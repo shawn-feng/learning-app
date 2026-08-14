@@ -1,0 +1,16 @@
+node_modules/
+out/
+dist/
+data/
+cloud-service/database/
+cloud-service/storage/
+cloud-service/__pycache__/
+cloud-service/app/__pycache__/
+cloud-service/*.log
+cloud-service/server*.log
+*.db
+.pi/
+aliyun-aksk.txt
+.npm-cache/
+electron.vite.config.*.mjs
+学习技能和资料/

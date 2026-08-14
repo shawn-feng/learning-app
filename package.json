@@ -1,0 +1,109 @@
+{
+  "name": "learning-app",
+  "version": "0.1.0",
+  "description": "AI-guided learning app for children",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "python:dev": "cd cloud-service && python -m uvicorn app.main:app --reload --port 8000",
+    "python:install": "cd cloud-service && pip install -r requirements.txt",
+    "test": "vitest run",
+    "dist": "electron-vite build && electron-builder",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:win:mirror": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& electron-vite build && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.learning-app.desktop",
+    "productName": "学习伙伴",
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "electron/**/*.js",
+      "templates/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "templates",
+        "to": "templates"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": null,
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "学习伙伴",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    }
+  },
+  "keywords": [
+    "learning",
+    "education",
+    "ai",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "^26.2.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@alicloud/pop-core": "^1.8.0",
+    "@andresaya/edge-tts": "^1.8.0",
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "bcryptjs": "^3.0.3",
+    "dompurify": "^3.4.13",
+    "ffmpeg-static": "^5.3.0",
+    "node-cron": "^4.6.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tencentcloud-sdk-nodejs-asr": "^4.1.273",
+    "typebox": "^1.3.12"
+  }
+}
