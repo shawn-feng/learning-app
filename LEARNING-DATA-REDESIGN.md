@@ -41,10 +41,11 @@ children/{childId}/
 ├── learning/              # 按主题组织（不按月）
 │   ├── topics.md          # 总入口：主题→进度文件→method 指针
 │   ├── rules.md           # 每日学习目标量（只与学习相关）
-│   └── lunyu/             # 每个主题一个目录
+│   └── lunyu/             # 每个主题一个目录（自包含"主题包"）
 │       ├── lunyu.md       # 主题进度文件：课程·状态·next·tags（放自己目录下）
 │       ├── method.md      # 该主题教学方法（内容）
-│       └── materials/     # 教学资料+学习资料（内容，agent 可读）
+│       ├── materials/     # 教学资料+学习资料（内容，agent 可读）
+│       └── media/         # 音视频媒体（本主题专用，固定位置，不随 app 打包）
 ├── life/                  # 按月索引（只指针）
 │   └── 2026-08.md
 ├── inquiries/             # 按月索引（只指针）
@@ -57,7 +58,7 @@ children/{childId}/
     └── 诚实.md            # 关联知识点 + 关联生活事件
 ```
 
-**组织方式说明**：`learning/` 按主题（课程天然归属主题，按主题查最自然）；`life/`、`inquiries/`、`tasks/` 按月（时间流，按月最自然）。后三者本质都是索引/指针，都指向 `daily/{日期}.md`——内容只在 daily 写一次。**进度文件放在各自主题目录下**（如 `learning/lunyu/lunyu.md`），与 method.md、materials/ 同目录，主题自包含；**每日目标量放 `learning/rules.md`**（只与学习相关）。不设 meta 目录——每个主题的进度文件本身已承载进度，无需跨天累积进度文件。
+**组织方式说明**：`learning/` 按主题（课程天然归属主题，按主题查最自然）；`life/`、`inquiries/`、`tasks/` 按月（时间流，按月最自然）。后三者本质都是索引/指针，都指向 `daily/{日期}.md`——内容只在 daily 写一次。**进度文件放在各自主题目录下**（如 `learning/lunyu/lunyu.md`），与 method.md、materials/ 同目录，主题自包含；**每日目标量放 `learning/rules.md`**（只与学习相关）。不设 meta 目录——每个主题的进度文件本身已承载进度，无需跨天累积进度文件。**音视频固定放 `learning/{topic}/media/`**——主题作为自包含"主题包"额外下载、不随 app 打包，结构规范见 `LEARNING-TOPIC-STRUCTURE.md`。
 
 ---
 
