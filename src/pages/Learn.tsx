@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import ChatWindow, { type ChatMessage, type ToolCallState } from "../components/ChatWindow";
+import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
@@ -11,7 +11,7 @@ interface Props {
 
 const AI_EMOJIS = ["🤖", "🦊", "🐱", "🐶", "🦉", "🐲", "🦄", "🌟", "🎓", "📚"];
 
-// 朗读语速档位（对齐 wowenglish 偏好，默认 0.7x 慢速）
+// 朗读语速档位（对齐 wowenglish 偏好，默认 1.0x 正常语速）
 const RATE_OPTIONS = [
   { label: "慢", value: "-50%", display: "0.5x" },
   { label: "标准", value: "-30%", display: "0.7x" },
@@ -57,8 +57,8 @@ export default function Learn({ child, onExit }: Props) {
   // Sidebar collapse
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  // TTS 语速
-  const [rate, setRate] = useState("-30%");
+  // TTS 语速（默认正常 1.0x）
+  const [rate, setRate] = useState("+0%");
 
   // AI Agent settings
   const [showAiSettings, setShowAiSettings] = useState(false);
@@ -90,6 +90,7 @@ export default function Learn({ child, onExit }: Props) {
               id: nextId(),
               role: m.role === "user" ? "user" : "ai",
               text: m.text,
+              time: m.time || nowLabel(),
             }))
           );
         }
@@ -137,23 +138,33 @@ export default function Learn({ child, onExit }: Props) {
     if (data.toolName === "display_content") {
       const panel = data.result?.details?.panelContent;
       if (panel) {
-        const id = nextId();
+        const filePath = panel.filePath;
+        let targetId: string | null = null;
         setMaterials((prev) => {
+          // 去重：同一份资料（同一 filePath）已在面板里，则不再重复添加，
+          // 直接聚焦已有条目，避免「每步都重发学习资料」导致面板堆积重复。
+          if (filePath && prev.some((m) => m.filePath === filePath)) {
+            targetId = prev.find((m) => m.filePath === filePath)!.id;
+            return prev;
+          }
+          const id = nextId();
+          targetId = id;
           const next = [
             ...prev,
             {
               id,
-              format: panel.format,
+              format: "html" as const,
               content: panel.content,
               title: panel.title,
               time: nowLabel(),
+              filePath,
             },
           ];
           const lim = materialsLimitRef.current;
           return lim > 0 ? next.slice(-lim) : next;
         });
-        // 新资料到达后自动打开查看
-        setSelectedMaterialId(id);
+        // 新资料（或重复资料聚焦）到达后自动打开查看
+        if (targetId) setSelectedMaterialId(targetId);
       }
     }
     patchWorking((m) => ({
@@ -183,7 +194,7 @@ export default function Learn({ child, onExit }: Props) {
             : m
         );
       }
-      return [...prev, { id: nextId(), role: "ai", text: data.text }];
+      return [...prev, { id: nextId(), role: "ai", text: data.text, time: nowTime() }];
     });
     setBusy(false);
   }, []);
@@ -205,8 +216,20 @@ export default function Learn({ child, onExit }: Props) {
             : m
         );
       }
-      return [...prev, { id: nextId(), role: "ai", text: `⚠️ ${data.error}` }];
+      return [...prev, { id: nextId(), role: "ai", text: `⚠️ ${data.error}`, time: nowTime() }];
     });
+    setBusy(false);
+  }, []);
+
+  // 定时任务触发的会话重置：清空当前孩子的会话与资料面板
+  const handleSessionReset = useCallback((data: { childId: string }) => {
+    if (data.childId !== childIdRef.current) return;
+    setMessages([
+      { id: nextId(), role: "ai", text: "🔄 会话已被自动重置（定时任务），我们重新开始吧！", time: nowTime() },
+    ]);
+    setMaterials([]);
+    setSelectedMaterialId(null);
+    workingIdRef.current = null;
     setBusy(false);
   }, []);
 
@@ -217,13 +240,78 @@ export default function Learn({ child, onExit }: Props) {
     window.api.onPiThinking(handleThinking);
     window.api.onPiToolStart(handleToolStart);
     window.api.onPiToolEnd(handleToolEnd);
+    window.api.onPiSessionReset(handleSessionReset);
     return () => {
       window.api.piRemoveListeners();
     };
-  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd]);
+  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleSessionReset]);
+
+  // 向聊天追加一条 AI 消息（命令反馈 / 系统提示用）
+  function addAiMessage(text: string) {
+    setMessages((prev) => [...prev, { id: nextId(), role: "ai", text, time: nowTime() }]);
+    setBusy(false);
+    workingIdRef.current = null;
+  }
+
+  // 命令清单（以 / 开头触发，为后续更多命令预留）
+  const COMMANDS: Record<string, { desc: string }> = {
+    reset: { desc: "重置会话：清空当前对话和学习资料面板，重新开始" },
+    help: { desc: "查看可用命令" },
+  };
+
+  function showHelp() {
+    const lines = ["📖 可用命令："];
+    for (const [name, info] of Object.entries(COMMANDS)) {
+      lines.push(`  /${name} —— ${info.desc}`);
+    }
+    addAiMessage(lines.join("\n"));
+  }
+
+  // 处理 /reset 命令：清空会话上下文与学习资料面板
+  async function runResetCommand() {
+    setBusy(true);
+    try {
+      const r = await window.api.piReset(child.childId);
+      if (r?.success) {
+        setMessages([
+          { id: nextId(), role: "ai", text: "✅ 会话已重置，我们重新开始吧！有什么想学的吗？😊", time: nowTime() },
+        ]);
+        setMaterials([]);
+        setSelectedMaterialId(null);
+        workingIdRef.current = null;
+        setBusy(false);
+      } else {
+        addAiMessage(`⚠️ 重置失败：${r?.error || "未知错误"}`);
+      }
+    } catch (e: any) {
+      addAiMessage(`⚠️ 重置失败：${e?.message || "网络错误"}`);
+    }
+  }
+
+  // 命令解析：以 / 开头的输入走命令分支，否则作为普通消息发送
+  async function handleCommand(raw: string) {
+    const parts = raw.slice(1).split(/\s+/).filter(Boolean);
+    const name = (parts[0] || "").toLowerCase();
+    switch (name) {
+      case "reset":
+        await runResetCommand();
+        break;
+      case "help":
+        showHelp();
+        break;
+      default:
+        addAiMessage(`❓ 未知命令「/${name}」。输入 /help 查看可用命令。`);
+    }
+  }
 
   async function handleSend(text: string, audio?: string) {
-    const userMsg: ChatMessage = { id: nextId(), role: "user", text, audio };
+    const trimmed = text.trim();
+    // 命令拦截：以 / 开头即触发命令（为后续更多命令预留），不发送给 AI
+    if (trimmed.startsWith("/")) {
+      await handleCommand(trimmed);
+      return;
+    }
+    const userMsg: ChatMessage = { id: nextId(), role: "user", text, audio, time: nowTime() };
     const workingMsg: ChatMessage = {
       id: nextId(),
       role: "ai",
@@ -231,6 +319,7 @@ export default function Learn({ child, onExit }: Props) {
       thinking: "",
       tools: [],
       working: true,
+      time: nowTime(),
     };
     workingIdRef.current = workingMsg.id;
     setMessages((prev) => [...prev, userMsg, workingMsg]);
@@ -411,7 +500,7 @@ export default function Learn({ child, onExit }: Props) {
             {sidebarCollapsed ? (
               <button
                 className="sidebar-icon-btn"
-                title={`朗读语速 ${RATE_OPTIONS.find((o) => o.value === rate)?.display || "0.7x"}`}
+                title={`朗读语速 ${RATE_OPTIONS.find((o) => o.value === rate)?.display || "1.0x"}`}
                 onClick={() => setSidebarCollapsed(false)}
               >
                 🔉
@@ -482,7 +571,7 @@ export default function Learn({ child, onExit }: Props) {
           ) : (
             <LearningDashboard childId={child.childId} />
           )}
-          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} aiEmoji={aiEmoji} rate={rate} />
+          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} aiEmoji={aiEmoji} rate={rate} childId={child.childId} />
         </div>
       </div>
 

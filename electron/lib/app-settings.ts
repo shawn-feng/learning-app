@@ -3,6 +3,10 @@ import { getAppSettingsPath } from "./config";
 
 interface AppSettings {
   materialsLimit: number;
+  // 用户设置的「默认模型」，格式 "provider/modelId"，如 "qwen/qwen-flash"。
+  // 这是主进程可读的唯一种源：getDefaultModel()、scheduler 定时任务、渲染侧 ModelSelector
+  // 都从这里取，避免出现「设置里改了默认模型、孩子模式仍显示 deepseek flash」的脱钩问题。
+  defaultModel?: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -35,4 +39,19 @@ export function setMaterialsLimit(n: number): number {
   settings.materialsLimit = valid;
   saveSettings(settings);
   return valid;
+}
+
+// 默认模型（"provider/modelId"）。空字符串/未设置表示「未指定，由调用方自行回退」。
+export function getDefaultModelKey(): string {
+  return loadSettings().defaultModel || "";
+}
+
+export function setDefaultModelKey(key: string): void {
+  const settings = loadSettings();
+  if (key) {
+    settings.defaultModel = key;
+  } else {
+    delete settings.defaultModel;
+  }
+  saveSettings(settings);
 }

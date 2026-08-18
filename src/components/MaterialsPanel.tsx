@@ -3,10 +3,12 @@ import remarkGfm from "remark-gfm";
 
 export interface Material {
   id: string;
-  format: "markdown" | "html";
+  format: "html";
   content: string;
   title?: string;
   time: string;
+  /** 资料文件路径（相对学习目录），用于去重 */
+  filePath?: string;
 }
 
 interface Props {

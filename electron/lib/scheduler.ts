@@ -1,10 +1,12 @@
 import fs from "fs";
 import path from "path";
 import cron from "node-cron";
+import { BrowserWindow } from "electron";
 import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config";
 import { listChildren } from "./child-auth";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { resetChildSession } from "./pi-session";
 
 interface TaskState {
   children: Record<
@@ -12,6 +14,7 @@ interface TaskState {
     {
       recording: { lastRun: string };
       "study-tracker": { lastRun: string };
+      "session-reset": { lastRun: string };
     }
   >;
 }
@@ -20,6 +23,11 @@ interface TaskState {
 export interface SchedulerChildConfig {
   recording: { enabled: boolean; intervalHours: number };
   studyTracker: { enabled: boolean; hour: number; minute: number };
+  // 会话重置：每天在配置的 hour:minute 清空孩子会话上下文与学习资料（不清除学习进度）
+  sessionReset: { enabled: boolean; hour: number; minute: number };
+  // 历史会话归档保留上限：每次会话重置后只保留最近 N 个旧会话文件，更早的清理，避免无限膨胀。
+  // 家长可在「定时任务」设置页配置；设置为 0 表示不保留历史归档（仅当前会话）。
+  archiveLimit: number;
 }
 
 interface SchedulerConfig {
@@ -29,6 +37,8 @@ interface SchedulerConfig {
 export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
   recording: { enabled: false, intervalHours: 1 },
   studyTracker: { enabled: false, hour: 21, minute: 0 },
+  sessionReset: { enabled: false, hour: 22, minute: 0 },
+  archiveLimit: 20,
 };
 
 const HOUR_MS = 3600 * 1000;
@@ -52,6 +62,7 @@ function getChildState(state: TaskState, childId: string) {
     state.children[childId] = {
       recording: { lastRun: "" },
       "study-tracker": { lastRun: "" },
+      "session-reset": { lastRun: "" },
     };
   }
   return state.children[childId];
@@ -81,6 +92,8 @@ export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {
   return {
     recording: { ...DEFAULT_CHILD_CONFIG.recording, ...(c.recording || {}) },
     studyTracker: { ...DEFAULT_CHILD_CONFIG.studyTracker, ...(c.studyTracker || {}) },
+    sessionReset: { ...DEFAULT_CHILD_CONFIG.sessionReset, ...(c.sessionReset || {}) },
+    archiveLimit: c.archiveLimit ?? DEFAULT_CHILD_CONFIG.archiveLimit,
   };
 }
 
@@ -92,6 +105,11 @@ export function setChildSchedulerConfig(
   config.children[childId] = {
     recording: { ...DEFAULT_CHILD_CONFIG.recording, ...(childConfig.recording || {}) },
     studyTracker: { ...DEFAULT_CHILD_CONFIG.studyTracker, ...(childConfig.studyTracker || {}) },
+    sessionReset: { ...DEFAULT_CHILD_CONFIG.sessionReset, ...(childConfig.sessionReset || {}) },
+    archiveLimit:
+      typeof childConfig.archiveLimit === "number"
+        ? childConfig.archiveLimit
+        : DEFAULT_CHILD_CONFIG.archiveLimit,
   };
   saveSchedulerConfig(config);
   return config.children[childId];
@@ -213,6 +231,24 @@ async function runTracker(childId: string): Promise<void> {
   }
 }
 
+// 会话重置：清空孩子会话上下文与学习资料面板（不清除学习进度文件）。
+// 先销毁内存会话，再清空持久化 sessions 目录；随后广播事件，
+// 若家长/孩子正打开该孩子的 Learn 页面，前端会同步清空。
+async function runSessionReset(childId: string): Promise<void> {
+  const archiveLimit = getChildSchedulerConfig(childId).archiveLimit;
+  await resetChildSession(childId, archiveLimit);
+  broadcastSessionReset(childId);
+}
+
+// 通知所有渲染窗口：某孩子会话已被重置，前端（Learn 页）据此清空状态
+function broadcastSessionReset(childId: string): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) {
+      w.webContents.send("pi:session_reset", { childId });
+    }
+  }
+}
+
 // 每分钟检查一次：按每个孩子各自的配置决定是否执行。默认未配置的孩子不执行。
 export function startScheduler(): void {
   cron.schedule("* * * * *", async () => {
@@ -256,6 +292,25 @@ export function startScheduler(): void {
           }
         }
       }
+
+      // session-reset：每天在配置的 hour:minute 清空孩子会话（不清除学习进度）
+      if (cc.sessionReset.enabled) {
+        const lastDay = cs["session-reset"].lastRun
+          ? new Date(cs["session-reset"].lastRun).toDateString()
+          : "";
+        const isTime =
+          now.getHours() === cc.sessionReset.hour &&
+          now.getMinutes() === cc.sessionReset.minute;
+        if (isTime && lastDay !== now.toDateString()) {
+          try {
+            await runSessionReset(child.childId);
+            cs["session-reset"].lastRun = new Date().toISOString();
+            saveTaskState(state);
+          } catch (e) {
+            console.error(`Session reset failed for child ${child.childId}:`, e);
+          }
+        }
+      }
     }
   });
 }
@@ -293,6 +348,20 @@ export async function runCatchUp(): Promise<void> {
           cs["study-tracker"].lastRun = new Date().toISOString();
         } catch (e) {
           console.error(`Tracker catch-up failed for child ${child.childId}:`, e);
+        }
+      }
+    }
+
+    if (cc.sessionReset.enabled) {
+      const lastReset = cs["session-reset"].lastRun
+        ? new Date(cs["session-reset"].lastRun).toDateString()
+        : "";
+      if (lastReset !== today) {
+        try {
+          await runSessionReset(child.childId);
+          cs["session-reset"].lastRun = new Date().toISOString();
+        } catch (e) {
+          console.error(`Session-reset catch-up failed for child ${child.childId}:`, e);
         }
       }
     }

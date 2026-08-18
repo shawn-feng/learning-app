@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import ChatWindow, { type ChatMessage } from "../components/ChatWindow";
+import ChatWindow, { type ChatMessage, nowTime } from "../components/ChatWindow";
 
 interface ChildInfo {
   childId: string;
@@ -39,7 +39,7 @@ export default function TopicEditor() {
         if (last && last.role === "ai") {
           clone[clone.length - 1] = { ...last, text: last.text + (data.delta || "") };
         } else {
-          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: data.delta || "" });
+          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: data.delta || "", time: nowTime() });
         }
         return clone;
       });
@@ -81,7 +81,7 @@ export default function TopicEditor() {
     if (messages.length === 0 && currentChild) {
       full = `当前选中的孩子是「${currentChild.name}」（childId=${currentChild.childId}）。${text}`;
     }
-    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text }]);
+    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text, time: nowTime() }]);
     setBusy(true);
     try {
       await window.api.piPromptParent(full);

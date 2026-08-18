@@ -4,57 +4,52 @@ import fs from "fs";
 import path from "path";
 
 export interface PanelContent {
-  format: "markdown" | "html";
+  format: "html";
   content: string;
   title?: string;
+  /** 资料文件路径（相对学习目录），用于前端去重与回看 */
+  filePath: string;
 }
 
 export const displayContentTool = defineTool({
   name: "display_content",
-  label: "展示内容",
+  label: "展示 HTML 资料",
   description:
-    "在学习内容面板展示教学内容。支持 markdown 和 html 两种格式。html 格式在沙盒 iframe 中渲染，可运行内联 <script> 和 onclick 等交互逻辑，可播放 <audio>/<video>（src 用 media://local/ 开头的本地媒体地址）。\n\n两种用法：\n1. 直接传 content（现场拼内容）；\n2. 传 path 引用预生成的学习资料文件（推荐）：path 是相对当前学习目录的文件路径，如 `learning/lunyu/materials/论语先进篇第十三章.html`，格式按扩展名自动识别（.html→html，其余→markdown）。当孩子要学某一课时，优先用 path 引用该课预生成的 html 资料（含吟诵音频、翻译、道理讲解）。",
+    "在孩子学习资料面板展示一份 **HTML 格式** 的学习资料（在沙盒 iframe 中渲染，可运行内联 <script>、onclick 等交互，可播放 <audio>/<video>，src 用 media://local/ 本地地址）。\n\n" +
+    "**用法**：传 `path` 引用预生成的学习资料文件（必填）。path 是相对当前学习目录的文件路径，如 `learning/lunyu/materials/论语先进篇第十三章.html`；仅支持 .html / .htm，格式固定为 html。\n\n" +
+    "**何时调用**：仅当需要展示资料时——引导学习时展示该课预生成的 html 资料，或孩子主动要求查看某份资料。\n\n" +
+    "**展示什么、何时展示，以该主题 method.md 的规定为准**。",
   parameters: Type.Object({
-    format: Type.Optional(
-      Type.Union([Type.Literal("markdown"), Type.Literal("html")], {
-        description: "内容格式：markdown 或 html（用 path 时可选，自动按扩展名识别）",
-      })
-    ),
-    content: Type.Optional(Type.String({ description: "要展示的内容（用 path 时可省略）" })),
-    path: Type.Optional(
-      Type.String({ description: "预生成资料文件路径，相对学习目录，如 learning/lunyu/materials/论语先进篇第十三章.html" })
-    ),
-    title: Type.Optional(Type.String({ description: "内容标题" })),
+    path: Type.String({
+      description:
+        "预生成资料文件路径（必填），相对学习目录，必须以 .html 或 .htm 结尾，如 learning/lunyu/materials/论语先进篇第十三章.html",
+    }),
+    title: Type.Optional(Type.String({ description: "内容标题（缺省取文件名）" })),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    let format = params.format || "markdown";
-    let content = params.content || "";
-    let title = params.title;
-
-    // 引用预生成资料文件：读文件内容，避免 LLM 转述大段 html
-    if (params.path) {
-      const resolved = path.resolve(ctx.cwd, params.path);
-      // 路径守卫：只允许访问当前学习目录（cwd）内的文件
-      if (resolved !== ctx.cwd && !resolved.startsWith(ctx.cwd + path.sep)) {
-        throw new Error("资料路径超出学习目录范围");
-      }
-      const raw = fs.readFileSync(resolved, "utf-8");
-      const ext = path.extname(resolved).toLowerCase();
-      format = ext === ".html" || ext === ".htm" ? "html" : "markdown";
-      content = raw;
-      if (!title) title = path.basename(resolved).replace(/\.[^.]+$/, "");
+    if (!params.path) {
+      throw new Error("display_content 必须提供 path 参数（预生成的 html 资料文件路径）");
     }
-
-    if (!content) throw new Error("content 与 path 至少提供其一");
+    const resolved = path.resolve(ctx.cwd, params.path);
+    // 路径守卫：只允许访问当前学习目录（cwd）内的文件
+    if (resolved !== ctx.cwd && !resolved.startsWith(ctx.cwd + path.sep)) {
+      throw new Error("资料路径超出学习目录范围");
+    }
+    const ext = path.extname(resolved).toLowerCase();
+    if (ext !== ".html" && ext !== ".htm") {
+      throw new Error("display_content 仅支持 .html / .htm 文件");
+    }
+    const raw = fs.readFileSync(resolved, "utf-8");
+    const title = params.title || path.basename(resolved).replace(/\.[^.]+$/, "");
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `已展示内容: ${title || "教学内容"}`,
+          text: `已展示内容: ${title}`,
         },
       ],
-      details: { panelContent: { format, content, title } },
+      details: { panelContent: { format: "html", content: raw, title, filePath: params.path } },
     };
   },
 });

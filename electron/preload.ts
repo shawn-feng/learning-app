@@ -31,6 +31,8 @@ const api = {
     registerListener("pi:reply_end", callback),
   onPiReplyError: (callback: (data: { childId: string; error: string }) => void) =>
     registerListener("pi:reply_error", callback),
+  onPiSessionReset: (callback: (data: { childId: string }) => void) =>
+    registerListener("pi:session_reset", callback),
 
   // Remove all Pi event listeners
   piRemoveListeners: () => {
@@ -47,9 +49,20 @@ const api = {
   piPromptParent: (text: string) => ipcRenderer.invoke("pi:prompt_parent", text),
   piAbort: (childId: string) => ipcRenderer.invoke("pi:abort", childId),
   piDispose: (childId: string) => ipcRenderer.invoke("pi:dispose", childId),
+  piReset: (childId: string) => ipcRenderer.invoke("pi:reset", childId),
+  piListSessions: (childId: string) => ipcRenderer.invoke("pi:listSessions", childId),
+  piGetSessionMessages: (childId: string, file: string) =>
+    ipcRenderer.invoke("pi:getSessionMessages", childId, file),
   piGetModels: () => ipcRenderer.invoke("pi:get_models"),
   piSwitchModel: (childId: string, provider: string, modelId: string) =>
     ipcRenderer.invoke("pi:switch_model", childId, provider, modelId),
+  piGetDefaultModel: () => ipcRenderer.invoke("pi:get_default_model"),
+  piSetDefaultModel: (key: string) => ipcRenderer.invoke("pi:set_default_model", key),
+  onPiDefaultModelChanged: (callback: (key: string) => void) => {
+    const wrapper = (_e: any, data: any) => callback(data);
+    ipcRenderer.on("pi:default_model_changed", wrapper);
+    return () => ipcRenderer.removeListener("pi:default_model_changed", wrapper);
+  },
   piSetApiKey: (provider: string, apiKey: string) =>
     ipcRenderer.invoke("pi:set_api_key", provider, apiKey),
   piCheckProvider: (provider: string) => ipcRenderer.invoke("pi:check_provider", provider),

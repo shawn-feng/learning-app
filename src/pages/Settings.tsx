@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import SkillImport from "../components/SkillImport";
 import SkillEditor from "./SkillEditor";
 import VoiceSettings from "../components/VoiceSettings";
@@ -24,11 +24,31 @@ export default function Settings() {
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [defaultModel, setDefaultModel] = useState(() => localStorage.getItem("defaultModel") || "");
 
+  // 初始值以主进程存储（app-settings.json）为准，与 ModelSelector / 会话建链同源；
+  // 若主进程尚无记录但有旧的 localStorage 值，则迁移过去。
+  useEffect(() => {
+    window.api.piGetDefaultModel().then((r: any) => {
+      if (r?.success && r.key) {
+        setDefaultModel(r.key);
+      } else {
+        const ls = localStorage.getItem("defaultModel") || "";
+        if (ls) {
+          setDefaultModel(ls);
+          window.api.piSetDefaultModel(ls);
+        } else {
+          setDefaultModel("");
+        }
+      }
+    }).catch(() => {});
+  }, []);
+
   async function handleSetDefault(provider: string, modelId: string) {
     const key = `${provider}/${modelId}`;
     setDefaultModel(key);
     localStorage.setItem("defaultModel", key);
-    setKeyStatus(`已将 ${modelId} 设为默认模型`);
+    // 写入主进程：成为 getDefaultModel()（会话建链）/ scheduler 定时任务 / ModelSelector 的唯一种源
+    const r = await window.api.piSetDefaultModel(key);
+    setKeyStatus(r?.success ? `已将 ${modelId} 设为默认模型` : `默认模型保存失败: ${r?.error || ""}`);
   }
 
   async function handleSaveKey() {

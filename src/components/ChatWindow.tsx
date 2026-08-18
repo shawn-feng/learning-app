@@ -21,6 +21,15 @@ export interface ChatMessage {
   thinking?: string;
   tools?: ToolCallState[];
   working?: boolean;
+  // 消息发送时间（用户可见的时间戳，形如 HH:mm）
+  time?: string;
+}
+
+// 消息时间戳（HH:mm）——各消息构造点统一调用，避免散落
+export function nowTime(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 interface Props {
@@ -29,6 +38,20 @@ interface Props {
   disabled?: boolean;
   aiEmoji?: string;
   rate?: string;
+  childId: string;
+}
+
+interface HistorySessionMeta {
+  file: string;
+  sessionId: string;
+  createdAt: string;
+  messageCount: number;
+}
+
+interface HistoryView {
+  file: string;
+  createdAt: string;
+  messages: { role: "user" | "ai"; text: string; time?: string }[];
 }
 
 // 工具调用的图标与动词展示
@@ -88,7 +111,7 @@ function TraceDetails({ m }: { m: ChatMessage }) {
   );
 }
 
-export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate = "-30%" }: Props) {
+export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate = "+0%", childId }: Props) {
   const [input, setInput] = useState("");
   const messagesRef = useRef<HTMLDivElement>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -103,6 +126,53 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { recording, start, stop } = useAudioRecorder();
+
+  // 历史会话浏览（归档调阅，只读）
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [sessions, setSessions] = useState<HistorySessionMeta[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [viewing, setViewing] = useState<HistoryView | null>(null);
+  const [historyError, setHistoryError] = useState("");
+
+  function formatHistoryDate(iso: string): string {
+    if (!iso) return "未知时间";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "未知时间";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  async function openHistory() {
+    setHistoryOpen(true);
+    setHistoryError("");
+    setHistoryLoading(true);
+    setViewing(null);
+    try {
+      const r: any = await window.api.piListSessions(childId);
+      if (r?.success) setSessions(r.sessions || []);
+      else setHistoryError(r?.error || "加载历史失败");
+    } catch (e: any) {
+      setHistoryError("加载历史失败");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function selectSession(file: string) {
+    setHistoryError("");
+    const meta = sessions.find((s) => s.file === file);
+    setViewing({ file, createdAt: meta?.createdAt ?? "", messages: [] });
+    try {
+      const r: any = await window.api.piGetSessionMessages(childId, file);
+      if (r?.success) {
+        setViewing({ file, createdAt: meta?.createdAt ?? "", messages: r.messages || [] });
+      } else {
+        setHistoryError(r?.error || "读取会话失败");
+      }
+    } catch (e: any) {
+      setHistoryError("读取会话失败");
+    }
+  }
 
   useEffect(() => {
     if (messagesRef.current) {
@@ -252,10 +322,72 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
     ? "识别中…"
     : recording
     ? "录音中… 松开结束"
-    : "输入你的想法...";
+    : "输入你的想法...（以 / 开头可触发命令，如 /help）";
 
   return (
     <div className="chat-window">
+      <div className="chat-toolbar">
+        <button
+          className="history-toggle-btn"
+          onClick={historyOpen ? () => setHistoryOpen(false) : openHistory}
+          title="显示/隐藏历史会话"
+        >
+          📜 {historyOpen ? "关闭历史" : "历史会话"}
+        </button>
+      </div>
+
+      {historyOpen && (
+        <div className="history-panel">
+          <div className="history-list">
+            <div className="history-list-title">历史会话（重置前的归档）</div>
+            {historyLoading && <div className="history-empty">加载中…</div>}
+            {!historyLoading && sessions.length === 0 && (
+              <div className="history-empty">暂无历史会话</div>
+            )}
+            {!historyLoading &&
+              sessions.map((s) => (
+                <button
+                  key={s.file}
+                  className={`history-item ${viewing?.file === s.file ? "active" : ""}`}
+                  onClick={() => selectSession(s.file)}
+                >
+                  <span className="history-item-date">{formatHistoryDate(s.createdAt)}</span>
+                  <span className="history-item-count">{s.messageCount} 条</span>
+                </button>
+              ))}
+          </div>
+          <div className="history-view">
+            {historyError && <div className="history-error">{historyError}</div>}
+            {!viewing && !historyError && (
+              <div className="history-empty">← 选择左侧一个历史会话查看（只读）</div>
+            )}
+            {viewing && (
+              <>
+                <div className="history-view-title">
+                  {formatHistoryDate(viewing.createdAt)} · 只读归档
+                </div>
+                {viewing.messages.length === 0 && (
+                  <div className="history-empty">该会话没有可读消息</div>
+                )}
+                {viewing.messages.map((m, i) => (
+                  <div key={i} className={`message ${m.role}`}>
+                    {m.role === "ai" && aiEmoji && (
+                      <span style={{ fontSize: 22, marginRight: 8, alignSelf: "flex-end" }}>
+                        {aiEmoji}
+                      </span>
+                    )}
+                    <div className={`bubble ${m.role === "ai" ? "bubble-md" : ""}`}>
+                      {m.text}
+                      {m.time && <div className="msg-time">{m.time}</div>}
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="chat-messages" ref={messagesRef}>
         {messages.length === 0 && (
           <div style={{ textAlign: "center", color: "#aaa", marginTop: 60 }}>
@@ -279,6 +411,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
                     </span>
                   </div>
                   <TraceDetails m={m} />
+                  {m.time && <div className="msg-time">{m.time}</div>}
                 </div>
               ) : m.role === "ai" ? (
                 <>
@@ -293,6 +426,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
                     >
                       {m.text}
                     </ReactMarkdown>
+                    {m.time && <div className="msg-time">{m.time}</div>}
                   </div>
                   {hasTrace && (
                     <button
@@ -318,7 +452,10 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
                 </>
               ) : (
                 <>
-                  <div className="bubble">{m.text}</div>
+                  <div className="bubble">
+                    {m.text}
+                    {m.time && <div className="msg-time">{m.time}</div>}
+                  </div>
                   {m.audio && (
                     <button
                       className={`speak-btn ${playingAudioId === m.id ? "speaking" : ""}`}

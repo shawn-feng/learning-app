@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 interface SchedulerChildConfig {
   recording: { enabled: boolean; intervalHours: number };
   studyTracker: { enabled: boolean; hour: number; minute: number };
+  sessionReset: { enabled: boolean; hour: number; minute: number };
+  archiveLimit: number;
 }
 
 interface ChildItem {
@@ -15,6 +17,8 @@ function defaultConfig(): SchedulerChildConfig {
   return {
     recording: { enabled: false, intervalHours: 1 },
     studyTracker: { enabled: false, hour: 21, minute: 0 },
+    sessionReset: { enabled: false, hour: 22, minute: 0 },
+    archiveLimit: 20,
   };
 }
 
@@ -70,7 +74,7 @@ export default function SchedulerSettings() {
     <div className="settings-section">
       <h3>定时任务</h3>
       <p className="desc">
-        为每个孩子单独设置自动任务（学习记录总结、学习进度追踪）。默认全部关闭，开启后才会在后台定时调用模型。
+        为每个孩子单独设置自动任务（学习记录总结、学习进度追踪、每日会话重置）。默认全部关闭，开启后才会在后台定时调用模型。会话重置只清空对话与学习资料面板，不会清除学习进度。
       </p>
 
       {!loaded ? (
@@ -218,6 +222,100 @@ export default function SchedulerSettings() {
                       />
                     </span>
                   )}
+                </div>
+
+                {/* session-reset */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={cfg.sessionReset.enabled}
+                      onChange={(e) =>
+                        updateConfig(child.childId, (p) => ({
+                          ...p,
+                          sessionReset: { ...p.sessionReset, enabled: e.target.checked },
+                        }))
+                      }
+                    />
+                    会话重置（清空对话与学习资料，不清除进度）
+                  </label>
+                  {cfg.sessionReset.enabled && (
+                    <span style={{ fontSize: 13, color: "#666" }}>
+                      每天{" "}
+                      <input
+                        type="number"
+                        min={0}
+                        max={23}
+                        value={cfg.sessionReset.hour}
+                        onChange={(e) =>
+                          updateConfig(child.childId, (p) => ({
+                            ...p,
+                            sessionReset: {
+                              ...p.sessionReset,
+                              hour: Math.max(0, Math.min(23, parseInt(e.target.value) || 0)),
+                            },
+                          }))
+                        }
+                        style={{ width: 44, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
+                      />
+                      :
+                      <input
+                        type="number"
+                        min={0}
+                        max={59}
+                        value={cfg.sessionReset.minute}
+                        onChange={(e) =>
+                          updateConfig(child.childId, (p) => ({
+                            ...p,
+                            sessionReset: {
+                              ...p.sessionReset,
+                              minute: Math.max(0, Math.min(59, parseInt(e.target.value) || 0)),
+                            },
+                          }))
+                        }
+                        style={{ width: 44, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
+                      />
+                    </span>
+                  )}
+                </div>
+
+                {/* 历史会话归档保留上限 */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginTop: 4,
+                  }}
+                >
+                  <span style={{ fontSize: 13, color: "#666" }}>
+                    历史会话归档保留数量
+                    <input
+                      type="number"
+                      min={0}
+                      max={200}
+                      value={cfg.archiveLimit}
+                      onChange={(e) =>
+                        updateConfig(child.childId, (p) => ({
+                          ...p,
+                          archiveLimit: Math.max(
+                            0,
+                            Math.min(200, parseInt(e.target.value) || 0)
+                          ),
+                        }))
+                      }
+                      style={{
+                        width: 56,
+                        marginLeft: 6,
+                        padding: "4px 6px",
+                        border: "1px solid #ddd",
+                        borderRadius: 6,
+                      }}
+                    />
+                    <span style={{ marginLeft: 6, color: "#999" }}>
+                      个（每次会话重置后只保留最近 N 个旧会话文件；设为 0 则不保留历史归档）
+                    </span>
+                  </span>
                 </div>
 
                 {status[child.childId] && (

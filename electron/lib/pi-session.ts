@@ -2,6 +2,7 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
+  CURRENT_SESSION_VERSION,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import path from "path";
@@ -13,38 +14,27 @@ import { getProfile, type ChildProfile } from "./child-auth";
 import learningGuardExtension from "../extensions/learning-guard";
 
 const LEARNING_NAV_INSTRUCTIONS = `
+## 交流准则
+- 用孩子听得懂的话说话，简短、亲切，不堆术语，回答保持简洁，不输出长篇大论
+- 不懂就承认，不瞎编；不确定的事，先查资料（用工具读文件）再回答
+- 孩子来了先自然问候，不直接进入学习模式
+- 孩子有进步、有思考时，明确说出来肯定
+- 孩子有疑惑时，不直接给标准答案，先倾听、引导他自己想，有时候倾听和讨论比答案更重要
+- 从生活话题自然引导应用已学知识，不强行说教
+- 不评判孩子的选择——听、理解、必要时给建议
+
 ## 行为规范
 
 ### 学习
 孩子要学习某个主题时：
 1. 先读 \`learning/topics.md\`（主题知识列表），找到对应主题及其方法文件
-2. 读该主题的 \`method.md\`，按其中描述的教学方法引导孩子学习
-（教学步骤、考核方式、教学资料位置都在 method.md 里）
+2. 读该主题的 \`method.md\`，**这是本次引导的唯一权威依据**：教学步骤、展示时机、资料位置都按 method 严格执行；当 method 的具体规定与你的通用判断冲突时，**以 method 为准**
 
 ### 记录
 学习总结、生活事件等记录由 recording 技能负责，按需调用（详见其 SKILL.md）。
 
 ### 内容展示
-用 display_content 工具向孩子展示内容，支持 markdown 和 html。
-
-## 你的角色
-
-你是孩子的良师益友，日常交流围绕三个角色：
-
-### 良师 - 学习
-- 有进步、有思考时，明确说出来肯定
-- 孩子有疑惑时，不直接给标准答案，先倾听、引导他自己想
-
-### 益友 - 生活
-- 孩子来了先自然问候，不直接进入学习模式
-- 认真听、配合聊，不敷衍不忽视
-- 从生活话题自然引导应用已学知识，不强行说教
-- 不评判孩子的选择——听、理解、必要时给建议
-
-### 智囊 - 答疑
-- 不懂就承认，不瞎编。查了再回答
-- 用孩子能理解的方式解释，不炫术语
-- 有时候倾听和讨论比答案更重要
+- 用 display_content 工具向孩子展示 **html 格式** 的学习资料，通过 \`path\` 引用预生成的 html 文件。
 `;
 
 const CUSTOM_START = "<!-- custom:start -->";
@@ -148,20 +138,14 @@ SKILL.md 格式：frontmatter（name/description）+ 工作流程。
 
 /**
  * 孩子会话的 system prompt 头部（替换 SDK 默认的 "expert coding assistant" 身份 + Pi 文档噪声）。
- * 注意：SDK 在 customPrompt 模式下仍会自动附加 <project_context>（AGENTS.md）、
- * <available_skills> 技能段、Current working directory 与学习守护扩展的时间注入，
- * 所以这里只负责「身份 + 通用准则」，孩子的详细行为规范由 AGENTS.md 提供（家长可在 custom 段编辑）。
+ * 这里**只描述身份**，所有行为规范（交流准则、学习方法、内容展示、角色）都放在
+ * LEARNING_NAV_INSTRUCTIONS 里，经 buildAgentsMd 生成 AGENTS.md，由 SDK 自动附加为
+ * <project_context>。孩子的完整行为规范以 AGENTS.md 为唯一真源（家长可在 custom 段编辑），
+ * getChildSession 会在每次开会话前刷新 AGENTS.md，避免磁盘文件与源码脱节。
  */
 function buildChildPrompt(profile: ChildProfile): string {
   const emoji = profile.aiEmoji || "🌟";
-  return `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，不是编程助手。你在孩子的学习空间里工作，通过读写孩子的学习记录、用 display_content 展示学习内容来陪伴和引导${profile.name}学习。
-
-## 交流准则
-- 用${profile.age}岁孩子听得懂的话说话，简短、亲切，不堆术语
-- 回答保持简洁，不输出长篇大论
-- 不懂就承认，不瞎编；需要查资料时用工具读文件
-- 展示学习内容（markdown / HTML 卡片）一律用 display_content 工具
-- 你的身份、性格与完整行为规范以 AGENTS.md 为准`;
+  return `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，陪伴和引导${profile.name}学习、生活和成长。`;
 }
 
 interface SessionEntry {
@@ -181,6 +165,11 @@ export async function getChildSession(
   const childDir = getChildDir(childId);
   const profile = getProfile(childId);
   if (!profile) throw new Error("Child profile not found");
+
+  // 开会话前刷新 AGENTS.md，确保磁盘文件始终与源码 LEARNING_NAV 同步（保留家长在
+  // custom 段的编辑）。这样无论源码怎么改、家长何时编辑，孩子会话拿到的行为规范都是最新、
+  // 且唯一以 AGENTS.md 为真源，避免"改了源码但磁盘 AGENTS.md 陈旧、约束不生效"的问题。
+  writeAgentsMd(childId, profile);
 
   const modelRuntime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -268,6 +257,218 @@ export async function disposeChildSession(childId: string): Promise<void> {
   }
 }
 
+/**
+ * 重置孩子的「当前会话上下文」——把发给模型的上下文清空、从空白开始，
+ * 但**不抹掉历史聊天记录**（旧会话文件完整保留，作为「归档」可随时在界面调阅）。
+ *
+ * 实现：使用 SDK 原生的 SessionManager.newSession() 在当前会话管理器上
+ * 开启一个**全新的、空的 .jsonl 会话文件**；旧会话文件**原封不动留在磁盘上**成为归档。
+ *   - newSession() 仅改变 sessionManager 指向的新文件与 leaf 指针（内存中 fileEntries 重置为 [header]），
+ *     旧文件从不被删除、不被分叉——它就是一个独立的、可被 readChildSessionMessages 直接读取的历史文件。
+ *   - resetLeaf()（分叉原语）不适用：它会在「同一文件」里开新根分支，旧对话作为兄弟分支残留，
+ *     语义是「尝试多种可能性」而非「重置」，会让单个文件无限堆叠分支。newSession() 才是干净的「另开新会话」。
+ *   - 同时清空内存 transcript（agent.state.messages），保证 getSessionHistory /
+ *     getSessionMaterials 及 UI 立即为空。
+ *
+ * 两条路径：
+ *   - 热路径（会话已在内存）：newSession() + 清空内存 transcript，立即生效；旧文件即归档。
+ *   - 冷路径（应用未加载该会话，如定时任务触发时应用没开）：在 sessions 目录新建一个
+ *     仅含 header 的空 .jsonl 会话文件，使下次 continueRecent 选中空白会话；旧文件保留为历史。
+ *
+ * 归档保留上限：每次重置后只保留最近 MAX_ARCHIVED_SESSIONS 个旧会话文件，更早的自动清理，
+ * 避免 sessions 目录随重置次数无限膨胀（当前活跃会话文件永不被删）。
+ *
+ * 仅清「会话上下文 + 学习资料」，不清学习进度文件（daily/、learning/ 进度、profile 等）。
+ */
+/** 默认归档保留上限：每次会话重置后只保留最近 N 个旧会话文件，更早的清理，避免无限膨胀。值可由家长在设置里覆盖（见 scheduler config 的 archiveLimit）。 */
+export const DEFAULT_ARCHIVE_LIMIT = 20;
+
+export async function resetChildSession(
+  childId: string,
+  archiveLimit: number = DEFAULT_ARCHIVE_LIMIT
+): Promise<void> {
+  const childDir = getChildDir(childId);
+  const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  const entry = activeSessions.get(childId);
+  if (entry) {
+    // 热路径：归档重置——在当前 sessionManager 上开一个全新的空会话文件，
+    // 旧会话文件完整保留为历史归档（不删除、不分叉）。
+    entry.session.sessionManager.newSession();
+    const agent: any = (entry.session as any).agent;
+    if (agent && agent.state) agent.state.messages = [];
+    // 关键修复：newSession() 只在内存里把 fileEntries 重置为 [header]、把 sessionFile
+    // 指向新路径，并不会立即写盘（SDK 首条消息才落盘）。若不在此写出空 header 文件，则：
+    //   (1) sessions 目录里没有新 jsonl（用户反馈「没有新 jsonl 文件」）；
+    //   (2) 用户退出再进入时 continueRecent 按 mtime 选中最新的仍是旧文件，
+    //       导致「聊天框里依然有旧消息」。
+    // 因此这里立即把新会话的 header 写出到磁盘，使其持久化、可被 continueRecent 选中。
+    const hotFile: string | undefined = entry.session.sessionFile;
+    const hotHeader: any = entry.session.sessionManager.getHeader();
+    if (hotFile && hotHeader) {
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      fs.writeFileSync(hotFile, JSON.stringify(hotHeader) + "\n");
+    }
+    pruneArchivedSessions(sessionsDir, hotFile ?? undefined, archiveLimit);
+  } else {
+    // 冷路径（应用未加载该会话，如定时任务触发时应用没开）：
+    // 新建一个空会话文件（仅含 header），使下次 continueRecent 选中空白会话；旧文件保留为历史。
+    // （SDK 无删除/清空 API，且 newSession() 不会立即写盘，故这里手写一个合法 header 文件。）
+    const newMgr = SessionManager.create(childDir, sessionsDir); // 内部 newSession()：空（仅 header）
+    const header = {
+      type: "session",
+      version: CURRENT_SESSION_VERSION,
+      id: newMgr.getSessionId(),
+      timestamp: new Date().toISOString(),
+      cwd: childDir,
+    };
+    const file = newMgr.getSessionFile();
+    if (file) fs.writeFileSync(file, JSON.stringify(header) + "\n");
+    pruneArchivedSessions(sessionsDir, file ?? undefined, archiveLimit);
+  }
+}
+
+/**
+ * 清理归档会话文件：保留 sessions 目录下最近 limit 个 .jsonl，更早的删除。
+ * 当前活跃会话文件（activeFile）永不被删。limit<1 时不保留任何历史归档（仅当前会话）。
+ */
+export function pruneArchivedSessions(
+  sessionsDir: string,
+  activeFile?: string,
+  limit: number = DEFAULT_ARCHIVE_LIMIT
+): void {
+  if (!fs.existsSync(sessionsDir)) return;
+  const keep = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : DEFAULT_ARCHIVE_LIMIT;
+  const activeResolved = activeFile ? path.resolve(activeFile) : null;
+  const files = fs
+    .readdirSync(sessionsDir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .map((f) => path.join(sessionsDir, f))
+    .filter((f) => !(activeResolved && path.resolve(f) === activeResolved));
+  files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  for (const f of files.slice(keep)) {
+    try {
+      fs.rmSync(f, { force: true });
+    } catch {
+      /* 忽略单文件删除失败 */
+    }
+  }
+}
+
+/** 一行一 JSON 的 jsonl 会话文件 → 条目数组（容错跳过坏行）。 */
+function loadJsonlEntries(filePath: string): any[] {
+  if (!fs.existsSync(filePath)) return [];
+  const text = fs.readFileSync(filePath, "utf8");
+  const entries: any[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      /* 跳过畸形行 */
+    }
+  }
+  return entries;
+}
+
+/**
+ * 直接读取某个历史会话 .jsonl 文件，重建其「活跃路径（root→leaf）」上的消息列表。
+ * 不加载进 agent、不影响当前会话上下文——仅用于前端「显示历史会话」时按需调阅。
+ * 复用了与 getSessionHistory 一致的文本提取规则（extractText）与角色映射。
+ */
+function readSessionMessagesFromFile(filePath: string): HistoryMessage[] {
+  const entries = loadJsonlEntries(filePath);
+  const nonHeader = entries.filter((e) => e.type !== "session");
+  const byId = new Map<string, any>();
+  for (const e of nonHeader) if (e.id) byId.set(e.id, e);
+  // leaf = 没有任何其他条目以其为 parentId 的条目（线性会话即最后一条）
+  const hasChild = new Set<string>();
+  for (const e of nonHeader) if (e.parentId) hasChild.add(e.parentId);
+  let leaf = nonHeader.find((e) => !hasChild.has(e.id));
+  const pathChain: any[] = [];
+  const guard = new Set<string>();
+  let cur: any = leaf;
+  while (cur && cur.id && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    pathChain.push(cur);
+    cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+  }
+  pathChain.reverse();
+
+  const out: HistoryMessage[] = [];
+  for (const e of pathChain) {
+    if (e.type !== "message" || !e.message) continue;
+    const role = e.message.role;
+    if (role !== "user" && role !== "assistant") continue;
+    const text = extractText(e.message.content);
+    if (text) {
+      const ms = typeof e.timestamp === "string" ? Date.parse(e.timestamp) : NaN;
+      out.push({
+        role: role === "assistant" ? "ai" : "user",
+        text,
+        time: formatTime(Number.isFinite(ms) ? ms : undefined),
+      });
+    }
+  }
+  return out;
+}
+
+export interface SessionMeta {
+  /** 文件名（前端据此请求具体消息；仅 basename，防目录穿越） */
+  file: string;
+  sessionId: string;
+  /** 会话创建时间 ISO 字符串（取自 header.timestamp） */
+  createdAt: string;
+  /** 活跃路径上的消息条数 */
+  messageCount: number;
+}
+
+/**
+ * 列出某孩子的历史归档会话（排除当前活跃会话）。
+ * 供前端「显示历史会话」下拉/列表使用。
+ */
+export async function listChildSessions(childId: string): Promise<SessionMeta[]> {
+  const childDir = getChildDir(childId);
+  const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
+  if (!fs.existsSync(sessionsDir)) return [];
+  const activeResolved = activeSessions.get(childId)?.session.sessionFile
+    ? path.resolve(activeSessions.get(childId)!.session.sessionFile!)
+    : null;
+  const result: SessionMeta[] = [];
+  for (const f of fs.readdirSync(sessionsDir)) {
+    if (!f.endsWith(".jsonl")) continue;
+    const full = path.join(sessionsDir, f);
+    if (activeResolved && path.resolve(full) === activeResolved) continue;
+    const entries = loadJsonlEntries(full);
+    const header = entries.find((e) => e.type === "session");
+    const msgs = readSessionMessagesFromFile(full);
+    result.push({
+      file: f,
+      sessionId: header?.id ?? f,
+      createdAt: header?.timestamp ?? "",
+      messageCount: msgs.length,
+    });
+  }
+  result.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  return result;
+}
+
+/**
+ * 直接读取指定历史会话文件（按文件名）的活跃路径消息，供前端显示。
+ * file 仅取 basename，杜绝路径穿越。
+ */
+export async function readChildSessionMessages(
+  childId: string,
+  file: string
+): Promise<HistoryMessage[]> {
+  const childDir = getChildDir(childId);
+  const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
+  const full = path.join(sessionsDir, path.basename(file));
+  if (!fs.existsSync(full)) return [];
+  return readSessionMessagesFromFile(full);
+}
+
 export async function disposeAllSessions(): Promise<void> {
   for (const [childId, entry] of activeSessions) {
     entry.session.dispose();
@@ -286,14 +487,18 @@ export function getActiveSession(childId: string): AgentSession | null {
 export interface HistoryMessage {
   role: "user" | "ai";
   text: string;
+  /** 消息时间戳（MM-DD HH:mm），用于前端气泡显示 */
+  time?: string;
 }
 
 export interface MaterialItem {
   id: string;
-  format: "markdown" | "html";
+  format: "html";
   content: string;
   title?: string;
   time: string;
+  /** 资料文件路径（相对学习目录），用于去重 */
+  filePath: string;
 }
 
 function formatTime(ts: number | undefined): string {
@@ -307,9 +512,10 @@ function formatTime(ts: number | undefined): string {
  * 资料由 display_content 工具产生，参数（format/content/title）记录在 assistant 消息的
  * toolCall 里。退出孩子模式再进入时据此恢复，保证资料一直显示（除非会话被重置）。
  */
-export function getSessionMaterials(session: AgentSession): MaterialItem[] {
+export function getSessionMaterials(session: AgentSession, cwd?: string): MaterialItem[] {
   const messages: any[] = (session as any).messages || [];
   const materials: MaterialItem[] = [];
+  const seen = new Set<string>();
   for (const m of messages) {
     if (m.role !== "assistant") continue;
     for (const c of m.content || []) {
@@ -323,14 +529,32 @@ export function getSessionMaterials(session: AgentSession): MaterialItem[] {
         }
       }
       if (!args || typeof args !== "object") continue;
-      const content = typeof args.content === "string" ? args.content : "";
-      if (!content) continue;
+      const filePath = typeof args.path === "string" ? args.path : "";
+      if (!filePath) continue;
+      // 去重：同一份资料（同一 path）在历史里多次被展示时只保留首次，
+      // 避免「每步都重发学习资料」导致面板堆积重复条目。
+      if (seen.has(filePath)) continue;
+      seen.add(filePath);
+      // 历史里可能只有 path（新版工具）或同时带 content（旧版）；
+      // 若没有 content，则从文件重新读取，保证恢复出的资料可正常展示。
+      let content = typeof args.content === "string" ? args.content : "";
+      if (!content && cwd) {
+        try {
+          const resolved = path.resolve(cwd, filePath);
+          if (resolved === cwd || resolved.startsWith(cwd + path.sep)) {
+            content = fs.readFileSync(resolved, "utf-8");
+          }
+        } catch {
+          content = "";
+        }
+      }
       materials.push({
         id: `mat-${materials.length}-${c.id || m.timestamp || Date.now()}`,
-        format: args.format === "html" ? "html" : "markdown",
+        format: "html",
         content,
         title: typeof args.title === "string" ? args.title : undefined,
         time: formatTime(m.timestamp),
+        filePath,
       });
     }
   }
@@ -360,10 +584,10 @@ export function getSessionHistory(session: AgentSession): HistoryMessage[] {
   for (const m of messages) {
     if (m.role === "user") {
       const text = extractText(m.content);
-      if (text) history.push({ role: "user", text });
+      if (text) history.push({ role: "user", text, time: formatTime(m.timestamp) });
     } else if (m.role === "assistant") {
       const text = extractText(m.content);
-      if (text) history.push({ role: "ai", text });
+      if (text) history.push({ role: "ai", text, time: formatTime(m.timestamp) });
     }
   }
   return history;

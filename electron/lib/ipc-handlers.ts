@@ -2,7 +2,7 @@ import { ipcMain, BrowserWindow, dialog, type IpcMainInvokeEvent } from "electro
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir } from "./config";
-import { getChildSession, getParentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials } from "./pi-session";
+import { getChildSession, getParentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages } from "./pi-session";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth } from "./pi-runtime";
 import { getSharedRuntime } from "./pi-runtime";
 import fs from "fs";
@@ -10,7 +10,7 @@ import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize } from "./voice";
 import { getLearningSummary } from "./learning-summary";
 import { getChildSchedulerConfig, setChildSchedulerConfig } from "./scheduler";
-import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
+import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey } from "./app-settings";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("auth:register", async (_e, email: string, password: string) => {
@@ -231,6 +231,26 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // 默认模型（与渲染侧 Settings / ModelSelector 同源，存于 app-settings.json）
+  ipcMain.handle("pi:get_default_model", async () => {
+    try {
+      return { success: true, key: getDefaultModelKey() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("pi:set_default_model", async (_e: IpcMainInvokeEvent, key: string) => {
+    try {
+      setDefaultModelKey(key || "");
+      // 通知所有渲染窗口：默认模型变了（孩子模式侧边栏自动预选新默认）
+      getMainWindow()?.webContents.send("pi:default_model_changed", key || "");
+      return { success: true, key: key || "" };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("progress:get", async (_e, childId: string) => {
     const childDir = getChildDir(childId);
     const result: Record<string, any> = {};
@@ -343,7 +363,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const session = await getChildSession(childId);
       attachSessionEvents(session, childId, getMainWindow);
       const history = getSessionHistory(session);
-      const materials = getSessionMaterials(session).slice(-getMaterialsLimit());
+      const materials = getSessionMaterials(session, getChildDir(childId)).slice(-getMaterialsLimit());
       return { success: true, history, materials, materialsLimit: getMaterialsLimit() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -473,6 +493,41 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("pi:dispose", async (_e: IpcMainInvokeEvent, childId: string) => {
     await disposeChildSession(childId);
     return { success: true };
+  });
+
+  // 会话重置：清空孩子当前会话上下文 + 学习资料面板，重新开始。
+  // 触发来源：聊天 /reset 命令 或 家长设置的定时任务（scheduler.ts 调用 resetChildSession）。
+  ipcMain.handle("pi:reset", async (_e: IpcMainInvokeEvent, childId: string) => {
+    try {
+      const archiveLimit = getChildSchedulerConfig(childId).archiveLimit;
+      await resetChildSession(childId, archiveLimit);
+      // 重建干净会话并重新挂载事件（Learn 页面仍挂载，需保证下一次 pi:prompt 可用）
+      const session = await getChildSession(childId);
+      attachSessionEvents(session, childId, getMainWindow);
+      return { success: true, history: [], materials: [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 列出孩子的历史归档会话（排除当前活跃会话），供前端「显示历史会话」调阅。
+  ipcMain.handle("pi:listSessions", async (_e: IpcMainInvokeEvent, childId: string) => {
+    try {
+      const sessions = await listChildSessions(childId);
+      return { success: true, sessions };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 直接读取指定历史会话文件（按文件名）的活跃路径消息，供前端显示（不加载进 agent 上下文）。
+  ipcMain.handle("pi:getSessionMessages", async (_e: IpcMainInvokeEvent, childId: string, file: string) => {
+    try {
+      const messages = await readChildSessionMessages(childId, file);
+      return { success: true, messages };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   // ---- Sync handlers ----

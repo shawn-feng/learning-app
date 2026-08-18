@@ -7,10 +7,10 @@ export interface TtsOptions {
   volume?: string | number;
 }
 
-// 语音选型（对齐 wowenglish 偏好：中文晓晓，英文英音，语速 0.7）
+// 语音选型（对齐 wowenglish 偏好：中文晓晓，英文英音，正常语速 1.0）
 const VOICE_ZH = "zh-CN-XiaoxiaoNeural";
 const VOICE_EN = "en-GB-SoniaNeural";
-const DEFAULT_RATE = "-30%"; // 0.7 倍语速
+const DEFAULT_RATE = "0%"; // 1.0 倍语速（正常语速）
 
 // 内存 LRU 缓存：命中即秒回，避免重复请求 Edge TTS 在线服务
 const CACHE_MAX = 100;

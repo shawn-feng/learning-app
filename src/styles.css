@@ -1243,6 +1243,21 @@ input, textarea {
   border-bottom-left-radius: 4px;
 }
 
+/* ===== 气泡内时间戳 ===== */
+.msg-time {
+  font-size: 11px;
+  margin-top: 6px;
+  text-align: right;
+  line-height: 1.2;
+  user-select: none;
+}
+.message.ai .msg-time {
+  color: #999;
+}
+.message.user .msg-time {
+  color: rgba(255, 255, 255, 0.75);
+}
+
 /* ===== AI 气泡内的 Markdown 渲染 ===== */
 .bubble-md {
   white-space: normal; /* 覆盖 .bubble 的 pre-wrap，让 markdown 段落语义生效 */
@@ -1881,4 +1896,113 @@ input, textarea {
 
 .import-drop:hover {
   border-color: #667eea;
+}
+
+/* ===== 历史会话归档浏览（只读） ===== */
+.chat-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 12px 0;
+}
+
+.history-toggle-btn {
+  padding: 4px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: #f7f8fc;
+  color: #555;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.history-toggle-btn:hover {
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.history-panel {
+  display: flex;
+  height: 240px;
+  margin: 6px 12px 0;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.history-list {
+  width: 210px;
+  flex-shrink: 0;
+  border-right: 1px solid #eee;
+  overflow-y: auto;
+  padding: 8px;
+  background: #fafbfe;
+}
+
+.history-list-title {
+  font-size: 12px;
+  color: #999;
+  padding: 4px 6px 8px;
+}
+
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.history-item:hover {
+  background: #f0f2ff;
+}
+
+.history-item.active {
+  border-color: #667eea;
+  background: #eef0ff;
+}
+
+.history-item-date {
+  font-size: 13px;
+  color: #333;
+}
+
+.history-item-count {
+  font-size: 11px;
+  color: #999;
+}
+
+.history-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+.history-view-title {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #eee;
+}
+
+.history-empty {
+  color: #aaa;
+  font-size: 13px;
+  text-align: center;
+  padding: 24px 0;
+}
+
+.history-error {
+  color: #e53e3e;
+  font-size: 13px;
+  padding: 8px 0;
 }

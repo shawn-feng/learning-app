@@ -4,6 +4,7 @@ import {
   type ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
 import { getAuthPath } from "./config";
+import { getDefaultModelKey } from "./app-settings";
 import fs from "fs";
 
 const cacheKey = "__learningAppModelRuntime";
@@ -110,11 +111,25 @@ export async function getAvailableModels() {
 }
 
 // 显式指定的默认模型：deepseek 的便宜档 flash，避免走 SDK 默认的 deepseek-v4-pro（更贵）
+// 这是「兜底默认」——仅当用户未在设置里指定默认模型时生效。
 const DEFAULT_PROVIDER = "deepseek";
 const DEFAULT_MODEL = "deepseek-v4-flash";
 
 export async function getDefaultModel() {
   const runtime = await getSharedRuntime();
+  // 优先使用用户在设置里指定的默认模型（存于 app-settings.json，主进程可读，
+  // 与渲染侧 Settings / ModelSelector 同源），解决「设置改了默认模型、孩子模式仍显示 deepseek flash」。
+  const key = getDefaultModelKey();
+  if (key) {
+    const sep = key.indexOf("/");
+    const provider = sep > 0 ? key.slice(0, sep) : key;
+    const modelId = sep > 0 ? key.slice(sep + 1) : "";
+    if (provider && modelId) {
+      const model = runtime.getModel(provider, modelId);
+      if (model) return model;
+    }
+  }
+  // 未设置或指定模型无法解析（如 provider 未注册）→ 回退到 deepseek flash。
   return runtime.getModel(DEFAULT_PROVIDER, DEFAULT_MODEL);
 }
 

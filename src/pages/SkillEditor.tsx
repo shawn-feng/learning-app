@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
-import ChatWindow from "../components/ChatWindow";
-import type { ChatMessage } from "../components/ChatWindow";
+import ChatWindow, { type ChatMessage, nowTime } from "../components/ChatWindow";
 
 export default function SkillEditor() {
   const [skills, setSkills] = useState<string[]>([]);
@@ -23,7 +22,7 @@ export default function SkillEditor() {
         if (last && last.role === "ai") {
           clone[clone.length - 1] = { ...last, text: last.text + (data.delta || "") };
         } else {
-          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: data.delta || "" });
+          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: data.delta || "", time: nowTime() });
         }
         return clone;
       });
@@ -46,7 +45,7 @@ export default function SkillEditor() {
   }
 
   async function handleSend(text: string) {
-    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text }]);
+    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text, time: nowTime() }]);
     setBusy(true);
     try {
       await window.api.piPromptParent(text);
