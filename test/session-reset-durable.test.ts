@@ -16,7 +16,7 @@ vi.mock("electron", () => ({
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent";
 import * as config from "../electron/lib/config";
 import * as piSession from "../electron/lib/pi-session";
 
@@ -38,6 +38,38 @@ function copyRealSessions(destDir: string) {
   return files;
 }
 
+// 生成一个 cwd 与测试 childDir 匹配的合法会话文件（避免 continueRecent 的 cwd 过滤把复制的真实文件排除）
+function makeSessionFile(sessionsDir: string, cwd: string, label: string): string {
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const id = `sess-${label}-${Date.now()}`;
+  const file = path.join(sessionsDir, `${label}.jsonl`);
+  const header = {
+    type: "session",
+    version: CURRENT_SESSION_VERSION,
+    id,
+    timestamp: new Date().toISOString(),
+    cwd,
+  };
+  const userMsg = {
+    type: "message",
+    id: "u1",
+    parentId: id,
+    role: "user",
+    message: { role: "user", content: "你好" },
+    timestamp: new Date().toISOString(),
+  };
+  const asstMsg = {
+    type: "message",
+    id: "a1",
+    parentId: "u1",
+    role: "assistant",
+    message: { role: "assistant", content: "你好呀" },
+    timestamp: new Date().toISOString(),
+  };
+  fs.writeFileSync(file, [header, userMsg, asstMsg].map((e) => JSON.stringify(e)).join("\n") + "\n");
+  return path.basename(file);
+}
+
 describe("会话重置持久化 + 历史读取", () => {
   beforeAll(() => {
     fs.mkdirSync(TMP, { recursive: true });
@@ -53,7 +85,7 @@ describe("会话重置持久化 + 历史读取", () => {
     }
   });
 
-  it("冷路径 reset 后必须在磁盘写出新会话文件（修复：重置不落盘）", async () => {
+  it("冷路径 reset 后不在磁盘写出新会话文件（官方流程：空会话不落盘）", async () => {
     const childId = `reset-${Date.now()}`;
     const childDir = config.getChildDir(childId);
     const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
@@ -63,34 +95,30 @@ describe("会话重置持久化 + 历史读取", () => {
     await piSession.resetChildSession(childId, 20);
 
     const after = fs.readdirSync(sessionsDir).filter((f) => f.endsWith(".jsonl"));
-    // 关键断言：reset 后在磁盘上多出 1 个新文件（此前 newSession() 不写盘，after === before）
-    expect(after.length).toBe(before.length + 1);
-    // 新文件应是最新的（mtime 最大），这样 continueRecent 才会选中它
-    const newest = after
-      .map((f) => ({ f, m: fs.statSync(path.join(sessionsDir, f)).mtimeMs }))
-      .sort((a, b) => b.m - a.m)[0].f;
-    expect(newest.startsWith("2026-08-18") || newest > before[0]).toBe(true);
+    // 官方流程：空会话不在 SDK 之外写盘 → 磁盘文件数不变（reset 不主动清空当前会话）
+    expect(after.length).toBe(before.length);
   });
 
-  it("reset 后 continueRecent 选中新空文件（修复：再进入仍是旧消息）", async () => {
+  it("冷路径 reset 后 continueRecent 仍选中旧会话（官方语义：不主动清空当前会话）", async () => {
     const childId = `cont-${Date.now()}`;
     const childDir = config.getChildDir(childId);
     const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
-    copyRealSessions(sessionsDir);
+    const oldName = makeSessionFile(sessionsDir, childDir, "old");
+    const beforeSet = new Set([oldName]);
 
     await piSession.resetChildSession(childId, 20);
 
     // 模拟「用户退出再进入」：重新从磁盘 continueRecent
     const mgr = SessionManager.continueRecent(childDir, sessionsDir);
     const picked = mgr.getSessionFile()!;
-    // 新文件的条目数应为 1（仅 header），即空白会话
+    // 选中的应仍是 reset 前就存在的旧文件（不是新创建的空文件）
+    expect(beforeSet.has(path.basename(picked))).toBe(true);
+    // 该文件是旧会话（多行，非仅 header）
     const lines = fs
       .readFileSync(picked, "utf8")
       .split(/\r?\n/)
       .filter((l) => l.trim());
-    expect(lines.length).toBe(1); // 只有 header
-    const header = JSON.parse(lines[0]);
-    expect(header.type).toBe("session");
+    expect(lines.length).toBeGreaterThan(1); // 旧会话有内容，不是空白
   });
 
   it("listChildSessions 排除活跃会话且不抛错", async () => {
@@ -123,38 +151,21 @@ describe("会话重置持久化 + 历史读取", () => {
     }
   });
 
-  it("热路径逻辑：newSession() 后必须立即写盘，否则再进入仍是旧消息（修复 #1/#2）", () => {
+  it("热路径 reset 按官方流程不写盘：若重载前未发消息，continueRecent 仍选中旧会话（已接受的边界）", () => {
     const childId = `hot-${Date.now()}`;
     const childDir = config.getChildDir(childId);
     const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
-    copyRealSessions(sessionsDir);
-    const oldest = fs
-      .readdirSync(sessionsDir)
-      .filter((f) => f.endsWith(".jsonl"))
-      .sort((a, b) =>
-        fs.statSync(path.join(sessionsDir, a)).mtimeMs -
-        fs.statSync(path.join(sessionsDir, b)).mtimeMs
-      )[0];
+    const oldName = makeSessionFile(sessionsDir, childDir, "old");
+    const beforeSet = new Set([oldName]);
 
-    // 模拟热路径：用真实 SessionManager 复刻 resetChildSession 热路径的关键动作
+    // 复刻 resetChildSession 热路径的关键动作：仅 newSession()（内存），不写盘
     const mgr = SessionManager.create(childDir, sessionsDir);
-    mgr.newSession(); // 仅在内存里重置，不写盘（这正是旧 bug）
-    const hotFile = mgr.getSessionFile()!;
-    const hotHeader = mgr.getHeader();
-    // —— 修复后必须补上的写盘动作 ——
-    fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(hotFile, JSON.stringify(hotHeader) + "\n");
+    mgr.newSession();
 
-    // 旧文件不应被误删（新文件是最新 mtime）
-    const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith(".jsonl"));
-    expect(files).toContain(oldest); // 旧归档保留
-    expect(files).toContain(path.basename(hotFile)); // 新文件已落盘
-
-    // 模拟「用户退出再进入」：continueRecent 必须选中新空文件
+    // 模拟「reset 后、发消息前就重载」：continueRecent 选中仍是旧会话
+    // （reset 不跨重载持久化——这是按官方流程接受下来的边界）
     const reloaded = SessionManager.continueRecent(childDir, sessionsDir);
     const picked = reloaded.getSessionFile()!;
-    expect(path.basename(picked)).toBe(path.basename(hotFile));
-    const lines = fs.readFileSync(picked, "utf8").split(/\r?\n/).filter((l) => l.trim());
-    expect(lines.length).toBe(1); // 空白会话（仅 header）
+    expect(beforeSet.has(path.basename(picked))).toBe(true);
   });
 });

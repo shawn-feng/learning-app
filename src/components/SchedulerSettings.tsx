@@ -4,6 +4,7 @@ interface SchedulerChildConfig {
   recording: { enabled: boolean; intervalHours: number };
   studyTracker: { enabled: boolean; hour: number; minute: number };
   sessionReset: { enabled: boolean; hour: number; minute: number };
+  autoNewSession: { enabled: boolean; hour: number; minute: number };
   archiveLimit: number;
 }
 
@@ -18,6 +19,7 @@ function defaultConfig(): SchedulerChildConfig {
     recording: { enabled: false, intervalHours: 1 },
     studyTracker: { enabled: false, hour: 21, minute: 0 },
     sessionReset: { enabled: false, hour: 22, minute: 0 },
+    autoNewSession: { enabled: false, hour: 21, minute: 0 },
     archiveLimit: 20,
   };
 }
@@ -42,7 +44,8 @@ export default function SchedulerSettings() {
         }
       }
       for (const c of childrenList) {
-        if (!map[c.childId]) map[c.childId] = defaultConfig();
+        // 用 defaultConfig 兜底，确保旧配置（缺 autoNewSession 等字段）也能正常渲染
+        map[c.childId] = { ...defaultConfig(), ...(map[c.childId] || {}) };
       }
       setConfigs(map);
       setLoaded(true);
@@ -74,7 +77,7 @@ export default function SchedulerSettings() {
     <div className="settings-section">
       <h3>定时任务</h3>
       <p className="desc">
-        为每个孩子单独设置自动任务（学习记录总结、学习进度追踪、每日会话重置）。默认全部关闭，开启后才会在后台定时调用模型。会话重置只清空对话与学习资料面板，不会清除学习进度。
+        为每个孩子单独设置自动任务（学习记录总结、学习进度追踪、每日会话重置、自动新建会话）。默认全部关闭，开启后才会在后台定时调用模型。会话重置 / 自动新建会话只清空对话与学习资料面板，不会清除学习进度。注意：自动新建会话已包含「跨天自动开新 + 每天定点开新」，与「每日会话重置」功能重叠，二者择一开启即可。
       </p>
 
       {!loaded ? (
@@ -269,6 +272,66 @@ export default function SchedulerSettings() {
                             ...p,
                             sessionReset: {
                               ...p.sessionReset,
+                              minute: Math.max(0, Math.min(59, parseInt(e.target.value) || 0)),
+                            },
+                          }))
+                        }
+                        style={{ width: 44, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
+                      />
+                    </span>
+                  )}
+                </div>
+
+                {/* 自动新建会话 */}
+                <div
+                  style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}
+                >
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={cfg.autoNewSession.enabled}
+                      onChange={(e) =>
+                        updateConfig(child.childId, (p) => ({
+                          ...p,
+                          autoNewSession: {
+                            ...(p.autoNewSession || { enabled: false, hour: 21, minute: 0 }),
+                            enabled: e.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    自动新建会话（开启后：① app 启动时若最后一次对话不是当天则开新会话；② 每天固定时间节点开新会话）
+                  </label>
+                  {cfg.autoNewSession.enabled && (
+                    <span style={{ fontSize: 13, color: "#666" }}>
+                      每天{" "}
+                      <input
+                        type="number"
+                        min={0}
+                        max={23}
+                        value={cfg.autoNewSession.hour}
+                        onChange={(e) =>
+                          updateConfig(child.childId, (p) => ({
+                            ...p,
+                            autoNewSession: {
+                              ...(p.autoNewSession || { enabled: true, hour: 21, minute: 0 }),
+                              hour: Math.max(0, Math.min(23, parseInt(e.target.value) || 0)),
+                            },
+                          }))
+                        }
+                        style={{ width: 44, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
+                      />
+                      :
+                      <input
+                        type="number"
+                        min={0}
+                        max={59}
+                        value={cfg.autoNewSession.minute}
+                        onChange={(e) =>
+                          updateConfig(child.childId, (p) => ({
+                            ...p,
+                            autoNewSession: {
+                              ...(p.autoNewSession || { enabled: true, hour: 21, minute: 0 }),
                               minute: Math.max(0, Math.min(59, parseInt(e.target.value) || 0)),
                             },
                           }))

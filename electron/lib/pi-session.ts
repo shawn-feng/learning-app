@@ -2,12 +2,11 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
-  CURRENT_SESSION_VERSION,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import path from "path";
 import fs from "fs";
-import { getChildDir, getSkillsDir, getDataDir } from "./config";
+import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { displayContentTool, getDateTool } from "./custom-tools";
 import { getProfile, type ChildProfile } from "./child-auth";
@@ -154,6 +153,9 @@ interface SessionEntry {
 }
 
 const activeSessions = new Map<string, SessionEntry>();
+// 同一 childId 的「正在创建会话」Promise，避免并发重复创建（pi:start_child 与 pi:prompt 竞态、
+// 或 /reset 与首次 prompt 竞态导致重复 newSession / 会话对象被覆盖 / EEXIST）。
+const sessionPromises = new Map<string, Promise<AgentSession>>();
 let cachedParentSession: AgentSession | null = null;
 
 export async function getChildSession(
@@ -161,7 +163,103 @@ export async function getChildSession(
 ): Promise<AgentSession> {
   const existing = activeSessions.get(childId);
   if (existing) return existing.session;
+  const inflight = sessionPromises.get(childId);
+  if (inflight) return inflight;
+  const promise = createChildSession(childId).finally(() => {
+    sessionPromises.delete(childId);
+  });
+  sessionPromises.set(childId, promise);
+  return promise;
+}
 
+// ---- 自动新建会话开关（autoNewSession）----
+// 读取 scheduler-config.json 中该孩子的 autoNewSession 配置（与 scheduler.ts 同源，
+// 在此直接读文件以避免与主进程 scheduler 模块形成循环依赖）。开关开启后，在「开会话」时
+// 按「跨天」或「到了设定的时间节点」强制开一个全新空会话，旧会话文件保留为归档。
+interface AutoNewSessionConfig {
+  enabled: boolean;
+  hour: number;
+  minute: number;
+}
+const DEFAULT_AUTO_NEW_SESSION: AutoNewSessionConfig = { enabled: false, hour: 21, minute: 0 };
+
+function getAutoNewSessionConfig(childId: string): AutoNewSessionConfig {
+  try {
+    const p = getSchedulerConfigPath();
+    if (!fs.existsSync(p)) return { ...DEFAULT_AUTO_NEW_SESSION };
+    const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
+    const c = raw?.children?.[childId]?.autoNewSession;
+    if (!c) return { ...DEFAULT_AUTO_NEW_SESSION };
+    return {
+      enabled: c.enabled === true,
+      hour: typeof c.hour === "number" ? c.hour : DEFAULT_AUTO_NEW_SESSION.hour,
+      minute: typeof c.minute === "number" ? c.minute : DEFAULT_AUTO_NEW_SESSION.minute,
+    };
+  } catch {
+    return { ...DEFAULT_AUTO_NEW_SESSION };
+  }
+}
+
+/** 该孩子所有会话文件中，最后一条消息的时间戳（ms）；没有任何消息则返回 null。 */
+export function getLastMessageTimestamp(childId: string): number | null {
+  const childDir = getChildDir(childId);
+  const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
+  if (!fs.existsSync(sessionsDir)) return null;
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name.endsWith(".jsonl")) files.push(full);
+    }
+  };
+  walk(sessionsDir);
+  let maxTs: number | null = null;
+  for (const f of files) {
+    for (const entry of loadJsonlEntries(f)) {
+      if (
+        entry.type === "message" &&
+        entry.message &&
+        (entry.message.role === "user" || entry.message.role === "assistant")
+      ) {
+        const ts = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+        if (Number.isFinite(ts) && (maxTs === null || ts > maxTs)) maxTs = ts;
+      }
+    }
+  }
+  return maxTs;
+}
+
+/**
+ * 是否应在「开会话」时强制新建一个空会话（只判断，不落盘）。开启开关后才可能返回 true，
+ * 满足以下任一即新建：
+ *   1) 最后一条消息不是今天（跨天 → app 启动/打开孩子模式时开新会话）；
+ *   2) 今天内、且当前时间已过了设定的时间节点，且最后一条消息在该节点之前（每天固定时间节点开新会话）。
+ * 没有任何历史消息时返回 false（continueRecent 本身即空会话，无需强制新建）。
+ */
+export function shouldAutoNewSession(
+  childId: string,
+  cfg: AutoNewSessionConfig = getAutoNewSessionConfig(childId)
+): boolean {
+  if (!cfg.enabled) return false;
+  const lastTs = getLastMessageTimestamp(childId);
+  if (lastTs === null) return false;
+  const now = new Date();
+  const today = now.toDateString();
+  const lastDate = new Date(lastTs);
+  // 行为1：最后一条消息不是今天 → 跨天，开新会话
+  if (lastDate.toDateString() !== today) return true;
+  // 行为2：今天内、已过设定的时间节点，且最后一条消息在该节点之前 → 开新会话
+  const scheduled = new Date(now);
+  scheduled.setHours(cfg.hour, cfg.minute, 0, 0);
+  if (now.getTime() >= scheduled.getTime() && lastTs < scheduled.getTime()) return true;
+  return false;
+}
+
+/** 实际创建孩子会话（被 getChildSession 的并发保护包裹，确保同一 childId 只创建一次）。 */
+async function createChildSession(
+  childId: string
+): Promise<AgentSession> {
   const childDir = getChildDir(childId);
   const profile = getProfile(childId);
   if (!profile) throw new Error("Child profile not found");
@@ -195,11 +293,19 @@ export async function getChildSession(
   });
   await loader.reload();
 
+  const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
+  const mgr = SessionManager.continueRecent(childDir, sessionsDir);
+  // 自动新建会话开关：开启且（最后一条消息不是今天 / 已过设定的时间节点）时，
+  // 在当前管理器上开一个全新空会话（旧会话文件保留为归档）。遵循官方「懒落盘」语义：
+  // 空会话不写盘，首条 assistant 回复时才独占创建并落盘，不在此手写任何 header 文件。
+  if (shouldAutoNewSession(childId)) {
+    mgr.newSession();
+  }
   const { session } = await createAgentSession({
     cwd: childDir,
     modelRuntime,
     model,
-    sessionManager: SessionManager.continueRecent(childDir, path.join(childDir, ".pi", "agent", "sessions")),
+    sessionManager: mgr,
     resourceLoader: loader,
     tools: ["read", "write", "edit", "display_content", "get_date"],
     customTools: [displayContentTool, getDateTool],
@@ -293,39 +399,24 @@ export async function resetChildSession(
 
   const entry = activeSessions.get(childId);
   if (entry) {
-    // 热路径：归档重置——在当前 sessionManager 上开一个全新的空会话文件，
+    // 热路径（按 SDK 官方流程）：在当前 sessionManager 上开一个全新的空会话（仅内存），
     // 旧会话文件完整保留为历史归档（不删除、不分叉）。
+    // 不在此手写 header 文件：空会话没有可保存的信息，SDK 会在首条 assistant 回复时
+    // 自动 openSync("wx") 独占创建并落盘（懒落盘）。这遵循官方语义，也彻底避免 EEXIST。
+    // 边界：若 reset 后、发送任何消息前就重载/重进孩子模式，内存中的空会话未落盘，
+    // continueRecent 会重新选中旧会话文件 → 旧消息重现（即此前 ISSUE-003 现象，已按用户决策接受）。
     entry.session.sessionManager.newSession();
     const agent: any = (entry.session as any).agent;
     if (agent && agent.state) agent.state.messages = [];
-    // 关键修复：newSession() 只在内存里把 fileEntries 重置为 [header]、把 sessionFile
-    // 指向新路径，并不会立即写盘（SDK 首条消息才落盘）。若不在此写出空 header 文件，则：
-    //   (1) sessions 目录里没有新 jsonl（用户反馈「没有新 jsonl 文件」）；
-    //   (2) 用户退出再进入时 continueRecent 按 mtime 选中最新的仍是旧文件，
-    //       导致「聊天框里依然有旧消息」。
-    // 因此这里立即把新会话的 header 写出到磁盘，使其持久化、可被 continueRecent 选中。
     const hotFile: string | undefined = entry.session.sessionFile;
-    const hotHeader: any = entry.session.sessionManager.getHeader();
-    if (hotFile && hotHeader) {
-      fs.mkdirSync(sessionsDir, { recursive: true });
-      fs.writeFileSync(hotFile, JSON.stringify(hotHeader) + "\n");
-    }
     pruneArchivedSessions(sessionsDir, hotFile ?? undefined, archiveLimit);
   } else {
     // 冷路径（应用未加载该会话，如定时任务触发时应用没开）：
-    // 新建一个空会话文件（仅含 header），使下次 continueRecent 选中空白会话；旧文件保留为历史。
-    // （SDK 无删除/清空 API，且 newSession() 不会立即写盘，故这里手写一个合法 header 文件。）
-    const newMgr = SessionManager.create(childDir, sessionsDir); // 内部 newSession()：空（仅 header）
-    const header = {
-      type: "session",
-      version: CURRENT_SESSION_VERSION,
-      id: newMgr.getSessionId(),
-      timestamp: new Date().toISOString(),
-      cwd: childDir,
-    };
-    const file = newMgr.getSessionFile();
-    if (file) fs.writeFileSync(file, JSON.stringify(header) + "\n");
-    pruneArchivedSessions(sessionsDir, file ?? undefined, archiveLimit);
+    // 按 SDK 官方流程，空会话不写盘——此处没有可持有的内存会话，故不创建/不写出任何 .jsonl。
+    // 真正的"新会话"由下次 app 启动时 continueRecent 按官方语义创建
+    // （目录无文件→建空会话；有文件→恢复最近会话）。定时重置的语义因此退化为：
+    // 仅做归档清理，不再主动清空当前会话（用户已确认接受此边界）。
+    pruneArchivedSessions(sessionsDir, undefined, archiveLimit);
   }
 }
 

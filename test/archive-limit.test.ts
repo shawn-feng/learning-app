@@ -110,7 +110,7 @@ describe("归档保留上限（archive limit）", () => {
     expect(got2.sessionReset.hour).toBe(22); // 缺省补全
   });
 
-  it("resetChildSession（冷路径）按 archiveLimit 清理归档，并保留当前活跃会话", async () => {
+  it("resetChildSession（冷路径）按 archiveLimit 清理归档（官方流程：不新建活跃文件）", async () => {
     const childId = `cold-${Date.now()}`;
     const childDir = config.getChildDir(childId);
     const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
@@ -121,8 +121,9 @@ describe("归档保留上限（archive limit）", () => {
     await piSession.resetChildSession(childId, 2);
 
     const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith(".jsonl"));
-    // 新建的活跃会话 header 文件 + 最多 2 个归档 = 3
-    expect(files.length).toBe(3);
+    // 官方流程：冷路径（会话未加载）不新建/不写出任何 .jsonl，仅按 archiveLimit 保留
+    // 最近 2 个归档（旧行为会额外写出 1 个新活跃 header 文件，已被移除）。因此剩 2 个。
+    expect(files.length).toBe(2);
 
     // 清理该孩子的临时目录
     try {
