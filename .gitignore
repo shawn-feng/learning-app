@@ -14,3 +14,5 @@ aliyun-aksk.txt
 .npm-cache/
 electron.vite.config.*.mjs
 学习技能和资料/
+# 网络抓包排查文件（含真实流量，不入库）
+pi-app-wireshark*.txt

@@ -2,12 +2,15 @@ import { ipcMain, BrowserWindow, dialog, type IpcMainInvokeEvent } from "electro
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir } from "./config";
-import { getChildSession, getParentSession, disposeChildSession, getActiveSession, getSessionHistory } from "./pi-session";
+import { getChildSession, getParentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials } from "./pi-session";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth } from "./pi-runtime";
 import { getSharedRuntime } from "./pi-runtime";
 import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize } from "./voice";
+import { getLearningSummary } from "./learning-summary";
+import { getChildSchedulerConfig, setChildSchedulerConfig } from "./scheduler";
+import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("auth:register", async (_e, email: string, password: string) => {
@@ -115,6 +118,114 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     try {
       fs.writeFileSync(path.join(getChildDir(childId), "AGENTS.md"), content, "utf-8");
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("learning:summary", async (_e, childId: string) => {
+    try {
+      return { success: true, data: getLearningSummary(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- 学习主题文件（家长在「教学内容」里管理）----
+
+  ipcMain.handle("learning:list", async (_e, childId: string) => {
+    try {
+      const learningDir = path.join(getChildDir(childId), "learning");
+      if (!fs.existsSync(learningDir)) {
+        return { success: true, rootFiles: [], topics: [] };
+      }
+      const rootFiles: string[] = [];
+      const topics: { topic: string; files: string[]; subdirs: string[] }[] = [];
+      for (const e of fs.readdirSync(learningDir, { withFileTypes: true })) {
+        if (e.isFile()) rootFiles.push(e.name);
+        else if (e.isDirectory()) {
+          const topicDir = path.join(learningDir, e.name);
+          const files: string[] = [];
+          const subdirs: string[] = [];
+          for (const se of fs.readdirSync(topicDir, { withFileTypes: true })) {
+            if (se.isFile()) files.push(se.name);
+            else subdirs.push(se.name);
+          }
+          topics.push({ topic: e.name, files, subdirs });
+        }
+      }
+      return { success: true, rootFiles, topics };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("learning:read", async (_e, childId: string, relPath: string) => {
+    try {
+      const learningDir = path.resolve(getChildDir(childId), "learning");
+      const full = path.resolve(learningDir, relPath);
+      if (full !== learningDir && !full.startsWith(learningDir + path.sep)) {
+        return { success: false, error: "路径超出学习目录" };
+      }
+      if (!fs.existsSync(full)) return { success: true, content: "" };
+      return { success: true, content: fs.readFileSync(full, "utf-8") };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("learning:write", async (_e, childId: string, relPath: string, content: string) => {
+    try {
+      const learningDir = path.resolve(getChildDir(childId), "learning");
+      const full = path.resolve(learningDir, relPath);
+      if (full !== learningDir && !full.startsWith(learningDir + path.sep)) {
+        return { success: false, error: "路径超出学习目录" };
+      }
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content, "utf-8");
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- 定时任务配置（家长在设置里管理，每个孩子独立，默认关闭）----
+
+  ipcMain.handle("scheduler:config:get", async () => {
+    try {
+      const children = listChildren();
+      const configs: Record<string, unknown> = {};
+      for (const child of children) {
+        configs[child.childId] = getChildSchedulerConfig(child.childId);
+      }
+      return { success: true, configs };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:config:set", async (_e, childId: string, config: any) => {
+    try {
+      const saved = setChildSchedulerConfig(childId, config);
+      return { success: true, config: saved };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- 通用设置（学习资料保留数量）----
+
+  ipcMain.handle("settings:materials_limit:get", async () => {
+    try {
+      return { success: true, limit: getMaterialsLimit() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("settings:materials_limit:set", async (_e, n: number) => {
+    try {
+      return { success: true, limit: setMaterialsLimit(n) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -232,7 +343,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const session = await getChildSession(childId);
       attachSessionEvents(session, childId, getMainWindow);
       const history = getSessionHistory(session);
-      return { success: true, history };
+      const materials = getSessionMaterials(session).slice(-getMaterialsLimit());
+      return { success: true, history, materials, materialsLimit: getMaterialsLimit() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -254,10 +366,24 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const session = await getChildSession(childId);
       console.log(`[pi:prompt] session ready, calling prompt()...`);
       await session.prompt(text);
-      console.log(`[pi:prompt] prompt() completed successfully`);
+      console.log(`[pi:prompt] prompt() completed`);
+
+      const messages: any[] = session.messages || [];
+
+      // 关键：session.prompt() 出错时不抛异常，而是把 stopReason="error" +
+      // errorMessage 记在最后一条 assistant 消息里（content 为空）。
+      // 若忽略它，下面的提取逻辑会回退到旧回复，导致断网时反复显示同一条旧消息。
+      const lastAssistant = findLastAssistant(messages);
+      const errMsg = assistantError(lastAssistant);
+      if (errMsg) {
+        const friendly = friendlyError(errMsg);
+        console.error(`[pi:prompt] LLM 调用失败:`, errMsg);
+        _e.sender.send("pi:reply_error", { childId, error: friendly });
+        _e.sender.send("pi:reply_end", { childId });
+        return { success: false, error: friendly };
+      }
 
       // Extract last assistant text and send as direct reply
-      const messages: any[] = session.messages || [];
       let replyText = "";
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
@@ -270,13 +396,16 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       }
       if (replyText) {
         _e.sender.send("pi:reply", { childId, text: replyText });
+      } else {
+        // 没有可展示的文本回复（异常兜底，正常应有 text）
+        _e.sender.send("pi:reply_error", { childId, error: "没有收到回复，请重试" });
       }
       _e.sender.send("pi:reply_end", { childId });
 
       return { success: true };
     } catch (err) {
       console.error(`[pi:prompt] error:`, (err as Error).message);
-      _e.sender.send("pi:reply_error", { childId, error: (err as Error).message });
+      _e.sender.send("pi:reply_error", { childId, error: friendlyError((err as Error).message) });
       return { success: false, error: (err as Error).message };
     }
   });
@@ -392,11 +521,12 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  ipcMain.handle("voice:transcribe", async (_e, audio: ArrayBuffer) => {
+  ipcMain.handle("voice:transcribe", async (_e, audio: ArrayBuffer, onlyProvider?: string) => {
     try {
       const buf = Buffer.from(audio);
-      const text = await transcribeAudio(buf);
-      return { success: true, text };
+      const text = await transcribeAudio(buf, onlyProvider);
+      // 返回原始录音（base64，webm/opus），供前端播放
+      return { success: true, text, audio: buf.toString("base64") };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -606,6 +736,31 @@ function attachSessionEvents(session: any, childId: string, win: () => BrowserWi
       }
     }
   });
+}
+
+function findLastAssistant(messages: any[]): any {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "assistant") return messages[i];
+  }
+  return null;
+}
+
+// 若 assistant 消息是错误（stopReason=error 或带 errorMessage），返回错误信息；否则返回 null
+function assistantError(m: any): string | null {
+  if (!m) return null;
+  if (m.stopReason === "error" || m.errorMessage) {
+    return m.errorMessage || "模型调用失败";
+  }
+  return null;
+}
+
+// 把底层错误映射为对孩子/家长友好的提示
+function friendlyError(msg: string): string {
+  const m = (msg || "").toLowerCase();
+  if (/(connection|fetch|network|timeout|econnrefused|enotfound|econnreset|abort|socket|unreachable)/.test(m)) {
+    return "网络连接失败，请检查网络后重试";
+  }
+  return msg || "模型调用失败";
 }
 
 function copyDir(src: string, dest: string): void {

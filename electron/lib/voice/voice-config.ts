@@ -1,8 +1,8 @@
 import fs from "fs";
 import path from "path";
-import { getSharedDir } from "../config";
+import { getSharedDir, getAuthPath } from "../config";
 
-export type VoiceProviderId = "aliyun" | "tencent" | "iflytek" | "baidu";
+export type VoiceProviderId = "aliyun" | "tencent" | "qwen" | "iflytek" | "baidu";
 
 export interface VoiceConfig {
   enabled: boolean;
@@ -16,10 +16,54 @@ const DEFAULT_CONFIG: VoiceConfig = {
   providers: {
     aliyun: { appKey: "", accessKeyId: "", accessKeySecret: "" },
     tencent: { secretId: "", secretKey: "" },
+    qwen: { apiKey: "" },
     iflytek: { appId: "", apiKey: "", apiSecret: "" },
     baidu: { appId: "", apiKey: "", secretKey: "" },
   },
 };
+
+// 服务回退顺序（默认服务优先，其余按此顺序尝试）
+export const VOICE_PROVIDER_ORDER: VoiceProviderId[] = ["aliyun", "tencent", "qwen"];
+
+// 判断某个语音服务是否已配置可用
+export function isProviderConfigured(cfg: VoiceConfig, id: VoiceProviderId): boolean {
+  const creds = cfg.providers[id] || {};
+  switch (id) {
+    case "aliyun":
+      return !!(creds.appKey && creds.accessKeyId && creds.accessKeySecret);
+    case "tencent":
+      return !!(creds.secretId && creds.secretKey);
+    case "qwen":
+      if (creds.apiKey) return true;
+      // apiKey 未填时回退模型认证配置（auth.json 的 qwen.key）
+      try {
+        const auth = JSON.parse(fs.readFileSync(getAuthPath(), "utf-8"));
+        const key = auth?.qwen?.key || auth?.qwen?.apiKey;
+        return typeof key === "string" && key.trim().length > 0;
+      } catch {
+        return false;
+      }
+    default:
+      return false; // iflytek / baidu 未实现
+  }
+}
+
+// 生成识别候选：默认服务在前，其余已配置的按固定顺序在后
+export function getTranscribeCandidates(cfg: VoiceConfig): { id: VoiceProviderId; creds: Record<string, string> }[] {
+  const out: { id: VoiceProviderId; creds: Record<string, string> }[] = [];
+  const pushIfConfigured = (id: VoiceProviderId) => {
+    if (isProviderConfigured(cfg, id)) {
+      out.push({ id, creds: cfg.providers[id] || {} });
+    }
+  };
+  if (VOICE_PROVIDER_ORDER.includes(cfg.provider)) {
+    pushIfConfigured(cfg.provider);
+  }
+  for (const id of VOICE_PROVIDER_ORDER) {
+    if (id !== cfg.provider) pushIfConfigured(id);
+  }
+  return out;
+}
 
 export function getVoiceConfigPath(): string {
   return path.join(getSharedDir(), "voice-config.json");

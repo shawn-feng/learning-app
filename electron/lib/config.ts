@@ -46,6 +46,16 @@ export function getTaskStatePath(): string {
   return path.join(getDataDir(), "task-state.json");
 }
 
+export function getSchedulerConfigPath(): string {
+  return path.join(getDataDir(), "scheduler-config.json");
+}
+
+export function getAppSettingsPath(): string {
+  return path.join(getDataDir(), "app-settings.json");
+}
+
 export function getCloudApiBase(): string {
-  return process.env["CLOUD_API_URL"] || "http://localhost:8000";
+  if (process.env["CLOUD_API_URL"]) return process.env["CLOUD_API_URL"];
+  // 生产打包默认走公网云服务，开发环境走本地联调
+  return app?.isPackaged ? "https://www.aixuexihao.top" : "http://localhost:8000";
 }

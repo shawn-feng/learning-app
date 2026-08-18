@@ -1,0 +1,16 @@
+[Unit]
+Description=Benefit Auth Center (权益认证中台)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/benefit-auth
+EnvironmentFile=/opt/benefit-auth/.env
+ExecStart=/opt/benefit-auth/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 9001
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/benefit-auth.log
+StandardError=append:/var/log/benefit-auth.log
+
+[Install]
+WantedBy=multi-user.target

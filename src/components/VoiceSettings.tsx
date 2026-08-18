@@ -29,6 +29,12 @@ const VOICE_PROVIDERS: VoiceProviderDef[] = [
     ],
   },
   {
+    id: "qwen",
+    name: "千问",
+    available: true,
+    fields: [{ key: "apiKey", label: "API Key（留空自动复用模型配置里的千问 Key）" }],
+  },
+  {
     id: "iflytek",
     name: "讯飞",
     available: false,
@@ -52,7 +58,8 @@ const VOICE_PROVIDERS: VoiceProviderDef[] = [
 
 export default function VoiceSettings() {
   const [enabled, setEnabled] = useState(false);
-  const [provider, setProvider] = useState("aliyun");
+  const [provider, setProvider] = useState("aliyun"); // 当前正在编辑的服务
+  const [defaultProvider, setDefaultProvider] = useState("aliyun"); // 默认服务（识别时优先）
   const [fields, setFields] = useState<Record<string, string>>({});
   const [status, setStatus] = useState("");
   const [testing, setTesting] = useState(false);
@@ -63,6 +70,7 @@ export default function VoiceSettings() {
       if (r?.success) {
         setEnabled(r.config.enabled);
         setProvider(r.config.provider);
+        setDefaultProvider(r.config.provider);
         setFields(r.config.providers[r.config.provider] || {});
       }
     });
@@ -74,6 +82,20 @@ export default function VoiceSettings() {
     const r = await window.api.voiceConfigGet();
     if (r?.success) {
       setFields(r.config.providers[id] || {});
+    }
+  }
+
+  async function setDefault() {
+    setDefaultProvider(provider);
+    setStatus(`已将「${currentProvider.name}」设为默认语音服务`);
+    // 立即持久化默认服务（不依赖点「保存」），避免退出设置页后丢失
+    try {
+      const r = await window.api.voiceConfigSet({ enabled, provider, providers: {} });
+      if (!r.success) {
+        setStatus(`默认服务保存失败: ${r.error}`);
+      }
+    } catch (e: any) {
+      setStatus(`默认服务保存失败: ${e.message}`);
     }
   }
 
@@ -91,7 +113,11 @@ export default function VoiceSettings() {
     }
     const providers: Record<string, Record<string, string>> = {};
     providers[provider] = fields;
-    const result = await window.api.voiceConfigSet({ enabled, provider, providers });
+    const result = await window.api.voiceConfigSet({
+      enabled,
+      provider: defaultProvider,
+      providers,
+    });
     if (result.success) {
       setStatus("已保存");
       setFields(result.config.providers[provider] || {});
@@ -108,10 +134,17 @@ export default function VoiceSettings() {
     }
     if (recording) {
       const blob = await stop();
+      // 无活跃录音（已停止过/从未开始）：静默返回
+      if (!blob) return;
+      if (blob.size < 200) {
+        setStatus("录音太短，请按住说完整的一句话再松手");
+        return;
+      }
       setTesting(true);
       try {
         const buf = await blob.arrayBuffer();
-        const r = await window.api.voiceTranscribe(buf);
+        // 测试当前编辑的服务（不做 fallback），方便确认凭证是否有效
+        const r = await window.api.voiceTranscribe(buf, provider);
         if (r.success) {
           setStatus(`识别结果：${r.text}`);
         } else {
@@ -136,7 +169,7 @@ export default function VoiceSettings() {
     <div className="settings-section">
       <h3>语音配置</h3>
       <p className="desc">
-        配置云端语音识别服务（阿里云、腾讯云等）。启用后，孩子可在聊天界面按住麦克风说话，语音会自动转成文字。凭证仅保存在本机。
+        配置云端语音识别服务（阿里云、千问、腾讯云等）。可配置多个服务，其中一个是默认服务——识别时优先用默认服务，若默认服务不可用（未配置凭证或识别失败），会自动切换到其他已配置的服务。凭证仅保存在本机。
       </p>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
@@ -156,15 +189,35 @@ export default function VoiceSettings() {
         </button>
       </div>
 
+      <div style={{ marginBottom: 8, fontSize: 13, color: "#888" }}>
+        选择服务编辑凭证；点「设为默认」把它设为识别时的首选服务：
+      </div>
       <div className="provider-list">
         {VOICE_PROVIDERS.map((p) => (
           <div
             key={p.id}
             className={`provider-chip ${provider === p.id ? "active" : ""}`}
             onClick={() => switchProvider(p.id)}
-            style={{ opacity: p.available ? 1 : 0.5 }}
+            style={{ opacity: p.available ? 1 : 0.5, position: "relative" }}
           >
             {p.name}
+            {defaultProvider === p.id && (
+              <span
+                style={{
+                  position: "absolute",
+                  top: -8,
+                  right: -8,
+                  background: "#f6ad55",
+                  color: "white",
+                  fontSize: 10,
+                  borderRadius: 8,
+                  padding: "0 5px",
+                  lineHeight: "16px",
+                }}
+              >
+                默认
+              </span>
+            )}
             {!p.available ? "（即将支持）" : ""}
           </div>
         ))}
@@ -183,12 +236,25 @@ export default function VoiceSettings() {
         </div>
       ))}
 
-      <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+      <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
         <button
           onClick={handleSave}
           style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
         >
           保存
+        </button>
+        <button
+          onClick={setDefault}
+          style={{
+            padding: "10px 20px",
+            background: defaultProvider === provider ? "#edf2f7" : "#f0f4ff",
+            color: defaultProvider === provider ? "#718096" : "#667eea",
+            border: "none",
+            borderRadius: 8,
+            cursor: "pointer",
+          }}
+        >
+          {defaultProvider === provider ? "✓ 当前默认" : "设为默认"}
         </button>
         <button
           onClick={handleTest}

@@ -1,14 +1,41 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from .database import init_db
 from .auth import router as auth_router
 from .license import router as license_router
 from .sync import router as sync_router
+from .pages import login_page, register_page, me_page
 
 app = FastAPI(title="Learning App Cloud Service", version="0.1.0")
 
 app.include_router(auth_router)
 app.include_router(license_router)
 app.include_router(sync_router)
+
+
+# ---------- 网页认证页面（认证统一走 /auth/*，不占根路径） ----------
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    """域名根目录：直接展示登录页"""
+    return login_page()
+
+
+@app.get("/auth/login", response_class=HTMLResponse)
+async def auth_login():
+    """认证登录页"""
+    return login_page()
+
+
+@app.get("/auth/register", response_class=HTMLResponse)
+async def auth_register():
+    """认证注册页"""
+    return register_page()
+
+
+@app.get("/me", response_class=HTMLResponse)
+async def profile_page():
+    """用户个人页（当前为空壳，前端校验 token）"""
+    return me_page()
 
 
 @app.on_event("startup")

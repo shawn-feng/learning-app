@@ -84,6 +84,16 @@ const api = {
 
   // Progress
   getProgress: (childId: string) => ipcRenderer.invoke("progress:get", childId),
+  learningSummary: (childId: string) => ipcRenderer.invoke("learning:summary", childId),
+
+  // Scheduler config (per-child, managed in parent settings)
+  schedulerConfigGet: () => ipcRenderer.invoke("scheduler:config:get"),
+  schedulerConfigSet: (childId: string, config: any) =>
+    ipcRenderer.invoke("scheduler:config:set", childId, config),
+
+  // General settings (materials limit)
+  materialsLimitGet: () => ipcRenderer.invoke("settings:materials_limit:get"),
+  materialsLimitSet: (n: number) => ipcRenderer.invoke("settings:materials_limit:set", n),
 
   // Skills
   skillsList: () => ipcRenderer.invoke("skills:list"),
@@ -95,6 +105,13 @@ const api = {
   skillListFiles: (skillName: string) =>
     ipcRenderer.invoke("skill:list_files", skillName),
 
+  // Learning topics (parent mode, 教学内容)
+  learningList: (childId: string) => ipcRenderer.invoke("learning:list", childId),
+  learningRead: (childId: string, relPath: string) =>
+    ipcRenderer.invoke("learning:read", childId, relPath),
+  learningWrite: (childId: string, relPath: string, content: string) =>
+    ipcRenderer.invoke("learning:write", childId, relPath, content),
+
   // Sync
   syncPull: () => ipcRenderer.invoke("sync:pull"),
   syncPush: (childId: string) => ipcRenderer.invoke("sync:push", childId),
@@ -103,7 +120,8 @@ const api = {
   // Voice (STT + TTS)
   voiceConfigGet: () => ipcRenderer.invoke("voice:config:get"),
   voiceConfigSet: (patch: any) => ipcRenderer.invoke("voice:config:set", patch),
-  voiceTranscribe: (audio: ArrayBuffer) => ipcRenderer.invoke("voice:transcribe", audio),
+  voiceTranscribe: (audio: ArrayBuffer, onlyProvider?: string) =>
+    ipcRenderer.invoke("voice:transcribe", audio, onlyProvider),
   voiceTts: (text: string, opts?: any) => ipcRenderer.invoke("voice:tts", text, opts),
 
   // Window controls (custom title bar)

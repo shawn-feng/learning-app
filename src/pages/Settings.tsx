@@ -2,9 +2,13 @@ import { useState } from "react";
 import SkillImport from "../components/SkillImport";
 import SkillEditor from "./SkillEditor";
 import VoiceSettings from "../components/VoiceSettings";
+import SchedulerSettings from "../components/SchedulerSettings";
+import GeneralSettings from "../components/GeneralSettings";
+import TopicEditor from "../components/TopicEditor";
 
 const PROVIDERS = [
   { id: "deepseek", name: "DeepSeek", keyHint: "sk-..." },
+  { id: "qwen", name: "通义千问", keyHint: "sk-..." },
   { id: "anthropic", name: "Anthropic Claude", keyHint: "sk-ant-..." },
   { id: "openai", name: "OpenAI", keyHint: "sk-..." },
   { id: "google", name: "Google Gemini", keyHint: "AIza..." },
@@ -13,7 +17,7 @@ const PROVIDERS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "skills" | "editor" | "voice">("models");
+  const [tab, setTab] = useState<"models" | "skills" | "editor" | "voice" | "scheduler" | "general" | "topics">("models");
   const [selectedProvider, setSelectedProvider] = useState("deepseek");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
@@ -60,7 +64,10 @@ export default function Settings() {
             ["models", "模型配置"],
             ["skills", "技能管理"],
             ["editor", "技能编辑器"],
+            ["topics", "教学内容"],
             ["voice", "语音配置"],
+            ["scheduler", "定时任务"],
+            ["general", "通用设置"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -186,7 +193,13 @@ export default function Settings() {
 
       {tab === "editor" && <SkillEditor />}
 
+      {tab === "topics" && <TopicEditor />}
+
       {tab === "voice" && <VoiceSettings />}
+
+      {tab === "scheduler" && <SchedulerSettings />}
+
+      {tab === "general" && <GeneralSettings />}
     </div>
   );
 }

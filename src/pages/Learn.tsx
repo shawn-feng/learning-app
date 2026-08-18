@@ -1,13 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ChatWindow, { type ChatMessage, type ToolCallState } from "../components/ChatWindow";
-import ContentPanel from "../components/ContentPanel";
+import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
+import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
-
-interface PanelContent {
-  format: "markdown" | "html";
-  content: string;
-  title?: string;
-}
 
 interface Props {
   child: any;
@@ -24,18 +19,40 @@ const RATE_OPTIONS = [
   { label: "快", value: "+30%", display: "1.3x" },
 ];
 
+// 左侧展示页配置（可扩展：新增展示页只需在此追加一项 + 对应渲染组件）
+type PanelViewKey = "materials" | "progress";
+const PANEL_VIEWS: Array<{ key: PanelViewKey; icon: string; label: string; desc: string }> = [
+  { key: "materials", icon: "📖", label: "学习资料", desc: "AI 老师展示的课文、卡片、练习" },
+  { key: "progress", icon: "📊", label: "学习进度看板", desc: "各学习主题的进度总览" },
+];
+
 let msgCounter = 0;
 function nextId() {
   return `msg-${Date.now()}-${msgCounter++}`;
 }
 
+// 学习资料到达时间标签（MM-DD HH:mm）
+function nowLabel() {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function Learn({ child, onExit }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [panelContent, setPanelContent] = useState<PanelContent | null>(null);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const childIdRef = useRef(child.childId);
   // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡）
   const workingIdRef = useRef<string | null>(null);
+  // 学习资料保留数量上限（家长可配置），追加材料时按此截断
+  const materialsLimitRef = useRef(20);
+
+  // 左侧展示页切换
+  const [view, setView] = useState<PanelViewKey>("materials");
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const currentView = PANEL_VIEWS.find((v) => v.key === view) || PANEL_VIEWS[0];
 
   // Sidebar collapse
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -76,6 +93,13 @@ export default function Learn({ child, onExit }: Props) {
             }))
           );
         }
+        // 恢复学习资料列表（退出再进入不丢失；主进程已按 limit 截断）
+        if (Array.isArray(r.materials)) {
+          setMaterials(r.materials);
+        }
+        if (typeof r.materialsLimit === "number" && r.materialsLimit > 0) {
+          materialsLimitRef.current = r.materialsLimit;
+        }
       } else {
         console.error("Failed to start session:", r?.error);
       }
@@ -107,17 +131,29 @@ export default function Learn({ child, onExit }: Props) {
     patchWorking((m) => ({ ...m, tools: [...(m.tools || []), call] }));
   }, [patchWorking]);
 
-  // 工具结束调用 + 内容面板更新
+  // 工具结束调用 + 学习资料列表更新
   const handleToolEnd = useCallback((data: any) => {
     if (data.childId !== childIdRef.current) return;
     if (data.toolName === "display_content") {
       const panel = data.result?.details?.panelContent;
       if (panel) {
-        setPanelContent({
-          format: panel.format,
-          content: panel.content,
-          title: panel.title,
+        const id = nextId();
+        setMaterials((prev) => {
+          const next = [
+            ...prev,
+            {
+              id,
+              format: panel.format,
+              content: panel.content,
+              title: panel.title,
+              time: nowLabel(),
+            },
+          ];
+          const lim = materialsLimitRef.current;
+          return lim > 0 ? next.slice(-lim) : next;
         });
+        // 新资料到达后自动打开查看
+        setSelectedMaterialId(id);
       }
     }
     patchWorking((m) => ({
@@ -143,7 +179,7 @@ export default function Learn({ child, onExit }: Props) {
       if (id && prev.some((m) => m.id === id)) {
         return prev.map((m) =>
           m.id === id
-            ? { ...m, text: data.text, working: false, thinking: undefined, tools: undefined }
+            ? { ...m, text: data.text, working: false }
             : m
         );
       }
@@ -165,7 +201,7 @@ export default function Learn({ child, onExit }: Props) {
       if (id && prev.some((m) => m.id === id)) {
         return prev.map((m) =>
           m.id === id
-            ? { ...m, text: `⚠️ ${data.error}`, working: false, thinking: undefined, tools: undefined }
+            ? { ...m, text: `⚠️ ${data.error}`, working: false }
             : m
         );
       }
@@ -186,8 +222,8 @@ export default function Learn({ child, onExit }: Props) {
     };
   }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd]);
 
-  async function handleSend(text: string) {
-    const userMsg: ChatMessage = { id: nextId(), role: "user", text };
+  async function handleSend(text: string, audio?: string) {
+    const userMsg: ChatMessage = { id: nextId(), role: "user", text, audio };
     const workingMsg: ChatMessage = {
       id: nextId(),
       role: "ai",
@@ -200,7 +236,11 @@ export default function Learn({ child, onExit }: Props) {
     setMessages((prev) => [...prev, userMsg, workingMsg]);
     setBusy(true);
     try {
-      const result = await window.api.piPrompt(child.childId, text);
+      // 语音识别的消息注明来源，让 AI 知道可能存在识别错误，结合上下文推理正确内容
+      const promptText = audio
+        ? `[语音识别输入，可能存在同音字/断句等识别错误，请结合上下文理解并推理出正确内容] ${text}`
+        : text;
+      const result = await window.api.piPrompt(child.childId, promptText);
       if (!result.success) {
         // 若 pi:reply_error 已处理则 workingIdRef 已清空，跳过
         const id = workingIdRef.current;
@@ -209,7 +249,7 @@ export default function Learn({ child, onExit }: Props) {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === id
-                ? { ...m, text: `⚠️ ${result.error || "发送失败"}`, working: false, thinking: undefined, tools: undefined }
+                ? { ...m, text: `⚠️ ${result.error || "发送失败"}`, working: false }
                 : m
             )
           );
@@ -223,7 +263,7 @@ export default function Learn({ child, onExit }: Props) {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === id
-              ? { ...m, text: `⚠️ ${e.message || "网络错误"}`, working: false, thinking: undefined, tools: undefined }
+              ? { ...m, text: `⚠️ ${e.message || "网络错误"}`, working: false }
               : m
           )
         );
@@ -306,8 +346,49 @@ export default function Learn({ child, onExit }: Props) {
             )}
           </div>
 
+          <div
+            className="view-switcher"
+            onMouseEnter={() => setViewMenuOpen(true)}
+            onMouseLeave={() => setViewMenuOpen(false)}
+          >
+            <button
+              className={`sidebar-btn view-switcher-btn ${viewMenuOpen ? "open" : ""}`}
+              title="切换展示页"
+            >
+              <span className="sidebar-btn-icon">{currentView.icon}</span>
+              {!sidebarCollapsed && (
+                <>
+                  <span className="sidebar-btn-text">{currentView.label}</span>
+                  <span className="view-switcher-caret">▾</span>
+                </>
+              )}
+            </button>
+
+            {viewMenuOpen && (
+              <div className="view-switcher-popover">
+                <div className="view-switcher-title">切换展示页</div>
+                {PANEL_VIEWS.map((v) => (
+                  <button
+                    key={v.key}
+                    className={`view-option ${view === v.key ? "active" : ""}`}
+                    onClick={() => {
+                      setView(v.key);
+                      setViewMenuOpen(false);
+                    }}
+                  >
+                    <span className="view-option-icon">{v.icon}</span>
+                    <span className="view-option-body">
+                      <span className="view-option-label">{v.label}</span>
+                      <span className="view-option-desc">{v.desc}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="sidebar-model">
-            {sidebarCollapsed ? (
+            {sidebarCollapsed && (
               <button
                 className="sidebar-icon-btn"
                 title="模型"
@@ -315,12 +396,15 @@ export default function Learn({ child, onExit }: Props) {
               >
                 🤖
               </button>
-            ) : (
-              <>
-                <div className="sidebar-section-label">模型</div>
-                <ModelSelector childId={child.childId} />
-              </>
             )}
+            {/* 保持 ModelSelector 常驻挂载，折叠时仅用 CSS 隐藏，避免卸载后重新挂载时重置为默认模型 */}
+            <div
+              className="sidebar-model-body"
+              style={{ display: sidebarCollapsed ? "none" : "block", width: "100%" }}
+            >
+              <div className="sidebar-section-label">模型</div>
+              <ModelSelector childId={child.childId} />
+            </div>
           </div>
 
           <div className="sidebar-rate">
@@ -388,7 +472,16 @@ export default function Learn({ child, onExit }: Props) {
         </div>
 
         <div className="learn-body">
-          <ContentPanel content={panelContent} />
+          {view === "materials" ? (
+            <MaterialsPanel
+              materials={materials}
+              selectedId={selectedMaterialId}
+              onOpen={setSelectedMaterialId}
+              onBack={() => setSelectedMaterialId(null)}
+            />
+          ) : (
+            <LearningDashboard childId={child.childId} />
+          )}
           <ChatWindow messages={messages} onSend={handleSend} disabled={busy} aiEmoji={aiEmoji} rate={rate} />
         </div>
       </div>

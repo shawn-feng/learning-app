@@ -10,9 +10,13 @@ import { registerIpcHandlers } from "./lib/ipc-handlers";
 import { disposeAllSessions } from "./lib/pi-session";
 import { startScheduler, runCatchUp } from "./lib/scheduler";
 import { syncAllChildren } from "./lib/sync-manager";
+import { registerMediaScheme, registerMediaProtocol } from "./lib/media-protocol";
 
 let mainWindow: BrowserWindow | null = null;
 const APP_VERSION = "0.1.0";
+
+// 必须在 app ready 之前注册自定义 scheme（media:// 用于沙盒 iframe 内播放本地音视频）
+registerMediaScheme();
 
 function getMainWindow() {
   return mainWindow;
@@ -91,6 +95,9 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(permission === "media");
   });
+
+  // 注册 media:// 协议，把沙盒 iframe 里的音视频请求映射到本地媒体文件
+  registerMediaProtocol();
 
   registerIpcHandlers(getMainWindow);
   startScheduler();

@@ -1,0 +1,17 @@
+[Unit]
+Description=Learning App Cloud Service (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/learning-cloud
+EnvironmentFile=/opt/learning-cloud/.env
+ExecStart=/opt/learning-cloud/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+# 日志
+StandardOutput=append:/var/log/learning-cloud.log
+StandardError=append:/var/log/learning-cloud.log
+
+[Install]
+WantedBy=multi-user.target

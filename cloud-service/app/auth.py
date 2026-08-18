@@ -92,3 +92,14 @@ async def login(req: LoginRequest, db=Depends(get_db)):
 
     token = create_token(row["id"])
     return {"token": token, "parent_id": row["id"]}
+
+
+@router.get("/me")
+async def get_me(parent_id: str = Depends(get_current_parent), db=Depends(get_db)):
+    """返回当前登录家长的信息（网页个人页使用）"""
+    rows = await db.execute_fetchall(
+        "SELECT id, email, created_at FROM parents WHERE id = ?", (parent_id,)
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    return {"parent_id": rows[0]["id"], "email": rows[0]["email"], "created_at": rows[0]["created_at"]}

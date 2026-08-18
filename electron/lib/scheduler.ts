@@ -1,12 +1,10 @@
 import fs from "fs";
 import path from "path";
 import cron from "node-cron";
-import { getTaskStatePath, getChildDir } from "./config";
+import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config";
 import { listChildren } from "./child-auth";
-import { getChildSession } from "./pi-session";
-import { getSharedRuntime } from "./pi-runtime";
+import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
-import { buildChildSettings } from "./user-init";
 
 interface TaskState {
   children: Record<
@@ -18,9 +16,22 @@ interface TaskState {
   >;
 }
 
+// 每个孩子独立的定时任务配置。默认（未配置）全部关闭。
+export interface SchedulerChildConfig {
+  recording: { enabled: boolean; intervalHours: number };
+  studyTracker: { enabled: boolean; hour: number; minute: number };
+}
+
+interface SchedulerConfig {
+  children: Record<string, SchedulerChildConfig>;
+}
+
+export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
+  recording: { enabled: false, intervalHours: 1 },
+  studyTracker: { enabled: false, hour: 21, minute: 0 },
+};
+
 const HOUR_MS = 3600 * 1000;
-const RECORDING_INTERVAL_HOURS = 1;
-const TRACKER_HOUR = 21;
 
 function loadTaskState(): TaskState {
   const p = getTaskStatePath();
@@ -46,14 +57,58 @@ function getChildState(state: TaskState, childId: string) {
   return state.children[childId];
 }
 
+// ---- 定时任务配置读写（家长在设置里管理）----
+
+function loadSchedulerConfig(): SchedulerConfig {
+  const p = getSchedulerConfigPath();
+  if (!fs.existsSync(p)) return { children: {} };
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf-8"));
+  } catch {
+    return { children: {} };
+  }
+}
+
+function saveSchedulerConfig(config: SchedulerConfig): void {
+  fs.writeFileSync(getSchedulerConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+}
+
+export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {
+  const config = loadSchedulerConfig();
+  const c = config.children[childId];
+  if (!c) return JSON.parse(JSON.stringify(DEFAULT_CHILD_CONFIG));
+  // 合并缺省字段，保证结构完整
+  return {
+    recording: { ...DEFAULT_CHILD_CONFIG.recording, ...(c.recording || {}) },
+    studyTracker: { ...DEFAULT_CHILD_CONFIG.studyTracker, ...(c.studyTracker || {}) },
+  };
+}
+
+export function setChildSchedulerConfig(
+  childId: string,
+  childConfig: SchedulerChildConfig
+): SchedulerChildConfig {
+  const config = loadSchedulerConfig();
+  config.children[childId] = {
+    recording: { ...DEFAULT_CHILD_CONFIG.recording, ...(childConfig.recording || {}) },
+    studyTracker: { ...DEFAULT_CHILD_CONFIG.studyTracker, ...(childConfig.studyTracker || {}) },
+  };
+  saveSchedulerConfig(config);
+  return config.children[childId];
+}
+
+// ---- 会话与任务执行 ----
+
 export async function createEphemeralSession(childId: string) {
   const childDir = getChildDir(childId);
   const runtime = await getSharedRuntime();
+  const model = await getDefaultModel();
 
   const { session } = await createAgentSession({
     cwd: childDir,
     agentDir: path.join(childDir, ".pi", "agent"),
     modelRuntime: runtime,
+    model,
     sessionManager: SessionManager.inMemory(),
     tools: ["read", "write", "edit"],
   });
@@ -158,46 +213,54 @@ async function runTracker(childId: string): Promise<void> {
   }
 }
 
+// 每分钟检查一次：按每个孩子各自的配置决定是否执行。默认未配置的孩子不执行。
 export function startScheduler(): void {
-  // Hourly recording check
-  cron.schedule("0 * * * *", async () => {
+  cron.schedule("* * * * *", async () => {
     const state = loadTaskState();
     const children = listChildren();
-    const now = Date.now();
+    const now = new Date();
 
     for (const child of children) {
+      const cc = getChildSchedulerConfig(child.childId);
       const cs = getChildState(state, child.childId);
-      const last = cs.recording.lastRun ? new Date(cs.recording.lastRun).getTime() : 0;
-      if (now - last >= RECORDING_INTERVAL_HOURS * HOUR_MS) {
-        try {
-          await runRecording(child.childId);
-          cs.recording.lastRun = new Date().toISOString();
-          saveTaskState(state);
-        } catch (e) {
-          console.error(`Recording failed for child ${child.childId}:`, e);
+
+      // recording：按 intervalHours 间隔执行
+      if (cc.recording.enabled) {
+        const last = cs.recording.lastRun ? new Date(cs.recording.lastRun).getTime() : 0;
+        if (now.getTime() - last >= cc.recording.intervalHours * HOUR_MS) {
+          try {
+            await runRecording(child.childId);
+            cs.recording.lastRun = new Date().toISOString();
+            saveTaskState(state);
+          } catch (e) {
+            console.error(`Recording failed for child ${child.childId}:`, e);
+          }
         }
       }
-    }
-  });
 
-  // Daily tracker at 21:00
-  cron.schedule(`0 ${TRACKER_HOUR} * * *`, async () => {
-    const state = loadTaskState();
-    const children = listChildren();
-
-    for (const child of children) {
-      const cs = getChildState(state, child.childId);
-      try {
-        await runTracker(child.childId);
-        cs["study-tracker"].lastRun = new Date().toISOString();
-        saveTaskState(state);
-      } catch (e) {
-        console.error(`Tracker failed for child ${child.childId}:`, e);
+      // study-tracker：每天在配置的 hour:minute 执行一次
+      if (cc.studyTracker.enabled) {
+        const lastDay = cs["study-tracker"].lastRun
+          ? new Date(cs["study-tracker"].lastRun).toDateString()
+          : "";
+        const isTime =
+          now.getHours() === cc.studyTracker.hour &&
+          now.getMinutes() === cc.studyTracker.minute;
+        if (isTime && lastDay !== now.toDateString()) {
+          try {
+            await runTracker(child.childId);
+            cs["study-tracker"].lastRun = new Date().toISOString();
+            saveTaskState(state);
+          } catch (e) {
+            console.error(`Tracker failed for child ${child.childId}:`, e);
+          }
+        }
       }
     }
   });
 }
 
+// 启动时补跑：仅对已开启对应任务且到期的孩子执行（默认关闭，因此默认不补跑）。
 export async function runCatchUp(): Promise<void> {
   const state = loadTaskState();
   const children = listChildren();
@@ -205,29 +268,32 @@ export async function runCatchUp(): Promise<void> {
   const today = now.toDateString();
 
   for (const child of children) {
+    const cc = getChildSchedulerConfig(child.childId);
     const cs = getChildState(state, child.childId);
 
-    // Recording catch-up: if recording hasn't run in the last interval, run it
-    const lastRec = cs.recording.lastRun ? new Date(cs.recording.lastRun).getTime() : 0;
-    if (now.getTime() - lastRec >= RECORDING_INTERVAL_HOURS * HOUR_MS) {
-      try {
-        await runRecording(child.childId);
-        cs.recording.lastRun = new Date().toISOString();
-      } catch (e) {
-        console.error(`Recording catch-up failed for child ${child.childId}:`, e);
+    if (cc.recording.enabled) {
+      const lastRec = cs.recording.lastRun ? new Date(cs.recording.lastRun).getTime() : 0;
+      if (now.getTime() - lastRec >= cc.recording.intervalHours * HOUR_MS) {
+        try {
+          await runRecording(child.childId);
+          cs.recording.lastRun = new Date().toISOString();
+        } catch (e) {
+          console.error(`Recording catch-up failed for child ${child.childId}:`, e);
+        }
       }
     }
 
-    // Tracker catch-up: if tracker hasn't run today, run it
-    const lastTracker = cs["study-tracker"].lastRun
-      ? new Date(cs["study-tracker"].lastRun).toDateString()
-      : "";
-    if (lastTracker !== today) {
-      try {
-        await runTracker(child.childId);
-        cs["study-tracker"].lastRun = new Date().toISOString();
-      } catch (e) {
-        console.error(`Tracker catch-up failed for child ${child.childId}:`, e);
+    if (cc.studyTracker.enabled) {
+      const lastTracker = cs["study-tracker"].lastRun
+        ? new Date(cs["study-tracker"].lastRun).toDateString()
+        : "";
+      if (lastTracker !== today) {
+        try {
+          await runTracker(child.childId);
+          cs["study-tracker"].lastRun = new Date().toISOString();
+        } catch (e) {
+          console.error(`Tracker catch-up failed for child ${child.childId}:`, e);
+        }
       }
     }
   }
