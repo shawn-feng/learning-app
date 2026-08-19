@@ -7,6 +7,7 @@ import { listChildren } from "./child-auth";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { resetChildSession } from "./pi-session";
+import { logRound } from "./token-stats";
 
 export interface TaskState {
   children: Record<
@@ -241,7 +242,10 @@ async function runRecording(childId: string): Promise<void> {
   const session = await createEphemeralSession(childId);
   try {
     const prompt = `/skill:recording\n\n以下是最近的学习会话内容，请从中提取学习总结并更新学习记录文件：\n\n${conversation}`;
+    const beforeCount = (session as any).messages?.length ?? 0;
     await session.prompt(prompt);
+    // ISSUE-010：定时任务记账（按 childId 隔离）
+    logRound({ session, beforeCount, channel: "scheduler", childId, ok: true });
   } finally {
     session.dispose();
   }
@@ -250,7 +254,10 @@ async function runRecording(childId: string): Promise<void> {
 async function runTracker(childId: string): Promise<void> {
   const session = await createEphemeralSession(childId);
   try {
+    const beforeCount = (session as any).messages?.length ?? 0;
     await session.prompt("/skill:study-tracker");
+    // ISSUE-010：定时任务记账（按 childId 隔离）
+    logRound({ session, beforeCount, channel: "scheduler", childId, ok: true });
   } finally {
     session.dispose();
   }

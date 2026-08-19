@@ -295,7 +295,13 @@
   2. **改引用**：因 method.md 第 100 行写明「不调用 recording 技能」（论语记录是内联执行、不委托 recording skill），故不能直接靠调用 skill 获得其详细度；若采用引用写法，需写明「按 recording skill 的详细度要求填写孩子表现」以避免两处维护不同步。
 - **普遍性提示（建议一并评估）**：同样的弱指令（「孩子表现写具体，不写空话」）也出现在 `data/children/1f050a7f-.../learning/` 下的 **english / qianziwen / hanzigong / reading / taodi / xiaojing / xiaozhuan** 的 `method.md` 记录段。用户点名论语，但根因是统一的模板文案过简；是否只修论语、还是所有主题 method 统一补详细度要求，需确认。
 - **待确认项**：① 只修论语还是全主题统一；② 内联补齐 vs 引用 recording skill 的取舍；③ 是否顺手把 recording skill 的「详细度要求」段落抽成共享片段，供各 method.md 引用。
-- **优先级**：待定（用户未标注）
+- **已修复（2026-08-19，用户确认：全部主题统一修 + 内联补齐）**：
+  1. **范围**：`data/children/1f050a7f-.../learning/` 下 8 个主题的 `method.md` 记录段第 2 步全部更新（lunyu / english / qianziwen / hanzigong / reading / taodi / xiaojing / xiaozhuan）。
+  2. **写法**：内联补齐——第 2 步的「孩子表现写具体，不写空话」改为「**孩子表现必填且详写**，按下方「详细度要求」记录」；第 2 步后新增一段「**详细度要求（硬性规定）**」：不限篇幅 / 记所有关键点（原话、例子、问题、情绪、思考、纠正过程）/ 禁空话（表现很好、理解到位、很积极）/ 宁详勿略。各主题字段列表（考核、掌握度、难点、错题、生字等）保持各自原有结构，english 的 Yellow 课程额外记录项未动。
+  3. **二次修订（2026-08-19，用户要求）**：(a) 标题去掉「与 recording 技能一致」字样（详细度要求已写全，无需再引 recording，避免依赖 skill 内容）；(b) 删除各文件记录段原有的「> 会话里若有生活事件、随口问答、任务等其他内容，才用 recording 技能兜底记录。」提示句——专注学习记录、不分散 agent 注意力。
+  4. **未做**：③ 抽共享片段未做（用户选内联，自包含不依赖 skill 内容）；`cloud-service/storage/` 下同名同步副本未改（非真源，云端同步会自动覆盖）。
+  5. **验证**：grep 确认 8 个文件均含「详细度要求」段、旧弱指令「孩子表现写具体，不写空话」与「recording 技能兜底记录」均无残留。
+- **优先级**：已完成（2026-08-19）
 - **记录时间**：2026-08-19
 
 ## [ISSUE-010] 增加 token 统计（每轮发送给 agent 的内容 / 已有消息 vs 新增消息 / agent 返回消息）
@@ -320,7 +326,20 @@
   3. **成本(cost)**：`UsageTotals.cost` 已含按模型计费，若要做费用看板可直接用，但需确认 SDK 计费表是否覆盖已登记的 DeepSeek/Qwen 模型（ISSUE-007 新增的 `qwen/deepseek-v4-*` 是否在 SDK cost 表中）。
   4. **定时任务路径**：`scheduler.ts` 的 agent 调用同样要计入，否则总量偏低。
 - **关联**：与上下文截断（`user-init.ts` reserveTokens/keepRecentTokens）、缓存命中（`electron/extensions/learning-guard.ts:25` cache 命中与否影响 input 计费）直接相关；统计后可反推截断/缓存策略是否省 token。
-- **优先级**：待定（用户未标注）
+- **修复记录（2026-08-19 实施）**：
+  1. **新增核心模块 `electron/lib/token-stats.ts`**：
+     - **真实用量直接取 SDK usage**：每轮 prompt 后对「新增 assistant 消息」的 `m.usage` 累加（input/output/cacheRead/cacheWrite/cost.total/totalTokens + assistantCalls 调用次数；`stopReason==="error"` 不计入），不本地估算、不按字符猜（已确认 `AgentMessage` 的 `AssistantMessage` 必带 `usage`，agent-session.js 每条 assistant 挂 `result.usage`）。
+     - **已有 vs 新增拆分用本地近似分词**（SDK 不给 user/tool 消息 token）：`estimateTokens()`——CJK（含全角标点）~1.5 字符/token、其它 ~4 字符/token；`computeRoundStats(session, beforeCount)` 在 prompt 前快照 `messages.length`，已有 = 前 beforeCount 条估算、新增 = 之后估算（**已确认 SDK 的 prompt() 内部构造用户消息、不会在调用前 push 进 messages**，故 beforeCount 快照时机准确：「已有」= 上轮上下文，「新增」= 本轮输入+工具往返+回复）。
+     - **按 childId 隔离落盘**：`data/children/<childId>/token-log.jsonl`（家长无 childId 落 `data/token-log.jsonl`），append-only 每行一条 JSON（seq 递增 / ts / channel / sessionFile / model / ok / 真实用量 / existingTokens / newTokens / assistantCalls / replyLength）；`MAX_TOKEN_LOG_LINES=5000` 超限截断防膨胀。
+     - `logRound({session, beforeCount, channel, childId, ok, replyLength})` 一站式：收集 + 落盘，内部 try/catch 静默降级（统计失败绝不影响主流程）。
+  2. **三个发送入口全部接入**：
+     - 孩子聊天 `pi:prompt`（`ipc-handlers.ts`）：prompt() 前取 beforeCount，正常轮 `ok:true`、`stopReason=error` 的失败轮 `ok:false` 都记账（失败轮 input 通常已实际发生）。
+     - 家长聊天 `pi:prompt_parent`：`channel:"parent"`，无 childId 落全局日志。
+     - 定时任务 `scheduler.ts` `runRecording` / `runTracker`：`channel:"scheduler"`，按 childId 隔离。
+  3. **家长端展示面板（UI 已实现，2026-08-19 同日）**：IPC `token:summary`（累计 rounds/totalInput/totalOutput/totalCacheRead/totalCacheWrite/totalCost/totalTokens/lastTs + 按模型分组 byModel）与 `token:list`（最近 N 条），`preload.ts` 桥接 `getTokenSummary` / `getTokenList`。前端新增 `src/components/TokenStatsPanel.tsx`，作为 Dashboard 侧边栏「📈 Token 消耗」独立菜单项（与「学习进度」平级）：顶部 6 张汇总卡（总轮次/总输入/总输出/缓存命中/估算总费用/最近使用）、按孩子·渠道表（每孩子 + 家长会话）、按模型表、最近明细表（100 条内合并排序，可按下拉过滤孩子，⏰ 标注定时任务、✓/✗ 标注成败、已有/新增估算并列显示）。
+  4. **取舍**：未引入 gpt-tokenizer/tiktoken 新依赖（打包体积 + 维护成本），「已有/新增」用近似估算并在字段名上与非估算的真实 usage 分开（existingTokens/newTokens 是 estimated，input/output 是 real）；若后续要精确到字节级，可再换分词器。
+  5. **验证**：新增 `test/token-stats.test.ts` **16 用例全过**（estimateTokens 中英混合 / computeRoundStats 累加与切片 / error 不计入 / usage 缺失防御 / content 数组只计 text / childId 隔离 / seq 递增 / 家长全局路径 / getTokenSummary 累计与 byModel / logRound 一站式 / 异常静默降级）；`tsc --noEmit` 过滤 TS2318/TS2552 后 0 业务错误；`rm -rf out && electron-vite build` 通过（main/preload/renderer 均成功，renderer 含 TokenStatsPanel）。全量 vitest **81 用例 69 通过 / 12 失败**（+16 全过）；12 失败为既有环境问题（learning-summary 真实数据漂移 2 / functional `app.isPackaged` 1 / app.test 云端 ECONNREFUSED 1，以及沙箱受限下偶发的 sync 超时与 safe-delete 清理拦截），与本次改动无关。
+- **优先级**：已完成（2026-08-19）
 - **记录时间**：2026-08-19
 
 ## [ISSUE-011] npm run dev 启动卡死/强制退出：启动同步整篇读+哈希 1925 文件阻塞主进程事件循环
@@ -404,4 +423,75 @@
   - 基线设计：`LEARNING-DATA-REDESIGN.md`（P0–P6 已实施项，本次在它之上做查询/写入效率层）。
 - **关联**：ISSUE-006（进度查询省 token，已解决，本 issue 是它的推广/泛化）；ISSUE-010（token 统计——落地后可量化验证本优化效果：查询/写入前后 token 对比）；ISSUE-009（method 记录详细度——写入质量与写入成本需平衡）。
 - **优先级**：待定（用户未标注，建议中优先级：不影响功能，但随 daily 增长会越来越贵）
+- **记录时间**：2026-08-19
+
+## [ISSUE-014] 左侧学习资料应自动显示最新资料，不要停在列表等手动点开
+
+- **需求**：左侧「学习资料」面板要**自动显示最新的那份资料**；不要停在列表视图、让用户再点开最新的。用户原话：「不要返回列表再点开最新的」。
+- **现状（已定位）**：
+  - 会话进行中：`display_content` 工具结束 → `Learn.tsx:198-222` 新资料入列后 `setSelectedMaterialId(targetId)` **已会自动弹开**最新（含去重聚焦：同 `filePath` 重复展示时聚焦已有条目）——这条没问题。
+  - **缺口在会话恢复/重进**：`Learn.tsx:152-155` 恢复材料列表只 `setMaterials(r.materials)`，**没有设置 `selectedMaterialId`** → 面板停在列表视图（`MaterialsPanel.tsx:66-92`），用户必须手动点开最新一份。这就是「返回列表再点开最新的」的实际场景。
+  - 列表顺序：主进程 `getSessionMaterials`（`pi-session.ts:637-684`）按 session 历史顺序 push，**最新一份在数组末尾** → 可直接 `materials[materials.length - 1]` 取最新。
+- **实现要点（候选，待定）**：
+  1. 恢复材料列表后自动选中最新：`setSelectedMaterialId(r.materials[r.materials.length - 1]?.id ?? null)`（注意 id 是主进程重建的 `mat-*`，恢复后与 `materials` 一一对应，可用）；
+  2. 触发时机取舍：仅「恢复/初始」时自动打开，还是「每次切回 materials 视图」都自动跟随最新（后者可能与用户主动点「返回列表」看历史的意图冲突，需确认）；
+  3. 空列表时保持列表态（占位文案）不变。
+- **排查 / 修改入口（可直接执行）**：`src/pages/Learn.tsx:152-155`（恢复材料）、`src/pages/Learn.tsx:198-222`（会话中自动弹开参照）、`src/components/MaterialsPanel.tsx:43-94`（两态渲染）、主进程 `electron/lib/pi-session.ts:637-684`（材料重建顺序）。
+- **待确认项**：① 自动打开时机（仅恢复 vs 始终跟随最新）；② 用户显式「返回列表」后，新资料到达是否仍自动弹开（现实现是会的，`Learn.tsx:222` 无条件 set）——若用户认为「返回列表后不该被打断」则需加状态判定。
+- **关联**：ISSUE-002（重发资料去重——本 issue 的「自动弹开」依赖同一 `display_content` 去重机制，避免弹开重复条目）。
+- **优先级**：待定（用户未标注）
+- **记录时间**：2026-08-19
+
+## [ISSUE-015] 语音转写失败（ffmpeg）：Invalid data found when processing input——MediaRecorder 半成品 webm 未拦截
+
+- **类型**：bug / 已修复（2026-08-19）
+- **现象**：语音识别报错 `音频转换失败（ffmpeg）：[in#0] Error opening input: Invalid data found when processing input ... stt-in-*.webm`。
+- **根因（本机已复现确认）**：用 ffmpeg-static 实测——**0 字节输入**与「只有 EBML 容器头」的**半成品 webm** 报错与用户完全一致（Invalid data）；有效 webm（≥250ms opus）转换正常。即写入临时文件的录音数据是**空/半成品**（MediaRecorder 极短录音或麦克风无数据时，Chromium 输出仅含容器头、无音频帧的 webm）。前端 `blob.size < 200` 阈值太松（半成品可达数百字节），主进程无兜底。
+- **修复**：
+  1. `electron/lib/voice/audio.ts` `webmToWav16k`：输入 `< 2000` 字节直接快速失败（报「录音数据过短或为空（N 字节）」，不调 ffmpeg）；ffmpeg 失败时**保留原始 tmpIn 文件**（tmpdir 系统清理）并把输入字节数 + 保留路径带进错误消息便于复现排查（cleanup 不再删 tmpIn）。
+  2. 前端阈值统一收紧：`src/components/ChatWindow.tsx` 与 `src/components/VoiceSettings.tsx` 的 `blob.size < 200` → `< 2000`（有效录音 ≥250ms opus 远超 2KB，不误伤）。
+- **验证**：新增 `test/voice-audio.test.ts` 4 用例全过（0 字节快速失败 / <2000 字节快速失败且带字节数 / 有效 webm 转 16k WAV 且 RIFF+16000Hz+单声道正确 / ffmpeg 失败时错误含输入大小且原始文件确实保留）；`tsc --noEmit` 过滤 TS2318/2552 后 0 业务错误；`electron-vite build` 通过；全量 vitest 85 用例 73 过 / 12 失败（+4 全过，12 为既有环境问题）。`out/` 需重新构建生效。
+- **优先级**：已完成（2026-08-19）
+- **记录时间**：2026-08-19
+
+## [ISSUE-016] 家长页删除孩子账号后返回主页，密码输入框无法选中（点击无光标），需最小化再点开才恢复
+
+- **类型**：bug / 待排查（用户未标注）
+- **现象**：家长中心（Dashboard）删除测试孩子账号后，点「← 返回主页」，主页点击孩子卡片出现密码输入框后，**点击输入框无光标、无法输入**；只有**最小化再点开 App** 才能选中输入框、出现输入光标。
+- **代码锚点（已定位）**：
+  - 删除流程：`src/pages/Dashboard.tsx:56-61` `handleDeleteChild` → **`confirm()`**（渲染进程同步原生模态对话框）→ `child:delete` IPC（`electron/preload.ts:103`）→ `refresh()`。
+  - 返回主页：`src/App.tsx:66` `onEnterChildMode={() => setView("home")}`——App 是 `switch(view)` 条件渲染（`App.tsx:40-87`），view 变化 → **Home 全新卸载/挂载**，`autoFocus`（`Home.tsx:107`）会重新触发。
+  - 密码输入框：`src/pages/Home.tsx:100-109`（`type="password"` + `autoFocus` + `outline:none`），条件 `selectedChild &&`（97 行）——回主页时 `selectedChild` 初始为 null，输入框此时未挂载，点孩子卡片后才挂载。
+  - 孩子列表：`Home.tsx:24-26` `childList()` 仅挂载时加载一次（删除后回主页会拉到新列表）。
+  - 主进程 `child:delete` 实现（`electron/lib/ipc-handlers.ts`）无任何焦点操作，可排除主进程主动夺焦。
+- **根因假设（待验证，非结论）**：
+  1. **`confirm()` 模态对话框焦点残留（最吻合）**：Electron 渲染进程的 `confirm()` 是原生模态对话框，Windows 上关闭后 BrowserWindow/webContents 的键盘焦点可能未正确归还 → 页面可见可点但焦点处于异常态（点击 input 不出现光标）；**最小化/还原强制系统重新聚焦窗口 → 恢复**，与该症状完全吻合。Electron 官方亦不推荐渲染进程 `confirm()`，建议用主进程 `dialog.showMessageBox`（`main.ts:33` 已有现成用法范式）。
+  2. `autoFocus` 竞争：输入框在 confirm 关闭后的焦点异常窗口期挂载，`autoFocus` 失败，且点击无法抢回焦点。
+  3. 与删除内容本身无关（重置密码、新增孩子等其它操作后回主页是否同样出现，可缩小范围验证）。
+- **候选修复方向（待定）**：
+  1. **替换 `confirm()`** 为 `dialog.showMessageBox`（主进程，`main.ts:33` 范式），从根上消除原生模态焦点残留——最治本；
+  2. 或在 Home 输入框挂载后主动 `focus()`（useEffect + ref 兜底），或在 `setView("home")` 后主进程 `mainWindow.focus()` / `webContents.focus()`；
+  3. 验证手段：复现后最小化/还原可恢复 → 确认窗口级焦点问题；修完跑 `npm run build` 后手测删除→回主页→点输入框。
+- **排查 / 修改入口（可直接执行）**：`src/pages/Dashboard.tsx:57`（`confirm()` 调用点）；`src/pages/Home.tsx:97-109`（输入框与 autoFocus）；`src/App.tsx:66`（返回主页）；主进程 `electron/main.ts:33`（`dialog.showMessageBox` 复用范式）。
+- **待确认项**：① 是否每次必现、是否仅删除后出现（其它操作对比）；② 点击输入框时窗口标题栏/其它控件是否可交互（判断是窗口级还是页面级焦点问题）；③ 用 `dialog.showMessageBox` 替换后是否消失。
+- **关联**：无直接关联（独立的 UI 焦点问题）。
+- **优先级**：待定（用户未标注）
+- **记录时间**：2026-08-19
+
+## [ISSUE-017] 退出家长账号按钮只应出现在家长页面，去掉主页左上角退出按钮
+
+- **类型**：需求 / 待实现（用户未标注）
+- **需求**：退出家长账号的按钮**只保留在家长页面（Dashboard）**里；**去掉主页（Home）左上角的退出按钮**。理由：孩子（在主页选择孩子身份进入）不能退出家长账号，主页出现退出按钮会让低龄用户误操作退出登录。
+- **现状（已定位）**：
+  - 主页退出按钮：`src/pages/Home.tsx:143-158`（`position:absolute; top:20; left:20` 的「← 退出登录」按钮，onClick → `handleLogout` → `window.api.authLogout()` + `onLogout()`）。Home 是孩子和家长共用入口页，孩子点选孩子卡片进入学习，此按钮对孩子可见 → 需移除。
+  - 家长页退出按钮：`src/pages/Dashboard.tsx:76-77`（header 右侧「← 返回主页」+「退出登录」两个按钮）——保留退出按钮在此处即可满足「只出现在家长页面」。
+  - 登出实现（保留不变）：`Home.tsx:57-60` `handleLogout`；`App.tsx:67-70` Dashboard 的 `onLogout`（`authLogout` + `setView("parent-login")`）。
+- **实现要点**：
+  1. 删除 `Home.tsx:143-158` 的退出按钮 JSX（含 `handleLogout` 若不再被其它地方使用则一并清理，或保留无妨）；
+  2. `Home` 组件的 `onLogout` prop（`Home.tsx:7`）随之不再需要，可从 `App.tsx:51-60` 的 `<Home>` 调用处移除该 prop（清理可选，不影响功能）；
+  3. 家长退出入口唯一保留：Dashboard 右上角「退出登录」（`Dashboard.tsx:77`）。
+- **排查 / 修改入口（可直接执行）**：`src/pages/Home.tsx:143-158`（删除按钮）、`Home.tsx:57-60`（handleLogout，可清理）、`src/App.tsx:51-60`（Home 的 onLogout prop，可清理）、`src/pages/Dashboard.tsx:76-77`（保留的退出按钮）。
+- **待确认项**：① 主页是否还需要任何「返回/退出到登录页」的途径（如仅家长能登出、孩子通过「退出学习」回主页，主页本身没有退出入口 → 家长要退出需先进家长中心）；② `handleLogout`/`onLogout` prop 是否顺手清理。
+- **关联**：无（独立 UI 调整）。
+- **优先级**：待定（用户未标注）
 - **记录时间**：2026-08-19

@@ -136,7 +136,8 @@ export default function VoiceSettings() {
       const blob = await stop();
       // 无活跃录音（已停止过/从未开始）：静默返回
       if (!blob) return;
-      if (blob.size < 200) {
+      if (blob.size < 2000) {
+        // 空/极短的 webm 容器（无音频帧，只有 EBML 头），ffmpeg 无法解析（Invalid data）
         setStatus("录音太短，请按住说完整的一句话再松手");
         return;
       }

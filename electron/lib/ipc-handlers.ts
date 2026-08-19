@@ -10,6 +10,7 @@ import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize } f
 import { getLearningSummary } from "./learning-summary";
 import { getChildSchedulerConfig, setChildSchedulerConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey } from "./app-settings";
+import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("auth:register", async (_e, email: string, password: string) => {
@@ -407,6 +408,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
           }
         }
         console.log(`[pi:prompt] session ready, calling prompt()...`);
+        const beforeCount = (session as any).messages?.length ?? 0;
         await session.prompt(text, imgCount > 0 ? { images: images! } : undefined);
         console.log(`[pi:prompt] prompt() completed`);
 
@@ -420,6 +422,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       if (errMsg) {
         const friendly = friendlyError(errMsg);
         console.error(`[pi:prompt] LLM 调用失败:`, errMsg);
+        // ISSUE-010：失败轮也记账（input 通常已实际发生），ok=false
+        logRound({ session, beforeCount, channel: "child", childId, ok: false });
         _e.sender.send("pi:reply_error", { childId, error: friendly });
         _e.sender.send("pi:reply_end", { childId });
         return { success: false, error: friendly };
@@ -443,6 +447,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         _e.sender.send("pi:reply_error", { childId, error: "没有收到回复，请重试" });
       }
       _e.sender.send("pi:reply_end", { childId });
+      // ISSUE-010：正常轮记账（真实 input/output + 已有/新增估算）
+      logRound({ session, beforeCount, channel: "child", childId, ok: true, replyLength: replyText.length });
 
       return { success: true };
     } catch (err) {
@@ -455,8 +461,29 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("pi:prompt_parent", async (_e: IpcMainInvokeEvent, text: string) => {
     try {
       const session = await getParentSession();
+      const beforeCount = (session as any).messages?.length ?? 0;
       await session.prompt(text);
+      // ISSUE-010：家长会话记账（无 childId，落 data/token-log.jsonl）
+      logRound({ session, beforeCount, channel: "parent", ok: true });
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- token 统计读取（ISSUE-010）：家长端只读汇总 / 最近日志 ----
+  // childId 缺省时返回全局（家长会话）统计；传 childId 时返回该孩子隔离统计。
+  ipcMain.handle("token:summary", async (_e, childId?: string) => {
+    try {
+      return { success: true, summary: getTokenSummary(childId || undefined) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("token:list", async (_e, childId?: string, limit?: number) => {
+    try {
+      return { success: true, entries: readTokenLog(childId || undefined, limit ?? 50) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

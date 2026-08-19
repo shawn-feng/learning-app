@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import AddChildModal from "../components/AddChildModal";
 import ProgressView from "../components/ProgressView";
+import TokenStatsPanel from "../components/TokenStatsPanel";
 import Settings from "./Settings";
 
 interface Props {
@@ -15,7 +16,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [children, setChildren] = useState<any[]>([]);
   const [showAddChild, setShowAddChild] = useState(false);
   const [selectedChild, setSelectedChild] = useState<any>(null);
-  const [view, setView] = useState<"children" | "progress" | "settings">("children");
+  const [view, setView] = useState<"children" | "progress" | "tokens" | "settings">("children");
   const [error, setError] = useState("");
   const [resetChildId, setResetChildId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
@@ -101,6 +102,16 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             <div className="child-avatar">📊</div>
             <div className="child-info">
               <div className="name">学习进度</div>
+            </div>
+          </div>
+          <div
+            className="child-card"
+            style={{ border: "none" }}
+            onClick={() => setView("tokens")}
+          >
+            <div className="child-avatar">📈</div>
+            <div className="child-info">
+              <div className="name">Token 消耗</div>
             </div>
           </div>
           <div
@@ -209,6 +220,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
               onSelectChild={setSelectedChild}
             />
           )}
+
+          {view === "tokens" && <TokenStatsPanel childrenList={children} />}
 
           {view === "settings" && <Settings />}
         </div>

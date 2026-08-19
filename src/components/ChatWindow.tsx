@@ -405,8 +405,9 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
     const blob = await stop();
     // 无活跃录音（已停止过/从未开始）：静默返回，不提示
     if (!blob) return;
-    if (blob.size < 200) {
-      // 空/极短的 webm 容器（无音频帧），ffmpeg 无法解析
+    if (blob.size < 2000) {
+      // 空/极短的 webm 容器（无音频帧，只有 EBML 头，Chromium 极短录音常见），
+      // ffmpeg 无法解析（Invalid data）。阈值取 2000：有效录音（≥250ms opus）远超此值。
       setVoiceError("录音太短，请按住说完整的一句话再松手");
       return;
     }

@@ -58,6 +58,20 @@ export function probeFfmpeg(): Promise<string> {
 
 // 把 webm/opus 音频转成 16kHz / 16bit / 单声道 WAV（阿里云 NLS / 腾讯云 / 千问 ASR 均支持）
 export async function webmToWav16k(input: Buffer): Promise<Buffer> {
+  // 空 / 半成品 webm 直接快速失败：MediaRecorder 极短录音或麦克风无数据时，
+  // 输出可能只有 EBML 容器头、不含音频帧（Chromium 已知行为）。ffmpeg 对这类
+  // 输入（0 字节 ~ 1KB 级）一律报 "Invalid data found when processing input"，
+  // 前端 size 阈值已收紧，这里主进程兜底 + 报出实际大小便于排查。
+  // 有效录音（≥250ms opus，16kHz mono）通常 > 2KB，此阈值不会误伤正常输入。
+  const MIN_WEBM_BYTES = 2000;
+  if (input.length < MIN_WEBM_BYTES) {
+    return Promise.reject(
+      new Error(
+        `录音数据过短或为空（${input.length} 字节），无法解析。请按住麦克风说完整的一句话再松手。`
+      )
+    );
+  }
+
   const ffmpegPath = await probeFfmpeg();
   return new Promise((resolve, reject) => {
     const tmpIn = path.join(
@@ -89,8 +103,7 @@ export async function webmToWav16k(input: Buffer): Promise<Buffer> {
       { timeout: 30000, maxBuffer: 1024 * 1024 * 64 },
       (err, _stdout, stderr) => {
         if (err) {
-          cleanup();
-          // 提取 stderr 里的关键错误行，便于定位（如 End of file / Invalid data 等）
+          // 保留输入文件（tmpdir 由系统定期清理），路径随错误返回，便于复现排查
           const detail = String(stderr || "")
             .split("\n")
             .filter((l) => /Error|Invalid|End of file|not found|No such/i.test(l))
@@ -99,7 +112,8 @@ export async function webmToWav16k(input: Buffer): Promise<Buffer> {
             .join(" | ");
           reject(
             new Error(
-              `音频转换失败（ffmpeg）${detail ? `：${detail}` : `：${(err as Error).message.split("\n")[0]}`}`
+              `音频转换失败（ffmpeg，输入 ${input.length} 字节，已保留原始文件 ${tmpIn}）` +
+                (detail ? `：${detail}` : `：${(err as Error).message.split("\n")[0]}`)
             )
           );
           return;
@@ -116,9 +130,6 @@ export async function webmToWav16k(input: Buffer): Promise<Buffer> {
     );
 
     function cleanup() {
-      try {
-        fs.unlinkSync(tmpIn);
-      } catch {}
       try {
         fs.unlinkSync(tmpOut);
       } catch {}
