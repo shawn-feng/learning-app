@@ -49,6 +49,53 @@ async function checkForUpdates() {
   }
 }
 
+// 启动时网络请求错峰延迟：等窗口创建、network service 稳定后再发起，
+// 避免在 Chromium network service 刚初始化时多路请求并发扎堆
+// （Windows 上这是 "Network service crashed or was terminated, restarting service" 的常见诱因）。
+const STARTUP_NETWORK_DELAY_MS = 1500;
+const STARTUP_TASK_TIMEOUT_MS = 30_000;
+
+/** 给启动任务加超时保护：单步卡死（如云端不可达）时不阻塞后续步骤 */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
+/**
+ * 启动期网络任务串行执行：sync（最重）→ catch-up → 版本检查（最轻）。
+ * 每一步独立 try/catch + 超时，单步失败/超时不影响后续步骤；
+ * 整条链不阻塞 whenReady，窗口立即可用。
+ */
+async function runStartupNetworkTasks(): Promise<void> {
+  // 1) 云同步（数据拉取，最重，放最前）
+  try {
+    const results = await withTimeout(syncAllChildren(), STARTUP_TASK_TIMEOUT_MS, "Sync");
+    console.log("Sync complete:", JSON.stringify(results));
+  } catch (e) {
+    console.error("Sync failed on startup:", e?.message || e);
+  }
+  // 2) 定时任务补跑（默认全部关闭，通常立即返回）
+  try {
+    await withTimeout(runCatchUp(), STARTUP_TASK_TIMEOUT_MS, "Catch-up");
+  } catch (e) {
+    console.error("Catch-up failed:", e);
+  }
+  // 3) 版本检查（最轻，放最后）
+  try {
+    await withTimeout(checkForUpdates(), STARTUP_TASK_TIMEOUT_MS, "Version check");
+  } catch (e) {
+    console.debug("Version check error:", e);
+  }
+}
+
 function createWindow() {
   const preloadPath = path.join(__dirname, "..", "preload", "index.js");
   mainWindow = new BrowserWindow({
@@ -100,17 +147,12 @@ app.whenReady().then(() => {
   registerMediaProtocol();
 
   registerIpcHandlers(getMainWindow);
-  startScheduler();
-  runCatchUp().catch((e) => console.error("Catch-up failed:", e));
-  // Sync: pull latest data from cloud on startup (non-blocking)
-  syncAllChildren().then((results) => {
-    console.log("Sync complete:", JSON.stringify(results));
-  }).catch((e) => {
-    console.error("Sync failed on startup:", e?.message || e);
-  });
+  startScheduler(); // 本地 cron，无网络请求，立即注册
   createWindow();
-  // Check for updates (non-blocking, runs after window is shown)
-  checkForUpdates().catch((e) => console.debug("Version check error:", e));
+  // 启动网络请求串行 + 错峰：窗口先出，network service 稳定后再逐个发起
+  setTimeout(() => {
+    runStartupNetworkTasks().catch((e) => console.error("Startup network tasks failed:", e));
+  }, STARTUP_NETWORK_DELAY_MS);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

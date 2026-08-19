@@ -141,12 +141,48 @@ const QWEN_DEEPSEEK_MODELS: ProviderModelConfig[] = [
   },
 ];
 
+// 视觉/多模态模型（Qwen3-VL 系列，经 DashScope 同端点调用）。
+// 当前（2026-07-15 官方文档）推荐的视觉模型已是 Qwen3-VL 系列（qwen3-vl-plus / qwen3-vl-flash），
+// 输入支持 文本·图像·视频；旧的 qwen-vl-max/plus 已被官方列入「旧版不再推荐」，故这里挂 Qwen3-VL。
+// thinking 语义与 qwen 文本模型一致（同属 Qwen3 家族），复用 thinkingFormat:"qwen" + supportsDeveloperRole:false；
+// 区别是 input 多了 "image"（图片上传走视觉模型识别，见 ISSUE-008 的 pi:prompt 自动切换逻辑）。
+// maxTokens 取保守安全值（VL 输出上限低于纯文本 qwen，避免超 400）；contextWindow 取官方 256k。
+const QWEN_VL_MODELS: ProviderModelConfig[] = [
+  {
+    id: "qwen3-vl-flash",
+    name: "通义千问 VL Flash (视觉)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 256000,
+    maxTokens: 8192,
+    compat: { thinkingFormat: "qwen", supportsDeveloperRole: false },
+    thinkingLevelMap: { off: null },
+  },
+  {
+    id: "qwen3-vl-plus",
+    name: "通义千问 VL Plus (视觉)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 256000,
+    maxTokens: 8192,
+    compat: { thinkingFormat: "qwen", supportsDeveloperRole: false },
+    thinkingLevelMap: { off: null },
+  },
+];
+
+// 图片上传时自动切换到的视觉模型（provider/modelId）。便宜优先用 flash。
+export const DEFAULT_VISION_MODEL = { provider: "qwen", modelId: "qwen3-vl-flash" };
+
 const QWEN_PROVIDER: ProviderConfig = {
   name: "通义千问 (Qwen)",
   baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   api: "openai-completions",
-  // qwen 官方三款 + 经同端点可调用的 DeepSeek V4 系列（费用更低，见 QWEN_DEEPSEEK_MODELS 注释）。
-  models: [...QWEN_MODELS, ...QWEN_DEEPSEEK_MODELS],
+  // qwen 官方三款 + 经同端点可调用的 DeepSeek V4 系列（费用更低）+ Qwen3-VL 视觉系列（图片上传用）。
+  models: [...QWEN_MODELS, ...QWEN_DEEPSEEK_MODELS, ...QWEN_VL_MODELS],
 };
 
 function registerQwenProvider(runtime: ModelRuntime): void {

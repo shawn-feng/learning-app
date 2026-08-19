@@ -38,6 +38,42 @@ export function getChildDir(childId: string): string {
   return path.join(getChildrenDir(), childId);
 }
 
+/** 孩子上传文件的落盘目录（按 childId 隔离，见 ISSUE-008 落盘方案） */
+export function getUploadsDir(childId: string): string {
+  return path.join(getChildDir(childId), "uploads");
+}
+
+/** 上传文件扩展名白名单（与前端格式路由一致；gif 模型不支持但允许落盘留存） */
+export const UPLOAD_EXT_WHITELIST = [
+  ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".heic", ".tif", ".tiff",
+  ".txt", ".md",
+  ".webm", ".mp3", ".wav", ".m4a", ".ogg",
+];
+
+/** 上传目录保留上限：超出后按 mtime 清理最旧文件，避免无限膨胀（默认 200 个） */
+export const DEFAULT_UPLOAD_LIMIT = 200;
+
+/**
+ * 清理上传目录：只保留最近 limit 个文件，更早的删除。
+ * 每个文件独立 try/catch，删除失败不影响其它文件。
+ */
+export function pruneUploads(uploadsDir: string, limit: number = DEFAULT_UPLOAD_LIMIT): void {
+  if (!fs.existsSync(uploadsDir)) return;
+  const keep = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : DEFAULT_UPLOAD_LIMIT;
+  const files = fs
+    .readdirSync(uploadsDir)
+    .map((f) => path.join(uploadsDir, f))
+    .filter((f) => fs.statSync(f).isFile())
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  for (const f of files.slice(keep)) {
+    try {
+      fs.rmSync(f, { force: true });
+    } catch {
+      /* 忽略单文件删除失败 */
+    }
+  }
+}
+
 export function getLicensePath(): string {
   return path.join(getDataDir(), "license.json");
 }

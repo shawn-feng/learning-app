@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "../components/ChatWindow";
+import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
@@ -38,12 +38,60 @@ function nowLabel() {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/**
+ * 从会话历史文本中还原附件（与 handleSend 的附件标记格式一一对应）。
+ * 发送时只把「【附件类型：文件名|相对路径】」存进会话历史，全文不进上下文；
+ * 退出重进时据此把标记剥离、还原为附件条目（无 dataUrl/content，仅文件名 + 路径可点击打开）。
+ * 同时剥离所有 [内部指令]（如语音识别误差前缀）——它们只发给 AI，不显示给孩子。
+ */
+function restoreAttachments(text: string): {
+  text: string;
+  attachments?: ImageAttachment[];
+  textFiles?: TextFileAttachment[];
+  audioPath?: string;
+} {
+  const attachments: ImageAttachment[] = [];
+  const textFiles: TextFileAttachment[] = [];
+  let audioPath: string | undefined;
+  const cleaned = text
+    // 先剥离 [内部指令文字]（语音误差前缀等），再处理附件标记
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/【附件音频：([^|】]+)\|([^】]+)】/g, (_m, _name: string, p: string) => {
+      if (p && p !== "未保存") audioPath = p;
+      return "";
+    })
+    .replace(/【附件图片：([^|】]+)\|([^】]+)】/g, (_m, name: string, p: string) => {
+      if (p && p !== "未保存") attachments.push({ name, mime: "", dataUrl: "", path: p });
+      return "";
+    })
+    .replace(/【附件文件：([^|】]+)\|([^】]+)】/g, (_m, name: string, p: string) => {
+      if (p && p !== "未保存") textFiles.push({ name, content: "", path: p });
+      return "";
+    });
+  return {
+    text: cleaned.trim(),
+    attachments: attachments.length ? attachments : undefined,
+    textFiles: textFiles.length ? textFiles : undefined,
+    audioPath,
+  };
+}
+
+/** base64（webm/opus）→ ArrayBuffer（用于落盘） */
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
 export default function Learn({ child, onExit }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const childIdRef = useRef(child.childId);
+  // 输入区上方一次性提示（视觉模型切换等）
+  const [visionNotice, setVisionNotice] = useState("");
   // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡）
   const workingIdRef = useRef<string | null>(null);
   // 学习资料保留数量上限（家长可配置），追加材料时按此截断
@@ -86,12 +134,19 @@ export default function Learn({ child, onExit }: Props) {
       if (r?.success) {
         if (Array.isArray(r.history) && r.history.length > 0) {
           setMessages(
-            r.history.map((m: any) => ({
-              id: nextId(),
-              role: m.role === "user" ? "user" : "ai",
-              text: m.text,
-              time: m.time || nowLabel(),
-            }))
+            r.history.map((m: any) => {
+              const restored = restoreAttachments(typeof m.text === "string" ? m.text : "");
+              return {
+                id: nextId(),
+                role: m.role === "user" ? "user" : "ai",
+                text: restored.text,
+                // 附件只还原在用户消息上
+                attachments: m.role === "user" ? restored.attachments : undefined,
+                textFiles: m.role === "user" ? restored.textFiles : undefined,
+                audioPath: m.role === "user" ? restored.audioPath : undefined,
+                time: m.time || nowLabel(),
+              };
+            })
           );
         }
         // 恢复学习资料列表（退出再进入不丢失；主进程已按 limit 截断）
@@ -233,6 +288,13 @@ export default function Learn({ child, onExit }: Props) {
     setBusy(false);
   }, []);
 
+  // 图片上传时主进程自动切到视觉模型 → 输入区上方提示一次（6 秒后自动消失）
+  const handleVisionSwitched = useCallback((data: { childId: string; modelId: string }) => {
+    if (data.childId !== childIdRef.current) return;
+    setVisionNotice("🖼️ 已自动切换到视觉模型来识别图片");
+    window.setTimeout(() => setVisionNotice(""), 6000);
+  }, []);
+
   useEffect(() => {
     window.api.onPiReply(handleReply);
     window.api.onPiReplyEnd(handleReplyEnd);
@@ -241,10 +303,11 @@ export default function Learn({ child, onExit }: Props) {
     window.api.onPiToolStart(handleToolStart);
     window.api.onPiToolEnd(handleToolEnd);
     window.api.onPiSessionReset(handleSessionReset);
+    window.api.onPiVisionModelSwitched(handleVisionSwitched);
     return () => {
       window.api.piRemoveListeners();
     };
-  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleSessionReset]);
+  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleSessionReset, handleVisionSwitched]);
 
   // 向聊天追加一条 AI 消息（命令反馈 / 系统提示用）
   function addAiMessage(text: string) {
@@ -304,14 +367,36 @@ export default function Learn({ child, onExit }: Props) {
     }
   }
 
-  async function handleSend(text: string, audio?: string) {
+  async function handleSend(text: string, opts?: SendOptions) {
     const trimmed = text.trim();
     // 命令拦截：以 / 开头即触发命令（为后续更多命令预留），不发送给 AI
     if (trimmed.startsWith("/")) {
       await handleCommand(trimmed);
       return;
     }
-    const userMsg: ChatMessage = { id: nextId(), role: "user", text, audio, time: nowTime() };
+    const images = opts?.images || [];
+    const textFiles = opts?.textFiles || [];
+    // 语音输入：先把录音落盘（历史恢复时据此播放），失败不影响发送
+    let audioPath: string | undefined;
+    if (opts?.audio) {
+      try {
+        const buf = base64ToArrayBuffer(opts.audio);
+        const r: any = await window.api.saveUpload(child.childId, "语音录音.webm", "audio/webm", buf);
+        if (r?.success) audioPath = r.path as string;
+      } catch {
+        /* 落盘失败不影响发送 */
+      }
+    }
+    const userMsg: ChatMessage = {
+      id: nextId(),
+      role: "user",
+      text,
+      audio: opts?.audio,
+      audioPath,
+      attachments: images.length ? images : undefined,
+      textFiles: textFiles.length ? textFiles : undefined,
+      time: nowTime(),
+    };
     const workingMsg: ChatMessage = {
       id: nextId(),
       role: "ai",
@@ -325,11 +410,47 @@ export default function Learn({ child, onExit }: Props) {
     setMessages((prev) => [...prev, userMsg, workingMsg]);
     setBusy(true);
     try {
-      // 语音识别的消息注明来源，让 AI 知道可能存在识别错误，结合上下文推理正确内容
-      const promptText = audio
-        ? `[语音识别输入，可能存在同音字/断句等识别错误，请结合上下文理解并推理出正确内容] ${text}`
-        : text;
-      const result = await window.api.piPrompt(child.childId, promptText);
+      // 拼接发给 AI 的正文：语音注明识别误差来源；附件用可逆标记（文件名|相对路径），
+      // 文件全文不进 prompt（避免全文被存进会话历史、退出重进时原文显示在气泡里）；
+      // AI 需要内容时用 read 工具读 uploads 目录下的落盘文件。
+      // 标记格式同时是前端「历史恢复还原附件」的依据，改动需与 restoreAttachments 同步。
+      const parts: string[] = [];
+      // 语音输入：prompt 里注明识别误差来源（[] 内容恢复时不显示）
+      if (opts?.audio) {
+        parts.push(
+          "[语音识别输入，可能存在同音字/断句等识别错误，请结合上下文理解并推理出正确内容]"
+        );
+      }
+      parts.push(text);
+      // save_upload 返回 children/<childId>/uploads/xx（相对 data/），AI 的 cwd 是 childDir，
+      // 转为相对 childDir 的 uploads/xx 路径（未落盘时为「未保存」）。
+      // 注意：这里只放附件标记，不放任何给 AI 的指令文字——指令文字会随消息存进会话历史、
+      // 退出重进时原样显示在气泡里；附件处理规则已写在 AGENTS.md（LEARNING_NAV_INSTRUCTIONS）。
+      const toRel = (p?: string) => (p ? p.replace(/^children\/[^/]+\//, "") : "未保存");
+      if (opts?.audio) {
+        parts.push(`【附件音频：语音录音.webm|${toRel(audioPath)}】`);
+      }
+      for (const img of images) {
+        parts.push(`【附件图片：${img.name}|${toRel(img.path)}】`);
+      }
+      for (const f of textFiles) {
+        parts.push(`【附件文件：${f.name}|${toRel(f.path)}】`);
+      }
+      const promptText = parts.join("\n");
+      // dataURL → SDK ImageContent（剥离前缀，内联 base64 发送，不落盘）
+      const sdkImages = images.map((img) => {
+        const comma = img.dataUrl.indexOf(",");
+        return {
+          type: "image" as const,
+          mimeType: img.mime,
+          data: comma >= 0 ? img.dataUrl.slice(comma + 1) : img.dataUrl,
+        };
+      });
+      const result = await window.api.piPrompt(
+        child.childId,
+        promptText,
+        sdkImages.length ? sdkImages : undefined
+      );
       if (!result.success) {
         // 若 pi:reply_error 已处理则 workingIdRef 已清空，跳过
         const id = workingIdRef.current;
@@ -571,7 +692,7 @@ export default function Learn({ child, onExit }: Props) {
           ) : (
             <LearningDashboard childId={child.childId} />
           )}
-          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} aiEmoji={aiEmoji} rate={rate} childId={child.childId} />
+          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} aiEmoji={aiEmoji} rate={rate} childId={child.childId} notice={visionNotice || null} />
         </div>
       </div>
 

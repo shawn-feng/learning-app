@@ -8,7 +8,8 @@ import path from "path";
 import fs from "fs";
 import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { displayContentTool, getDateTool } from "./custom-tools";
+import { displayContentTool, getDateTool, getProgressTool } from "./custom-tools";
+import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import learningGuardExtension from "../extensions/learning-guard";
 
@@ -32,8 +33,19 @@ const LEARNING_NAV_INSTRUCTIONS = `
 ### 记录
 学习总结、生活事件等记录由 recording 技能负责，按需调用（详见其 SKILL.md）。
 
+### 孩子上传的附件（uploads/）
+- 孩子上传的图片会随消息直接发送给你（你可见），无需读取文件；
+- 孩子上传的文本文件（txt/md）已保存在 \`uploads/\` 目录下，消息里有 \`【附件文件：文件名|路径】\` 标记（路径如 \`uploads/xxx.txt\`）。需要文件内容时用 read 工具读取标记里的路径再回应，不要凭空猜测内容；不必要时不读。
+
 ### 内容展示
 - 用 display_content 工具向孩子展示 **html 格式** 的学习资料，通过 \`path\` 引用预生成的 html 文件。
+
+### 进度查询（省上下文，务必遵守）
+各主题进度文件的 **frontmatter（learned/total/next/updated）已经在系统提示顶部的「孩子的学习进度概览」里替你读好**，确定「下一课」或查询进度时：
+- **直接用**系统提示里给出的 \`next\` 值，或调用 \`get_progress\` 工具（只回 frontmatter 摘要，不含逐课正文）；
+- **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 514 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
+- 只有**明确需要逐课状态**（如 study-tracker 评估需要核对每课掌握度）时，才读进度文件全文；
+- 完成一课后按 method 更新进度文件 frontmatter（learned/total/next/updated）即可，不要为了「确认 next」而反复读全文。
 `;
 
 const CUSTOM_START = "<!-- custom:start -->";
@@ -137,14 +149,25 @@ SKILL.md 格式：frontmatter（name/description）+ 工作流程。
 
 /**
  * 孩子会话的 system prompt 头部（替换 SDK 默认的 "expert coding assistant" 身份 + Pi 文档噪声）。
- * 这里**只描述身份**，所有行为规范（交流准则、学习方法、内容展示、角色）都放在
+ * 这里描述身份，并附带「孩子的学习进度概览」（由 learning-summary 从各进度文件 frontmatter
+ * 解析而来，仅 frontmatter 级信息）。所有行为规范（交流准则、学习方法、内容展示、角色）放在
  * LEARNING_NAV_INSTRUCTIONS 里，经 buildAgentsMd 生成 AGENTS.md，由 SDK 自动附加为
- * <project_context>。孩子的完整行为规范以 AGENTS.md 为唯一真源（家长可在 custom 段编辑），
- * getChildSession 会在每次开会话前刷新 AGENTS.md，避免磁盘文件与源码脱节。
+ * <project_context>。孩子的完整行为规范以 AGENTS.md 为唯一真源（家长可在 custom 段编辑）。
+ *
+ * 注入进度概览的目的（ISSUE-006）：让 agent 开会话即知「下一课」是什么，无需为了确认 next
+ * 而去 read 整个进度文件（论语等主题正文可达几百行，纯浪费上下文）。
+ *
+ * @param progressContext 进度概览 markdown；为空字符串时不注入（如该孩子暂无主题）。
  */
-function buildChildPrompt(profile: ChildProfile): string {
+function buildChildPrompt(profile: ChildProfile, progressContext?: string): string {
   const emoji = profile.aiEmoji || "🌟";
-  return `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，陪伴和引导${profile.name}学习、生活和成长。`;
+  let prompt = `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，陪伴和引导${profile.name}学习、生活和成长。`;
+  if (progressContext && progressContext.trim()) {
+    prompt +=
+      `\n\n## 孩子的学习进度概览（已在下方替你读好，**无需再读进度文件正文**即可知道下一步学什么）\n` +
+      progressContext;
+  }
+  return prompt;
 }
 
 interface SessionEntry {
@@ -264,6 +287,10 @@ async function createChildSession(
   const profile = getProfile(childId);
   if (!profile) throw new Error("Child profile not found");
 
+  // 进度概览（仅 frontmatter 级）：注入系统提示，使 agent 开会话即知下一课，
+  // 无需 read 整个进度文件（ISSUE-006）。无主题时 topics 为空，progressContext 为空串不注入。
+  const progressContext = progressSummaryToMarkdown(getLearningSummary(childId));
+
   // 开会话前刷新 AGENTS.md，确保磁盘文件始终与源码 LEARNING_NAV 同步（保留家长在
   // custom 段的编辑）。这样无论源码怎么改、家长何时编辑，孩子会话拿到的行为规范都是最新、
   // 且唯一以 AGENTS.md 为真源，避免"改了源码但磁盘 AGENTS.md 陈旧、约束不生效"的问题。
@@ -277,7 +304,7 @@ async function createChildSession(
     agentDir: path.join(childDir, ".pi", "agent"),
     // 替换 SDK 默认 base：去掉 "expert coding assistant" 身份与 Pi 自身文档索引（对孩子是噪声），
     // 换成孩子专属的学习伙伴身份。AGENTS.md / 技能段 / cwd / 时间注入由 SDK 在 customPrompt 模式下自动附加。
-    systemPromptOverride: () => buildChildPrompt(profile),
+    systemPromptOverride: () => buildChildPrompt(profile, progressContext),
     // 教学技能在 shared/skills（recording / study-tracker），孩子默认扫描路径不含它，
     // 此前 <available_skills> 段为空，AGENTS.md 里写的 recording 技能孩子根本发现不了。
     // 注意：noSkills 必须为 true —— SDK 的 packageManager 会自动发现并启用 ~/.agents/skills
@@ -307,8 +334,12 @@ async function createChildSession(
     model,
     sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "display_content", "get_date"],
-    customTools: [displayContentTool, getDateTool],
+    // 注意：customTools 里的每个工具，其 name 必须同时出现在 tools 白名单中才会被
+    // SDK 注册并激活（agent-session.js 的 isAllowedTool 会按白名单过滤 customTools）。
+    // display_content / get_date / get_progress 都是 customTools，故三者名字都要列在 tools 里，
+    // 缺一不可——此前 get_progress 漏列导致 agent 根本拿不到该工具（ISSUE-006 配套修复）。
+    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress"],
+    customTools: [displayContentTool, getDateTool, getProgressTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，

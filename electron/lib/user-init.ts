@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { app } from "electron";
 import { getChildDir, getSkillsDir } from "./config";
 import type { ChildProfile } from "./child-auth";
 import { writeAgentsMd } from "./pi-session";
@@ -192,7 +193,11 @@ export async function initChildDirectory(
 
 export function initSharedSkills(): void {
   const skillsDir = getSkillsDir();
-  const templatesDir = path.join(process.cwd(), "templates", "skills");
+  // 打包后 resources 位于 process.resourcesPath；开发态位于项目根目录
+  const templatesBase = app.isPackaged
+    ? process.resourcesPath
+    : process.cwd();
+  const templatesDir = path.join(templatesBase, "templates", "skills");
 
   if (!fs.existsSync(templatesDir)) return;
 

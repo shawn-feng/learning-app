@@ -33,6 +33,9 @@ const api = {
     registerListener("pi:reply_error", callback),
   onPiSessionReset: (callback: (data: { childId: string }) => void) =>
     registerListener("pi:session_reset", callback),
+  // 图片上传时主进程自动切换到视觉模型的通知（前端据此提示）
+  onPiVisionModelSwitched: (callback: (data: { childId: string; modelId: string }) => void) =>
+    registerListener("pi:vision_model_switched", callback),
 
   // Remove all Pi event listeners
   piRemoveListeners: () => {
@@ -45,7 +48,17 @@ const api = {
   // Pi actions (renderer -> main)
   piStartChild: (childId: string) => ipcRenderer.invoke("pi:start_child", childId),
   piStartParent: () => ipcRenderer.invoke("pi:start_parent"),
-  piPrompt: (childId: string, text: string) => ipcRenderer.invoke("pi:prompt", childId, text),
+  piPrompt: (childId: string, text: string, images?: Array<{ type: "image"; mimeType: string; data: string }> | null) =>
+    ipcRenderer.invoke("pi:prompt", childId, text, images || null),
+  // 文件上传落盘（ISSUE-008）：保存到 data/children/<childId>/uploads/，返回相对路径
+  saveUpload: (childId: string, name: string, mime: string, data: ArrayBuffer) =>
+    ipcRenderer.invoke("file:save_upload", { childId, name, mime, data }),
+  // 用本地默认程序打开已落盘的上传文件（严格限定 uploads 目录内）
+  openUpload: (childId: string, relPath: string) =>
+    ipcRenderer.invoke("file:open_upload", childId, relPath),
+  // 读取已落盘的上传文件内容（base64），用于历史消息播放语音录音
+  readUpload: (childId: string, relPath: string) =>
+    ipcRenderer.invoke("file:read_upload", childId, relPath),
   piPromptParent: (text: string) => ipcRenderer.invoke("pi:prompt_parent", text),
   piAbort: (childId: string) => ipcRenderer.invoke("pi:abort", childId),
   piDispose: (childId: string) => ipcRenderer.invoke("pi:dispose", childId),

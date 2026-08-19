@@ -182,3 +182,31 @@ export function getLearningSummary(childId: string): LearningSummary {
     },
   };
 }
+
+/**
+ * 把学习进度摘要渲染为注入 LLM 上下文的紧凑文本。
+ * **只含 frontmatter 级信息**（各主题 learned/total/next/updated + 总体进度），
+ * **不含逐课正文**（论语等主题的正文可达几百行，纯属浪费上下文）。
+ *
+ * 用途：开孩子会话时把这串文本塞进系统提示，agent 无需为了确认「下一课」而去
+ * read 整个进度文件（ISSUE-006）。配套还有一个 get_progress 工具，供 agent 在
+ * 会话中途刷新进度时使用。
+ */
+export function progressSummaryToMarkdown(summary: LearningSummary): string {
+  const lines: string[] = [];
+  lines.push(
+    `总体进度 ${summary.totals.learned}/${summary.totals.total}（${summary.totals.percent}%），` +
+      `共 ${summary.totals.topicCount} 个主题，已完成 ${summary.totals.completedCount} 个。`
+  );
+  for (const t of summary.topics) {
+    const next = t.next.trim()
+      ? `下一课：「${t.next.trim()}」`
+      : "（已全部学完或暂无下一课）";
+    const type = t.type ? `（${t.type}）` : "";
+    const daily = t.daily != null ? ` 每日目标 ${t.daily} 课` : "";
+    lines.push(
+      `- ${t.name}${type}：已学 ${t.learned}/${t.total}（${t.percent}%），${next}${daily}`
+    );
+  }
+  return lines.join("\n");
+}

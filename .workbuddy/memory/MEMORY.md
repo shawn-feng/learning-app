@@ -12,8 +12,12 @@
 - `noSkills: true` + `additionalSkillPaths` 才能把 `~/.agents/skills` 的 60 个全局技能挡掉、只留教学技能。
 - system prompt 是 LLM 前缀缓存公共前缀：时间注入只到「日期」，不要到「秒」，否则缓存失效。
 - 会话模型 append-only：重置用 `newSession()`（归档保留旧文件），不要用 `resetLeaf()`（会无限堆叠分支）。
+- **customTools 的每个 `name` 必须同时出现在 `createAgentSession({ tools })` 的白名单里**，否则 `agent-session.js` 的 `isAllowedTool` 会把它过滤掉——工具既不注册也不激活，agent 会报告「没有这个技能」。ISSUE-006 的 `get_progress` 当初漏列进 `tools` 就是这个坑（2026-08-19 修复：`tools` 加 `"get_progress"`，并加 `test/get-progress-registration.test.ts` 锁不变量）。
 
 ## 构建与验证
-- 主进程/渲染改动后需 `rm -rf out && npm run build`（electron-vite）才生效；`electron-vite build` 清空 out 时可能撞环境 safe-delete 回收站报错，先 `rm -rf out` 可规避。
+- 主进程/渲染改动后需 `rm -rf out && npm run build`（electron-vite）才生效；`electron-vite build` 清空 out 时可能撞环境 safe-delete 回收站报错，先 `rm -rf out` 可规避（注：`rm -rf out` 本身也可能被 safe-delete 拦，拦完目录其实已删，直接再跑 `npm run build` 即可）。
 - `tsc --noEmit` 项目里长期有 5 条环境相关的全局类型告警（TS7/@types/node26 不兼容），非业务代码引入，忽略即可。
-- 既有失败用例：app.test.ts 云端注册（ECONNREFUSED 8005）、sync.test.ts 并发超时——均非本地改动引入。
+- ⚠️ **这 5 条 TS2318/TS2552 全局类型损坏会导致 tsc 终止大部分语义分析，可能掩盖真实业务错误**——如 ISSUE-008 白屏事故：`ChatWindow` 组件漏解构 `notice` prop（JSX 里用了 `notice` 变量）→ 运行时 ReferenceError → 进孩子模式整页白屏，而 tsc 只报了 5 条环境告警、electron-vite build（esbuild）不做类型检查，双双漏过。**验证时把 tsc 输出过滤掉 TS2318/TS2552 后再看是否有其它错误**；改组件后要核对「Props 字段是否都解构了」。
+- 既有失败用例：app.test.ts 云端注册（ECONNREFUSED 8005）、sync.test.ts 并发超时——均非本地改动引入。2026-08-19 起另有环境性失败：auto-new-session/archive-limit 的测试清理 `rmSync` 被 safe-delete 拦截（SAFE_DELETE_BULK_CONFIRM_REQUIRED）导致测试残留目录堆积、级联失败；functional.test.ts 的 `app.isPackaged` 在 vitest 未定义——均与业务改动无关。
+- ⚠️ **vitest（threads 池）测试用例里残留 `setInterval` 会让 worker 静默崩溃**：无任何输出、直接 exit 1，`--pool=forks` 可绕过但不应全局改；验证「事件循环让出」这类行为改用 `vi.spyOn(global, "setImmediate")` + `finally mockRestore` 统计调用（ISSUE-011 的 sync-scan.test.ts 踩过）。
+- **同步重 IO 阻塞主进程时 `withTimeout` 无效**：`setTimeout` 回调也要事件循环跑，事件循环被 `readFileSync`/全量哈希堵死时超时永不触发。修复范式（ISSUE-011）：扫描用 `fs.promises` + 每 N 文件 `await setImmediate()` 让出 + 流式哈希（`createReadStream` 管道）+ 「size 预过滤」只对 size 相同的文件算哈希（size 不同 → hash 必不同，语义等价）。

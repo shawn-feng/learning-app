@@ -1686,3 +1686,36 @@ ffmpeg 解析输入 webm 时在 pos 36 处 EOF——**录到的 blob 只有 ~36 
 - 构建 ✅；测试 28/29（1 失败为既有 8005 云端注册，无关）。⚠️ 主进程改动需重启 app 生效。
 
 **教训**：测 SDK prompt 必须走 `DefaultResourceLoader` 完整链路（packageManager 会注入全局 skills/extensions），直接调 `loadSkills`/`buildSystemPrompt` 会漏掉全局资源，结论失真。
+
+---
+
+## 修复：启动期网络请求串行化（缓解 Windows network service 崩溃）
+
+- 背景：`npm run dev` 启动时偶发 `[ERROR:content\browser\network_service_instance_impl.cc:721] Network service crashed or was terminated, restarting service`。这是 Chromium network service 子进程崩溃后自愈的日志，多数无害；但反复出现时是环境隐患信号（代理/VPN、杀毒、Winsock 损坏、高并发请求压垮）。
+- 根因（应用侧诱因）：`electron/main.ts` 的 `whenReady` 里 **3 路网络请求并发扎堆**——`syncAllChildren()`（云同步）+ `runCatchUp()`（定时任务补跑）+ `checkForUpdates()`（版本检查），全部在 network service 刚初始化时同时发起。
+- 修复（`electron/main.ts`）：
+  1. 抽出 `runStartupNetworkTasks()`：**串行**执行 sync → catch-up → 版本检查（最重放最前，最轻放最后）。
+  2. 每一步独立 try/catch + `withTimeout` 30s 超时保护——单步失败/云端不可达不阻塞后续步骤。
+  3. `createWindow()` 之后延迟 **1.5s** 再启动网络链（`STARTUP_NETWORK_DELAY_MS`），等窗口渲染、network service 稳定。
+  4. 整条链不阻塞 `whenReady`，窗口立即可用；`startScheduler()`（纯本地 cron）保持立即注册。
+- 设计权衡：串行化只降"并发扎堆"这一诱因，不根治代理/杀毒等环境问题；超时用 `Promise.race` 语义（超时后任务仍在后台跑，但不阻塞链路），30s 后 network service 早已稳定，可接受。
+- 验证：`tsc --noEmit` 过滤 TS2318/TS2552 后无新增错误 ✅；vitest 61 用例 49 通过、12 失败——全部为既有失败（app.test.ts 8005 云端注册、sync.test.ts 并发超时、auto-new-session/archive-limit safe-delete 拦截、functional.test.ts app.isPackaged 未定义）及 learning-summary.test.ts 数据快照过期（论语 learned 280→282，下一课第十五→第十七章），与本次改动无关。⚠️ 主进程改动需重启 `npm run dev` 生效。
+
+---
+
+## 修复：ISSUE-011 启动卡死（同步扫描 1925 文件阻塞主进程事件循环）
+
+- 背景：`npm run dev` 启动后 App 无响应、必须强制退出。日志三连：`[NODE-CRON][WARN] missed execution ... Possible blocking IO` → `[ERROR] Network service crashed or was terminated` → `Sync complete: {...skipped:1924}`。
+- 根因：`electron/lib/sync-manager.ts` 的 `scanChildFiles` **全同步重 IO**——`readdirSync` + 每文件 `readFileSync`（整篇读入内存）+ `createHash("sha256").update(content)`（全量哈希）+ `statSync`，1925 个文件串行执行，主进程事件循环被长时间独占：
+  1. node-cron 每分钟 tick 无法触发 → `blocking IO` WARN；
+  2. 主进程与 Chromium network service 通信中断 → `Network service crashed`；
+  3. 整个 App 假死。
+  - 关键：既有 `withTimeout`（`main.ts`）**救不了同步阻塞**——`setTimeout` 回调同样需要事件循环运行，事件循环被堵死时超时永远不触发。此前的「启动网络串行化 + 1.5s 延迟 + 30s 超时」只解决网络请求扎堆，不解决同步 IO 阻塞。
+- 修复（`electron/lib/sync-manager.ts` 重写）：
+  1. **扫描全异步**：新增 `scanDirectory(rootDir, excludeDirs?)` 全走 `fs.promises.readdir/stat`，每 `SCAN_YIELD_EVERY=20` 个文件 `await setImmediate()` 让出事件循环（cron tick / IPC / 窗口事件可插队）；`scanChildFiles` 变异步，返回 `{path, size, mtimeMs}`，**不再预先读内容 + 哈希**。
+  2. **流式哈希**：`hashFile()` 用 `createHash` + `createReadStream` 管道，天然异步、大文件（mp3/mp4）不整篇入内存。
+  3. **size 预过滤**：`syncChild` 只对「云端存在且 size 相同」的本地文件算哈希比对（8 路 `mapLimit` 并发池）；size 不同直接判定为变更走 last-write-wins（size 不同 → hash 必不同，与原 `lf.hash !== cloud.hash` 语义等价）。哈希次数从 1925 降到「与云端 size 相同的文件数」。
+  4. **并行与异步补齐**：`syncAllChildren` 孩子间 `Promise.all` 并行；云不可达 fallback 与 `fullSnapshot` 走 `uploadAllLocal`（8 路并发上传）；下载/写盘改 `fs.promises`。
+- 配套测试：新增 `test/sync-scan.test.ts`（4 用例全过）——相对路径/size/mtimeMs 正确、排除 `.pi` 且 `.` 开头文件不排除、不存在目录返回 `[]` 不抛错、流式哈希与同步 sha256 一致（512KB）、扫描期间 `setImmediate` 被调用（验证让出）。
+  - ⚠️ 测试踩坑：用例里用 `setInterval` 计数会让 vitest threads worker **静默崩溃**（无任何输出直接 exit 1，`--pool=forks` 可绕过）；改用 `vi.spyOn(global, "setImmediate")` + `finally mockRestore` 规避。
+- 验证：`tsc --noEmit` 过滤 TS2318/TS2552 后 0 业务错误 ✅；`rm -rf out && npm run build` 通过 ✅；全量 `vitest run` **65 用例 53 通过 / 12 失败**（基线 61/49/12，+4 用例全过，失败项零新增）——12 个失败全为既有：learning-summary 数据漂移（280→282、下一课十五章→十七章）、sync.test 本地模拟扫描真实大目录超时（其 `scanChildFiles` 为测试内嵌模拟函数，不 import sync-manager，与本次无关）、functional `app.isPackaged`、app.test 云端 ECONNREFUSED、auto-new-session/archive-limit safe-delete 拦截。⚠️ 主进程改动需重启 `npm run dev` 生效。

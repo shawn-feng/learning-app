@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
 import path from "path";
+import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 
 export interface PanelContent {
   format: "html";
@@ -76,6 +77,42 @@ export const getDateTool = defineTool({
         },
       ],
       details: { date: dateStr, time: timeStr, weekday },
+    };
+  },
+});
+
+/**
+ * 查询学习进度（只回 frontmatter 摘要，绝不读进度文件正文）。
+ *
+ * 背景（ISSUE-006）：进度文件 `learning/{topic}/{topic}.md` 的正文是逐课列表
+ * （论语可达 514 课、几百行），agent 过去为了拿一个 `next` 字段会 read 整个文件，
+ * 极其浪费上下文。本工具只回 frontmatter 级摘要（learned/total/next/updated），
+ * 日常教学流确认下一课、study-tracker 评估流核对进度都应优先用它，不要读正文。
+ *
+ * childId 由 ctx.cwd 推导（childDir 即 `children/<childId>`）。
+ */
+export const getProgressTool = defineTool({
+  name: "get_progress",
+  label: "查询学习进度（仅 frontmatter 摘要）",
+  description:
+    "返回当前孩子的学习进度摘要——**只含各主题 frontmatter 的 learned/total/next/updated，不含几百行的逐课正文**。" +
+    "当你需要确认「下一课是什么」「已学多少」「今日是否已完成每日目标」时，使用本工具，" +
+    "**不要**用 read 工具去读取进度文件（`learning/{topic}/{topic}.md`）的正文（那只为一个 next 字段而浪费大量上下文）。" +
+    "日常教学流与 study-tracker 评估流都应优先用本工具确认进度；只有明确需要逐课状态时才读全文。",
+  parameters: Type.Object({}),
+  execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
+    const childId = path.basename(ctx.cwd);
+    const summary = getLearningSummary(childId);
+    const text = summary.topics.length
+      ? progressSummaryToMarkdown(summary)
+      : "暂无学习主题进度。";
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text,
+        },
+      ],
     };
   },
 });

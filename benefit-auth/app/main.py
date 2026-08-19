@@ -24,9 +24,17 @@ async def health():
 
 
 # ---------- 页面 ----------
+# 首页当前为空白页（内容已按要求移除）；/login、/me 保留
+_BLANK_PAGE = (
+    "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"UTF-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+    "<title></title></head><body></body></html>"
+)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return login_page()
+    return _BLANK_PAGE
 
 
 @app.get("/login", response_class=HTMLResponse)

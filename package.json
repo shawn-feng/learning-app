@@ -12,7 +12,8 @@
     "test": "vitest run",
     "dist": "electron-vite build && electron-builder",
     "dist:win": "electron-vite build && electron-builder --win",
-    "dist:win:mirror": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& electron-vite build && electron-builder --win"
+    "dist:win:mirror": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& electron-vite build && electron-builder --win",
+    "dist:linux": "electron-vite build && electron-builder --linux"
   },
   "build": {
     "appId": "com.learning-app.desktop",
@@ -58,8 +59,14 @@
     },
     "linux": {
       "target": [
+        "deb",
         "AppImage"
-      ]
+      ],
+      "arch": [
+        "x64"
+      ],
+      "category": "Education",
+      "executableName": "xuexihub"
     },
     "mac": {
       "target": [

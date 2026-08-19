@@ -1,10 +1,9 @@
-import { ipcMain, BrowserWindow, dialog, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, BrowserWindow, dialog, shell, type IpcMainInvokeEvent } from "electron";
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
-import { getSkillsDir, getChildDir } from "./config";
+import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads } from "./config";
 import { getChildSession, getParentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages } from "./pi-session";
-import { getAvailableModels, setProviderApiKey, checkProviderAuth } from "./pi-runtime";
-import { getSharedRuntime } from "./pi-runtime";
+import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, DEFAULT_VISION_MODEL } from "./pi-runtime";
 import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize } from "./voice";
@@ -380,13 +379,36 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  ipcMain.handle("pi:prompt", async (_e: IpcMainInvokeEvent, childId: string, text: string) => {
-    console.log(`[pi:prompt] child=${childId} text="${text.slice(0, 50)}"`);
-    try {
-      const session = await getChildSession(childId);
-      console.log(`[pi:prompt] session ready, calling prompt()...`);
-      await session.prompt(text);
-      console.log(`[pi:prompt] prompt() completed`);
+  ipcMain.handle(
+    "pi:prompt",
+    async (
+      _e: IpcMainInvokeEvent,
+      childId: string,
+      text: string,
+      images: Array<{ type: "image"; mimeType: string; data: string }> | null
+    ) => {
+      const imgCount = images?.length || 0;
+      console.log(`[pi:prompt] child=${childId} text="${text.slice(0, 50)}" images=${imgCount}`);
+      try {
+        const session = await getChildSession(childId);
+        // 图片上传：若当前模型不支持图像输入，自动切换到视觉模型（ISSUE-008）。
+        // 切换是会话级、持久的（qwen3-vl 也能正常聊文字），仅切一次，不做切换提示状态回退。
+        if (imgCount > 0) {
+          const cur: any = session.model;
+          const supportsImage = Array.isArray(cur?.input) && cur.input.includes("image");
+          if (!supportsImage) {
+            const runtime = await getSharedRuntime();
+            const vl = runtime.getModel(DEFAULT_VISION_MODEL.provider, DEFAULT_VISION_MODEL.modelId);
+            if (vl) {
+              await session.setModel(vl);
+              _e.sender.send("pi:vision_model_switched", { childId, modelId: vl.id });
+              console.log(`[pi:prompt] switched to vision model ${vl.id} for image input`);
+            }
+          }
+        }
+        console.log(`[pi:prompt] session ready, calling prompt()...`);
+        await session.prompt(text, imgCount > 0 ? { images: images! } : undefined);
+        console.log(`[pi:prompt] prompt() completed`);
 
       const messages: any[] = session.messages || [];
 
@@ -557,6 +579,71 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const { fullSnapshot } = await import("./sync-manager");
       const result = await fullSnapshot(childId);
       return { success: true, ...result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 文件上传落盘（ISSUE-008）：保存到 data/children/<childId>/uploads/，按 childId 隔离
+  ipcMain.handle(
+    "file:save_upload",
+    async (
+      _e: IpcMainInvokeEvent,
+      payload: { childId: string; name: string; mime: string; data: ArrayBuffer | Buffer }
+    ) => {
+      try {
+        const uploadsDir = getUploadsDir(payload.childId);
+        fs.mkdirSync(uploadsDir, { recursive: true });
+        // 安全文件名：只取 basename（防目录穿越）→ 剔除危险字符 → 前缀时间戳防重名
+        const rawBase = path
+          .basename(payload.name || "file")
+          .replace(/[^\w.\-\u4e00-\u9fa5()]/g, "_")
+          .slice(0, 80);
+        const finalName = `${Date.now()}-${rawBase || "file"}`;
+        const full = path.join(uploadsDir, finalName);
+        // 双保险：解析后必须仍在 uploads 目录内
+        if (path.dirname(path.resolve(full)) !== path.resolve(uploadsDir)) {
+          throw new Error("非法上传路径");
+        }
+        fs.writeFileSync(full, Buffer.from(payload.data));
+        pruneUploads(uploadsDir);
+        return {
+          success: true,
+          // 相对路径（相对 data/），统一正斜杠，便于前端展示/后续读取
+          path: path.join("children", payload.childId, "uploads", finalName).replace(/\\/g, "/"),
+          size: Buffer.byteLength(payload.data),
+        };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  // 点击气泡附件：用本地默认程序打开 uploads 目录内的文件（严格限定，防路径穿越）
+  ipcMain.handle("file:open_upload", async (_e: IpcMainInvokeEvent, childId: string, relPath: string) => {
+    try {
+      const uploadsDir = getUploadsDir(childId);
+      // 只取 basename 后拼入 uploads 目录并 resolve 双校验：杜绝任何穿越可能
+      const full = path.resolve(uploadsDir, path.basename(relPath));
+      if (path.dirname(full) !== path.resolve(uploadsDir)) throw new Error("非法路径");
+      if (!fs.existsSync(full)) throw new Error("文件不存在（可能已被清理）");
+      const err = await shell.openPath(full);
+      if (err) return { success: false, error: err };
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 读取 uploads 目录内文件内容（base64），用于历史消息播放语音录音（防路径穿越同 open_upload）
+  ipcMain.handle("file:read_upload", async (_e: IpcMainInvokeEvent, childId: string, relPath: string) => {
+    try {
+      const uploadsDir = getUploadsDir(childId);
+      const full = path.resolve(uploadsDir, path.basename(relPath));
+      if (path.dirname(full) !== path.resolve(uploadsDir)) throw new Error("非法路径");
+      if (!fs.existsSync(full)) throw new Error("文件不存在（可能已被清理）");
+      const buf = fs.readFileSync(full);
+      return { success: true, data: buf.toString("base64") };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
