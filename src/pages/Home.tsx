@@ -4,10 +4,11 @@ interface Props {
   email: string;
   onEnterParent: () => void;
   onEnterChild: (child: any) => void;
-  onLogout: () => void;
 }
 
-export default function Home({ email, onEnterParent, onEnterChild, onLogout }: Props) {
+// ISSUE-017: 退出登录按钮只保留在家长页（Dashboard）；主页是孩子和家长共用入口，
+// 移除退出按钮避免低龄用户误操作退出家长账号。主页不再接收 onLogout prop。
+export default function Home({ email, onEnterParent, onEnterChild }: Props) {
   const [children, setChildren] = useState<any[]>([]);
   const [selectedChild, setSelectedChild] = useState<any>(null);
 
@@ -52,11 +53,6 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
     } else {
       setChildError("密码错误，请重试");
     }
-  }
-
-  async function handleLogout() {
-    await window.api.authLogout();
-    onLogout();
   }
 
   return (
@@ -139,23 +135,6 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
           </div>
         </div>
       )}
-
-      <button
-        onClick={handleLogout}
-        style={{
-          position: "absolute",
-          top: 20,
-          left: 20,
-          padding: "10px 20px",
-          background: "rgba(255,255,255,0.2)",
-          color: "white",
-          border: "none",
-          borderRadius: 8,
-          cursor: "pointer",
-        }}
-      >
-        ← 退出登录
-      </button>
     </div>
   );
 }

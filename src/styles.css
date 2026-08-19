@@ -1588,7 +1588,8 @@ input, textarea {
   border-top: 1px solid #eee;
   display: flex;
   gap: 12px;
-  align-items: center;
+  /* ISSUE-012: textarea 变高时按钮贴底对齐，避免悬空居中 */
+  align-items: flex-end;
 }
 
 .chat-input textarea {
@@ -1598,7 +1599,10 @@ input, textarea {
   border-radius: 12px;
   resize: none;
   font-size: 14px;
-  max-height: 120px;
+  line-height: 1.5;
+  /* ISSUE-012: 上限放宽到 160px（与 ChatWindow 的 auto-resize 一致），超过才滚动 */
+  max-height: 160px;
+  overflow-y: auto;
   outline: none;
 }
 

@@ -145,11 +145,15 @@ export default function Learn({ child, onExit }: Props) {
                 textFiles: m.role === "user" ? restored.textFiles : undefined,
                 audioPath: m.role === "user" ? restored.audioPath : undefined,
                 time: m.time || nowLabel(),
+                // ISSUE-018: 恢复 AI 消息的思考过程与工具调用记录（与实时气泡一致，点 🧠 展开查看）
+                thinking: m.role === "ai" ? m.thinking : undefined,
+                tools: m.role === "ai" ? m.tools : undefined,
               };
             })
           );
         }
-        // 恢复学习资料列表（退出再进入不丢失；主进程已按 limit 截断）
+        // 恢复学习资料列表（退出再进入不丢失；主进程已按 limit 截断）。
+        // 自动打开最新一份由下方统一的 materials 监听 effect 处理（ISSUE-014），这里只负责回填。
         if (Array.isArray(r.materials)) {
           setMaterials(r.materials);
         }
@@ -187,6 +191,16 @@ export default function Learn({ child, onExit }: Props) {
     patchWorking((m) => ({ ...m, tools: [...(m.tools || []), call] }));
   }, [patchWorking]);
 
+  // ISSUE-014（核心修复）：AI 展示新材料（display_content）或恢复历史后，自动打开最新一份资料。
+  // ⚠️ 不能像旧实现那样在 setMaterials 的 updater 里给外部变量赋值、再同步读取——React 18 中
+  // updater 异步执行（render 阶段才跑），同步检查时变量必然还是 null，导致「自动弹开」从未生效
+  // （会话中第二份资料到达时左侧停留在上一份）。统一监听 materials 变化，渲染后最新状态已就绪，
+  // 自动选中末尾（最新）一条；去重时 updater 返回原引用、effect 不触发，用户返回列表也不被打断。
+  useEffect(() => {
+    if (materials.length === 0) return;
+    setSelectedMaterialId(materials[materials.length - 1].id);
+  }, [materials]);
+
   // 工具结束调用 + 学习资料列表更新
   const handleToolEnd = useCallback((data: any) => {
     if (data.childId !== childIdRef.current) return;
@@ -194,16 +208,13 @@ export default function Learn({ child, onExit }: Props) {
       const panel = data.result?.details?.panelContent;
       if (panel) {
         const filePath = panel.filePath;
-        let targetId: string | null = null;
         setMaterials((prev) => {
           // 去重：同一份资料（同一 filePath）已在面板里，则不再重复添加，
-          // 直接聚焦已有条目，避免「每步都重发学习资料」导致面板堆积重复。
+          // 避免「每步都重发学习资料」导致面板堆积重复。
           if (filePath && prev.some((m) => m.filePath === filePath)) {
-            targetId = prev.find((m) => m.filePath === filePath)!.id;
             return prev;
           }
           const id = nextId();
-          targetId = id;
           const next = [
             ...prev,
             {
@@ -218,8 +229,7 @@ export default function Learn({ child, onExit }: Props) {
           const lim = materialsLimitRef.current;
           return lim > 0 ? next.slice(-lim) : next;
         });
-        // 新资料（或重复资料聚焦）到达后自动打开查看
-        if (targetId) setSelectedMaterialId(targetId);
+        // 自动打开由上方 materials 监听 effect 统一处理（新条目追加后自动选中）
       }
     }
     patchWorking((m) => ({

@@ -101,6 +101,9 @@ const api = {
   childAuth: (childId: string, password: string) =>
     ipcRenderer.invoke("child:auth", childId, password),
   childDelete: (childId: string) => ipcRenderer.invoke("child:delete", childId),
+  // ISSUE-016: 原生确认对话框（替代渲染进程 confirm()，避免 Windows 模态对话框焦点残留）
+  confirmDialog: (opts: { title?: string; message: string; detail?: string; confirmLabel?: string; cancelLabel?: string }) =>
+    ipcRenderer.invoke("dialog:confirm", opts),
   childResetPassword: (childId: string, newPassword: string) =>
     ipcRenderer.invoke("child:resetPassword", childId, newPassword),
   childChangePassword: (childId: string, oldPassword: string, newPassword: string) =>

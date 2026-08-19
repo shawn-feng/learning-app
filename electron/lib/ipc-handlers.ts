@@ -86,6 +86,25 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     return { success: true };
   });
 
+  // ISSUE-016: 渲染进程的 confirm() 是原生模态对话框，Windows 上关闭后可能不归还窗口键盘焦点
+  // （表现为回到主页后点击输入框无光标、需最小化再打开才恢复）。改为主进程 dialog.showMessageBox
+  // 从根上消除焦点残留；按钮顺序「取消 | 确认」（defaultId=取消，删除等危险操作默认不触发）。
+  ipcMain.handle("dialog:confirm", async (_e, opts: { title?: string; message: string; detail?: string; confirmLabel?: string; cancelLabel?: string }) => {
+    const win = getMainWindow();
+    const options: Electron.MessageBoxOptions = {
+      type: "warning",
+      title: opts.title || "确认",
+      message: opts.message,
+      detail: opts.detail,
+      buttons: [opts.cancelLabel || "取消", opts.confirmLabel || "确定"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    };
+    const result = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+    return { confirmed: result.response === 1 };
+  });
+
   ipcMain.handle("child:resetPassword", async (_e, childId: string, newPassword: string) => {
     await resetChildPassword(childId, newPassword);
     return { success: true };

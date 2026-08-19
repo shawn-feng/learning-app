@@ -611,6 +611,19 @@ export interface HistoryMessage {
   text: string;
   /** 消息时间戳（MM-DD HH:mm），用于前端气泡显示 */
   time?: string;
+  /** AI 消息的思考过程（assistant content 里 type==="thinking" 块），恢复后与实时气泡一致可展开查看 */
+  thinking?: string;
+  /** AI 消息的工具调用记录（assistant content 里 type==="toolCall" 块 + 对应 toolResult 终态） */
+  tools?: HistoryToolCall[];
+}
+
+/** 工具调用历史记录（与前端 ToolCallState 结构一致，退出重进恢复用） */
+export interface HistoryToolCall {
+  id: string;
+  name: string;
+  argsPreview?: string;
+  status: "running" | "done" | "error";
+  resultPreview?: string;
 }
 
 export interface MaterialItem {
@@ -696,20 +709,84 @@ function extractText(content: unknown): string {
   return "";
 }
 
+/** 从 assistant content 里提取思考过程（type==="thinking" 块的 thinking 文本） */
+function extractThinking(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((c: any) => c && c.type === "thinking" && typeof c.thinking === "string")
+    .map((c: any) => c.thinking)
+    .join("\n");
+}
+
+const TOOL_PREVIEW_LIMIT = 200;
+const TOOL_RESULT_LIMIT = 300;
+
+/**
+ * 从 assistant content 里提取工具调用记录（type==="toolCall" 块），
+ * 并用 toolResult 消息（按 toolCallId 匹配）填充终态 status 与结果预览。
+ */
+function extractToolCalls(
+  content: unknown,
+  toolResults: Map<string, { isError: boolean; text: string }>
+): HistoryToolCall[] {
+  if (!Array.isArray(content)) return [];
+  const calls: HistoryToolCall[] = [];
+  for (const c of content) {
+    if (!c || c.type !== "toolCall" || !c.id) continue;
+    let argsPreview = "";
+    if (typeof c.arguments === "string") argsPreview = c.arguments;
+    else if (c.arguments && typeof c.arguments === "object") argsPreview = JSON.stringify(c.arguments);
+    if (argsPreview.length > TOOL_PREVIEW_LIMIT) argsPreview = argsPreview.slice(0, TOOL_PREVIEW_LIMIT) + "…";
+    const res = toolResults.get(c.id);
+    let resultPreview: string | undefined;
+    if (res && res.text) {
+      resultPreview = res.text.length > TOOL_RESULT_LIMIT ? res.text.slice(0, TOOL_RESULT_LIMIT) + "…" : res.text;
+    }
+    calls.push({
+      id: c.id,
+      name: typeof c.name === "string" ? c.name : "unknown",
+      argsPreview: argsPreview || undefined,
+      status: res ? (res.isError ? "error" : "done") : "running",
+      resultPreview,
+    });
+  }
+  return calls;
+}
+
 /**
  * Extract a renderable transcript from a session's message history.
- * Only user / assistant text is returned (tool calls, thinking, etc. are skipped).
+ * 返回 user / assistant 消息的正文，以及 assistant 消息的思考过程与工具调用记录
+ * （ISSUE-018：退出再进入时与实时气泡内联显示的效果一致，可展开查看）。
  */
 export function getSessionHistory(session: AgentSession): HistoryMessage[] {
   const messages: any[] = (session as any).messages || [];
   const history: HistoryMessage[] = [];
+  // toolResult 消息按 toolCallId 建索引，供 assistant 的工具调用匹配终态
+  const toolResults = new Map<string, { isError: boolean; text: string }>();
+  for (const m of messages) {
+    if (m.role === "toolResult" && m.toolCallId) {
+      toolResults.set(m.toolCallId, { isError: !!m.isError, text: extractText(m.content) });
+    }
+  }
   for (const m of messages) {
     if (m.role === "user") {
       const text = extractText(m.content);
       if (text) history.push({ role: "user", text, time: formatTime(m.timestamp) });
     } else if (m.role === "assistant") {
       const text = extractText(m.content);
-      if (text) history.push({ role: "ai", text, time: formatTime(m.timestamp) });
+      const thinking = extractThinking(m.content);
+      const tools = extractToolCalls(m.content, toolResults);
+      // 保留有正文 / 有思考 / 有工具调用的 assistant 消息
+      // （纯 toolUse 中转消息若三者皆空则跳过，避免恢复出空气泡）
+      if (text || thinking || tools.length > 0) {
+        history.push({
+          role: "ai",
+          text,
+          time: formatTime(m.timestamp),
+          thinking: thinking || undefined,
+          tools: tools.length ? tools : undefined,
+        });
+      }
     }
   }
   return history;

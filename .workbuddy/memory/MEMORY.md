@@ -14,6 +14,9 @@
 - 会话模型 append-only：重置用 `newSession()`（归档保留旧文件），不要用 `resetLeaf()`（会无限堆叠分支）。
 - **customTools 的每个 `name` 必须同时出现在 `createAgentSession({ tools })` 的白名单里**，否则 `agent-session.js` 的 `isAllowedTool` 会把它过滤掉——工具既不注册也不激活，agent 会报告「没有这个技能」。ISSUE-006 的 `get_progress` 当初漏列进 `tools` 就是这个坑（2026-08-19 修复：`tools` 加 `"get_progress"`，并加 `test/get-progress-registration.test.ts` 锁不变量）。
 
+## React 状态坑（踩过的，别再踩）
+- ⚠️ **绝不依赖 `setState(updater)` 闭包给外部变量赋值、再同步读取**——React 18+ 中 updater 异步执行（render 阶段才跑），同步检查时变量恒为旧值/初始值。ISSUE-014 教训：旧代码「updater 里赋 `targetId` → 同步 `if (targetId) setSelectedMaterialId(targetId)`」恒为 null，自动弹开从未生效（初次登记误判为正常，用户实测第二份资料不切换才暴露）。**「状态变更后的派生行为」一律用 `useEffect` 监听状态**；需要 updater 内部分支结果时（如去重返回原引用），依赖「返回原引用 → React bail-out → effect 不触发」这一行为。
+
 ## 构建与验证
 - 主进程/渲染改动后需 `rm -rf out && npm run build`（electron-vite）才生效；`electron-vite build` 清空 out 时可能撞环境 safe-delete 回收站报错，先 `rm -rf out` 可规避（注：`rm -rf out` 本身也可能被 safe-delete 拦，拦完目录其实已删，直接再跑 `npm run build` 即可）。
 - `tsc --noEmit` 项目里长期有 5 条环境相关的全局类型告警（TS7/@types/node26 不兼容），非业务代码引入，忽略即可。

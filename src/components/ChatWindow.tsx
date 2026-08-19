@@ -144,6 +144,8 @@ function TraceDetails({ m }: { m: ChatMessage }) {
 export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate = "+0%", childId, notice }: Props) {
   const [input, setInput] = useState("");
   const messagesRef = useRef<HTMLDivElement>(null);
+  // ISSUE-012: 输入框 ref，配合 useEffect 随内容自动增高
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState("");
@@ -215,6 +217,15 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // ISSUE-012: textarea 随内容自动增高（不滚动即可看到全部输入；清空后回落 44px）。
+  // 统一在这里按 [input] 调整，覆盖输入、语音追加、文件回填、发送清空等所有 setInput 路径。
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+  }, [input]);
 
   useEffect(() => {
     window.api.voiceConfigGet().then((r: any) => {
@@ -752,6 +763,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
           </button>
         )}
         <textarea
+          ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {

@@ -54,7 +54,16 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   }, []);
 
   async function handleDeleteChild(childId: string, childName: string) {
-    if (!confirm(`确定要删除孩子"${childName}"吗？此操作不可撤销。`)) return;
+    // ISSUE-016: 不再用渲染进程 confirm()（Windows 上其原生模态对话框关闭后焦点不归还，
+    // 回主页点输入框无光标），改为主进程 dialog.showMessageBox 确认。
+    const r = await window.api.confirmDialog({
+      title: "删除孩子",
+      message: `确定要删除孩子"${childName}"吗？`,
+      detail: "此操作不可撤销，孩子的所有学习数据都会被删除。",
+      confirmLabel: "删除",
+      cancelLabel: "取消",
+    });
+    if (!r?.confirmed) return;
     await window.api.childDelete(childId);
     refresh();
     if (selectedChild?.childId === childId) setSelectedChild(null);

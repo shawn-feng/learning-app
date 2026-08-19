@@ -394,7 +394,12 @@
   5. **Enter 发送 / Shift+Enter 换行**（667-672 行）行为不变；自动增高不影响换行。
 - **排查 / 修改入口（可直接执行）**：`src/components/ChatWindow.tsx:664-676`（textarea JSX + onChange）、`src/styles.css:1594-1603`（`.chat-input textarea` 的 max-height/overflow）。
 - **关联**：无（独立 UI 优化）。
-- **优先级**：待定（用户未标注）
+- **已修复（2026-08-19 实施）**：
+  1. `ChatWindow.tsx`：新增 `textareaRef`，用 `useEffect([input])` 统一调整——`el.style.height = "auto"` 后取 `Math.min(scrollHeight, 160)`。统一按 [input] 驱动，覆盖输入、语音追加（`setInput(prev => ...)`）、文件回填、发送清空（回落 44px）所有 setInput 路径。
+  2. `styles.css`：`.chat-input` 的 `align-items: center` → `flex-end`（textarea 变高时上传/语音/发送按钮贴底对齐）；`.chat-input textarea` 的 `max-height: 120px` → `160px`（与 JS 上限一致）+ `overflow-y: auto` + `line-height: 1.5`（超过上限才滚动）。
+  3. Enter 发送 / Shift+Enter 换行行为不变。
+  4. 验证：`tsc --noEmit` 过滤 TS2318/2552 后 0 业务错误；`npm run build` 通过（renderer 含新 CSS/JS）。`out/` 需重新构建生效。
+- **优先级**：已完成（2026-08-19）
 - **记录时间**：2026-08-19
 
 ## [ISSUE-013] 梳理孩子 agent 知识库的「快速查询 / 快速写入」，查询与写入都要省 token
@@ -425,21 +430,58 @@
 - **优先级**：待定（用户未标注，建议中优先级：不影响功能，但随 daily 增长会越来越贵）
 - **记录时间**：2026-08-19
 
+### 设计方案（2026-08-19 产出，待用户确认后实施）
+
+**设计原则**：查询 = 先索引/摘要后定点小读，绝不整文件 read；写入 = 追加优先、避免读改写；查询型数据（进度/索引）与内容型数据（daily 详情/资料）分离；工具面替代自由 read/write。
+
+**现状核对（2026-08-19 实测）**：daily/ 101 个文件；topics.md frontmatter + 正文表格双份冗余（8 主题各写两遍）；根目录遗留 `study-topics.md`（frontmatter topics:{} + 空表格）、`study-rules.md`（空）、`life-events.md`（旧单文件）；inquiries/ 与 tasks/ 目录为空、无月索引；life/ 仅 2026-08.md。
+
+**方案分三层**：
+
+1. **结构层（数据）**
+   - **新增 `daily/index.md`（跨天总索引）**：追加友好，每行 `- YYYY-MM-DD 学习:{主题数/摘要} 生活:{事件数} 问答:{数} 任务:{数}`，agent 查「上周学了什么」先读 index 再定点读目标 daily。
+   - **topics.md 去重**：删正文表格，frontmatter 为唯一真源（`getLearningSummary` 只读 frontmatter，正文表格纯冗余且诱导 agent 误 read 全文）；文件头注释「正文仅供人类查看，agent 只读 frontmatter」。
+   - **清理遗留文件**：`study-topics.md` / `study-rules.md` / `life-events.md` 数据已迁至 daily/life/learning 结构（P5 迁移残留）→ 建议直接删除（保留会误导 agent 误读浪费 token；内容已迁移无丢失风险）。
+   - **inquiries/ tasks/ 月索引**：recording skill 增加维护 `inquiries/{YYYY-MM}.md`、`tasks/{YYYY-MM}.md`（追加行，指针指向 daily 锚点），与 life/{月}.md 一致。
+   - **daily 写入改「区块追加」**：recording skill 明确「读目标 daily 时只取区块位置，edit 仅追加到目标区块尾部」，避免整文件读改写（4 区块会持续膨胀，追加友好设计需兑现）。
+
+2. **工具层（agent 面，custom-tools.ts 新增，替代自由 read/write）**
+   - **`kb_read {kind: daily|life|tags|learning|inquiry|task, ref}`**：只回目标区块/摘要（如 daily+日期→该日「学习」区块；life+月→月索引行），childId 由 ctx.cwd 推导；绝不整文件返回。
+   - **`kb_append {file, section, content}`**：追加友好——向指定文件的目标区块（## 标题）尾部追加内容，免「读全文 + edit 重写」；仅允许追加到白名单文件（daily/*、life/*、tags/*、inquiries/*、tasks/*、AGENTS.md 的 custom 段），路径守卫同 display_content。
+   - 与 `get_progress`（进度查询）形成「结构化小工具族」，替代 agent 对知识库的自由 read/write。
+
+3. **注入层（上下文）**
+   - **AGENTS.md 瘦身**：核心段（身份/交流准则）常驻；长内容（method 清单、资料目录等）移出只留指针，`buildAgentsMd` 复核是否仍干净（redesign 强调「只放去哪读的指引」）。
+   - **daily/index.md 注入权衡**：是否把「最近 N 天」指针注入系统提示（方便 agent 直接知道最近学了什么）——注入增加固定 token 成本（N 天×1 行），建议先不注入、靠 kb_read 按需取，落地后用 ISSUE-010 统计对比再定。
+
+**实施顺序（防漂移，分 4 步）**：
+- Phase 1 结构：清理遗留文件 + topics.md 去重 + 新建 daily/index.md（脚本回填 101 天历史索引）
+- Phase 2 工具：`kb_read` / `kb_append` 实现 + customTools 注册 + 单测（路径守卫/区块追加/回读正确性）
+- Phase 3 规范：recording skill 更新（区块追加 + inquiries/tasks 月索引）+ AGENTS.md 工具指引
+- Phase 4 验证：build + 全量测试 + 用 ISSUE-010 token 统计对比「查询/写入前后 token」量化收益
+
+**待确认项**：① 遗留 3 文件直接删除 vs 标 deprecated 排除（建议删除，数据已迁移）；② daily/index.md 全量回填 vs 今日起增量（建议脚本全量回填一次，成本低收益完整）；③ 工具命名/参数（kb_read/kb_append 可改）；④ 是否注入 daily/index 到系统提示（建议先不注入）。
+
 ## [ISSUE-014] 左侧学习资料应自动显示最新资料，不要停在列表等手动点开
 
 - **需求**：左侧「学习资料」面板要**自动显示最新的那份资料**；不要停在列表视图、让用户再点开最新的。用户原话：「不要返回列表再点开最新的」。
 - **现状（已定位）**：
-  - 会话进行中：`display_content` 工具结束 → `Learn.tsx:198-222` 新资料入列后 `setSelectedMaterialId(targetId)` **已会自动弹开**最新（含去重聚焦：同 `filePath` 重复展示时聚焦已有条目）——这条没问题。
-  - **缺口在会话恢复/重进**：`Learn.tsx:152-155` 恢复材料列表只 `setMaterials(r.materials)`，**没有设置 `selectedMaterialId`** → 面板停在列表视图（`MaterialsPanel.tsx:66-92`），用户必须手动点开最新一份。这就是「返回列表再点开最新的」的实际场景。
+  - 会话进行中：`display_content` 工具结束 → `Learn.tsx` 新资料入列后自动弹开——**此链路旧实现实际从未生效**（详见下方 2026-08-19 二次修复的根因说明，初次登记时误判为「已自动弹开」）。
+  - **缺口在会话恢复/重进**：恢复材料列表只 `setMaterials(r.materials)`，没有设置 `selectedMaterialId` → 面板停在列表视图（`MaterialsPanel.tsx:66-92`），用户必须手动点开最新一份。
   - 列表顺序：主进程 `getSessionMaterials`（`pi-session.ts:637-684`）按 session 历史顺序 push，**最新一份在数组末尾** → 可直接 `materials[materials.length - 1]` 取最新。
 - **实现要点（候选，待定）**：
   1. 恢复材料列表后自动选中最新：`setSelectedMaterialId(r.materials[r.materials.length - 1]?.id ?? null)`（注意 id 是主进程重建的 `mat-*`，恢复后与 `materials` 一一对应，可用）；
   2. 触发时机取舍：仅「恢复/初始」时自动打开，还是「每次切回 materials 视图」都自动跟随最新（后者可能与用户主动点「返回列表」看历史的意图冲突，需确认）；
   3. 空列表时保持列表态（占位文案）不变。
 - **排查 / 修改入口（可直接执行）**：`src/pages/Learn.tsx:152-155`（恢复材料）、`src/pages/Learn.tsx:198-222`（会话中自动弹开参照）、`src/components/MaterialsPanel.tsx:43-94`（两态渲染）、主进程 `electron/lib/pi-session.ts:637-684`（材料重建顺序）。
-- **待确认项**：① 自动打开时机（仅恢复 vs 始终跟随最新）；② 用户显式「返回列表」后，新资料到达是否仍自动弹开（现实现是会的，`Learn.tsx:222` 无条件 set）——若用户认为「返回列表后不该被打断」则需加状态判定。
+- **待确认项**：① 自动打开时机（仅恢复 vs 始终跟随最新）；② 用户显式「返回列表」后，新资料到达是否仍自动弹开（现实现是会的——若用户认为「返回列表后不该被打断」则需加状态判定）。
 - **关联**：ISSUE-002（重发资料去重——本 issue 的「自动弹开」依赖同一 `display_content` 去重机制，避免弹开重复条目）。
-- **优先级**：待定（用户未标注）
+- **已修复·第一轮（2026-08-19 白天）**：恢复材料后自动选中最新（`pi:start_child` 回调里 `setSelectedMaterialId(materials[length-1].id)`），解决「重进停在列表」。但**用户实测发现会话中第二份资料仍未自动切换**。
+- **已修复·第二轮（2026-08-19 晚间，根因修正）**：
+  - **根因**：会话中自动弹开的旧实现 `Learn.tsx:222` 是「在 `setMaterials(updater)` 里给闭包变量 `targetId` 赋值，再同步 `if (targetId) setSelectedMaterialId(targetId)`」——React 18 中 **updater 异步执行（render 阶段才跑）**，同步检查时 `targetId` **恒为 null**，自动弹开从未生效。第一份资料能显示是恢复逻辑选中的；会话中第二份 `display_content` 到达时无任何切换 → 左侧停留在第一份。初次登记「这条没问题」系误判。
+  - **修复**（`src/pages/Learn.tsx`）：删除失效的 `targetId` 闭包赋值与同步 set；`handleToolEnd` 的 updater 只负责去重/追加（去重返回原引用时 React bail-out、effect 不触发）；新增 `useEffect(() => { if (materials.length === 0) return; setSelectedMaterialId(materials[materials.length - 1].id); }, [materials])`——渲染后最新状态已就绪，统一处理「会话中新增」「恢复回填」两种路径的自动打开；用户返回列表（materials 未变）不被打断，新材料到达则自动切到最新（待确认项②按「会弹开」默认）。
+  - 验证：`tsc --noEmit` 过滤后 0 业务错误；`npm run build` 通过。手测路径：进入珊珊会话 → 让 AI 连续展示两份资料 → 第二份到达时左侧应自动切换到第二份。
+- **优先级**：已完成（2026-08-19）
 - **记录时间**：2026-08-19
 
 ## [ISSUE-015] 语音转写失败（ffmpeg）：Invalid data found when processing input——MediaRecorder 半成品 webm 未拦截
@@ -475,7 +517,42 @@
 - **排查 / 修改入口（可直接执行）**：`src/pages/Dashboard.tsx:57`（`confirm()` 调用点）；`src/pages/Home.tsx:97-109`（输入框与 autoFocus）；`src/App.tsx:66`（返回主页）；主进程 `electron/main.ts:33`（`dialog.showMessageBox` 复用范式）。
 - **待确认项**：① 是否每次必现、是否仅删除后出现（其它操作对比）；② 点击输入框时窗口标题栏/其它控件是否可交互（判断是窗口级还是页面级焦点问题）；③ 用 `dialog.showMessageBox` 替换后是否消失。
 - **关联**：无直接关联（独立的 UI 焦点问题）。
-- **优先级**：待定（用户未标注）
+- **已修复（2026-08-19 实施）**：采用治本方案 #1——替换渲染进程 `confirm()`。
+  1. `electron/lib/ipc-handlers.ts` 新增 `dialog:confirm` handler：用 `dialog.showMessageBox`（type:"warning"，按钮「取消|确认」，`defaultId:0`/`cancelId:0` 默认取消，`noLink:true`），返回 `{confirmed}`。
+  2. `electron/preload.ts` 新增 `confirmDialog` 桥接。
+  3. `src/pages/Dashboard.tsx` `handleDeleteChild` 改为先 `await window.api.confirmDialog({title:"删除孩子", message, detail:"此操作不可撤销…", confirmLabel:"删除", cancelLabel:"取消"})`，`confirmed` 才执行 `childDelete`。
+  4. 从根上消除 Windows 原生模态 confirm() 的焦点残留（最小化/还原才恢复的症状即为窗口级焦点未归还）；删除确认默认指向「取消」，防误删。
+  验证：`tsc --noEmit` 过滤后 0 业务错误；`npm run build` 通过（main/preload/renderer 均成功）。手测路径：家长中心删除孩子 → 返回主页 → 点孩子卡片 → 密码输入框应可直接聚焦输入（需构建后复测确认）。
+
+## [ISSUE-019] 家长页孩子学习进度展示——方案设计（内容 / 形式 / 技术方案）
+
+- **类型**：需求 / 方案设计（待拍板后实施）
+- **目标**：家长页能**快速掌握孩子学习情况的关键点**，聚焦三件事：
+  1. **进度是否匹配计划**——实际进度 vs 每日计划目标，超前还是落后；
+  2. **学习中的错误和误解**——最近出现过哪些错误/误解、涉及哪些知识点；
+  3. **学习中的亮点和进步**——值得表扬的亮点（好问题、好例子、进步、情绪正面反应）。
+- **现状（已定位）**：
+  - 展示层 `src/components/ProgressView.tsx`（Dashboard「学习进度」视图，`Dashboard.tsx:216`）：已有一级进度条（learned/total/percent/下一课/最近更新）+「今日评估」表（rules 的 daily 目标 vs `updated` 是否今天）+「最近日志」（dailyLogs 最近 3 个 `<details>` 折叠全文）。
+  - 数据层 `electron/lib/learning-summary.ts` `getLearningSummary()`（110-184 行）经 `getProgress` IPC 供前端：只含 topics（name/file/learned/total/percent/next/updated/daily/type）+ totals。
+  - **错误/误解、亮点/进步：现有数据层与展示层均无**——需从 `daily/` 记录提取（recording skill 已在 daily 记「孩子表现：原话/例子/提问/情绪/思考/纠正过程」，见 ISSUE-009）。
+- **方案要点（候选，待拍板）**：
+  - **① 进度 vs 计划**：
+    - 数据：`learning-summary` 已有 daily 目标与 learned；**缺「按日期的 learned 历史快照」**——候选：a) 约定 recording 在 daily 文件里记当天各主题 learned（结构化字段），由主进程扫描 daily 汇总出「计划累计线 vs 实际累计线」；b) 简单版：只算偏差 = 实际 learned − (daily × 已过天数)，显示「超前/落后 N 课」。
+    - 形式：每主题一个「计划 vs 实际」对比（折线/进度双条），落后标黄/红、超前标绿。
+  - **② 错误和误解**：
+    - 数据：daily 记录里的「纠正过程」段；需与 recording 约定**结构化标记**（如 `### 错误与纠正` 小节或 `- 误解：… / 纠正：…` 条目）以便脚本提取（依赖 ISSUE-009 把记录写细）。
+    - 形式：最近 N 天「常见错误清单」卡片（知识点 + 孩子的原始说法 + 纠正结果），错误用暖色（橙/红）标注，可折叠看原文。
+  - **③ 亮点和进步**：
+    - 数据：daily 记录的「孩子表现」段正面内容（原话/例子/提问/思考过程）。
+    - 形式：亮点时间线/卡片（如「8/19 提出了一个好问题：…」「自己举了例子：…」），绿色高亮，配 emoji。
+  - **技术方案（主进程汇总 + 前端渲染）**：扩展 `learning-summary.ts`（或新增 `learning-insights.ts`）扫描 `daily/` 生成 `{ errors: [...], highlights: [...], planDiff: {...} }`，经新 IPC（如 `progress:insights`）下发；前端 `ProgressView` 增加三个区块（或独立 `LearningInsights` 组件）。提取逻辑放主进程，避免全文注入上下文（呼应 ISSUE-013）；daily 全文仍保留 `<details>` 折叠供家长下钻。
+- **前置依赖**：**ISSUE-009**（method 记录详细度对齐 recording skill）必须先落地，daily 记录才包含可供提取的错误/亮点信息；否则②③无数据可挖。
+- **待确认项**：① 三块的优先级/首版范围（是否先做①简单版，②③依赖 009）；② 错误/亮点的**结构化标记格式**由谁定（recording skill / method.md 内约定）；③ 是否按主题/时间维度聚合、是否要「近 7 天/本月」时间窗；④ 展示位置：并入现有「学习进度」视图 vs 家长中心新增独立视图。
+- **排查 / 修改入口（可直接执行）**：展示 `src/components/ProgressView.tsx`（现有三块参照）；数据 `electron/lib/learning-summary.ts`（扩展点）+ 新 IPC（`electron/lib/ipc-handlers.ts` 的 `getProgress` 相邻注册）；数据源 `data/children/<childId>/daily/*.md`（recording 写入）；规范 `data/shared/skills/recording/SKILL.md`。
+- **关联**：ISSUE-009（前置，记录详细度）、ISSUE-013（提取放主进程省 token）、ISSUE-006（进度数据复用 `learning-summary`）。
+- **优先级**：待定（用户未标注，建议中高：家长侧核心价值，但依赖 009）
+- **记录时间**：2026-08-19
+- **优先级**：已完成（2026-08-19）
 - **记录时间**：2026-08-19
 
 ## [ISSUE-017] 退出家长账号按钮只应出现在家长页面，去掉主页左上角退出按钮
@@ -493,5 +570,35 @@
 - **排查 / 修改入口（可直接执行）**：`src/pages/Home.tsx:143-158`（删除按钮）、`Home.tsx:57-60`（handleLogout，可清理）、`src/App.tsx:51-60`（Home 的 onLogout prop，可清理）、`src/pages/Dashboard.tsx:76-77`（保留的退出按钮）。
 - **待确认项**：① 主页是否还需要任何「返回/退出到登录页」的途径（如仅家长能登出、孩子通过「退出学习」回主页，主页本身没有退出入口 → 家长要退出需先进家长中心）；② `handleLogout`/`onLogout` prop 是否顺手清理。
 - **关联**：无（独立 UI 调整）。
-- **优先级**：待定（用户未标注）
+- **已修复（2026-08-19 实施）**：
+  1. `src/pages/Home.tsx`：删除左上角「← 退出登录」按钮 JSX（原 143-158 行）与 `handleLogout` 函数；`Props` 移除 `onLogout`。
+  2. `src/App.tsx`：`<Home>` 调用处移除 `onLogout` prop。
+  3. 家长退出唯一入口保留在 Dashboard 右上角「退出登录」（`Dashboard.tsx:77`）。待确认项①按默认推进：主页无退出入口，家长要退出先进「家长中心」再退；孩子从主页进入学习、经「退出」回主页，全程接触不到退出登录。
+  验证：`tsc --noEmit` 过滤后 0 业务错误；`npm run build` 通过。`out/` 需重新构建生效。
+- **优先级**：已完成（2026-08-19）
+- **记录时间**：2026-08-19
+
+## [ISSUE-018] 退出孩子账号再进入后，历史消息也要恢复「模型的思考」和「工具调用记录」
+
+- **类型**：需求 / 待实现（用户未标注）
+- **需求**：孩子学习过程中退出再进入，历史消息里**也要有该轮 AI 的思考过程（thinking）和工具调用记录（tools）**，与实时会话中气泡内联显示的效果一致；现在恢复后只剩最终文本回复。
+- **现状（已定位）**：
+  - **主进程丢弃**：`electron/lib/pi-session.ts:699-716` `getSessionHistory()` 注释明写「tool calls, thinking, etc. are skipped」——历史重建时**只提取 user/assistant 的 text**（`extractText`），思考和工具调用被显式丢弃。
+  - **前端结构已就绪**：`ChatMessage` 接口（`src/components/ChatWindow.tsx:14-32`）**已有** `thinking?: string`（23 行）与 `tools?: ToolCallState[]`（24 行），气泡渲染侧（`ChatWindow.tsx:283-321`）已支持显示——缺的只是「恢复时填充」。
+  - **前端恢复映射**：`src/pages/Learn.tsx:130-150` 把 `getSessionHistory` 返回的消息映射成 `ChatMessage`，只填 `text / attachments / textFiles / audioPath / time`，**没填 `thinking` / `tools`**。
+- **关键依赖（待确认）**：SDK assistant 消息里**思考内容存于哪个字段**（如消息顶层 `reasoning`/`thinking` 字段、或 content 块内特殊类型），工具调用存于 content 块的 `type:"toolCall"`（`getSessionMaterials` 已按此遍历，`pi-session.ts:641-652` 可参照）；需先在 SDK 消息结构里确认 thinking 的实际字段名，才能从历史正确还原。
+- **实现要点（候选，待定）**：
+  1. 主进程 `getSessionHistory()` 扩展：assistant 消息额外输出 `thinking`（取思考字段原文）与 `tools`（从 content 的 toolCall 块提取 name/argsPreview/status，与 `getSessionMaterials` 的遍历方式一致）；`HistoryMessage` 类型同步加字段；
+  2. 前端 `Learn.tsx:130-150` 恢复映射时透传 `thinking` / `tools`（tool 的 status 历史值取「done/error」终态，时间戳缺失可省略）；
+  3. 注意与上下文截断策略的兼容：历史被截断后较早轮次的 thinking/tools 会缺失，属预期。
+- **排查 / 修改入口（可直接执行）**：`electron/lib/pi-session.ts:699-716`（`getSessionHistory`，主改点）、`pi-session.ts:637-684`（`getSessionMaterials` 遍历 toolCall 的参照范式）、`src/pages/Learn.tsx:130-150`（恢复映射）、`src/components/ChatWindow.tsx:6-32`（`ToolCallState`/`ChatMessage` 类型）。
+- **待确认项**：① SDK assistant 消息思考字段的确切名称与结构（先看 `node_modules/@earendil-works/pi-coding-agent` 的 assistant 消息样例）；② 历史里的工具调用是否需要完整参数/结果预览，还是仅名称+状态；③ 恢复的消息是否需要与实时气泡一致的「思考可展开/折叠」交互。
+- **关联**：ISSUE-004（气泡时间——同走 `getSessionHistory` 恢复链路，可一并改）；ISSUE-013（知识库 token 效率——thinking 恢复会增加历史体量，需权衡是否全量恢复）。
+- **已修复（2026-08-19 实施）**：
+  1. **SDK 消息结构确认（待确认项①）**：真实 jsonl 实测——assistant 消息 `content` 数组含 `{type:"thinking", thinking:"…"}`（thinkingSignature:"reasoning_content"）、`{type:"text", text:"…"}`、`{type:"toolCall", id, name, arguments}`；工具结果在独立消息 `{role:"toolResult", toolCallId, toolName, content, isError}`。
+  2. **主进程 `getSessionHistory` 扩展**（`electron/lib/pi-session.ts`）：先遍历一遍把 `role:"toolResult"` 按 `toolCallId` 建索引；assistant 消息输出 `thinking`（type==="thinking" 块 join）与 `tools`（type==="toolCall" 块 → `HistoryToolCall{id,name,argsPreview,status,resultPreview}`，argsPreview=JSON.stringify(arguments) 截 200 字符，status 由对应 toolResult 的 `isError` 判 done/error，无结果则 running，resultPreview 截 300 字符）；正文/思考/工具三者皆空的 assistant 消息跳过（避免恢复出空气泡）。`HistoryMessage` 新增 `thinking?`/`tools?`，新增 `HistoryToolCall` 接口（与前端 `ToolCallState` 结构一致）。
+  3. **前端恢复映射**（`src/pages/Learn.tsx`）：恢复历史时透传 `thinking: m.thinking`、`tools: m.tools`（仅 ai 消息）。气泡侧无需改：`ChatMessage` 已有 `thinking/tools` 字段，`ChatWindow` 的 `hasTrace` 判断与 🧠 展开交互直接生效（与实时气泡一致，可展开/折叠，待确认项③默认满足）。
+  4. 取舍（待确认项②）：参数/结果均带预览（截断），不存完整原文——恢复出的历史保持轻量；历史被上下文截断较早的轮次 thinking/tools 缺失属预期（与截断策略兼容）。
+  验证：`tsc --noEmit` 过滤后 0 业务错误；`npm run build` 通过；全量 vitest 85 用例 72 过 / 13 失败，13 失败均为既有环境/数据问题（safe-delete 拦截 auto-new-session/archive-limit、learning-summary 真实数据漂移、functional app.isPackaged、app.test 云端 ECONNREFUSED、sync.test 扫描真实目录超时偶发）——单独重跑 auto-new-session+archive-limit 13 用例全过，证实与本次改动无关。`out/` 需重新构建生效。
+- **优先级**：已完成（2026-08-19）
 - **记录时间**：2026-08-19

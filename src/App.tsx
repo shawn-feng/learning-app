@@ -55,7 +55,6 @@ export default function App() {
             setCurrentChild(child);
             setView("learn");
           }}
-          onLogout={() => setView("parent-login")}
         />
       );
       break;
