@@ -26,9 +26,11 @@ const cacheKey = "__learningAppModelRuntime";
 // 故 compat 里必须显式 supportsDeveloperRole:false，让 system 保持 system。
 // 性能：qwen3 思考很冗长（实测 flash/plus 思考约 1900 字符、占 10~20s，正文迟迟不出，
 // 远慢于 deepseek-v4-flash 的 ~158 字符/1s）。reasoning_effort 对 qwen3.7 无效（low/medium 无差异），
-// 正确参数是 thinking_budget（限制思考 token 数）。实测 flash budget=512 后思考 770 字符、
-// 总耗时 12s→7.4s（与 deepseek 持平），plus budget=512 后正文首 token 15.9s→8.4s，正文均不受损。
-// 故 flash/plus 加 samplingParams.thinking_budget。注意 samplingParams 最后 Object.assign 进请求，
+// 正确参数是 thinking_budget（限制思考 token 数）。实测 flash 自由思考约 1900 字符/12s，
+// budget=512 可压到 770 字符/7.4s，但会把「需查证/多步推理」的复杂问题思考腰斩、偶发幻觉；
+// 故 flash 现用 thinking_budget=2048（复杂问题基本想得完、速度仍远快于 max）。
+// plus 现同调 thinking_budget=2048（与 flash 一致，覆盖复杂问题、不再腰斩思考）。
+// 故 flash/plus 加 samplingParams.thinking_budget=2048。注意 samplingParams 最后 Object.assign 进请求，
 // 但其中不含 enable_thinking，不会覆盖 thinkingFormat 分支写入的 enable_thinking:true。
 // 另：thinkingLevelMap 里 off:null 表示「qwen 不支持 off 等级」，防止历史遗留的会话 thinkingLevel=off
 // 把 qwen 卡在关思考（enable_thinking=false → 思考混进正文、无 thinking 块）。SDK 会把 off clamp 到 minimal。
@@ -59,7 +61,7 @@ const QWEN_MODELS: ProviderModelConfig[] = [
     maxTokens: 32768,
     compat: { thinkingFormat: "qwen", supportsDeveloperRole: false },
     thinkingLevelMap: { off: null },
-    samplingParams: { thinking_budget: 512 },
+    samplingParams: { thinking_budget: 2048 },
   },
   {
     id: "qwen-flash",
@@ -72,7 +74,70 @@ const QWEN_MODELS: ProviderModelConfig[] = [
     maxTokens: 16384,
     compat: { thinkingFormat: "qwen", supportsDeveloperRole: false },
     thinkingLevelMap: { off: null },
-    samplingParams: { thinking_budget: 512 },
+    // 思考预算 2048：原 512 会把「需查证/多步推理」的问题思考腰斩（reasoning 卡在 512），
+    // 模型在没想完时输出正文、偶发幻觉（见珊珊会话）。2048 覆盖绝大多数复杂问题、速度仍远快于 qwen-max。
+    samplingParams: { thinking_budget: 2048 },
+  },
+];
+
+// 经 DashScope 同端点可调用的 DeepSeek 系列（百炼第三方模型，费用低于直连 deepseek 官方）。
+// 关键：DeepSeek 的思考格式与 qwen 不同——必须用 thinkingFormat:"deepseek"（不是 "qwen"），
+// 并 requiresReasoningContentOnAssistantMessages:true，否则 reasoning_content 会混进正文、
+// 没有独立 🧠 思考块（重现早前 qwen reasoning:false 的「思考灌进正文」bug）。
+// 参数取自 SDK 内置 deepseek provider 的 deepseek.json（cost/maxTokens/contextWindow 一致）：
+//   maxTokens=384000（思考+最终输出共享，DeepSeek-V4 的 384k 限制，区别于 qwen 的 16k/32k/65k）；
+//   contextWindow=1000000；thinkingLevelMap 与 SDK 对齐（min/low/medium 置 null，仅 high/max 有效，
+//   配合 pi-session.ts 对 thinkingLevel==="off" 的强制纠正为 high）。
+// 注：千问平台（platform.qianwenai.com 模型清单）同时提供稳定别名 deepseek-v4-flash-0731 /
+// deepseek-v4-pro-0813（定点快照）与无后缀别名（自动路由最新版）；两者都登记，用户可按需选定点版。
+const QWEN_DEEPSEEK_MODELS: ProviderModelConfig[] = [
+  {
+    id: "deepseek-v4-flash",
+    name: "DeepSeek V4 Flash (百炼)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 384000,
+    compat: { thinkingFormat: "deepseek", supportsDeveloperRole: false, requiresReasoningContentOnAssistantMessages: true },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+  {
+    id: "deepseek-v4-flash-0731",
+    name: "DeepSeek V4 Flash 0731 (百炼)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 384000,
+    compat: { thinkingFormat: "deepseek", supportsDeveloperRole: false, requiresReasoningContentOnAssistantMessages: true },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+  {
+    id: "deepseek-v4-pro",
+    name: "DeepSeek V4 Pro (百炼)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 384000,
+    compat: { thinkingFormat: "deepseek", supportsDeveloperRole: false, requiresReasoningContentOnAssistantMessages: true },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+  {
+    id: "deepseek-v4-pro-0813",
+    name: "DeepSeek V4 Pro 0813 (百炼)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 384000,
+    compat: { thinkingFormat: "deepseek", supportsDeveloperRole: false, requiresReasoningContentOnAssistantMessages: true },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
   },
 ];
 
@@ -80,7 +145,8 @@ const QWEN_PROVIDER: ProviderConfig = {
   name: "通义千问 (Qwen)",
   baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   api: "openai-completions",
-  models: QWEN_MODELS,
+  // qwen 官方三款 + 经同端点可调用的 DeepSeek V4 系列（费用更低，见 QWEN_DEEPSEEK_MODELS 注释）。
+  models: [...QWEN_MODELS, ...QWEN_DEEPSEEK_MODELS],
 };
 
 function registerQwenProvider(runtime: ModelRuntime): void {
