@@ -56,13 +56,13 @@ describe("Phase 9: 同步管理器", () => {
     const childDir = config.getChildDir(child.childId);
     const files = scanChildFiles(childDir);
 
-    // Should have profile.json, study-topics.md, study-rules.md, life-events.md
+    // Should have profile.json、AGENTS.md、daily/、learning/ 等（ISSUE-013 Phase 1 已删旧结构 study-* 残留）
     expect(files.length).toBeGreaterThanOrEqual(4);
     const paths = files.map((f) => f.path);
     expect(paths).toContain("profile.json");
-    expect(paths).toContain("study-topics.md");
-    expect(paths).toContain("study-rules.md");
-    expect(paths).toContain("life-events.md");
+    expect(paths).toContain("AGENTS.md");
+    expect(paths).toContain("learning/topics.md");
+    expect(paths).toContain("learning/rules.md");
 
     // .pi directory should NOT be included (sync excludes it)
     expect(paths.some((p) => p.startsWith(".pi/"))).toBe(false);
@@ -93,12 +93,13 @@ describe("Phase 9: 同步管理器", () => {
     const profileBefore = before.find((f) => f.path === "profile.json")!.hash;
 
     // Read and modify (add a comment)
-    const rulesPath = path.join(childDir, "study-rules.md");
+    // 注：ISSUE-013 Phase 1 已删除旧结构 study-rules.md，改用 learning/rules.md
+    const rulesPath = path.join(childDir, "learning", "rules.md");
     const original = fs.readFileSync(rulesPath, "utf-8");
     fs.writeFileSync(rulesPath, original + "\n# sync test comment\n");
 
     const after = scanChildFiles(childDir);
-    const rulesAfter = after.find((f) => f.path === "study-rules.md")!.hash;
+    const rulesAfter = after.find((f) => f.path === "learning/rules.md")!.hash;
 
     // Restore
     fs.writeFileSync(rulesPath, original);

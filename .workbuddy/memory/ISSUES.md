@@ -404,7 +404,7 @@
 
 ## [ISSUE-013] 梳理孩子 agent 知识库的「快速查询 / 快速写入」，查询与写入都要省 token
 
-- **类型**：知识库结构 + 工具面专项优化（待梳理/待实现）
+- **类型**：知识库结构 + 工具面专项优化（已梳理定稿 2026-08-20，待实施）
 - **需求**：孩子 agent 的知识库（`data/children/<childId>/`）需要再做一轮梳理，目标：**快速查询**（agent 想找什么能低成本拿到）、**快速写入**（记录/更新省力），且**查询与写入都要省 token**。
 - **基线（已存在，先对齐）**：
   - 结构已按 `LEARNING-DATA-REDESIGN.md`（P0–P6 方案，项目根，239 行）落地：`daily/` 单一真相源（4 区块：学习/生活/问答/任务）+ `learning/`（topics.md 索引 + rules.md + 各主题 `{topic}.md` 进度/method.md/materials/）+ `life/{月}.md` 月索引（指针）+ `tags/` 倒排索引（taxonomy.md + 各 tag）+ `inquiries/`、`tasks/`、`outputs/`。
@@ -461,6 +461,34 @@
 - Phase 4 验证：build + 全量测试 + 用 ISSUE-010 token 统计对比「查询/写入前后 token」量化收益
 
 **待确认项**：① 遗留 3 文件直接删除 vs 标 deprecated 排除（建议删除，数据已迁移）；② daily/index.md 全量回填 vs 今日起增量（建议脚本全量回填一次，成本低收益完整）；③ 工具命名/参数（kb_read/kb_append 可改）；④ 是否注入 daily/index 到系统提示（建议先不注入）。
+
+### 已定稿方案（2026-08-20，与 LEARNING-DATA-SPEC.md 一致）
+
+**数据结构定稿**（详见 `LEARNING-DATA-SPEC.md`，现为唯一权威）：
+- **不建 `daily/index.md`**（推翻原建议）：daily 文件名即日期 = 时间线索引；跨天查询用 `kb_read` month 聚合**按需生成**（不持久化、不漂移）。
+- daily 详式定稿（`### 标题`+字段，孩子表现/概要必填详写）；进度文件每课加 `tags::`（**创建知识点时**一次性选定，不归 recording）；`outputs/` 启用（产物统一归位）；topics.md frontmatter 唯一真源（删正文表格）；inquiries/tasks 月索引由 recording 补维护；旧结构残留（life-events/study-topics/study-rules）删除；tags 倒排失效链接修复。
+
+**工具定稿**（5.3/5.4/5.5 节）：
+- `kb_read {file, block?, item?, listOnly?}`（含 month 聚合）；`kb_patch {file, item?, field?, value, fields?}`（定位更新，内容不进上下文，frontmatter 用 `frontmatter:key`）；`kb_append {file, block, content}`（区块尾追加）。共用定位器 + `kb-parser.ts`（纯函数，支持 `- 键：值` 与 `键:: 值` 两种格式）。
+- **schema 约束四层保障**：L1 数据文件写入走 kb 工具收口（数据/内容文件分流）；L2 字段白名单（`kb-schema.ts` 单一真源，kb 工具与 lint 共享）；L3 AGENTS.md + recording 行为约束；L4 **lint 定时校验**（确定性脚本 `scripts/kb-lint.mjs`，app 启动时 + 每 24h，只报告不修改，报告落 `data/children/{childId}/lint-report.md`）。
+- 已知限制：SDK 内置 write/edit 无法按路径禁止（内容文件需要），L1 依赖 L3+L4 兜底。
+
+**实施清单（Phase 0–4）**：
+- **Phase 0 规范补充（先定死规则）**：①SPEC 3.6/3.7 补「索引条目标题与 daily `###` 标题**同名**」约束（指针精确定位的根基）；②SPEC 5.3 补 `kb_read` 的 `ref` 简写（`daily/2026-08-13.md#生活` → `{file, block}`）；③SPEC 5.5 lint 校验加第③条「同标题条目存在」（指针三级校验：文件存在→区块存在→同标题条目存在）；④确认进度文件**不加**指向 daily 的指针（B 方案：进度管进度、复习次数承载频次，反查走 daily 文件名+课程名字段）。
+- **Phase 1 结构迁移**：①删遗留 3 文件（life-events/study-topics/study-rules）+ 空壳孩子 `daily-logs/`；②topics.md 删正文表格；③产物移入 `outputs/`（番茄钟.html/pomodoro.html/tomato-timer.html）；④修 tags 倒排失效链接（`learning/lunyu.md` → `learning/lunyu/lunyu.md`）；⑤统一 life/2026-08.md 旧散文为索引行格式。验证：ls + 抽查 + tsc。
+- **Phase 2 工具实现**：①`electron/lib/kb-parser.ts`（纯函数：frontmatter/区块/条目/字段，两种字段格式 `- 键：值` 与 `键:: 值`）；②`kb-schema.ts`（字段白名单单一真源）；③`custom-tools.ts` 注册 `kb_read`（含 ref 简写/listOnly/month 聚合）/`kb_patch`（frontmatter:key/批量 fields）/`kb_append`；④`pi-session.ts:341` tools 白名单同步；⑤单测（定位/追加/回读/路径守卫/ref 解析/未知字段拒绝）。验证：vitest 新用例全过 + `tsc` 过滤后 0 业务错误 + `npm run build`。
+- **Phase 3 规范更新**：①`recording/SKILL.md` 补 inquiries/tasks 月索引步骤 + 索引标题与 daily 同名 + 写入走 kb 工具；②`LEARNING_NAV_INSTRUCTIONS`（pi-session.ts）加「数据文件禁止裸 write/edit，一律走 kb 工具」；③跑 `scripts/regenerate-agents.mjs` 刷新。验证：regenerate 后 AGENTS.md 含新指令。
+- **Phase 4 lint + 验证**：①`electron/lib/kb-lint.ts`（校验：目录结构/daily 文件名/字段白名单/格式一致性/取值约束/指针三级校验/frontmatter 可解析）；②`scripts/kb-lint.mjs`（CLI + 主进程调用）；③主进程接入（启动时 + 每 24h，报告落 `data/children/{childId}/lint-report.md`，只报告不修改）；④端到端：新会话用 kb 工具读写验证 + ISSUE-010 token 对比量化（可选）。验证：lint 对现有 108 个 daily 跑出基线报告 + 主进程启动日志。
+- **验收总则**：`LEARNING-DATA-SPEC.md` 为唯一权威，冲突以 SPEC 为准；每 Phase 完成跑 `tsc`（过滤 TS2318/2552）+ build + 相关测试。
+
+### 实施进度（2026-08-20 已完成 Phase 0–4）
+- **Phase 0 ✅**：SPEC 补指针规范（3.6/3.7 同名约束、5.3 ref 简写、5.5 lint 三级校验、3.4 B 方案注明）；daily 示例更新为实际 `- **键：** 值` 加粗格式。
+- **Phase 1 ✅**：删主账号 life-events/study-topics/study-rules 残留；topics.md 删正文表格；产物移入 outputs/（番茄钟/pomodoro/tomato-timer）；tags 倒排 20 个文件失效链接修复（learning/lunyu.md → learning/lunyu/lunyu.md）；daily/2026-08-11.md 生活区块与 life/2026-08.md 统一为规范格式（`### 做番茄钟网页` + 索引行，同名）。
+- **Phase 2 ✅**：新建 `electron/lib/kb-parser.ts`（结构解析纯函数，支持 `- 键：值`/`键:: 值`/`**键：** 值` 加粗三种形态）+ `kb-schema.ts`（字段白名单，含 recording 主流字段扩展）；custom-tools.ts 注册 kb_read（ref 简写/listOnly/month 聚合）/kb_patch（frontmatter:key/批量 fields/白名单拒绝）/kb_append（区块尾追加/白名单拒绝）；pi-session.ts tools 白名单 + customTools 同步；单测 `test/kb-parser.test.ts`（19 用例）+ `test/kb-tools.test.ts`（11 用例）全过。
+- **Phase 3 ✅**：recording/SKILL.md 补第 5/6 步（inquiries/tasks 索引）+ 同名约束 + 第 7 节 kb 工具写入指引；LEARNING_NAV_INSTRUCTIONS 加「数据文件禁止裸 write/edit」；regenerate-agents.mjs 刷新（1 孩子）。
+- **Phase 4 ✅**：新建 `electron/lib/kb-lint.ts`（校验：目录/文件名/字段白名单/格式一致性/取值约束/指针三级/frontmatter）+ `scripts/kb-lint.mjs`（CLI，node --experimental-strip-types）+ main.ts 启动时 + 每 24h 定时接入；**实测主账号 error=0 / warning=1436（历史基线字段）**；lint 跳过无 profile.json 的测试残留目录（~150 个）；daily 未知 ## 区块（评估区块）不检查。
+- **验证**：kb 相关 30 用例全过；tsc 过滤后 0 业务错误；npm run build 通过；全量 vitest 无新增失败（既有环境性失败不变）。
+- **遗留待办**：① 历史 daily（4-6 月）warning 1436 条为基线不迁移（历史即事实）；② study-tracker 评估区块文案引用 `study-rules.md` 已删除，需改为 `learning/rules.md`（后续随 study-tracker 更新）；③ 测试残留目录（ans-*/cont-* 等 ~150 个）堆积问题独立处理。
 
 ## [ISSUE-014] 左侧学习资料应自动显示最新资料，不要停在列表等手动点开
 
@@ -555,6 +583,47 @@
 - **优先级**：已完成（2026-08-19）
 - **记录时间**：2026-08-19
 
+## [ISSUE-020] 增加专门的「编程 agent」负责 HTML 制作，学习伙伴 agent 判断需要 html 时调用它，编程 agent 单独设置模型
+
+- **类型**：需求 / 待实现（用户未标注）
+- **需求**：新增一个**专门的编程 agent**，职责是制作给孩子看的 HTML 学习资料。当学习伙伴 agent（孩子会话）判断需要做 html 时，**调用这个编程 agent** 生成；编程 agent 要**单独设置模型**（与学习 agent 的默认模型不同，可选更强/更适配代码生成的模型）。
+- **现状（已定位）**：
+  - 现在 html 由**学习 agent 自己拼**：孩子 prompt（`pi-session.ts:139`）明确写「html 学习资料（给孩子看的展示版）由你灵活处理——手工拼 html 用 display_content 展示」；`display_content` 工具（`custom-tools.ts:13`）负责展示，内容来自 agent 现场生成或脚本预生成。
+  - 孩子 agent 会话：`createAgentSession`（`pi-session.ts:332-343`），模型 `getDefaultModel()`（301 行），工具面 `read/write/edit/display_content/get_date/get_progress/kb_read/kb_patch/kb_append`。
+  - **SDK 无内置子 agent 机制（已查证）**：`@earendil-works/pi-coding-agent` dist 中无 subagent/delegate/task tool——「agent 调 agent」不能靠 SDK 原生能力，必须**应用层编排**。
+- **技术方案（候选，待拍板）**：
+  - **编排链路**：学习 agent 新增 customTool（如 `create_html_lesson`，参数：标题/内容要求/输出相对路径）→ 主进程 handler 捕获 → 创建/复用**编程 agent 会话**（独立 model，如 qwen-max / deepseek-v4 中代码能力更强的项，与 `getDefaultModel()` 解耦）→ 编程 agent 依要求生成 HTML 落盘（`data/children/<childId>/learning/<topic>/materials/` 或与 display_content 的 path 约定一致）→ 返回 `{path, title}` → 学习 agent 再用 `display_content` 展示。
+  - **编程 agent 会话**：独立 prompt（编程规范：儿童友好样式、可交互 JS 沙盒内自包含、文件落盘路径约束、无 method/知识库职责）；工具面收敛为 `read/write/edit/get_date`（不挂 display_content/kb_*）；会话文件按 childId 隔离存储（沿用现有 `data/children/<childId>/sessions/` 模式）。
+  - **模型配置**：`pi-runtime.ts` 模型清单已支持多模型（ISSUE-007 已登记 DeepSeek V4 系列），新增「编程 agent 模型」配置项（默认值与家长可调，落 Settings 或 config.ts），`createAgentSession({ model })` 传不同模型即可（现有签名支持，`pi-session.ts:334-335` 参照）。
+  - **触发判定**：学习 agent 何时调编程 agent 由 prompt 引导（如「需要给孩子展示 html 时调用 create_html_lesson」），或保持 display_content 兼容（编程 agent 产出后仍走 display_content 展示，前端 MaterialsPanel 无需改动）。
+- **待确认项**：① 编程 agent 模型选哪个（qwen-max / deepseek-v4 系列 / 其它）；② 会话生命周期：每次生成新建一次性会话 vs 长期复用同一编程会话（影响 token 与历史累积）；③ 学习 agent 是「调工具」还是「发消息给编程 agent」语义（本方案按工具编排，更可控）；④ html 生成的输入来源（学习 agent 传需求摘要 vs 编程 agent 自行读进度/method）；⑤ 是否需要家长在 Settings 里配置编程 agent 模型。
+- **排查 / 修改入口（可直接执行）**：`electron/lib/pi-session.ts:332-343`（学习会话 tools/customTools 扩展点）、`electron/lib/custom-tools.ts`（新增 `create_html_lesson` 工具定义）、`electron/lib/pi-runtime.ts`（模型清单/默认模型）、`electron/lib/ipc-handlers.ts`（工具 handler 编排处）、`pi-session.ts:362-383`（家长 agent 会话范式可参照建编程会话）。
+- **关联**：ISSUE-007（模型登记——编程 agent 模型从现有清单选）、ISSUE-002/ISSUE-014（display_content 展示链路保持兼容）、ISSUE-013（编程 agent 读写知识库与否、token 开销需评估）。
+- **优先级**：待定（用户未标注）
+- **记录时间**：2026-08-20
+
+## [ISSUE-022] 学习主题 method.md（用户自定义）里对 kb 工具调用的约定要写清，且需能「检测 + 自动修复」
+
+- **需求**：method.md 是家长可自由编辑的内容文件，但其「记录」段会规定 agent 如何调用 kb 工具（主要是 `kb_append` 写 daily）。这类 kb 工具调用的**约定要标准化、可校验**，并且系统要能**检测 method.md 里的陈旧/错误 kb 工具引用**（工具名写错、参数形状不对、误用 write/edit 写数据文件），并提供**自动修复**把它们改写成规范写法。
+- **现状（已定位）**：
+  - kb 工具真源：`electron/lib/custom-tools.ts` 注册的 `kb_read`(158) / `kb_patch`(252) / `kb_append`(380)，外加 `display_content`(31) / `get_date`(74) / `get_progress`(110)；规范签名见 `LEARNING-DATA-SPEC.md:286-319`（kb_read/get/patch/append 四工具 + 参数）。
+  - method.md 角色：`LEARNING-DATA-SPEC.md:338` 表确认 method.md 属「内容文件」，可用 write/edit，但**其内容规定 agent 对数据文件必须用 kb 工具**（对照：`AGENTS.md:33`「数据文件读写一律用 kb_read/kb_patch/kb_append，禁止 write/edit 裸写」）。
+  - 现状写法：8 个主题的 method.md「记录」段均写「用 `kb_append`（`{file:"daily/…", block:"学习", content:"### …"}`）」——目前与规范一致，但靠人工对齐，无自动化保障。
+- **缺口（根因）**：
+  1. **method.md 完全不在校验范围**：`kb-lint.ts` 的 `lintChildDir`（246-271）只跑 `lintDaily` / `lintProgress` / `lintIndexes` / `lintTopicsRules`——**无任何 method.md 检查**，用户改坏 kb 工具引用也检不出来；
+  2. `kb-lint` 设计哲学是「只报告不修改」（`main.ts:153` 注释 + `writeReport` 仅落报告），目前**不具备自动修复能力**；
+  3. **自动修复先例已存在**：`scripts/update-method-recording.mjs` 正是「遍历各主题 method.md、把记录段从 write/edit 改成 kb 工具指引」的脚本——证明「扫描+改写 method.md」可行，可沉淀为常驻能力。
+- **候选方案（检测 + 自动修复）**：
+  - **约定标准化**：在 `LEARNING-DATA-SPEC.md` 新增一节「method.md 内 kb 工具引用规范」（允许工具名集合、参数形状、数据文件 vs 内容文件边界）；或在 `kb-schema.ts` 加 `METHOD_KB_TOOLS` 白名单供检测复用（避免「工具一套、lint 一套」漂移，呼应 `kb-schema.ts:4-5` 既有设计意图）。
+  - **检测（扩展 kb-lint）**：新增 `lintMethodKbRefs(childDir)`，正则扫描每个 `learning/{topic}/method.md`：① 是否引用不存在的工具名（如 `kb_write`/`kb_update`/`write`/`edit` 出现在数据文件写场景）；② 参数形状是否偏离规范（如 `kb_append` 缺 `block`、`kb_patch` 缺 `value`）；③ 是否把数据文件（daily/、learning 进度、life/、inquiries/、tasks/、tags/）写成走 write/edit。
+  - **修复（新增 `scripts/fix-method-kb.mjs` 或并入 `update-method-recording.mjs`，常驻化）**：把扫描出的错误引用重写为规范写法（复用该脚本既有替换逻辑），幂等、可重复跑；`kb-lint` 报告里给「可自动修复」标记。
+  - **触发**：沿用 `main.ts` 现有 `lintOnce`（启动 + 每 24h），检测阶段顺带跑 method 检查；修复可手动跑或加 IPC/按钮触发。**先不默认自动改**（避免误改家长自定义内容），报告后由人确认。
+- **待确认项**：① 自动修复默认开还是仅报告（家长自定义内容误改风险）；② method.md 的 kb 引用是否要标准化模板（减少自由度）；③ 是否把 method.md 检查并入 `scripts/kb-lint.mjs` CLI 一并输出。
+- **排查 / 修改入口（可直接执行）**：`electron/lib/kb-lint.ts`（新增 `lintMethodKbRefs` + 在 `lintChildDir` 调用）、`electron/lib/kb-schema.ts`（加 `METHOD_KB_TOOLS` 白名单）、`electron/main.ts:153-173`（触发点）、`scripts/update-method-recording.mjs`（修复先例，复用替换逻辑）、`LEARNING-DATA-SPEC.md:286-342`（规范真源）、各 `learning/{topic}/method.md`（被检/被修对象）。
+- **关联**：ISSUE-009（同走 method.md「记录」段，本次把它对 kb 工具的引用标准化+可校验，与「详细度」互补）；ISSUE-013（kb 查询/写入省 token——method.md 写错工具会导致 agent 跑偏、额外消耗）；ISSUE-018（method.md 本身用 write/edit 属内容文件，与数据文件 kb 工具边界）。
+- **优先级**：待定（建议中：涉及数据完整性但不阻断功能）
+- **记录时间**：2026-08-20
+
 ## [ISSUE-017] 退出家长账号按钮只应出现在家长页面，去掉主页左上角退出按钮
 
 - **类型**：需求 / 待实现（用户未标注）
@@ -602,3 +671,22 @@
   验证：`tsc --noEmit` 过滤后 0 业务错误；`npm run build` 通过；全量 vitest 85 用例 72 过 / 13 失败，13 失败均为既有环境/数据问题（safe-delete 拦截 auto-new-session/archive-limit、learning-summary 真实数据漂移、functional app.isPackaged、app.test 云端 ECONNREFUSED、sync.test 扫描真实目录超时偶发）——单独重跑 auto-new-session+archive-limit 13 用例全过，证实与本次改动无关。`out/` 需重新构建生效。
 - **优先级**：已完成（2026-08-19）
 - **记录时间**：2026-08-19
+
+## [ISSUE-021] 语音输入多次说话只保存最后一段录音——应把本次输入的所有语音段拼接成一个音频文件
+
+- **类型**：bug / 待修复（用户未标注）
+- **现象**：聊天输入框用语音输入时，一次输入中**多次按住说话**（每段识别后追加文本），最终**保存/发送的录音只包含最后一段**；需求是把这一次输入的所有语音段**拼接成一个语音文件**保存（消息气泡里一个可播放的完整音频）。
+- **根因（已定位，前端覆盖式状态）**：
+  - 识别链路：每次按住说话 → `handlePressEnd`（`src/components/ChatWindow.tsx:415-441`）→ `voice:transcribe`（`electron/lib/ipc-handlers.ts:712-721`，返回 `{text, audio}`，audio=本段录音 webm base64）→ 前端 **文本用 `setInput(prev => prev + r.text)` 追加**（430 行，正确），但 **`setPendingAudio(r.audio)` 是覆盖**（431 行，错误——只留最后一段）。
+  - 发送时 `ChatWindow.tsx:240` `const audio = pendingAudio || undefined` → 消息只带最后一段音频进 `ChatMessage.audio`；`setPendingAudio("")`（247 行）清空。预览区（688-701 行）也只支持单段。
+  - 主进程 `transcribeAudio`（`electron/lib/voice/index.ts:30`）只做转写（webm→wav→provider），临时文件用完即删（ISSUE-015 后仅失败时保留），**无正式录音落盘**——「保存录音」实际是前端 base64 状态，历史恢复靠 `audioPath`（`readUpload` 读落盘文件，`ChatWindow.tsx:390-397`）。
+- **实现要点（候选，待定）**：
+  1. **前端多段累积**：`pendingAudio`（单段 string）改为 `pendingAudios: string[]`，每次识别 `push(r.audio)`；预览播放逻辑适配多段（或合并后播放）；
+  2. **拼接**：发送时把所有段（base64/ArrayBuffer）交给主进程新 IPC（如 `voice:merge`）→ 主进程复用既有 ffmpeg 管线（`electron/lib/voice/audio.ts` `webmToWav16k`）把各段**转 wav 后用 ffmpeg concat** 拼成单个音频 → 落盘为正式文件（如 `data/children/<childId>/uploads/voice-*.webm|wav`）→ 消息带 `audioPath`（历史可恢复）+ 可选 base64 预览；
+  3. 拼接细节：webm/opus 各段同编码可直接 concat demuxer，但跨段时间戳/EBML 可能不连续，**先统一转 wav 再 concat 更稳**；输出格式选浏览器可播的 wav/webm/mp3（确认播放端）；
+  4. 若只发一段：保持现有行为（可直接落盘单段，不强制 concat）。
+- **待确认项**：① 合并时机：发送时一次性合并 vs 每次识别后立即合并（发送时合并更省，但预览只能按段播）；② 合并输出格式（wav/webm/mp3）；③ 合并失败时的降级（如落盘失败仍用 base64 发送最后一段 + 提示）；④ 是否同时保留每段独立录音。
+- **排查 / 修改入口（可直接执行）**：`src/components/ChatWindow.tsx:240-247`（发送取 audio）、`ChatWindow.tsx:415-441`（`handlePressEnd` 覆盖点）、`ChatWindow.tsx:688-701`（预览区单段）、`electron/lib/ipc-handlers.ts:712-721`（voice:transcribe 参照，新增 voice:merge 相邻注册）、`electron/lib/voice/audio.ts`（ffmpeg 拼接）、`electron/lib/voice/index.ts:30`（transcribeAudio）。
+- **关联**：ISSUE-015（ffmpeg 管线与临时文件策略，拼接复用同一管线）；ISSUE-008（文件上传——落盘目录/`readUpload` 读取可复用）。
+- **优先级**：待定（用户未标注）
+- **记录时间**：2026-08-20

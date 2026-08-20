@@ -2,7 +2,8 @@
 
 > 本文档汇总了关于「重设计孩子学习记录文件结构，让 AI agent 更高效、安全地检索与读写」的讨论，并据此形成可落地的实施方案建议。
 > 适用范围：桌面应用「学习伙伴」的每个孩子数据目录 `children/{childId}/`。
-> 状态：讨论定稿，待在允许编辑的会话中按 P0–P6 逐步实施。
+> 状态：**数据结构已定稿（2026-08-20）**；工具面（kb 系列）与实施步骤待单独讨论。AGENTS.md 属行为规范，不在本文档范围（见第十节附注）。
+> ⚠️ **现行权威规范见 `LEARNING-DATA-SPEC.md`**（数据结构 + 生命周期 + AI 工具面）；本文档为历史设计讨论与决策记录，冲突时以 SPEC 为准。
 
 ---
 
@@ -52,7 +53,7 @@ children/{childId}/
 │   └── 2026-08.md
 ├── tasks/                 # 按月索引（只指针）
 │   └── 2026-08.md
-├── outputs/               # 任务产物（番茄钟.html、歌曲/视频链接等真实文件）
+├── outputs/               # 任务产物（已启用：番茄钟.html、歌曲/视频链接等真实文件统一放此，不散落孩子目录根）
 └── tags/                  # 倒排索引（标签枢纽）
     ├── taxonomy.md        # 预设标签总表（可控词表，家长可增删）
     └── 诚实.md            # 关联知识点 + 关联生活事件
@@ -117,8 +118,7 @@ children/{childId}/
 | 关联机制 | 受控标签词表 + `tags/` 倒排索引，知识点 ↔ 生活事件通过标签关联 |
 | recording | **保留为 skill**（可临时触发做汇总）；study-tracker 同属定时任务，**确认保留为定时 skill** |
 | 打标签可靠性 | recording 只能从 taxonomy 选标签，无法归类打 `其他` |
-| 知识点 tags | 课程建好时一次性从词表选定，稳定不动 |
-| AGENTS.md | 采用**双段结构（B 方案）**：模板生成段（身份+导航，每次重写）+ 家长自由编辑段（`<!-- custom -->` 标记内，重写时保留）；导航指令写进 `buildAgentsMd` 模板 |
+| 知识点 tags | **创建知识点（新增进度条目）时**一次性从 taxonomy 选定，写入进度文件 tags 字段，稳定不动；**不归 recording 维护** |
 | 上下文控制 | method/materials 只放"去哪读"的指引，不灌全文，agent 按需 read |
 | 场景覆盖 | 4 类场景（学习/生活/问答/任务）**全部落地**，不做后置 |
 | 进度文件位置 | 每个主题的进度文件放**自己主题目录下**（`learning/{topic}/{topic}.md`），与 method.md、materials/ 同目录 |
@@ -129,41 +129,65 @@ children/{childId}/
 
 ## 九、文件 schema 详细定义
 
-### daily/{YYYY-MM-DD}.md（单一真相源，4 固定区块）
+### daily/{YYYY-MM-DD}.md（单一真相源，4 固定区块，详式）
+文件名即日期（YYYY-MM-DD），文件系统天然构成时间线索引——**不另建总索引**。每条记录用 `### 标题` + 字段详写（与 ISSUE-009「宁详勿略」对齐；「孩子表现/概要」必填且详写，不限篇幅）：
+
 ```markdown
 ## 学习
-- 主题/课程/摘要 | tags:[反思]
+### 论语先进篇第十六章
+- 课程名：论语先进篇第十六章（与进度文件 ### 标题完全一致）
+- 考核：吟诵✓ 翻译✓ 道理应用✓
+- 掌握度：熟练
+- 难点：…（讲解/纠正过程）
+- 错题：…（错在哪、如何纠正）
+- 孩子表现：…（原话/例子/提问/思考/情绪，必填详写）
 
 ## 生活
-- 事件：… | type: consult|share | tags:[诚实]
+### 事件标题
+- 标签：#日常 #独立（只能从 tags/taxonomy.md 选）
+- 概要：…（完整经过，必填详写）
 
 ## 问答
-- Q: … | tags:[恐龙]
+### 问题
+- 孩子的疑问：…（原话）
+- 引导过程：…
+- 结论：…
 
 ## 任务
-- 任务：做个番茄钟 | type: game | status: done | output: outputs/tomato.html
+### 任务名
+- 需求：…
+- 过程：…
+- 产物：outputs/xxx.html
+- 状态：done
 ```
 
 ### learning/topics.md（总入口）
 frontmatter：`topics: [{name, file, method, progress}]`，其中 `file` 指向主题目录下的进度文件（如 `lunyu/lunyu.md`）。
+**frontmatter 是唯一真源；正文只放说明性文字，不写重复数据表**（避免双份数据漂移）。
 
 ### learning/rules.md（每日目标量，放 learning 根目录）
 frontmatter：`rules: {主题: {daily, review, type}}`，只与学习相关。
 
 ### learning/{topic}/{topic}.md（主题进度文件，放自己目录下）
+frontmatter 只承载进度字段（method/materials 分别在 topics.md 与 method.md 中约定，不在此重复）：
+
 ```markdown
 ---
-topic: 论语
-learned: 3
-total: 20
-next: 学而篇·吾日三省吾身
-method: learning/lunyu/method.md
-materials: learning/lunyu/materials/
+learned: 282
+total: 514
+next: "论语先进篇第十七章"
+updated: 2026-08-19
 ---
-### 学而篇·吾日三省吾身
-- 状态: ⬜ | 类别: 必学 | tags: [反思, 自律, 诚实]
-- 关联汇总: daily/2026-08-13.md#学习
+
+### 论语先进篇第十六章
+状态:: ✅
+掌握度:: 良好
+复习次数:: 0
+最近复习:: 2026-08-13
+tags:: [诚实, 自律]
 ```
+
+- 每课 `tags`：**创建知识点（新增该 `###` 条目）时**从 taxonomy 一次性选定，稳定不动；不归 recording 维护。tags 倒排索引的「关联知识点」据此生成。
 
 ### learning/{topic}/method.md + materials/
 - `method.md`：该主题教学步骤（含"用 tags 找相关生活事件讲解"一步）。
@@ -174,6 +198,19 @@ materials: learning/lunyu/materials/
 ## 2026-08-13 撒谎事件
 - summary: 对妈妈撒谎 | type: consult
 - tags: [诚实, 亲情] | 关联: daily/2026-08-13.md#生活
+```
+
+### inquiries/{YYYY-MM}.md 与 tasks/{YYYY-MM}.md（按月索引，只指针，与 life 同构）
+由 recording 在写 daily「问答/任务」区块后同步维护：
+
+```markdown
+## 2026-08-13 恐龙为什么灭绝
+- summary: 随口问恐龙灭绝原因 | type: qa
+- tags: [好奇] | 关联: daily/2026-08-13.md#问答
+
+## 2026-08-13 做个番茄钟
+- summary: 番茄钟网页，可自己调时间 | type: game | status: done
+- 关联: daily/2026-08-13.md#任务
 ```
 
 ### tags/taxonomy.md（受控词表）
@@ -190,19 +227,9 @@ materials: learning/lunyu/materials/
 
 ---
 
-## 十、AGENTS.md 模板变更（写进生成模板）
+## 十、附注：AGENTS.md 不属于本文档范围
 
-`buildAgentsMd(profile)` 在生成 AGENTS.md 时，除身份/性格外，追加导航段：
-
-```
-【学习】孩子要学习时：读 learning/topics.md → {topic}.md 的 next →
-       method.md 按方法教 → materials/ 取资料 → 用课程 tags 开
-       tags/{tag}.md 找相关生活事件，结合讲解。
-【记录生活】每次记生活事件必须打 tags，且只能从 tags/taxonomy.md 选；
-       无法归类打 `其他`。
-```
-
-> 注意：AGENTS.md 是生成物，改资料时会被 `buildAgentsMd` 重写，因此导航指令必须写进生成模板，否则一改资料就被覆盖。
+AGENTS.md 是**行为准则**（身份 + 导航指令 + 家长 custom 段），不是数据结构。其生成模板与导航指令在 `electron/lib/pi-session.ts`（`LEARNING_NAV_INSTRUCTIONS` / `buildAgentsMd` / `writeAgentsMd` 保留 custom 段）维护，不在本文档描述。涉及 AGENTS.md 的改动请直接改生成代码，并跑 `scripts/regenerate-agents.mjs` 刷新所有孩子。
 
 ---
 
@@ -213,7 +240,7 @@ materials: learning/lunyu/materials/
 3. **定时任务**：recording / study-tracker 按调度运行，产出 daily/meta 并维护索引。
 
 **具体示例（让设计落地可感）**：
-- `learning/lunyu.md` 课程「吾日三省吾身」tags: `[反思, 自律, 诚实]`
+- `learning/lunyu/lunyu.md` 课程「吾日三省吾身」tags: `[反思, 自律, 诚实]`
 - `tags/诚实.md` 里写：`关联知识点: 论语·吾日三省吾身`；`关联生活事件: 2026-08-13 撒谎事件 → daily/2026-08-13.md#生活`
 - 孩子某天说"今天对妈妈撒谎了，怎么办" → recording 记进 life 索引，打 tag `[诚实, 亲情]`，并同步写进 `tags/诚实.md`
 - 之后教「吾日三省吾身」时，agent 读 method.md → 见"用 tags 找生活事件" → 开 `tags/诚实.md` → 读 daily 区块 → 结合撒谎事件讲解
@@ -222,12 +249,12 @@ materials: learning/lunyu/materials/
 
 ## 十二、实施步骤（P0–P6）
 
-- **P0** 定义标签词表 → 写 `tags/taxonomy.md`
-- **P1** 重写 learning 结构（topics.md / {topic}.md / method.md / materials/）
-- **P2** 改造 `buildAgentsMd` 模板，追加导航 + 打标签规则
-- **P3** 改造 recording skill：写 daily + 双索引（life 索引 + tags 倒排）+ 受限标签
-- **P4** study-tracker 确认保留为定时 skill
-- **P5** 迁移脚本：旧 `life-events.md` / `daily-logs` / `{topic}.md` → 新结构
+- **P0** 定义标签词表 → 写 `tags/taxonomy.md` ✅
+- **P1** 重写 learning 结构（topics.md / {topic}.md / method.md / materials/）✅
+- **P2** ~~改造 buildAgentsMd 模板~~（AGENTS.md 属行为规范，已移出本文档；导航/打标签规则改动走 `pi-session.ts`）
+- **P3** 改造 recording skill：写 daily（详式）+ 三索引（life / inquiries / tasks）+ tags 倒排 + 受限标签（**inquiries/tasks 索引待补**）
+- **P4** study-tracker 确认保留为定时 skill ✅
+- **P5** 迁移脚本：清 `life-events.md` / `study-topics.md` / `study-rules.md` / `daily-logs` 残留；任务产物移入 `outputs/`；修 tags 倒排失效链接（旧 `learning/lunyu.md` → `learning/lunyu/lunyu.md`）；统一 life 旧散文数据为索引行格式
 - **P6** Path Guard 复核 + 端到端测试
 
 ---
@@ -236,4 +263,9 @@ materials: learning/lunyu/materials/
 
 - ~~study-tracker 是否也保留为 skill~~ → **已确认保留为定时 skill**
 - ~~标签词表初版具体范围~~ → 初版 20 个标签（品格 / 关系 / 情绪 / 学习 四维），见 P0 实施
+- ~~daily 行式 vs 详式~~ → **详式**：`### 标题` + 字段，孩子表现/概要必填详写（2026-08-20 确认）
+- ~~是否建 daily/index.md 总索引~~ → **不建**：daily 文件名即日期构成时间线索引；分类索引（life/inquiries/tasks + tags 倒排）负责按维度反查（2026-08-20 确认）
+- ~~知识点 tags 由谁维护~~ → **创建知识点（新增进度条目）时**一次性选定写入 tags 字段，不归 recording（2026-08-20 确认）
+- ~~outputs/ 是否启用~~ → **启用**：任务产物统一放 outputs/，不散落孩子根目录（2026-08-20 确认）
+- ~~AGENTS.md 模板是否属本文档~~ → **移出**：AGENTS.md 是行为准则，模板维护在 `pi-session.ts`（2026-08-20 确认）
 - 是否要加"打开数据文件夹 / 在 Obsidian 打开"的辅助入口（可选，未定）

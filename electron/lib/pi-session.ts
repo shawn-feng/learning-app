@@ -8,7 +8,7 @@ import path from "path";
 import fs from "fs";
 import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { displayContentTool, getDateTool, getProgressTool } from "./custom-tools";
+import { displayContentTool, getDateTool, getProgressTool, kbAppendTool, kbPatchTool, kbReadTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import learningGuardExtension from "../extensions/learning-guard";
@@ -32,6 +32,7 @@ const LEARNING_NAV_INSTRUCTIONS = `
 
 ### 记录
 学习总结、生活事件等记录由 recording 技能负责，按需调用（详见其 SKILL.md）。
+**数据文件（daily/、life/、inquiries/、tasks/、tags/、learning 进度文件）的读写一律用 kb_read / kb_patch / kb_append 结构化工具，禁止用 write/edit 裸写**——工具会校验字段白名单与结构；新建当日 daily 文件、追加新条目用 kb_append（文件不存在时自动创建）；更新字段用 kb_patch（字段缺失会自动追加）。只有 method.md / materials/ 等内容文件才用 write/edit。
 
 ### 孩子上传的附件（uploads/）
 - 孩子上传的图片会随消息直接发送给你（你可见），无需读取文件；
@@ -336,10 +337,10 @@ async function createChildSession(
     resourceLoader: loader,
     // 注意：customTools 里的每个工具，其 name 必须同时出现在 tools 白名单中才会被
     // SDK 注册并激活（agent-session.js 的 isAllowedTool 会按白名单过滤 customTools）。
-    // display_content / get_date / get_progress 都是 customTools，故三者名字都要列在 tools 里，
-    // 缺一不可——此前 get_progress 漏列导致 agent 根本拿不到该工具（ISSUE-006 配套修复）。
-    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress"],
-    customTools: [displayContentTool, getDateTool, getProgressTool],
+    // display_content / get_date / get_progress / kb_read / kb_patch / kb_append 都是 customTools，
+    // 故名字都要列在 tools 里，缺一不可——此前 get_progress 漏列导致 agent 根本拿不到该工具（ISSUE-006 配套修复）。
+    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress", "kb_read", "kb_patch", "kb_append"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbReadTool, kbPatchTool, kbAppendTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，
