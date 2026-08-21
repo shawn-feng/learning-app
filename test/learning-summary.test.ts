@@ -8,7 +8,7 @@ import path from "path";
 // process.cwd()/data（vitest 在仓库根目录运行，正好命中真实 data/children）。
 vi.mock("electron", () => ({ app: undefined }));
 
-import { getLearningSummary, progressSummaryToMarkdown } from "../electron/lib/learning-summary";
+import { getLearningSummary, progressSummaryToMarkdown, getTopicProgress, getCourseDailySummary } from "../electron/lib/learning-summary";
 import { migrateAllToSqlite } from "../electron/lib/kb-sqlite";
 
 // 真实存在的孩子（含 lunyu 主题，514 课）。ISSUE-006 的痛点就是 lunyu 正文几百行被整篇读入只为取 next。
@@ -86,5 +86,44 @@ rules:
     const s = getLearningSummary(CHILD);
     expect(s.topics.length).toBeGreaterThan(0);
     expect(() => progressSummaryToMarkdown(s)).not.toThrow();
+  });
+});
+
+describe("ISSUE-027 进度看板钻取（主题 → 每课 → 当课汇总）", () => {
+  it("getTopicProgress 返回该主题的逐课明细（真实数据）", () => {
+    const s = getLearningSummary(CHILD);
+    const lunyu = s.topics.find((t) => t.name === "论语")!;
+    const topicDir = lunyu.file.split("/")[0]; // "lunyu"
+    const detail = getTopicProgress(CHILD, topicDir);
+    expect(detail, "应取到 lunyu 主题明细").toBeTruthy();
+    expect(detail!.topic).toBe(topicDir);
+    expect(detail!.items.length).toBe(lunyu.total); // 明细课程数 = 视图统计 total
+    // 每课至少含状态字段
+    const first = detail!.items[0];
+    expect(first.title.trim()).not.toBe("");
+    expect(["⬜", "✅"]).toContain(first.status);
+  });
+
+  it("未知主题返回 null（不报错）", () => {
+    expect(getTopicProgress(CHILD, "no-such-topic")).toBeNull();
+  });
+
+  it("getCourseDailySummary 返回该课的学习总结（来自 daily_entries，真实数据：论语学而篇第一章）", () => {
+    const list = getCourseDailySummary(CHILD, "论语", "论语学而篇第一章");
+    expect(Array.isArray(list), "应返回数组").toBe(true);
+    expect(list.length, "该课应有学习总结记录（含重新系统学习等）").toBeGreaterThan(0);
+    // 每条都应含日期 + 原文，且原文为 markdown 学习总结
+    const s = list[0];
+    expect(s.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(s.raw).toContain("知识点");
+    // 按日期升序
+    for (let i = 1; i < list.length; i++) {
+      expect(list[i].date >= list[i - 1].date, "应按日期升序").toBe(true);
+    }
+  });
+
+  it("getCourseDailySummary 对无总结的课程返回空数组（不报错）", () => {
+    const list = getCourseDailySummary(CHILD, "论语", "并不存在的一课");
+    expect(list).toEqual([]);
   });
 });

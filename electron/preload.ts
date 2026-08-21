@@ -122,6 +122,10 @@ const api = {
   // Progress
   getProgress: (childId: string) => ipcRenderer.invoke("progress:get", childId),
   learningSummary: (childId: string) => ipcRenderer.invoke("learning:summary", childId),
+  learningTopic: (childId: string, topic: string) =>
+    ipcRenderer.invoke("learning:topic", childId, topic),
+  learningCourseSummary: (childId: string, topicName: string, title: string) =>
+    ipcRenderer.invoke("learning:courseSummary", childId, topicName, title),
 
   // Scheduler config (per-child, managed in parent settings)
   schedulerConfigGet: () => ipcRenderer.invoke("scheduler:config:get"),

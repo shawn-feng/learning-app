@@ -855,7 +855,22 @@
   4. 孩子侧是否也应在聊天主区常驻（如侧边栏顶部小进度卡）？
 - **排查 / 修改入口（可直接执行）**：家长侧 `src/pages/Dashboard.tsx:19,107,113,225-226` + `src/components/ProgressView.tsx`；孩子侧 `src/pages/Learn.tsx:23-27,616-729` + `src/components/LearningDashboard.tsx`；数据源 `electron/lib/learning-summary.ts`（`getLearningSummary`）+ IPC（`learning:summary`、`learning:progress`）。
 - **关联**：ISSUE-019（家长页进度展示方案设计——①②③ 目标，本 issue 是「家长+孩子双端都展示」的入口/形式诉求，可与 019 合并实施）；ISSUE-006（进度数据源 frontmatter 概览，两端共用）。
-- **优先级**：待定（用户未标注，建议先澄清「缺什么」再定）。
+- **状态：已修复（2026-08-21）**。用户澄清后确定方案：
+  - 孩子侧**不改成默认面板**，保留左侧「学习进度看板」tab 手动切换；家长侧**保持现有二级入口**（首页孩子列表不加进度概览）。
+  - 核心交付 = **钻取式进度**（两端一致）：总览（总体进度 + 各主题进度条）→ 点主题 → 每课概要列表（状态✅/⬜、掌握度、标签、首次学习、复习次数）→ 点单课 → 当课汇总（状态/掌握度/首次/最近复习/复习次数/教学资料/标签全字段）。
+  - 家长侧原 `ProgressView` 用的是**旧 markdown 路径 `progress:get`（读 study-topics.md 等，已与 SQLite 真源脱节）**，改为与家长侧统一走 SQLite：`learningSummary` + 新增 `learning:topic` IPC；今日评估表改由 summary 的 `updated/today`、`daily`、`type` 实时计算。旧 `progress:get` IPC 保留未删（无调用方）。
+  - 改动文件：`electron/lib/learning-summary.ts`（新增 `getTopicProgress`）、`electron/lib/ipc-handlers.ts`（新增 `learning:topic` handler）、`electron/preload.ts`（新增 `learningTopic`）、`src/components/LearningDashboard.tsx`（钻取）、`src/components/ProgressView.tsx`（重构为 SQLite + 钻取）、`src/styles.css`（钻取样式）、`test/learning-summary.test.ts`（新增钻取单测，5/5 通过）。`tsc --noEmit` 无业务错误（仅环境噪声 TS2318/TS2552），`npm run build` 通过。
+
+## [ISSUE-027 增强] 点进课程显示学习总结 + 课程列表搜索
+- **需求（2026-08-21 追加）**：① 家长/孩子界面点进单课时要显示「课程学习的总结内容」；② 课程列表页面要有搜索功能。
+- **实现（v1，已废弃）**：最初按「教学资料」理解，新增 `getCourseMaterial` 读 `learning/<topic>/materials/<课程名>.md`。
+- **修正（2026-08-21 同日）**：用户明确指出「每一课程的学习总结在 daily 数据表里」「学习进度的展示都要从数据库里取数据，不是从文件里」。故**废弃文件读取**，改为从 SQLite `daily_entries`（block='学习'）取该课学习总结：
+  - `kb-sqlite.ts` 新增 `queryCourseDailySummaries(childDir, topicName, courseTitle)` + 标题章节课时键 `chapterKey(title, topicName)`：先去主题中文名+`·`，优先取括号 `（…）` 内章节课时标识（`学而篇第三章`/`为政篇第五章`），再退化为归一化串；course 行与 daily 行按此键关联。已用真实 lunyu 数据验证（512 课中 238 课有 daily 总结；学而篇第一章→2 条含「重新系统学习」、为政篇第五章→正确命中）。
+  - `learning-summary.ts` 删 `getCourseMaterial`，改 `getCourseDailySummary`（返回 `{date,title,raw,tags}[]` 升序）；`ipc-handlers.ts` 删 `learning:courseMaterial` 改 `learning:courseSummary`；`preload.ts` 改 `learningCourseSummary(childId, topicName, title)`；`CourseDetail.tsx` 渲染「📝 这一课的学习总结」卡片列表（react-markdown 渲染 raw），空态「暂未找到该课的学习总结记录」。进度字段卡（courses 表）保留。
+  - `matchesCourseSearch` 搜索 helper 与两端🔍搜索框保留。
+- **根因/坑**：courses 表与 daily_entries 无外键，关联靠标题；daily 标题带 `·` 与 `（…跟读练习）` 装饰，须去主题名+`·`、括号优先取章节课时键，否则会错位/漏匹配。
+- 验证：`test/learning-summary.test.ts` 7/7 通过（含 `getCourseDailySummary` 真实数据：论语学而篇第一章→数组非空、含知识点、日期升序；未知课→[]）；`tsc --noEmit` 无业务错误；`npm run build` 通过。
+- **优先级**：已解决。
 - **记录时间**：2026-08-21
 
 ## [ISSUE-028] AI 返回消息过长时自动滚动停在结尾，孩子看不到开头——应把消息开头显示在一屏幕内

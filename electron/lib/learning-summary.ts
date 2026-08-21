@@ -1,6 +1,11 @@
-import path from "path";
 import { getChildDir } from "./config";
-import { queryTopicProgress, queryTopicsMeta } from "./kb-sqlite";
+import {
+  queryCourseDailySummaries,
+  queryTopicProgress,
+  queryTopicsMeta,
+  type CourseDailySummary,
+  type TopicProgress,
+} from "./kb-sqlite";
 
 /**
  * 学习进度汇总（ISSUE-023 P2：数据源改为 SQLite 唯一真源）。
@@ -87,6 +92,43 @@ export function getLearningSummary(childId: string): LearningSummary {
       completedCount,
     },
   };
+}
+
+/**
+ * 单个课程的教学资料（即「课程学习的总结内容」）。
+ *
+ * 资料文件命名与课程名**完全同名**（见各主题 method.md）：
+ *   `learning/<topic>/materials/<课程名>.md`（源文件，含 frontmatter 知识要点/生活引导 + 教学正文）
+ *   `learning/<topic>/materials/<课程名>.html`（给孩子看的预生成友好版，可能内嵌相对路径音频，iframe 中音频不保证可播放）
+ * 优先返回 `.md`（自包含、可全文渲染），缺省回退 `.html`。
+ *
+ * @param topic 主题目录名（如 "lunyu"，即 topics.file 的第一段）
+ * @param title 课程名（与 materials 下文件名完全同名）
+ */
+/**
+ * 单课「学习情况的总结」：来自 daily_entries（block='学习'，数据库唯一真源），
+ * 不是从 materials 文件读取。按标题章节课时键关联到对应 courses 行，
+ * 返回该课的全部学习记录（含知识点 / 掌握度 / 错题 / 亮点等），按日期升序。
+ */
+export function getCourseDailySummary(
+  childId: string,
+  topicName: string,
+  courseTitle: string
+): CourseDailySummary[] {
+  const childDir = getChildDir(childId);
+  return queryCourseDailySummaries(childDir, topicName, courseTitle);
+}
+
+/**
+ * 单个主题的进度明细（含每课 CourseItem 列表），供进度看板「主题 → 每课 → 当课汇总」钻取使用。
+ * 数据来自 SQLite topic_progress 视图 + courses 表（与 getLearningSummary 同一真源）。
+ *
+ * @param topic 主题目录名（如 "lunyu"，即 topics.file 的第一段）
+ */
+export function getTopicProgress(childId: string, topic: string): TopicProgress | null {
+  const childDir = getChildDir(childId);
+  const list = queryTopicProgress(childDir, topic);
+  return list[0] || null;
 }
 
 /**

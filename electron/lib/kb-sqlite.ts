@@ -624,6 +624,61 @@ function rowToCourse(r: Record<string, unknown>): CourseItem {
   };
 }
 
+/** 单课「学习总结」条目（来自 daily_entries，block='学习'，唯一真源）。 */
+export interface CourseDailySummary {
+  date: string; // 日期 YYYY-MM-DD
+  title: string; // daily 条目标题
+  raw: string; // 完整条目原文（markdown）
+  tags: string; // 标签（逗号分隔）
+}
+
+/**
+ * 计算标题的「章节课时键」，用于把 courses 行关联到其 daily_entries 学习总结。
+ *
+ * 关联规则（无显式外键，靠标题对齐）：
+ *  - 先去掉主题中文名（如「论语」）与「·」；
+ *  - 优先从括号 `（…）` 内取章节课时标识（如「学而篇第三章」「为政篇第五章」），
+ *    取不到再对整串取；
+ *  - 取不到（非 篇/章/课 体系）则退化为去装饰后的归一化串。
+ * 例：课程「论语学而篇第三章」↔ daily「论语·巧言令色（学而篇第三章）」→ 同键「学而篇第三章」。
+ */
+function chapterKey(title: string, topicName: string): string {
+  const norm = title.replace(topicName, "").replace(/·/g, "");
+  const parens = [...norm.matchAll(/[（(]([^）)]*)[）)]/g)].map((m) => m[1]);
+  const main = norm.replace(/[（(][^）)]*[）)]/g, "");
+  for (const seg of [...parens, main]) {
+    const hit = /.+?篇第[^章]*章/.exec(seg) || /.+?第[^章课]*[章课]/.exec(seg);
+    if (hit) return hit[0];
+  }
+  return norm.replace(/[·（）()\s]/g, "");
+}
+
+/**
+ * 查询某课程的学习总结：返回与该课程关联的全部 daily_entries（block='学习'）。
+ * 关联靠标题章节课时键（见 chapterKey）；按日期升序，方便家长/孩子按时间看学习轨迹。
+ *
+ * @param topicName 主题中文名（如「论语」），用于归一化标题
+ * @param courseTitle 课程名（courses.title）
+ */
+export function queryCourseDailySummaries(
+  childDir: string,
+  topicName: string,
+  courseTitle: string
+): CourseDailySummary[] {
+  const db = openKbDb(childDir);
+  try {
+    const rows = db
+      .prepare("SELECT date, title, raw, tags FROM daily_entries WHERE block = '学习' ORDER BY date")
+      .all() as unknown as Array<{ date: string; title: string; raw: string; tags: string }>;
+    const courseKey = chapterKey(courseTitle, topicName);
+    return rows
+      .filter((r) => chapterKey(r.title, topicName) === courseKey)
+      .map((r) => ({ date: r.date, title: r.title, raw: r.raw, tags: r.tags }));
+  } finally {
+    db.close();
+  }
+}
+
 /** 查询主题清单（topics 表，含 rules_json）。 */
 export function queryTopicsMeta(childDir: string): Array<{ name: string; file: string; method: string; progress: string; rules: Record<string, string> }> {
   const db = openKbDb(childDir);

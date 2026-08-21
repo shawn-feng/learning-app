@@ -7,7 +7,7 @@ import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRunt
 import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize } from "./voice";
-import { getLearningSummary } from "./learning-summary";
+import { getLearningSummary, getTopicProgress, getCourseDailySummary } from "./learning-summary";
 import { getChildSchedulerConfig, setChildSchedulerConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
@@ -149,6 +149,27 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // 单主题进度明细（含每课 CourseItem 列表）—— 进度看板「主题 → 每课 → 当课汇总」钻取数据源
+  ipcMain.handle("learning:topic", async (_e, childId: string, topic: string) => {
+    try {
+      return { success: true, data: getTopicProgress(childId, topic) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 单课「学习情况的总结」：关联 daily_entries（block='学习'，数据库唯一真源）
+  ipcMain.handle(
+    "learning:courseSummary",
+    async (_e, childId: string, topicName: string, title: string) => {
+      try {
+        return { success: true, data: getCourseDailySummary(childId, topicName, title) };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
 
   // ---- 学习主题文件（家长在「教学内容」里管理）----
 

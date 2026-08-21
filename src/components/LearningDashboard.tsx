@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import CourseDetail, { matchesCourseSearch } from "./CourseDetail";
 
 interface TopicSummary {
   name: string;
@@ -23,6 +24,30 @@ interface LearningSummary {
   };
 }
 
+/** 单主题进度明细（来自 learning:topic IPC，对应 kb-sqlite 的 TopicProgress）。 */
+interface CourseItem {
+  topic: string;
+  title: string;
+  sortOrder: number;
+  status: string;
+  mastery: string;
+  firstLearned: string;
+  lastReview: string;
+  reviewCount: number;
+  material: string;
+  sendMaterial: string;
+  tags: string;
+}
+
+interface TopicDetail {
+  topic: string;
+  learned: number;
+  total: number;
+  next: string;
+  updated: string;
+  items: CourseItem[];
+}
+
 interface Props {
   childId: string;
 }
@@ -32,6 +57,11 @@ export default function LearningDashboard({ childId }: Props) {
   const [summary, setSummary] = useState<LearningSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  // 钻取状态：null = 总览；topic 级 = 选定主题、列出每课；course 级 = 选定单课、看当课汇总
+  const [drill, setDrill] = useState<{ topic: TopicSummary; detail: TopicDetail | null; course: CourseItem | null } | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [search, setSearch] = useState("");
 
   const load = useCallback(() => {
     setLoading(true);
@@ -52,6 +82,41 @@ export default function LearningDashboard({ childId }: Props) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 切走孩子时退出钻取
+  useEffect(() => {
+    setDrill(null);
+  }, [childId]);
+
+  function openTopic(t: TopicSummary) {
+    const topicDir = t.file.split("/")[0];
+    setSearch("");
+    setDrill({ topic: t, detail: null, course: null });
+    setLoadingDetail(true);
+    window.api
+      .learningTopic(childId, topicDir)
+      .then((r: any) => {
+        if (r?.success) {
+          setDrill((d) => (d ? { ...d, detail: r.data } : d));
+        } else {
+          setError(r?.error || "加载课程失败");
+        }
+      })
+      .catch((e: any) => setError(e.message || "加载课程失败"))
+      .finally(() => setLoadingDetail(false));
+  }
+
+  function openCourse(c: CourseItem) {
+    setDrill((d) => (d ? { ...d, course: c } : d));
+  }
+
+  function goBack() {
+    setDrill((d) => {
+      if (!d) return d;
+      if (d.course) return { ...d, course: null }; // 从单课返回主题列表
+      return null; // 从主题列表返回总览
+    });
+  }
 
   if (loading) {
     return (
@@ -83,8 +148,79 @@ export default function LearningDashboard({ childId }: Props) {
     );
   }
 
-  const { totals } = summary;
+  // ---------- 单课详情（含课程学习的总结内容） ----------
+  if (drill?.course) {
+    return (
+      <CourseDetail
+        childId={childId}
+        topicDir={drill.topic.file.split("/")[0]}
+        topicName={drill.topic.name}
+        course={drill.course}
+        onBack={goBack}
+      />
+    );
+  }
 
+  // ---------- 主题内：每课列表 ----------
+  if (drill?.detail) {
+    const d = drill.detail;
+    const shown = d.items.filter((c) => matchesCourseSearch(c, search));
+    return (
+      <div className="dashboard-panel">
+        <div className="dash-breadcrumb">
+          <button className="dash-back" onClick={goBack}>← 返回</button>
+          <span className="dash-crumb-current">{drill.topic.name}</span>
+          <span className="dash-crumb-sep">·</span>
+          <span className="dash-crumb">{d.learned}/{d.total} 课</span>
+        </div>
+
+        {loadingDetail && <div className="placeholder">⏳ 正在加载课程…</div>}
+
+        <div className="lesson-search-wrap">
+          <input
+            className="lesson-search"
+            type="text"
+            placeholder="🔍 搜索课程 / 标签…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {search.trim() && (
+            <span className="lesson-search-count">
+              {shown.length} / {d.items.length}
+            </span>
+          )}
+        </div>
+
+        <div className="lesson-list">
+          {shown.map((c) => (
+            <button className="lesson-row" key={c.title} onClick={() => openCourse(c)}>
+              <span className="lesson-status">{c.status}</span>
+              <span className="lesson-main">
+                <span className="lesson-title">{c.title}</span>
+                <span className="lesson-sub">
+                  {c.mastery && <span className="lesson-mastery">掌握度 {c.mastery}</span>}
+                  {c.tags && <span className="lesson-tags">{c.tags}</span>}
+                  {(c.firstLearned || c.reviewCount > 0) && (
+                    <span className="lesson-meta">
+                      {c.firstLearned ? `首次 ${c.firstLearned}` : ""}
+                      {c.reviewCount > 0 ? ` · 复习 ${c.reviewCount} 次` : ""}
+                    </span>
+                  )}
+                </span>
+              </span>
+              <span className="lesson-arrow">›</span>
+            </button>
+          ))}
+          {!loadingDetail && shown.length === 0 && (
+            <div className="lesson-search-empty">没有匹配「{search}」的课程</div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- 总览：总体进度 + 各主题（点击钻取） ----------
+  const { totals } = summary;
   return (
     <div className="dashboard-panel">
       <div className="dashboard-header">
@@ -121,12 +257,17 @@ export default function LearningDashboard({ childId }: Props) {
         </div>
       </div>
 
-      {/* 主题卡片列表 */}
+      {/* 主题卡片列表（点击钻取每课） */}
       <div className="dashboard-topics">
         {summary.topics.map((t) => {
           const done = t.total > 0 && t.learned >= t.total;
           return (
-            <div key={t.name} className={`topic-card ${done ? "done" : ""}`}>
+            <button
+              key={t.name}
+              className={`topic-card ${done ? "done" : ""}`}
+              style={{ textAlign: "left", cursor: "pointer", width: "100%" }}
+              onClick={() => openTopic(t)}
+            >
               <div className="topic-card-head">
                 <div className="topic-name">
                   {done ? "🏆 " : ""}
@@ -157,7 +298,7 @@ export default function LearningDashboard({ childId }: Props) {
                 )}
                 {t.updated && <div className="topic-updated">更新于 {t.updated}</div>}
               </div>
-            </div>
+            </button>
           );
         })}
       </div>

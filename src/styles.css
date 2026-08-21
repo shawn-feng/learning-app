@@ -1170,6 +1170,263 @@ input, textarea {
   color: #bbb;
 }
 
+/* ===== 进度看板钻取（主题 → 每课 → 当课汇总） ===== */
+.dash-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #888;
+  flex-wrap: wrap;
+}
+
+.dash-back {
+  border: 1px solid #e0e0e0;
+  background: #f7f8fc;
+  color: #667eea;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dash-back:hover {
+  background: #eef1ff;
+}
+
+.dash-crumb-current {
+  color: #333;
+  font-weight: 700;
+}
+
+.dash-crumb-sep {
+  color: #ccc;
+}
+
+/* 每课列表 */
+.lesson-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lesson-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: white;
+  cursor: pointer;
+  transition: box-shadow 0.2s;
+  font: inherit;
+}
+
+.lesson-row:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.lesson-status {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 22px;
+  text-align: center;
+}
+
+.lesson-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lesson-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.lesson-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 12px;
+  color: #888;
+}
+
+.lesson-mastery {
+  color: #667eea;
+  font-weight: 600;
+}
+
+.lesson-tags {
+  color: #38a169;
+}
+
+.lesson-meta {
+  color: #aaa;
+}
+
+.lesson-arrow {
+  color: #ccc;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+/* 单课详情 */
+.lesson-detail-card {
+  border: 1px solid #eee;
+  border-radius: 14px;
+  padding: 16px;
+  background: white;
+}
+
+.lesson-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 12px;
+}
+
+.lesson-detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lesson-detail-row {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+  border-bottom: 1px solid #f5f5f5;
+  padding-bottom: 8px;
+}
+
+.lesson-detail-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.lesson-detail-key {
+  width: 88px;
+  flex-shrink: 0;
+  color: #888;
+}
+
+.lesson-detail-val {
+  color: #333;
+  flex: 1;
+  word-break: break-word;
+}
+
+/* 课程列表搜索框 */
+.lesson-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+.lesson-search {
+  flex: 1;
+  padding: 9px 14px;
+  border: 1px solid #e2e2ea;
+  border-radius: 10px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.lesson-search:focus {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+.lesson-search-count {
+  font-size: 12px;
+  color: #999;
+  white-space: nowrap;
+}
+.lesson-search-empty {
+  padding: 24px;
+  text-align: center;
+  color: #aaa;
+  font-size: 14px;
+}
+
+/* 课程学习资料（总结内容） */
+.lesson-summary {
+  margin-top: 18px;
+  border-top: 1px dashed #eee;
+  padding-top: 16px;
+}
+.lesson-summary-head {
+  font-size: 15px;
+  font-weight: 600;
+  color: #4a2c2a;
+  margin-bottom: 12px;
+}
+.lesson-summary-empty {
+  padding: 20px;
+  text-align: center;
+  color: #aaa;
+  font-size: 14px;
+}
+.lesson-summary-card {
+  background: #fff;
+  border: 1px solid #f0e6e2;
+  border-left: 4px solid #8a6fb0;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.lesson-summary-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.lesson-summary-date {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: #8a6fb0;
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+.lesson-summary-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #4a2c2a;
+}
+.lesson-summary-body {
+  font-size: 14px;
+  line-height: 1.8;
+  color: #333;
+}
+.lesson-summary-body h1,
+.lesson-summary-body h2,
+.lesson-summary-body h3 {
+  margin: 12px 0 6px;
+  line-height: 1.4;
+}
+.lesson-summary-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.lesson-summary-body th,
+.lesson-summary-body td {
+  border: 1px solid #eaeaea;
+  padding: 5px 9px;
+  text-align: left;
+}
+
 .chat-window {
   flex: 1;
   display: flex;
