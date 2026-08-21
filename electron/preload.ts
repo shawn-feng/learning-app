@@ -60,6 +60,8 @@ const api = {
   readUpload: (childId: string, relPath: string) =>
     ipcRenderer.invoke("file:read_upload", childId, relPath),
   piPromptParent: (text: string) => ipcRenderer.invoke("pi:prompt_parent", text),
+  piStartParentContent: () => ipcRenderer.invoke("pi:start_parent_content"),
+  piPromptParentContent: (text: string) => ipcRenderer.invoke("pi:prompt_parent_content", text),
   piAbort: (childId: string) => ipcRenderer.invoke("pi:abort", childId),
   piDispose: (childId: string) => ipcRenderer.invoke("pi:dispose", childId),
   piReset: (childId: string) => ipcRenderer.invoke("pi:reset", childId),
@@ -75,6 +77,8 @@ const api = {
     ipcRenderer.invoke("pi:switch_model", childId, provider, modelId),
   piGetDefaultModel: () => ipcRenderer.invoke("pi:get_default_model"),
   piSetDefaultModel: (key: string) => ipcRenderer.invoke("pi:set_default_model", key),
+  piGetProgrammingModel: () => ipcRenderer.invoke("pi:get_programming_model"),
+  piSetProgrammingModel: (key: string) => ipcRenderer.invoke("pi:set_programming_model", key),
   onPiDefaultModelChanged: (callback: (key: string) => void) => {
     const wrapper = (_e: any, data: any) => callback(data);
     ipcRenderer.on("pi:default_model_changed", wrapper);
@@ -155,6 +159,8 @@ const api = {
   voiceConfigSet: (patch: any) => ipcRenderer.invoke("voice:config:set", patch),
   voiceTranscribe: (audio: ArrayBuffer, onlyProvider?: string) =>
     ipcRenderer.invoke("voice:transcribe", audio, onlyProvider),
+  voiceMerge: (childId: string, segments: string[]) =>
+    ipcRenderer.invoke("voice:merge", childId, segments),
   voiceTts: (text: string, opts?: any) => ipcRenderer.invoke("voice:tts", text, opts),
 
   // Window controls (custom title bar)

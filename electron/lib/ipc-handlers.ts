@@ -2,14 +2,14 @@ import { ipcMain, BrowserWindow, dialog, shell, type IpcMainInvokeEvent } from "
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads } from "./config";
-import { getChildSession, getParentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages } from "./pi-session";
+import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages } from "./pi-session";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, DEFAULT_VISION_MODEL } from "./pi-runtime";
 import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize } from "./voice";
 import { getLearningSummary } from "./learning-summary";
 import { getChildSchedulerConfig, setChildSchedulerConfig } from "./scheduler";
-import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey } from "./app-settings";
+import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
@@ -270,6 +270,24 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // ISSUE-020：编程 agent 模型（未配置 = 空串，create_html_lesson 不可用）
+  ipcMain.handle("pi:get_programming_model", async () => {
+    try {
+      return { success: true, key: getProgrammingModelKey() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("pi:set_programming_model", async (_e: IpcMainInvokeEvent, key: string) => {
+    try {
+      setProgrammingModelKey(key || "");
+      return { success: true, key: key || "" };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("progress:get", async (_e, childId: string) => {
     const childDir = getChildDir(childId);
     const result: Record<string, any> = {};
@@ -483,6 +501,29 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const beforeCount = (session as any).messages?.length ?? 0;
       await session.prompt(text);
       // ISSUE-010：家长会话记账（无 childId，落 data/token-log.jsonl）
+      logRound({ session, beforeCount, channel: "parent", ok: true });
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- 教学内容生成专用会话（ISSUE-026）：与通用家长助手解耦，专门引导家长制作教学内容 ----
+  ipcMain.handle("pi:start_parent_content", async () => {
+    try {
+      const session = await getParentContentSession();
+      attachSessionEvents(session, "parent-content", getMainWindow);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("pi:prompt_parent_content", async (_e: IpcMainInvokeEvent, text: string) => {
+    try {
+      const session = await getParentContentSession();
+      const beforeCount = (session as any).messages?.length ?? 0;
+      await session.prompt(text);
       logRound({ session, beforeCount, channel: "parent", ok: true });
       return { success: true };
     } catch (err) {
@@ -719,6 +760,41 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // ISSUE-021：把一次输入的多段 webm 语音拼接成单个 WAV 落盘（按 childId 隔离）。
+  // 前端多次按住说话产生多段，发送时调用此接口合并，消息附带单个可播放音频。
+  ipcMain.handle(
+    "voice:merge",
+    async (_e: IpcMainInvokeEvent, childId: string, segments: string[]) => {
+      try {
+        if (!Array.isArray(segments) || segments.length < 2) {
+          return { success: false, error: "需要至少两段录音才能合并" };
+        }
+        const bufs = segments.map((s) => Buffer.from(s, "base64"));
+        const { mergeWebmSegments } = await import("./voice/audio");
+        const merged = await mergeWebmSegments(bufs);
+        const uploadsDir = getUploadsDir(childId);
+        fs.mkdirSync(uploadsDir, { recursive: true });
+        const finalName = `${Date.now()}-merged.wav`;
+        const full = path.join(uploadsDir, finalName);
+        // 双保险：解析后必须仍在 uploads 目录内（防目录穿越）
+        if (path.dirname(path.resolve(full)) !== path.resolve(uploadsDir)) {
+          throw new Error("非法上传路径");
+        }
+        fs.writeFileSync(full, merged);
+        pruneUploads(uploadsDir);
+        return {
+          success: true,
+          // 相对路径（相对 data/），统一正斜杠，便于前端展示/后续读取
+          path: path.join("children", childId, "uploads", finalName).replace(/\\/g, "/"),
+          // 合并后 WAV 的 base64，供前端立即播放（无需二次读取落盘文件）
+          data: merged.toString("base64"),
+        };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
 
   // Voice (TTS) — Edge 神经语音合成，返回 MP3
   ipcMain.handle("voice:tts", async (_e, text: string, opts: any) => {

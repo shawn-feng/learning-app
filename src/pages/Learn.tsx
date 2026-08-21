@@ -386,9 +386,34 @@ export default function Learn({ child, onExit }: Props) {
     }
     const images = opts?.images || [];
     const textFiles = opts?.textFiles || [];
-    // 语音输入：先把录音落盘（历史恢复时据此播放），失败不影响发送
+    // 语音输入：先把录音落盘（历史恢复时据此播放），失败不影响发送。
+    // 多段（ISSUE-021）由主进程 voice:merge 拼接成单个 WAV；单段沿用原 saveUpload。
     let audioPath: string | undefined;
-    if (opts?.audio) {
+    let audioData: string | undefined;
+    if (opts?.audios && opts.audios.length) {
+      if (opts.audios.length === 1) {
+        audioData = opts.audios[0];
+        try {
+          const buf = base64ToArrayBuffer(opts.audios[0]);
+          const r: any = await window.api.saveUpload(child.childId, "语音录音.webm", "audio/webm", buf);
+          if (r?.success) audioPath = r.path as string;
+        } catch {
+          /* 落盘失败不影响发送 */
+        }
+      } else {
+        try {
+          const r: any = await window.api.voiceMerge(child.childId, opts.audios);
+          if (r?.success) {
+            audioPath = r.path as string;
+            audioData = r.data as string;
+          }
+        } catch {
+          /* 合并失败不影响发送（可降级为不带录音） */
+        }
+      }
+    } else if (opts?.audio) {
+      // 兼容旧调用方单段路径
+      audioData = opts.audio;
       try {
         const buf = base64ToArrayBuffer(opts.audio);
         const r: any = await window.api.saveUpload(child.childId, "语音录音.webm", "audio/webm", buf);
@@ -401,7 +426,7 @@ export default function Learn({ child, onExit }: Props) {
       id: nextId(),
       role: "user",
       text,
-      audio: opts?.audio,
+      audio: audioData,
       audioPath,
       attachments: images.length ? images : undefined,
       textFiles: textFiles.length ? textFiles : undefined,
@@ -426,7 +451,7 @@ export default function Learn({ child, onExit }: Props) {
       // 标记格式同时是前端「历史恢复还原附件」的依据，改动需与 restoreAttachments 同步。
       const parts: string[] = [];
       // 语音输入：prompt 里注明识别误差来源（[] 内容恢复时不显示）
-      if (opts?.audio) {
+      if (audioData) {
         parts.push(
           "[语音识别输入，可能存在同音字/断句等识别错误，请结合上下文理解并推理出正确内容]"
         );
@@ -437,8 +462,9 @@ export default function Learn({ child, onExit }: Props) {
       // 注意：这里只放附件标记，不放任何给 AI 的指令文字——指令文字会随消息存进会话历史、
       // 退出重进时原样显示在气泡里；附件处理规则已写在 AGENTS.md（LEARNING_NAV_INSTRUCTIONS）。
       const toRel = (p?: string) => (p ? p.replace(/^children\/[^/]+\//, "") : "未保存");
-      if (opts?.audio) {
-        parts.push(`【附件音频：语音录音.webm|${toRel(audioPath)}】`);
+      if (audioData) {
+        const audioName = audioPath ? audioPath.split("/").pop() || "语音录音" : "语音录音";
+        parts.push(`【附件音频：${audioName}|${toRel(audioPath)}】`);
       }
       for (const img of images) {
         parts.push(`【附件图片：${img.name}|${toRel(img.path)}】`);

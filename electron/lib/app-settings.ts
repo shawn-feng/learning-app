@@ -7,6 +7,9 @@ interface AppSettings {
   // 这是主进程可读的唯一种源：getDefaultModel()、scheduler 定时任务、渲染侧 ModelSelector
   // 都从这里取，避免出现「设置里改了默认模型、孩子模式仍显示 deepseek flash」的脱钩问题。
   defaultModel?: string;
+  // 「编程 agent」模型（ISSUE-020），格式同 defaultModel："provider/modelId"。
+  // 空/未设置 = 未启用编程 agent：create_html_lesson 工具会报错并提示家长先到设置页配置。
+  programmingModel?: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -52,6 +55,21 @@ export function setDefaultModelKey(key: string): void {
     settings.defaultModel = key;
   } else {
     delete settings.defaultModel;
+  }
+  saveSettings(settings);
+}
+
+// 编程 agent 模型（"provider/modelId"）。空字符串/未设置表示「未启用」。
+export function getProgrammingModelKey(): string {
+  return loadSettings().programmingModel || "";
+}
+
+export function setProgrammingModelKey(key: string): void {
+  const settings = loadSettings();
+  if (key) {
+    settings.programmingModel = key;
+  } else {
+    delete settings.programmingModel;
   }
   saveSettings(settings);
 }

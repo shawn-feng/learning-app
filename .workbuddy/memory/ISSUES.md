@@ -599,7 +599,13 @@
 - **待确认项**：① 编程 agent 模型选哪个（qwen-max / deepseek-v4 系列 / 其它）；② 会话生命周期：每次生成新建一次性会话 vs 长期复用同一编程会话（影响 token 与历史累积）；③ 学习 agent 是「调工具」还是「发消息给编程 agent」语义（本方案按工具编排，更可控）；④ html 生成的输入来源（学习 agent 传需求摘要 vs 编程 agent 自行读进度/method）；⑤ 是否需要家长在 Settings 里配置编程 agent 模型。
 - **排查 / 修改入口（可直接执行）**：`electron/lib/pi-session.ts:332-343`（学习会话 tools/customTools 扩展点）、`electron/lib/custom-tools.ts`（新增 `create_html_lesson` 工具定义）、`electron/lib/pi-runtime.ts`（模型清单/默认模型）、`electron/lib/ipc-handlers.ts`（工具 handler 编排处）、`pi-session.ts:362-383`（家长 agent 会话范式可参照建编程会话）。
 - **关联**：ISSUE-007（模型登记——编程 agent 模型从现有清单选）、ISSUE-002/ISSUE-014（display_content 展示链路保持兼容）、ISSUE-013（编程 agent 读写知识库与否、token 开销需评估）。
-- **优先级**：待定（用户未标注）
+- **已修复（2026-08-20 实施，决策点已拍板）**：
+  1. **模型配置**：`app-settings.ts` 新增 `programmingModel` 配置项 + `getProgrammingModelKey`/`setProgrammingModelKey`（**默认空 = 未启用**）；`pi-runtime.ts` 新增 `getProgrammingModel()`（未配置/解析失败返回 null，不静默回退）。
+  2. **编程会话**：新建 `electron/lib/programming-agent.ts`——`getProgrammingAgentSession(childId, sessionKey)` 按 sessionKey 复用同一会话（**不重置**，一份 HTML 的生成+修改上下文连续；缺省 key 按 outputPath 派生）；cwd=childDir、noSkills、tools 收敛为 `read/write/edit`（不挂 kb_*/display_content）、挂 learning-guard 扩展（越界拦截+日期注入）；`generateHtmlLesson` 做路径守卫（仅限学习目录内 .html/.htm）、预建目录、生成后校验落盘非空（<100 字节视为失败）。**未配置模型时抛错并提示家长到设置页配置**。
+  3. **工具接入**：`custom-tools.ts` 新增 `createHtmlLessonTool`（参数 title/requirement/outputPath/sessionKey），学习 agent 经它调编程 agent；`pi-session.ts` 孩子会话 tools+customTools 加 `create_html_lesson`，`LEARNING_NAV_INSTRUCTIONS`「内容展示」段改为「html 不存在/需改 → 先 create_html_lesson 生成，再 display_content 展示；禁止手工拼长 HTML 塞 content」；`disposeAllSessions` 一并释放编程会话（顺带补上 026 家长 content 会话遗漏的释放）。
+  4. **设置页**：`ipc-handlers.ts` 加 `pi:get_programming_model`/`pi:set_programming_model`，`preload.ts` 加桥接；`Settings.tsx` 模型配置页新增「编程 agent 模型」下拉（默认「未启用」，可选已配置的任意模型，可清空停用）。
+  5. 验证：tsc 过滤环境告警后 0 业务错误；`test/programming-agent.test.ts` 4 用例全过（越界路径拒绝、非 html 扩展名拒绝、未配置模型报错提示、配置读写往返）；`npm run build` 通过；全量测试 141 通过 / 14 失败（两次全量失败集合不一致——kb-sqlite/auto-new-session 等单独跑均全过，为并行级联的环境性预存失败，与本次改动无关）。
+- **优先级**：已完成（2026-08-20）
 - **记录时间**：2026-08-20
 
 ## [ISSUE-022] 学习主题 method.md（用户自定义）里对 kb 工具调用的约定要写清，且需能「检测 + 自动修复」
@@ -621,7 +627,13 @@
 - **待确认项**：① 自动修复默认开还是仅报告（家长自定义内容误改风险）；② method.md 的 kb 引用是否要标准化模板（减少自由度）；③ 是否把 method.md 检查并入 `scripts/kb-lint.mjs` CLI 一并输出。
 - **排查 / 修改入口（可直接执行）**：`electron/lib/kb-lint.ts`（新增 `lintMethodKbRefs` + 在 `lintChildDir` 调用）、`electron/lib/kb-schema.ts`（加 `METHOD_KB_TOOLS` 白名单）、`electron/main.ts:153-173`（触发点）、`scripts/update-method-recording.mjs`（修复先例，复用替换逻辑）、`LEARNING-DATA-SPEC.md:286-342`（规范真源）、各 `learning/{topic}/method.md`（被检/被修对象）。
 - **关联**：ISSUE-009（同走 method.md「记录」段，本次把它对 kb 工具的引用标准化+可校验，与「详细度」互补）；ISSUE-013（kb 查询/写入省 token——method.md 写错工具会导致 agent 跑偏、额外消耗）；ISSUE-018（method.md 本身用 write/edit 属内容文件，与数据文件 kb 工具边界）。
-- **优先级**：待定（建议中：涉及数据完整性但不阻断功能）
+- **已修复（2026-08-20 实施）**：
+  1. `electron/lib/kb-schema.ts` 新增 `KB_DATA_TOOLS`/`KB_AUX_TOOLS`/`METHOD_KB_TOOLS`/`KB_TOOL_REQUIRED` 白名单（kb 工具真源，来自 custom-tools.ts 实际注册：`kb_read`/`kb_patch`/`kb_append` + 辅助 `display_content`/`get_date`/`get_progress`，**无 kb_get**）。
+  2. `electron/lib/kb-lint.ts` 新增 `lintMethodKbRefs`（导出）：三类检测——① 全文扫描 `kb_xxx` 工具名合法性（非白名单→warning）；② 代码语境（``` 代码块 + 行内反引号）内 kb 工具调用缺必需参数（kb_append 缺 block/content、kb_patch 缺 value/fields、kb_read 缺 file/ref）；③ 数据文件裸 `write(`/`edit(` 调用（应走 kb 工具）。**仅检测代码语境，不误伤「禁止 write/edit 裸写」教学文案**。在 `lintChildDir` 调用，结果自动进 `lint-report.md`。
+  3. `scripts/fix-method-kb.mjs`：常驻化修复脚本，复用 `update-method-recording.mjs` 的已知句式替换（进度→kb_patch、daily→kb_append）+ 过时工具名映射（kb_get→kb_read、kb_update→kb_patch）；幂等、可重复跑；**默认不自动执行**（ISSUE-022 决策：避免误改家长自定义内容，需人确认后手动跑）。
+  4. `test/kb-lint-method.test.ts`（7 用例）覆盖：规范 method.md 零 warning、kb_get 检测、kb_append/kb_patch 缺参检测、数据文件裸 write 检测、不误伤「禁止 write/edit」文案、真实 lunyu method.md 零误报。**修复中发现并修正一个真实 bug**：规则1 原 regex 写成 `\bk_...`（要求 k 后紧跟下划线），但真实工具名是 `kb_read`（k 后接 b），导致规则1 对所有 kb 工具名完全匹配不到——之前"零误报"是假象；改为 `\bkb_...` 后真正生效。
+  5. 验证：tsc 过滤环境告警后 0 业务错误；全量真实孩子 method.md 扫描 0 误报（不污染 lint-report）；vitest kb-lint-method 7 用例全过；`npm run build` 通过；全量测试 122 通过 / 12 失败，12 失败均为预存环境/数据问题（app.test 云端 ECONNREFUSED、functional app.isPackaged、learning-summary 真实数据漂移、auto-new-session/archive-limit 的 safe-delete 拦截 rmSync、sync 扫描超时），与本次无关。
+- **优先级**：已完成（2026-08-20）
 - **记录时间**：2026-08-20
 
 ## [ISSUE-017] 退出家长账号按钮只应出现在家长页面，去掉主页左上角退出按钮
@@ -688,5 +700,174 @@
 - **待确认项**：① 合并时机：发送时一次性合并 vs 每次识别后立即合并（发送时合并更省，但预览只能按段播）；② 合并输出格式（wav/webm/mp3）；③ 合并失败时的降级（如落盘失败仍用 base64 发送最后一段 + 提示）；④ 是否同时保留每段独立录音。
 - **排查 / 修改入口（可直接执行）**：`src/components/ChatWindow.tsx:240-247`（发送取 audio）、`ChatWindow.tsx:415-441`（`handlePressEnd` 覆盖点）、`ChatWindow.tsx:688-701`（预览区单段）、`electron/lib/ipc-handlers.ts:712-721`（voice:transcribe 参照，新增 voice:merge 相邻注册）、`electron/lib/voice/audio.ts`（ffmpeg 拼接）、`electron/lib/voice/index.ts:30`（transcribeAudio）。
 - **关联**：ISSUE-015（ffmpeg 管线与临时文件策略，拼接复用同一管线）；ISSUE-008（文件上传——落盘目录/`readUpload` 读取可复用）。
-- **优先级**：待定（用户未标注）
+- **已修复（2026-08-20 实施）**：
+  1. **前端累积多段**：`src/components/ChatWindow.tsx` 的 `pendingAudio`（单段 string）改为 `pendingAudios: string[]`；`handlePressEnd` 每次识别后 `setPendingAudios(prev => [...prev, r.audio])` 累积（不再覆盖）；预览区显示「N 段」并支持顺序连播（多段逐段播放）+ 一键清空；`SendOptions` 新增 `audios?: string[]`。
+  2. **发送时合并**：`Learn.tsx` `handleSend` 对 `audios`：单段沿用原 `saveUpload`（落 `语音录音.webm`），多段（≥2）调新增 IPC `voice:merge` 合并落盘（返回 `path` + 合并后 WAV 的 base64 `data`）；消息同时带 `audio`(base64) 与 `audioPath`(历史恢复播放)。prompt 附件标记改用音频文件名（webm/wav 自适应）。
+  3. **主进程合并**：`electron/lib/voice/audio.ts` 新增 `extractWavPcm`（解析 WAV、抽 PCM、校验 16k/单声道/16bit，含 fmt 块容错）+ `concatWav`（44 字节标准头 + 拼接）+ `mergeWebmSegments`（逐段 `webmToWav16k` 转 WAV→抽 PCM→拼接，单段失败跳过不丢整体）；`electron/lib/ipc-handlers.ts` 新增 `voice:merge`（按 childId 隔离落盘到 uploads、双路径校验、`pruneUploads`）；`electron/preload.ts` 新增 `voiceMerge` 桥接。
+  4. **播放兼容**：`playAudioBase64` 按 base64 前缀 `UklG`(RIFF) 嗅探 WAV 并设 `audio/wav` MIME，确保合并后的 WAV 能播放（原硬编码 webm）。
+  5. **验证**：新增 `test/voice-merge.test.ts`（8 用例：extractWavPcm/concatWav 纯函数 + 端到端两段合并 + 空输入/坏段跳过）全过；`tsc` 过滤环境告警后 0 业务错误；`npm run build` 通过；全量 vitest 无新增回归（4 个失败均为预存的 learning-summary 数据漂移 / app.test 云端 ECONNREFUSED / functional app.isPackaged，与本次无关）。
+- **优先级**：已完成（2026-08-20）
 - **记录时间**：2026-08-20
+
+---
+
+## [ISSUE-023] 孩子学习/生活数据已完全结构化，是否改用 SQLite 存储，避免 AI 用 write/edit 破坏结构、提升查询与维护效率
+
+- **背景 / 现象**：孩子数据（`daily/`、`life/`、`inquiries/`、`tasks/`、`tags/` + `learning/` 进度 frontmatter）已经是**完全结构化的 markdown**（frontmatter + 命名区块 + 条目，由 `kb-parser.ts` 解析、`kb-schema.ts` 的 `DAILY_BLOCKS`/`TAG_BLOCKS`/字段白名单约束）。既然结构已稳定，是否值得迁到 SQLite，规避文本文件被写坏、查询慢、维护难的痛点。
+- **当前结构性风险（已定位）**：
+  - `pi-session.ts:342` 的 `tools` 白名单**仍含 `read/write/edit`**（SDK 通用工具）→ `AGENTS.md:35` 只是「约定」数据文件禁止裸 write/edit，但 agent **技术上可绕过 kb 工具直接 write/edit**，一旦误调用就会破坏 markdown 结构（这正是本 issue 要根除的根因）。
+  - 即便走 kb 工具，写入也是「读全文→解析→改字符串→整篇重写 markdown」，脆弱（并发/截断易坏）、且 **IO/token 双贵**（ISSUE-013 同主题）。
+- **候选方案（SQLite）**：
+  - 每孩子一个 `data/children/<childId>/kb.sqlite`（沿用「按 childId 隔离」硬约束，`kb-schema.ts` 的区块/字段映射成表：`daily_entries`/`life_events`/`inquiries`/`tasks`/`tags`/`topic_progress` 等）；或单库按 `child_id` 分区。
+  - 新增 SQL 后端工具替换 `kb_read/kb_patch/kb_append`：`kb_query`（SELECT 条件）、`kb_insert`（INSERT 条目）、`kb_update`（UPDATE 字段）→ agent 永远不再碰原始文件，结构上不可能被破坏。
+  - 工具白名单移除 `write/edit`（保留 `read` 用于只读非数据文件如 method.md/materials）。
+  - 迁移：用现有 `kb-parser` 把所有存量 markdown 导入 SQLite（脚本一次性）。
+- **得益**：① 结构上防破坏（root cause 根除）；② 查询快（索引、WHERE，省 token——呼应 ISSUE-013）；③ 维护简单（schema 约束即文档）。
+- **代价 / 关键权衡（已拍板 2026-08-20 讨论）**：
+  1. **可读性与 Obsidian 友好性丢失**：✅ **已拍板：放弃 Obsidian 直读**。SQLite 为唯一真源，不做双写、不做定时导出 markdown；家长/AI 检索全部走 SQL 查询或家长 UI（learning-summary/insights）；markdown 仅一次性迁移，之后不再维护。
+  2. **家长可手写 method.md/materials**：✅ 已确认：这类**内容文件**仍需 write/edit，SQLite 只接管「数据文件」（daily/life/inquiries/tasks/tags/进度 frontmatter），范围以 SPEC 5.4 文件类型分流为准。
+  3. **SQLite 并发**：Electron 主进程单点访问，串行化；渲染进程读走 IPC（现有 `learning:summary` 范式）。
+  4. **依赖**：✅ **已拍板：接受 native 依赖**（better-sqlite3 或 Node 内置 node:sqlite），但**先进 POC 验证**（先验证 Electron 打包/rebuild 是否踩坑，再全量）。
+  5. ✅ **已拍板：先在小范围试点**——首批只迁 `tags/` 倒排索引进 SQLite，用 ISSUE-010 token 统计量化收益后再决定全量。
+- **执行路线（2026-08-20 讨论定稿，P1 已实施 2026-08-20）**：
+  - ~~P0 最小修复：白名单移除 write/edit~~ → **已否决（2026-08-20）**：agent 还要写**非结构化内容**（method.md、materials/、临时产物等无模板文件），write/edit 必须留在白名单——这正是 SPEC 5.4 已知限制「无法在工具层按路径禁止 write/edit」的体现。**结论：write/edit 不撤，数据入库后它们物理上碰不到结构化数据**——这使 SQLite 成为「防 AI 破坏」的**唯一结构层手段**，也是相对白名单/路径约束的决定性优势。
+  - **P1 tags 索引 POC（已实施 2026-08-20）**：
+    - **依赖选型**：`node:sqlite`（Node 内置模块，Electron 43 / 内置 Node 24.18.1 **原生可用**，实测 CREATE/INSERT/SELECT 全通）——**零 native 依赖**，直接消除 better-sqlite3 的 Electron rebuild/打包坑；`@types/node@26` 自带类型。
+    - **新增文件**：`electron/lib/kb-sqlite.ts`（openKbDb / parseTagFile / tagsDirMtime / syncTagsToSqlite / queryTagLinks / tagLinksToMarkdown）；`scripts/migrate-tags-sqlite.mjs`（CLI 迁移，`node --experimental-strip-types scripts/migrate-tags-sqlite.mjs`）；`scripts/token-compare-tags.mjs`（收益量化）。
+    - **表结构**：每孩子 `data/children/<childId>/kb.sqlite`，`tag_links(tag, kind, title, pointer)` + `meta(tags_last_sync)`。**同步策略**：tags/*.md 仍由 recording（kb_append）写，kb_query 查询前按 tags 目录 mtime 增量重建索引（幂等，mtime 未变跳过）。
+    - **工具面**：新增 `kb_query`（custom-tools.ts + pi-session.ts:385 tools 白名单 + customTools 双注册；kb-schema.ts `KB_AUX_TOOLS` 加 kb_query、`KB_TOOL_REQUIRED` 加 query 必需参；kb-lint.ts 规则 1 合法集扩展含 kb_query；AGENTS.md:35 模板补充「查询标签用 kb_query 优先于 read tags/*.md」，已 regenerate-agents 刷新 4 个孩子）。
+    - **验证**：新增 `test/kb-sqlite.test.ts` 17 用例全过（含端到端：kb_append 写入 → kb_query 增量同步读到）；tsc 过滤环境告警后 0 业务错误；`npm run build` 过（node:sqlite 保持内置引用未被打包）；全量 vitest 无新增回归（既有失败用例与本次无关）。
+    - **⚠️ 量化结论（重要，影响 P2 决策）**：当前 tags 数据量极小（主孩子 19 文件共 1518 字符），SQLite 查询 token 收益**不明显**（全量 1.1x / 单标签 1.2x）——**tags 倒排不是能体现 SQLite 价值的最佳试点**。SQLite 的真实价值在「结构防破坏 + 事务一致性 + 大文件/跨维度查询」，tags 索引太小测不出来。**P2 全量决策建议**：要么换试点（如 daily/ 月聚合或 tasks 状态查询），要么直接按「结构防破坏」为主要理由推进（放弃 token 收益量化作为门槛），待 ISSUE-010 在真实长会话里再对比。
+  - **P2 决策点**：POC 通过后 → 全量迁移（kb_query/kb_insert/kb_update 替换 kb_read/kb_patch/kb_append；迁移脚本用 kb-parser 导入存量；learning-summary/recording 技能同步改；ISSUE-022 检测脚本同步）。
+  - **注意**：P0 否决后，SQLite 是防破坏唯一结构层手段，P1 POC 优先级相应提升（不再是「可选优化」，而是必选验证）。
+- **排查 / 修改入口（可直接执行）**：
+  - 数据结构真源：`data/children/<childId>/{daily,life,inquiries,tasks,tags,learning}/`；解析/约束 `electron/lib/kb-parser.ts`、`kb-schema.ts`。
+  - 工具注册：`electron/lib/custom-tools.ts:157-...(kbRead/kbPatch/kbAppend)`；白名单 `electron/lib/pi-session.ts:342`。
+  - 约定文案：`electron/lib/pi-session.ts` 生成的 `AGENTS.md:35`。
+  - 索引/导出：`electron/lib/learning-summary.ts`、`recording/SKILL.md`。
+- **关联**：ISSUE-013（知识库查询/写入省 token，SQLite 是最优解之一）；ISSUE-009（method 记录详细度——数据落库后提取更廉价）；ISSUE-022（method.md 的 kb 工具引用约定——迁移后工具名会变，需同步更新检测脚本）；ISSUE-006（进度 frontmatter 查询——SQL 化后天然高效）。
+- **优先级**：**已完成（2026-08-20 P2 全量迁移落地）**
+- **P2 全量迁移（2026-08-20 已实施）**：
+  - 表结构：`daily_entries(date,block,title,fields_json,raw)` + `topic_progress` + `topics` + `rules` + `tag_links` + `meta`；**life/inquiries/tasks 月索引不建表**（`WHERE block=? AND date LIKE ?` 直查 daily_entries 代替，查询替代手工索引）。
+  - 迁移：`scripts/migrate-kb-sqlite.mjs`（全量幂等）；主孩子 daily 1382 条（**687 条历史完全重复条目被主键去重，内容一致无损**）/ 进度 8 / topics 8 / rules 7 / tags 25。
+  - 工具面：删 markdown 版 kb_read/kb_patch/kb_append → `kb_query`（daily/topics/progress/tags）+ `kb_insert`（daily/tags）+ `kb_update`（daily/progress）；pi-session.ts / kb-schema / kb-lint（改 SQLite 校验）/ AGENTS.md / recording SKILL.md / 8 个 method.md 全部同步（scripts/fix-method-kb-sqlite.mjs、fix-tag-pointers.mjs、fix-archive-tag-pointers.mjs）。
+  - **坑**：topics.name 中文 vs topic_progress.topic 目录名——用 `file.split("/")[0]` 关联；lint 调 queryDaily 需传 `{}`；tags 历史指针 learning/taodi.md 失效（SPEC P5 遗留，双修 SQLite+归档）。
+  - 验证：tsc 0 业务错误；build 过；kb 相关 7 套件 83 用例全过；lint 全孩子 error 0。
+- **v3 修订（2026-08-21，已实施）——按用户拍板：**
+  - **daily_entries 删 `fields_json` 列**（raw 唯一内容源；字段是 method 灵活设定的，白名单限制灵活性——**字段白名单机制整体废弃**，kb-schema 删 DAILY_FIELDS/PROGRESS_FIELDS/INDEX_FIELDS/legalFieldsFor；kb-lint 删字段 warning → 全孩子 warning 归零）。`kb_query daily` 非 listOnly 直接回 raw 原文。
+  - **进度明细化**：新增 `courses(topic,title,sort_order,status,mastery,first_learned,last_review,review_count,material,send_material,tags)` 表；旧 topic_progress 表删除，**learned/total/next/updated 改为视图实时计算**（`kb_update` 只更新单课状态/时间字段，传 learned/next/updated 会被拒绝；复习次数 `value:"+1"` 自增）。
+  - **v2→v3 就地迁移**：`openKbDb` 的 `ensureV3` 自动执行（去 fields_json 列、items_json 展开 courses、删旧表建视图），不丢 SQLite 迁移后新增数据；`openKbDb` 加 `PRAGMA busy_timeout=3000`（vitest 多文件并行访问真实库会锁冲突）。
+  - **⚠️ 重要操作约束**：`migrate-kb-sqlite.mjs` 是全量重灌（DELETE + 从 markdown 导入），**SQLite 真源后不能再对真源库跑它**（会覆盖丢失 SQLite 里迁移后新增的 daily/进度）——它只是「首次建库/灾难恢复」工具。
+  - 验证：tsc 0 业务错误；build 过；相关 7 套件 89 用例全过；lint 全孩子 error 0 / warning 0（592 条字段 warning 消失）。
+- **v4 修订（2026-08-21，已实施）——按用户拍板（标签体系改造 + rules 并入）：**
+  - **`topics` 加 `rules_json` 列，删除独立 `rules` 表**（rules.md 的 key 是**中文名**如「论语」，直接匹配 topics.name；曾误用目录名匹配导致合并失败，补丁回填）。
+  - **`tag_links` 倒排表 → `tags` 定义表**（tag + dimension + criteria 判断标准）：只存标签定义（家长维护，AI 打标签前查），不再存「每关联一行」的倒排；**`daily_entries` 加 `tags` 列**（针对生活区块事件打标签，kb_insert 从 content 的 `- 标签：` 行自动解析，field=标签 更新时同步）；**courses.tags 确认保留**（每课打标签）。反查用 `(','||tags||',') LIKE '%,标签,%'` 扫数据行（查询替代索引，消灭倒排一致性问题）。
+  - 工具面：`kb_query tags` 查定义表、`kb_query daily/progress` 支持 tag 过滤、**`kb_insert` 移除 tags 分支**（打标签改走 daily content / progress tags；标签定义不开放给 AI 写，保持词表纪律）；kb-lint 删倒排指针校验 → 新增「daily.tags / courses.tags ⊂ tags 定义表」合规校验。
+  - 迁移/补丁：ensureV4 就地迁移（topics+rules_json、daily+tags 回填、tag_links→tags）；`scripts/fix-v4-tags-rules.mjs`（rules 中文名回填 + # 前缀归一化）、`fix-v4-backfill-tags.mjs`（**历史用过但不在词表的 57 个标签补入定义表** dimension=历史，保持历史可检索且 lint 归零）。
+  - ⚠️ **坑（已踩）**：① rules.md key 是中文名，与 topics.name 匹配而非目录名；② AGENTS.md 模板是反引号模板字符串，嵌入 `- 标签：` 等反引号需 `\`` 转义（TS1127）；③ 历史标签带 `#` 前缀（#动手），normalizeTags 需去前导 #。
+  - 验证：tsc 0 业务错误；build 过；相关 7 套件 88 用例全过；lint 全孩子 error 0 / warning 0。
+- **记录时间**：2026-08-20（讨论定稿：SQLite 为唯一真源；**否决 P0 白名单收口**，理由 = agent 还要写无模板内容文件；直接进入 P1 tags 索引 POC）；2026-08-21（v3 / v4 修订落地）
+
+---
+
+## [ISSUE-024] 将 recording 技能按「记录类型」拆分为独立子技能，让 AI 处理时更专注
+
+- **背景 / 需求**：当前 `data/shared/skills/recording/SKILL.md`（217 行）把 **4 类记录**塞进一个技能——① 学习（§2-3）、② 生活（§4）、③ 问答（§5）、④ 任务（§6），外加共用的「详细度要求（最高优先级）」和「写入方式/kb 工具」段。一个巨型技能让 AI 在提取时注意力分散、易漏类。拆成 4 个独立技能（如 `recording-study`/`recording-life`/`recording-inquiry`/`recording-task`），每类只关心自己的区块与字段，更专注、更不易错。
+- **4 类已对应**记忆里的「计划学习 / 生活事件 / 即兴问答 / AI 任务执行」四类日常场景；`study-tracker`（每日达标评估）已是独立姊妹技能，拆分有先例。
+- **已定位的引用（拆分后必须同步改）**：
+  - 技能加载：`pi-session.ts:309-315` `additionalSkillPaths:[getSkillsDir()]` 指向 `data/shared/skills/`，SDK 自动发现子目录 `SKILL.md`——**拆分零改加载逻辑**，只增子目录。
+  - **定时任务硬引用**：`scheduler.ts:244` 写死 `/skill:recording\n\n以下是最近的学习会话内容，请从中提取学习总结并更新学习记录文件`——**一次性提取全部 4 类**；拆分后需改为按类型各调一次（或保留父技能 `recording` 做编排，子技能各管一类）。
+  - AGENTS.md 文案：`pi-session.ts:34`「学习总结、生活事件等记录由 recording 技能负责，按需调用」→ 改为列出 4 个子技能。
+  - 各主题 `method.md` 里「不调用 recording 技能」等措辞（如 lunyu method.md:100）→ 引用名需随之更新。
+- **方案要点（候选）**：
+  - 目录：`data/shared/skills/recording-{study,life,inquiry,task}/SKILL.md`；原 `recording/` 保留为「编排/索引」父技能（仅列 4 子技能 + 共用约定），或直接删除改由调度层分别调用。
+  - **共用段提取**：「详细度要求」与「kb 工具写入方式（§7）」是 4 类共用的，应抽成 `_common.md` 各子技能引用，避免 4 份维护不同步（呼应 ISSUE-022 的「共享片段」思路）。
+  - **关键约束**：daily 是单一真相源（`daily/{日期}.md` 含 学习/生活/问答/任务 4 区块），拆分是**按提取关注点**而非按文件——各子技能仍 `kb_append` 到自己那一块，互不影响。
+  - 调用粒度：实时会话中 agent 按当前内容类型调对应子技能；定时总结由 `scheduler.ts:244` 改为逐类调用（或父技能内部串起 4 子技能）。
+- **待确认**：① 父技能保留 vs 删；② 共用段内联还是引用 `_common.md`；③ 定时任务改「逐类调用」还是「父技能编排」；④ 子技能命名（study/life/inquiry/task 还是 learning/life/qa/task）。
+- **排查 / 修改入口（可直接执行）**：`data/shared/skills/recording/SKILL.md`（真源）；`pi-session.ts:34,309-315`；`scheduler.ts:244,295-301,382-387`；各主题 `method.md` 的 recording 引用。
+- **关联**：ISSUE-022（method.md / 共用约定片段化，同一「拆共享」主题）；ISSUE-009（记录详细度——共用段抽 `_common.md` 后，详细度要求一处维护）；ISSUE-013（拆分后每类调用更聚焦、上下文更省）。
+- **优先级**：待定（用户未标注，建议中：提升记录质量，但改动面较广需谨慎）。
+- **记录时间**：2026-08-20
+
+## [ISSUE-025] 家长设置页去掉「技能管理」与「技能编辑器」两个 tab（暂不开放给家长）
+
+- **需求**：家长界面移除「技能管理」和「技能编辑器」功能入口，暂不向家长开放（当前无使用场景）。
+- **现状（已定位）**：这两项都在家长**设置页** `src/pages/Settings.tsx`：
+  - tab 类型声明 `Settings.tsx:20` 含 `"skills" | "editor"`；
+  - tab 按钮数组 `Settings.tsx:85-86` `["skills", "技能管理"]`、`["editor", "技能编辑器"]`；
+  - 渲染分支 `Settings.tsx:212` `{tab === "skills" && <SkillImport />}`、`Settings.tsx:214` `{tab === "editor" && <SkillEditor />}`；
+  - 顶部 import `Settings.tsx:2-3` `import SkillImport` / `import SkillEditor`。
+  - 组件本体：`src/components/SkillImport.tsx`（技能管理/导入）、`src/pages/SkillEditor.tsx`（技能编辑器）。
+- **实现要点（候选）**：
+  1. 从 `Settings.tsx` tab 联合类型移除 `"skills" | "editor"`；
+  2. 从 tab 数组（85-86）删两行；
+  3. 删渲染分支（212、214）；
+  4. 删没用到的 import（2-3），避免编译 unused 警告；
+  5. `SkillImport.tsx` / `SkillEditor.tsx` 两个文件**保留还是删除**待定（建议先保留，后续若重新开放可快速恢复；且 `window.api.skillsList/skillRead/skillWrite/skillImportFolder` 等 IPC 仍可保留供内部/开发用）。
+- **待确认**：① 组件文件保留 vs 删除；② 相关 IPC（`skillsList`/`skillRead`/`skillWrite`/`skillImportFolder`）是否一并保留；③ 是否只是隐藏入口、还是连同底层能力都收敛（底层能力收敛会影响 ISSUE-024 的拆分与 recording 技能维护操作入口）。
+- **排查 / 修改入口（可直接执行）**：`src/pages/Settings.tsx:2-3,20,85-86,212,214`；`src/components/SkillImport.tsx`、`src/pages/SkillEditor.tsx`。
+- **关联**：ISSUE-024（recording 技能拆分——若底层技能维护入口被收敛，其拆分后子技能的维护/调试通道也要另寻）；底层 IPC 与 `data/shared/skills/` 加载逻辑（`pi-session.ts:309-315`）无直接关系，移除 UI 不影响技能运行时加载。
+- **已修复（2026-08-20 实施）**：
+  1. `src/pages/Settings.tsx`：从 tab 联合类型移除 `"skills" | "editor"`；tab 按钮数组删除「技能管理」「技能编辑器」两项；删除 `{tab === "skills" && <SkillImport />}` 与 `{tab === "editor" && <SkillEditor />}` 渲染分支；删除不再使用的 `SkillImport`/`SkillEditor` import。`SkillImport.tsx`/`SkillEditor.tsx` 组件文件保留（仅供开发/内部使用，运行时技能加载不受影响）。
+  2. 验证：`tsc --noEmit` 过滤 TS2318/2552 后 0 业务错误；`npm run build` 通过；`grep` 确认 `src` 内已无 `skills`/`editor` tab 与 `SkillImport`/`SkillEditor` 残留引用。
+- **优先级**：已完成（2026-08-20）
+- **记录时间**：2026-08-20
+
+## [ISSUE-026] 家长「教学内容」页改为左右分栏（左=目录+文件预览，右=AI 沟通），且该页聊天用专门提示词引导家长制作教学内容
+
+- **需求**：家长设置页的「教学内容」标签（`topics`）改为左右两栏布局——左栏显示**目录 + 预览文件**，右栏是与 AI 的沟通；并且这个界面发出的聊天要带**专门的提示词**，引导家长制作/生成教学内容。
+- **现状（已定位）**：
+  - 页面本体：`src/components/TopicEditor.tsx`（注意是 `components/` 不是 `pages/`，`Settings.tsx:216` 以 `{tab === "topics" && <TopicEditor />}` 挂载）。
+  - **当前布局不是你要的左右分栏**：孩子选择器 + 左目录树（220px，`rootFiles`+`topics`/`subdirs`） + 中间文件 `textarea` 编辑区 + **底部整宽 `ChatWindow`**（`TopicEditor.tsx:115-186`）。即「目录/文件/聊天」三者竖排加中置编辑，与你设想的「左目录预览、右聊天」不同。
+  - 聊天链路：前端 `handleSend`（79-91）→ `window.api.piPromptParent`（`preload.ts:62`）→ 主进程 `pi:prompt_parent`（`ipc-handlers.ts:394`）→ `getParentSession()`（`pi-session.ts:358`）。
+  - 家长提示词：`buildParentPrompt()`（`pi-session.ts:101-148`）**已含**「能力二：引导生成教学内容（6 步）」——但它是一个**共享单提示词**，同时混合「能力一：编辑教学技能」，且 `getParentSession` 是**全局缓存单例**（`cachedParentSession`，383 行），所有家长交互（含技能编辑）共用同一会话与提示词。
+- **关键缺口（待决策的要点）**：
+  1. **布局**：把底部聊天改成右栏；目录树+文件查看合并到左栏。文件左栏是「预览」还是保留「可编辑」待定（当前是 textarea 可编辑，`handleSave` 写回 `learningWrite`）——若右栏 AI 已能生成/改写文件，「预览」可能更合适，编辑交给 AI。
+  2. **专门提示词**：你要的「该页聊天用专门提示词引导制作教学内容」意味着需要**与通用家长助手解耦**的提示词——要么新建一个聚焦「教学内容生成」的 parent-content 会话/提示词（`buildParentContentPrompt()`），要么给 `piPromptParent` 传 context 标志切换。当前共享 prompt 还掺着技能编辑，不纯。
+- **实现要点（候选）**：
+  - `TopicEditor.tsx` 重构为 `display:flex` 左右两栏：左 `<div style={{width:…}}>` 目录+文件预览，右 `<div>` `ChatWindow`；去掉底部整宽聊天。
+  - 主进程新增 `getParentContentSession()`（或扩展 `getParentSession` 接收 mode 参数），用专门的 `buildParentContentPrompt()`（只保留 6 步教学内容引导，去掉技能编辑能力段）。
+  - 前端首条消息已自动注入选中孩子身份（`TopicEditor.tsx:81-83`），可保留；专门提示词负责「引导制作」的语气与流程。
+- **待确认**：① 左栏文件是预览（只读）还是仍可在页内编辑；② 专门提示词是新建父-content 会话，还是复用当前会话仅换 prompt；③ 与「技能编辑」场景是否彻底分离（若分离，ISSUE-025 移除技能 tab 后，通用 parent 助手是否还需要技能编辑能力）；④ 右栏聊天是否要带「当前正在看的文件」上下文（让 AI 针对该文件生成/改写）。
+- **排查 / 修改入口（可直接执行）**：`src/components/TopicEditor.tsx`（全文件，布局 93-188、聊天 79-91、文件 66-77）；`electron/lib/pi-session.ts:101-148`（buildParentPrompt）、`358-386`（getParentSession）；`electron/lib/ipc-handlers.ts:394`（pi:prompt_parent）；`electron/preload.ts:62`（piPromptParent）。
+- **关联**：ISSUE-025（同页移除技能 tab 后，本页更纯粹聚焦教学内容，专门提示词可顺势去掉技能编辑段）；ISSUE-020（编程 agent 制作 html——本页 AI 引导生成教学内容时，可能触发调用编程 agent 生成 html 资料）。
+- **已修复（2026-08-20 实施）**：
+  1. **左右分栏布局**：`src/components/TopicEditor.tsx` 重构为 `flex` 左右两栏——左栏 = 孩子选择器 + 目录树 + **选中文件只读预览**（`pre`，去掉原 textarea 编辑与「保存」按钮）；右栏 = `ChatWindow`。去掉原底部整宽聊天。
+  2. **专门提示词解耦**：`electron/lib/pi-session.ts` 新增 `buildParentContentPrompt()`（只保留「引导生成教学内容 6 步」、去掉「编辑教学技能」能力段，呼应 ISSUE-025 移除技能 tab）+ 独立会话 `getParentContentSession()`（`cachedParentContentSession`，与通用 `getParentSession` 分离）；`electron/lib/ipc-handlers.ts` 新增 `pi:start_parent_content` / `pi:prompt_parent_content`（流式标签 `parent-content`，沿用 `attachSessionEvents` 机制）；`electron/preload.ts` 新增 `piStartParentContent` / `piPromptParentContent` 桥接。
+  3. **当前文件上下文**：前端 `handleSend` 在发送时若已选中文件，附带 `【当前正在查看的文件：xxx】\n<内容>` 上下文，让 AI 针对该文件生成/改写（不取代 AGENTS.md 的文件操作规则）。
+  4. 决策说明（待确认项）：① 左栏改为**只读预览**（编辑交给右栏 AI，避免页内编辑/AI 双写冲突）；② 新建 **parent-content 独立会话**（非复用通用 parent 会话换 prompt）；③ 与技能编辑彻底分离（ISSUE-025 已移除技能 tab，通用 parent 助手技能编辑能力保留但不在此页暴露）；④ 右栏聊天**带当前文件上下文**。
+  5. 验证：tsc 过滤环境告警后 0 业务错误；`npm run build` 通过；全量测试 122 通过 / 12 失败（均预存，与本次无关，见 ISSUE-022 验证记录）。
+- **优先级**：已完成（2026-08-20）
+- **记录时间**：2026-08-20
+
+## [ISSUE-027] 家长页面和孩子页面都要展示学习进度
+
+- **需求**：家长页面和孩子页面**都要**展示学习进度。
+- **重要现状（已定位，两边其实已有组件，需先与用户对齐「缺什么」）**：
+  - **家长侧已有**：家长中心 `Dashboard.tsx` 有「学习进度」入口（`Dashboard.tsx:107,113`）→ `view === "progress"` 时渲染 `ProgressView`（`Dashboard.tsx:225-226`）；`ProgressView.tsx` 展示各主题进度条 + 今日评估布尔表 + 最近日志折叠（数据源 `getProgress` IPC，`ProgressView.tsx:41`）。
+  - **孩子侧已有**：孩子模式 `Learn.tsx` 左侧面板配置含「📊 学习进度看板」tab（`Learn.tsx:26`），`view === "progress"` 时渲染 `LearningDashboard`（`Learn.tsx:729`）；`LearningDashboard.tsx` 展示总体进度 + 各主题进度条（数据源 `learningSummary` IPC，`LearningDashboard.tsx:40`）。
+  - **孩子侧的关键缺口**：`Learn.tsx:721` 默认渲染 `materials`（学习资料）面板，**进度看板要手动切 tab 才看得到**——若用户希望「进孩子模式就能看到进度」，需调默认面板或加常驻概览。
+- **待确认（关键，需用户澄清）**：
+  1. 用户诉求是「**已有但不够显眼/不是默认显示**」（孩子侧默认面板、家长侧二级入口），还是「**想要更丰富的进度内容**」（如 ISSUE-019 的 ②错误误解 ③亮点进步）？
+  2. 孩子侧的展示**形式**是否要儿童友好化（大字体/图标/进度条动画），还是复用 `LearningDashboard` 即可？
+  3. 家长侧是否在 Dashboard 首页（`view === "children"` 列表）就要看到每个孩子进度概览，而不是点进「学习进度」二级视图？
+  4. 孩子侧是否也应在聊天主区常驻（如侧边栏顶部小进度卡）？
+- **排查 / 修改入口（可直接执行）**：家长侧 `src/pages/Dashboard.tsx:19,107,113,225-226` + `src/components/ProgressView.tsx`；孩子侧 `src/pages/Learn.tsx:23-27,616-729` + `src/components/LearningDashboard.tsx`；数据源 `electron/lib/learning-summary.ts`（`getLearningSummary`）+ IPC（`learning:summary`、`learning:progress`）。
+- **关联**：ISSUE-019（家长页进度展示方案设计——①②③ 目标，本 issue 是「家长+孩子双端都展示」的入口/形式诉求，可与 019 合并实施）；ISSUE-006（进度数据源 frontmatter 概览，两端共用）。
+- **优先级**：待定（用户未标注，建议先澄清「缺什么」再定）。
+- **记录时间**：2026-08-21
+
+## [ISSUE-028] AI 返回消息过长时自动滚动停在结尾，孩子看不到开头——应把消息开头显示在一屏幕内
+
+- **需求**：AI 返回的消息过长、一屏放不下时，当前自动滚动让消息**结尾**贴底，孩子要手动往上滚才能看到**开头**；希望进入一屏就能看到开头。
+- **根因（已定位）**：`src/components/ChatWindow.tsx:220-224` 的 useEffect 在 `messages` 变化时**无条件**执行 `messagesRef.current.scrollTop = messagesRef.current.scrollHeight`（滚到底部）。当最后一条消息高度超过视口（`clientHeight`）时，「底部」落在该消息结尾之后，开头被顶出屏幕上方。
+- **消息结构（已定位，可供锚点）**：滚动容器 `.chat-messages`（`ChatWindow.tsx:573`，`messagesRef`）；每条消息外层 `<div className="message ${m.role}">`（583）；AI 文本在 `.bubble.bubble-md`（600）。
+- **候选修复（方向）**：滚动目标从「scrollHeight（底）」改为「最后一条消息的**顶部**」：取最后一条 `.message` 的 `offsetTop`（或整条消息高度），`target = min(scrollHeight - clientHeight, lastMsgTop)`——消息短时等价于滚到底（最后一条完整可见），消息超一屏时停在开头可见。流式 working 阶段（587）同样适用（逐步增长时锚定开头）。
+  - 需注意：`.message` 是 flex 行（583 起含 emoji/气泡/按钮），取 `offsetTop` 前最好让布局稳定（如 `requestAnimationFrame` 后再算）。
+  - 可选增强：用户主动向上滚动阅读历史时，新消息到达**不强行拉回**（需在滚动事件里记录「用户是否已上滚」）。
+- **待确认**：① 流式增长期间是否也保持开头可见（还是仅最终态）；② 用户上滚阅读历史时新消息是否打断（增强项）；③ 是否要考虑「过长消息折叠/展开」作为补充（与锚点方案二选一或共存）。
+- **排查 / 修改入口（可直接执行）**：`src/components/ChatWindow.tsx:220-224`（滚动 useEffect）、`573`（容器）、`583-600`（消息结构/锚点）。
+- **关联**：ISSUE-004（气泡时间显示，同文件历史恢复链路）；ISSUE-018（thinking/tools 恢复——trace 展开会让消息更高，加剧此问题）。
+- **优先级**：待定（用户未标注，建议中：儿童 UX 关键，改动集中在单文件）。
+- **记录时间**：2026-08-21

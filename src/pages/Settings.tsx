@@ -1,6 +1,4 @@
 import { useState, useEffect } from "react";
-import SkillImport from "../components/SkillImport";
-import SkillEditor from "./SkillEditor";
 import VoiceSettings from "../components/VoiceSettings";
 import SchedulerSettings from "../components/SchedulerSettings";
 import GeneralSettings from "../components/GeneralSettings";
@@ -17,12 +15,14 @@ const PROVIDERS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "skills" | "editor" | "voice" | "scheduler" | "general" | "topics">("models");
+  const [tab, setTab] = useState<"models" | "voice" | "scheduler" | "general" | "topics">("models");
   const [selectedProvider, setSelectedProvider] = useState("deepseek");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [defaultModel, setDefaultModel] = useState(() => localStorage.getItem("defaultModel") || "");
+  // ISSUE-020：编程 agent 模型（空 = 未启用，create_html_lesson 不可用）
+  const [programmingModel, setProgrammingModel] = useState("");
 
   // 初始值以主进程存储（app-settings.json）为准，与 ModelSelector / 会话建链同源；
   // 若主进程尚无记录但有旧的 localStorage 值，则迁移过去。
@@ -42,6 +42,13 @@ export default function Settings() {
     }).catch(() => {});
   }, []);
 
+  // 编程 agent 模型初始值（主进程 app-settings.json 为准）
+  useEffect(() => {
+    window.api.piGetProgrammingModel().then((r: any) => {
+      if (r?.success) setProgrammingModel(r.key || "");
+    }).catch(() => {});
+  }, []);
+
   async function handleSetDefault(provider: string, modelId: string) {
     const key = `${provider}/${modelId}`;
     setDefaultModel(key);
@@ -49,6 +56,14 @@ export default function Settings() {
     // 写入主进程：成为 getDefaultModel()（会话建链）/ scheduler 定时任务 / ModelSelector 的唯一种源
     const r = await window.api.piSetDefaultModel(key);
     setKeyStatus(r?.success ? `已将 ${modelId} 设为默认模型` : `默认模型保存失败: ${r?.error || ""}`);
+  }
+
+  // ISSUE-020：编程 agent 模型（modelId 为空 = 停用）
+  async function handleSetProgramming(provider: string, modelId: string) {
+    const key = modelId ? `${provider}/${modelId}` : "";
+    setProgrammingModel(key);
+    const r = await window.api.piSetProgrammingModel(key);
+    setKeyStatus(r?.success ? (key ? `已将 ${modelId} 设为编程 agent 模型` : "已停用编程 agent 模型") : `编程 agent 模型保存失败: ${r?.error || ""}`);
   }
 
   async function handleSaveKey() {
@@ -82,8 +97,6 @@ export default function Settings() {
         {(
           [
             ["models", "模型配置"],
-            ["skills", "技能管理"],
-            ["editor", "技能编辑器"],
             ["topics", "教学内容"],
             ["voice", "语音配置"],
             ["scheduler", "定时任务"],
@@ -206,12 +219,34 @@ export default function Settings() {
               );
             })
           )}
+
+          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #eee" }}>
+            <h4 style={{ fontSize: 15, marginBottom: 4 }}>编程 agent 模型</h4>
+            <p style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>
+              用于自动生成 / 修改孩子学习的 HTML 资料（create_html_lesson 工具）。未选择则此功能不可用，学习 agent 需要时会提示先在这里配置。
+            </p>
+            <select
+              value={programmingModel}
+              onChange={(e) => {
+                const v = e.target.value;
+                const sep = v.indexOf("/");
+                handleSetProgramming(sep > 0 ? v.slice(0, sep) : "", sep > 0 ? v.slice(sep + 1) : "");
+              }}
+              style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 260 }}
+            >
+              <option value="">未启用（默认）</option>
+              {availableModels.map((m) => (
+                <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                  {m.name}（{m.provider}/{m.id}）
+                </option>
+              ))}
+            </select>
+            {programmingModel && (
+              <p style={{ fontSize: 12, color: "#667eea", marginTop: 6 }}>当前编程 agent 模型：{programmingModel}</p>
+            )}
+          </div>
         </div>
       )}
-
-      {tab === "skills" && <SkillImport />}
-
-      {tab === "editor" && <SkillEditor />}
 
       {tab === "topics" && <TopicEditor />}
 

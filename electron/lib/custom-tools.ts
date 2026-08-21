@@ -1,23 +1,22 @@
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
-import { promises as fsp } from "fs";
 import path from "path";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import {
-  appendItemToBlock,
-  extractFrontmatter,
-  findBlock,
-  findField,
-  findItem,
-  isItemChunk,
-  listItemTitles,
-  parseFieldLine,
-  splitBlocks,
-  splitItems,
-  updateFieldValue,
-} from "./kb-parser";
-import { DAILY_BLOCKS, TAG_BLOCKS, detectDataFileKind, legalFieldsFor } from "./kb-schema";
+  dailyToMarkdown,
+  insertCourse,
+  insertDailyEntry,
+  progressToMarkdown,
+  queryDaily,
+  queryTags,
+  queryTopicProgress,
+  queryTopicsMeta,
+  tagsToMarkdown,
+  updateDailyField,
+  updateProgress,
+} from "./kb-sqlite";
+import { generateHtmlLesson } from "./programming-agent";
 
 export interface PanelContent {
   format: "html";
@@ -133,327 +132,300 @@ export const getProgressTool = defineTool({
 });
 
 /**
- * ===== 知识库结构化工具（kb_read / kb_patch / kb_append）=====
- * 依据 LEARNING-DATA-SPEC.md 5.3：查询只回目标区块/条目，写入内容不进 LLM 上下文。
- * 共用 kb-parser（结构解析）+ kb-schema（字段白名单），Path Guard 同 display_content。
+ * ===== 知识库结构化工具（kb_query / kb_insert / kb_update）=====
+ * 依据 LEARNING-DATA-SPEC.md 5.3 与 ISSUE-023 P2（SQLite 唯一真源）：
+ * 数据全部存 `data/children/<childId>/kb.sqlite`，查询只回目标内容、写入内容不进 LLM 上下文。
+ * markdown 为历史归档（一次性迁移后不再读写），agent 不再碰数据文件。
  */
 
-/** 路径守卫：仅允许访问 cwd（孩子学习目录）内文件；返回解析后的绝对路径。 */
-function resolveInCwd(cwd: string, file: string): string {
-  const resolved = path.resolve(cwd, file);
-  if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
-    throw new Error(`路径超出学习目录范围: ${file}`);
-  }
-  return resolved;
-}
-
-/** 拆解 ref 简写："daily/2026-08-13.md#生活" → { file, block }。无 # 时 block 为空。 */
-function parseRef(ref: string): { file: string; block?: string } {
-  const idx = ref.indexOf("#");
-  if (idx < 0) return { file: ref };
-  return { file: ref.slice(0, idx), block: ref.slice(idx + 1) || undefined };
-}
-
-export const kbReadTool = defineTool({
-  name: "kb_read",
-  label: "结构化读取知识库",
+/**
+ * kb_query（SQL 结构化查询）。
+ *
+ * 支持四类查询（query 必填）：
+ *   "daily"    —— daily 记录：date（精确）/ month（YYYY-MM 聚合）+ block（学习/生活/问答/任务）+ title + listOnly
+ *   "topics"   —— 主题清单 + 进度摘要（topics/rules/topic_progress 聚合）
+ *   "progress" —— 某主题进度（learned/total/next/updated + 条目清单）：topic 必填 + listOnly
+ *   "tags"     —— 标签倒排：tag（缺省全部）+ kind（knowledge/life）
+ *
+ * 全部走 SQLite 索引，**不读任何 markdown 数据文件**。
+ */
+export const kbQueryTool = defineTool({
+  name: "kb_query",
+  label: "SQL 查询知识库",
   description:
-    "按结构定位读取知识库数据文件的目标区块/条目，**只返回目标内容，绝不整文件返回**（省 token）。\n\n" +
-    "**定位**：`file`（相对学习目录，如 daily/2026-08-19.md）+ `block`（## 区块标题，如 生活）+ `item`（### 条目标题或 1-based 序号，如 2）。\n" +
-    "**ref 简写**：`ref: \"daily/2026-08-19.md#生活\"` 等价于 `{file, block:\"生活\"}`（与数据文件里的指针写法一致，见 life 索引的「关联」行）。\n" +
-    "**listOnly**：只返回该区块内全部条目标题清单（先看有哪些再定点读，比盲猜标题省 token）。\n" +
-    "**month 聚合**：`{month: \"2026-08\", block: \"学习\", listOnly: true}` 提取该月所有 daily 文件指定区块的条目标题清单（按日期分组，按需生成不持久化）。",
+    "从 SQLite 查询知识库数据（daily 记录 / 主题进度 / 标签定义），**只返回目标内容，不读 markdown 全文，省 token**（ISSUE-013/ISSUE-023）。\n\n" +
+    "**query 类型**：\n" +
+    "- `query: \"daily\"`：查 daily 记录。定位：`date`（YYYY-MM-DD）或 `month`（YYYY-MM 聚合）+ `block`（学习/生活/问答/任务）+ `title`（条目标题）+ `tag`（按标签过滤，如 诚实）+ `listOnly`（只回标题清单）。非 listOnly 返回条目原文（字段由 method 定义）。\n" +
+    "- `query: \"topics\"`：查主题清单与进度摘要（无需其它参数）。\n" +
+    "- `query: \"progress\"`：查某主题进度，`topic` 必填（如 lunyu）+ `tag`（按课程标签过滤）+ `listOnly`（只回课程清单，不看字段）。\n" +
+    "- `query: \"tags\"`：查**标签定义**（词表 + 判断标准，打标签前先查此表，只能从下表选择），`tag`（缺省 = 全部）。\n" +
+    "**返回**：结构化 markdown，可直接用于教学反查相关生活事件、确认下一课、回顾某天记录。\n" +
+    "**优先于 read 数据文件**：daily/、life/、inquiries/、tasks/、tags/、learning 进度文件都是 SQLite 管理的，不要用 read 读它们。",
   parameters: Type.Object({
-    file: Type.Optional(Type.String({ description: "数据文件路径（相对学习目录）。与 ref 二选一，同传时 ref 优先" })),
-    ref: Type.Optional(Type.String({ description: "指针简写：文件路径 + 可选 #区块锚点，如 daily/2026-08-19.md#生活" })),
-    block: Type.Optional(Type.String({ description: "## 区块标题（缺省 = 整个文件正文）" })),
-    item: Type.Optional(Type.Union([Type.String(), Type.Number()], { description: "### 条目标题或 1-based 序号" })),
+    query: Type.String({ description: "查询类型：daily | topics | progress | tags" }),
+    date: Type.Optional(Type.String({ description: "daily 查询：精确日期 YYYY-MM-DD" })),
+    month: Type.Optional(Type.String({ description: "daily 查询：月份聚合 YYYY-MM（配合 block + listOnly）" })),
+    block: Type.Optional(Type.String({ description: "daily 查询：区块（学习/生活/问答/任务）" })),
+    title: Type.Optional(Type.String({ description: "daily 查询：条目标题精确匹配" })),
     listOnly: Type.Optional(Type.Boolean({ description: "true 时只返回条目标题清单，不返回内容" })),
-    month: Type.Optional(Type.String({ description: "month 聚合：YYYY-MM，配合 block（+listOnly）提取该月所有 daily 指定区块的条目标题" })),
+    topic: Type.Optional(Type.String({ description: "progress 查询：主题名（如 lunyu）" })),
+    tag: Type.Optional(Type.String({ description: "标签过滤：daily 查生活事件、progress 查课程、tags 查标签定义（如 诚实）；缺省 = 全部" })),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    const { file: fileFromRef, block: blockFromRef } = params.ref ? parseRef(params.ref) : { file: undefined, block: undefined };
-    const file = params.file ?? fileFromRef ?? "";
-    const block = params.block ?? blockFromRef;
-    if (!file && !params.month) {
-      throw new Error("kb_read 必须提供 file（或 ref / month 聚合）");
-    }
+    const childDir = ctx.cwd;
 
-    // month 聚合：读 daily/{month}-*.md，提取 block 的条目标题
-    if (params.month) {
-      if (!block) throw new Error("month 聚合必须提供 block（如 学习）");
-      const dailyDir = path.join(ctx.cwd, "daily");
-      let files: string[];
-      try {
-        files = (await fsp.readdir(dailyDir))
-          .filter((f) => f.startsWith(params.month!) && f.endsWith(".md"))
-          .sort();
-      } catch {
-        throw new Error(`daily 目录不存在或无 ${params.month} 文件`);
+    switch (params.query) {
+      case "daily": {
+        const entries = queryDaily(childDir, {
+          date: params.date,
+          month: params.month,
+          block: params.block,
+          title: params.title,
+          tag: params.tag,
+          listOnly: params.listOnly,
+        });
+        const scope = params.date
+          ? `${params.date}${params.block ? ` ${params.block}` : ""}`
+          : params.month
+            ? `${params.month}${params.block ? ` ${params.block}` : ""}`
+            : "全部 daily";
+        return {
+          content: [{ type: "text" as const, text: `${scope}记录：\n${dailyToMarkdown(entries, params.listOnly)}` }],
+        };
       }
-      if (files.length === 0) throw new Error(`没有 ${params.month} 的 daily 文件`);
-      const lines: string[] = [];
-      for (const f of files) {
-        const text = await fsp.readFile(path.join(dailyDir, f), "utf-8");
-        const titles = listItemTitles(text, block);
-        for (const t of titles) {
-          for (const it of t.items) lines.push(`${f.replace(/\.md$/, "")} | ${it}`);
+      case "topics": {
+        const topics = queryTopicsMeta(childDir);
+        const progress = queryTopicProgress(childDir);
+        if (topics.length === 0) {
+          return { content: [{ type: "text" as const, text: "暂无学习主题。" }] };
         }
+        const lines: string[] = ["主题清单："];
+        for (const t of topics) {
+          const dirName = t.file.split("/")[0];
+          const p = progress.find((x) => x.topic === dirName);
+          const next = p?.next?.trim() ? `，下一课「${p.next.trim()}」` : "";
+          const daily = t.rules.daily ? ` 每日目标 ${t.rules.daily} 课` : "";
+          const type = t.rules.type ? `（${t.rules.type}）` : "";
+          lines.push(`- ${t.name}${type}：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${next}${daily}`);
+        }
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       }
-      return {
-        content: [{ type: "text" as const, text: lines.length ? lines.join("\n") : `${params.month} 无 ${block} 条目` }],
-      };
+      case "progress": {
+        if (!params.topic) throw new Error("kb_query progress 需要 topic 参数（如 lunyu）");
+        const progress = queryTopicProgress(childDir, params.topic, params.tag);
+        if (progress.length === 0) {
+          return { content: [{ type: "text" as const, text: `主题「${params.topic}」暂无进度记录。` }] };
+        }
+        return {
+          content: [{ type: "text" as const, text: progressToMarkdown(progress, params.listOnly) }],
+        };
+      }
+      case "tags": {
+        const defs = queryTags(childDir, params.tag);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${params.tag ? `标签「${params.tag}」定义：` : ""}${tagsToMarkdown(defs)}`,
+            },
+          ],
+        };
+      }
+      default:
+        throw new Error(`kb_query 支持 query: daily | topics | progress | tags（当前: ${params.query}）`);
     }
+  },
+});
 
-    const resolved = resolveInCwd(ctx.cwd, file);
-    let text: string;
-    try {
-      text = await fsp.readFile(resolved, "utf-8");
-    } catch {
-      throw new Error(`文件不存在: ${file}`);
-    }
-    const fm = extractFrontmatter(text);
-    const bodyLines = (fm ? fm.body : text).split(/\r?\n/);
-    const blocks = splitBlocks(bodyLines);
-
-    // block 缺省 = 整个文件正文
-    if (!block) {
-      const body = (fm ? fm.body : text).replace(/\n+$/, "\n");
-      return { content: [{ type: "text" as const, text: body || "(空文件)" }] };
-    }
-    const blk = findBlock(blocks, block);
-    if (!blk) throw new Error(`区块不存在: ${block}（可选: ${blocks.map((b) => b.title).join("、") || "无"}）`);
-    const items = splitItems(blk.lines);
-
-    // listOnly：只回标题清单
-    if (params.listOnly) {
+/**
+ * kb_insert（SQL 插入新条目）。
+ *
+ * 支持两类写入（table 必填）：
+ *   "daily"  —— 写 daily 新条目：date（YYYY-MM-DD）+ block（学习/生活/问答/任务）+ content（### 标题 + 字段行原文；
+ *                **生活事件在 content 里写 `- 标签：诚实,亲情`（从 tags 定义表选）**，工具自动解析进 tags 列）
+ *   "course" —— 新增课程（courses 表）：topic（主题目录名，如 lunyu）+ title（课程名，如 论语先进篇第二十一章）
+ *                （"progress" 是旧别名，兼容保留，新调用请用 "course"）
+ *
+ * 写入内容不进 LLM 上下文。data 主键已存在时返回 false（daily 是 append-only 历史，不覆盖）。
+ */
+export const kbInsertTool = defineTool({
+  name: "kb_insert",
+  label: "插入知识库条目（SQL）",
+  description:
+    "向 SQLite 知识库插入新条目，**内容不进上下文**（ISSUE-023 P2，SQLite 唯一真源）。\n\n" +
+    "**table: \"daily\"**：写 daily 记录。`date`（YYYY-MM-DD）+ `block`（学习/生活/问答/任务）+ `content`（一条完整条目，`### 标题` 开头 + 字段行，**直接用已在回复中输出给孩子的学习总结原文**）。生活事件需在 content 里写 `- 标签：诚实,亲情` 字段行（标签只能从 `kb_query {query:\"tags\"}` 的定义表选）。\n" +
+    "**table: \"course\"**：新增课程（courses 表）。`topic`（主题目录名，如 lunyu）+ `title`（课程名）；可选 `status`（⬜/✅）/ `mastery`（掌握度）/ `material`（教学资料）/ `sendMaterial`（要发送的学习资料）/ `tags`（课程标签，逗号分隔）。\n" +
+    "**重复插入**：同主键已存在时返回 false（daily 历史不改，不覆盖）。\n" +
+    "**注意**：只用于数据写入；method.md / materials/ 等内容文件仍用 write/edit。",
+  parameters: Type.Object({
+    table: Type.String({ description: "写入目标：daily | course（旧名 progress 兼容）" }),
+    date: Type.Optional(Type.String({ description: "daily：日期 YYYY-MM-DD" })),
+    block: Type.Optional(Type.String({ description: "daily：区块（学习/生活/问答/任务）" })),
+    content: Type.Optional(Type.String({ description: "daily：完整条目文本（### 标题 + 字段行，生活事件含 - 标签：行）" })),
+    topic: Type.Optional(Type.String({ description: "course：主题目录名（如 lunyu）" })),
+    title: Type.Optional(Type.String({ description: "course：新课程名（如 论语先进篇第二十一章）" })),
+    status: Type.Optional(Type.String({ description: "course：初始掌握状态（⬜/✅，缺省 ⬜）" })),
+    mastery: Type.Optional(Type.String({ description: "course：初始掌握度（method 定义语义，如 良好）" })),
+    material: Type.Optional(Type.String({ description: "course：教学资料（路径指针或描述，method 决定写法）" })),
+    sendMaterial: Type.Optional(Type.String({ description: "course：要发送的学习资料" })),
+    tags: Type.Optional(Type.String({ description: "course：课程标签（逗号分隔，从 tags 定义表选）" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const childDir = ctx.cwd;
+    if (params.table === "daily") {
+      if (!params.date || !params.block || !params.content) {
+        throw new Error("kb_insert daily 需要 date + block + content");
+      }
+      const ok = insertDailyEntry(childDir, { date: params.date, block: params.block, title: params.content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "", content: params.content });
       return {
         content: [
           {
             type: "text" as const,
-            text: items.length ? items.map((it, i) => `${i + 1}. ${it.title}`).join("\n") : `「${block}」区块暂无条目`,
+            text: ok
+              ? `已写入 daily ${params.date}「${params.block}」：${params.content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "条目"}`
+              : `daily ${params.date}「${params.block}」已存在同名条目，未重复写入（历史不改）`,
           },
         ],
       };
     }
-    // 无 item：返回整个区块
-    if (params.item === undefined) {
-      return { content: [{ type: "text" as const, text: blk.lines.join("\n") }] };
+    if (params.table === "course" || params.table === "progress") {
+      if (!params.topic || !params.title) {
+        throw new Error("kb_insert course 需要 topic + title（新课程名）");
+      }
+      const ok = insertCourse(childDir, {
+        topic: params.topic,
+        title: params.title,
+        status: params.status,
+        mastery: params.mastery,
+        material: params.material,
+        sendMaterial: params.sendMaterial,
+        tags: params.tags,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: ok ? `已新增课程：${params.topic}「${params.title}」` : `课程已存在：${params.topic}「${params.title}」（未重复插入）`,
+          },
+        ],
+      };
     }
-    const it = findItem(items, params.item);
-    if (!it) {
-      throw new Error(`条目不存在: ${params.item}（可选: ${items.map((i) => i.title).join("、") || "无"}）`);
-    }
-    return { content: [{ type: "text" as const, text: it.lines.join("\n") }] };
+    throw new Error(`kb_insert 支持 table: daily | course（当前: ${params.table}）`);
   },
 });
 
-export const kbPatchTool = defineTool({
-  name: "kb_patch",
-  label: "定位更新知识库字段",
+/**
+ * kb_update（SQL 更新字段）。
+ *
+ * 支持两类更新（table 必填）：
+ *   "daily"  —— daily 条目字段：date + block + title + field + value
+ *   "course" —— 课程进度字段（操作 courses 表）：topic + item（课程名）+ field + value；
+ *     field 支持：状态/掌握状态（⬜/✅）、掌握度、首次学习(时间)、最近复习/复习时间/上次复习、
+ *     复习次数（value 传 "+1" 自动递增）、教学资料、学习资料/要发送的学习资料、tags。
+ *     **learned/total/next/updated 为视图自动计算，无需（也不可）手动更新。**
+ *     （"progress" 是旧别名，兼容保留，新调用请用 "course"）
+ *
+ * 无需提供旧值，写入内容不进上下文。目标不存在返回 false。
+ */
+export const kbUpdateTool = defineTool({
+  name: "kb_update",
+  label: "更新知识库字段（SQL）",
   description:
-    "按结构定位更新数据文件的某个字段值，**无需提供旧值、文件内容不进上下文**（替代「读全文 + edit 重写」）。\n\n" +
-    "**定位**：`file` + `item`（### 条目标题或序号；frontmatter 用固定值 \"frontmatter\"）+ `field`（字段名，frontmatter 用 \"frontmatter:learned\" 形式）+ `value`（新值，整行替换）。\n" +
-    "**批量**：`fields: [{field, value}, ...]` 一次更新同一条目多个字段。\n" +
-    "**校验**：字段名必须在该文件类型的白名单内（daily 学习区块合法字段：课程名/考核/掌握度/难点/错题/孩子表现；进度条目：状态/掌握度/复习次数/最近复习/tags），非法字段名直接拒绝并提示合法值。\n" +
-    "**只用于数据文件**（daily/、learning/、life/、inquiries/、tasks/、tags/），method.md / materials/ 等内容文件请用 write/edit。",
+    "按结构定位更新 SQLite 知识库的字段值，**无需提供旧值、内容不进上下文**（替代「读全文 + edit 重写」）。\n\n" +
+    "**table: \"daily\"**：`date` + `block` + `title`（定位条目）+ `field` + `value`（新值）。\n" +
+    "**table: \"course\"**：更新某门课程（courses 表）。`topic`（如 lunyu）+ `item`（**课程名必填**，如 论语先进篇第十七章）+ `field`（状态/掌握状态/掌握度/首次学习/最近复习/复习时间/上次复习/复习次数/教学资料/学习资料/tags）+ `value`。\n" +
+    "**进度自动计算**：learned/total/next/updated 由视图实时计算，**不要**手动更新（传这些字段会被拒绝）。复习次数传 `value: \"+1\"` 自动递增。\n" +
+    "**字段缺失时自动追加**（如新学一课补「掌握度/首次学习」）。\n" +
+    "**只用于数据写入**；method.md / materials/ 等内容文件请用 write/edit。",
   parameters: Type.Object({
-    file: Type.String({ description: "数据文件路径（相对学习目录）" }),
-    item: Type.Optional(Type.Union([Type.String(), Type.Number()], { description: "### 条目标题或序号；更新 frontmatter 时传 \"frontmatter\"" })),
-    field: Type.Optional(Type.String({ description: "字段名（如 掌握度）；frontmatter 用 frontmatter:key" })),
-    value: Type.Optional(Type.String({ description: "新值（整行替换）" })),
-    fields: Type.Optional(Type.Array(Type.Object({ field: Type.String(), value: Type.String() }), { description: "批量字段更新（同条目）" })),
+    table: Type.String({ description: "更新目标：daily | course（旧名 progress 兼容）" }),
+    date: Type.Optional(Type.String({ description: "daily：日期 YYYY-MM-DD" })),
+    block: Type.Optional(Type.String({ description: "daily：区块（学习/生活/问答/任务）" })),
+    title: Type.Optional(Type.String({ description: "daily：条目标题" })),
+    topic: Type.Optional(Type.String({ description: "course：主题名（如 lunyu）" })),
+    item: Type.Optional(Type.String({ description: "course：课程名（必填，如 论语先进篇第十七章）" })),
+    field: Type.String({ description: "字段名（course：状态/掌握度/首次学习/最近复习/复习次数/教学资料/学习资料/tags）" }),
+    value: Type.String({ description: "新值（整字段替换）" }),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    const file = params.file;
-    const kind = detectDataFileKind(file);
-    if (!kind) {
-      throw new Error(`kb_patch 仅支持数据文件（daily/、learning/、life|inquiries|tasks/、tags/）；${file} 是内容文件，请用 write/edit`);
+    const childDir = ctx.cwd;
+    if (params.table === "daily") {
+      if (!params.date || !params.block || !params.title) {
+        throw new Error("kb_update daily 需要 date + block + title + field + value");
+      }
+      const ok = updateDailyField(childDir, { date: params.date, block: params.block, title: params.title, field: params.field, value: params.value });
+      if (!ok) throw new Error(`daily 条目不存在: ${params.date}「${params.block}」${params.title}`);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `已更新 daily ${params.date}「${params.block}」${params.title}：${params.field}=${params.value}`,
+          },
+        ],
+      };
     }
-    const updates = params.fields ?? (params.field && params.value !== undefined ? [{ field: params.field, value: params.value }] : []);
-    if (updates.length === 0) throw new Error("kb_patch 需要 field+value 或 fields[]");
-
-    const resolved = resolveInCwd(ctx.cwd, file);
-    const text = await fsp.readFile(resolved, "utf-8");
-
-    // frontmatter 更新（field 形如 frontmatter:learned）
-    const fmUpdates = updates.filter((u) => u.field.startsWith("frontmatter:"));
-    const bodyUpdates = updates.filter((u) => !u.field.startsWith("frontmatter:"));
-
-    // —— 字段白名单校验：daily 需要 block 定位，先解析定位再做字段校验 ——
-    if (bodyUpdates.length > 0) {
-      const fm = extractFrontmatter(text);
-      const bodyLines = (fm ? fm.body : text).split(/\r?\n/);
-      const blocks = splitBlocks(bodyLines);
-      // daily 文件：需先按 block 定位条目（field 校验按区块）
-      if (kind === "daily" && !params.block) {
-        throw new Error(`kb_patch daily 文件需要 block 参数（## 区块标题，如 ${DAILY_BLOCKS.join("/")}）`);
-      }
-      const blk = params.block ? findBlock(blocks, params.block) : null;
-      if (params.block && !blk) throw new Error(`区块不存在: ${params.block}`);
-      const legalHere = legalFieldsFor(kind, blk?.title);
-      const illegal = bodyUpdates.filter((u) => legalHere && !legalHere.includes(u.field));
-      if (illegal.length > 0) {
-        throw new Error(`非法字段: ${illegal.map((u) => u.field).join("、")}（${kind === "daily" ? `「${blk?.title}」区块` : "该文件"}合法字段: ${legalHere?.join("/") ?? "不限"}）`);
-      }
+    if (params.table === "course" || params.table === "progress") {
+      if (!params.topic) throw new Error("kb_update course 需要 topic（如 lunyu）");
+      if (!params.item) throw new Error("kb_update course 需要 item（课程名，如 论语先进篇第十七章）");
+      const ok = updateProgress(childDir, { topic: params.topic, item: params.item, field: params.field, value: params.value });
+      if (!ok) throw new Error(`进度更新失败：主题「${params.topic}」课程「${params.item}」不存在`);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `已更新 ${params.topic}「${params.item}」：${params.field}=${params.value}`,
+          },
+        ],
+      };
     }
+    throw new Error(`kb_update 支持 table: daily | course（当前: ${params.table}）`);
+  },
+});
 
-    // —— 执行更新（先整体解析验证，再做替换）——
-    let result = text;
-    // frontmatter 区更新
-    if (fmUpdates.length > 0) {
-      const fm = extractFrontmatter(text);
-      if (!fm) throw new Error("文件没有 frontmatter，无法更新 frontmatter:key");
-      let fmLines = fm.data.split(/\r?\n/);
-      for (const u of fmUpdates) {
-        const key = u.field.slice("frontmatter:".length);
-        let found = false;
-        fmLines = fmLines.map((line) => {
-          const m = /^([A-Za-z_][\w]*):(.*)$/.exec(line);
-          if (m && m[1] === key) {
-            found = true;
-            return `${m[1]}: ${u.value}`;
-          }
-          return line;
-        });
-        if (!found) fmLines.push(`${key}: ${u.value}`);
-      }
-      result = `---\n${fmLines.join("\n")}\n---\n${fm.body}`;
+/**
+ * create_html_lesson（ISSUE-020）：把需求交给「编程 agent」生成/修改一份自包含 HTML 学习资料。
+ *
+ * 设计：学习 agent 不自己拼 HTML，而是把需求摘要（标题 + 结构要求 + 输出相对路径）传给编程 agent
+ * （独立会话、可配置模型、cwd=孩子学习目录），编程 agent 只负责把 HTML 写到指定路径。
+ * 生成成功后学习 agent 再用 display_content 展示（走既有 MaterialsPanel 链路，前端无需改）。
+ *
+ * 未配置「编程 agent 模型」时（设置页为空）会抛错并提示家长去设置页配置，不静默回退。
+ */
+export const createHtmlLessonTool = defineTool({
+  name: "create_html_lesson",
+  label: "编程 agent 生成/修改 HTML 学习资料",
+  description:
+    "把一份 HTML 学习资料的生成或修改需求交给「编程 agent」完成，产出落盘文件。\n\n" +
+    "**用途**：当需要给孩子展示一份 html 格式学习资料、而该文件还不存在或需要修改时，先调用本工具生成/更新文件，再用 display_content 展示。\n\n" +
+    "**参数**：`title`（课程标题）、`requirement`（需求描述：页面结构、内容要点、交互要求，尽可能具体）、`outputPath`（输出路径，相对学习目录，如 `learning/lunyu/materials/论语先进篇第十三章.html`，必须以 .html 结尾）、`sessionKey`（可选，同一份资料的生成与后续修改传相同值以复用上下文；缺省按 outputPath 自动派生）。\n\n" +
+    "**返回**：生成的文件相对路径。成功后请立即用 display_content 展示给孩子。\n\n" +
+    "**未配置时**：若家长未在设置页配置「编程 agent 模型」，本工具会报错，请告诉家长到设置页配置后重试。",
+  parameters: Type.Object({
+    title: Type.String({ description: "课程标题（如 论语先进篇第十三章）" }),
+    requirement: Type.String({ description: "需求描述：页面结构、内容要点、交互要求（尽量具体，直接决定产出质量）" }),
+    outputPath: Type.String({ description: "输出路径（相对学习目录，.html/.htm 结尾），如 learning/lunyu/materials/论语先进篇第十三章.html" }),
+    sessionKey: Type.Optional(Type.String({ description: "会话键：同一份资料的生成/修改复用同一编程会话；缺省按 outputPath 派生" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    if (!params.title || !params.requirement || !params.outputPath) {
+      throw new Error("create_html_lesson 需要 title / requirement / outputPath 参数");
     }
-    // 正文区更新
-    if (bodyUpdates.length > 0) {
-      const fm = extractFrontmatter(result);
-      const bodyLines = (fm ? fm.body : result).split(/\r?\n/);
-      const blocks = splitBlocks(bodyLines);
-      // 进度文件等无 ## 区块的文件：把整个正文视为隐式区块（条目直接挂在文件级）
-      const blk =
-        (params.block ? findBlock(blocks, params.block) : blocks[0] ?? null) ??
-        (blocks.length === 0 ? { title: "", start: 0, end: bodyLines.length, lines: bodyLines } : null);
-      if (!blk) throw new Error("无法定位区块");
-      const items = splitItems(blk.lines);
-      if (params.item === undefined) throw new Error("kb_patch 正文更新需要 item（### 条目标题或序号，frontmatter 用 \"frontmatter\"）");
-      const it = findItem(items, params.item);
-      if (!it) throw new Error(`条目不存在: ${params.item}（可选: ${items.map((i) => i.title).join("、") || "无"}）`);
-      let itemLines = [...it.lines];
-      const missing: string[] = [];
-      for (const u of bodyUpdates) {
-        const r = updateFieldValue(itemLines, u.field, u.value);
-        if (!r.hit) {
-          missing.push(u.field);
-        } else {
-          itemLines = r.lines;
-        }
-      }
-      // 字段不存在时自动追加到条目尾（recording 真实场景：新学一课要补「掌握度/首次学习」等原本没有的字段）。
-      // 字段格式跟随条目内已有字段（`键:: 值` 或 `- 键：值`），无则按文件类型默认。
-      if (missing.length > 0) {
-        const existingSep = itemLines.map(parseFieldLine).find((h) => h !== null)?.sep ?? (kind === "daily" ? "dash-colon" : "dcolon");
-        for (const f of missing) {
-          const u = bodyUpdates.find((x) => x.field === f)!;
-          itemLines.push(existingSep === "dash-colon" ? `- ${f}：${u.value}` : `${f}:: ${u.value}`);
-        }
-      }
-      // 用更新后的条目行替换原区块中的条目
-      const newBlockLines = [
-        ...blk.lines.slice(0, it.start),
-        ...itemLines,
-        ...blk.lines.slice(it.end),
-      ];
-      const updatedLines = [...bodyLines.slice(0, blk.start), ...newBlockLines, ...bodyLines.slice(blk.end)];
-      const newBody = updatedLines.join("\n");
-      result = fm ? `---\n${fm.data}\n---\n${newBody}` : newBody;
-    }
-
-    await fsp.writeFile(resolved, result, "utf-8");
+    const childId = path.basename(ctx.cwd);
+    const result = await generateHtmlLesson({
+      childId,
+      title: params.title,
+      requirement: params.requirement,
+      outputPath: params.outputPath,
+      sessionKey: params.sessionKey,
+    });
     return {
       content: [
         {
           type: "text" as const,
-          text: `已更新 ${file}${params.block ? ` 「${params.block}」` : ""}${params.item !== undefined ? `「${typeof params.item === "string" ? params.item : `#${params.item}`}」` : ""}${updates.map((u) => `${u.field}=${u.value}`).join(", ")}`,
+          text: `已生成/更新 HTML 学习资料：${result.title}\n文件路径：${result.relPath}\n请用 display_content 展示给孩子。`,
         },
       ],
-    };
-  },
-});
-
-export const kbAppendTool = defineTool({
-  name: "kb_append",
-  label: "向知识库区块追加条目",
-  description:
-    "向数据文件的指定区块尾部追加一条完整条目（如 daily 的新学习总结、life 月索引新行），**文件内容不进上下文**。\n\n" +
-    "**定位**：`file` + `block`（## 区块标题；缺省 = 追加到文件尾）+ `content`（一条完整条目文本）。\n" +
-    "daily 的 `content` 以 `### 标题` 开头——**通常直接使用 method 流程已在回复中输出给孩子的学习总结原文**（如 `### 论语先进篇第十七章\\n- 考核：…\\n- 孩子表现：…`），工具只校验结构（### 开头、区块合法），**不校验字段名**（字段质量由 method 输出流程保证，lint 定时兜底）。\n" +
-    "life/inquiries/tasks 月索引的 content 以 `## 日期 标题` 开头（条目标题须与 daily 对应 ### 标题同名，见 SPEC 3.6）。\n" +
-    "tags 倒排：block 为 关联知识点/关联生活事件。\n" +
-    "**文件不存在时自动创建**（如当日 daily 首次写入），无需先用 write 建文件。",
-  parameters: Type.Object({
-    file: Type.String({ description: "数据文件路径（相对学习目录）" }),
-    block: Type.Optional(Type.String({ description: "## 区块标题（缺省 = 追加到文件尾）" })),
-    content: Type.String({ description: "要追加的条目文本（### 或 ## 标题开头 + 字段行）" }),
-  }),
-  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    const { file, block, content } = params;
-    const kind = detectDataFileKind(file);
-    if (!kind || (kind !== "daily" && kind !== "index" && kind !== "tags")) {
-      throw new Error(`kb_append 仅支持追加到 daily/、life|inquiries|tasks/、tags/ 文件；${file} 不允许追加`);
-    }
-    const resolved = resolveInCwd(ctx.cwd, file);
-    const exists = fs.existsSync(resolved);
-
-    // 结构校验（不做字段白名单校验：content 是 method 流程已输出给孩子的学习总结原文，直接追加；
-    // 字段质量由 method 输出流程保证，事后由 lint（5.5）兜底）
-    if (kind === "daily") {
-      if (!block) throw new Error(`kb_append daily 文件需要 block 参数（${DAILY_BLOCKS.join("/")}）`);
-      if (!(DAILY_BLOCKS as readonly string[]).includes(block)) {
-        throw new Error(`非法区块: ${block}（合法: ${DAILY_BLOCKS.join("/")}）`);
-      }
-      if (!isItemChunk(content)) {
-        throw new Error("daily 追加内容必须以 `### 标题` 开头");
-      }
-    } else if (kind === "tags") {
-      if (block && !(TAG_BLOCKS as readonly string[]).includes(block)) {
-        throw new Error(`非法区块: ${block}（合法: ${TAG_BLOCKS.join("/")}）`);
-      }
-    }
-
-    // 文件不存在：自动创建（daily 当日文件、life 月索引等首次写入场景；内容不进上下文）
-    if (!exists) {
-      let created = "";
-      if (kind === "daily") {
-        const date = file.replace(/^daily\//, "").replace(/\.md$/, "");
-        created = `# ${date}\n\n## ${block}\n\n${content}\n`;
-      } else {
-        created = `${content}\n`;
-      }
-      await fsp.mkdir(path.dirname(resolved), { recursive: true });
-      await fsp.writeFile(resolved, created, "utf-8");
-      return {
-        content: [{ type: "text" as const, text: `已创建 ${file} 并写入「${block ?? "文件尾"}」` }],
-      };
-    }
-
-    const text = await fsp.readFile(resolved, "utf-8");
-    const fm = extractFrontmatter(text);
-    const bodyLines = (fm ? fm.body : text).split(/\r?\n/);
-    let updatedLines: string[];
-    if (block) {
-      const r = appendItemToBlock(bodyLines, block, content);
-      if (!r.block) {
-        // 区块不存在：在文件尾自动创建新区块（当天先写「学习」再追加「生活」等场景）
-        const trimmed = bodyLines.filter((l) => l.trim() !== "");
-        updatedLines = [...trimmed, "", `## ${block}`, "", ...content.split(/\r?\n/), ""];
-      } else {
-        updatedLines = r.lines;
-      }
-    } else {
-      // 追加到文件尾
-      const tail = bodyLines.filter((l) => l.trim() === "").length > 0 ? [] : [""];
-      updatedLines = [...bodyLines, ...(bodyLines[bodyLines.length - 1]?.trim() === "" ? [] : [""]), ...content.split(/\r?\n/), ""];
-    }
-    const newText = fm ? `---\n${fm.data}\n---\n${updatedLines.join("\n")}` : updatedLines.join("\n");
-    await fsp.writeFile(resolved, newText, "utf-8");
-    return {
-      content: [{ type: "text" as const, text: `已追加到 ${file}${block ? `「${block}」` : "文件尾"}` }],
+      details: { relPath: result.relPath, title: result.title },
     };
   },
 });

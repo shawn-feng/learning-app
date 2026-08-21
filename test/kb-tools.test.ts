@@ -7,7 +7,8 @@ import path from "path";
 // 打桩成 undefined，与 learning-summary.test.ts 一致。
 vi.mock("electron", () => ({ app: undefined }));
 
-import { kbAppendTool, kbPatchTool, kbReadTool } from "../electron/lib/custom-tools";
+import { kbInsertTool, kbQueryTool, kbUpdateTool } from "../electron/lib/custom-tools";
+import { openKbDb } from "../electron/lib/kb-sqlite";
 
 const REAL_CHILD = path.resolve(__dirname, "../data/children/1f050a7f-df8a-45b0-925a-1ffe2aa35674");
 
@@ -16,224 +17,164 @@ async function runTool(tool: { execute: Function }, params: any, cwd: string) {
   return tool.execute("test-call", params, undefined, undefined, { cwd });
 }
 
-describe("kb_read（结构化读取）", () => {
-  it("ref 简写定位 daily 生活区块，listOnly 返回标题清单", async () => {
-    // 用真实主账号数据：2026-08-11 生活区块含「做番茄钟网页」
-    const res = await runTool(kbReadTool, { ref: "daily/2026-08-11.md#生活", listOnly: true }, REAL_CHILD);
+describe("kb_query（SQLite 结构化查询）", () => {
+  it("query=daily：date+block 精确查询（真实主账号 2026-08-11 生活区块）", async () => {
+    const res = await runTool(kbQueryTool, { query: "daily", date: "2026-08-11", block: "生活", listOnly: true }, REAL_CHILD);
     const text = res.content[0].text as string;
     expect(text).toContain("做番茄钟网页");
-    expect(text.split("\n").length).toBeLessThanOrEqual(5); // 只回标题清单，不含全文
   });
 
-  it("block+item 定位单条生活事件", async () => {
+  it("query=daily：month 聚合 + listOnly 只回标题", async () => {
+    const res = await runTool(kbQueryTool, { query: "daily", month: "2026-08", block: "生活", listOnly: true }, REAL_CHILD);
+    const text = res.content[0].text as string;
+    expect(text.split("\n").length).toBeLessThanOrEqual(30); // 只回标题清单，不含全文
+  });
+
+  it("query=daily：block+title 定位单条", async () => {
     const res = await runTool(
-      kbReadTool,
-      { file: "daily/2026-08-11.md", block: "生活", item: "做番茄钟网页" },
+      kbQueryTool,
+      { query: "daily", date: "2026-08-11", block: "生活", title: "做番茄钟网页" },
       REAL_CHILD
     );
     const text = res.content[0].text as string;
     expect(text).toContain("番茄钟网页");
-    expect(text).toContain("标签");
-    // 只回该条目，不含「学习」区块
-    expect(text).not.toContain("## 学习");
+    expect(text).toContain("概要");
   });
 
-  it("路径守卫：越界路径被拒", async () => {
-    await expect(runTool(kbReadTool, { file: "../../../Windows/win.ini" }, REAL_CHILD)).rejects.toThrow(
-      /超出学习目录范围/
-    );
+  it("query=topics：返回主题清单与进度摘要", async () => {
+    const res = await runTool(kbQueryTool, { query: "topics" }, REAL_CHILD);
+    const text = res.content[0].text as string;
+    expect(text).toContain("主题清单");
+    expect(text).toContain("论语");
   });
 
-  it("不存在的区块/条目报错并给出可选清单", async () => {
-    await expect(runTool(kbReadTool, { file: "daily/2026-08-11.md", block: "不存在的区块" }, REAL_CHILD)).rejects.toThrow(
-      /区块不存在/
-    );
+  it("query=progress：topic + listOnly 返回课程清单", async () => {
+    const res = await runTool(kbQueryTool, { query: "progress", topic: "lunyu", listOnly: true }, REAL_CHILD);
+    const text = res.content[0].text as string;
+    expect(text).toContain("lunyu");
+    expect(text).toContain("论语学而篇第一章");
+  });
+
+  it("query=tags：tag 精确查询标签定义（词表 + 判断标准）", async () => {
+    const res = await runTool(kbQueryTool, { query: "tags", tag: "亲情" }, REAL_CHILD);
+    const text = res.content[0].text as string;
+    expect(text).toContain("标签「亲情」定义");
+    expect(text).toContain("亲情");
+  });
+
+  it("query=daily：tag 过滤查生活事件（真实库 08-11 动手标签）", async () => {
+    const res = await runTool(kbQueryTool, { query: "daily", block: "生活", tag: "动手", listOnly: true }, REAL_CHILD);
+    const text = res.content[0].text as string;
+    expect(text).toContain("番茄钟");
+  });
+
+  it("query 非法值被拒", async () => {
+    await expect(runTool(kbQueryTool, { query: "bad" }, REAL_CHILD)).rejects.toThrow(/支持 query/);
   });
 });
 
-describe("kb_patch / kb_append（临时目录写测试）", () => {
+describe("kb_insert / kb_update（临时目录写测试）", () => {
   let tmpDir: string;
-  let dailyFile: string;
-  let progressFile: string;
 
   beforeAll(() => {
-    // 用系统临时目录隔离写测试（避免污染真实孩子数据；临时目录由系统回收）
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-tools-test-"));
-    dailyFile = path.join(tmpDir, "daily", "2026-08-20.md");
-    fs.mkdirSync(path.dirname(dailyFile), { recursive: true });
-    fs.writeFileSync(
-      dailyFile,
-      "## 生活\n\n### 做番茄钟网页\n- 标签：#动手\n- 概要：原始概要\n\n## 任务\n\n### 做个番茄钟\n- 需求：一个番茄钟\n- 状态：pending\n",
-      "utf-8"
-    );
-    // 进度文件（无 ## 区块，条目直接挂文件级——与真实 lunyu.md 一致）
-    progressFile = path.join(tmpDir, "learning", "lunyu", "lunyu.md");
-    fs.mkdirSync(path.dirname(progressFile), { recursive: true });
-    fs.writeFileSync(
-      progressFile,
-      "---\nlearned: 282\ntotal: 514\nnext: \"论语先进篇第十七章\"\nupdated: 2026-08-19\n---\n\n### 论语先进篇第十六章\n状态:: ✅\n掌握度:: 良好\n复习次数:: 0\n最近复习:: 2026-08-13\n\n### 论语先进篇第十七章\n状态:: ⬜\n复习次数:: 0\n",
-      "utf-8"
-    );
+    // 用系统临时目录隔离写测试；先建库（kb_insert 依赖 kb.sqlite 存在）
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-tools-sqlite-test-"));
+    const db = openKbDb(tmpDir);
+    db.close();
   });
 
-  it("kb_patch 定位更新 daily 条目字段，文件内容不进返回", async () => {
+  it("kb_insert daily：写入新条目，内容不进返回", async () => {
     const res = await runTool(
-      kbPatchTool,
-      { file: "daily/2026-08-20.md", block: "生活", item: "做番茄钟网页", field: "概要", value: "更新后的概要" },
+      kbInsertTool,
+      { table: "daily", date: "2026-08-20", block: "生活", content: "### 做番茄钟网页\n- 标签：#动手\n- 概要：原始概要" },
       tmpDir
     );
-    expect(res.content[0].text).toContain("概要=更新后的概要");
-    // 返回里不应出现文件内容（只回确认信息）
-    expect(res.content[0].text).not.toContain("原始概要");
-    const text = fs.readFileSync(dailyFile, "utf-8");
-    expect(text).toContain("- 概要：更新后的概要");
+    expect(res.content[0].text).toContain("已写入 daily 2026-08-20");
+    expect(res.content[0].text).not.toContain("原始概要"); // 内容不进上下文
+    // 验证落库
+    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "生活" }, tmpDir);
+    expect(q.content[0].text).toContain("做番茄钟网页");
   });
 
-  it("kb_patch 批量更新同条目多字段", async () => {
+  it("kb_insert daily：同主键重复插入返回不覆盖（append-only）", async () => {
+    const res = await runTool(
+      kbInsertTool,
+      { table: "daily", date: "2026-08-20", block: "生活", content: "### 做番茄钟网页\n- 概要：应该不覆盖" },
+      tmpDir
+    );
+    expect(res.content[0].text).toContain("已存在同名条目，未重复写入");
+    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "生活", title: "做番茄钟网页" }, tmpDir);
+    expect(q.content[0].text).toContain("原始概要"); // 仍是第一次的内容
+    expect(q.content[0].text).not.toContain("应该不覆盖");
+  });
+
+  it("kb_insert daily：生活事件标签行自动解析 → kb_query daily tag 过滤可反查", async () => {
+    const res = await runTool(
+      kbInsertTool,
+      { table: "daily", date: "2026-08-20", block: "生活", content: "### 2026-08-20 撒谎事件\n- 概要：说了谎\n- 标签：诚实" },
+      tmpDir
+    );
+    expect(res.content[0].text).toContain("已写入 daily 2026-08-20");
+    const q = await runTool(kbQueryTool, { query: "daily", block: "生活", tag: "诚实", listOnly: true }, tmpDir);
+    expect(q.content[0].text).toContain("2026-08-20 撒谎事件");
+  });
+
+  it("kb_update daily：更新条目字段", async () => {
     await runTool(
-      kbPatchTool,
-      {
-        file: "daily/2026-08-20.md",
-        block: "任务",
-        item: "做个番茄钟",
-        fields: [
-          { field: "状态", value: "done" },
-          { field: "需求", value: "一个可爱的番茄钟" },
-        ],
-      },
+      kbInsertTool,
+      { table: "daily", date: "2026-08-20", block: "任务", content: "### 做个番茄钟\n- 需求：一个番茄钟\n- 状态：pending" },
       tmpDir
     );
-    const text = fs.readFileSync(dailyFile, "utf-8");
-    expect(text).toContain("- 状态：done");
-    expect(text).toContain("- 需求：一个可爱的番茄钟");
+    const res = await runTool(
+      kbUpdateTool,
+      { table: "daily", date: "2026-08-20", block: "任务", title: "做个番茄钟", field: "状态", value: "done" },
+      tmpDir
+    );
+    expect(res.content[0].text).toContain("已更新 daily");
+    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "任务", title: "做个番茄钟" }, tmpDir);
+    expect(q.content[0].text).toContain("状态：done");
   });
 
-  it("kb_patch 非法字段名被拒绝（白名单校验）", async () => {
+  it("kb_update course：更新课程字段，learned/total 视图自动计算", async () => {
+    // 先预置课程（courses 表，v3）
+    const db = openKbDb(tmpDir);
+    db.prepare("INSERT OR REPLACE INTO courses (topic, title, sort_order, status) VALUES (?, ?, ?, ?)").run("lunyu", "论语先进篇第十六章", 0, "✅");
+    db.prepare("INSERT OR REPLACE INTO courses (topic, title, sort_order, status) VALUES (?, ?, ?, ?)").run("lunyu", "论语先进篇第十七章", 1, "⬜");
+    db.close();
+
+    // 更新课程字段
+    const r1 = await runTool(
+      kbUpdateTool,
+      { table:"course", topic: "lunyu", item: "论语先进篇第十七章", field: "状态", value: "✅" },
+      tmpDir
+    );
+    expect(r1.content[0].text).toContain("已更新 lunyu");
+    // 复习次数 +1 自增
+    await runTool(kbUpdateTool, { table:"course", topic: "lunyu", item: "论语先进篇第十七章", field: "复习次数", value: "+1" }, tmpDir);
+    // 视图计算：两门课都 ✅ → 已学 2/2；不再手工维护 learned
+    const q = await runTool(kbQueryTool, { query: "progress", topic: "lunyu" }, tmpDir);
+    const text = q.content[0].text as string;
+    expect(text).toContain("已学 2/2");
+    expect(text).toContain("复习次数：1");
+  });
+
+  it("kb_update course：手动更新 learned/next 被拒绝（视图自动计算）", async () => {
     await expect(
-      runTool(kbPatchTool, { file: "daily/2026-08-20.md", block: "生活", item: "做番茄钟网页", field: "不存在的字段", value: "x" }, tmpDir)
-    ).rejects.toThrow(/非法字段/);
+      runTool(kbUpdateTool, { table:"course", topic: "lunyu", item: "论语先进篇第十六章", field: "learned", value: "999" }, tmpDir)
+    ).rejects.toThrow(/learned\/next\/updated/);
   });
 
-  it("kb_patch 内容文件（method.md）被拒绝", async () => {
+  it("kb_update 目标不存在报错", async () => {
     await expect(
-      runTool(kbPatchTool, { file: "learning/lunyu/method.md", item: "x", field: "y", value: "z" }, tmpDir)
-    ).rejects.toThrow(/内容文件/);
+      runTool(kbUpdateTool, { table: "daily", date: "2026-08-20", block: "生活", title: "不存在的事件", field: "概要", value: "x" }, tmpDir)
+    ).rejects.toThrow(/不存在/);
   });
 
-  it("kb_append 向 daily 生活区块追加新条目", async () => {
-    const res = await runTool(
-      kbAppendTool,
-      { file: "daily/2026-08-20.md", block: "生活", content: "### 新事件\n- 标签：#亲情\n- 概要：新事件概要" },
-      tmpDir
-    );
-    expect(res.content[0].text).toContain("已追加");
-    const text = fs.readFileSync(dailyFile, "utf-8");
-    expect(text.indexOf("### 新事件")).toBeGreaterThan(text.indexOf("## 生活"));
-    expect(text.indexOf("### 新事件")).toBeLessThan(text.indexOf("## 任务")); // 在生活区块内，任务之前
+  it("kb_update 非法 table 被拒", async () => {
+    await expect(runTool(kbUpdateTool, { table: "bad", field: "x", value: "y" }, tmpDir)).rejects.toThrow(/支持 table/);
   });
 
-  it("kb_append 不校验字段名：可直接追加 method 已输出的学习总结原文", async () => {
-    // content = method 流程已输出给孩子的总结原文（含任意字段行），工具只追加不校验
-    const res = await runTool(
-      kbAppendTool,
-      {
-        file: "daily/2026-08-20.md",
-        block: "生活",
-        content: "### 总结原文事件\n- 标签：#亲情\n- 概要：任意字段原文",
-      },
-      tmpDir
-    );
-    expect(res.content[0].text).toContain("已追加");
-    const text = fs.readFileSync(dailyFile, "utf-8");
-    expect(text).toContain("### 总结原文事件");
-    expect(text).toContain("- 概要：任意字段原文");
-  });
-
-  it("kb_append 文件存在但目标区块不存在时自动创建新区块（当天先写生活再写学习）", async () => {
-    // dailyFile 现有 ## 生活 / ## 任务，无 ## 学习 → 追加学习区块应自动创建
-    const res = await runTool(
-      kbAppendTool,
-      {
-        file: "daily/2026-08-20.md",
-        block: "学习",
-        content: "### 论语先进篇第十八章\n- 考核：吟诵✓\n- 孩子表现：示例",
-      },
-      tmpDir
-    );
-    expect(res.content[0].text).toContain("已追加");
-    const text = fs.readFileSync(dailyFile, "utf-8");
-    expect(text).toContain("## 学习");
-    expect(text).toContain("### 论语先进篇第十八章");
-    // 原区块仍在
-    expect(text).toContain("## 生活");
-    expect(text).toContain("### 做番茄钟网页");
-  });
-
-  it("kb_append 非追加白名单文件（进度文件）被拒绝", async () => {
-    await expect(
-      runTool(kbAppendTool, { file: "learning/lunyu/lunyu.md", block: "x", content: "### y" }, tmpDir)
-    ).rejects.toThrow(/不允许追加/);
-  });
-
-  // —— 2026-08-20 会话实测修复（用户反馈）——
-  it("kb_patch 进度文件（无 ## 区块）可更新条目字段", async () => {
-    const res = await runTool(
-      kbPatchTool,
-      {
-        file: "learning/lunyu/lunyu.md",
-        item: "论语先进篇第十七章",
-        fields: [
-          { field: "状态", value: "✅" },
-          { field: "掌握度", value: "熟练" },
-          { field: "首次学习", value: "2026-08-20" }, // 白名单已扩展
-          { field: "最近复习", value: "2026-08-20" },
-        ],
-      },
-      tmpDir
-    );
-    expect(res.content[0].text).toContain("状态=✅");
-    const text = fs.readFileSync(progressFile, "utf-8");
-    expect(text).toContain("状态:: ✅");
-    expect(text).toContain("首次学习:: 2026-08-20");
-    // 其它条目不受影响
-    expect(text).toContain("### 论语先进篇第十六章");
-    expect(text).toContain("掌握度:: 良好");
-  });
-
-  it("kb_patch 进度文件 frontmatter 更新（learned/next/updated）", async () => {
-    await runTool(
-      kbPatchTool,
-      {
-        file: "learning/lunyu/lunyu.md",
-        item: "frontmatter",
-        fields: [
-          { field: "frontmatter:learned", value: "283" },
-          { field: "frontmatter:next", value: "论语先进篇第十八章" },
-          { field: "frontmatter:updated", value: "2026-08-20" },
-        ],
-      },
-      tmpDir
-    );
-    const text = fs.readFileSync(progressFile, "utf-8");
-    expect(text).toContain("learned: 283");
-    expect(text).toContain("next: 论语先进篇第十八章"); // YAML 无引号字符串，合法且 learning-summary 可解析
-    expect(text).toContain("updated: 2026-08-20");
-  });
-
-  it("kb_append 文件不存在时自动创建（daily 当日文件）", async () => {
-    const res = await runTool(
-      kbAppendTool,
-      {
-        file: "daily/2026-08-21.md",
-        block: "学习",
-        content: "### 论语先进篇第十八章\n- **课程名：** 论语先进篇第十八章\n- **掌握度：** 熟练\n- **孩子表现：** 测试条目",
-      },
-      tmpDir
-    );
-    expect(res.content[0].text).toContain("已创建");
-    const text = fs.readFileSync(path.join(tmpDir, "daily", "2026-08-21.md"), "utf-8");
-    expect(text).toContain("# 2026-08-21");
-    expect(text).toContain("## 学习");
-    expect(text).toContain("### 论语先进篇第十八章");
+  it("kb_insert 非法 table 被拒", async () => {
+    await expect(runTool(kbInsertTool, { table: "bad" }, tmpDir)).rejects.toThrow(/支持 table/);
   });
 });

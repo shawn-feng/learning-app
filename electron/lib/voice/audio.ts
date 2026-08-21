@@ -136,3 +136,83 @@ export async function webmToWav16k(input: Buffer): Promise<Buffer> {
     }
   });
 }
+
+// ===== ISSUE-021：多段 webm 语音合并为单个 WAV =====
+// webmToWav16k 输出为 16kHz / 单声道 / 16bit PCM 的标准 WAV。
+// 合并策略：逐段转 WAV → 抽取 PCM 数据 → 拼接 → 重写 44 字节标准头，
+// 无需再跑 ffmpeg concat，且输出格式与单段完全一致（浏览器可播）。
+
+/** 解析 WAV，抽取 PCM 数据并校验为 16k/单声道/16bit PCM。返回纯 PCM 字节。 */
+export function extractWavPcm(wav: Buffer): Buffer {
+  if (wav.length < 12 || wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") {
+    throw new Error("非 WAV 文件");
+  }
+  let offset = 12;
+  let fmt: { audioFormat: number; sampleRate: number; channels: number; bitsPerSample: number } | null = null;
+  let data: Buffer | null = null;
+  while (offset + 8 <= wav.length) {
+    const id = wav.toString("ascii", offset, offset + 4);
+    const size = wav.readUInt32LE(offset + 4);
+    const bodyStart = offset + 8;
+    const bodyEnd = bodyStart + size;
+    if (id === "fmt ") {
+      fmt = {
+        audioFormat: wav.readUInt16LE(bodyStart),
+        sampleRate: wav.readUInt32LE(bodyStart + 4),
+        channels: wav.readUInt16LE(bodyStart + 2),
+        bitsPerSample: wav.readUInt16LE(bodyStart + 14),
+      };
+    } else if (id === "data") {
+      data = wav.subarray(bodyStart, bodyEnd);
+    }
+    // chunk 之间按字对齐（偶数长度）
+    offset = bodyEnd + (size % 2);
+  }
+  if (!fmt) throw new Error("WAV 缺少 fmt 块");
+  if (fmt.audioFormat !== 1) throw new Error(`WAV 非 PCM 格式(${fmt.audioFormat})`);
+  if (fmt.sampleRate !== 16000) throw new Error(`WAV 采样率非 16k(${fmt.sampleRate})`);
+  if (fmt.channels !== 1) throw new Error(`WAV 非单声道(${fmt.channels})`);
+  if (fmt.bitsPerSample !== 16) throw new Error(`WAV 非 16bit(${fmt.bitsPerSample})`);
+  if (!data) throw new Error("WAV 缺少 data 块");
+  return data;
+}
+
+/** 把多段 PCM 拼成标准 44 字节头 + 拼接体的 WAV Buffer。 */
+export function concatWav(pcmChunks: Buffer[]): Buffer {
+  if (!pcmChunks.length) throw new Error("没有可拼接的音频段");
+  const total = pcmChunks.reduce((n, c) => n + c.length, 0);
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + total, 4);
+  header.write("WAVE", 8, "ascii");
+  header.write("fmt ", 12, "ascii");
+  header.writeUInt32LE(16, 16); // fmt chunk 大小
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // 单声道
+  header.writeUInt32LE(16000, 24); // 采样率
+  header.writeUInt32LE(16000 * 1 * 2, 28); // 字节率 = sampleRate * channels * bytesPerSample
+  header.writeUInt16LE(2, 32); // block align = channels * bytesPerSample
+  header.writeUInt16LE(16, 34); // 位深
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(total, 40);
+  return Buffer.concat([header, ...pcmChunks]);
+}
+
+/**
+ * 把多段 webm/opus 录音合并为单个 16k/单声道/16bit WAV Buffer。
+ * 单段失败会被跳过（其余段仍合并），避免一段坏数据丢掉整段语音。
+ */
+export async function mergeWebmSegments(segments: Buffer[]): Promise<Buffer> {
+  if (!segments.length) throw new Error("没有可合并的音频段");
+  const pcms: Buffer[] = [];
+  for (const seg of segments) {
+    try {
+      const wav = await webmToWav16k(seg);
+      pcms.push(extractWavPcm(wav));
+    } catch {
+      // 单段转换失败（如仍是不完整 webm）：跳过该段，继续合并其余
+    }
+  }
+  if (!pcms.length) throw new Error("所有音频段均无法转换，合并失败");
+  return concatWav(pcms);
+}

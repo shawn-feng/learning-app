@@ -1,37 +1,36 @@
 /**
  * 知识库数据格式校验（lint）核心——确定性脚本，不靠 AI 判断。
  *
- * 依据 LEARNING-DATA-SPEC.md 5.5。校验规则：
- * 1. 目录结构：daily/learning/life/inquiries/tasks/tags/outputs 存在
- * 2. daily 文件名：YYYY-MM-DD.md
- * 3. 字段白名单：daily 各区块字段 ⊂ kb-schema 白名单；进度条目字段 ⊂ PROGRESS_FIELDS
- * 4. 格式一致性：daily/索引用 `- 键：值`，进度条目用 `键:: 值`（不混用）
- * 5. 取值约束：`状态::` ∈ {⬜,✅}；`tags::` 值 ∈ taxonomy 词表
- * 6. 索引指针三级校验：文件存在 → ## 区块存在 → 同标题 ### 条目存在（同名约束 3.6/3.7）
- * 7. frontmatter 可解析：topics.md 有 topics、rules.md 有 rules
+ * 依据 LEARNING-DATA-SPEC.md 5.5 与 ISSUE-023 P2（SQLite 唯一真源）：
+ * 数据已全部存 `data/children/<childId>/kb.sqlite`，lint 校验 **SQLite 数据**而非 markdown。
+ *
+ * 校验规则（SQLite 版，v4）：
+ * 1. 结构：kb.sqlite 存在；必需目录（daily/learning/life/inquiries/tasks/tags/outputs）存在
+ * 2. courses 状态取值（⬜/✅，值域约束；字段名不做白名单——字段由 method 灵活设定，2026-08-21）
+ * 3. 标签合规：daily.tags / courses.tags 的每个标签 ∈ tags 定义表（词表纪律）
+ * 4. topics 非空（有主题时）
+ * 5. method.md 内 kb 工具引用规范性（ISSUE-022，保留 markdown 内容文件校验）
  *
  * 纯 node（无 electron 依赖），CLI（scripts/kb-lint.mjs）与主进程共用。
  */
 
 import fs from "fs";
 import path from "path";
-import { extractFrontmatter, parseFieldLine, splitBlocks, splitItems } from "./kb-parser.ts";
+import { openKbDb, queryDaily, queryTags, queryTopicProgress } from "./kb-sqlite.ts";
 import {
-  DAILY_BLOCKS,
-  DAILY_FIELDS,
-  PROGRESS_FIELDS,
-  PROGRESS_FRONTMATTER,
   PROGRESS_STATUS_VALUES,
+  KB_DATA_TOOLS,
+  KB_AUX_TOOLS,
+  KB_TOOL_REQUIRED,
 } from "./kb-schema.ts";
 
 export type LintKind =
   | "structure"
-  | "filename"
   | "field"
-  | "format"
   | "value"
   | "pointer"
-  | "frontmatter";
+  | "frontmatter"
+  | "format";
 
 export interface LintIssue {
   file: string;
@@ -42,204 +41,176 @@ export interface LintIssue {
   message: string;
 }
 
-const DAILY_NAME_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
 const REQUIRED_DIRS = ["daily", "learning", "life", "inquiries", "tasks", "tags", "outputs"];
 
-/** 从 taxonomy.md 提取合法标签集合（正文 `- 标签名：释义` 行）。 */
-function loadTaxonomyTags(childDir: string): Set<string> {
+/** 从 tags 定义表提取合法标签集合（SQLite 真源，替代 taxonomy.md 解析）。 */
+function loadTagDefSet(childDir: string): Set<string> {
   const tags = new Set<string>();
-  const p = path.join(childDir, "tags", "taxonomy.md");
-  if (!fs.existsSync(p)) return tags;
-  const text = fs.readFileSync(p, "utf-8");
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^-\s*([^：:]+?)\s*[：:]/.exec(line.trim());
-    if (m) tags.add(m[1].trim());
-  }
+  for (const d of queryTags(childDir)) tags.add(d.tag);
   return tags;
 }
 
-/** 校验 daily/ 下所有文件。 */
-function lintDaily(childDir: string, issues: LintIssue[]) {
-  const dir = path.join(childDir, "daily");
-  if (!fs.existsSync(dir)) return;
-  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
-    const rel = `daily/${f}`;
-    if (!DAILY_NAME_RE.test(f)) {
-      issues.push({ file: rel, kind: "filename", message: `文件名应为 YYYY-MM-DD.md（实际: ${f}）` });
-      continue;
-    }
-    const text = fs.readFileSync(path.join(dir, f), "utf-8");
-    const fm = extractFrontmatter(text);
-    const bodyLines = (fm ? fm.body : text).split(/\r?\n/);
-    const blocks = splitBlocks(bodyLines);
-    for (const block of blocks) {
-      // daily 允许附加「内容型」## 区块（如 study-tracker 的评估区块），
-      // 不检查其内部字段；仅对 4 个结构化区块做字段/格式校验
-      if (!(DAILY_BLOCKS as readonly string[]).includes(block.title)) continue;
-      const legal = DAILY_FIELDS[block.title];
-      const items = splitItems(block.lines);
-      for (const item of items) {
-        for (let i = 0; i < item.lines.length; i++) {
-          const line = item.lines[i];
-          const hit = parseFieldLine(line);
-          if (!hit) continue;
-          if (hit.sep !== "dash-colon") {
-            issues.push({
-              file: rel,
-              line: block.start + item.start + i + 1,
-              kind: "format",
-              message: `「${block.title}」区块字段应用 \`- 键：值\` 格式（实际: ${line.trim()}）`,
-            });
-          }
-          if (!legal.includes(hit.key)) {
-            issues.push({
-              file: rel,
-              line: block.start + item.start + i + 1,
-              kind: "field",
-              severity: "warning",
-              message: `「${block.title}」区块字段「${hit.key}」不在白名单（合法: ${legal.join("/")}；历史基线/字段变体可人工判断）`,
-            });
-          }
-        }
+/** 校验 courses 状态取值（⬜/✅；字段名不做白名单——字段由 method 灵活设定）。 */
+function lintSqliteProgress(childDir: string, issues: LintIssue[]) {
+  const progress = queryTopicProgress(childDir);
+  for (const p of progress) {
+    for (const it of p.items) {
+      if (it.status && !(PROGRESS_STATUS_VALUES as readonly string[]).includes(it.status)) {
+        issues.push({
+          file: `courses:${p.topic}`,
+          kind: "value",
+          message: `「${it.title}」状态取值非法「${it.status}」（合法: ${PROGRESS_STATUS_VALUES.join("/")}）`,
+        });
       }
     }
   }
 }
 
-/** 校验 learning/{topic}/{topic}.md 进度文件。 */
-function lintProgress(childDir: string, issues: LintIssue[], taxonomy: Set<string>) {
+/** 校验标签合规：daily.tags / courses.tags 的每个标签 ∈ tags 定义表（词表纪律，v4）。 */
+function lintSqliteTagCompliance(childDir: string, issues: LintIssue[]) {
+  const defs = loadTagDefSet(childDir);
+  const check = (where: string, tagsRaw: string, title: string) => {
+    if (!tagsRaw) return;
+    for (const t of tagsRaw.split(/[,，、\s]+/).filter(Boolean)) {
+      const clean = t.trim().replace(/^\[|\]$/g, "");
+      if (clean && !defs.has(clean)) {
+        issues.push({ file: where, kind: "value", message: `「${title}」含非词表标签「${clean}」（标签只能从 tags 定义表选择）` });
+      }
+    }
+  };
+  for (const e of queryDaily(childDir, {})) check(`daily_entries:${e.date}`, e.tags, e.title);
+  for (const p of queryTopicProgress(childDir)) {
+    for (const it of p.items) check(`courses:${p.topic}`, it.tags, it.title);
+  }
+}
+
+/** 校验 topics / rules（learning/topics.md / rules.md 的存在性对应；rules 已并入 topics 表）。 */
+function lintSqliteTopicsRules(childDir: string, issues: LintIssue[]) {
+  const topicsFile = path.join(childDir, "learning", "topics.md");
+  const rulesFile = path.join(childDir, "learning", "rules.md");
+  if (!fs.existsSync(topicsFile)) {
+    issues.push({ file: "topics", kind: "frontmatter", message: "learning/topics.md 缺失（主题清单未配置）" });
+  }
+  if (!fs.existsSync(rulesFile)) {
+    issues.push({ file: "rules", kind: "frontmatter", message: "learning/rules.md 缺失（每日目标未配置）" });
+  }
+}
+
+/**
+ * 校验 learning/{topic}/method.md 内对 kb 工具引用的规范性（ISSUE-022）。
+ * 仅检测「代码语境」（``` 围栏代码块 + 行内反引号），避免误伤「禁止 write/edit 裸写」这类教学文案。
+ * 三类问题：
+ *  1. 引用了不存在/过时的 kb 工具名（如 kb_write / kb_append 等 SQLite 化前旧名）；
+ *  2. kb 工具调用示例缺少必需参数；
+ *  3. 对数据文件使用裸 write/edit 调用（应走 kb 工具）。
+ */
+export function lintMethodKbRefs(childDir: string, issues: LintIssue[]) {
   const learningDir = path.join(childDir, "learning");
   if (!fs.existsSync(learningDir)) return;
   for (const topic of fs.readdirSync(learningDir)) {
-    const progressFile = path.join(learningDir, topic, `${topic}.md`);
-    if (!fs.existsSync(progressFile)) continue;
-    const rel = `learning/${topic}/${topic}.md`;
-    const text = fs.readFileSync(progressFile, "utf-8");
-    const fm = extractFrontmatter(text);
-    if (fm) {
-      for (const line of fm.data.split(/\r?\n/)) {
-        const m = /^([A-Za-z_][\w]*):/.exec(line);
-        if (m && !(PROGRESS_FRONTMATTER as readonly string[]).includes(m[1])) {
-          issues.push({ file: rel, kind: "frontmatter", message: `frontmatter 非法键「${m[1]}」（合法: ${PROGRESS_FRONTMATTER.join("/")}）` });
+    const methodFile = path.join(learningDir, topic, "method.md");
+    if (!fs.existsSync(methodFile)) continue;
+    const rel = `learning/${topic}/method.md`;
+    const lines = fs.readFileSync(methodFile, "utf-8").split(/\r?\n/);
+
+    // 规则1：全文扫描 kb_ 工具名合法性（无论是否在代码块，工具名本身应规范）
+    const legalKbNames = [
+      ...KB_DATA_TOOLS,
+      ...KB_AUX_TOOLS.filter((t) => t.startsWith("kb_")),
+    ];
+    for (let i = 0; i < lines.length; i++) {
+      const re = /\bkb_([a-zA-Z_]\w*)\b/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(lines[i]))) {
+        const name = "kb_" + m[1];
+        if (!(legalKbNames as readonly string[]).includes(name)) {
+          issues.push({
+            file: rel,
+            line: i + 1,
+            kind: "field",
+            severity: "warning",
+            message: `引用了非标准/过时 kb 工具名「${name}」（合法: ${legalKbNames.join("/")}）`,
+          });
         }
       }
     }
-    const bodyLines = (fm ? fm.body : text).split(/\r?\n/);
-    const items = splitItems(bodyLines); // 进度文件无 ## 区块，全文件按条目切
-    for (const item of items) {
-      for (let i = 0; i < item.lines.length; i++) {
-        const line = item.lines[i];
-        const hit = parseFieldLine(line);
-        if (!hit) continue;
-        if (hit.sep !== "dcolon") {
-          issues.push({
-            file: rel,
-            line: (fm ? fm.data.split(/\r?\n/).length + 2 : 0) + item.start + i + 1,
-            kind: "format",
-            message: `进度条目字段应用 \`键:: 值\` 格式（实际: ${line.trim()}）`,
-          });
+
+    // 提取代码语境：``` 围栏块 + 行内反引号
+    const codeSegments: { text: string; line: number }[] = [];
+    let inFence = false;
+    let fenceBuf: string[] = [];
+    let fenceStart = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^\s*```/.test(line)) {
+        if (inFence) {
+          codeSegments.push({ text: fenceBuf.join("\n"), line: fenceStart });
+          inFence = false;
+          fenceBuf = [];
+        } else {
+          inFence = true;
+          fenceStart = i + 1;
         }
-        if (!(PROGRESS_FIELDS as readonly string[]).includes(hit.key)) {
-          issues.push({
-            file: rel,
-            kind: "field",
-            severity: "warning",
-            message: `进度条目字段「${hit.key}」不在白名单（合法: ${PROGRESS_FIELDS.join("/")}；历史基线/字段变体可人工判断）`,
-          });
-        }
-        if (hit.key === "状态" && !(PROGRESS_STATUS_VALUES as readonly string[]).includes(hit.value)) {
-          issues.push({ file: rel, kind: "value", message: `状态:: 取值非法「${hit.value}」（合法: ${PROGRESS_STATUS_VALUES.join("/")}）` });
-        }
-        if (hit.key === "tags" && hit.value) {
-          const inside = hit.value.replace(/^\[|\]$/g, "");
-          for (const t of inside.split(/[,\s]+/).filter(Boolean)) {
-            const clean = t.trim();
-            if (clean && !taxonomy.has(clean)) {
-              issues.push({ file: rel, kind: "value", message: `tags:: 含非词表标签「${clean}」（见 tags/taxonomy.md）` });
-            }
+        continue;
+      }
+      if (inFence) {
+        fenceBuf.push(line);
+      } else {
+        const inline = line.match(/`([^`]+)`/g);
+        if (inline) for (const seg of inline) codeSegments.push({ text: seg.slice(1, -1), line: i + 1 });
+      }
+    }
+
+    for (const seg of codeSegments) {
+      // 规则2：kb 数据工具调用参数检查（仅当工具名后跟 { 视为调用）
+      for (const tool of KB_DATA_TOOLS) {
+        const callRe = new RegExp("\\b" + tool + "\\s*\\{", "g");
+        let cm: RegExpExecArray | null;
+        while ((cm = callRe.exec(seg.text))) {
+          const obj = extractBalancedBraces(seg.text, cm.index + cm[0].length - 1);
+          const body = obj ?? "";
+          const missing = (KB_TOOL_REQUIRED[tool] ?? []).filter(
+            (r) => !new RegExp("\\b" + r + "\\b").test(body)
+          );
+          if (missing.length) {
+            issues.push({
+              file: rel,
+              line: seg.line,
+              kind: "format",
+              severity: "warning",
+              message: `${tool} 调用示例缺少必需参数: ${missing.join("/")}`,
+            });
           }
         }
       }
-    }
-  }
-}
-
-/** 索引指针三级校验：①文件存在 ②## 区块存在 ③同标题 ### 条目存在（同名约束）。 */
-function checkPointer(childDir: string, issues: LintIssue[], indexFile: string, title: string, pointer: string, lineNo: number) {
-  const m = /^daily\/(\d{4}-\d{2}-\d{2}\.md)#(\S+)$/.exec(pointer.trim());
-  if (!m) {
-    issues.push({ file: indexFile, line: lineNo, kind: "pointer", message: `关联指针格式非法: ${pointer}` });
-    return;
-  }
-  const dailyFile = path.join(childDir, "daily", m[1]);
-  if (!fs.existsSync(dailyFile)) {
-    issues.push({ file: indexFile, line: lineNo, kind: "pointer", message: `指针目标文件不存在: daily/${m[1]}` });
-    return;
-  }
-  const text = fs.readFileSync(dailyFile, "utf-8");
-  const fm = extractFrontmatter(text);
-  const bodyLines = (fm ? fm.body : text).split(/\r?\n/);
-  const blocks = splitBlocks(bodyLines);
-  const block = blocks.find((b) => b.title === m[2]);
-  if (!block) {
-    issues.push({ file: indexFile, line: lineNo, kind: "pointer", message: `daily/${m[1]} 无 ## 区块「${m[2]}」` });
-    return;
-  }
-  const items = splitItems(block.lines);
-  if (title && !items.some((it) => it.title === title)) {
-    issues.push({
-      file: indexFile,
-      line: lineNo,
-      kind: "pointer",
-      message: `同名约束违反：索引标题「${title}」在 daily/${m[1]} 的「${m[2]}」区块无同名 ### 条目（可选: ${items.map((i) => i.title).join("、") || "无"}）`,
-    });
-  }
-}
-
-/** 校验 life/ inquiries/ tasks/ 月索引。 */
-function lintIndexes(childDir: string, issues: LintIssue[]) {
-  for (const kind of ["life", "inquiries", "tasks"]) {
-    const dir = path.join(childDir, kind);
-    if (!fs.existsSync(dir)) continue;
-    for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
-      const rel = `${kind}/${f}`;
-      const lines = fs.readFileSync(path.join(dir, f), "utf-8").split(/\r?\n/);
-      let currentTitle = "";
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const titleM = /^##\s+(.+)$/.exec(line);
-        if (titleM) {
-          currentTitle = titleM[1].trim();
-          continue;
-        }
-        const ptrM = /关联\s*[:：]\s*(daily\/\S+)/.exec(line);
-        if (ptrM) {
-          checkPointer(childDir, issues, rel, currentTitle, ptrM[1], i + 1);
-        }
+      // 规则3：数据文件裸 write/edit 调用（应走 kb 工具）
+      const dataPathRe = /\b(daily\/|learning\/[^\s"`]+?\/[^\s"`]+\.md|life\/|inquiries\/|tasks\/|tags\/)/;
+      const writeCallRe = /\b(?:write|edit)\s*\(/;
+      if (dataPathRe.test(seg.text) && writeCallRe.test(seg.text)) {
+        issues.push({
+          file: rel,
+          line: seg.line,
+          kind: "format",
+          severity: "warning",
+          message: `数据文件不应裸 write/edit，应走 kb 工具（kb_query / kb_insert / kb_update）`,
+        });
       }
     }
   }
 }
 
-/** 校验 topics.md / rules.md frontmatter 关键键存在。 */
-function lintTopicsRules(childDir: string, issues: LintIssue[]) {
-  for (const [rel, key] of [
-    ["learning/topics.md", "topics"],
-    ["learning/rules.md", "rules"],
-  ] as const) {
-    const p = path.join(childDir, rel);
-    if (!fs.existsSync(p)) {
-      issues.push({ file: rel, kind: "frontmatter", message: "文件缺失" });
-      continue;
-    }
-    const text = fs.readFileSync(p, "utf-8");
-    const fm = extractFrontmatter(text);
-    if (!fm) {
-      issues.push({ file: rel, kind: "frontmatter", message: "缺少 YAML frontmatter" });
-    } else if (!new RegExp(`^${key}\\s*:`, "m").test(fm.data)) {
-      issues.push({ file: rel, kind: "frontmatter", message: `frontmatter 缺少「${key}:」键` });
+/** 从文本指定位置提取平衡括号包裹的对象体（text[startIdx] 应为 '{'）。 */
+function extractBalancedBraces(text: string, startIdx: number): string | null {
+  let depth = 0;
+  for (let i = startIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(startIdx, i + 1);
     }
   }
+  return null;
 }
 
 /** 校验单个孩子目录，返回全部违规。 */
@@ -247,25 +218,24 @@ export function lintChildDir(childDir: string): LintIssue[] {
   const issues: LintIssue[] = [];
   const base = path.basename(childDir);
 
-  // 1. 目录结构
-  for (const d of REQUIRED_DIRS) {
-    if (!fs.existsSync(path.join(childDir, d))) {
-      issues.push({ file: `${d}/`, kind: "structure", message: `必需目录缺失: ${d}/` });
+  // 1. 结构：kb.sqlite 存在 + 必需目录存在
+  if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) {
+    issues.push({ file: "kb.sqlite", kind: "structure", message: "kb.sqlite 不存在（数据未迁移到 SQLite）" });
+  } else {
+    for (const d of REQUIRED_DIRS) {
+      if (!fs.existsSync(path.join(childDir, d))) {
+        issues.push({ file: `${d}/`, kind: "structure", message: `必需目录缺失: ${d}/` });
+      }
     }
   }
 
-  // 2-4. daily
-  lintDaily(childDir, issues);
+  // 2. SQLite 数据校验
+  lintSqliteProgress(childDir, issues);
+  lintSqliteTagCompliance(childDir, issues);
+  lintSqliteTopicsRules(childDir, issues);
 
-  // 3-5. 进度文件 + tags 词表
-  const taxonomy = loadTaxonomyTags(childDir);
-  lintProgress(childDir, issues, taxonomy);
-
-  // 6. 索引指针三级校验
-  lintIndexes(childDir, issues);
-
-  // 7. topics/rules frontmatter
-  lintTopicsRules(childDir, issues);
+  // 3. method.md 内 kb 工具引用规范性（ISSUE-022）
+  lintMethodKbRefs(childDir, issues);
 
   return issues.map((it) => ({ ...it, file: `${base}/${it.file}` }));
 }

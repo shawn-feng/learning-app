@@ -27,12 +27,13 @@ export default function TopicEditor() {
       setChildren(list || []);
       if (list?.length) setChildId(list[0].childId);
     });
-    window.api.piStartParent();
+    // ISSUE-026：本页使用「教学内容生成专用会话」（专门提示词，与通用家长助手解耦）
+    window.api.piStartParentContent();
   }, []);
 
   useEffect(() => {
     window.api.onPiStreaming((data: any) => {
-      if (data.childId !== "parent") return;
+      if (data.childId !== "parent-content") return;
       setMessages((prev) => {
         const clone = [...prev];
         const last = clone[clone.length - 1];
@@ -45,7 +46,7 @@ export default function TopicEditor() {
       });
     });
     window.api.onPiAgentEnd((data: any) => {
-      if (data.childId === "parent") setBusy(false);
+      if (data.childId === "parent-content") setBusy(false);
     });
   }, []);
 
@@ -70,21 +71,19 @@ export default function TopicEditor() {
     if (r?.success) setFileContent(r.content || "");
   }
 
-  async function handleSave() {
-    if (!childId || !selectedFile) return;
-    const r = await window.api.learningWrite(childId, selectedFile, fileContent);
-    if (r?.success) alert("已保存");
-  }
-
   async function handleSend(text: string) {
     let full = text;
     if (messages.length === 0 && currentChild) {
       full = `当前选中的孩子是「${currentChild.name}」（childId=${currentChild.childId}）。${text}`;
     }
+    // ISSUE-026：把当前查看的文件内容作为上下文带给 AI，便于针对该文件生成/改写
+    if (selectedFile) {
+      full = `${full}\n\n【当前正在查看的文件：${selectedFile}】\n${fileContent}`;
+    }
     setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text, time: nowTime() }]);
     setBusy(true);
     try {
-      await window.api.piPromptParent(full);
+      await window.api.piPromptParentContent(full);
     } catch {
       setBusy(false);
     }
@@ -94,7 +93,7 @@ export default function TopicEditor() {
     <div className="settings-section" style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 180px)" }}>
       <h3>教学内容</h3>
       <p className="desc">
-        选择孩子查看其学习主题文件，底部与 AI 对话，让它引导你生成进度文件、教学方法、每课文案等。
+        左侧选择孩子并查看其学习主题文件（只读预览），右侧与 AI 沟通，让它引导你生成进度文件、教学方法、每课文案等。
       </p>
 
       <div style={{ marginBottom: 12 }}>
@@ -113,76 +112,72 @@ export default function TopicEditor() {
       </div>
 
       <div style={{ display: "flex", flex: 1, minHeight: 0, gap: 16 }}>
-        <div style={{ width: 220, borderRight: "1px solid #eee", overflowY: "auto", paddingRight: 8 }}>
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>学习根目录</div>
-          {rootFiles.map((f) => (
-            <FileRow key={f} label={f} active={selectedFile === f} onClick={() => openFile(f)} />
-          ))}
+        {/* 左栏：目录树 + 文件只读预览 */}
+        <div
+          style={{
+            width: 380,
+            display: "flex",
+            flexDirection: "column",
+            borderRight: "1px solid #eee",
+            paddingRight: 8,
+            minWidth: 0,
+          }}
+        >
+          <div style={{ overflowY: "auto", flexShrink: 0, maxHeight: "45%" }}>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>学习根目录</div>
+            {rootFiles.map((f) => (
+              <FileRow key={f} label={f} active={selectedFile === f} onClick={() => openFile(f)} />
+            ))}
 
-          {topics.map((t) => (
-            <div key={t.topic} style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 12, color: "#888", marginBottom: 4, fontWeight: 600 }}>📁 {t.topic}</div>
-              {t.files.map((f) => {
-                const rel = `${t.topic}/${f}`;
-                return <FileRow key={rel} label={f} active={selectedFile === rel} onClick={() => openFile(rel)} />;
-              })}
-              {t.subdirs.length > 0 && (
-                <div style={{ fontSize: 11, color: "#bbb", paddingLeft: 12, marginTop: 2 }}>
-                  {t.subdirs.map((d) => `📂 ${d}/`).join("  ")}
-                </div>
-              )}
-            </div>
-          ))}
+            {topics.map((t) => (
+              <div key={t.topic} style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 4, fontWeight: 600 }}>📁 {t.topic}</div>
+                {t.files.map((f) => {
+                  const rel = `${t.topic}/${f}`;
+                  return <FileRow key={rel} label={f} active={selectedFile === rel} onClick={() => openFile(rel)} />;
+                })}
+                {t.subdirs.length > 0 && (
+                  <div style={{ fontSize: 11, color: "#bbb", paddingLeft: 12, marginTop: 2 }}>
+                    {t.subdirs.map((d) => `📂 ${d}/`).join("  ")}
+                  </div>
+                )}
+              </div>
+            ))}
 
-          {rootFiles.length === 0 && topics.length === 0 && (
-            <p style={{ color: "#888", fontSize: 12, padding: 12 }}>该孩子暂无学习主题</p>
-          )}
-        </div>
+            {rootFiles.length === 0 && topics.length === 0 && (
+              <p style={{ color: "#888", fontSize: 12, padding: 12 }}>该孩子暂无学习主题</p>
+            )}
+          </div>
 
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          {selectedFile ? (
-            <>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <strong style={{ fontSize: 14 }}>{selectedFile}</strong>
-                <button
-                  onClick={handleSave}
+          <div style={{ flex: 1, overflowY: "auto", borderTop: "1px solid #eee", marginTop: 8, paddingTop: 8, minHeight: 0 }}>
+            {selectedFile ? (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{selectedFile}</div>
+                <pre
                   style={{
-                    padding: "6px 16px",
-                    background: "#667eea",
-                    color: "white",
-                    border: "none",
-                    borderRadius: 6,
-                    fontSize: 13,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    margin: 0,
+                    color: "#333",
                   }}
                 >
-                  保存
-                </button>
+                  {fileContent}
+                </pre>
+              </>
+            ) : (
+              <div style={{ color: "#888", fontSize: 13, textAlign: "center", marginTop: 20 }}>
+                选择左侧文件查看预览，或在右侧对话让 AI 引导生成
               </div>
-              <textarea
-                value={fileContent}
-                onChange={(e) => setFileContent(e.target.value)}
-                style={{
-                  flex: 1,
-                  fontFamily: "monospace",
-                  fontSize: 13,
-                  border: "1px solid #ddd",
-                  borderRadius: 8,
-                  padding: 12,
-                  resize: "none",
-                  minHeight: 200,
-                }}
-              />
-            </>
-          ) : (
-            <div style={{ color: "#888", fontSize: 13, textAlign: "center", marginTop: 40 }}>
-              选择左侧文件查看/编辑，或在下方对话让 AI 引导生成
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </div>
 
-      <div style={{ marginTop: 16, borderTop: "1px solid #eee", paddingTop: 12 }}>
-        <ChatWindow messages={messages} onSend={handleSend} disabled={busy} />
+        {/* 右栏：与 AI 沟通 */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} />
+        </div>
       </div>
     </div>
   );

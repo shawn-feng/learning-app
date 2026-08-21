@@ -48,7 +48,11 @@ export interface TextFileAttachment {
 
 /** handleSend 的扩展选项：图片 / 文本文件随文本一起发出 */
 export interface SendOptions {
+  // 单段语音（base64 webm）。ISSUE-021 后已改用 audios 多段数组，
+  // 保留 audio 仅为兼容旧调用方；两者同时存在时以 audios 为准。
   audio?: string;
+  // 一次输入的多段语音（多次按住说话），发送时由主进程拼接成单个音频文件
+  audios?: string[];
   images?: ImageAttachment[];
   textFiles?: TextFileAttachment[];
 }
@@ -150,8 +154,9 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
   const [transcribing, setTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState("");
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-  // 识别后未发送的录音（base64，webm/opus），在输入框上方预览播放
-  const [pendingAudio, setPendingAudio] = useState("");
+  // 识别后未发送的录音（base64，webm/opus），可能有多段（多次按住说话）。
+  // 发送时由主进程 voice:merge 拼接成单个音频文件（ISSUE-021）。
+  const [pendingAudios, setPendingAudios] = useState<string[]>([]);
   // 正在播放用户语音气泡的消息 id
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   // 展开显示「思考过程 + 工具调用」的消息 id 集合
@@ -236,15 +241,14 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
   function handleSend() {
     const text = input.trim();
     // 允许「只发图片/文本文件、不带文字」也发送
-    if ((!text && pendingImages.length === 0 && pendingTextFiles.length === 0) || disabled) return;
-    const audio = pendingAudio || undefined;
+    if ((!text && pendingImages.length === 0 && pendingTextFiles.length === 0 && pendingAudios.length === 0) || disabled) return;
     const opts: SendOptions = {};
-    if (audio) opts.audio = audio;
+    if (pendingAudios.length) opts.audios = pendingAudios;
     if (pendingImages.length) opts.images = pendingImages;
     if (pendingTextFiles.length) opts.textFiles = pendingTextFiles;
     onSend(text, opts);
     setInput("");
-    setPendingAudio("");
+    setPendingAudios([]);
     setPendingImages([]);
     setPendingTextFiles([]);
   }
@@ -348,7 +352,9 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
       const bin = atob(b64);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const blob = new Blob([bytes], { type: "audio/webm" });
+      // WAV 的 "RIFF" 头 base64 前缀为 "UklG"；合并后的录音是 WAV，需标对 MIME 才能播放
+      const isWav = b64.startsWith("UklG");
+      const blob = new Blob([bytes], { type: isWav ? "audio/wav" : "audio/webm" });
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
@@ -364,15 +370,28 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
     }
   }
 
-  // 输入框上方预览：播放/停止刚识别的录音
+  // 输入框上方预览：播放/停止刚识别的录音（多段顺序连播，ISSUE-021）
   function togglePendingAudio() {
     if (playingAudioId === "__pending__") {
       audioRef.current?.pause();
       setPlayingAudioId(null);
       return;
     }
+    const segs = pendingAudios;
+    if (!segs.length) return;
     setPlayingAudioId("__pending__");
-    playAudioBase64(pendingAudio, () => setPlayingAudioId(null));
+    let i = 0;
+    const playNext = () => {
+      if (i >= segs.length) {
+        setPlayingAudioId(null);
+        return;
+      }
+      playAudioBase64(segs[i], () => {
+        i += 1;
+        playNext();
+      });
+    };
+    playNext();
   }
 
   // 播放用户消息气泡里附带的语音原文（实时消息用 base64；历史恢复的消息读落盘文件）
@@ -428,7 +447,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
       const r = await window.api.voiceTranscribe(buf);
       if (r.success) {
         setInput((prev) => (prev ? prev + r.text : r.text));
-        if (r.audio) setPendingAudio(r.audio);
+        if (r.audio) setPendingAudios((prev) => [...prev, r.audio]);
       } else {
         // 显示具体错误原因（识别失败/无语音/服务不可用等），便于排查
         setVoiceError(r.error || "没听清，再试一次");
@@ -685,9 +704,9 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
       {fileError && <div style={{ padding: "0 12px 4px", color: "#e53e3e", fontSize: 12 }}>{fileError}</div>}
       {notice && <div className="chat-notice">{notice}</div>}
 
-      {pendingAudio && (
+      {pendingAudios.length > 0 && (
         <div className="voice-preview">
-          <span>🎤 已识别语音</span>
+          <span>🎤 已识别语音（{pendingAudios.length} 段）</span>
           <button
             className="voice-preview-play"
             onClick={togglePendingAudio}
@@ -697,7 +716,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
           </button>
           <button
             className="voice-preview-clear"
-            onClick={() => setPendingAudio("")}
+            onClick={() => setPendingAudios([])}
             title="移除录音"
           >
             ✕

@@ -4,7 +4,7 @@ import {
   type ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
 import { getAuthPath } from "./config";
-import { getDefaultModelKey } from "./app-settings";
+import { getDefaultModelKey, getProgrammingModelKey } from "./app-settings";
 import fs from "fs";
 
 const cacheKey = "__learningAppModelRuntime";
@@ -233,6 +233,19 @@ export async function getDefaultModel() {
   }
   // 未设置或指定模型无法解析（如 provider 未注册）→ 回退到 deepseek flash。
   return runtime.getModel(DEFAULT_PROVIDER, DEFAULT_MODEL);
+}
+
+// 编程 agent 模型（ISSUE-020）。未在设置页配置（programmingModel 为空）或模型无法解析时返回 null
+// —— create_html_lesson 工具据此报「未配置」错误并提示家长先去设置页配置，不静默回退。
+export async function getProgrammingModel() {
+  const key = getProgrammingModelKey();
+  if (!key) return null;
+  const sep = key.indexOf("/");
+  const provider = sep > 0 ? key.slice(0, sep) : key;
+  const modelId = sep > 0 ? key.slice(sep + 1) : "";
+  if (!provider || !modelId) return null;
+  const runtime = await getSharedRuntime();
+  return runtime.getModel(provider, modelId) ?? null;
 }
 
 export async function checkProviderAuth(providerId: string) {

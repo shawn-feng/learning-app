@@ -8,10 +8,11 @@ import path from "path";
 import fs from "fs";
 import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { displayContentTool, getDateTool, getProgressTool, kbAppendTool, kbPatchTool, kbReadTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import learningGuardExtension from "../extensions/learning-guard";
+import { disposeProgrammingSessions } from "./programming-agent";
 
 const LEARNING_NAV_INSTRUCTIONS = `
 ## 交流准则
@@ -32,21 +33,24 @@ const LEARNING_NAV_INSTRUCTIONS = `
 
 ### 记录
 学习总结、生活事件等记录由 recording 技能负责，按需调用（详见其 SKILL.md）。
-**数据文件（daily/、life/、inquiries/、tasks/、tags/、learning 进度文件）的读写一律用 kb_read / kb_patch / kb_append 结构化工具，禁止用 write/edit 裸写**——工具会校验字段白名单与结构；新建当日 daily 文件、追加新条目用 kb_append（文件不存在时自动创建）；更新字段用 kb_patch（字段缺失会自动追加）。只有 method.md / materials/ 等内容文件才用 write/edit。
+**孩子数据已全部存入 SQLite（kb.sqlite），一律用 kb_query / kb_insert / kb_update 结构化工具读写，禁止用 read/write/edit 碰数据文件**——数据文件（daily/、life/、inquiries/、tasks/、tags/、learning 进度）的 markdown 只是历史归档，不要读写。写入 daily 新条目用 kb_insert（date + block + content，生活事件在 content 里写 \`- 标签：\` 行打标签）；更新字段用 kb_update（无需知道旧值，字段缺失自动追加）；查询 daily 记录、主题进度、标签定义用 kb_query（只回目标内容，省 token）。打标签只能从标签定义表选（先 \`kb_query {query:"tags"}\` 查词表与判断标准），标签直接打在 daily 生活事件（自动解析）与课程上（\`kb_update course field:"tags"\`）。只有 method.md / materials/ / uploads/ 等内容文件才用 write/edit / read。
 
 ### 孩子上传的附件（uploads/）
 - 孩子上传的图片会随消息直接发送给你（你可见），无需读取文件；
 - 孩子上传的文本文件（txt/md）已保存在 \`uploads/\` 目录下，消息里有 \`【附件文件：文件名|路径】\` 标记（路径如 \`uploads/xxx.txt\`）。需要文件内容时用 read 工具读取标记里的路径再回应，不要凭空猜测内容；不必要时不读。
 
 ### 内容展示
-- 用 display_content 工具向孩子展示 **html 格式** 的学习资料，通过 \`path\` 引用预生成的 html 文件。
+- 需要给孩子展示 **html 格式** 学习资料时：
+  1. 若该 html 文件**还不存在**（或需要修改），先用 \`create_html_lesson\` 工具生成/更新（把标题、结构要求、内容要点、交互要求整理成 requirement 传给编程 agent，输出到 \`learning/{topic}/materials/{课程名}.html\`），生成成功后再展示；
+  2. 若 html 文件**已存在**，直接用 display_content 工具通过 \`path\` 引用展示。
+- **不要**自己手工拼一长串 HTML 正文塞进 display_content 的 content 参数——用 create_html_lesson 生成文件、display_content 引用文件。
 
 ### 进度查询（省上下文，务必遵守）
-各主题进度文件的 **frontmatter（learned/total/next/updated）已经在系统提示顶部的「孩子的学习进度概览」里替你读好**，确定「下一课」或查询进度时：
-- **直接用**系统提示里给出的 \`next\` 值，或调用 \`get_progress\` 工具（只回 frontmatter 摘要，不含逐课正文）；
-- **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 514 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
-- 只有**明确需要逐课状态**（如 study-tracker 评估需要核对每课掌握度）时，才读进度文件全文；
-- 完成一课后按 method 更新进度文件 frontmatter（learned/total/next/updated）即可，不要为了「确认 next」而反复读全文。
+各主题的 **进度摘要（learned/total/next/updated）由系统从课程表自动计算**，已放在系统提示顶部的「孩子的学习进度概览」里，确定「下一课」或查询进度时：
+- **直接用**系统提示里给出的 \`next\` 值，或调用 \`get_progress\` 工具（只回摘要，不含逐课明细）；
+- **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 500+ 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
+- 需要逐课状态（如 study-tracker 核对每课掌握度）时，用 \`kb_query {query:"progress", topic, listOnly:true}\` 或带 listOnly 的课程清单，不要 read 文件；
+- 完成一课后用 \`kb_update {table:"course", topic, item: 课程名, field:"状态", value:"✅"}\` 更新该课程状态即可，learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。
 `;
 
 const CUSTOM_START = "<!-- custom:start -->";
@@ -149,6 +153,48 @@ SKILL.md 格式：frontmatter（name/description）+ 工作流程。
 }
 
 /**
+ * 教学内容生成专用提示词（ISSUE-026）：从通用家长助手中解耦，只聚焦「引导家长生成/完善一个学习主题的全部教学文件」，
+ * 去掉「编辑教学技能」能力段（ISSUE-025 已移除技能 tab）。由 getParentContentSession 使用。
+ */
+function buildParentContentPrompt(): string {
+  return `你是「教学内容生成助手」，专门帮家长为孩子的一个学习主题，生成或完善全部教学文件。你只做教学内容生成这一件事，不编辑教学技能。
+
+你的工作目录是数据根目录（data/），用相对路径访问。当前要处理的孩子与主题由家长在对话中指定，或前端已附带「当前查看的文件」上下文。
+
+## 目录结构（孩子维度）
+\`\`\`
+children/{childId}/learning/
+  topics.md                  # 主题清单（frontmatter topics 数组）
+  rules.md                   # 学习规则（每日目标量）
+  {topic}/                   # 每个主题一个自包含目录
+    {topic}.md               # 进度文件（frontmatter + 每课 ### 课程名 + 状态）
+    method.md                #   教学方法
+    materials/{课程名}.md     #   每课教学文案
+    media/                   #   音视频（文件名与课程名逐字一致）
+\`\`\`
+
+## 引导家长生成教学内容的 6 步（可中断、可只做某一步）
+1. 确认主题：key（英文目录名）、主题名、必学/选学、每日目标量。
+2. 进度文件 {topic}.md：frontmatter（topic/learned/total/next/updated）+ 每课「### 课程名」+ 状态「⬜」。
+3. method.md：教学步骤（分几步、每步考核方式、教学资料位置）。
+4. 逐课文案 materials/{课程名}.md：原文/翻译/道理/典故等。三种方式：家长粘贴文本你来结构化、家长上传文件你来解析、你起草家长确认。
+5. 登记：更新 topics.md 的 topics 数组 + rules.md 的 rules。
+6. 音视频 + html：提示家长把 mp3/mp4 放进 media/（文件名与课程名逐字一致）。html 学习资料（给孩子看的展示版）由你灵活处理——无共性格式就手工拼 html 用 display_content 展示；每课有共同格式就写一个该主题专用脚本批量转 html（可参考 scripts/generate-lessons.mjs）。
+
+## 文件结构约定
+- 进度文件 frontmatter：topic、learned、total、next、updated。
+- topics.md frontmatter：topics 数组，每项 {name, file, method, progress}，file 相对 learning/（如 lunyu/lunyu.md）。
+- rules.md frontmatter：rules 对象，每项 {主题: {daily, type: 必学|选学}}。
+- 课程名、materials 文件名、media 文件名三者逐字一致。
+
+## 工作方式
+- 家长说一句话，你先判断属于哪一步，引导式推进，不要一次灌完所有文件。
+- 若前端附带了「当前查看的文件」上下文，请针对该文件给出生成/改写建议，并可主动用 write/edit 直接修改。
+- 用大白话、清晰步骤回应家长，必要时先确认再动手改文件。
+`;
+}
+
+/**
  * 孩子会话的 system prompt 头部（替换 SDK 默认的 "expert coding assistant" 身份 + Pi 文档噪声）。
  * 这里描述身份，并附带「孩子的学习进度概览」（由 learning-summary 从各进度文件 frontmatter
  * 解析而来，仅 frontmatter 级信息）。所有行为规范（交流准则、学习方法、内容展示、角色）放在
@@ -181,6 +227,7 @@ const activeSessions = new Map<string, SessionEntry>();
 // 或 /reset 与首次 prompt 竞态导致重复 newSession / 会话对象被覆盖 / EEXIST）。
 const sessionPromises = new Map<string, Promise<AgentSession>>();
 let cachedParentSession: AgentSession | null = null;
+let cachedParentContentSession: AgentSession | null = null;
 
 export async function getChildSession(
   childId: string
@@ -337,10 +384,10 @@ async function createChildSession(
     resourceLoader: loader,
     // 注意：customTools 里的每个工具，其 name 必须同时出现在 tools 白名单中才会被
     // SDK 注册并激活（agent-session.js 的 isAllowedTool 会按白名单过滤 customTools）。
-    // display_content / get_date / get_progress / kb_read / kb_patch / kb_append 都是 customTools，
+    // display_content / get_date / get_progress / kb_query / kb_insert / kb_update / create_html_lesson 都是 customTools，
     // 故名字都要列在 tools 里，缺一不可——此前 get_progress 漏列导致 agent 根本拿不到该工具（ISSUE-006 配套修复）。
-    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress", "kb_read", "kb_patch", "kb_append"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbReadTool, kbPatchTool, kbAppendTool],
+    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，
@@ -384,6 +431,39 @@ export async function getParentSession(): Promise<AgentSession> {
   });
 
   cachedParentSession = session;
+  return session;
+}
+
+/**
+ * 教学内容生成专用会话（ISSUE-026）：与通用家长助手解耦，使用 buildParentContentPrompt，
+ * 只聚焦引导家长生成/完善学习主题的教学文件。同样复用 data/ 工作目录与 write/edit/get_date 工具。
+ */
+export async function getParentContentSession(): Promise<AgentSession> {
+  if (cachedParentContentSession) return cachedParentContentSession;
+
+  const dataDir = getDataDir();
+  const modelRuntime = await getSharedRuntime();
+  const model = await getDefaultModel();
+
+  const loader = new DefaultResourceLoader({
+    cwd: dataDir,
+    systemPromptOverride: () => buildParentContentPrompt(),
+    noSkills: true,
+    extensionFactories: [learningGuardExtension],
+  });
+  await loader.reload();
+
+  const { session } = await createAgentSession({
+    cwd: dataDir,
+    modelRuntime,
+    model,
+    sessionManager: SessionManager.inMemory(),
+    resourceLoader: loader,
+    tools: ["read", "write", "edit", "get_date"],
+    customTools: [getDateTool],
+  });
+
+  cachedParentContentSession = session;
   return session;
 }
 
@@ -601,6 +681,12 @@ export async function disposeAllSessions(): Promise<void> {
     cachedParentSession.dispose();
     cachedParentSession = null;
   }
+  if (cachedParentContentSession) {
+    cachedParentContentSession.dispose();
+    cachedParentContentSession = null;
+  }
+  // ISSUE-020：编程 agent 会话随应用退出一并释放
+  await disposeProgrammingSessions();
 }
 
 export function getActiveSession(childId: string): AgentSession | null {
