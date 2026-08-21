@@ -127,6 +127,28 @@ const api = {
   learningCourseSummary: (childId: string, topicName: string, title: string) =>
     ipcRenderer.invoke("learning:courseSummary", childId, topicName, title),
 
+  // Parent library (ISSUE-029)
+  parentListTopics: () => ipcRenderer.invoke("parent:listTopics"),
+  parentListCourses: (topicDir: string) => ipcRenderer.invoke("parent:listCourses", topicDir),
+  parentAllocate: (childId: string, topicDir: string) =>
+    ipcRenderer.invoke("parent:allocate", childId, topicDir),
+  parentListChildTopics: (childId: string) =>
+    ipcRenderer.invoke("parent:listChildTopics", childId),
+  parentMigrate: () => ipcRenderer.invoke("parent:migrate"),
+  parentUpsertCourse: (topicDir: string, course: any) =>
+    ipcRenderer.invoke("parent:upsertCourse", topicDir, course),
+  parentUpsertTopic: (topic: any) => ipcRenderer.invoke("parent:upsertTopic", topic),
+  parentDeleteCourse: (topicDir: string, title: string) =>
+    ipcRenderer.invoke("parent:deleteCourse", topicDir, title),
+  parentMoveCourse: (topicDir: string, title: string, direction: -1 | 1) =>
+    ipcRenderer.invoke("parent:moveCourse", topicDir, title, direction),
+  parentReadMaterial: (relPath: string) =>
+    ipcRenderer.invoke("parent:readMaterial", relPath),
+  parentListMaterials: (topicDir: string) =>
+    ipcRenderer.invoke("parent:listMaterials", topicDir),
+  parentUploadMaterial: (topicDir: string) =>
+    ipcRenderer.invoke("parent:uploadMaterial", topicDir),
+
   // Scheduler config (per-child, managed in parent settings)
   schedulerConfigGet: () => ipcRenderer.invoke("scheduler:config:get"),
   schedulerConfigSet: (childId: string, config: any) =>

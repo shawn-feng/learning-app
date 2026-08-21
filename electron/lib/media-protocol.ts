@@ -1,11 +1,20 @@
 import { protocol, net } from "electron";
+import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import { getDataDir } from "./config";
 
-// media://local/{childId}/learning/{topic}/media/{文件}
-// 映射到 data/children/{childId}/learning/{topic}/media/{文件}
-// 音视频固定存放在学习主题目录的 media/ 子目录下（不随 app 打包，作为主题包额外下载）
+// media://local 协议：把沙盒 iframe 里的音视频请求映射到本地媒体文件。
+//
+// 两种 URL 格式（2026-08-21 ISSUE-029 后）：
+//   新格式（父库共享，多孩子同一份，与 childId 解耦）：
+//     media://local/parent/{parentId}/{topic}/media/{文件}
+//       → data/parents/{parentId}/materials/{topic}/media/{文件}
+//   旧格式（兼容存量，html 仍引用孩子路径时兜底）：
+//     media://local/{childId}/learning/{topic}/media/{文件}
+//       → data/children/{childId}/learning/{topic}/media/{文件}
+//
+// 音视频固定存放在主题的 media/ 子目录下（不随 app 打包，作为主题包额外下载）。
 const ALLOWED_EXT = new Set([
   ".mp3",
   ".mp4",
@@ -17,6 +26,46 @@ const ALLOWED_EXT = new Set([
   ".flac",
   ".m3u8",
 ]);
+
+/**
+ * 把 media:// URL 的 pathname 解析为本地文件绝对路径（纯函数，可单测）。
+ * 返回 null 表示格式非法 / 目录穿越 / 越权。
+ *
+ * @param dataDir 数据根（getDataDir()）
+ * @param pathname 如 `/parent/default/lunyu/media/论语.mp3` 或 `/1f050a7f.../learning/lunyu/media/x.mp3`
+ */
+export function resolveMediaTarget(dataDir: string, pathname: string): string | null {
+  const segs = decodeURIComponent(pathname)
+    .replace(/^\/+/, "")
+    .split("/")
+    .filter(Boolean);
+  if (segs.length < 2) return null;
+
+  let base: string;
+  let rel: string[];
+  const first = segs[0];
+
+  if (first === "parent") {
+    // media://local/parent/{parentId}/{topic}/media/{文件}
+    if (segs.length < 4) return null;
+    const [, parentId, topic, ...rest] = segs;
+    if (!parentId || parentId.includes("..") || parentId.includes("\\")) return null;
+    base = path.join(dataDir, "parents", parentId, "materials", topic);
+    rel = rest; // media/<file>
+  } else {
+    // 旧格式：media://local/{childId}/learning/{topic}/media/{文件}
+    if (segs.length < 4) return null;
+    const childId = first;
+    if (!childId || childId.includes("..") || childId.includes("\\")) return null;
+    base = path.join(dataDir, "children", childId);
+    rel = segs.slice(1); // learning/<topic>/media/<file>
+  }
+
+  const filePath = path.resolve(base, ...rel);
+  // 防目录穿越：解析后必须仍在 base 内
+  if (filePath !== base && !filePath.startsWith(base + path.sep)) return null;
+  return filePath;
+}
 
 // 必须在 app ready 之前调用，注册 scheme 为 standard + stream
 export function registerMediaScheme(): void {
@@ -34,33 +83,16 @@ export function registerMediaScheme(): void {
 }
 
 export function registerMediaProtocol(): void {
-  const childrenDir = path.join(getDataDir(), "children");
+  const dataDir = getDataDir();
   protocol.handle("media", async (request) => {
     try {
       const url = new URL(request.url);
-      // pathname 形如 /{childId}/learning/{topic}/media/{文件}
-      const segs = decodeURIComponent(url.pathname)
-        .replace(/^\/+/, "")
-        .split("/")
-        .filter(Boolean);
-      const childId = segs[0];
+      const filePath = resolveMediaTarget(dataDir, url.pathname);
+      if (!filePath) return new Response("forbidden", { status: 403 });
 
-      // childId 校验：非空、不含路径穿越片段
-      if (!childId || childId.includes("..") || childId.includes("\\")) {
-        return new Response("forbidden", { status: 403 });
-      }
-
-      const childDir = path.join(childrenDir, childId);
-      const filePath = path.resolve(childDir, ...segs.slice(1));
-
-      // 防目录穿越：解析后必须仍在当前孩子目录内
-      if (filePath !== childDir && !filePath.startsWith(childDir + path.sep)) {
-        return new Response("forbidden", { status: 403 });
-      }
       const ext = path.extname(filePath).toLowerCase();
-      if (!ALLOWED_EXT.has(ext)) {
-        return new Response("forbidden", { status: 403 });
-      }
+      if (!ALLOWED_EXT.has(ext)) return new Response("forbidden", { status: 403 });
+      if (!fs.existsSync(filePath)) return new Response("not found", { status: 404 });
 
       // 交给 Chromium 网络栈读取本地文件（支持 Range，audio/video 可 seek）
       return await net.fetch(pathToFileURL(filePath).toString());

@@ -19,3 +19,6 @@ pi-app-wireshark*.txt
 
 # Python 依赖缓存（benefit-auth）
 benefit-auth/.deps/
+
+# 数据迁移备份（不入库）
+data-backup-*/

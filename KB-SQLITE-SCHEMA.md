@@ -1,6 +1,6 @@
 # 知识库 SQLite Schema（KB-SQLITE-SCHEMA）
 
-> **状态**：定稿（2026-08-21，schema v4：标签体系改造——倒排索引 → 定义表 + 数据行打标；rules 并入 topics）。
+> **状态**：定稿（2026-08-21，schema v5：标签体系改造——倒排索引 → 定义表 + 数据行打标；rules 并入 topics；ISSUE-029 courses 加 lesson_method/html_path/teaching_copy）。
 > **适用范围**：桌面应用「学习伙伴」的每个孩子数据目录 `data/children/{childId}/kb.sqlite`。
 > **权威性**：本文件是 `kb.sqlite` 数据库结构（表 / 视图 / 列 / 约束 / 索引 / 写入语义）的**唯一权威**。与 `LEARNING-DATA-SPEC.md`（数据结构与生命周期）配合使用——SPEC 描述「数据长什么样、怎么流转」，本文件描述「数据在 SQLite 里怎么存」。
 > **实现位置**：schema 定义在 `electron/lib/kb-sqlite.ts`（`SCHEMA_TABLES` / `SCHEMA_VIEWS` 常量），工具面 `kb_query / kb_insert / kb_update` 与 lint（`electron/lib/kb-lint.ts`）均以本文件 + 该常量一致。
@@ -90,6 +90,9 @@ CREATE TABLE courses (
   material TEXT NOT NULL DEFAULT '',
   send_material TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
+  lesson_method TEXT NOT NULL DEFAULT '',
+  html_path TEXT NOT NULL DEFAULT '',
+  teaching_copy TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (topic, title)
 );
 CREATE INDEX idx_courses_topic ON courses(topic, sort_order);
@@ -106,6 +109,9 @@ CREATE INDEX idx_courses_topic ON courses(topic, sort_order);
 | `review_count` | INTEGER | 复习次数（`kb_update` 传 `value:"+1"` 自增） |
 | `material` / `send_material` | TEXT | 教学资料 / 要发送的学习资料 |
 | `tags` | TEXT | **课程标签**（逗号分隔，从 tags 定义表选，v4 确认保留） |
+| `lesson_method` | TEXT | **每课教学方法全文**（v5/ISSUE-029 新增，分配时从家长库快照拷贝） |
+| `html_path` | TEXT | **学习资料 html 地址**（v5/ISSUE-029 新增，相对父库根，如 `materials/lunyu/论语为政篇第一章.html`；父库共享，多孩子同一份） |
+| `teaching_copy` | TEXT | **教学文案全文**（v5/ISSUE-029 延伸，由 `materials/<课程名>.md` 等文件入库，数据库唯一真源；lunyu 512 课已回填） |
 
 ### 2.3 `topic_progress` — 进度视图（非表）
 
@@ -146,7 +152,7 @@ CREATE TABLE topics (
 |---|---|---|
 | `name` | TEXT | 主题中文名（如 `论语`） |
 | `file` | TEXT | 进度文件相对 `learning/` 路径（如 `lunyu/lunyu.md`；`file.split("/")[0]` = 目录名，关联 courses.topic） |
-| `method` | TEXT | **教学方法文件地址**（如 `learning/lunyu/method.md`；AI 教学先读它） |
+| `method` | TEXT | **教学方法全文**（v5/ISSUE-029 起存 method.md 整篇文本，不再是文件链接；AI 教学直接读它） |
 | `progress` | TEXT | 兜底进度字符串（仅进度文件缺失时兜底，权威以视图为准） |
 | `rules_json` | TEXT | **每日目标/规则**（v4 起 rules 表并入）：`{"daily":"3","type":"必学"}` |
 
@@ -221,7 +227,7 @@ CREATE TABLE meta (
 ## 五、迁移
 
 - **全量迁移**：`node --experimental-strip-types scripts/migrate-kb-sqlite.mjs`（**仅首次建库/灾难恢复**——SQLite 真源后重跑会覆盖丢失新增数据）。
-- **就地迁移**：`openKbDb` 自动执行——`ensureV3`（v2→v3：daily 去 fields_json、进度展开 courses、聚合改视图）；`ensureV4`（v3→v4：topics 加 rules_json 并并入 rules 表、daily 加 tags 列并从 raw 回填、tag_links → tags 定义表）。不丢 SQLite 里迁移后新增的数据。
+- **就地迁移**：`openKbDb` 自动执行——`ensureV3`（v2→v3：daily 去 fields_json、进度展开 courses、聚合改视图）；`ensureV4`（v3→v4：topics 加 rules_json 并并入 rules 表、daily 加 tags 列并从 raw 回填、tag_links → tags 定义表）；`ensureV5`（v4→v5：courses 加 lesson_method/html_path，ISSUE-029）。不丢 SQLite 里迁移后新增的数据。
 - **v4 补丁**：`scripts/fix-v4-tags-rules.mjs`（rules 按中文名回填 + tags 归一化）、`scripts/fix-v4-backfill-tags.mjs`（历史用过的非词表标签补入定义表，保持历史可检索）。
 - **幂等**：迁移按主键 INSERT OR REPLACE，重复执行不重复入库；无数据孩子不建库（`hasAnyKbData()`）。
 - **markdown 归档**：迁移后保留为归档（不再读写）。

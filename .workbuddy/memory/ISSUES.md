@@ -886,3 +886,184 @@
 - **关联**：ISSUE-004（气泡时间显示，同文件历史恢复链路）；ISSUE-018（thinking/tools 恢复——trace 展开会让消息更高，加剧此问题）。
 - **优先级**：待定（用户未标注，建议中：儿童 UX 关键，改动集中在单文件）。
 - **记录时间**：2026-08-21
+
+## [ISSUE-029] 主题教学资料与 method 入 SQLite（家长中心库 + 主题分配/拷贝给孩子）；method 存全文而非文件链接；每课 method 与 html 地址入库；资料移出孩子目录、改由家长目录统一管理
+
+- **需求（四点）**：
+  1. 教学主题的教学资料也存入 SQLite；教学方法 `method` 也存入。
+  2. `method` 存入 `topics` 表**新增的 `method` 字段**，**存整个文本**，而不是现在的文件链接。
+  3. 每一课的教学方法存入 `courses` 表**新增字段**；还要新增一个字段**记录学习资料 html 的地址**。
+  4. 教学资料不再放到孩子的目录下，改在**家长的目录里管理**：给家长建一个 SQLite 库，所有学习主题都在家长这里；家长可以**分配学习主题给孩子**，分配后该主题的数据**拷贝到孩子的数据库**里。
+- **现状（已定位，ISSUE-023 已落地 per-child sqlite）**：
+  - `electron/lib/kb-sqlite.ts`（schema v4）已是每孩子一个 `data/children/<childId>/kb.sqlite`，SQLite 为唯一真源；相关表 `daily_entries` / `courses` / `topics` / `tags` / `meta` + 视图 `topic_progress`。
+  - **`topics` 表已有 `method` 列，但当前是文件链接**：`migrateAllToSqlite`（kb-sqlite.ts:456-465）从 `topics.md` frontmatter 的 `method: learning/lunyu/method.md` 取值（路径），不是全文。需改为读取 `method.md` 整篇写入。
+  - **`courses` 表现有列**：`topic,title,sort_order,status,mastery,first_learned,last_review,review_count,material,send_material,tags`——**没有**「每课 method」列，也没有「html 地址」列。
+  - **html 资料现状**：在 `data/children/<id>/learning/<topic>/materials/*.html`（lunyu 单主题就有 **512 个 html**），由 `method.md` 用 `display_content(path="learning/lunyu/materials/{课程名}.html")` 引用孩子相对路径；`english/method.md:14`、`hanzigong/method.md:11` 等同理。
+  - **家长库现状**：**`data/` 下只有 `children/` 和 `shared/`，没有 `parents/` 目录，也没有任何 parent sqlite**。所有主题数据当前是每个孩子的 `learning/` 各存一份（重复）。
+- **方案要点（候选）**：
+  - **新增家长库** `data/parents/<parentId>/parent.sqlite`（沿用 childId 隔离范式；parent 概念在会话层已有 `getParentSession`/`getParentContentSession`，但无数据落盘）。表：`topics(method 全文, rules_json, …)`、`courses(topic,title,…,method,html_path)`、`materials(topic,course,html_path,html_content?)`、`meta`。
+  - **`topics.method` 改全文**：迁移/写入时读 `learning/<topic>/method.md` 整篇存文本（替代文件链接）。
+  - **`courses` 加列**：`lesson_method TEXT`（每课教学方法）、`html_path TEXT`（学习资料 html 地址，绝对或 parent 库相对路径）。
+  - **资料上移**：html（及可选 md 文案）从孩子 `learning/<topic>/materials/` **移到家长库管理**（parent 库 `materials` 表或 parent 目录下 `materials/<topic>/`）；孩子库只存 `html_path` 指针，运行时按 path 读取展示。
+  - **分配/拷贝**：家长在 UI 勾选主题分配给某孩子 → 触发「拷贝」：把该主题的 `topics`/`courses`/`materials` 从 parent 库写入孩子 `kb.sqlite`（含 html 落盘到孩子可访问路径，或孩子库保留 path 指向 parent 库共享目录）。需定义「分配后家长再改主题，孩子是否同步更新」策略（快照 vs 链接）。
+- **关键决策点（待你拍板）**：
+  1. parent 库 `materials` 是否把 html **内容也存进 sqlite**（BLOB/长文本），还是只存文件 + `html_path` 指针（parent 目录放真实文件）；
+  2. 分配是「**快照拷贝**」（家长改了孩子不变）还是「**实时链接**」（指向 parent 库，家长改孩子即变）——决定孩子库要不要冗余存资料；
+  3. 多孩子共享同一份主题时，html 文件放哪里避免重复（parent 共享目录 vs 每孩子一份）；
+  4. 存量迁移：现有每个孩子的 html（lunyu 512 个等）如何一次性导入 parent 库并清理孩子目录；
+  5. `display_content(path=…)` 路径语义要随之改（从孩子相对路径 → parent 库 path / 共享目录）。
+- **排查 / 修改入口（可直接执行）**：
+  - 现有 sqlite 层：`electron/lib/kb-sqlite.ts`（SCHEMA_TABLES 79-125、migrateAllToSqlite 400-513、queryTopicsMeta 683、insertCourse 826、COURSE_FIELD_MAP 777）。
+  - 主题/method/资料引用：`data/children/<id>/learning/topics.md`、`*/method.md`（文件链接写法）、materials 目录。
+  - 资料展示：`electron/lib/custom-tools.ts` 的 `display_content`（读 path 展示）；`src/components/MaterialsPanel.tsx` / `Learn.tsx`。
+  - 家长层 UI：家长「教学内容」页（`src/components/TopicEditor.tsx`，ISSUE-026 已做左右分栏）、`Settings.tsx`、可能的「分配」入口需新增。
+  - 会话提示：`pi-session.ts` 的 `buildChildPrompt`（method 注入方式）、`getParentContentSession`（家长制作教学内容）。
+- **关联**：ISSUE-023（本 issue 是其泛化/升级——023 只解决 per-child 结构化数据入 sqlite；本 issue 引入 parent 库 + 主题分配 + 资料上移）；ISSUE-022（method 的 kb 约定——method 入库后引用写法要同步调整）；ISSUE-009（method 记录详细度——入库的是 method.md 全文，详细度规范仍生效）；ISSUE-026（家长教学内容页是「分配/管理主题」的天然入口）。
+- **优先级**：待定（架构级，建议先出数据模型与分配策略再动手；影响面大：schema 变更 + 双库 + 迁移 + UI）。
+- **记录时间**：2026-08-21
+
+## [ISSUE-029 处理记录] 2026-08-21（已实施，用户拍板三项决策）
+- **决策**：① 分配 = **快照拷贝**（家长改主题不影响已分配孩子，重新分配才生效）；② `topics.method` **全文入库**、html 用**文件指针**（父库共享目录，多孩子共享一份）；③ **现在一次性迁移**存量资料。
+- **实施**：
+  - 新增父库模块 `electron/lib/parent-library.ts`：`data/parents/<pid>/parent.sqlite`（topics.method 全文 + courses 含 lesson_method/html_path）+ `materials/<topic>/*.html` 共享目录；`listParentTopics`/`listParentTopicCourses`/`upsertParentTopic`/`allocateTopicToChild`（快照：存在则只补内容字段、进度保留）/`migrateChildrenToParent`（method 全文、html 上移、html_path 回填、courses 同步父库）。parentId 固定 `default`（单家长假设，已参数化）。
+  - child `kb-sqlite.ts`：courses 加 `lesson_method`/`html_path` 列（schema v5 + `ensureV5`），`CourseItem`/`rowToCourse`/`insertCourse`/`COURSE_FIELD_MAP`（课时方法/每课教学方法/html地址/html_path/学习资料地址）同步；`migrateAllToSqlite` 的 topics.method 从文件链接改为读 method.md 全文。
+  - `display_content`：html 解析父库共享目录优先（`learning/<topic>/materials/<file>` → `data/parents/default/materials/<topic>/<file>`）、孩子目录兜底；`create_html_lesson` 生成后镜像一份到父库。
+  - IPC：`parent:listTopics`/`parent:listCourses`/`parent:allocate`/`parent:migrate`；preload 对应 4 个方法。
+  - UI：`src/components/ParentTopicAllocator.tsx` 挂到「教学内容」页（主题库列表 + 选孩子分配 + 迁移按钮，迁移有 confirm）。
+  - **迁移已执行**：512 html 全部上移父库（孩子目录 0 残留，materials 目录保留 .md 教学文稿），孩子 courses.html_path 回填 512、topics.method 8 主题改全文；父库 8 主题（中文名）+ 1300 课 + 512 html_path。迁移前已备份 `data-backup-20260821-issue029/`（220MB，含 learning + kb.sqlite）。
+  - 测试：`test/parent-library.test.ts` 4 用例（method 全文/课程字段/快照分配不丢进度/迁移链路，config mock 临时目录）；learning-summary 7/7；tsc 0；build 过。
+- **遗留/后续**：① `create_html_lesson` 仍先写孩子目录再镜像父库（未完全改走父库 cwd，生成 html 可能带旧 childId media 引用——旧格式 handler 兜底可用，但多孩子共享时建议统一新格式）；② 家长端「编辑主题/制作资料」仍走 TopicEditor 孩子文件视角，未完全切到父库读写；③ display_content 兜底逻辑依赖孩子目录，后续可删。迁移时曾遇 `database is locked`（openParentDb 的 DROP VIEW 写锁竞争）→ 已改「视图存在则跳过重建」+ busy_timeout 10s。
+- **媒体上移（html 引用）**：用户指出「html 里引用的 media 也要放到位置，不然 html 用不了」——512 个 html 均引用 `media://local/{childId}/learning/lunyu/media/{课程名}.mp3`（audio，206MB）。已把媒体 `mv` 到父库 `data/parents/default/materials/lunyu/media/`（共享，孩子目录清空删除）；512 个 html 的引用全部重写为 **`media://local/parent/{pid}/{topic}/media/{文件}`**（与 childId 解耦）；`media-protocol.ts` 重构：抽出纯函数 `resolveMediaTarget(dataDir, pathname)` 支持新 parent 格式 + 旧 childId 格式兜底 + 防穿越（parentId 含 ../\ 拒绝、resolve 后必须仍在 base 内），ALLOWED_EXT 不变；新增 `test/media-protocol.test.ts` 6 用例（新/旧格式、百分号解码、穿越拒绝、parentId 含 ../\ 拒绝、空路径）。验证：512 引用 0 缺失、0 旧格式残留、17/17 测试过、tsc 0、build 过。
+- **分配入口移到孩子管理页**：用户要求「给孩子分配学习主题应该在孩子管理页面」。实施：① 删除 `src/components/ParentTopicAllocator.tsx`（原挂在「教学内容」页），从 TopicEditor 移除引用；② 新增 `src/components/ChildTopicsModal.tsx`——孩子在 `Dashboard.tsx`「孩子管理」卡片点「学习主题」按钮弹出，列出家长库主题（已学/总数、html 数、method 状态），一键「+ 添加主题」（parentAllocate 快照拷贝），已添加显示「✓ 已添加」，含「迁移存量资料」按钮；③ 新增 `parent:listChildTopics` IPC + `parentListChildTopics` preload + `listChildAllocatedTopics(childId)`（parent-library.ts，读孩子 kb.sqlite topics，无库返回空）。测试 +1（listChildAllocatedTopics 空/分配后），18/18 过、tsc 0、build 过。
+- **学习进度入口 + 课程管理页**：① 孩子管理卡片新增「学习进度」按钮（setView=progress + 预选该孩子，直达其进度看板）；② 家长中心侧栏新增「课程管理」视图（`src/components/CourseManager.tsx`）：主题选择 + 新建主题（`parent:upsertTopic`，空 method/courses）、课程列表 + 课程表单（标题/每课方法/教学资料/学习资料/标签/html地址 → `parent:upsertCourse` 保存、`parent:deleteCourse` 删除；upsert 用 **NULLIF-COALESCE 只覆盖非空字段**，避免自动关联 html 时误清其它字段）、上传资料（`parent:uploadMaterial` 主进程对话框 → `copyMaterialIntoParent` 落盘父库 materials/<topic>/，媒体自动进 media/ 子目录，html 与课程同名自动回填 html_path）、agent 聊天（复用 parent-content 会话，上下文注入主题/课程/资料目录，agent 可 write/edit 父库 materials 下文件）。测试 +3（upsert/delete、copy 落盘 html vs media、listMaterials）→ 21/21、tsc 0、build 过（注：build 曾因运行中的 electron 占住 out/ 报 EPERM，杀进程后通过）。
+- **课程管理重构（卡片 + 三列详情）**：用户要求「课程管理用卡片展示每个学习主题，主题卡片里有教学方法/课程详情/基本信息三个按钮；点击进入详细页面（三列：左课程列表、中 AI 对话框、右选中课程的详细信息）」。实施：① `CourseManager.tsx` 重写为主题卡片网格（卡片=主题名/课程数/html 数/方法状态 + 三按钮），`TopicDetail.tsx` 新增三列详情页——左：课程列表（添加/删除/↑↓排序）；中：AI 对话（上下文注入主题/课程/资料目录）；右：标签切换「教学方法（method markdown 渲染 + 编辑保存，parent:upsertTopic）/ 课程详情（名称 + 教学文案 markdown + 发给学生的学习材料——html_path 文件或 html 片段用 sandbox iframe 渲染，否则 markdown；含上传资料自动关联）/ 基本信息（主题名/目录/课程数/html 数/方法长度/每日目标/类型）」。② 数据层：`moveParentCourse`（与相邻课程交换 sort_order，`parent:moveCourse` IPC）、`readParentMaterial`（按相对父库根读资料文件防穿越，`parent:readMaterial` IPC）。③ AI 建课工具：新增 `parent_course_save`/`parent_course_delete` 两个 custom tools 并注册到家长内容会话（tools 白名单同步，谨记 ISSUE-006 教训），提示词补充家长库建课段（去掉模板字符串内反引号，曾引发 TS1005）。测试 +2（move 排序边界、readMaterial 内容/穿越）→ 23/23、tsc 0、build 0。
+- **教学文案入库（courses.teaching_copy）**：用户要求「course 里增加教学文案字段，把文件存储的教学文案也放到数据库里；现在只有 lunyu 提供了，就把 lunyu 的放进去」。实施：child + parent courses 均加 `teaching_copy` 列（child ensureV5 扩展；parent 新增 `ensureParentV2`——`CREATE TABLE IF NOT EXISTS` 不会改已存在旧表，必须显式 ALTER 加列）；`CourseItem`/`rowToCourse`/`rowToParentCourse`/`insertCourse`/`upsertParentCourse`（NULLIF-COALESCE）/`upsertParentTopic`/`allocateTopicToChild`/`migrateChildrenToParent`（同步 + 新增 3.5 步：materials/<课程名>.md → teaching_copy 回填父库+孩子库，幂等 guard `teaching_copy='' OR IS NULL`）/`COURSE_FIELD_MAP`（教学文案/teaching_copy）全链路；`parent_course_save` 工具加 teachingCopy 参数；TopicDetail 课程详情「教学文案」改用 DB teachingCopy（markdown 渲染）。**真实数据已回填：父库 + 孩子库 lunyu 均 512/512**（内容为 md 全文）。测试 +1（migrate md 回填父库+孩子库）→ 24/24、tsc 0、build 0。注意：迁移统计 teachingCopyBackfilled 在真实数据上显示 0 但实测两库均已填（计数疑点未深究，以直查库为准）；另有 497 个散落孩子目录的 html 重复文件在迁移中被按「父库已有→删除孩子侧」清理（父库共享副本完好）。
+- **孩子库去重（method/teaching_copy 只存家长库，专用工具查询）**：用户问「孩子的数据库里能否不要有主题教学方法和教学文案，要查询时通过专用工具从家长的表里获取内容」——采纳并落地：① `allocateTopicToChild` 不再拷贝 topics.method 与 courses.teaching_copy（孩子库只留主题骨架/进度/lesson_method/html_path 指针）；② `migrateChildrenToParent` 的 method 写入与 teaching_copy 回填**只写父库**，不再写孩子库；③ 新增 `parent_content` 专用工具（custom-tools.ts）注册到**孩子会话**（tools 白名单 + customTools 同步，谨记 ISSUE-006），type=method|teachingCopy，后端 `getParentContentForChild(childId, topicDir, type, course?)`（parent-library.ts）——**先校验该孩子确实分配了该主题再读家长库**，未分配一律拒绝，防越权；④ 孩子行为规范（LEARNING_NAV）更新：学习流程改为 kb_query topics + parent_content 取方法/文案，删除「读 method.md」旧指引；⑤ 存量清理：真实孩子库 topics.method 8 行、courses.teaching_copy 1300 行已清空（家长库仍为唯一真源，内容可随时取回）。测试：allocate 断言孩子库 method/teachingCopy 为空 + 新增 getParentContentForChild（未分配拒绝/分配后可取/其它主题拒绝）+ migrate 断言只回填父库 → 25/25、tsc 0、build 0。
+- **孩子提示词来源全面 DB 化排查**：用户要求「排查孩子的提示词来源，都调整为使用数据库数据的工具」。逐项排查孩子会话提示词链路并修正：① **LEARNING_NAV/AGENTS.md**（上轮已改，本轮确认并**刷新真实孩子磁盘 AGENTS.md**——磁盘旧文案仍指引读 method.md，writeAgentsMd 每次开会话才重写，app 关闭期间为陈旧状态，已用临时脚本重写为新文案且保留 custom 段）；② **教学技能** recording / study-tracker 的 SKILL.md：均已用 kb_query/kb_insert/kb_update（确认无需改）；③ **工具描述**（孩子可见即提示词）：`display_content` 的「以该主题 method.md 的规定为准」→「以 parent_content 取到的教学方法为准」；`kb_insert`/`kb_update` 描述里「method.md / materials/ 等内容文件」→「materials/ / uploads/」（method 已非孩子文件）；`kb_query` 描述「字段由 method 定义」→「由家长库 method 定义」；④ **learning-guard 扩展**：日期注入文案「更新进度文件的日期字段」→「更新课程时间字段（首次学习/最近复习）」（进度已 SQLite 化）；⑤ 确认 `learning-summary.ts`（getLearningSummary/getTopicProgress/getCourseDailySummary）全部 SQLite 读（queryTopicProgress/queryCourseDailySummaries），`get_progress`/`kb_query`/`parent_content` 均 DB 后端。新增 `test/agents-md.test.ts` **锁定不变量**（AGENTS.md 必须含 parent_content、不得含「读 method.md/先读 topics.md」、数据读写禁 read/write/edit、进度查询禁读文件正文）→ 28/28、tsc 0、build 0。
+- **parent_content 增加 htmlPath 查询**：用户要求「parent_content 还要能查询课程学习资料的 html 文件路径」。实施：① `ParentContentType` 增加 `htmlPath`，`getParentContentForChild` 按课程查 html_path 并**校验文件真实存在**（避免返回失效指针），返回家长库相对路径 `materials/<topic>/<file>.html`；② `parent_content` 工具 description/参数/错误文案同步（type=method|teachingCopy|htmlPath，course 必填）；③ `display_content` 的 path 解析扩展为**同时接受家长库相对路径** `materials/<topic>/<file>.html` 与旧 `learning/<topic>/materials/<file>.html`（正则 `^(?:learning\/[^/]+\/)?materials\/...`），描述注明 htmlPath 返回格式可直接传入。测试 +2 断言（htmlPath 文件不存在 → not found；造文件后返回正确路径）→ 28/28、tsc 0、build 0。
+- **提示词分层去重（method/AGENTS/技能）**：用户问「既然工具描述写清楚了，为什么 AGENTS 和 method 还重复写怎么使用」——定位为「怎么调（工具描述唯一真源）vs 何时用/红线（AGENTS）vs 教学协议（method）」三层混叠，且 method 已与 parent_content 设计**漂移**（仍写「先读 learning/lunyu/materials/{课程名}.md」）。按用户拍板清理：① **8 个主题 method**（家长库 topics.method，`scripts/fix-method-tool-refs.py` 可重复执行，先备份 parent.sqlite.bak-dedup）：删 kb_update/kb_insert 参数级 JSON 示例 → 语义描述；教学文案读取 → `parent_content teachingCopy`；display_content 路径 → 家长库相对路径 `materials/<topic>/<file>.html`（论语 2 处）；tags 文件 `tags/{tag}.md` → kb_query 按 tag 查；小篆/陶笛「读索引文件定位」→ kb_query 课程清单、考核「读 materials 对应课」→ parent_content；春风阅读「读 reading.md 顺序」→ 系统 next；汉字宫保留索引 md + 字卡 html 内容文件流程（仅清 kb JSON）。每主题精简 ~190-250 字符；② **AGENTS.md（LEARNING_NAV）**：学习/记录/进度查询段去掉 `{query:"topics"}`/`{table:"course"}` 等 JSON，只留策略红线；③ **recording 技能 SKILL.md**：同步去 JSON 示例，保留领域语义（复习次数 +1、标签行、写入顺序），「课程名一致」改指课程表；④ 刷新真实孩子磁盘 AGENTS.md（保留 custom 段）；⑤ 测试加固：agents-md.test.ts 新增断言 AGENTS 不含 `{table:"course"`/`{query:"topics"`/`{query:"tags"`/`{query:"progress"` → 28/28、tsc 0、build 0。
+- **method/技能二次去参数（只描述「用什么工具做什么」）**：用户指出「method 里还是有工具的调用参数，应该只描述用工具获取什么东西」——上一轮保留的 `（type:"teachingCopy"，topic 传…、course 传…）`、`（table 用 course：topic 传…、field 传…、value 传…）` 等仍是调用参数。二次清理（并入 `scripts/fix-method-tool-refs.py` 的 pass2，对当前库幂等）：method 里 parent_content 只写「获取该课教学文案/该篇教学文案/html 资料路径」；kb_update 只写「更新该课进度：状态→✅、掌握度、首次学习、最近复习」；kb_insert 只写「写入当日「学习」记录（### 课程名 标题 + 原文）」；kb_query 只写「查相关生活事件」；论语 display 改「（html 资料路径可先用 parent_content 获取）」。保留的仅领域语义字段名（状态/掌握度/首次学习/最近复习/### 课程名）与规则（learned/total/next 视图自动计算、字段缺失追加）。recording 技能同步清 `table 用`/`query 用`/`field 传`/`value 传` 及 `kb_query {query:"tags"}` JSON。验证：method 8/8 零参数残留、recording 零残留、每主题再精简 ~110-300 字符（论语 -305）；28/28、tsc 0、build 0。新增 `scripts/verify-method-clean.py` 可复查。
+- **优先级**：已实施（数据层 + 迁移 + 分配 UI 落地；管理端深化为后续项）。
+
+## [ISSUE-030] 管理孩子界面只有两个孩子，新增孩子时报「已达孩子数量上限」
+
+- **类型**：配置/UX 问题（非数量统计 bug；已定位完整根因链，待拍板）
+- **现象**：家长「孩子管理」界面显示 2 个孩子（珊珊、闻闻），尝试新增第 3 个时弹「已达孩子数量上限」，无法创建。
+- **根因链（已全部确认）**：
+  1. **云端注册硬编码 max_children=2**：`cloud-service/app/auth.py:71-73` 注册时 `INSERT INTO subscriptions ... plan='basic', max_children=2 ...`（写死 2，无档位设计）；DB 默认值同（`app/database.py:31` `max_children INTEGER NOT NULL DEFAULT 2`）。
+  2. **本地 license 缓存同为 2**：`data/license.json`（`plan:"basic"`、`max_children:2`、账号 test@qq.com，`expires_at 2026-09-11`，`getLicensePath()` = `config.ts:77-79`）。
+  3. **child:add 上限以云端为准**：`electron/lib/ipc-handlers.ts:61-81`——有 license 时 `let maxChildren = license.max_children`，再 `verifyLicenseWithCloud`（`auth-manager.ts:63-83`，成功取 `cloud.max_children`、401/失败返回 0、网络错误返回 null 降级用本地值）；`listChildren()`（`child-auth.ts:55-71`，扫 `data/children/*/profile.json`）实测返回 **2**（`data/children/` 下仅 2 个 profile.json：1f050a7f… + 408a727b…）；`children.length(2) >= maxChildren(2)` → 返回 `"已达孩子数量上限"`。
+  4. **结论**：界面 2 个孩子与套餐上限 2 **恰好打满**，新增第 3 个必然被拒——行为正确，问题是**套餐上限不可见、不可调**。
+- **UX / 产品缺口（用户视角的"问题"）**：
+  1. 错误文案只说「已达孩子数量上限」，**未说明当前上限是多少、什么套餐、如何解锁**——用户无从判断是被限流还是 bug。
+  2. 云端**没有调整 max_children 的管理途径**：注册写死 basic/2，无更高档位（家庭版等），也没有管理员改订阅的接口（只能直接改 DB）。
+  3. 边界：`child:add` 只在 `license` 存在时检查上限；**未登录（无 license）时不检查、可无限加**——上限检查并非强制路径。
+- **待确认项**：
+  1. 期望上限是多少？是否新增套餐档位（如 family max_children=5/10）或给当前账号提额？
+  2. 云端是否要加「管理员调整订阅 max_children」的接口（/api/license 管理侧），还是仅改 DB？
+  3. 前端错误提示是否改为友好文案（如「当前套餐 basic 最多 2 个孩子（已用 2/2），如需更多请联系升级」），并把上限带到 `child:list`/`child:add` 返回里供 UI 展示？
+  4. 未登录无上限的边界是否一并收紧？
+- **排查 / 修改入口（可直接执行）**：
+  - 上限检查：`electron/lib/ipc-handlers.ts:61-81`（child:add）、`electron/lib/auth-manager.ts:63-83`（verifyLicenseWithCloud 返回 max_children）。
+  - 云端订阅：`cloud-service/app/auth.py:69-74`（注册 INSERT 写死 2）、`cloud-service/app/database.py:31`（DEFAULT 2）、`cloud-service/app/license.py:34-56`（/verify 返回 max_children）。
+  - 本地数据实测：`data/license.json`（max_children:2）、`data/children/` 下 profile.json 数（2）。
+- **关联**：无直接依赖；若落地「套餐/提额」，与云端 benefit-auth 中台规划（订阅/权益）同属 license 体系。
+- **优先级**：待定（建议中：影响用户加第 3 个孩子的真实需求；若暂时只想要 3 个孩子，最快解法是云端把该账号 max_children 改大）。
+- **记录时间**：2026-08-21
+
+## [ISSUE-031] 给孩子分配学习主题时没有「每天学习量」的设置入口——应在家长界面分配时设置
+
+- **类型**：需求 / 新功能（待拍板后实施）
+- **需求**：每个孩子在分配学习主题时，「每天的学习量」没有地方设置。应在**家长界面给孩子分配学习主题**时设置该孩子在该主题的**每天学习量**（如每天学 3 章论语 / 2 课汉字宫 / 1 个内容单元英语）。
+- **现状（已全部定位）**：
+  1. **每日学习量目前只在旧文件、手工维护、已与 SQLite 链路脱节**：`data/children/<id>/learning/rules.md` frontmatter（真源为珊珊的）`rules: 论语:{daily:3,...} 汉字宫:{daily:2} 千字文:{daily:1} 英语:{daily:1, unit:内容单元}`；文件头注释「每日学习目标量。调整时直接改本文件」——需**手改文件**，家长界面无任何入口。
+  2. **SQLite 迁移时 daily 被丢弃**：`kb-sqlite.ts:512` `migrateAllToSqlite` 写 topics 表 `insert.run(..., "{}")`——`rules_json` **硬编码空对象**，rules.md 的 daily 量未迁入任何库；实测父库 `parent.sqlite` topics 表 8 行 `rules_json` 全为 `{}`。
+  3. **父库/孩子库 topics 表都没有「每日学习量」字段**：父库 `PARENT_SCHEMA_TABLES:44-50`、孩子库 `kb-sqlite.ts:113-119` 均为 `name, file, method, progress, rules_json`。
+  4. **分配链路无 daily 参数**：`allocateTopicToChild(parentId, childId, topicDir)`（`parent-library.ts:273-332`）只拷 `name/file/rules_json`（method 不拷，走 parent_content），签名里没有学习量；`parent:allocate` IPC 同名透传。
+  5. **分配 UI 无输入框**：`src/components/ChildTopicsModal.tsx:64`「+ 添加主题」按钮直接 `window.api.parentAllocate(child.childId, topicDir)`，无任何每日学习量设置控件。
+- **方案要点（候选）**：
+  - **数据模型**：daily 量是「**孩子 × 主题**」维度（同一主题不同孩子可不同）→ 孩子库 `topics` 表加列（如 `daily_amount TEXT/INTEGER`，幂等 ALTER 参照 `ensureV5`/`ensureParentV2` 范式）；父库 topics 可加 `daily_amount` 默认值，分配时快照进孩子库（分配后家长改默认不影响已分配孩子——沿用 ISSUE-029「快照拷贝」语义），或分配时按孩子单独设置。
+  - **UI**：`ChildTopicsModal.tsx` 分配时弹「每天学习量」输入（数字 + 可选量纲说明）；或分配后在该孩子主题行内可编辑。
+  - **消费方**：学习流程/study-tracker 从哪读 daily（`kb_query topics` / 新字段）需同步；ISSUE-019「进度 vs 计划」对比直接依赖此量。
+- **待确认项**：
+  1. 学习量字段放孩子库 topics（每孩子独立）还是父库默认+分配快照（沿用 ISSUE-029 语义）？
+  2. 量纲：整数课数（每天 N 课）？还是允许自由文本（英语的「内容单元」、论语的「章」）？是否沿用 rules.md 的 `daily` + `unit` 双字段写法？
+  3. UI 形态：分配时弹框设置 vs 分配后列表行内编辑；是否要「全局默认 + 按孩子覆盖」？
+  4. 存量数据：现有 rules.md 的 daily（论语3/汉字宫2/千字文1/英语1）是否一次性迁入新字段？rules.md 是否废弃（同 ISSUE-013 清理遗留文件的思路）？
+  5. 与 rules_json 的关系：rules_json 目前全空、无消费方，是否并入新字段或删除该列？
+- **排查 / 修改入口（可直接执行）**：
+  - 分配逻辑：`electron/lib/parent-library.ts:273-332`（allocateTopicToChild）+ `parent:allocate` IPC（ipc-handlers.ts）+ preload `parentAllocate`。
+  - 分配 UI：`src/components/ChildTopicsModal.tsx`（:64 添加按钮、主题列表渲染）。
+  - 表结构：父库 `parent-library.ts:44-50`、孩子库 `kb-sqlite.ts:113-119` + 幂等迁移（`ensureParentV2` 115-120 / `ensureV5` 范式）。
+  - 旧数据：`data/children/<id>/learning/rules.md`（daily 真源）、迁移 `kb-sqlite.ts:512`（rules_json 硬编码 `{}`）。
+  - 消费方：`electron/lib/learning-summary.ts`（getLearningSummary 的 daily 字段）、study-tracker/学习提示词（kb_query topics）。
+- **关联**：ISSUE-029（主题分配/快照语义——daily 量随分配一起拷贝）；ISSUE-019（家长页「进度 vs 计划」展示依赖此量做偏差计算）；ISSUE-013（kb 工具族查询）。
+- **优先级**：待定（建议中高：家长设置学习计划的刚需，且 ISSUE-019 的「计划对比」功能前置依赖它）。
+- **记录时间**：2026-08-21
+
+## [ISSUE-032] 创建孩子时的目录结构仍按「文件时代」初始化，需按 SQLite 化后的结构调整
+
+- **类型**：结构重构（待拍板后实施）
+- **需求**：创建孩子时（`initChildDirectory`）孩子目录下创建的文件夹结构要改——现在部分信息已改为数据库存储（kb.sqlite 唯一真源），init 仍创建大量已废弃/冗余的目录与模板文件。
+- **现状（已全部定位）**：
+  1. **`initChildDirectory`（`electron/lib/user-init.ts:115-192`）仍按文件时代初始化**：
+     - 创建 7 个归档目录 `daily/ learning/ life/ inquiries/ tasks/ outputs/ tags/`（:129-139）；
+     - 创建 `daily-logs/` 空壳目录（:126）——ISSUE-013 已判定删除，init 却仍创建；
+     - 写已废弃模板文件 `study-topics.md`（:147-151）、`study-rules.md`（:153-157）、`life-events.md`（:159-163）——ISSUE-013 已判定废弃删除，init 仍写盘（**实测珊珊目录 8-20 仍残留这三个文件**，即清理后又由 init/其它路径重建）；
+     - 写 `learning/topics.md`（:171-175）、`learning/rules.md`（:177-181）模板——主题清单与分配已走家长库/孩子库 `topics` 表（ISSUE-029），daily 量应入库（ISSUE-031）；
+     - 写 `tags/taxonomy.md`（:165-169）——标签体系 v4 已改为「标签直接打在数据行」，tags 定义真源是 kb.sqlite `tags` 表（recording SKILL.md:55），taxonomy.md 已是归档。
+  2. **SQLite 已是唯一真源**：recording SKILL.md:7「SQLite 知识库 kb.sqlite 唯一真源，daily/、life/、inquiries/、tasks/、tags/、learning 进度的 markdown 只是历史归档，**不要读写**；一律用 kb_query/kb_insert/kb_update」；`openKbDb`（`kb-sqlite.ts:155-167`）首次打开自动建表（SCHEMA_TABLES + ensureV3/V4/V5 + 视图），**不依赖 init 预建目录**。
+  3. **仍必要**：`profile.json`（:141）、`.pi/agent/sessions` + `.pi/agent/settings.json`（:122-124、183-187）、`.pi/skills`（:125）、`AGENTS.md`（:189 writeAgentsMd）；`uploads/` 由上传 IPC 按需 `mkdirSync`（`ipc-handlers.ts:838/932`），init 无需建。
+  4. **kb.sqlite 初始化时机**：init 目前**不创建** kb.sqlite（首次 openKbDb 才建）；新孩子建议 init 时显式初始化空库（openKbDb 建表即可，幂等）。
+  5. **约束——kb-lint 依赖这些目录/文件，改动需同步**：`electron/lib/kb-lint.ts:44` `REQUIRED_DIRS = ["daily","learning","life","inquiries","tasks","tags","outputs"]`（结构校验，缺失报错）；`:87-94` 校验 `learning/topics.md`、`learning/rules.md` **存在**（frontmatter 缺失报「主题清单未配置」）——与 ISSUE-029/031 入库方向矛盾，删目录/文件前必须先改 lint（存在性校验改查 kb.sqlite `topics` 表）。
+- **方案要点（候选）**：
+  - **init 新结构**：只建 `childDir` + `.pi/`（agent/sessions、skills、settings.json）+ `profile.json` + `AGENTS.md` + 初始化空 `kb.sqlite`；**不再创建归档目录与废弃模板**（study-topics/study-rules/life-events/daily-logs/taxonomy）。
+  - **归档目录按需创建**：老孩子迁移/lint 场景需要时再建；或 **kb-lint 去掉 REQUIRED_DIRS 结构检查**（改查 kb.sqlite），topics/rules 存在性校验改查库。
+  - **清理存量残留**：已有孩子目录里的 `study-topics.md` / `study-rules.md` / `life-events.md` / `daily-logs/` 清理（数据已迁移，无丢失风险，同 ISSUE-013 思路）。
+  - 老孩子的 `daily/*.md`（珊珊 102 个）等历史归档文件：只读归档，可保留不动或按需压缩（可选）。
+- **待确认项**：
+  1. 新孩子 init 是否初始化空 kb.sqlite（推荐）？
+  2. 归档 7 目录新孩子是否**完全不建**？kb-lint 的 REQUIRED_DIRS / topics.md·rules.md 存在性校验是否改为查库？
+  3. 是否保留一份「人类可读」的目录（如 learning/ 仅存 topics.md 占位供家长直接查看）？
+  4. 存量孩子目录残留文件是否一并清理？
+- **排查 / 修改入口（可直接执行）**：
+  - init：`electron/lib/user-init.ts:115-192`（initChildDirectory）+ 模板常量（STUDY_TOPICS_TEMPLATE/STUDY_RULES_TEMPLATE/LEARNING_TOPICS_TEMPLATE/LEARNING_RULES_TEMPLATE/buildTaxonomyMd）。
+  - lint 依赖：`electron/lib/kb-lint.ts:44`（REQUIRED_DIRS）、`:87-94`（topics/rules 存在性）。
+  - 库初始化：`electron/lib/kb-sqlite.ts:155-167`（openKbDb，建表幂等，可直接在 init 调用）。
+  - 实测残留：`data/children/1f050a7f-…/`（study-topics.md / study-rules.md / life-events.md / daily-logs/ 存在）。
+- **关联**：ISSUE-013（kb-lint/目录规范同源，本 issue 是结构侧收敛）；ISSUE-029（主题/资料已上移父库）；ISSUE-031（rules.md 的 daily 量入库后，rules.md 更无存在必要）。
+- **优先级**：待定（建议中：新孩子结构干净，但不影响老孩子功能；需与 ISSUE-031、kb-lint 改动联动，建议三者一起拍板）。
+- **记录时间**：2026-08-21
+
+## [ISSUE-033] AGENTS 改为「代码默认 + 用户版本」：用户可编辑（每孩子 + 家长各一份），带历史版本可回退
+
+- **类型**：架构 / 新功能（待拍板后实施）
+- **需求**（用户原话要点）：「AGENTS 不要（文件），编到代码里，可以有个默认值，但用户可以修改，修改后就是用户的版本，以后都用用户的版本构建 prompt。每个孩子的 AGENTS 以及父母的 AGENTS 都这样操作。目的是为了让用户能自己编辑，编辑坏了，可以回退版本。」
+- **现状（已全部定位）**：
+  1. **孩子侧**：默认内容已在代码（`LEARNING_NAV_INSTRUCTIONS` `pi-session.ts:17-54` + `buildAgentsMd(profile)` `:66-85` 拼身份段）；`getChildSession` 每次开会话前调 `writeAgentsMd`（`:87-103`）**写盘** `data/children/<id>/AGENTS.md`，SDK 的 DefaultResourceLoader 在 customPrompt 模式下**自动把 AGENTS.md 文件附加为 `<project_context>`**（`createAgentSession` 不读 extension 同理，loader 是唯一注入通道）。
+  2. **用户编辑现状 = 只能改 custom 段**：`writeAgentsMd` 只保留 `<!-- custom:start/end -->` 之间的内容（`extractCustomSection` `:59-64`），其余部分每次开会话都用代码默认**覆盖重建**——家长在 AGENTS.md 里改 custom 段之外的任何内容都会**被冲掉**（设计上只允许改 custom 段）。
+  3. **家长侧**：`buildParentPrompt()`（`:105-153`）与 `buildParentContentPrompt()`（`:159+`，ISSUE-026）是**纯代码字符串**，经 `systemPromptOverride`（`:421`/`:457`）直接注入——**没有落盘文件、没有 custom 段、没有用户编辑入口**。
+  4. **版本管理完全没有**：AGENTS.md 覆盖写盘，无历史版本、无回退能力；家长提示词更是代码常量。
+  5. **相关既有事实**：ISSUE-025 已从家长界面移除「技能管理/技能编辑器」tab——本需求是**新增 AGENTS 编辑入口**，与技能编辑器无关（只编辑提示词本身），不冲突但需确认入口位置。
+- **方案要点（候选）**：
+  - **默认值在代码（已有，保持）**：`LEARNING_NAV_INSTRUCTIONS` + `buildAgentsMd` / `buildParentPrompt` / `buildParentContentPrompt` 即「代码默认」；引入统一的 `resolveAgents(kind: child|parent, ...)`：**存在用户版本则用用户版本，否则用代码默认**构建 prompt（用户版本优先，永不写盘覆盖）。
+  - **用户版本存储**（与库化方向一致，候选）：
+    - 方案 A（推荐）：家长库/孩子库 `meta` 表存「用户版本」+ 新增 `agents_versions` 表存历史版本（content/ts/备注），容量上限（如最近 20 版）；
+    - 方案 B：JSON 文件（`data/children/<id>/agents-user.json`、`data/parents/<pid>/agents-user.json`，`{current, history:[...]}`）。
+  - **孩子 AGENTS 注入方式（待确认）**：仍走 AGENTS.md 文件（文件内容 = 用户版本，`writeAgentsMd` 改为「有用户版本就写用户版本、否则写代码默认」，**不再无条件覆盖**）；或改为 `systemPromptOverride` 内联（`buildChildPrompt` 里拼 AGENTS，彻底去掉文件依赖——即「AGENTS 不要（文件）」的字面实现）。
+  - **版本回退**：UI 展示历史版本列表，回退 = 把某历史版写入用户版本（回退本身也记一版，可再回退）；提供「恢复默认」= 清空用户版本。
+  - **UI 入口**：家长中心新增「AI 提示词 / AGENTS」设置（每孩子一份 + 家长全局一份），编辑器 + 历史版本列表 + 回退/恢复默认按钮。
+- **待确认项**：
+  1. 用户版本是**整体替换** AGENTS 文本，还是**在代码默认基础上只改特定段**（现 custom 段语义泛化）？——影响合并逻辑与「代码升级后用户版本是否跟进新默认」的取舍（整体替换=用户版本与代码默认完全解耦；分段=默认更新自动生效）。
+  2. 存储走 SQLite（家长/孩子库 meta + versions 表）还是 JSON 文件？
+  3. 孩子 AGENTS 注入：保留 AGENTS.md 文件（内容=用户版本）vs 完全内联 systemPromptOverride（去掉文件）？
+  4. 历史版本上限（如 20）与「回退是否记版本」？
+  5. 家长侧是**一份统一** AGENTS，还是 `buildParentPrompt`（通用助手）与 `buildParentContentPrompt`（教学内容助手）**各一份**用户版本？
+  6. UI 入口位置（家长中心哪个视图）？
+- **排查 / 修改入口（可直接执行）**：
+  - 代码默认与注入：`electron/lib/pi-session.ts`——`LEARNING_NAV_INSTRUCTIONS`（:17-54）、`buildAgentsMd`（:66-85）、`writeAgentsMd`（:87-103，含 extractCustomSection :59-64）、`buildChildPrompt`、`buildParentPrompt`（:105-153）、`buildParentContentPrompt`（:159+）、`getChildSession`（:352 刷新调用）、`getParentSession`（:421）、`getParentContentSession`（:457）。
+  - 存储：孩子库 `electron/lib/kb-sqlite.ts`（meta 表，SCHEMA_TABLES :127-130）、父库 `electron/lib/parent-library.ts`（meta 表 :71-74）。
+  - UI：家长中心（Dashboard/Settings 相关视图，新增入口）。
+- **关联**：ISSUE-026（家长内容会话提示词——家长侧用户版本覆盖对象之一）；ISSUE-025（技能编辑器已移除，AGENTS 编辑入口是独立新增）；ISSUE-032（若孩子 AGENTS 改为内联，`AGENTS.md` 文件去留与目录结构联动）。
+- **优先级**：待定（建议中高：家长自定义 AI 行为的刚需；改动集中在 pi-session.ts 注入层 + 存储 + 一个设置页）。
+- **记录时间**：2026-08-21

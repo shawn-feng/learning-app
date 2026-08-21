@@ -8,6 +8,20 @@ import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize } from "./voice";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary } from "./learning-summary";
+import {
+  allocateTopicToChild,
+  copyMaterialIntoParent,
+  deleteParentCourse,
+  listChildAllocatedTopics,
+  listParentMaterials,
+  listParentTopics,
+  listParentTopicCourses,
+  migrateChildrenToParent,
+  moveParentCourse,
+  readParentMaterial,
+  upsertParentCourse,
+  upsertParentTopic,
+} from "./parent-library";
 import { getChildSchedulerConfig, setChildSchedulerConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
@@ -170,6 +184,126 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       }
     }
   );
+
+  // ---- 家长库（ISSUE-029：主题/资料统一管理 + 分配给孩子）----
+
+  ipcMain.handle("parent:listTopics", async () => {
+    try {
+      return { success: true, data: listParentTopics() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("parent:listCourses", async (_e, topicDir: string) => {
+    try {
+      return { success: true, data: listParentTopicCourses(undefined, topicDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 新建/更新家长库主题（课程管理页「新建主题」，method 全文、courses 可空）
+  ipcMain.handle("parent:upsertTopic", async (_e, topic: any) => {
+    try {
+      const r = upsertParentTopic(undefined, topic, topic.courses || []);
+      return { success: true, data: r };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("parent:allocate", async (_e, childId: string, topicDir: string) => {
+    try {
+      return { success: true, data: allocateTopicToChild(undefined, childId, topicDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 孩子已分配的主题清单（孩子管理页「添加学习主题」展示用）
+  ipcMain.handle("parent:listChildTopics", async (_e, childId: string) => {
+    try {
+      return { success: true, data: listChildAllocatedTopics(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 一次性存量迁移（html 上移父库 + method 改全文）。破坏性操作，调用方需先备份。
+  ipcMain.handle("parent:migrate", async () => {
+    try {
+      return { success: true, data: migrateChildrenToParent() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 家长库课程管理（课程管理页）
+  ipcMain.handle("parent:upsertCourse", async (_e, topicDir: string, course: any) => {
+    try {
+      upsertParentCourse(undefined, topicDir, course);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("parent:deleteCourse", async (_e, topicDir: string, title: string) => {
+    try {
+      return { success: true, data: deleteParentCourse(undefined, topicDir, title) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("parent:moveCourse", async (_e, topicDir: string, title: string, direction: -1 | 1) => {
+    try {
+      return { success: true, data: moveParentCourse(undefined, topicDir, title, direction) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("parent:readMaterial", async (_e, relPath: string) => {
+    try {
+      return { success: true, data: readParentMaterial(undefined, relPath) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("parent:listMaterials", async (_e, topicDir: string) => {
+    try {
+      return { success: true, data: listParentMaterials(undefined, topicDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 上传课程资料：主进程弹文件选择框 → 复制进父库共享 materials/<topicDir>/（媒体进 media/ 子目录）
+  ipcMain.handle("parent:uploadMaterial", async (e: IpcMainInvokeEvent, topicDir: string) => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
+      const result = await dialog.showOpenDialog(win!, {
+        title: "上传课程资料",
+        properties: ["openFile", "multiSelections"],
+        filters: [
+          { name: "资料文件", extensions: ["html", "htm", "md", "pdf", "jpg", "jpeg", "png", "webp", "mp3", "mp4", "webm", "ogg", "wav", "m4a", "aac", "flac"] },
+        ],
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: true, data: { files: [] } };
+      }
+      const files = result.filePaths.map((p) => {
+        const rel = copyMaterialIntoParent(undefined, topicDir, p);
+        return { name: path.basename(p), relPath: rel };
+      });
+      return { success: true, data: { files } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
 
   // ---- 学习主题文件（家长在「教学内容」里管理）----
 

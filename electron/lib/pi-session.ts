@@ -8,7 +8,7 @@ import path from "path";
 import fs from "fs";
 import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import learningGuardExtension from "../extensions/learning-guard";
@@ -28,12 +28,12 @@ const LEARNING_NAV_INSTRUCTIONS = `
 
 ### 学习
 孩子要学习某个主题时：
-1. 先读 \`learning/topics.md\`（主题知识列表），找到对应主题及其方法文件
-2. 读该主题的 \`method.md\`，**这是本次引导的唯一权威依据**：教学步骤、展示时机、资料位置都按 method 严格执行；当 method 的具体规定与你的通用判断冲突时，**以 method 为准**
+1. 用 kb_query 查看主题清单与进度（SQLite，别读数据文件）
+2. 用 parent_content 从**家长库**获取该主题的教学方法（type 用 "method"）——**这是本次引导的唯一权威依据**：教学步骤、展示时机、资料位置都按 method 严格执行；当 method 的具体规定与你的通用判断冲突时，**以 method 为准**。需要某课的教学文案或 html 资料路径时同样用 parent_content 获取（孩子库不存 method 与教学文案，不要尝试读文件或猜内容）
 
 ### 记录
 学习总结、生活事件等记录由 recording 技能负责，按需调用（详见其 SKILL.md）。
-**孩子数据已全部存入 SQLite（kb.sqlite），一律用 kb_query / kb_insert / kb_update 结构化工具读写，禁止用 read/write/edit 碰数据文件**——数据文件（daily/、life/、inquiries/、tasks/、tags/、learning 进度）的 markdown 只是历史归档，不要读写。写入 daily 新条目用 kb_insert（date + block + content，生活事件在 content 里写 \`- 标签：\` 行打标签）；更新字段用 kb_update（无需知道旧值，字段缺失自动追加）；查询 daily 记录、主题进度、标签定义用 kb_query（只回目标内容，省 token）。打标签只能从标签定义表选（先 \`kb_query {query:"tags"}\` 查词表与判断标准），标签直接打在 daily 生活事件（自动解析）与课程上（\`kb_update course field:"tags"\`）。只有 method.md / materials/ / uploads/ 等内容文件才用 write/edit / read。
+**孩子数据已全部存入 SQLite（kb.sqlite），数据读写一律用 kb_query / kb_insert / kb_update 结构化工具，禁止用 read/write/edit 碰数据文件**——daily/、life/、inquiries/、tasks/、tags/、learning 进度 的 markdown 只是历史归档，不要读写。**标签只能从标签定义表选**（先 kb_query 查词表与判断标准，不能自创），打在 daily 生活事件（content 里写 \`- 标签：\` 行，自动解析）与课程上。只有 materials/ / uploads/ 等内容文件才用 write/edit / read；主题教学方法与课程教学文案存家长库，一律用 parent_content 获取。
 
 ### 孩子上传的附件（uploads/）
 - 孩子上传的图片会随消息直接发送给你（你可见），无需读取文件；
@@ -49,8 +49,8 @@ const LEARNING_NAV_INSTRUCTIONS = `
 各主题的 **进度摘要（learned/total/next/updated）由系统从课程表自动计算**，已放在系统提示顶部的「孩子的学习进度概览」里，确定「下一课」或查询进度时：
 - **直接用**系统提示里给出的 \`next\` 值，或调用 \`get_progress\` 工具（只回摘要，不含逐课明细）；
 - **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 500+ 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
-- 需要逐课状态（如 study-tracker 核对每课掌握度）时，用 \`kb_query {query:"progress", topic, listOnly:true}\` 或带 listOnly 的课程清单，不要 read 文件；
-- 完成一课后用 \`kb_update {table:"course", topic, item: 课程名, field:"状态", value:"✅"}\` 更新该课程状态即可，learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。
+- 需要逐课状态（如 study-tracker 核对每课掌握度）时，用 kb_query 查进度（listOnly 只看课程清单），不要 read 文件；
+- 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。
 `;
 
 const CUSTOM_START = "<!-- custom:start -->";
@@ -186,6 +186,13 @@ children/{childId}/learning/
 - topics.md frontmatter：topics 数组，每项 {name, file, method, progress}，file 相对 learning/（如 lunyu/lunyu.md）。
 - rules.md frontmatter：rules 对象，每项 {主题: {daily, type: 必学|选学}}。
 - 课程名、materials 文件名、media 文件名三者逐字一致。
+
+## 家长库课程工具（课程管理页，ISSUE-029）
+- 家长库在 parents/default/（parent.sqlite 是教学内容真源；资料文件在 parents/default/materials/{topic}/，媒体在 media/ 子目录）。
+- 课程管理页（前端「课程管理」）的对话使用本会话：家长会附带「当前主题/课程」上下文。
+- 你可以用 parent_course_save（topic 目录名 + title 课程名 + lessonMethod/material/sendMaterial/tags/htmlPath）新建或更新课程；用 parent_course_delete 删除课程。
+- 学习资料文件：用 write/edit 直接写到 parents/default/materials/{topic}/（如 parents/default/materials/lunyu/论语学而篇第一章.html）；音频/视频放 media/ 子目录，html 里用 media://local/parent/default/{topic}/media/文件名 引用；写好后用 parent_course_save 把 htmlPath 登记为 materials/{topic}/文件名.html。
+- html 要自包含（内联 CSS/JS），音频用 media:// 协议，不依赖外网资源。
 
 ## 工作方式
 - 家长说一句话，你先判断属于哪一步，引导式推进，不要一次灌完所有文件。
@@ -386,8 +393,8 @@ async function createChildSession(
     // SDK 注册并激活（agent-session.js 的 isAllowedTool 会按白名单过滤 customTools）。
     // display_content / get_date / get_progress / kb_query / kb_insert / kb_update / create_html_lesson 都是 customTools，
     // 故名字都要列在 tools 里，缺一不可——此前 get_progress 漏列导致 agent 根本拿不到该工具（ISSUE-006 配套修复）。
-    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool],
+    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，
@@ -459,8 +466,8 @@ export async function getParentContentSession(): Promise<AgentSession> {
     model,
     sessionManager: SessionManager.inMemory(),
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "get_date"],
-    customTools: [getDateTool],
+    tools: ["read", "write", "edit", "get_date", "parent_course_save", "parent_course_delete"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool],
   });
 
   cachedParentContentSession = session;

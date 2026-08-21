@@ -3,6 +3,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
 import path from "path";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
+import { deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse } from "./parent-library";
 import {
   dailyToMarkdown,
   insertCourse,
@@ -31,9 +32,9 @@ export const displayContentTool = defineTool({
   label: "展示 HTML 资料",
   description:
     "在孩子学习资料面板展示一份 **HTML 格式** 的学习资料（在沙盒 iframe 中渲染，可运行内联 <script>、onclick 等交互，可播放 <audio>/<video>，src 用 media://local/ 本地地址）。\n\n" +
-    "**用法**：传 `path` 引用预生成的学习资料文件（必填）。path 是相对当前学习目录的文件路径，如 `learning/lunyu/materials/论语先进篇第十三章.html`；仅支持 .html / .htm，格式固定为 html。\n\n" +
+    "**用法**：传 `path` 引用预生成的学习资料文件（必填）。支持两种写法：家长库相对路径 `materials/lunyu/论语先进篇第十三章.html`（**parent_content 工具 htmlPath 返回的格式**）或孩子视角旧路径 `learning/lunyu/materials/论语先进篇第十三章.html`；仅支持 .html / .htm。\n\n" +
     "**何时调用**：仅当需要展示资料时——引导学习时展示该课预生成的 html 资料，或孩子主动要求查看某份资料。\n\n" +
-    "**展示什么、何时展示，以该主题 method.md 的规定为准**。",
+    "**展示什么、何时展示，以 parent_content 工具取到的该主题教学方法（method）为准**。",
   parameters: Type.Object({
     path: Type.String({
       description:
@@ -45,14 +46,30 @@ export const displayContentTool = defineTool({
     if (!params.path) {
       throw new Error("display_content 必须提供 path 参数（预生成的 html 资料文件路径）");
     }
-    const resolved = path.resolve(ctx.cwd, params.path);
-    // 路径守卫：只允许访问当前学习目录（cwd）内的文件
-    if (resolved !== ctx.cwd && !resolved.startsWith(ctx.cwd + path.sep)) {
-      throw new Error("资料路径超出学习目录范围");
+    // ISSUE-029：html 资料已上移到父库共享目录（data/parents/<pid>/materials/）。
+    // 解析顺序：① 父库共享目录（新家）→ ② 孩子学习目录（旧路径，兼容存量）。
+    // 支持两种路径写法：
+    //   `learning/<topic>/materials/<file>.html`（孩子视角，旧写法）
+    //   `materials/<topic>/<file>.html`（家长库相对路径，courses.html_path 的规范写法，parent_content htmlPath 返回的格式）
+    const m = /^(?:learning\/[^/]+\/)?materials\/([^/]+)\/([^/]+\.(?:html|htm))$/i.exec(params.path);
+    let resolved: string | null = null;
+    if (m) {
+      const parentPath = path.join(getParentMaterialsDir(), m[1], m[2]);
+      if (fs.existsSync(parentPath)) resolved = parentPath;
+    }
+    if (!resolved) {
+      resolved = path.resolve(ctx.cwd, params.path);
+      // 路径守卫：只允许访问当前学习目录（cwd）内的文件
+      if (resolved !== ctx.cwd && !resolved.startsWith(ctx.cwd + path.sep)) {
+        throw new Error("资料路径超出学习目录范围");
+      }
     }
     const ext = path.extname(resolved).toLowerCase();
     if (ext !== ".html" && ext !== ".htm") {
       throw new Error("display_content 仅支持 .html / .htm 文件");
+    }
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`资料文件不存在: ${params.path}`);
     }
     const raw = fs.readFileSync(resolved, "utf-8");
     const title = params.title || path.basename(resolved).replace(/\.[^.]+$/, "");
@@ -155,7 +172,7 @@ export const kbQueryTool = defineTool({
   description:
     "从 SQLite 查询知识库数据（daily 记录 / 主题进度 / 标签定义），**只返回目标内容，不读 markdown 全文，省 token**（ISSUE-013/ISSUE-023）。\n\n" +
     "**query 类型**：\n" +
-    "- `query: \"daily\"`：查 daily 记录。定位：`date`（YYYY-MM-DD）或 `month`（YYYY-MM 聚合）+ `block`（学习/生活/问答/任务）+ `title`（条目标题）+ `tag`（按标签过滤，如 诚实）+ `listOnly`（只回标题清单）。非 listOnly 返回条目原文（字段由 method 定义）。\n" +
+    "- `query: \"daily\"`：查 daily 记录。定位：`date`（YYYY-MM-DD）或 `month`（YYYY-MM 聚合）+ `block`（学习/生活/问答/任务）+ `title`（条目标题）+ `tag`（按标签过滤，如 诚实）+ `listOnly`（只回标题清单）。非 listOnly 返回条目原文（字段由家长库 method 定义）。\n" +
     "- `query: \"topics\"`：查主题清单与进度摘要（无需其它参数）。\n" +
     "- `query: \"progress\"`：查某主题进度，`topic` 必填（如 lunyu）+ `tag`（按课程标签过滤）+ `listOnly`（只回课程清单，不看字段）。\n" +
     "- `query: \"tags\"`：查**标签定义**（词表 + 判断标准，打标签前先查此表，只能从下表选择），`tag`（缺省 = 全部）。\n" +
@@ -256,7 +273,7 @@ export const kbInsertTool = defineTool({
     "**table: \"daily\"**：写 daily 记录。`date`（YYYY-MM-DD）+ `block`（学习/生活/问答/任务）+ `content`（一条完整条目，`### 标题` 开头 + 字段行，**直接用已在回复中输出给孩子的学习总结原文**）。生活事件需在 content 里写 `- 标签：诚实,亲情` 字段行（标签只能从 `kb_query {query:\"tags\"}` 的定义表选）。\n" +
     "**table: \"course\"**：新增课程（courses 表）。`topic`（主题目录名，如 lunyu）+ `title`（课程名）；可选 `status`（⬜/✅）/ `mastery`（掌握度）/ `material`（教学资料）/ `sendMaterial`（要发送的学习资料）/ `tags`（课程标签，逗号分隔）。\n" +
     "**重复插入**：同主键已存在时返回 false（daily 历史不改，不覆盖）。\n" +
-    "**注意**：只用于数据写入；method.md / materials/ 等内容文件仍用 write/edit。",
+    "**注意**：只用于数据写入；materials/ / uploads/ 等内容文件仍用 write/edit；主题教学方法与教学文案存家长库，一律用 parent_content 获取。",
   parameters: Type.Object({
     table: Type.String({ description: "写入目标：daily | course（旧名 progress 兼容）" }),
     date: Type.Optional(Type.String({ description: "daily：日期 YYYY-MM-DD" })),
@@ -336,7 +353,7 @@ export const kbUpdateTool = defineTool({
     "**table: \"course\"**：更新某门课程（courses 表）。`topic`（如 lunyu）+ `item`（**课程名必填**，如 论语先进篇第十七章）+ `field`（状态/掌握状态/掌握度/首次学习/最近复习/复习时间/上次复习/复习次数/教学资料/学习资料/tags）+ `value`。\n" +
     "**进度自动计算**：learned/total/next/updated 由视图实时计算，**不要**手动更新（传这些字段会被拒绝）。复习次数传 `value: \"+1\"` 自动递增。\n" +
     "**字段缺失时自动追加**（如新学一课补「掌握度/首次学习」）。\n" +
-    "**只用于数据写入**；method.md / materials/ 等内容文件请用 write/edit。",
+    "**只用于数据写入**；materials/ / uploads/ 等内容文件请用 write/edit；主题教学方法与教学文案存家长库，一律用 parent_content 获取。",
   parameters: Type.Object({
     table: Type.String({ description: "更新目标：daily | course（旧名 progress 兼容）" }),
     date: Type.Optional(Type.String({ description: "daily：日期 YYYY-MM-DD" })),
@@ -418,6 +435,18 @@ export const createHtmlLessonTool = defineTool({
       outputPath: params.outputPath,
       sessionKey: params.sessionKey,
     });
+    // ISSUE-029：生成成功后同步镜像到父库共享目录（资料统一由家长管理；孩子侧保留一份兼容旧链路）
+    const m = /^learning\/([^/]+)\/materials\/([^/]+\.(?:html|htm))$/i.exec(result.relPath);
+    if (m) {
+      try {
+        const src = path.join(ctx.cwd, result.relPath);
+        const dstDir = path.join(getParentMaterialsDir(), m[1]);
+        fs.mkdirSync(dstDir, { recursive: true });
+        fs.copyFileSync(src, path.join(dstDir, m[2]));
+      } catch (e) {
+        console.error(`[custom-tools] 镜像 html 到父库失败:`, e);
+      }
+    }
     return {
       content: [
         {
@@ -426,6 +455,131 @@ export const createHtmlLessonTool = defineTool({
         },
       ],
       details: { relPath: result.relPath, title: result.title },
+    };
+  },
+});
+
+// ==================== 家长库课程工具（课程管理 AI 聊天用，ISSUE-029） ====================
+// 让「课程管理」页的 AI 聊天能直接创建/维护家长库课程（家长库是内容真源）。
+// 注意：资料文件（html/md/媒体）由 agent 用 write/edit 写到
+// data/parents/<pid>/materials/<topic>/ 下（媒体进 media/ 子目录），课程字段用本工具登记。
+
+/**
+ * 保存（新建或更新）一门家长库课程。只覆盖传入的非空内容字段，不影响课程进度。
+ * 主题目录名如 lunyu；教学文案 teachingCopy、发给学生的学习材料 sendMaterial 为文本；
+ * 若资料是文件，htmlPath 填相对父库根路径（如 materials/lunyu/xxx.html）。
+ */
+export const parentUpsertCourseTool = defineTool({
+  name: "parent_course_save",
+  label: "保存家长库课程",
+  description:
+    "在家长主题库中新建或更新一门课程（家长库是教学内容的唯一真源，孩子端通过「分配」快照拷贝）。\n\n" +
+    "**参数**：`topic`（主题目录名，如 lunyu）、`title`（课程名，如 论语学而篇第一章）、可选 `lessonMethod`（每课教学方法）、`teachingCopy`（教学文案全文）、`material`（教学资料说明）、`sendMaterial`（发给学生的学习材料）、`tags`（逗号分隔）、`htmlPath`（学习资料 html 相对父库根路径，如 materials/lunyu/xxx.html）。\n\n" +
+    "**规则**：只覆盖传入的非空字段（未传字段保留旧值）；课程进度（状态/掌握度/学习时间）属于孩子，不在这里维护。\n\n" +
+    "**配合资料文件**：html/md 学习资料请先用 write/edit 写到 data/parents/<pid>/materials/<topic>/ 下（音频/视频放 media/ 子目录，html 里用 media://local/parent/<pid>/<topic>/media/文件名 引用），再把 htmlPath 通过本工具登记到课程上。",
+  parameters: Type.Object({
+    topic: Type.String({ description: "主题目录名（如 lunyu）" }),
+    title: Type.String({ description: "课程名（如 论语学而篇第一章）" }),
+    lessonMethod: Type.Optional(Type.String({ description: "每课教学方法（如 朗读+讲解+跟读）" })),
+    material: Type.Optional(Type.String({ description: "教学资料说明" })),
+    teachingCopy: Type.Optional(Type.String({ description: "教学文案全文（markdown）" })),
+    sendMaterial: Type.Optional(Type.String({ description: "发给学生的学习材料（文本或 html 片段）" })),
+    tags: Type.Optional(Type.String({ description: "课程标签（逗号分隔）" })),
+    htmlPath: Type.Optional(Type.String({ description: "学习资料 html 相对父库根路径（如 materials/lunyu/xxx.html）" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    if (!params.topic || !params.title) {
+      throw new Error("parent_course_save 需要 topic + title");
+    }
+    upsertParentCourse(undefined, params.topic, {
+      title: params.title,
+      lessonMethod: params.lessonMethod,
+      material: params.material,
+      teachingCopy: params.teachingCopy,
+      sendMaterial: params.sendMaterial,
+      tags: params.tags,
+      htmlPath: params.htmlPath,
+    });
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `已保存家长库课程：${params.topic}「${params.title}」`,
+        },
+      ],
+    };
+  },
+});
+
+/** 删除家长库课程（不删除共享资料文件，避免其它引用失效）。 */
+export const parentDeleteCourseTool = defineTool({
+  name: "parent_course_delete",
+  label: "删除家长库课程",
+  description:
+    "删除家长库中的一门课程（按 topic 主题目录名 + title 课程名）。共享资料文件不删除。",
+  parameters: Type.Object({
+    topic: Type.String({ description: "主题目录名（如 lunyu）" }),
+    title: Type.String({ description: "课程名" }),
+  }),
+  execute: async (_toolCallId, params) => {
+    const ok = deleteParentCourse(undefined, params.topic, params.title);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: ok
+            ? `已删除家长库课程：${params.topic}「${params.title}」`
+            : `课程不存在：${params.topic}「${params.title}」`,
+        },
+      ],
+    };
+  },
+});
+
+/**
+ * parent_content：孩子端专用工具（ISSUE-029）——从家长库取「主题教学方法 / 课程教学文案 / 课程 html 资料路径」。
+ * 孩子库**不冗余存** method 与 teaching_copy（分配时不再拷贝），教学需要时经本工具查家长库；
+ * htmlPath 也以家长库为准（返回 `materials/<topic>/<file>.html`，可直接传给 display_content）。
+ * 隔离：只返回「已分配给当前孩子」的主题内容；未分配一律拒绝。
+ */
+export const parentContentTool = defineTool({
+  name: "parent_content",
+  label: "查询主题教学方法 / 课程教学文案 / html 资料路径（家长库）",
+  description:
+    "从**家长库**取当前主题的教学方法（method 全文）、某课程的教学文案（teaching_copy 全文）或某课程的 **html 学习资料路径**。\n\n" +
+    "孩子数据库不存 method 与教学文案（分配主题时只拷入课程骨架/进度/资料指针），所以**教学需要方法、文案或 html 资料路径时，必须先调用本工具**，不要尝试去读孩子库或猜测。\n\n" +
+    "**参数**：\n" +
+    "- `type` = `method`：取主题教学方法，`topic` 传主题目录名（如 lunyu）；\n" +
+    "- `type` = `teachingCopy`：取课程教学文案，`topic` + `course` 课程名（如 论语学而篇第一章）；\n" +
+    "- `type` = `htmlPath`：取课程 html 学习资料的**家长库相对路径**（如 `materials/lunyu/论语学而篇第一章.html`），`topic` + `course`；拿到路径后直接用 display_content 展示（path 传该路径即可）。\n\n" +
+    "**返回**：method/teachingCopy 返回 markdown 全文；htmlPath 返回路径字符串。未分配该主题或家长库无内容时返回错误。",
+  parameters: Type.Object({
+    type: Type.String({ description: "method（主题教学方法全文）| teachingCopy（课程教学文案全文）| htmlPath（课程 html 资料路径）" }),
+    topic: Type.String({ description: "主题目录名（如 lunyu）" }),
+    course: Type.Optional(Type.String({ description: "teachingCopy / htmlPath 时必填：课程名（如 论语学而篇第一章）" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const childId = path.basename(ctx.cwd);
+    if (!["method", "teachingCopy", "htmlPath"].includes(params.type)) {
+      throw new Error("parent_content 的 type 仅支持 method | teachingCopy | htmlPath");
+    }
+    const r = getParentContentForChild(childId, params.topic, params.type, params.course);
+    if (!r.found) {
+      const what =
+        params.type === "method"
+          ? `主题「${params.topic}」的教学方法`
+          : params.type === "teachingCopy"
+            ? `课程「${params.course}」的教学文案`
+            : `课程「${params.course}」的 html 资料`;
+      throw new Error(`家长库中未找到${what}（或该主题未分配给孩子）`);
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: r.content,
+        },
+      ],
     };
   },
 });

@@ -62,6 +62,9 @@ export interface CourseItem {
   material: string; // 教学资料（路径指针或描述，method 决定写法）
   sendMaterial: string; // 要发送的学习资料（内容摘要或指针）
   tags: string; // 关联词表标签（逗号分隔，从 tags 定义表选）
+  lessonMethod: string; // 每课教学方法全文（ISSUE-029，从父库快照拷贝）
+  htmlPath: string; // 学习资料 html 地址（ISSUE-029，指向父库共享目录）
+  teachingCopy: string; // 教学文案全文（ISSUE-029，由 materials/*.md 等文件入库，数据库唯一真源）
 }
 
 export interface TopicProgress {
@@ -100,6 +103,9 @@ CREATE TABLE IF NOT EXISTS courses (
   material TEXT NOT NULL DEFAULT '',
   send_material TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
+  lesson_method TEXT NOT NULL DEFAULT '',
+  html_path TEXT NOT NULL DEFAULT '',
+  teaching_copy TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (topic, title)
 );
 CREATE INDEX IF NOT EXISTS idx_courses_topic ON courses(topic, sort_order);
@@ -153,10 +159,30 @@ export function openKbDb(childDir: string): DatabaseSync {
   db.exec(SCHEMA_TABLES);
   ensureV3(db);
   ensureV4(db, childDir);
+  ensureV5(db);
   // 视图每次重建（廉价、幂等）：视图定义变更时无需迁移即可生效
   db.exec("DROP VIEW IF EXISTS topic_progress");
   db.exec(SCHEMA_VIEWS);
   return db;
+}
+
+/**
+ * v4 → v5 就地迁移：courses 表加 `lesson_method`（每课教学方法全文）与 `html_path`（学习资料 html 地址）。
+ * 幂等：通过列存在性判断，只在缺少这两列时执行一次。
+ */
+function ensureV5(db: DatabaseSync): void {
+  const cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (cols.includes("lesson_method") && cols.includes("html_path") && cols.includes("teaching_copy")) return;
+  if (!cols.includes("lesson_method")) {
+    db.exec("ALTER TABLE courses ADD COLUMN lesson_method TEXT NOT NULL DEFAULT ''");
+  }
+  if (!cols.includes("html_path")) {
+    db.exec("ALTER TABLE courses ADD COLUMN html_path TEXT NOT NULL DEFAULT ''");
+  }
+  if (!cols.includes("teaching_copy")) {
+    db.exec("ALTER TABLE courses ADD COLUMN teaching_copy TEXT NOT NULL DEFAULT ''");
+  }
+  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "5");
 }
 
 /**
@@ -374,6 +400,9 @@ export function parseProgressFile(topic: string, text: string): CourseItem[] {
       material: fields["教学资料"] || "",
       sendMaterial: fields["学习资料"] || fields["要发送的学习资料"] || "",
       tags: normalizeTags(fields["tags"] || ""),
+      lessonMethod: fields["课时方法"] || fields["每课教学方法"] || "",
+      htmlPath: fields["html地址"] || fields["html_path"] || fields["学习资料地址"] || "",
+      teachingCopy: fields["教学文案"] || "",
     });
   }
   return items;
@@ -462,7 +491,26 @@ export function migrateAllToSqlite(childDir: string): {
               while ((m2 = re2.exec(m[1])) !== null) {
                 kv[m2[1]] = (m2[3] !== undefined ? m2[3] : m2[4]).trim();
               }
-              if (kv.name && kv.file) insert.run(kv.name, kv.file, kv.method || "", kv.progress || "", "{}");
+              if (kv.name && kv.file) {
+                // ISSUE-029：topics.method 存 method.md 全文（替代文件链接）。
+                // 链接写法如 `learning/lunyu/method.md` 或 `lunyu/method.md`；读不到文件则退化为原值。
+                let methodFull = "";
+                const link = kv.method || "";
+                const linkRel = link.replace(/^learning\//, "");
+                const topicDirFromLink = linkRel.split("/")[0];
+                const methodCandidates = [
+                  path.join(learningDir, topicDirFromLink, "method.md"),
+                  path.join(childDir, "learning", linkRel),
+                  path.join(childDir, "learning", link),
+                ];
+                for (const cand of methodCandidates) {
+                  if (fs.existsSync(cand) && fs.statSync(cand).isFile()) {
+                    methodFull = fs.readFileSync(cand, "utf-8");
+                    break;
+                  }
+                }
+                insert.run(kv.name, kv.file, methodFull || link, kv.progress || "", "{}");
+              }
             }
           }
         }
@@ -619,8 +667,11 @@ function rowToCourse(r: Record<string, unknown>): CourseItem {
     lastReview: String(r.last_review ?? ""),
     reviewCount: Number(r.review_count) || 0,
     material: String(r.material ?? ""),
-    sendMaterial: String(r.send_material ?? ""),
+    sendMaterial:  String(r.send_material ?? ""),
     tags: String(r.tags ?? ""),
+    lessonMethod: String(r.lesson_method ?? ""),
+    htmlPath: String(r.html_path ?? ""),
+    teachingCopy: String(r.teaching_copy ?? ""),
   };
 }
 
@@ -789,6 +840,13 @@ export const COURSE_FIELD_MAP: Record<string, string> = {
   要发送的学习资料: "send_material",
   tags: "tags",
   标签: "tags",
+  课时方法: "lesson_method",
+  每课教学方法: "lesson_method",
+  html地址: "html_path",
+  html_path: "html_path",
+  学习资料地址: "html_path",
+  教学文案: "teaching_copy",
+  teaching_copy: "teaching_copy",
 };
 
 /** 更新课程进度字段（kb_update）。item 必填（课程名）；value="+1" 时复习次数自增。 */
@@ -823,15 +881,41 @@ export function updateProgress(childDir: string, p: { topic: string; item: strin
 }
 
 /** 新增课程（kb_insert progress）。sort_order 自动取该主题最大 +1；已有同 (topic,title) 返回 false。 */
-export function insertCourse(childDir: string, c: { topic: string; title: string; status?: string; mastery?: string; material?: string; sendMaterial?: string; tags?: string }): boolean {
+export function insertCourse(
+  childDir: string,
+  c: {
+    topic: string;
+    title: string;
+    status?: string;
+    mastery?: string;
+    material?: string;
+    sendMaterial?: string;
+    tags?: string;
+    lessonMethod?: string;
+    htmlPath?: string;
+    teachingCopy?: string;
+  }
+): boolean {
   const db = openKbDb(childDir);
   try {
     const exists = db.prepare("SELECT 1 FROM courses WHERE topic = ? AND title = ?").get(c.topic, c.title);
     if (exists) return false;
     const max = db.prepare("SELECT MAX(sort_order) AS m FROM courses WHERE topic = ?").get(c.topic) as { m: number | null };
     db.prepare(
-      "INSERT INTO courses (topic, title, sort_order, status, mastery, material, send_material, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(c.topic, c.title, (max.m ?? -1) + 1, c.status || "⬜", c.mastery || "", c.material || "", c.sendMaterial || "", c.tags ? normalizeTags(c.tags) : "");
+      "INSERT INTO courses (topic, title, sort_order, status, mastery, material, send_material, tags, lesson_method, html_path, teaching_copy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(
+      c.topic,
+      c.title,
+      (max.m ?? -1) + 1,
+      c.status || "⬜",
+      c.mastery || "",
+      c.material || "",
+      c.sendMaterial || "",
+      c.tags ? normalizeTags(c.tags) : "",
+      c.lessonMethod || "",
+      c.htmlPath || "",
+      c.teachingCopy || ""
+    );
     return true;
   } finally {
     db.close();

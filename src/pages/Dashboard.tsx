@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import AddChildModal from "../components/AddChildModal";
 import ProgressView from "../components/ProgressView";
 import TokenStatsPanel from "../components/TokenStatsPanel";
+import ChildTopicsModal from "../components/ChildTopicsModal";
+import CourseManager from "../components/CourseManager";
 import Settings from "./Settings";
 
 interface Props {
@@ -16,10 +18,11 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [children, setChildren] = useState<any[]>([]);
   const [showAddChild, setShowAddChild] = useState(false);
   const [selectedChild, setSelectedChild] = useState<any>(null);
-  const [view, setView] = useState<"children" | "progress" | "tokens" | "settings">("children");
+  const [view, setView] = useState<"children" | "progress" | "courses" | "tokens" | "settings">("children");
   const [error, setError] = useState("");
   const [resetChildId, setResetChildId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
+  const [topicsChild, setTopicsChild] = useState<any>(null); // 学习主题弹窗目标孩子
 
   // AGENTS.md editor state
   const [agentsEditorChild, setAgentsEditorChild] = useState<any>(null);
@@ -116,6 +119,16 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
+            onClick={() => setView("courses")}
+          >
+            <div className="child-avatar">📚</div>
+            <div className="child-info">
+              <div className="name">课程管理</div>
+            </div>
+          </div>
+          <div
+            className="child-card"
+            style={{ border: "none" }}
             onClick={() => setView("tokens")}
           >
             <div className="child-avatar">📈</div>
@@ -194,12 +207,24 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                             </div>
                           </div>
                         </div>
-                        <div style={{ display: "flex", gap: 8, marginTop: 12, width: "100%" }}>
+                        <div style={{ display: "flex", gap: 8, marginTop: 12, width: "100%", flexWrap: "wrap" }}>
+                          <button
+                            onClick={() => { setSelectedChild(child); setView("progress"); }}
+                            style={{ flex: 1, minWidth: 88, padding: "6px 12px", background: "#eef6ff", color: "#2b6cb0", border: "none", borderRadius: 6, fontSize: 12 }}
+                          >
+                            学习进度
+                          </button>
                           <button
                             onClick={() => { setResetChildId(child.childId); setNewPassword(""); setError(""); }}
                             style={{ flex: 1, padding: "6px 12px", background: "#f0f4ff", color: "#667eea", border: "none", borderRadius: 6, fontSize: 12 }}
                           >
                             重置密码
+                          </button>
+                          <button
+                            onClick={() => setTopicsChild(child)}
+                            style={{ flex: 1, padding: "6px 12px", background: "#fdf6e3", color: "#b7791f", border: "none", borderRadius: 6, fontSize: 12 }}
+                          >
+                            学习主题
                           </button>
                           <button
                             onClick={() => openAgentsEditor(child)}
@@ -230,6 +255,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             />
           )}
 
+          {view === "courses" && <CourseManager />}
+
           {view === "tokens" && <TokenStatsPanel childrenList={children} />}
 
           {view === "settings" && <Settings />}
@@ -244,6 +271,13 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             setShowAddChild(false);
             refresh();
           }}
+        />
+      )}
+
+      {topicsChild && (
+        <ChildTopicsModal
+          child={topicsChild}
+          onClose={() => setTopicsChild(null)}
         />
       )}
 

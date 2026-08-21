@@ -32,7 +32,7 @@ export default function (pi: any) {
     const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     const weekday = weekdays[d.getDay()];
 
-    const note = `\n\n## 当前日期\n今天是 ${dateStr}（${weekday}）。\n当你需要日期时（写 daily 日志、更新进度文件的日期字段、回答"今天几号/星期几"等）一律以这里给出的日期为准，不要使用对话历史里出现过的旧日期；当需要精确到几点几分时，调用 get_date 工具获取当前时间。`;
+    const note = `\n\n## 当前日期\n今天是 ${dateStr}（${weekday}）。\n当你需要日期时（写 daily 记录、更新课程时间字段（首次学习/最近复习）、回答"今天几号/星期几"等）一律以这里给出的日期为准，不要使用对话历史里出现过的旧日期；当需要精确到几点几分时，调用 get_date 工具获取当前时间。`;
 
     return { systemPrompt: (event.systemPrompt || "") + note };
   });
