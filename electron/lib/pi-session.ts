@@ -32,7 +32,7 @@ const LEARNING_NAV_INSTRUCTIONS = `
 2. 用 parent_content 从**家长库**获取该主题的教学方法（type 用 "method"）——**这是本次引导的唯一权威依据**：教学步骤、展示时机、资料位置都按 method 严格执行；当 method 的具体规定与你的通用判断冲突时，**以 method 为准**。需要某课的教学文案或 html 资料路径时同样用 parent_content 获取（孩子库不存 method 与教学文案，不要尝试读文件或猜内容）
 
 ### 记录
-学习总结、生活事件等记录由 recording 技能负责，按需调用（详见其 SKILL.md）。
+学习总结、生活事件等记录由**系统定时任务**统一完成（定期从孩子当天的对话中提取，写入 daily；recording 已从技能改为定时任务，不再提供可调用的记录技能）。各主题 method.md 的「记录」段指引照常执行。
 **孩子数据已全部存入 SQLite（kb.sqlite），数据读写一律用 kb_query / kb_insert / kb_update 结构化工具，禁止用 read/write/edit 碰数据文件**——daily/、life/、inquiries/、tasks/、tags/、learning 进度 的 markdown 只是历史归档，不要读写。**标签只能从标签定义表选**（先 kb_query 查词表与判断标准，不能自创），打在 daily 生活事件（content 里写 \`- 标签：\` 行，自动解析）与课程上。只有 materials/ / uploads/ 等内容文件才用 write/edit / read；主题教学方法与课程教学文案存家长库，一律用 parent_content 获取。
 
 ### 孩子上传的附件（uploads/）
@@ -360,8 +360,9 @@ async function createChildSession(
     // 替换 SDK 默认 base：去掉 "expert coding assistant" 身份与 Pi 自身文档索引（对孩子是噪声），
     // 换成孩子专属的学习伙伴身份。AGENTS.md / 技能段 / cwd / 时间注入由 SDK 在 customPrompt 模式下自动附加。
     systemPromptOverride: () => buildChildPrompt(profile, progressContext),
-    // 教学技能在 shared/skills（recording / study-tracker），孩子默认扫描路径不含它，
+    // 教学技能在 shared/skills（study-tracker），孩子默认扫描路径不含它，
     // 此前 <available_skills> 段为空，AGENTS.md 里写的 recording 技能孩子根本发现不了。
+    // recording 已改为定时任务（electron/lib/recording-prompt.ts），不再作为技能存在。
     // 注意：noSkills 必须为 true —— SDK 的 packageManager 会自动发现并启用 ~/.agents/skills
     // 下全部全局技能（agent-browser / bilibili-cli / code-reviewer 等 60 个），
     // 不关掉的话这些无关技能会全量进孩子 <available_skills> 索引，纯噪声还占 token。

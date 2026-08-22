@@ -787,8 +787,13 @@
 - **待确认**：① 父技能保留 vs 删；② 共用段内联还是引用 `_common.md`；③ 定时任务改「逐类调用」还是「父技能编排」；④ 子技能命名（study/life/inquiry/task 还是 learning/life/qa/task）。
 - **排查 / 修改入口（可直接执行）**：`data/shared/skills/recording/SKILL.md`（真源）；`pi-session.ts:34,309-315`；`scheduler.ts:244,295-301,382-387`；各主题 `method.md` 的 recording 引用。
 - **关联**：ISSUE-022（method.md / 共用约定片段化，同一「拆共享」主题）；ISSUE-009（记录详细度——共用段抽 `_common.md` 后，详细度要求一处维护）；ISSUE-013（拆分后每类调用更聚焦、上下文更省）。
-- **优先级**：待定（用户未标注，建议中：提升记录质量，但改动面较广需谨慎）。
-- **记录时间**：2026-08-20
+- **已实施（2026-08-21，方案变更）**：用户拍板改为「recording 不作为技能，改为纯定时任务」——不再拆 4 子技能，而是：
+  1. 删除 `data/shared/skills/recording/` 技能目录（不再进 `<available_skills>`）；
+  2. 新建 `electron/lib/recording-prompt.ts`：`RECORDING_SYSTEM_PROMPT`（极简记录助手身份）+ `RECORDING_PROMPT`（从原 SKILL.md 提炼的流程与要求：详细度/四类提取/kb 写入方式/daily 格式/标签）；
+  3. `scheduler.ts`：`createEphemeralSession` 加 `DefaultResourceLoader({ noContextFiles:true, noSkills:true, systemPromptOverride })` 保证不加载 AGENTS.md / 技能 / 其它 prompt；工具只挂 `kb_query/kb_insert/kb_update`（顺带修复：原 ephemeral session 只有 read/write/edit、kb 工具缺失，recording 写不进 SQLite）；`runRecording` 改用 `readTodayConversation`（遍历所有 jsonl、按本地当天过滤、只取 role=user/assistant 的 text part、排除 thinking/toolCall/toolResult；顺带修复：旧 extractText 按 `user_message/assistant_message` 判断，与真实 jsonl 结构 `type=message` 不符、提取为空）；当天无对话直接跳过；
+  4. `pi-session.ts` AGENTS.md「记录」段改为「由系统定时任务统一完成」，并跑 `scripts/regenerate-agents.mjs` 重新生成 2 个孩子 AGENTS.md。
+- **遗留待确认**：① 各主题 method.md「记录（学完直接执行）」段仍会让 agent 实时写 daily/更新进度（与定时任务双轨；kb_insert/kb_update 幂等、短期无害）——是否移除、改由定时任务全权负责，待用户拍板；② 历史脚本 `scripts/rename-progress-to-course.mjs`、`trim-skill-params.py` 仍引用旧技能路径（一次性脚本，再跑会报文件不存在，不影响功能）。
+- **优先级**：已完成（2026-08-21）
 
 ## [ISSUE-025] 家长设置页去掉「技能管理」与「技能编辑器」两个 tab（暂不开放给家长）
 

@@ -5,7 +5,9 @@ import { BrowserWindow } from "electron";
 import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config";
 import { listChildren } from "./child-auth";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
+import { kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
+import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt";
 import { resetChildSession } from "./pi-session";
 import { logRound } from "./token-stats";
 
@@ -148,100 +150,94 @@ export async function createEphemeralSession(childId: string) {
   const runtime = await getSharedRuntime();
   const model = await getDefaultModel();
 
+  // recording 定时任务专用会话：不加载 AGENTS.md（noContextFiles）、不加载任何技能（noSkills），
+  // system prompt 用极简记录助手身份——只做「从对话提取信息写入 daily」这一件事。
+  // 工具只挂 kb 三件套（写 daily / 更新进度 / 查标签定义），不给 read/write/edit 碰数据文件的机会。
+  const loader = new DefaultResourceLoader({
+    cwd: childDir,
+    agentDir: path.join(childDir, ".pi", "agent"),
+    noContextFiles: true,
+    noSkills: true,
+    systemPromptOverride: () => RECORDING_SYSTEM_PROMPT,
+  });
+  await loader.reload();
+
   const { session } = await createAgentSession({
     cwd: childDir,
     agentDir: path.join(childDir, ".pi", "agent"),
     modelRuntime: runtime,
     model,
     sessionManager: SessionManager.inMemory(),
-    tools: ["read", "write", "edit"],
+    resourceLoader: loader,
+    // 注意：customTools 的 name 必须同时出现在 tools 白名单（agent-session.js 的 isAllowedTool 会过滤），
+    // kb 三件套缺一不可（ISSUE-006 教训：漏列白名单 → 工具不注册不激活）。
+    tools: ["kb_query", "kb_insert", "kb_update"],
+    customTools: [kbQueryTool, kbInsertTool, kbUpdateTool],
   });
   return session;
 }
 
-function readRecentConversation(childId: string): string {
+// 读取孩子「今天（本地时区）」的对话文本：遍历 sessions 目录所有 jsonl（含归档），
+// 只取 type=message 且 role 为 user / assistant 的条目，content 数组里只保留 type=text 的部分
+// （排除 thinking / toolCall，role=toolResult 的条目整体跳过），按时间升序拼成对话记录。
+// 旧实现（readRecentConversation）按 user_message / assistant_message 类型判断，与真实
+// jsonl 结构（type=message + message.role）不符，实际提取不到内容，这里一并修复。
+function readTodayConversation(childId: string): string {
   const childDir = getChildDir(childId);
   const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
   if (!fs.existsSync(sessionsDir)) return "";
-
-  // Find the most recent session file
-  const files: { name: string; time: number }[] = [];
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const msgs: { ts: number; role: string; text: string }[] = [];
   const walk = (dir: string) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) walk(full);
-      else if (e.name.endsWith(".jsonl")) {
-        files.push({ name: full, time: fs.statSync(full).mtimeMs });
+      if (e.isDirectory()) {
+        walk(full);
+      } else if (e.name.endsWith(".jsonl")) {
+        for (const line of fs.readFileSync(full, "utf-8").split("\n").filter(Boolean)) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.type !== "message" || !entry.message) continue;
+            const ts = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+            if (!Number.isFinite(ts) || ts < todayStart) continue;
+            const role = entry.message.role;
+            if (role !== "user" && role !== "assistant") continue;
+            const content = entry.message.content;
+            const parts = Array.isArray(content) ? content : [];
+            const texts = parts
+              .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+              .map((p: any) => p.text.trim())
+              .filter(Boolean);
+            if (texts.length === 0) continue;
+            msgs.push({ ts, role, text: texts.join("\n") });
+          } catch {
+            // 单行损坏跳过，不影响其余行
+          }
+        }
       }
     }
   };
   walk(sessionsDir);
-
-  if (files.length === 0) return "";
-  files.sort((a, b) => b.time - a.time);
-  const latest = files[0].name;
-
-  const lines = fs.readFileSync(latest, "utf-8").split("\n").filter(Boolean);
-  const parts: string[] = [];
-  for (const line of lines) {
-    try {
-      const entry = JSON.parse(line);
-      const content = extractText(entry);
-      if (content) parts.push(content);
-    } catch {
-      // skip invalid lines
-    }
-  }
-  return parts.slice(-50).join("\n");
+  msgs.sort((a, b) => a.ts - b.ts);
+  return msgs.map((m) => `${m.role === "user" ? "孩子" : "饺子"}: ${m.text}`).join("\n\n");
 }
 
-function extractText(entry: any): string {
-  if (entry.type === "user_message" && entry.message?.content) {
-    const c = entry.message.content;
-    if (typeof c === "string") return `孩子: ${c}`;
-    if (Array.isArray(c)) {
-      return `孩子: ${c
-        .filter((p: any) => p.type === "text")
-        .map((p: any) => p.text)
-        .join(" ")}`;
-    }
-  }
-  if (entry.type === "assistant_message" && entry.message?.content) {
-    const c = entry.message.content;
-    if (typeof c === "string") return `AI: ${c}`;
-    if (Array.isArray(c)) {
-      return `AI: ${c
-        .filter((p: any) => p.type === "text")
-        .map((p: any) => p.text)
-        .join(" ")}`;
-    }
-  }
-  if (entry.type === "tool_result_message") {
-    const toolResults = entry.message?.toolResults;
-    if (Array.isArray(toolResults)) {
-      return toolResults
-        .map((tr: any) => {
-          const content = tr.content;
-          if (typeof content === "string") return `工具结果: ${content}`;
-          if (Array.isArray(content)) {
-            return `工具结果: ${content
-              .filter((p: any) => p.type === "text")
-              .map((p: any) => p.text)
-              .join(" ")}`;
-          }
-          return "";
-        })
-        .join("\n");
-    }
-  }
-  return "";
+// 本地时区 YYYY-MM-DD（不用 toISOString：那是 UTC 日期，东八区晚上会跨到错误的「今天」）
+function formatLocalDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 async function runRecording(childId: string): Promise<void> {
-  const conversation = readRecentConversation(childId);
+  const conversation = readTodayConversation(childId);
+  if (!conversation.trim()) return; // 当天无对话，跳过本次提取（不发请求、不记账）
   const session = await createEphemeralSession(childId);
   try {
-    const prompt = `/skill:recording\n\n以下是最近的学习会话内容，请从中提取学习总结并更新学习记录文件：\n\n${conversation}`;
+    const today = formatLocalDate(new Date());
+    const prompt = `${RECORDING_PROMPT}\n\n今天是 ${today}。以下是孩子今天（${today}）的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}`;
     const beforeCount = (session as any).messages?.length ?? 0;
     await session.prompt(prompt);
     // ISSUE-010：定时任务记账（按 childId 隔离）
