@@ -8,6 +8,7 @@ import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
 import { kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
 import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt";
+import { runStudyTracker, formatLocalDate, type StudyTrackerResult } from "./study-tracker";
 import { resetChildSession } from "./pi-session";
 import { logRound } from "./token-stats";
 
@@ -223,14 +224,6 @@ function readTodayConversation(childId: string): string {
   return msgs.map((m) => `${m.role === "user" ? "孩子" : "饺子"}: ${m.text}`).join("\n\n");
 }
 
-// 本地时区 YYYY-MM-DD（不用 toISOString：那是 UTC 日期，东八区晚上会跨到错误的「今天」）
-function formatLocalDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
 async function runRecording(childId: string): Promise<void> {
   const conversation = readTodayConversation(childId);
   if (!conversation.trim()) return; // 当天无对话，跳过本次提取（不发请求、不记账）
@@ -247,15 +240,19 @@ async function runRecording(childId: string): Promise<void> {
   }
 }
 
-async function runTracker(childId: string): Promise<void> {
-  const session = await createEphemeralSession(childId);
-  try {
-    const beforeCount = (session as any).messages?.length ?? 0;
-    await session.prompt("/skill:study-tracker");
-    // ISSUE-010：定时任务记账（按 childId 隔离）
-    logRound({ session, beforeCount, channel: "scheduler", childId, ok: true });
-  } finally {
-    session.dispose();
+// study-tracker：纯代码实现（不再作为技能、不调用 AI），从 kb.sqlite 取数判断当日达标情况，
+// 结果写入 learning/tracker-latest.md 并广播给渲染窗口（前端无监听时无副作用）。
+function runTracker(childId: string): void {
+  const childDir = getChildDir(childId);
+  const result = runStudyTracker(childDir);
+  broadcastStudyTracker(childId, result);
+}
+
+function broadcastStudyTracker(childId: string, result: StudyTrackerResult): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) {
+      w.webContents.send("pi:study_tracker", { childId, result });
+    }
   }
 }
 
@@ -312,7 +309,7 @@ export function startScheduler(): void {
           now.getMinutes() === cc.studyTracker.minute;
         if (isTime && lastDay !== now.toDateString()) {
           try {
-            await runTracker(child.childId);
+            runTracker(child.childId);
             cs["study-tracker"].lastRun = new Date().toISOString();
             saveTaskState(state);
           } catch (e) {
@@ -393,7 +390,7 @@ export async function runCatchUp(): Promise<void> {
         : "";
       if (lastTracker !== today) {
         try {
-          await runTracker(child.childId);
+          runTracker(child.childId);
           cs["study-tracker"].lastRun = new Date().toISOString();
         } catch (e) {
           console.error(`Tracker catch-up failed for child ${child.childId}:`, e);
