@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 
 interface SchedulerChildConfig {
   recording: { enabled: boolean; intervalHours: number };
-  studyTracker: { enabled: boolean; hour: number; minute: number };
   sessionReset: { enabled: boolean; hour: number; minute: number };
   autoNewSession: { enabled: boolean; hour: number; minute: number };
   archiveLimit: number;
@@ -17,7 +16,6 @@ interface ChildItem {
 function defaultConfig(): SchedulerChildConfig {
   return {
     recording: { enabled: false, intervalHours: 1 },
-    studyTracker: { enabled: false, hour: 21, minute: 0 },
     sessionReset: { enabled: false, hour: 22, minute: 0 },
     autoNewSession: { enabled: false, hour: 21, minute: 0 },
     archiveLimit: 20,
@@ -168,61 +166,6 @@ export default function SchedulerSettings() {
                         style={{ width: 48, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
                       />{" "}
                       小时
-                    </span>
-                  )}
-                </div>
-
-                {/* study-tracker */}
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={cfg.studyTracker.enabled}
-                      onChange={(e) =>
-                        updateConfig(child.childId, (p) => ({
-                          ...p,
-                          studyTracker: { ...p.studyTracker, enabled: e.target.checked },
-                        }))
-                      }
-                    />
-                    学习进度追踪（study-tracker）
-                  </label>
-                  {cfg.studyTracker.enabled && (
-                    <span style={{ fontSize: 13, color: "#666" }}>
-                      每天{" "}
-                      <input
-                        type="number"
-                        min={0}
-                        max={23}
-                        value={cfg.studyTracker.hour}
-                        onChange={(e) =>
-                          updateConfig(child.childId, (p) => ({
-                            ...p,
-                            studyTracker: {
-                              ...p.studyTracker,
-                              hour: Math.max(0, Math.min(23, parseInt(e.target.value) || 0)),
-                            },
-                          }))
-                        }
-                        style={{ width: 44, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
-                      />
-                      :
-                      <input
-                        type="number"
-                        min={0}
-                        max={59}
-                        value={cfg.studyTracker.minute}
-                        onChange={(e) =>
-                          updateConfig(child.childId, (p) => ({
-                            ...p,
-                            studyTracker: {
-                              ...p.studyTracker,
-                              minute: Math.max(0, Math.min(59, parseInt(e.target.value) || 0)),
-                            },
-                          }))
-                        }
-                        style={{ width: 44, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
-                      />
                     </span>
                   )}
                 </div>

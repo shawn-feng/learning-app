@@ -8,7 +8,6 @@ import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
 import { kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
 import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt";
-import { runStudyTracker, formatLocalDate, type StudyTrackerResult } from "./study-tracker";
 import { resetChildSession } from "./pi-session";
 import { logRound } from "./token-stats";
 
@@ -17,7 +16,6 @@ export interface TaskState {
     string,
     {
       recording: { lastRun: string };
-      "study-tracker": { lastRun: string };
       "session-reset": { lastRun: string };
       "auto-new-session": { lastRun: string };
     }
@@ -27,7 +25,6 @@ export interface TaskState {
 // 每个孩子独立的定时任务配置。默认（未配置）全部关闭。
 export interface SchedulerChildConfig {
   recording: { enabled: boolean; intervalHours: number };
-  studyTracker: { enabled: boolean; hour: number; minute: number };
   // 会话重置：每天在配置的 hour:minute 清空孩子会话上下文与学习资料（不清除学习进度）
   sessionReset: { enabled: boolean; hour: number; minute: number };
   // 自动新建会话：开关开启后，每天在配置的 hour:minute 新建空会话；且 app 启动时若最后一条
@@ -45,7 +42,6 @@ interface SchedulerConfig {
 
 export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
   recording: { enabled: false, intervalHours: 1 },
-  studyTracker: { enabled: false, hour: 21, minute: 0 },
   sessionReset: { enabled: false, hour: 22, minute: 0 },
   autoNewSession: { enabled: false, hour: 21, minute: 0 },
   archiveLimit: 20,
@@ -70,7 +66,6 @@ function saveTaskState(state: TaskState): void {
 function defaultChildTaskState() {
   return {
     recording: { lastRun: "" },
-    "study-tracker": { lastRun: "" },
     "session-reset": { lastRun: "" },
     "auto-new-session": { lastRun: "" },
   };
@@ -87,7 +82,6 @@ export function getChildState(state: TaskState, childId: string) {
     const existing = state.children[childId];
     state.children[childId] = {
       recording: { ...base.recording, ...existing.recording },
-      "study-tracker": { ...base["study-tracker"], ...existing["study-tracker"] },
       "session-reset": { ...base["session-reset"], ...existing["session-reset"] },
       "auto-new-session": { ...base["auto-new-session"], ...existing["auto-new-session"] },
     };
@@ -118,7 +112,6 @@ export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {
   // 合并缺省字段，保证结构完整
   return {
     recording: { ...DEFAULT_CHILD_CONFIG.recording, ...(c.recording || {}) },
-    studyTracker: { ...DEFAULT_CHILD_CONFIG.studyTracker, ...(c.studyTracker || {}) },
     sessionReset: { ...DEFAULT_CHILD_CONFIG.sessionReset, ...(c.sessionReset || {}) },
     autoNewSession: { ...DEFAULT_CHILD_CONFIG.autoNewSession, ...(c.autoNewSession || {}) },
     archiveLimit: c.archiveLimit ?? DEFAULT_CHILD_CONFIG.archiveLimit,
@@ -132,7 +125,6 @@ export function setChildSchedulerConfig(
   const config = loadSchedulerConfig();
   config.children[childId] = {
     recording: { ...DEFAULT_CHILD_CONFIG.recording, ...(childConfig.recording || {}) },
-    studyTracker: { ...DEFAULT_CHILD_CONFIG.studyTracker, ...(childConfig.studyTracker || {}) },
     sessionReset: { ...DEFAULT_CHILD_CONFIG.sessionReset, ...(childConfig.sessionReset || {}) },
     autoNewSession: { ...DEFAULT_CHILD_CONFIG.autoNewSession, ...(childConfig.autoNewSession || {}) },
     archiveLimit:
@@ -224,6 +216,14 @@ function readTodayConversation(childId: string): string {
   return msgs.map((m) => `${m.role === "user" ? "孩子" : "饺子"}: ${m.text}`).join("\n\n");
 }
 
+// 本地时区 YYYY-MM-DD（不用 toISOString：那是 UTC 日期，东八区晚上会跨到错误的「今天」）
+function formatLocalDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 async function runRecording(childId: string): Promise<void> {
   const conversation = readTodayConversation(childId);
   if (!conversation.trim()) return; // 当天无对话，跳过本次提取（不发请求、不记账）
@@ -237,22 +237,6 @@ async function runRecording(childId: string): Promise<void> {
     logRound({ session, beforeCount, channel: "scheduler", childId, ok: true });
   } finally {
     session.dispose();
-  }
-}
-
-// study-tracker：纯代码实现（不再作为技能、不调用 AI），从 kb.sqlite 取数判断当日达标情况，
-// 结果写入 learning/tracker-latest.md 并广播给渲染窗口（前端无监听时无副作用）。
-function runTracker(childId: string): void {
-  const childDir = getChildDir(childId);
-  const result = runStudyTracker(childDir);
-  broadcastStudyTracker(childId, result);
-}
-
-function broadcastStudyTracker(childId: string, result: StudyTrackerResult): void {
-  for (const w of BrowserWindow.getAllWindows()) {
-    if (!w.isDestroyed()) {
-      w.webContents.send("pi:study_tracker", { childId, result });
-    }
   }
 }
 
@@ -295,25 +279,6 @@ export function startScheduler(): void {
             saveTaskState(state);
           } catch (e) {
             console.error(`Recording failed for child ${child.childId}:`, e);
-          }
-        }
-      }
-
-      // study-tracker：每天在配置的 hour:minute 执行一次
-      if (cc.studyTracker.enabled) {
-        const lastDay = cs["study-tracker"].lastRun
-          ? new Date(cs["study-tracker"].lastRun).toDateString()
-          : "";
-        const isTime =
-          now.getHours() === cc.studyTracker.hour &&
-          now.getMinutes() === cc.studyTracker.minute;
-        if (isTime && lastDay !== now.toDateString()) {
-          try {
-            runTracker(child.childId);
-            cs["study-tracker"].lastRun = new Date().toISOString();
-            saveTaskState(state);
-          } catch (e) {
-            console.error(`Tracker failed for child ${child.childId}:`, e);
           }
         }
       }
@@ -380,20 +345,6 @@ export async function runCatchUp(): Promise<void> {
           cs.recording.lastRun = new Date().toISOString();
         } catch (e) {
           console.error(`Recording catch-up failed for child ${child.childId}:`, e);
-        }
-      }
-    }
-
-    if (cc.studyTracker.enabled) {
-      const lastTracker = cs["study-tracker"].lastRun
-        ? new Date(cs["study-tracker"].lastRun).toDateString()
-        : "";
-      if (lastTracker !== today) {
-        try {
-          runTracker(child.childId);
-          cs["study-tracker"].lastRun = new Date().toISOString();
-        } catch (e) {
-          console.error(`Tracker catch-up failed for child ${child.childId}:`, e);
         }
       }
     }

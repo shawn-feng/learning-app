@@ -4,13 +4,12 @@ import { getChildState, type TaskState } from "../electron/lib/scheduler";
 // 回归测试：getChildState 必须容忍磁盘上已有的 task-state.json 缺失后续新增的任务键，
 // 否则 cron 读到 undefined.lastRun 会崩溃（见 auto-new-session 上线后 node-cron 报错）。
 describe("getChildState 向前兼容老结构", () => {
-  it("老结构（仅 recording/study-tracker/session-reset）缺失 auto-new-session 时不崩溃且补齐该键", () => {
+  it("老结构（仅 recording/session-reset）缺失 auto-new-session 时不崩溃且补齐该键", () => {
     const state: TaskState = {
       children: {
         // 模拟升级前已存在于磁盘上的孩子状态，没有 auto-new-session 键
         "kid-1": {
           recording: { lastRun: "2026-08-17T12:00:00.000Z" },
-          "study-tracker": { lastRun: "" },
           "session-reset": { lastRun: "" },
         },
       },
@@ -22,7 +21,6 @@ describe("getChildState 向前兼容老结构", () => {
     expect(cs["auto-new-session"].lastRun).toBe("");
     // 旧字段的 lastRun 必须保留，不能被覆盖
     expect(cs.recording.lastRun).toBe("2026-08-17T12:00:00.000Z");
-    expect(cs["study-tracker"].lastRun).toBe("");
     expect(cs["session-reset"].lastRun).toBe("");
   });
 
@@ -31,7 +29,6 @@ describe("getChildState 向前兼容老结构", () => {
       children: {
         "kid-2": {
           recording: { lastRun: "2026-08-10T08:00:00.000Z" },
-          "study-tracker": { lastRun: "2026-08-10T09:00:00.000Z" },
           "session-reset": { lastRun: "2026-08-10T22:00:00.000Z" },
           "auto-new-session": { lastRun: "2026-08-18T21:00:00.000Z" },
         },
@@ -42,11 +39,11 @@ describe("getChildState 向前兼容老结构", () => {
     expect(cs.recording.lastRun).toBe("2026-08-10T08:00:00.000Z");
   });
 
-  it("全新孩子初始化出完整四键结构", () => {
+  it("全新孩子初始化出完整三键结构", () => {
     const state: TaskState = { children: {} };
     const cs = getChildState(state, "kid-3");
     expect(Object.keys(cs).sort()).toEqual(
-      ["auto-new-session", "recording", "session-reset", "study-tracker"].sort()
+      ["auto-new-session", "recording", "session-reset"].sort()
     );
     for (const key of Object.keys(cs)) {
       expect((cs as any)[key].lastRun).toBe("");

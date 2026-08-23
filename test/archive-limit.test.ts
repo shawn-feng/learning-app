@@ -96,7 +96,6 @@ describe("归档保留上限（archive limit）", () => {
     const kid = "cfg-kid-1";
     scheduler.setChildSchedulerConfig(kid, {
       recording: { enabled: false, intervalHours: 1 },
-      studyTracker: { enabled: false, hour: 21, minute: 0 },
       sessionReset: { enabled: false, hour: 22, minute: 0 },
       archiveLimit: 7,
     });
