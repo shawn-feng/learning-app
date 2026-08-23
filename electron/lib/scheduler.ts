@@ -4,12 +4,8 @@ import cron from "node-cron";
 import { BrowserWindow } from "electron";
 import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config";
 import { listChildren } from "./child-auth";
-import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
-import { kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
-import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt";
+import { summarizeDailyConversation, formatLocalDate } from "./daily-summary";
 import { resetChildSession } from "./pi-session";
-import { logRound } from "./token-stats";
 
 export interface TaskState {
   children: Record<
@@ -24,7 +20,8 @@ export interface TaskState {
 
 // 每个孩子独立的定时任务配置。默认（未配置）全部关闭。
 export interface SchedulerChildConfig {
-  recording: { enabled: boolean; intervalHours: number };
+  // 每日学习记录总结（recording）：按具体时间点触发（可多个）；onNewSession = 每次新建会话前自动总结
+  recording: { enabled: boolean; times: string[]; onNewSession: boolean };
   // 会话重置：每天在配置的 hour:minute 清空孩子会话上下文与学习资料（不清除学习进度）
   sessionReset: { enabled: boolean; hour: number; minute: number };
   // 自动新建会话：开关开启后，每天在配置的 hour:minute 新建空会话；且 app 启动时若最后一条
@@ -41,13 +38,24 @@ interface SchedulerConfig {
 }
 
 export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
-  recording: { enabled: false, intervalHours: 1 },
+  recording: { enabled: false, times: ["21:00"], onNewSession: false },
   sessionReset: { enabled: false, hour: 22, minute: 0 },
   autoNewSession: { enabled: false, hour: 21, minute: 0 },
   archiveLimit: 20,
 };
 
-const HOUR_MS = 3600 * 1000;
+// 旧配置（intervalHours 间隔模式）已废弃：读配置时把缺省 times 补成默认时间点。
+export function defaultRecordingTimes(): string[] {
+  return [...DEFAULT_CHILD_CONFIG.recording.times];
+}
+
+/** HH:mm（本地时区，两位补零），用于时间点匹配。 */
+function hhmm(d: Date): string {
+  const h = String(d.getHours()).padStart(2, "0");
+  const m = String(d.getMinutes()).padStart(2, "0");
+  return `${h}:${m}`;
+}
+
 
 function loadTaskState(): TaskState {
   const p = getTaskStatePath();
@@ -109,9 +117,15 @@ export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {
   const config = loadSchedulerConfig();
   const c = config.children[childId];
   if (!c) return JSON.parse(JSON.stringify(DEFAULT_CHILD_CONFIG));
-  // 合并缺省字段，保证结构完整
+  // 合并缺省字段，保证结构完整；recording.times 兼容旧配置（intervalHours 模式无 times → 补默认时间点）
+  const rec = c.recording || {};
   return {
-    recording: { ...DEFAULT_CHILD_CONFIG.recording, ...(c.recording || {}) },
+    recording: {
+      enabled: rec.enabled ?? DEFAULT_CHILD_CONFIG.recording.enabled,
+      times:
+        Array.isArray(rec.times) && rec.times.length > 0 ? [...rec.times] : defaultRecordingTimes(),
+      onNewSession: rec.onNewSession ?? DEFAULT_CHILD_CONFIG.recording.onNewSession,
+    },
     sessionReset: { ...DEFAULT_CHILD_CONFIG.sessionReset, ...(c.sessionReset || {}) },
     autoNewSession: { ...DEFAULT_CHILD_CONFIG.autoNewSession, ...(c.autoNewSession || {}) },
     archiveLimit: c.archiveLimit ?? DEFAULT_CHILD_CONFIG.archiveLimit,
@@ -124,7 +138,14 @@ export function setChildSchedulerConfig(
 ): SchedulerChildConfig {
   const config = loadSchedulerConfig();
   config.children[childId] = {
-    recording: { ...DEFAULT_CHILD_CONFIG.recording, ...(childConfig.recording || {}) },
+    recording: {
+      enabled: childConfig.recording?.enabled ?? DEFAULT_CHILD_CONFIG.recording.enabled,
+      times:
+        Array.isArray(childConfig.recording?.times) && childConfig.recording.times.length > 0
+          ? [...childConfig.recording.times]
+          : defaultRecordingTimes(),
+      onNewSession: childConfig.recording?.onNewSession ?? DEFAULT_CHILD_CONFIG.recording.onNewSession,
+    },
     sessionReset: { ...DEFAULT_CHILD_CONFIG.sessionReset, ...(childConfig.sessionReset || {}) },
     autoNewSession: { ...DEFAULT_CHILD_CONFIG.autoNewSession, ...(childConfig.autoNewSession || {}) },
     archiveLimit:
@@ -138,106 +159,11 @@ export function setChildSchedulerConfig(
 
 // ---- 会话与任务执行 ----
 
-export async function createEphemeralSession(childId: string) {
-  const childDir = getChildDir(childId);
-  const runtime = await getSharedRuntime();
-  const model = await getDefaultModel();
-
-  // recording 定时任务专用会话：不加载 AGENTS.md（noContextFiles）、不加载任何技能（noSkills），
-  // system prompt 用极简记录助手身份——只做「从对话提取信息写入 daily」这一件事。
-  // 工具只挂 kb 三件套（写 daily / 更新进度 / 查标签定义），不给 read/write/edit 碰数据文件的机会。
-  const loader = new DefaultResourceLoader({
-    cwd: childDir,
-    agentDir: path.join(childDir, ".pi", "agent"),
-    noContextFiles: true,
-    noSkills: true,
-    systemPromptOverride: () => RECORDING_SYSTEM_PROMPT,
-  });
-  await loader.reload();
-
-  const { session } = await createAgentSession({
-    cwd: childDir,
-    agentDir: path.join(childDir, ".pi", "agent"),
-    modelRuntime: runtime,
-    model,
-    sessionManager: SessionManager.inMemory(),
-    resourceLoader: loader,
-    // 注意：customTools 的 name 必须同时出现在 tools 白名单（agent-session.js 的 isAllowedTool 会过滤），
-    // kb 三件套缺一不可（ISSUE-006 教训：漏列白名单 → 工具不注册不激活）。
-    tools: ["kb_query", "kb_insert", "kb_update"],
-    customTools: [kbQueryTool, kbInsertTool, kbUpdateTool],
-  });
-  return session;
-}
-
-// 读取孩子「今天（本地时区）」的对话文本：遍历 sessions 目录所有 jsonl（含归档），
-// 只取 type=message 且 role 为 user / assistant 的条目，content 数组里只保留 type=text 的部分
-// （排除 thinking / toolCall，role=toolResult 的条目整体跳过），按时间升序拼成对话记录。
-// 旧实现（readRecentConversation）按 user_message / assistant_message 类型判断，与真实
-// jsonl 结构（type=message + message.role）不符，实际提取不到内容，这里一并修复。
-function readTodayConversation(childId: string): string {
-  const childDir = getChildDir(childId);
-  const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
-  if (!fs.existsSync(sessionsDir)) return "";
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const msgs: { ts: number; role: string; text: string }[] = [];
-  const walk = (dir: string) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) {
-        walk(full);
-      } else if (e.name.endsWith(".jsonl")) {
-        for (const line of fs.readFileSync(full, "utf-8").split("\n").filter(Boolean)) {
-          try {
-            const entry = JSON.parse(line);
-            if (entry.type !== "message" || !entry.message) continue;
-            const ts = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
-            if (!Number.isFinite(ts) || ts < todayStart) continue;
-            const role = entry.message.role;
-            if (role !== "user" && role !== "assistant") continue;
-            const content = entry.message.content;
-            const parts = Array.isArray(content) ? content : [];
-            const texts = parts
-              .filter((p: any) => p?.type === "text" && typeof p.text === "string")
-              .map((p: any) => p.text.trim())
-              .filter(Boolean);
-            if (texts.length === 0) continue;
-            msgs.push({ ts, role, text: texts.join("\n") });
-          } catch {
-            // 单行损坏跳过，不影响其余行
-          }
-        }
-      }
-    }
-  };
-  walk(sessionsDir);
-  msgs.sort((a, b) => a.ts - b.ts);
-  return msgs.map((m) => `${m.role === "user" ? "孩子" : "饺子"}: ${m.text}`).join("\n\n");
-}
-
-// 本地时区 YYYY-MM-DD（不用 toISOString：那是 UTC 日期，东八区晚上会跨到错误的「今天」）
-function formatLocalDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
+// 每日学习记录总结（recording）：按天汇总今天（本地）的会话——有会话则 AI 提取写 daily，无会话跳过。
+// 读取与 ephemeral session 逻辑在 electron/lib/daily-summary.ts（定时 / 会话前 / AI 工具三路共用）。
 async function runRecording(childId: string): Promise<void> {
-  const conversation = readTodayConversation(childId);
-  if (!conversation.trim()) return; // 当天无对话，跳过本次提取（不发请求、不记账）
-  const session = await createEphemeralSession(childId);
-  try {
-    const today = formatLocalDate(new Date());
-    const prompt = `${RECORDING_PROMPT}\n\n今天是 ${today}。以下是孩子今天（${today}）的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}`;
-    const beforeCount = (session as any).messages?.length ?? 0;
-    await session.prompt(prompt);
-    // ISSUE-010：定时任务记账（按 childId 隔离）
-    logRound({ session, beforeCount, channel: "scheduler", childId, ok: true });
-  } finally {
-    session.dispose();
-  }
+  const childDir = getChildDir(childId);
+  await summarizeDailyConversation(childDir, formatLocalDate(new Date()));
 }
 
 // 会话重置：清空孩子会话上下文与学习资料面板（不清除学习进度文件）。
@@ -269,16 +195,22 @@ export function startScheduler(): void {
       const cc = getChildSchedulerConfig(child.childId);
       const cs = getChildState(state, child.childId);
 
-      // recording：按 intervalHours 间隔执行
+      // 每日学习记录总结（recording）：按配置的具体时间点（可多个）触发，每个时间点每天只跑一次；
+      // 当天无会话时 summarizeDailyConversation 内部跳过（不消耗 token）。
       if (cc.recording.enabled) {
-        const last = cs.recording.lastRun ? new Date(cs.recording.lastRun).getTime() : 0;
-        if (now.getTime() - last >= cc.recording.intervalHours * HOUR_MS) {
-          try {
-            await runRecording(child.childId);
-            cs.recording.lastRun = new Date().toISOString();
-            saveTaskState(state);
-          } catch (e) {
-            console.error(`Recording failed for child ${child.childId}:`, e);
+        const nowMin = hhmm(now);
+        if (cc.recording.times.includes(nowMin)) {
+          const last = cs.recording.lastRun ? new Date(cs.recording.lastRun) : null;
+          const alreadyRan =
+            last && formatLocalDate(last) === formatLocalDate(now) && hhmm(last) === nowMin;
+          if (!alreadyRan) {
+            try {
+              await runRecording(child.childId);
+              cs.recording.lastRun = new Date().toISOString();
+              saveTaskState(state);
+            } catch (e) {
+              console.error(`Recording failed for child ${child.childId}:`, e);
+            }
           }
         }
       }
@@ -338,13 +270,20 @@ export async function runCatchUp(): Promise<void> {
     const cs = getChildState(state, child.childId);
 
     if (cc.recording.enabled) {
-      const lastRec = cs.recording.lastRun ? new Date(cs.recording.lastRun).getTime() : 0;
-      if (now.getTime() - lastRec >= cc.recording.intervalHours * HOUR_MS) {
-        try {
-          await runRecording(child.childId);
-          cs.recording.lastRun = new Date().toISOString();
-        } catch (e) {
-          console.error(`Recording catch-up failed for child ${child.childId}:`, e);
+      // catch-up：今天已过的配置时间点若还没跑过，补跑最近一个（启动/休眠恢复场景）
+      const passed = cc.recording.times.filter((t) => t <= hhmm(now));
+      if (passed.length > 0) {
+        const latestPoint = passed[passed.length - 1];
+        const lastRec = cs.recording.lastRun ? new Date(cs.recording.lastRun) : null;
+        const alreadyRan =
+          lastRec && formatLocalDate(lastRec) === formatLocalDate(now) && hhmm(lastRec) === latestPoint;
+        if (!alreadyRan) {
+          try {
+            await runRecording(child.childId);
+            cs.recording.lastRun = new Date().toISOString();
+          } catch (e) {
+            console.error(`Recording catch-up failed for child ${child.childId}:`, e);
+          }
         }
       }
     }

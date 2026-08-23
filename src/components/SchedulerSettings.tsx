@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 interface SchedulerChildConfig {
-  recording: { enabled: boolean; intervalHours: number };
+  recording: { enabled: boolean; times: string[]; onNewSession: boolean };
   sessionReset: { enabled: boolean; hour: number; minute: number };
   autoNewSession: { enabled: boolean; hour: number; minute: number };
   archiveLimit: number;
@@ -15,7 +15,7 @@ interface ChildItem {
 
 function defaultConfig(): SchedulerChildConfig {
   return {
-    recording: { enabled: false, intervalHours: 1 },
+    recording: { enabled: false, times: ["21:00"], onNewSession: false },
     sessionReset: { enabled: false, hour: 22, minute: 0 },
     autoNewSession: { enabled: false, hour: 21, minute: 0 },
     archiveLimit: 20,
@@ -124,49 +124,119 @@ export default function SchedulerSettings() {
                   </button>
                 </div>
 
-                {/* recording */}
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    marginBottom: 10,
-                  }}
-                >
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={cfg.recording.enabled}
-                      onChange={(e) =>
-                        updateConfig(child.childId, (p) => ({
-                          ...p,
-                          recording: { ...p.recording, enabled: e.target.checked },
-                        }))
-                      }
-                    />
-                    学习记录总结（recording）
-                  </label>
-                  {cfg.recording.enabled && (
-                    <span style={{ fontSize: 13, color: "#666" }}>
-                      每{" "}
+                {/* 每日学习记录总结（recording）：多时间点触发 + 会话前自动总结 */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                       <input
-                        type="number"
-                        min={1}
-                        max={24}
-                        value={cfg.recording.intervalHours}
+                        type="checkbox"
+                        checked={cfg.recording.enabled}
                         onChange={(e) =>
                           updateConfig(child.childId, (p) => ({
                             ...p,
-                            recording: {
-                              ...p.recording,
-                              intervalHours: Math.max(1, parseInt(e.target.value) || 1),
-                            },
+                            recording: { ...p.recording, enabled: e.target.checked },
                           }))
                         }
-                        style={{ width: 48, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
-                      />{" "}
-                      小时
-                    </span>
+                      />
+                      每日学习记录总结
+                    </label>
+                  </div>
+                  {cfg.recording.enabled && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        marginLeft: 26,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                      }}
+                    >
+                      <div style={{ fontSize: 13, color: "#666" }}>
+                        每天在这些时间点自动总结当天对话（可多个；当天无对话自动跳过）：
+                      </div>
+                      {cfg.recording.times.map((t, idx) => (
+                        <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <input
+                            type="time"
+                            value={t}
+                            onChange={(e) =>
+                              updateConfig(child.childId, (p) => ({
+                                ...p,
+                                recording: {
+                                  ...p.recording,
+                                  times: p.recording.times.map((v, i) =>
+                                    i === idx ? e.target.value : v
+                                  ),
+                                },
+                              }))
+                            }
+                            style={{
+                              padding: "4px 6px",
+                              border: "1px solid #ddd",
+                              borderRadius: 6,
+                              fontSize: 13,
+                            }}
+                          />
+                          <button
+                            onClick={() =>
+                              updateConfig(child.childId, (p) => ({
+                                ...p,
+                                recording: {
+                                  ...p.recording,
+                                  times: p.recording.times.filter((_, i) => i !== idx),
+                                },
+                              }))
+                            }
+                            style={{
+                              padding: "4px 10px",
+                              border: "1px solid #ddd",
+                              borderRadius: 6,
+                              background: "white",
+                              fontSize: 13,
+                              cursor: "pointer",
+                            }}
+                          >
+                            删除
+                          </button>
+                        </div>
+                      ))}
+                      <div>
+                        <button
+                          onClick={() =>
+                            updateConfig(child.childId, (p) => ({
+                              ...p,
+                              recording: {
+                                ...p.recording,
+                                times: [...p.recording.times, "21:00"],
+                              },
+                            }))
+                          }
+                          style={{
+                            padding: "4px 10px",
+                            border: "1px solid #ddd",
+                            borderRadius: 6,
+                            background: "white",
+                            fontSize: 13,
+                            cursor: "pointer",
+                          }}
+                        >
+                          + 添加时间点
+                        </button>
+                      </div>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={cfg.recording.onNewSession}
+                          onChange={(e) =>
+                            updateConfig(child.childId, (p) => ({
+                              ...p,
+                              recording: { ...p.recording, onNewSession: e.target.checked },
+                            }))
+                          }
+                        />
+                        每次新建会话前，自动总结之前的会话
+                      </label>
+                    </div>
                   )}
                 </div>
 

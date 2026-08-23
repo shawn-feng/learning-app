@@ -95,7 +95,7 @@ describe("归档保留上限（archive limit）", () => {
   it("scheduler 配置能读写并合并 archiveLimit（默认值 20）", () => {
     const kid = "cfg-kid-1";
     scheduler.setChildSchedulerConfig(kid, {
-      recording: { enabled: false, intervalHours: 1 },
+      recording: { enabled: false, times: ["21:00"], onNewSession: false },
       sessionReset: { enabled: false, hour: 22, minute: 0 },
       archiveLimit: 7,
     });
