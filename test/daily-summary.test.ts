@@ -7,6 +7,7 @@ import {
   findLastConversationDate,
   findLatestConversationDate,
   summarizeDailyConversation,
+  formatDailyExistingList,
 } from "../electron/lib/daily-summary.ts";
 
 // daily-summary 核心逻辑：jsonl 按天过滤（排除 think/toolCall/toolResult）、最近会话日期查找、
@@ -93,5 +94,43 @@ describe("summarizeDailyConversation（无会话跳过，不调 AI）", () => {
     } finally {
       fs.rmSync(empty, { recursive: true, force: true });
     }
+  });
+});
+
+describe("formatDailyExistingList（同天多次汇总的去重清单）", () => {
+  it("按区块分组列出已存在条目（raw 截断）", () => {
+    const list = formatDailyExistingList([
+      {
+        date: "2026-08-23",
+        block: "学习",
+        title: "论语先进篇第二十一章",
+        raw: "### 论语先进篇第二十一章\n- 考核：吟诵✓\n- 孩子表现：很认真",
+        tags: "",
+      },
+      {
+        date: "2026-08-23",
+        block: "生活",
+        title: "准备去奶奶家",
+        raw: "### 准备去奶奶家\n- 标签：独立\n- 概要：自己列了行李清单",
+        tags: "独立",
+      },
+    ]);
+    expect(list).toContain("【学习】");
+    expect(list).toContain("论语先进篇第二十一章");
+    expect(list).toContain("【生活】");
+    expect(list).toContain("准备去奶奶家");
+  });
+
+  it("raw 超过截断长度时省略号截断（省 token）", () => {
+    const longRaw = "### 标题\n- 字段：" + "很长的内容".repeat(100);
+    const list = formatDailyExistingList([
+      { date: "2026-08-23", block: "问答", title: "恐龙为什么灭绝", raw: longRaw, tags: "" },
+    ]);
+    expect(list).toContain("恐龙为什么灭绝");
+    expect(list.length).toBeLessThan(200);
+  });
+
+  it("无条目返回空串", () => {
+    expect(formatDailyExistingList([])).toBe("");
   });
 });

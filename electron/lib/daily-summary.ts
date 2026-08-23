@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
+import { queryDaily, type DailyEntry } from "./kb-sqlite";
 import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt";
 import { logRound } from "./token-stats";
 
@@ -168,6 +169,26 @@ export async function createEphemeralSession(childDir: string) {
   return session;
 }
 
+/**
+ * 把当天已有的 daily 条目整理成给 AI 的「已存在清单」文本（按区块分组，raw 截断省 token）。
+ * 同一天可能多次汇总：清单用于让 AI 跳过已写入的条目、只补新增/更新。
+ */
+export function formatDailyExistingList(entries: DailyEntry[], maxRawLen = 120): string {
+  if (entries.length === 0) return "";
+  const lines: string[] = [];
+  const blocks = ["学习", "生活", "问答", "任务"] as const;
+  for (const block of blocks) {
+    const inBlock = entries.filter((e) => e.block === block);
+    if (inBlock.length === 0) continue;
+    lines.push(`【${block}】`);
+    for (const e of inBlock) {
+      const snippet = e.raw.replace(/\s+/g, " ").trim();
+      lines.push(`- ${e.title}${snippet ? `：${snippet.slice(0, maxRawLen)}` : ""}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 export interface DailySummaryResult {
   /** 汇总的日期 YYYY-MM-DD */
   date: string;
@@ -193,10 +214,17 @@ export async function summarizeDailyConversation(
   if (!conversation.trim()) {
     return { date, summarized: false, skipped: true, note: `${date} 没有会话，跳过本次总结` };
   }
+  // 同一天可能被多次汇总（多时间点 / 会话前 / AI 工具）：
+  // 先把当天已有的 daily 条目查出来，让 AI 跳过已写入的内容，避免重复入库（主键幂等仅兜底）。
+  const existing = queryDaily(childDir, { date });
+  const existingList = formatDailyExistingList(existing);
   const session = await createEphemeralSession(childDir);
   try {
     const beforeCount = (session as any).messages?.length ?? 0;
-    const prompt = `${RECORDING_PROMPT}\n\n今天是 ${date}。以下是孩子 ${date} 的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}`;
+    const dedupSection = existingList
+      ? `\n\n重要——同一天可能多次汇总，请遵守以下「不重复」规则：\n当天 daily 已存在的记录：\n${existingList}\n规则：\n1. 清单中已存在的条目（标题一致或内容重复）禁止重复插入；\n2. 若清单中某条目有新信息需要补充，用 kb_update 更新它（不要新增条目）；\n3. 只对清单中没有的新条目调用 kb_insert。`
+      : "";
+    const prompt = `${RECORDING_PROMPT}\n\n今天是 ${date}。以下是孩子 ${date} 的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}${dedupSection}`;
     await session.prompt(prompt);
     logRound({ session, beforeCount, channel: "scheduler", childId: path.basename(childDir), ok: true });
     return { date, summarized: true, skipped: false, note: `已总结 ${date} 的对话并写入 daily` };
