@@ -11,6 +11,14 @@ import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
+import { getAgentPrompt } from "./agent-prompts";
+import {
+  findLastConversationDate,
+  formatLocalDate,
+  summarizeConversationTool,
+  summarizeDailyConversation,
+} from "./daily-summary";
+import { getChildSchedulerConfig } from "./scheduler";
 import learningGuardExtension from "../extensions/learning-guard";
 import { disposeProgrammingSessions } from "./programming-agent";
 
@@ -32,7 +40,7 @@ const LEARNING_NAV_INSTRUCTIONS = `
 2. 用 parent_content 从**家长库**获取该主题的教学方法（type 用 "method"）——**这是本次引导的唯一权威依据**：教学步骤、展示时机、资料位置都按 method 严格执行；当 method 的具体规定与你的通用判断冲突时，**以 method 为准**。需要某课的教学文案或 html 资料路径时同样用 parent_content 获取（孩子库不存 method 与教学文案，不要尝试读文件或猜内容）
 
 ### 记录
-学习总结、生活事件等记录由**系统定时任务**统一完成（定期从孩子当天的对话中提取，写入 daily；recording 已从技能改为定时任务，不再提供可调用的记录技能）。各主题 method.md 的「记录」段指引照常执行。
+学习总结、生活事件等记录由**系统定时任务**统一完成（按配置的时间点从孩子当天的对话中提取，写入 daily）。**当孩子/家长希望回顾或总结某天的学习内容、生活事件时，调用 \`summarize_conversation\` 工具**（按天汇总，date 可省略，自动选最近有会话的一天；该天无会话会返回跳过说明）。各主题 method.md 的「记录」段指引照常执行。
 **孩子数据已全部存入 SQLite（kb.sqlite），数据读写一律用 kb_query / kb_insert / kb_update 结构化工具，禁止用 read/write/edit 碰数据文件**——daily/、life/、inquiries/、tasks/、tags/、learning 进度 的 markdown 只是历史归档，不要读写。**标签只能从标签定义表选**（先 kb_query 查词表与判断标准，不能自创），打在 daily 生活事件（content 里写 \`- 标签：\` 行，自动解析）与课程上。只有 materials/ / uploads/ 等内容文件才用 write/edit / read；主题教学方法与课程教学文案存家长库，一律用 parent_content 获取。
 
 ### 孩子上传的附件（uploads/）
@@ -49,7 +57,7 @@ const LEARNING_NAV_INSTRUCTIONS = `
 各主题的 **进度摘要（learned/total/next/updated）由系统从课程表自动计算**，已放在系统提示顶部的「孩子的学习进度概览」里，确定「下一课」或查询进度时：
 - **直接用**系统提示里给出的 \`next\` 值，或调用 \`get_progress\` 工具（只回摘要，不含逐课明细）；
 - **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 500+ 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
-- 需要逐课状态（如 study-tracker 核对每课掌握度）时，用 kb_query 查进度（listOnly 只看课程清单），不要 read 文件；
+- 需要逐课状态（如逐课核对掌握度）时，用 kb_query 查进度（listOnly 只看课程清单），不要 read 文件；
 - 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。
 `;
 
@@ -88,7 +96,14 @@ export function writeAgentsMd(childId: string, profile: ChildProfile): void {
   const childDir = getChildDir(childId);
   const filePath = path.join(childDir, "AGENTS.md");
 
-  // 保留家长在 custom 段内手动编辑的内容
+  // ISSUE-033：若存在用户保存的「整体替换」版本，直接以它为准写入（代码默认不再生效）。
+  const userVersion = getAgentPrompt("child", childId);
+  if (userVersion && userVersion.trim()) {
+    fs.writeFileSync(filePath, userVersion, "utf-8");
+    return;
+  }
+
+  // 保留家长在 custom 段内手动编辑的内容（无用户整体版本时的向后兼容路径）
   let customContent = "";
   if (fs.existsSync(filePath)) {
     customContent = extractCustomSection(fs.readFileSync(filePath, "utf-8"));
@@ -102,7 +117,31 @@ export function writeAgentsMd(childId: string, profile: ChildProfile): void {
   fs.writeFileSync(filePath, full, "utf-8");
 }
 
+/**
+ * 返回某 scope/ref 的「默认提示词」内容（ISSUE-033 编辑器初始填充用）：
+ * - 孩子：优先返回磁盘上当前 AGENTS.md（即孩子当前实际收到的内容），
+ *   无文件时回退到按 profile 生成的 buildAgentsMd（保证「在默认基础上修改」）；
+ * - 家长：返回 buildParentPrompt / buildParentContentPrompt 的代码默认。
+ * 注意：本函数在「无用户整体版本」时调用，因此不会出现与 SQLite 用户版本叠加的情况。
+ */
+export function getDefaultPrompt(scope: string, ref: string): string {
+  if (scope === "child") {
+    const filePath = path.join(getChildDir(ref), "AGENTS.md");
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, "utf-8");
+    }
+    return buildAgentsMd(getProfile(ref));
+  }
+  if (scope === "parent") {
+    return ref === "content" ? buildParentContentPrompt() : buildParentPrompt();
+  }
+  return "";
+}
+
 function buildParentPrompt(): string {
+  // ISSUE-033：用户保存的家长提示词版本优先（整体替换代码默认）
+  const userVersion = getAgentPrompt("parent", "main");
+  if (userVersion && userVersion.trim()) return userVersion;
   return `你是家长工作台助手，帮助家长管理孩子的学习内容和教学技能。
 
 你的工作目录是数据根目录（data/），用相对路径访问以下内容：
@@ -157,6 +196,9 @@ SKILL.md 格式：frontmatter（name/description）+ 工作流程。
  * 去掉「编辑教学技能」能力段（ISSUE-025 已移除技能 tab）。由 getParentContentSession 使用。
  */
 function buildParentContentPrompt(): string {
+  // ISSUE-033：用户保存的家长「教学内容生成」提示词版本优先（整体替换代码默认）
+  const userVersion = getAgentPrompt("parent", "content");
+  if (userVersion && userVersion.trim()) return userVersion;
   return `你是「教学内容生成助手」，专门帮家长为孩子的一个学习主题，生成或完善全部教学文件。你只做教学内容生成这一件事，不编辑教学技能。
 
 你的工作目录是数据根目录（data/），用相对路径访问。当前要处理的孩子与主题由家长在对话中指定，或前端已附带「当前查看的文件」上下文。
@@ -334,6 +376,24 @@ export function shouldAutoNewSession(
   return false;
 }
 
+// 会话前自动总结：配置 recording.onNewSession 时，对「今天之前最后有会话的一天」做按天汇总。
+// fire-and-forget（不阻塞会话打开）；找不到会话日期或当天无对话时 summarizeDailyConversation 内部跳过。
+function maybeSummarizeBeforeNewSession(childId: string): void {
+  try {
+    const cfg = getChildSchedulerConfig(childId);
+    if (!cfg.recording.onNewSession) return;
+    const childDir = getChildDir(childId);
+    const date = findLastConversationDate(childDir, formatLocalDate(new Date()));
+    if (date) {
+      void summarizeDailyConversation(childDir, date).catch((e) =>
+        console.error(`Pre-session summary failed for child ${childId}:`, e)
+      );
+    }
+  } catch (e) {
+    console.error(`Pre-session summary setup failed for child ${childId}:`, e);
+  }
+}
+
 /** 实际创建孩子会话（被 getChildSession 的并发保护包裹，确保同一 childId 只创建一次）。 */
 async function createChildSession(
   childId: string
@@ -360,9 +420,8 @@ async function createChildSession(
     // 替换 SDK 默认 base：去掉 "expert coding assistant" 身份与 Pi 自身文档索引（对孩子是噪声），
     // 换成孩子专属的学习伙伴身份。AGENTS.md / 技能段 / cwd / 时间注入由 SDK 在 customPrompt 模式下自动附加。
     systemPromptOverride: () => buildChildPrompt(profile, progressContext),
-    // 教学技能在 shared/skills（study-tracker），孩子默认扫描路径不含它，
-    // 此前 <available_skills> 段为空，AGENTS.md 里写的 recording 技能孩子根本发现不了。
-    // recording 已改为定时任务（electron/lib/recording-prompt.ts），不再作为技能存在。
+    // shared/skills 已无教学技能（recording / study-tracker 均已移除，目录为空），
+    // 该扫描路径仅作兜底，未来若再加技能无需改加载逻辑。
     // 注意：noSkills 必须为 true —— SDK 的 packageManager 会自动发现并启用 ~/.agents/skills
     // 下全部全局技能（agent-browser / bilibili-cli / code-reviewer 等 60 个），
     // 不关掉的话这些无关技能会全量进孩子 <available_skills> 索引，纯噪声还占 token。
@@ -382,6 +441,9 @@ async function createChildSession(
   // 在当前管理器上开一个全新空会话（旧会话文件保留为归档）。遵循官方「懒落盘」语义：
   // 空会话不写盘，首条 assistant 回复时才独占创建并落盘，不在此手写任何 header 文件。
   if (shouldAutoNewSession(childId)) {
+    // 配置了「每次新建会话前自动总结」时，先对之前的会话（今天之前最后有对话的一天）做按天汇总，
+    // fire-and-forget：不阻塞会话打开，失败只记日志（汇总本身幂等，重复触发不重复写 daily）。
+    maybeSummarizeBeforeNewSession(childId);
     mgr.newSession();
   }
   const { session } = await createAgentSession({
@@ -392,10 +454,11 @@ async function createChildSession(
     resourceLoader: loader,
     // 注意：customTools 里的每个工具，其 name 必须同时出现在 tools 白名单中才会被
     // SDK 注册并激活（agent-session.js 的 isAllowedTool 会按白名单过滤 customTools）。
-    // display_content / get_date / get_progress / kb_query / kb_insert / kb_update / create_html_lesson 都是 customTools，
-    // 故名字都要列在 tools 里，缺一不可——此前 get_progress 漏列导致 agent 根本拿不到该工具（ISSUE-006 配套修复）。
-    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool],
+    // display_content / get_date / get_progress / kb_query / kb_insert / kb_update / create_html_lesson
+    // / summarize_conversation 都是 customTools，故名字都要列在 tools 里，缺一不可
+    // ——此前 get_progress 漏列导致 agent 根本拿不到该工具（ISSUE-006 配套修复）。
+    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，

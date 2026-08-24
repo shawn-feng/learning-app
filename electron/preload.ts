@@ -118,6 +118,14 @@ const api = {
     ipcRenderer.invoke("child:getAgentsMd", childId),
   childSaveAgentsMd: (childId: string, content: string) =>
     ipcRenderer.invoke("child:saveAgentsMd", childId, content),
+  agentsGet: (scope: string, ref: string) =>
+    ipcRenderer.invoke("agents:get", scope, ref),
+  agentsSave: (scope: string, ref: string, content: string) =>
+    ipcRenderer.invoke("agents:save", scope, ref, content),
+  agentsHistory: (scope: string, ref: string) =>
+    ipcRenderer.invoke("agents:history", scope, ref),
+  agentsRestore: (scope: string, ref: string, updated: string) =>
+    ipcRenderer.invoke("agents:restore", scope, ref, updated),
 
   // Progress
   getProgress: (childId: string) => ipcRenderer.invoke("progress:get", childId),
@@ -134,6 +142,8 @@ const api = {
     ipcRenderer.invoke("parent:allocate", childId, topicDir),
   parentListChildTopics: (childId: string) =>
     ipcRenderer.invoke("parent:listChildTopics", childId),
+  parentSetChildTopicDaily: (childId: string, topicDir: string, daily: string, type: string) =>
+    ipcRenderer.invoke("parent:setChildTopicDaily", childId, topicDir, daily, type),
   parentMigrate: () => ipcRenderer.invoke("parent:migrate"),
   parentUpsertCourse: (topicDir: string, course: any) =>
     ipcRenderer.invoke("parent:upsertCourse", topicDir, course),

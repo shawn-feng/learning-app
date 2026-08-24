@@ -43,8 +43,8 @@ describe("Electron app modules", () => {
     const skills = fs
       .readdirSync(skillsDir)
       .filter((d) => fs.statSync(path.join(skillsDir, d)).isDirectory());
-    expect(skills).toContain("recording");
-    expect(skills).toContain("study-tracker");
+    // recording / study-tracker 均已改为定时任务，共享技能目录应为空
+    expect(skills).toEqual([]);
   });
 
   it("initializes child directory with all required files", async () => {
@@ -65,10 +65,9 @@ describe("Electron app modules", () => {
     await userInit.initChildDirectory(childId, profile);
     const childDir = config.getChildDir(childId);
     const files = fs.readdirSync(childDir);
-    expect(files).toContain("study-topics.md");
-    expect(files).toContain("study-rules.md");
     expect(files).toContain("profile.json");
-    expect(files).toContain("life-events.md");
+    expect(files).toContain("kb.sqlite");
+    expect(files).toContain("AGENTS.md");
     const settingsPath = path.join(childDir, ".pi", "agent", "settings.json");
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));

@@ -49,6 +49,14 @@ export default function Settings() {
     }).catch(() => {});
   }, []);
 
+  // 初始化时自动加载模型列表：保证「编程 agent 模型」下拉与「设为默认」列表
+  // 首次打开页面即有选项（此前只靠「保存 key / 手动刷新」填充，下拉空导致无法指定）。
+  useEffect(() => {
+    window.api.piGetModels().then((models: any) => {
+      if (Array.isArray(models)) setAvailableModels(models);
+    }).catch(() => {});
+  }, []);
+
   async function handleSetDefault(provider: string, modelId: string) {
     const key = `${provider}/${modelId}`;
     setDefaultModel(key);
@@ -232,6 +240,7 @@ export default function Settings() {
                 const sep = v.indexOf("/");
                 handleSetProgramming(sep > 0 ? v.slice(0, sep) : "", sep > 0 ? v.slice(sep + 1) : "");
               }}
+              disabled={availableModels.length === 0}
               style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 260 }}
             >
               <option value="">未启用（默认）</option>
@@ -241,6 +250,11 @@ export default function Settings() {
                 </option>
               ))}
             </select>
+            {availableModels.length === 0 && (
+              <p style={{ fontSize: 12, color: "#c0392b", marginTop: 6 }}>
+                暂无可用模型：请先在「API key」区配置并保存一个模型提供商的 key，模型列表加载后可在这里选择编程 agent 模型。
+              </p>
+            )}
             {programmingModel && (
               <p style={{ fontSize: 12, color: "#667eea", marginTop: 6 }}>当前编程 agent 模型：{programmingModel}</p>
             )}

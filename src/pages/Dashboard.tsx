@@ -5,6 +5,7 @@ import TokenStatsPanel from "../components/TokenStatsPanel";
 import ChildTopicsModal from "../components/ChildTopicsModal";
 import CourseManager from "../components/CourseManager";
 import Settings from "./Settings";
+import AgentPromptEditor from "../components/AgentPromptEditor";
 
 interface Props {
   email: string;
@@ -23,29 +24,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [resetChildId, setResetChildId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [topicsChild, setTopicsChild] = useState<any>(null); // 学习主题弹窗目标孩子
-
-  // AGENTS.md editor state
-  const [agentsEditorChild, setAgentsEditorChild] = useState<any>(null);
-  const [agentsContent, setAgentsContent] = useState("");
-  const [agentsMsg, setAgentsMsg] = useState("");
-
-  async function openAgentsEditor(child: any) {
-    setAgentsEditorChild(child);
-    const { content } = await window.api.childGetAgentsMd(child.childId);
-    setAgentsContent(content);
-    setAgentsMsg("");
-  }
-
-  async function saveAgentsMd() {
-    if (!agentsEditorChild) return;
-    const result = await window.api.childSaveAgentsMd(agentsEditorChild.childId, agentsContent);
-    if (result.success) {
-      setAgentsMsg("已保存");
-      setAgentsEditorChild(null);
-    } else {
-      setAgentsMsg(result.error || "保存失败");
-    }
-  }
+  const [agentPrompt, setAgentPrompt] = useState<{ scope: string; ref: string; title: string } | null>(null);
 
   async function refresh() {
     const list = await window.api.childList();
@@ -85,6 +64,13 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
       <div className="dashboard-header">
         <h1>家长中心</h1>
         <div className="actions">
+          <button
+            onClick={() =>
+              setAgentPrompt({ scope: "parent", ref: "main", title: "编辑家长 AI 提示词" })
+            }
+          >
+            家长 AI 提示词
+          </button>
           <button onClick={onEnterChildMode}>← 返回主页</button>
           <button onClick={onLogout}>退出登录</button>
         </div>
@@ -227,10 +213,16 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                             学习主题
                           </button>
                           <button
-                            onClick={() => openAgentsEditor(child)}
+                            onClick={() =>
+                              setAgentPrompt({
+                                scope: "child",
+                                ref: child.childId,
+                                title: `编辑 AI 提示词 — ${child.aiName}`,
+                              })
+                            }
                             style={{ flex: 1, padding: "6px 12px", background: "#f0fff0", color: "#38a169", border: "none", borderRadius: 6, fontSize: 12 }}
                           >
-                            编辑 AGENTS.md
+                            编辑 AI 提示词
                           </button>
                           <button
                             onClick={() => handleDeleteChild(child.childId, child.name)}
@@ -301,36 +293,14 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
         </div>
       )}
 
-      {agentsEditorChild && (
-        <div className="modal-overlay" onClick={() => setAgentsEditorChild(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
-            <h2>编辑 AGENTS.md — {agentsEditorChild.aiName}</h2>
-            {agentsMsg && (
-              <div style={{ marginBottom: 12, color: agentsMsg.includes("失败") ? "red" : "#48bb78" }}>
-                {agentsMsg}
-              </div>
-            )}
-            <textarea
-              value={agentsContent}
-              onChange={(e) => setAgentsContent(e.target.value)}
-              style={{
-                width: "100%",
-                minHeight: 400,
-                padding: 12,
-                border: "1px solid #ddd",
-                borderRadius: 8,
-                fontSize: 14,
-                fontFamily: "monospace",
-                resize: "vertical",
-              }}
-            />
-            <div className="modal-actions">
-              <button className="cancel" onClick={() => setAgentsEditorChild(null)}>取消</button>
-              <button className="confirm" onClick={saveAgentsMd}>保存</button>
-            </div>
-          </div>
-        </div>
+      {agentPrompt && (
+        <AgentPromptEditor
+          scope={agentPrompt.scope}
+          refKey={agentPrompt.ref}
+          title={agentPrompt.title}
+          onClose={() => setAgentPrompt(null)}
+        />
       )}
-    </div>
+      </div>
   );
 }

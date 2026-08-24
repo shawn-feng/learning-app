@@ -41,8 +41,6 @@ export interface LintIssue {
   message: string;
 }
 
-const REQUIRED_DIRS = ["daily", "learning", "life", "inquiries", "tasks", "tags", "outputs"];
-
 /** 从 tags 定义表提取合法标签集合（SQLite 真源，替代 taxonomy.md 解析）。 */
 function loadTagDefSet(childDir: string): Set<string> {
   const tags = new Set<string>();
@@ -84,15 +82,17 @@ function lintSqliteTagCompliance(childDir: string, issues: LintIssue[]) {
   }
 }
 
-/** 校验 topics / rules（learning/topics.md / rules.md 的存在性对应；rules 已并入 topics 表）。 */
+/** 校验 topics（ISSUE-032：topics/rules 已并入 SQLite topics 表，不再检查 learning/*.md 文件）。 */
 function lintSqliteTopicsRules(childDir: string, issues: LintIssue[]) {
-  const topicsFile = path.join(childDir, "learning", "topics.md");
-  const rulesFile = path.join(childDir, "learning", "rules.md");
-  if (!fs.existsSync(topicsFile)) {
-    issues.push({ file: "topics", kind: "frontmatter", message: "learning/topics.md 缺失（主题清单未配置）" });
-  }
-  if (!fs.existsSync(rulesFile)) {
-    issues.push({ file: "rules", kind: "frontmatter", message: "learning/rules.md 缺失（每日目标未配置）" });
+  if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) return;
+  const db = openKbDb(childDir);
+  try {
+    const cnt = (db.prepare("SELECT COUNT(*) AS c FROM topics").get() as { c: number }).c;
+    if (cnt === 0) {
+      issues.push({ file: "topics", kind: "frontmatter", message: "topics 表为空（未配置任何主题）" });
+    }
+  } finally {
+    db.close();
   }
 }
 
@@ -218,15 +218,9 @@ export function lintChildDir(childDir: string): LintIssue[] {
   const issues: LintIssue[] = [];
   const base = path.basename(childDir);
 
-  // 1. 结构：kb.sqlite 存在 + 必需目录存在
+  // 1. 结构：kb.sqlite 存在（ISSUE-032：数据唯一真源为 SQLite，不再要求文件时代目录）
   if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) {
-    issues.push({ file: "kb.sqlite", kind: "structure", message: "kb.sqlite 不存在（数据未迁移到 SQLite）" });
-  } else {
-    for (const d of REQUIRED_DIRS) {
-      if (!fs.existsSync(path.join(childDir, d))) {
-        issues.push({ file: `${d}/`, kind: "structure", message: `必需目录缺失: ${d}/` });
-      }
-    }
+    issues.push({ file: "kb.sqlite", kind: "structure", message: "kb.sqlite 不存在（数据未初始化）" });
   }
 
   // 2. SQLite 数据校验

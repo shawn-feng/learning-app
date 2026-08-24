@@ -2,7 +2,8 @@ import { ipcMain, BrowserWindow, dialog, shell, type IpcMainInvokeEvent } from "
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads } from "./config";
-import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages } from "./pi-session";
+import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
+import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion } from "./agent-prompts";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, DEFAULT_VISION_MODEL } from "./pi-runtime";
 import fs from "fs";
 import path from "path";
@@ -14,6 +15,7 @@ import {
   deleteParentCourse,
   listChildAllocatedTopics,
   listParentMaterials,
+  setChildTopicDaily,
   listParentTopics,
   listParentTopicCourses,
   migrateChildrenToParent,
@@ -139,8 +141,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("child:getAgentsMd", async (_e, childId: string) => {
-    const childDir = getChildDir(childId);
-    const p = path.join(childDir, "AGENTS.md");
+    // ISSUE-033：优先返回 SQLite 中的用户版本（整体替换权威），否则回退磁盘文件
+    const userVer = getAgentPrompt("child", childId);
+    if (userVer !== null) return { content: userVer };
+    const p = path.join(getChildDir(childId), "AGENTS.md");
     if (fs.existsSync(p)) {
       return { content: fs.readFileSync(p, "utf-8") };
     }
@@ -149,8 +153,48 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("child:saveAgentsMd", async (_e, childId: string, content: string) => {
     try {
+      // 写入 SQLite 用户版本（权威），并立即落到 AGENTS.md 文件使改动即时生效
+      saveAgentPrompt("child", childId, content);
       fs.writeFileSync(path.join(getChildDir(childId), "AGENTS.md"), content, "utf-8");
       return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- AGENTS / 系统提示词「用户可编辑版本」通用接口（ISSUE-033）----
+  ipcMain.handle("agents:get", async (_e, scope: string, ref: string) => {
+    const userVer = getAgentPrompt(scope, ref);
+    if (userVer !== null) return { content: userVer, customized: true };
+    // 无用户整体版本：返回当前默认内容（孩子的 AGENTS.md / 家长代码默提示词），
+    // 让家长在默认基础上修改（ISSUE-033 修：此前返回空串导致编辑器空白）。
+    return { content: getDefaultPrompt(scope, ref), customized: false };
+  });
+
+  ipcMain.handle("agents:save", async (_e, scope: string, ref: string, content: string) => {
+    try {
+      saveAgentPrompt(scope, ref, content);
+      // 孩子 scope 同时落到磁盘 AGENTS.md，让改动即时生效且与编辑器所见一致
+      if (scope === "child") {
+        fs.writeFileSync(path.join(getChildDir(ref), "AGENTS.md"), content, "utf-8");
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("agents:history", async (_e, scope: string, ref: string) => {
+    try {
+      return { success: true, data: listAgentPromptHistory(scope, ref) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("agents:restore", async (_e, scope: string, ref: string, updated: string) => {
+    try {
+      return { success: true, data: restoreAgentPromptVersion(scope, ref, updated) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -229,6 +273,18 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // ISSUE-031：设置孩子某主题的每天学习量（daily + type），写入孩子库 topics.rules_json
+  ipcMain.handle(
+    "parent:setChildTopicDaily",
+    async (_e, childId: string, topicDir: string, daily: string, type: string) => {
+      try {
+        return { success: true, data: setChildTopicDaily(childId, topicDir, daily, type) };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
 
   // 一次性存量迁移（html 上移父库 + method 改全文）。破坏性操作，调用方需先备份。
   ipcMain.handle("parent:migrate", async () => {

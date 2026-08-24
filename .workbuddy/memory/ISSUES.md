@@ -889,8 +889,9 @@
 - **待确认**：① 流式增长期间是否也保持开头可见（还是仅最终态）；② 用户上滚阅读历史时新消息是否打断（增强项）；③ 是否要考虑「过长消息折叠/展开」作为补充（与锚点方案二选一或共存）。
 - **排查 / 修改入口（可直接执行）**：`src/components/ChatWindow.tsx:220-224`（滚动 useEffect）、`573`（容器）、`583-600`（消息结构/锚点）。
 - **关联**：ISSUE-004（气泡时间显示，同文件历史恢复链路）；ISSUE-018（thinking/tools 恢复——trace 展开会让消息更高，加剧此问题）。
-- **优先级**：待定（用户未标注，建议中：儿童 UX 关键，改动集中在单文件）。
-- **记录时间**：2026-08-21
+- **已修复（2026-08-22 实施）**：`src/components/ChatWindow.tsx` 重写滚动逻辑——从「无条件滚到底」改为「滚到**最后一条消息顶部**」：`target = min(scrollHeight - clientHeight, lastMsgTop)`，消息能整条放进视口时仍滚到底（自然、整条可见），超一屏时把开头显示在一屏内。用 `getBoundingClientRect` 计算 `lastMsgTop`（不受定位祖先影响）；新增 `nearBottomRef` + scroll 监听，用户主动上滚阅读历史时（`distanceFromBottom > 80px`）不打断、不强行拉回，滚回底部附近才恢复自动滚动。流式 working 阶段同样锚定开头。验证：`tsc --noEmit` 仅余基线 `TS2318/TS2552` 全局类型错误（与本次无关）。⚠️ 渲染层改动需 `npm run build` 后手测：长 AI 回复开头可见、用户上滚读历史不被拉回、用户发新消息正常跟到底。
+- **优先级**：已修复（代码完成，待构建后手测确认）
+- **记录时间**：2026-08-21 / 2026-08-22 修复
 
 ## [ISSUE-029] 主题教学资料与 method 入 SQLite（家长中心库 + 主题分配/拷贝给孩子）；method 存全文而非文件链接；每课 method 与 html 地址入库；资料移出孩子目录、改由家长目录统一管理
 
@@ -950,32 +951,6 @@
 - **method/技能二次去参数（只描述「用什么工具做什么」）**：用户指出「method 里还是有工具的调用参数，应该只描述用工具获取什么东西」——上一轮保留的 `（type:"teachingCopy"，topic 传…、course 传…）`、`（table 用 course：topic 传…、field 传…、value 传…）` 等仍是调用参数。二次清理（并入 `scripts/fix-method-tool-refs.py` 的 pass2，对当前库幂等）：method 里 parent_content 只写「获取该课教学文案/该篇教学文案/html 资料路径」；kb_update 只写「更新该课进度：状态→✅、掌握度、首次学习、最近复习」；kb_insert 只写「写入当日「学习」记录（### 课程名 标题 + 原文）」；kb_query 只写「查相关生活事件」；论语 display 改「（html 资料路径可先用 parent_content 获取）」。保留的仅领域语义字段名（状态/掌握度/首次学习/最近复习/### 课程名）与规则（learned/total/next 视图自动计算、字段缺失追加）。recording 技能同步清 `table 用`/`query 用`/`field 传`/`value 传` 及 `kb_query {query:"tags"}` JSON。验证：method 8/8 零参数残留、recording 零残留、每主题再精简 ~110-300 字符（论语 -305）；28/28、tsc 0、build 0。新增 `scripts/verify-method-clean.py` 可复查。
 - **优先级**：已实施（数据层 + 迁移 + 分配 UI 落地；管理端深化为后续项）。
 
-## [ISSUE-030] 管理孩子界面只有两个孩子，新增孩子时报「已达孩子数量上限」
-
-- **类型**：配置/UX 问题（非数量统计 bug；已定位完整根因链，待拍板）
-- **现象**：家长「孩子管理」界面显示 2 个孩子（珊珊、闻闻），尝试新增第 3 个时弹「已达孩子数量上限」，无法创建。
-- **根因链（已全部确认）**：
-  1. **云端注册硬编码 max_children=2**：`cloud-service/app/auth.py:71-73` 注册时 `INSERT INTO subscriptions ... plan='basic', max_children=2 ...`（写死 2，无档位设计）；DB 默认值同（`app/database.py:31` `max_children INTEGER NOT NULL DEFAULT 2`）。
-  2. **本地 license 缓存同为 2**：`data/license.json`（`plan:"basic"`、`max_children:2`、账号 test@qq.com，`expires_at 2026-09-11`，`getLicensePath()` = `config.ts:77-79`）。
-  3. **child:add 上限以云端为准**：`electron/lib/ipc-handlers.ts:61-81`——有 license 时 `let maxChildren = license.max_children`，再 `verifyLicenseWithCloud`（`auth-manager.ts:63-83`，成功取 `cloud.max_children`、401/失败返回 0、网络错误返回 null 降级用本地值）；`listChildren()`（`child-auth.ts:55-71`，扫 `data/children/*/profile.json`）实测返回 **2**（`data/children/` 下仅 2 个 profile.json：1f050a7f… + 408a727b…）；`children.length(2) >= maxChildren(2)` → 返回 `"已达孩子数量上限"`。
-  4. **结论**：界面 2 个孩子与套餐上限 2 **恰好打满**，新增第 3 个必然被拒——行为正确，问题是**套餐上限不可见、不可调**。
-- **UX / 产品缺口（用户视角的"问题"）**：
-  1. 错误文案只说「已达孩子数量上限」，**未说明当前上限是多少、什么套餐、如何解锁**——用户无从判断是被限流还是 bug。
-  2. 云端**没有调整 max_children 的管理途径**：注册写死 basic/2，无更高档位（家庭版等），也没有管理员改订阅的接口（只能直接改 DB）。
-  3. 边界：`child:add` 只在 `license` 存在时检查上限；**未登录（无 license）时不检查、可无限加**——上限检查并非强制路径。
-- **待确认项**：
-  1. 期望上限是多少？是否新增套餐档位（如 family max_children=5/10）或给当前账号提额？
-  2. 云端是否要加「管理员调整订阅 max_children」的接口（/api/license 管理侧），还是仅改 DB？
-  3. 前端错误提示是否改为友好文案（如「当前套餐 basic 最多 2 个孩子（已用 2/2），如需更多请联系升级」），并把上限带到 `child:list`/`child:add` 返回里供 UI 展示？
-  4. 未登录无上限的边界是否一并收紧？
-- **排查 / 修改入口（可直接执行）**：
-  - 上限检查：`electron/lib/ipc-handlers.ts:61-81`（child:add）、`electron/lib/auth-manager.ts:63-83`（verifyLicenseWithCloud 返回 max_children）。
-  - 云端订阅：`cloud-service/app/auth.py:69-74`（注册 INSERT 写死 2）、`cloud-service/app/database.py:31`（DEFAULT 2）、`cloud-service/app/license.py:34-56`（/verify 返回 max_children）。
-  - 本地数据实测：`data/license.json`（max_children:2）、`data/children/` 下 profile.json 数（2）。
-- **关联**：无直接依赖；若落地「套餐/提额」，与云端 benefit-auth 中台规划（订阅/权益）同属 license 体系。
-- **优先级**：待定（建议中：影响用户加第 3 个孩子的真实需求；若暂时只想要 3 个孩子，最快解法是云端把该账号 max_children 改大）。
-- **记录时间**：2026-08-21
-
 ## [ISSUE-031] 给孩子分配学习主题时没有「每天学习量」的设置入口——应在家长界面分配时设置
 
 - **类型**：需求 / 新功能（待拍板后实施）
@@ -1003,8 +978,18 @@
   - 旧数据：`data/children/<id>/learning/rules.md`（daily 真源）、迁移 `kb-sqlite.ts:512`（rules_json 硬编码 `{}`）。
   - 消费方：`electron/lib/learning-summary.ts`（getLearningSummary 的 daily 字段）、study-tracker/学习提示词（kb_query topics）。
 - **关联**：ISSUE-029（主题分配/快照语义——daily 量随分配一起拷贝）；ISSUE-019（家长页「进度 vs 计划」展示依赖此量做偏差计算）；ISSUE-013（kb 工具族查询）。
-- **优先级**：待定（建议中高：家长设置学习计划的刚需，且 ISSUE-019 的「计划对比」功能前置依赖它）。
-- **记录时间**：2026-08-21
+- **优先级**：已实施（代码完成，待构建后手测；用户拍板「孩子库独立存储 + 父库默认带入 / 分配时弹框 + 分配后可编辑」）。
+- **记录时间**：2026-08-21 / 2026-08-22 实施
+
+## [ISSUE-031 处理记录] 2026-08-22（已实施）
+- **拍板**：学习量存孩子库 `topics.rules_json.daily/type`（随分配从父库快照带入，每孩子可独立改）；UI = 分配时弹框设置 + 分配后行内可编辑。
+- **实施**：
+  - `parent-library.ts`：`listChildAllocatedTopics` 现返回 `daily/type`（解析 rules_json）；新增 `setChildTopicDaily(childId, topicDir, daily, type)` 写回孩子库 rules_json（幂等、主题不存在忽略）。
+  - IPC/preload：新增 `parent:setChildTopicDaily` + `parentSetChildTopicDaily`。
+  - UI：`ChildTopicsModal.tsx` 重写——已添加主题行内显示「每天学习量」输入框 + 类型下拉（必学/选学/复习）+ 保存；未添加主题点「+ 添加主题」弹出设置面板（默认带父库 daily/type），确认后 `parentAllocate` 紧接着 `parentSetChildTopicDaily` 写入。
+  - 迁移不丢量：孩子库 topics.rules_json 独立于父库迁移，存量 daily 不会丢；`migrateAllToSqlite` 父库 topics 写 `{}` 仅影响父库默认（分配时父库默认 daily 现由分配链拷贝，见 rules_json 已随行）。
+- **说明**：`rules_json` 已承载 daily/type（灵活自由文本，支持「3」「1 内容单元」等量纲），无需新增列；消费方（ISSUE-019 计划对比）后续从 `kb_query topics` 读 rules_json.daily 即可。
+- **验证**：`tsc --noEmit` 相关文件 0 错。`npm run build` 后需手测：分配弹框设量、分配后改量保存、父库默认值带入。
 
 ## [ISSUE-032] 创建孩子时的目录结构仍按「文件时代」初始化，需按 SQLite 化后的结构调整
 
@@ -1037,8 +1022,17 @@
   - 库初始化：`electron/lib/kb-sqlite.ts:155-167`（openKbDb，建表幂等，可直接在 init 调用）。
   - 实测残留：`data/children/1f050a7f-…/`（study-topics.md / study-rules.md / life-events.md / daily-logs/ 存在）。
 - **关联**：ISSUE-013（kb-lint/目录规范同源，本 issue 是结构侧收敛）；ISSUE-029（主题/资料已上移父库）；ISSUE-031（rules.md 的 daily 量入库后，rules.md 更无存在必要）。
-- **优先级**：待定（建议中：新孩子结构干净，但不影响老孩子功能；需与 ISSUE-031、kb-lint 改动联动，建议三者一起拍板）。
-- **记录时间**：2026-08-21
+- **优先级**：已实施（代码完成，待构建后手测；用户拍板「只建最小集 `.pi/`+profile.json+AGENTS.md+空 kb.sqlite` + 默认标签种子入 tags 表；kb-lint 去掉目录结构检查、topics/rules 改查库」）。
+- **记录时间**：2026-08-21 / 2026-08-22 实施
+
+## [ISSUE-032 处理记录] 2026-08-22（已实施）
+- **拍板**：新孩子只建最小集；SQLite 唯一真源；kb-lint 去掉目录结构硬性检查、topics/rules 改查库；标签词表从 taxonomy.md 改为初始化时写入孩子库 tags 表（默认 20 个）。
+- **实施**：
+  - `user-init.ts` `initChildDirectory` 改为只建 `childDir` + `.pi/agent/sessions` + `.pi/skills` + `profile.json` + `.pi/agent/settings.json` + `AGENTS.md`；**不再建** `daily/learning/life/inquiries/tasks/outputs/tags/` 与 `daily-logs/`、`study-topics.md`/`study-rules.md`/`life-events.md`/`tags/taxonomy.md`/`learning/topics.md`/`learning/rules.md`；删除对应模板常量与 `buildTaxonomyMd`。新增 `initChildKb(childDir)`：调 `openKbDb` 建表并写入默认 20 个标签词表（tags 表空时才写）。
+  - `kb-lint.ts`：移除 `REQUIRED_DIRS` 结构检查（仅校验 kb.sqlite 存在）；`lintSqliteTopicsRules` 改查孩子库 `topics` 表（空则报「未配置任何主题」），不再检查 `learning/topics.md`/`rules.md` 文件。
+  - 运行时安全：排查确认新孩子创建路径无任何代码写这些废弃目录（`progress:get` 用 `existsSync` 守卫，缺文件仅省略字段，不报错）。
+  - 测试同步：`test/app.test.ts`、`test/functional.test.ts`、`test/sync.test.ts` 的文件存在性断言改为断言 `kb.sqlite` + `AGENTS.md`；`functional.test.ts`「文件模板」两个 `it` 改写为断言 kb.sqlite + tags 表 20 行；`sync.test.ts` 的 hash 变更测试改用 `profile.json`。
+- **验证**：`tsc --noEmit` 相关文件 0 错。`npm run build` 后需手测：新增孩子目录干净、kb-lint 对新孩子无「缺失目录」报错、默认标签词表就绪。
 
 ## [ISSUE-033] AGENTS 改为「代码默认 + 用户版本」：用户可编辑（每孩子 + 家长各一份），带历史版本可回退
 
@@ -1070,5 +1064,150 @@
   - 存储：孩子库 `electron/lib/kb-sqlite.ts`（meta 表，SCHEMA_TABLES :127-130）、父库 `electron/lib/parent-library.ts`（meta 表 :71-74）。
   - UI：家长中心（Dashboard/Settings 相关视图，新增入口）。
 - **关联**：ISSUE-026（家长内容会话提示词——家长侧用户版本覆盖对象之一）；ISSUE-025（技能编辑器已移除，AGENTS 编辑入口是独立新增）；ISSUE-032（若孩子 AGENTS 改为内联，`AGENTS.md` 文件去留与目录结构联动）。
-- **优先级**：待定（建议中高：家长自定义 AI 行为的刚需；改动集中在 pi-session.ts 注入层 + 存储 + 一个设置页）。
-- **记录时间**：2026-08-21
+- **优先级**：已实施（代码完成，待构建后手测；用户拍板「整体替换 + SQLite 存储 + 家长中心设置页；孩子/家长各一份 + 历史版本可回退」）。
+- **记录时间**：2026-08-21 / 2026-08-22 实施
+
+## [ISSUE-033 处理记录] 2026-08-22（已实施）
+- **拍板**：整体替换（用户版本与代码默认完全解耦，编辑坏了可一键回退默认）；存储走新建 `data/agents.sqlite`（`prompts` 当前版 + `prompt_history` 历史版）；保留 AGENTS.md 文件（内容=用户版本）；家长中心新增「AI 提示词」设置入口（孩子 + 家长各一份，含历史回退）。
+- **实施**：
+  - 新增 `electron/lib/agent-prompts.ts`：`getAgentPrompt/saveAgentPrompt/resetAgentPrompt/listAgentPromptHistory/restoreAgentPromptVersion`，scope/ref 维度（child=<childId>；parent=main 通用助手 / content 教学内容助手）。保存时旧版推入历史；空内容=恢复默认（删当前版，留历史）。
+  - `pi-session.ts`：`writeAgentsMd` 优先写用户版本（整体替换），无用户版本才回退到「代码默认 + 保留 custom 段」向后兼容；`buildParentPrompt`/`buildParentContentPrompt` 优先返回用户版本。
+  - IPC/preload：新增 `agents:get/save/history/restore` 通用接口（child:getAgentsMd/child:saveAgentsMd 改为走 SQLite，并即时落盘 AGENTS.md 生效）。
+  - UI：新增 `src/components/AgentPromptEditor.tsx`（通用编辑器：textarea + 保存/恢复默认/历史版本列表回退）；`Dashboard.tsx` 孩子卡片「编辑 AI 提示词」与家长中心头部「家长 AI 提示词」均用它（家长端带 main/content 切换）。
+- **验证**：`tsc --noEmit` 相关文件 0 错。`npm run build` 后需手测：编辑孩子/家长提示词保存即生效、恢复默认回退代码提示、历史版本回退。
+
+## [ISSUE-034] SQLite 模糊匹配能力 + 需要模糊检索的场景分析（目标：减少 listOnly 操作，省 token）
+- **现状 / 问题**：
+  - 当前 `kb_query` 只有**精确匹配**（daily 的 date/block/title 等值匹配、tag 用 `LIKE` 逗号包裹）与 `listOnly` 标题清单。**没有对内容（raw / lesson_method / teaching_copy / method）的关键词检索能力**。
+  - 导致：AI 想找"上次聊到月球/恐龙/诚实是哪天"或"哪一课讲反义词"，只能 month+listOnly 拉全部标题、或依赖记忆手动扫——正是要减少的 listOnly 操作。
+- **SQLite 模糊匹配能力核查（已实测 node:sqlite / v22 内置 SQLite）**：
+  1. `LIKE '%x%'` —— **中文子串直接可用**（逐字符匹配，对 CJK 无分词问题），实测 `'今天孩子读了关于月球的绘本' LIKE '%月球%'` → 1 行。缺点：无索引、全表扫描；但单孩子 daily_entries/courses 量级（百~千行）全扫可忽略，瓶颈是 token 不是 DB 速度。
+  2. `GLOB` —— 大小写敏感，对中文检索价值低。
+  3. **FTS5 全文检索 —— 内置可用**（实测 `CREATE VIRTUAL TABLE ... USING fts5` 不报错）。但两个坑：
+     - 默认 `unicode61` 分词器**不对中文分词**：一整串 CJK 被当成一个 token，`MATCH '孔子'` 返回 0（已实测）。
+     - `trigram` 分词器支持任意语言子串，但**查询词必须 ≥ 3 个字符**（已实测 '孔子'/'月球'/'学而' 均 2 字 → 0 行）；短中文关键词（2 字词语）匹配不到。
+  - 结论：**中文短关键词检索，LIKE 是最稳的基线**；FTS5 trigram 适合 ≥3 字长文本做相关性排序，但不能作为 2 字关键词的唯一机制。
+- **哪些场景需要模糊检索（减少 listOnly）**：
+  1. **daily 内容关键词反查**：按 `raw` 自由文本找某天/某 block 的某次对话/事件（如"上次聊恐龙"），跨日期跨 block。→ 现只能 listOnly 全量再扫。
+  2. **课程关键词定位**：按 `courses.title/lesson_method/teaching_copy` 找"讲反义词的课/讲过去式的课"，跨主题跨课。→ 现只能 progress+listOnly 再扫全部课。
+  3. **主题/资料跨库全文检索（家长库，ISSUE-029 后资料上移父库）**：家长找某主题 method 里某段、某资料 html/path。→ 现无检索入口。
+  4. **跨 block 自由文本**：同一关键词可能出现在"生活"和"学习"两类记录，需跨 block 检索。
+  5. **录音/询问/任务反查**（recording 的 inquiries/tasks）：按内容找某次问答/任务。
+  （tags 是受控词表、先查定义再选，不需模糊，维持现状。）
+- **方案要点（待定）**：
+  - 给 `kb_query` 增加 `keyword`/`search` 参数（daily / progress / 家长库 topics 各加一份），底层 `raw/title/method/teaching_copy LIKE '%kw%'`（中文稳健），**可选**叠加 FTS5 trigram 做相关性排序与片段高亮。
+  - 返回**标题 + 命中片段（snippet）**而非整段 raw，命中再多也 token 可控；限制返回行数（如 20）。
+  - 关键词为空时行为与现在一致（仍走 listOnly/精确）。
+  - 预编译参数化（防注入，沿用现有 `prepare(...).all(...args)`）。
+  - 提示词：在 kb_query description 明确"模糊检索用 keyword，不要用 read 文件 / 不要 listOnly 全量"。
+- **待确认项**：
+  1. 是否只做 LIKE（简单稳健），还是引入 FTS5 trigram（需 ≥3 字、建虚拟表、迁移脚本）？建议先做 LIKE，trigram 作为长文本增强。
+  2. 返回片段长度与行数上限？
+  3. 是否对 `tags` 也放开自由模糊（放开受控词表）？
+  4. 家长库（ISSUE-029）是否同步加 keyword 检索？
+  5. 关键词命中后，AI 是否还要再发一次精确/全量查询拿完整字段？还是片段已够？
+- **排查 / 修改入口（可直接执行）**：
+  - 查询实现：`electron/lib/kb-sqlite.ts`——`queryDaily`（:584-617，conds 拼装处加 keyword 分支）、`queryTopicProgress`（:620-657）、`SCHEMA_TABLES`（:82-130，如需 FTS5 加虚拟表）、`openKbDb`。
+  - 工具接口：`electron/lib/custom-tools.ts`——`kbQueryTool`（:169-250，parameters 加 keyword + description 更新 + 各 case 透传）。
+  - 家长库：`electron/lib/parent-library.ts`（topics 表，ISSUE-029 后做）。
+  - 提示词：`electron/lib/pi-session.ts` AGENTS 里"优先 kb_query 而非 read 文件"段（:53 附近）补一句"模糊检索用 keyword"。
+- **关联**：ISSUE-013（kb 工具族省 token，本 issue 是检索能力补全）；ISSUE-023（SQLite 唯一真源）；ISSUE-029（资料上移父库后跨库全文检索需求）；ISSUE-019（家长页进度展示若要结合"内容反查"也受益）。
+- **优先级**：待定（建议中：直接减少 AI listOnly 全量扫，省 token 收益明确；LIKE 方案改动小）。
+- **记录时间**：2026-08-23
+
+## [ISSUE-035] study-tracker 从技能改为纯代码定时任务（数据库取数判断，不调用 AI）
+
+- **背景 / 需求**：与 ISSUE-024（recording）同思路——学习评估不需要 AI：删除 `data/shared/skills/study-tracker/SKILL.md` 技能，改为 scheduler 定时任务，**判断逻辑由代码直接从 kb.sqlite 取数**（不再经 AI / 不再 /skill:study-tracker）。
+- **已实施（2026-08-23）**：
+  1. 删除 `data/shared/skills/study-tracker/`（且再次删除被外部恢复的 `recording/`——skills 目录现为空，加载路径兜底无害）；
+  2. 新建 `electron/lib/study-tracker.ts`：`runStudyTracker(childDir, today?)` 纯代码——`queryTopicsMeta`（topics.rules_json：daily 每日目标 / type 必学选学）+ `queryTopicProgress`（learned/total/next/updated + 每课 first_learned）；**今日新增 = first_learned == 今天且状态✅ 的课数**；必学主题按 `todayLearned >= daily` 判定达标；生成 markdown 评估报告写入 `learning/tracker-latest.md`（latest 快照）并返回结构化结果；导出 `formatLocalDate`（scheduler 复用，删除本地重复定义）；
+  3. `scheduler.ts`：`runTracker` 改为同步调用 `runStudyTracker` + 广播 `pi:study_tracker` 事件（前端无监听无副作用）；不再建 AI session、不再 logRound；
+  4. `pi-session.ts` L53 文案（「study-tracker 核对」→「每日达标评估核对」）与 L377 注释更新；regenerate-agents.mjs 重新生成 AGENTS.md。
+- **数据匹配关键点（踩过的）**：topics.file 形如 `lunyu/lunyu.md`（带路径）↔ courses.topic 是纯目录名 `lunyu` → 用 `file.split("/")[0]`；rules_json 的 daily 是**字符串**（"3"）需 Number()；`courses.first_learned` 存 YYYY-MM-DD（空串/'-' 表示无）。
+- **输出**：tracker-latest.md（学习评估快照）+ 广播事件；前端暂无展示 UI（后续可接）。
+- **遗留待确认**：① 前端是否要展示评估结果（接 `pi:study_tracker` 事件或读 tracker-latest.md）；② `recording/` 技能目录 8/21 23:04 被恢复的根因（疑似经技能导入 IPC，ISSUE-025 已隐藏 UI 但 IPC/组件保留）——若不再需要，可考虑移除 skills 相关 IPC。
+- **已废弃并整体回退（2026-08-23 晚）**：用户确认 **study-tracker 功能不再需要**——孩子的学习进度界面已能直接看到当天是否完成学习任务，单独做每日达标评估任务属于重复。已移除：`electron/lib/study-tracker.ts`、`test/study-tracker.test.ts`、scheduler 内 studyTracker 配置/调度/runCatchUp 段、`SchedulerSettings.tsx` 的「学习进度追踪」UI 段、已生成的 `tracker-latest.md` 快照；相关测试断言同步更新（app/functional/scheduler-task-state/archive-limit）。`formatLocalDate` 收回 scheduler 本地。commit `463117a`（ISSUE-035 实现）保留在历史中，后续提交为移除操作。
+- **优先级**：已废弃（2026-08-23）
+
+## [ISSUE-036] recording 改造为「每日学习记录总结」：多时间点触发 + 会话前自动总结 + AI 工具化
+
+- **背景 / 需求**（用户 2026-08-23 拍板）：
+  1. 定时任务改名「每日学习记录总结」；
+  2. 触发方式从「时间间隔」改为「具体时间点，可多个」，设置页可配；
+  3. 新增「每次新建会话前自动总结之前的会话」开关；
+  4. 作为 AI 工具：用户（孩子/家长）希望做汇总时，agent 自动调用；
+  5. 每次汇总按天进行：从 jsonl 读某天的会话内容；该天没有会话则跳过。
+- **已实施（2026-08-23）**：
+  1. 新建 `electron/lib/daily-summary.ts` 核心（三路共用）：`readDailyConversation(childDir, date)`（参数化按天过滤，排除 thinking/toolCall/toolResult）、`findLastConversationDate`（今天之前最后有会话的天）、`findLatestConversationDate`（最近有会话的天，AI 工具缺省用）、`createEphemeralSession(childDir)`（从 scheduler 挪入，noContextFiles/noSkills/kb 三件套）、`summarizeDailyConversation(childDir, date)`（无会话 → skipped 不消耗 token；有会话 → AI 按 RECORDING_PROMPT 提取写 daily）、`summarizeConversationTool`（defineTool，name=summarize_conversation，date 可选）；
+  2. `scheduler.ts`：recording 配置改 `{ enabled, times: string[], onNewSession }`（默认 times:["21:00"]，兼容旧 intervalHours 配置自动补默认）；`startScheduler` 按 times 逐时间点触发（当天该点未跑过才跑，lastRun 日期+HH:mm 判断）；`runCatchUp` 补跑今天已过的最晚时间点；
+  3. `pi-session.ts`：`shouldAutoNewSession` 命中 newSession 前，若 `recording.onNewSession` 开启则 fire-and-forget 调 `summarizeDailyConversation`（总结今天之前最后有会话的天，失败只记日志）；工具白名单/customTools 挂 `summarize_conversation`；AGENTS.md「记录」段补充工具说明；
+  4. `SchedulerSettings.tsx`：改「每日学习记录总结」，启用后显示多时间点列表（time 输入 + 删除 + 添加，默认 21:00）+「每次新建会话前自动总结」开关；
+  5. 测试：`test/daily-summary.test.ts`（按天过滤/最近会话日/无会话跳过共 6 用例）；archive-limit 配置结构同步。
+- **关键点**：AI 工具与定时/会话前三路共用 `summarizeDailyConversation`，幂等（kb_insert 同主键不重复写）；`pi-session ↔ scheduler` 循环 import（getChildSchedulerConfig / resetChildSession 均在函数内使用，ESM 安全）；`pi-session.ts` 本次改动与 ISSUE-033（agent-prompts）同文件，未提交（等 033 批）。
+- **优先级**：已完成（2026-08-23，commit 待提交）
+- **补充（2026-08-23 晚，同天多次汇总去重）**：用户选择「每次都跑 + 增量去重」策略——`summarizeDailyConversation` 跑 AI 前先 `queryDaily` 查当天已有条目，经 `formatDailyExistingList` 拼成「已存在清单 + 不重复规则」进 prompt（① 清单中已存在条目禁止重复插入；② 新信息用 kb_update 更新已有条目；③ 只对清单外新条目 kb_insert）；`daily_entries` 主键 (date,block,title) 幂等兜底。三路触发（定时多时间点/会话前/AI 工具）统一走此去重。`formatDailyExistingList` 为纯函数（raw 截断 120 字符省 token），新增 2 单测（daily-summary 共 9 用例全过）。
+
+## [ISSUE-037] 家长「课程管理」页里的 AI 对话没有任何反应（发送后无回复、无报错）
+
+- **类型**：bug（用户未标注；症状=家长课程教学页右侧 AI 聊天发送后无任何 AI 回复，疑似静默失败）
+- **现象**：家长进入某学习主题的「课程管理」详情页（`src/components/TopicDetail.tsx`，右栏是与 AI 的沟通），在聊天框输入并发送后，**AI 不回复、输入框一直转圈或无任何变化**，也无任何错误提示。孩子/通用家长助手的聊天正常。
+- **代码锚点（已定位完整链路）**：
+  - 前端聊天：`src/components/TopicDetail.tsx`
+    - `useEffect([topicDir])`（59-63）挂载时调 `window.api.piStartParentContent()`——**fire-and-forget，无 await、无 .catch**，返回 Promise 被丢弃；
+    - `useEffect([])`（65-82）注册 `onPiStreaming` / `onPiAgentEnd` 监听，`onPiStreaming` 内 `if (data.childId !== "parent-content") return;`（67 行）按 childId 过滤；
+    - `handleSend`（177-192）：`setBusy(true)` 后 `try { await window.api.piPromptParentContent(...) } catch { setBusy(false) }`——**catch 块只 reset busy，完全吞掉错误、不给任何 UI 提示**；
+    - `busy` 状态仅在 `onPiAgentEnd`（childId==="parent-content"）时 `setBusy(false)`。
+  - 主进程 handler：`electron/lib/ipc-handlers.ts`
+    - `pi:start_parent_content`（723-731）：`getParentContentSession()` → `attachSessionEvents(session, "parent-content", getMainWindow)`；catch 仅返回 `{success:false}`，前端未消费；
+    - `pi:prompt_parent_content`（733-743）：`getParentContentSession()` → `session.prompt(text)` → `logRound`；catch 返回 `{success:false, error}`。
+  - 会话构造：`electron/lib/pi-session.ts:512-539` `getParentContentSession()`：单例（`cachedParentContentSession`），`DefaultResourceLoader({ noSkills:true, extensionFactories:[learningGuardExtension], systemPromptOverride: buildParentContentPrompt })`，`createAgentSession({ model: getDefaultModel(), sessionManager: SessionManager.inMemory(), tools:["read","write","edit","get_date","parent_course_save","parent_course_delete"], customTools:[getDateTool, parentUpsertCourseTool, parentDeleteCourseTool] })`。
+  - 事件绑定：`electron/lib/ipc-handlers.ts:1152-1214` `attachSessionEvents`：`session.subscribe` → `message_update` 的 `text_delta` 发 `pi:streaming`、其它 type 发 `tool_*`/`agent_end`/`message_end`/`error`；用 `subscribedSessions.has(session)` 去重。
+  - 桥接：`electron/preload.ts:14-33`（`onPiStreaming`/`onPiAgentEnd` 等）、`piPromptParentContent`（64）。
+  - 工具名校验：已确认 `parent_course_save`/`parent_course_delete` 同时出现在 `tools` 白名单（`pi-session.ts:533`）与 `customTools` 的 `defineTool({name})`（`custom-tools.ts:473/516`）——**排除 ISSUE-006 同类「customTools 未进白名单被过滤」坑**。
+- **根因假设（按可能性排序，待验证，非结论）**：
+  1. **【最吻合】前端静默吞错 + 后端任一步抛错 → 用户看到「完全没反应」**：`piStartParentContent` 是 fire-and-forget，若 `getParentContentSession()` 在**首次**构造时抛错（model 未配置 / `getDefaultModel()` 取不到 / `learningGuardExtension` 加载异常 / SDK 0.84 创建 session 失败），`attachSessionEvents` 永不执行 → 后续 `pi:prompt_parent_content` 复用同一抛错路径、返回 `{success:false}`，而 `handleSend` 的 catch 只 `setBusy(false)` 不提示。这与「没有任何反应、连错误都没有」完全吻合，也违反用户既定的「网络/调用失败必须显式提示 UI 错误，禁止静默回退」原则。
+  2. **`pi:start_parent_content` 与监听注册的顺序/生命周期问题**：监听在 `useEffect([])`（挂载即注册），`piStartParentContent` 在 `useEffect([topicDir])` 异步触发；若会话构造较慢或抛错，事件未绑定。但 childId 过滤与订阅去重逻辑本身正确。
+  3. **`session.subscribe` 的事件结构不匹配 SDK 0.84.1**：若 `message_update` 的 `assistantMessageEvent.type` 不是 `text_delta`（或字段改名），`pi:streaming` 永不发送 → 前端无文本；但 `agent_end` 仍会发 → busy 会复位。此情形用户应看到「转圈停止但仍无文字」，与「完全没反应」略有出入。
+  4. **模型/额度问题**：`getDefaultModel()` 返回的模型对家长内容会话不可用（如未配 key、超出额度），`session.prompt` 抛错 → 走假设 1 的静默路径。
+- **验证手段（定位用）**：
+  1. 打开 `node .` 主进程控制台 + 渲染进程 DevTools：**主进程** `attachSessionEvents` 的 `console.log("[pi:event] child=parent-content type=...")`（ipc-handlers.ts:1158）是否打印、`pi:prompt_parent_content` 的 catch（740）是否报错；**渲染进程** `handleSend` 的 `await window.api.piPromptParentContent(...)` 返回 `success:false` 还是抛异常。
+  2. 在 `TopicDetail.tsx:61` 把 `window.api.piStartParentContent()` 改为 `await window.api.piStartParentContent().catch(e=>console.error("start err",e))`，并把 `handleSend` 的 catch 改成 `catch(e){ setBusy(false); alert(JSON.stringify(e?.message||e)); }`，复现即可看到真实错误。
+  3. 确认 `getDefaultModel()` 在家长内容会话下返回有效模型（可在 `getParentContentSession` 加 `console.log("model", model)`）。
+- **候选修复方向（待定，先定位根因）**：
+  1. **治本（必做）**：`handleSend` 的 catch 必须显式提示错误（弹窗/内联错误条），绝不允许静默；`piStartParentContent` 改为 `await ... .catch` 并在失败时提示（与 ISSUE-016 一致的用户体验原则）。
+  2. 若根因是会话构造抛错：检查 `getDefaultModel()` / `learningGuardExtension` / SDK 创建参数，确保 `parent-content` 会话能正常建出（可复用通用家长会话 `getParentSession` 的构造路径对照）。
+  3. 若根因是事件结构：在 `attachSessionEvents` 的 `default` 分支 `console.log` 未识别的 event.type，确认 SDK 实际发出的事件名。
+- **排查 / 修改入口（可直接执行）**：`src/components/TopicDetail.tsx:59-63,65-82,177-192`；`electron/lib/ipc-handlers.ts:723-743,1152-1214`；`electron/lib/pi-session.ts:512-539`；`electron/preload.ts:14-33,64`。
+- **待确认项**：① 复现时是「完全无变化」还是「转圈停了但无文字」（区分假设 1 vs 3）；② 主进程控制台是否打印 `[pi:event] child=parent-content`；③ `getDefaultModel()` 在家长内容会话返回何值；④ 与其它正常会话（孩子/通用家长）的 model 配置是否一致。
+- **关联**：ISSUE-016（同属「失败须显式提示、禁止静默」的用户体验原则）；ISSUE-026（课程管理页左右分栏 + 专用提示词）；customTools 白名单坑（ISSUE-006，本次已排除）。
+- **优先级**：待定（建议高：家长制作教学内容的核心交互完全不可用，且无任何报错，难自查）。
+- **记录时间**：2026-08-24
+
+## [ISSUE-038] 评估：AGENTS / method / 工具描述 中存在大量重复内容，这些重复是否必要？
+
+- **类型**：评估 / 重构建议（用户要求评估重复是否必要；非 bug）
+- **现象**：孩子 AGENTS.md（系统提示）、各主题 method.md（运行时经 parent_content 拉取、ISSUE-029 还随主题拷贝进孩子库）、以及各工具的 `description`（随工具 schema 每次请求都带）三处，对**同一批通用规则**反复陈述，存在三重重复。
+- **已定位的三重重复（按规则逐条对照，含 file:line）**：
+
+  | # | 通用规则 | AGENTS.md | method.md | 工具 description |
+  |---|---|---|---|---|
+  | R1 | 用 get_progress / 顶部概览取 next，**严禁 read 进度文件** | `pi-session.ts:57-61`（进度查询） | `learning/lunyu/method.md:7`（「next 由系统自动计算…不要读文件」） | `custom-tools.ts:128-132`（getProgressTool：不要 read 进度文件…浪费上下文） |
+  | R2 | 展示 html 用 display_content，**不要自己手工拼 HTML** | `pi-session.ts:50-54`（内容展示） | `learning/lunyu/method.md:17`（「用 display_content…只展示html资料，不需要再自己编」） | `custom-tools.ts:33-37`（displayContentTool：何时调用/以 method 为准） |
+  | R3 | method 是孩子引导的**唯一权威**，从 parent_content 取，孩子库不存 method/文案 | `pi-session.ts:40`（学习） | （隐含：method 自身即权威） | `custom-tools.ts:548-555`（parentContentTool：孩子库不存…必须先调用） |
+  | R4 | 数据全在 SQLite，**禁止 read/write/edit 碰数据文件**，一律用 kb 工具 | `pi-session.ts:44`（记录） | — | `custom-tools.ts:173,180`（kbQueryTool：优先于 read 数据文件…不要用 read 读它们） |
+  | R5 | 标签只能从定义表选，先 kb_query 词表 | `pi-session.ts:44` | — | `custom-tools.ts:178`（kbQueryTool：打标签前先查此表） |
+
+  此外 AGENTS.md 的「学习/记录/内容展示/进度查询」四节（38-61 行）本质是**对 5 个工具的逐条用法散文重述**，与工具 description 高度重叠。
+- **评估结论（核心回答：这些重复是否必要？）**：
+  1. **method.md 里的通用规则（R1/R2）基本不需要**——这是最该清的重复。method.md 的定位是「某主题的**专属教学方法**」（论语的三步吟诵/翻译/应用、考核方式、反馈），而 R1/R2 是**全局通用约定**，本就属于 AGENTS.md（系统提示，孩子会话始终在上下文里）。保留在 method.md 的代价：① 随主题**拷贝进每个孩子的库**（ISSUE-029），N 主题 × M 孩子被放大 N×M 倍；② 改一条通用规则要同步改每一个 method.md，极易漂移（正是 ISSUE-033 想解决的「改了源码但磁盘陈旧」同类风险）；③ method.md 每次教学交互都被拉进上下文，通用废话浪费 token（与 ISSUE-013/034 的省 token 目标冲突）。**结论：method.md 应只留主题专属方法，通用规则一律回 AGENTS.md 一处。**
+  2. **AGENTS.md ↔ 工具 description 的重叠（R1–R5）部分必要、部分冗余**：工具 description **必须自包含**——模型在决定调哪个工具时只读 schema，看不到 AGENTS 散文，所以「这个工具干嘛用、啥时候用」写在 description 里是必要的（R2/R3/R4/R5 在 description 的版本应保留）。但 **AGENTS.md 里对这 5 个工具的逐条散文重述（38-61 行）大多冗余**：系统提示始终在上下文，模型既看 AGENTS 又看 description，重复写两遍只增 token。可把 AGENTS 的「学习/内容展示/进度查询」压成一句话指针（如「知识库查询用 kb_query，详见其工具说明」），细节交给 description。
+  3. **唯一可保留的"故意重复"**：把 1–2 条**最关键约束**在 method.md 里再强调一次（就近、增强遵守），但应是精选的少数，而非整段通用规则照抄。
+- **建议方案（待拍板后实施）**：
+  1. **method.md 去通用化**：保留各主题专属的「教学流程/考核/反馈」，删除 R1/R2 这类全局约定（它们已在 AGENTS.md）；改 `regenerate-agents`/主题生成脚本与存量 method.md 同步清理。
+  2. **AGENTS.md 瘦身**：把「学习/记录/内容展示/进度查询」四节压成"工具名 + 一句话用途 + 指向工具 description"的索引式写法，删逐条散文。
+  3. **工具 description 作为「如何使用工具」唯一真源**，保持自包含、不依赖 AGENTS 也不依赖 method。
+  4. 可选：把 R1–R5 抽成一份「全局约定」常量，AGENTS.md 与（必要的）method.md 都引用同一份，避免将来漂移。
+- **风险 / 待确认项**：① 删 method.md 通用句后，是否确有 AGENTS.md 在上下文兜底（孩子会话 system 始终注入 AGENTS.md，确认无"method 覆盖 AGENTS"导致通用规则失效的场景，ISSUE-033 用户整体版本路径需一并核对）；② AGENTS.md 压成索引后，模型是否仍稳定选对工具（建议删后做少量手测）；③ 存量 8 个主题 method.md 要不要一次性清理（可脚本批量）；④ 通用约定抽取为共享常量是否过度设计。
+- **关联**：ISSUE-029（method 随主题拷贝进孩子库 → 重复被 N×M 放大，去重收益最大）；ISSUE-033（AGENTS/家长提示词版本化——本 issue 去重后版本更干净）；ISSUE-013 / ISSUE-034（省 token 目标一致）；ISSUE-026（课程管理专用提示词，同属提示词治理）。
+- **优先级**：待定（建议中：纯提示词治理、不改功能，但能明显省 token、降漂移；建议与 ISSUE-029/033 一并拍板）。
+- **记录时间**：2026-08-24

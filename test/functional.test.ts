@@ -143,10 +143,9 @@ describe("需求 §十二 数据架构", () => {
     const childDir = config.getChildDir(child!.childId);
     expect(fs.existsSync(childDir)).toBe(true);
     expect(fs.existsSync(path.join(childDir, "profile.json"))).toBe(true);
-    expect(fs.existsSync(path.join(childDir, "study-topics.md"))).toBe(true);
-    expect(fs.existsSync(path.join(childDir, "study-rules.md"))).toBe(true);
-    expect(fs.existsSync(path.join(childDir, "life-events.md"))).toBe(true);
-    expect(fs.existsSync(path.join(childDir, "daily-logs"))).toBe(true);
+    // ISSUE-032：SQLite 唯一真源，不再建文件时代模板（study-topics/study-rules/life-events/daily-logs）
+    expect(fs.existsSync(path.join(childDir, "kb.sqlite"))).toBe(true);
+    expect(fs.existsSync(path.join(childDir, "AGENTS.md"))).toBe(true);
   });
 
   it("settings.json 指向共享技能目录", async () => {
@@ -164,7 +163,7 @@ describe("需求 §十二 数据架构", () => {
     expect(settings.defaultProjectTrust).toBe("always");
   });
 
-  it("共享技能目录包含 2 个基础技能（recording + study-tracker）", async () => {
+  it("共享技能目录为空（recording / study-tracker 均已改为定时任务）", async () => {
     const config = await import("../electron/lib/config");
     const skillsDir = config.getSkillsDir();
     expect(fs.existsSync(skillsDir)).toBe(true);
@@ -172,13 +171,7 @@ describe("需求 §十二 数据架构", () => {
     const dirs = fs.readdirSync(skillsDir).filter((d) =>
       fs.statSync(path.join(skillsDir, d)).isDirectory()
     );
-    expect(dirs).toContain("recording");
-    expect(dirs).toContain("study-tracker");
-
-    // 每个技能都有 SKILL.md
-    for (const dir of dirs) {
-      expect(fs.existsSync(path.join(skillsDir, dir, "SKILL.md"))).toBe(true);
-    }
+    expect(dirs).toEqual([]);
   });
 
   it("任务状态文件 task-state.json 路径配置正确", async () => {
@@ -195,34 +188,42 @@ describe("需求 §十二 数据架构", () => {
   });
 });
 
-describe("需求 §学习框架 — 文件模板", () => {
-  it("learning/topics.md 主题目录包含 YAML frontmatter", async () => {
+describe("需求 §学习框架 — SQLite 真源（ISSUE-032）", () => {
+  it("kb.sqlite 初始化且 tags 表含默认标签词表（≥20：全新孩子播种 20，存量迁移孩子更多）", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
+    const { openKbDb } = await import("../electron/lib/kb-sqlite");
 
     const children = childAuth.listChildren();
     const first = children[0];
-    const content = fs.readFileSync(
-      path.join(config.getChildDir(first.childId), "learning", "topics.md"), "utf-8"
-    );
+    const childDir = config.getChildDir(first.childId);
+    expect(fs.existsSync(path.join(childDir, "kb.sqlite"))).toBe(true);
 
-    expect(content).toContain("---");
-    expect(content).toContain("topics:");
-    expect(content).toContain("# 学习主题目录");
+    const db = openKbDb(childDir);
+    try {
+      const cnt = (db.prepare("SELECT COUNT(*) AS c FROM tags").get() as { c: number }).c;
+      // 全新孩子 initChildKb 播种 20 个默认标签；存量迁移孩子会从 taxonomy 导入更多（如 93）
+      expect(cnt).toBeGreaterThanOrEqual(20);
+    } finally {
+      db.close();
+    }
   });
 
-  it("learning/rules.md 每日目标量包含 YAML frontmatter", async () => {
+  it("topics 表存在且可被查询（主题由分配/添加后写入，存量孩子可能已非空）", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
+    const { openKbDb } = await import("../electron/lib/kb-sqlite");
 
     const children = childAuth.listChildren();
     const first = children[0];
-    const content = fs.readFileSync(
-      path.join(config.getChildDir(first.childId), "learning", "rules.md"), "utf-8"
-    );
-
-    expect(content).toContain("---");
-    expect(content).toContain("rules:");
+    const childDir = config.getChildDir(first.childId);
+    const db = openKbDb(childDir);
+    try {
+      const cnt = (db.prepare("SELECT COUNT(*) AS c FROM topics").get() as { c: number }).c;
+      expect(typeof cnt).toBe("number"); // 表可查；存量孩子可能已有主题（如 8），全新孩子为 0
+    } finally {
+      db.close();
+    }
   });
 
   it("tags/taxonomy.md 标签词表已创建", async () => {
@@ -259,7 +260,7 @@ describe("定时任务 (Phase 6)", () => {
       children: {
         "child-id": {
           recording: { lastRun: "2026-08-12T09:00:00Z" },
-          "study-tracker": { lastRun: "2026-08-12T21:00:00Z" },
+          "session-reset": { lastRun: "2026-08-12T22:00:00Z" },
         },
       },
     };
@@ -268,7 +269,7 @@ describe("定时任务 (Phase 6)", () => {
     expect(exampleState.children).toBeDefined();
     const childState = exampleState.children["child-id"];
     expect(childState.recording).toBeDefined();
-    expect(childState["study-tracker"]).toBeDefined();
+    expect(childState["session-reset"]).toBeDefined();
     expect(childState.recording.lastRun).toBeTruthy();
   });
 });

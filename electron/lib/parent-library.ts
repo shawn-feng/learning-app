@@ -332,16 +332,67 @@ export function allocateTopicToChild(
 }
 
 /** 孩子已分配的主题清单（读取孩子 kb.sqlite 的 topics 表；无库返回空）。用于孩子管理页展示「已添加的主题」。 */
-export function listChildAllocatedTopics(childId: string): Array<{ name: string; file: string }> {
+export function listChildAllocatedTopics(
+  childId: string
+): Array<{ name: string; file: string; daily: string; type: string }> {
   const childDir = path.join(getChildrenDir(), childId);
   if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) return [];
   const db = openKbDb(childDir);
   try {
-    const rows = db.prepare("SELECT name, file FROM topics ORDER BY file").all() as unknown as Array<{
+    const rows = db.prepare("SELECT name, file, rules_json FROM topics ORDER BY file").all() as unknown as Array<{
       name: string;
       file: string;
+      rules_json: string;
     }>;
-    return rows.map((r) => ({ name: r.name, file: r.file.split("/")[0] }));
+    return rows.map((r) => {
+      let daily = "";
+      let type = "";
+      try {
+        const parsed = JSON.parse(r.rules_json || "{}") as { daily?: string; type?: string };
+        daily = parsed.daily || "";
+        type = parsed.type || "";
+      } catch {
+        /* 损坏的 rules_json 视为空 */
+      }
+      return { name: r.name, file: r.file.split("/")[0], daily, type };
+    });
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * 设置孩子某主题的「每天学习量」（ISSUE-031）。
+ * 写入孩子库 topics.rules_json 的 `daily` / `type` 字段；该字段随分配从父库带入快照，
+ * 之后每孩子可独立修改，不影响父库默认值。幂等：主题不存在则忽略。
+ */
+export function setChildTopicDaily(
+  childId: string,
+  topicDir: string,
+  daily: string,
+  type: string
+): boolean {
+  const childDir = path.join(getChildrenDir(), childId);
+  if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) return false;
+  const db = openKbDb(childDir);
+  try {
+    const row = db.prepare("SELECT rules_json FROM topics WHERE file LIKE ?").get(`%${topicDir}%`) as
+      | { rules_json: string }
+      | undefined;
+    if (!row) return false;
+    let parsed: { daily?: string; type?: string; [k: string]: unknown } = {};
+    try {
+      parsed = JSON.parse(row.rules_json || "{}");
+    } catch {
+      parsed = {};
+    }
+    parsed.daily = daily;
+    parsed.type = type;
+    db.prepare("UPDATE topics SET rules_json = ? WHERE file LIKE ?").run(
+      JSON.stringify(parsed),
+      `%${topicDir}%`
+    );
+    return true;
   } finally {
     db.close();
   }

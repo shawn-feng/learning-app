@@ -56,13 +56,12 @@ describe("Phase 9: 同步管理器", () => {
     const childDir = config.getChildDir(child.childId);
     const files = scanChildFiles(childDir);
 
-    // Should have profile.json、AGENTS.md、daily/、learning/ 等（ISSUE-013 Phase 1 已删旧结构 study-* 残留）
-    expect(files.length).toBeGreaterThanOrEqual(4);
+    // Should have profile.json、AGENTS.md、kb.sqlite 等（ISSUE-032：SQLite 唯一真源，不再建 learning/*.md）
+    expect(files.length).toBeGreaterThanOrEqual(3);
     const paths = files.map((f) => f.path);
     expect(paths).toContain("profile.json");
     expect(paths).toContain("AGENTS.md");
-    expect(paths).toContain("learning/topics.md");
-    expect(paths).toContain("learning/rules.md");
+    expect(paths).toContain("kb.sqlite");
 
     // .pi directory should NOT be included (sync excludes it)
     expect(paths.some((p) => p.startsWith(".pi/"))).toBe(false);
@@ -92,20 +91,19 @@ describe("Phase 9: 同步管理器", () => {
     const before = scanChildFiles(childDir);
     const profileBefore = before.find((f) => f.path === "profile.json")!.hash;
 
-    // Read and modify (add a comment)
-    // 注：ISSUE-013 Phase 1 已删除旧结构 study-rules.md，改用 learning/rules.md
-    const rulesPath = path.join(childDir, "learning", "rules.md");
-    const original = fs.readFileSync(rulesPath, "utf-8");
-    fs.writeFileSync(rulesPath, original + "\n# sync test comment\n");
+    // 修改真实存在的 profile.json（ISSUE-032：不再有 learning/rules.md 文件模板）
+    const profilePath = path.join(childDir, "profile.json");
+    const original = fs.readFileSync(profilePath, "utf-8");
+    fs.writeFileSync(profilePath, original + "\n");
 
     const after = scanChildFiles(childDir);
-    const rulesAfter = after.find((f) => f.path === "learning/rules.md")!.hash;
+    const profileAfter = after.find((f) => f.path === "profile.json")!.hash;
 
     // Restore
-    fs.writeFileSync(rulesPath, original);
+    fs.writeFileSync(profilePath, original);
 
     // Hash should have changed
-    expect(rulesAfter).not.toBe(profileBefore);
+    expect(profileAfter).not.toBe(profileBefore);
   });
 
   it("last-write-wins: 本地较新的文件应标记为上传", () => {

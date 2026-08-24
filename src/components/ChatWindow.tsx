@@ -148,6 +148,8 @@ function TraceDetails({ m }: { m: ChatMessage }) {
 export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate = "+0%", childId, notice }: Props) {
   const [input, setInput] = useState("");
   const messagesRef = useRef<HTMLDivElement>(null);
+  // ISSUE-028: 记录用户是否贴近底部，贴近才自动滚动（上滚读历史不打断）
+  const nearBottomRef = useRef(true);
   // ISSUE-012: 输入框 ref，配合 useEffect 随内容自动增高
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -217,10 +219,37 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
     }
   }
 
+  // ISSUE-028: 跟踪用户是否贴近底部，用于决定是否自动滚动
   useEffect(() => {
-    if (messagesRef.current) {
-      messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+    const el = messagesRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      nearBottomRef.current = distanceFromBottom < 80;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // ISSUE-028: 长消息自动滚动——超一屏时把开头显示在一屏内，而非停在结尾。
+  // 消息能整条放进视口 → 滚到底（自然、整条可见）；消息超过一屏 → 滚到其顶部，保证开头可见。
+  // 用户主动上滚阅读历史时不强行拉回（仅在贴近底部时自动滚动）。
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    if (!nearBottomRef.current && messages.length > 0) return;
+    const msgs = el.querySelectorAll<HTMLElement>(".message");
+    const lastMsg = msgs[msgs.length - 1];
+    if (!lastMsg) {
+      el.scrollTop = el.scrollHeight;
+      return;
     }
+    // 用 getBoundingClientRect 计算最后一条消息顶部在滚动内容中的坐标（不受定位祖先影响）
+    const elRect = el.getBoundingClientRect();
+    const msgRect = lastMsg.getBoundingClientRect();
+    const lastMsgTop = msgRect.top - elRect.top + el.scrollTop;
+    const maxScroll = el.scrollHeight - el.clientHeight;
+    el.scrollTop = Math.min(maxScroll, lastMsgTop);
   }, [messages]);
 
   // ISSUE-012: textarea 随内容自动增高（不滚动即可看到全部输入；清空后回落 44px）。
