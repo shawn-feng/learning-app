@@ -145,7 +145,11 @@ describe("需求 §十二 数据架构", () => {
     expect(fs.existsSync(path.join(childDir, "profile.json"))).toBe(true);
     // ISSUE-032：SQLite 唯一真源，不再建文件时代模板（study-topics/study-rules/life-events/daily-logs）
     expect(fs.existsSync(path.join(childDir, "kb.sqlite"))).toBe(true);
-    expect(fs.existsSync(path.join(childDir, "AGENTS.md"))).toBe(true);
+    // ISSUE-033：AGENTS 纯 SQLite（data/agents.sqlite）——孩子目录不再有 AGENTS.md（孩子只读、
+    // 不可写），家长目录也无 agents 物理文件（SQLite 为唯一真源，查看/编辑在家长页面）
+    expect(fs.existsSync(path.join(childDir, "AGENTS.md"))).toBe(false);
+    const { getDataDir } = await import("../electron/lib/config");
+    expect(fs.existsSync(path.join(getDataDir(), "parents", "default", "agents"))).toBe(false);
   });
 
   it("settings.json 指向共享技能目录", async () => {

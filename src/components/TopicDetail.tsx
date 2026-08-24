@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import ChatWindow, { type ChatMessage, nowTime } from "./ChatWindow";
+import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "./ChatWindow";
 
 interface ParentTopic {
   name: string;
@@ -53,16 +53,34 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
   // AI 聊天
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
+  // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡，与孩子聊天界面一致）
+  const workingIdRef = useRef<string | null>(null);
+
+  // 更新当前工作气泡（按 id 定位）
+  const patchWorking = useCallback((patch: (m: ChatMessage) => ChatMessage) => {
+    const id = workingIdRef.current;
+    if (!id) return;
+    setMessages((prev) => prev.map((m) => (m.id === id ? patch(m) : m)));
+  }, []);
 
   const topicDir = topic.file;
 
   useEffect(() => {
     refreshCourses();
-    window.api.piStartParentContent();
+    // ISSUE-037：会话初始化结果必须显式检查——失败时提示，禁止 fire-and-forget 静默吞错
+    window.api
+      .piStartParentContent()
+      .then((r: any) => {
+        if (!r?.success) setMsg({ ok: false, text: `AI 会话初始化失败：${r?.error || "未知错误"}` });
+      })
+      .catch((e: any) => {
+        setMsg({ ok: false, text: `AI 会话初始化失败：${e?.message || e}` });
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topicDir]);
 
   useEffect(() => {
+    // 流式文本：working 气泡期间累积到该气泡的 text（working 态不显示正文，reply 时整体替换）
     window.api.onPiStreaming((data: any) => {
       if (data.childId !== "parent-content") return;
       setMessages((prev) => {
@@ -79,7 +97,83 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
     window.api.onPiAgentEnd((data: any) => {
       if (data.childId === "parent-content") setBusy(false);
     });
-  }, []);
+    // 思考增量（主进程已节流）——与孩子聊天界面一致，在 working 气泡里实时展示
+    window.api.onPiThinking((data: any) => {
+      if (data.childId !== "parent-content") return;
+      patchWorking((m) => ({ ...m, thinking: (m.thinking || "") + data.delta }));
+    });
+    // 工具开始调用
+    window.api.onPiToolStart((data: any) => {
+      if (data.childId !== "parent-content") return;
+      const call: ToolCallState = {
+        id: data.toolCallId || `tool-${Date.now()}`,
+        name: data.toolName,
+        argsPreview: data.argsPreview,
+        status: "running",
+      };
+      patchWorking((m) => ({ ...m, tools: [...(m.tools || []), call] }));
+    });
+    // 工具结束调用：更新对应工具状态
+    window.api.onPiToolEnd((data: any) => {
+      if (data.childId !== "parent-content") return;
+      patchWorking((m) => ({
+        ...m,
+        tools: (m.tools || []).map((t) =>
+          t.id === data.toolCallId
+            ? { ...t, status: data.isError ? ("error" as const) : ("done" as const), resultPreview: data.resultPreview }
+            : t
+        ),
+      }));
+    });
+    // 正式回复：替换 working 气泡为最终文本（与孩子聊天界面一致）
+    window.api.onPiReply((data: any) => {
+      if (data.childId !== "parent-content") return;
+      const id = workingIdRef.current;
+      workingIdRef.current = null;
+      setMessages((prev) => {
+        if (id && prev.some((m) => m.id === id)) {
+          return prev.map((m) => (m.id === id ? { ...m, text: data.text, working: false } : m));
+        }
+        const clone = [...prev];
+        const last = clone[clone.length - 1];
+        if (last && last.role === "ai") {
+          clone[clone.length - 1] = { ...last, text: data.text, working: false };
+        } else {
+          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: data.text, time: nowTime() });
+        }
+        return clone;
+      });
+      setBusy(false);
+    });
+    window.api.onPiReplyEnd((data: any) => {
+      if (data.childId === "parent-content") setBusy(false);
+    });
+    // 回复错误：替换 working 气泡为错误提示（不再静默）
+    window.api.onPiReplyError((data: any) => {
+      if (data.childId !== "parent-content") return;
+      const id = workingIdRef.current;
+      workingIdRef.current = null;
+      setMessages((prev) => {
+        if (id && prev.some((m) => m.id === id)) {
+          return prev.map((m) => (m.id === id ? { ...m, text: `⚠️ ${data.error}`, working: false } : m));
+        }
+        const clone = [...prev];
+        const last = clone[clone.length - 1];
+        if (last && last.role === "ai") {
+          clone[clone.length - 1] = { ...last, text: `⚠️ ${data.error}`, working: false };
+        } else {
+          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: `⚠️ ${data.error}`, time: nowTime() });
+        }
+        return clone;
+      });
+      setBusy(false);
+    });
+    // SDK 会话级错误事件（attachSessionEvents 的 error 分支）兜底提示
+    window.api.onPiError((error: string) => {
+      setBusy(false);
+      setMsg({ ok: false, text: error });
+    });
+  }, [patchWorking]);
 
   async function refreshCourses(keepSelection = true) {
     const r = await window.api.parentListCourses(topicDir);
@@ -182,17 +276,49 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
       sel ? `当前课程：「${sel.title}」每课方法：${sel.lessonMethod || "（空）"}，教学文案：${(sel.teachingCopy || "").slice(0, 60)}，教学资料说明：${(sel.material || "").slice(0, 40)}，发给学生：${(sel.sendMaterial || "").slice(0, 60)}，html：${sel.htmlPath || "（无）"}` : "当前未选中课程",
       "你可以用 parent_course_save 新建/更新课程（topic + title + lessonMethod/material/sendMaterial/tags/htmlPath），用 parent_course_delete 删除，用 write/edit 直接写资料文件。",
     ].join("\n");
-    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", text, time: nowTime() }]);
+    // 发送：创建用户气泡 + AI working 气泡（思考/工具/正式回复都进这一条，与孩子聊天界面一致）
+    const workingId = `ai-${Date.now()}`;
+    workingIdRef.current = workingId;
+    setMessages((prev) => [
+      ...prev,
+      { id: `u-${Date.now()}`, role: "user", text, time: nowTime() },
+      { id: workingId, role: "ai", text: "", thinking: "", tools: [], working: true, time: nowTime() },
+    ]);
     setBusy(true);
     try {
-      await window.api.piPromptParentContent(`${context}\n\n家长需求：${text}`);
-    } catch {
+      const r: any = await window.api.piPromptParentContent(`${context}\n\n家长需求：${text}`);
+      // ISSUE-037：主进程把错误包在返回值里（{success:false}）而不是抛异常——必须显式检查，
+      // 失败时复位 busy 并提示，禁止静默（此前 catch 只在 invoke 抛异常时触发，后端任何
+      // 失败都会表现为「发送后无任何反应、输入框一直转圈」）。
+      if (!r?.success) {
+        const id = workingIdRef.current;
+        workingIdRef.current = null;
+        if (id) {
+          setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text: `⚠️ ${r?.error || "发送失败，请重试"}`, working: false } : m)));
+        } else {
+          setMsg({ ok: false, text: r?.error || "发送失败，请重试" });
+        }
+        setBusy(false);
+      }
+    } catch (e: any) {
+      const id = workingIdRef.current;
+      workingIdRef.current = null;
+      if (id) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, text: `⚠️ ${e?.message || "发送失败，请重试"}`, working: false } : m))
+        );
+      } else {
+        setMsg({ ok: false, text: e?.message || "发送失败，请重试" });
+      }
       setBusy(false);
     }
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)" }}>
+    // ISSUE-037 续：外层用 flex:1 + min-height:0 + overflow:hidden 撑满 dashboard-main
+    //（现在 display:flex column）并在内部滚动，替代此前的 calc(100vh - 120px) 估算高度
+    //（估算偏差 / 消息增多会把整个页面拉长，聊天区无法独立滚动）。
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
       {/* 头部：返回 + 主题名 + 标签切换 */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
         <button

@@ -67,7 +67,11 @@ describe("Electron app modules", () => {
     const files = fs.readdirSync(childDir);
     expect(files).toContain("profile.json");
     expect(files).toContain("kb.sqlite");
-    expect(files).toContain("AGENTS.md");
+    // ISSUE-033：AGENTS 纯 SQLite（data/agents.sqlite）——孩子目录不落盘（孩子只读、不可写），
+    // 家长目录也无 agents 物理文件（SQLite 为唯一真源，查看/编辑在家长页面）
+    expect(files).not.toContain("AGENTS.md");
+    const { getDataDir } = await import("../electron/lib/config");
+    expect(fs.existsSync(path.join(getDataDir(), "parents", "default", "agents"))).toBe(false);
     const settingsPath = path.join(childDir, ".pi", "agent", "settings.json");
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));

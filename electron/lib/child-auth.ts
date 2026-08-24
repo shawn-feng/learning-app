@@ -3,7 +3,6 @@ import path from "path";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { getChildDir, getChildrenDir } from "./config";
-import { writeAgentsMd } from "./pi-session";
 import { initChildDirectory } from "./user-init";
 
 export interface ChildProfile {
@@ -128,8 +127,8 @@ export function updateChildProfile(
     "utf-8"
   );
 
-  // Regenerate AGENTS.md so next session picks up changes
-  writeAgentsMd(childId, profile);
+  // ISSUE-033：AGENTS 纯 SQLite（data/agents.sqlite）——改 profile 无需刷新任何文件，
+  // 孩子开会话时 buildChildPrompt 经 resolveChildAgents 实时取「SQLite 用户版本 / 代码默认」。
 
   return profile;
 }

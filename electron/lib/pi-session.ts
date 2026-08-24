@@ -62,16 +62,6 @@ const LEARNING_NAV_INSTRUCTIONS = `
 - 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。
 `;
 
-const CUSTOM_START = "<!-- custom:start -->";
-const CUSTOM_END = "<!-- custom:end -->";
-
-function extractCustomSection(content: string): string {
-  const match = content.match(
-    /<!--\s*custom:start\s*-->([\s\S]*?)<!--\s*custom:end\s*-->/
-  );
-  return match ? match[1] : "";
-}
-
 export function buildAgentsMd(profile: ChildProfile): string {
   return `你是${profile.aiName}，${profile.name}的学习伙伴。
 
@@ -87,51 +77,31 @@ export function buildAgentsMd(profile: ChildProfile): string {
 - 兴趣爱好：${profile.interests}
 
 ${LEARNING_NAV_INSTRUCTIONS}
-
-${CUSTOM_START}
-${CUSTOM_END}
 `;
 }
 
-export function writeAgentsMd(childId: string, profile: ChildProfile): void {
-  const childDir = getChildDir(childId);
-  const filePath = path.join(childDir, "AGENTS.md");
-
-  // ISSUE-033：若存在用户保存的「整体替换」版本，直接以它为准写入（代码默认不再生效）。
+/**
+ * 孩子会话实际收到的 AGENTS 内容（ISSUE-033：AGENTS 纯 SQLite 存储，不落任何物理文件）。
+ * 优先级：SQLite 用户版本（data/agents.sqlite，整体替换权威）→ 代码默认 buildAgentsMd。
+ * 孩子目录/家长目录均无 AGENTS 文件；行为规范经 buildChildPrompt 内联注入 system prompt，
+ * 孩子只读（无文件可写）、管理者=家长（家长页面 AgentPromptEditor 编辑）。
+ */
+export function resolveChildAgents(childId: string, profile: ChildProfile): string {
   const userVersion = getAgentPrompt("child", childId);
-  if (userVersion && userVersion.trim()) {
-    fs.writeFileSync(filePath, userVersion, "utf-8");
-    return;
-  }
-
-  // 保留家长在 custom 段内手动编辑的内容（无用户整体版本时的向后兼容路径）
-  let customContent = "";
-  if (fs.existsSync(filePath)) {
-    customContent = extractCustomSection(fs.readFileSync(filePath, "utf-8"));
-  }
-
-  const full = buildAgentsMd(profile).replace(
-    /<!--\s*custom:start\s*-->[\s\S]*?<!--\s*custom:end\s*-->/,
-    `${CUSTOM_START}\n${customContent}${CUSTOM_END}`
-  );
-
-  fs.writeFileSync(filePath, full, "utf-8");
+  if (userVersion && userVersion.trim()) return userVersion;
+  return buildAgentsMd(profile);
 }
 
 /**
  * 返回某 scope/ref 的「默认提示词」内容（ISSUE-033 编辑器初始填充用）：
- * - 孩子：优先返回磁盘上当前 AGENTS.md（即孩子当前实际收到的内容），
- *   无文件时回退到按 profile 生成的 buildAgentsMd（保证「在默认基础上修改」）；
+ * - 孩子：按 profile 生成 buildAgentsMd（保证「在默认基础上修改」；AGENTS 纯 SQLite，无磁盘文件）；
  * - 家长：返回 buildParentPrompt / buildParentContentPrompt 的代码默认。
  * 注意：本函数在「无用户整体版本」时调用，因此不会出现与 SQLite 用户版本叠加的情况。
  */
 export function getDefaultPrompt(scope: string, ref: string): string {
   if (scope === "child") {
-    const filePath = path.join(getChildDir(ref), "AGENTS.md");
-    if (fs.existsSync(filePath)) {
-      return fs.readFileSync(filePath, "utf-8");
-    }
-    return buildAgentsMd(getProfile(ref));
+    const profile = getProfile(ref);
+    return profile ? buildAgentsMd(profile) : "";
   }
   if (scope === "parent") {
     return ref === "content" ? buildParentContentPrompt() : buildParentPrompt();
@@ -248,15 +218,16 @@ children/{childId}/learning/
  * 孩子会话的 system prompt 头部（替换 SDK 默认的 "expert coding assistant" 身份 + Pi 文档噪声）。
  * 这里描述身份，并附带「孩子的学习进度概览」（由 learning-summary 从各进度文件 frontmatter
  * 解析而来，仅 frontmatter 级信息）。所有行为规范（交流准则、学习方法、内容展示、角色）放在
- * LEARNING_NAV_INSTRUCTIONS 里，经 buildAgentsMd 生成 AGENTS.md，由 SDK 自动附加为
- * <project_context>。孩子的完整行为规范以 AGENTS.md 为唯一真源（家长可在 custom 段编辑）。
+ * LEARNING_NAV_INSTRUCTIONS 里，经 buildAgentsMd 生成 AGENTS 内容，在本函数末尾内联注入。
+ * 孩子的完整行为规范以「data/agents.sqlite 用户版本 / 代码默认」为唯一真源（家长可编辑、孩子只读；
+ * ISSUE-033：AGENTS 纯 SQLite 存储，不落任何物理文件）。
  *
  * 注入进度概览的目的（ISSUE-006）：让 agent 开会话即知「下一课」是什么，无需为了确认 next
  * 而去 read 整个进度文件（论语等主题正文可达几百行，纯浪费上下文）。
  *
  * @param progressContext 进度概览 markdown；为空字符串时不注入（如该孩子暂无主题）。
  */
-function buildChildPrompt(profile: ChildProfile, progressContext?: string): string {
+function buildChildPrompt(childId: string, profile: ChildProfile, progressContext?: string): string {
   const emoji = profile.aiEmoji || "🌟";
   let prompt = `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，陪伴和引导${profile.name}学习、生活和成长。`;
   if (progressContext && progressContext.trim()) {
@@ -264,6 +235,10 @@ function buildChildPrompt(profile: ChildProfile, progressContext?: string): stri
       `\n\n## 孩子的学习进度概览（已在下方替你读好，**无需再读进度文件正文**即可知道下一步学什么）\n` +
       progressContext;
   }
+  // ISSUE-033：AGENTS 行为规范不以「文件」形式由 SDK 附加为 <project_context>（无任何磁盘 AGENTS
+  // 文件，孩子不可写），改为在此内联注入——内容来自 data/agents.sqlite 用户版本 / 代码默认
+  // （resolveChildAgents），孩子只读、管理者=家长（家长页面 AgentPromptEditor 编辑）。
+  prompt += `\n\n# 行为规范（必须遵守）\n\n${resolveChildAgents(childId, profile)}`;
   return prompt;
 }
 
@@ -407,10 +382,9 @@ async function createChildSession(
   // 无需 read 整个进度文件（ISSUE-006）。无主题时 topics 为空，progressContext 为空串不注入。
   const progressContext = progressSummaryToMarkdown(getLearningSummary(childId));
 
-  // 开会话前刷新 AGENTS.md，确保磁盘文件始终与源码 LEARNING_NAV 同步（保留家长在
-  // custom 段的编辑）。这样无论源码怎么改、家长何时编辑，孩子会话拿到的行为规范都是最新、
-  // 且唯一以 AGENTS.md 为真源，避免"改了源码但磁盘 AGENTS.md 陈旧、约束不生效"的问题。
-  writeAgentsMd(childId, profile);
+  // ISSUE-033：AGENTS 纯 SQLite 存储（data/agents.sqlite），行为规范经 buildChildPrompt 内联注入
+  // （resolveChildAgents：SQLite 用户版本 → 代码默认），不落任何物理文件——孩子只读、不可写，
+  // 管理者=家长（家长页面 AgentPromptEditor 编辑）。
 
   const modelRuntime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -419,8 +393,8 @@ async function createChildSession(
     cwd: childDir,
     agentDir: path.join(childDir, ".pi", "agent"),
     // 替换 SDK 默认 base：去掉 "expert coding assistant" 身份与 Pi 自身文档索引（对孩子是噪声），
-    // 换成孩子专属的学习伙伴身份。AGENTS.md / 技能段 / cwd / 时间注入由 SDK 在 customPrompt 模式下自动附加。
-    systemPromptOverride: () => buildChildPrompt(profile, progressContext),
+    // 换成孩子专属的学习伙伴身份。AGENTS / 技能段 / cwd / 时间注入由 SDK 在 customPrompt 模式下自动附加。
+    systemPromptOverride: () => buildChildPrompt(childId, profile, progressContext),
     // shared/skills 已无教学技能（recording / study-tracker 均已移除，目录为空），
     // 该扫描路径仅作兜底，未来若再加技能无需改加载逻辑。
     // 注意：noSkills 必须为 true —— SDK 的 packageManager 会自动发现并启用 ~/.agents/skills

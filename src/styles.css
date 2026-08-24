@@ -283,6 +283,10 @@ input, textarea {
   flex: 1;
   padding: 24px;
   overflow-y: auto;
+  /* ISSUE-037 续：flex column 让子视图（课程管理详情等）可用 flex:1 + min-height:0 撑满
+     可视区并在内部滚动，而不是靠 calc(100vh - xxx) 估算高度（估算偏差会把页面拉长）。 */
+  display: flex;
+  flex-direction: column;
 }
 
 /* ===== Child list ===== */
@@ -1432,6 +1436,9 @@ input, textarea {
   display: flex;
   flex-direction: column;
   background: #fafbfe;
+  /* ISSUE-037 续：flex item 默认 min-height:auto 会被内容撑高（消息多时把父容器拉长、
+     整页出现滚动条）；置 0 后聊天区高度严格受父容器约束，消息只在 .chat-messages 内部滚动。 */
+  min-height: 0;
 }
 
 .rate-btn {

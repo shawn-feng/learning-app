@@ -119,7 +119,9 @@ export default function Settings() {
   }
 
   return (
-    <div>
+    // ISSUE-037 续：flex column 让「教学内容」tab（TopicEditor）可用 flex:1 + min-height:0
+    // 撑满可视区、聊天区内部滚动；其它 tab 内容高度不变（仍由 dashboard-main 滚动）。
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <h3 style={{ marginBottom: 16 }}>设置</h3>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>

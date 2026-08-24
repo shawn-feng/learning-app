@@ -141,21 +141,17 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("child:getAgentsMd", async (_e, childId: string) => {
-    // ISSUE-033：优先返回 SQLite 中的用户版本（整体替换权威），否则回退磁盘文件
+    // ISSUE-033：AGENTS 纯 SQLite（data/agents.sqlite）——优先返回用户版本（整体替换权威），
+    // 无用户版本返回代码默认（buildAgentsMd）。无任何物理 AGENTS 文件。
     const userVer = getAgentPrompt("child", childId);
     if (userVer !== null) return { content: userVer };
-    const p = path.join(getChildDir(childId), "AGENTS.md");
-    if (fs.existsSync(p)) {
-      return { content: fs.readFileSync(p, "utf-8") };
-    }
-    return { content: "" };
+    return { content: getDefaultPrompt("child", childId) };
   });
 
   ipcMain.handle("child:saveAgentsMd", async (_e, childId: string, content: string) => {
     try {
-      // 写入 SQLite 用户版本（权威），并立即落到 AGENTS.md 文件使改动即时生效
+      // 修改后的 AGENTS 只存 SQLite（data/agents.sqlite），不落任何物理文件
       saveAgentPrompt("child", childId, content);
-      fs.writeFileSync(path.join(getChildDir(childId), "AGENTS.md"), content, "utf-8");
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -166,18 +162,16 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("agents:get", async (_e, scope: string, ref: string) => {
     const userVer = getAgentPrompt(scope, ref);
     if (userVer !== null) return { content: userVer, customized: true };
-    // 无用户整体版本：返回当前默认内容（孩子的 AGENTS.md / 家长代码默提示词），
+    // 无用户整体版本：返回当前默认内容（孩子=buildAgentsMd 代码默认，家长=代码默认提示词），
     // 让家长在默认基础上修改（ISSUE-033 修：此前返回空串导致编辑器空白）。
     return { content: getDefaultPrompt(scope, ref), customized: false };
   });
 
   ipcMain.handle("agents:save", async (_e, scope: string, ref: string, content: string) => {
     try {
+      // 保存只写 SQLite（data/agents.sqlite，prompts 当前版 + prompt_history 历史版），
+      // 不再落任何物理 AGENTS 文件（ISSUE-033：查看/编辑均在家长页面，SQLite 为唯一真源）
       saveAgentPrompt(scope, ref, content);
-      // 孩子 scope 同时落到磁盘 AGENTS.md，让改动即时生效且与编辑器所见一致
-      if (scope === "child") {
-        fs.writeFileSync(path.join(getChildDir(ref), "AGENTS.md"), content, "utf-8");
-      }
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -711,10 +705,48 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const session = await getParentSession();
       const beforeCount = (session as any).messages?.length ?? 0;
       await session.prompt(text);
-      // ISSUE-010：家长会话记账（无 childId，落 data/token-log.jsonl）
-      logRound({ session, beforeCount, channel: "parent", ok: true });
+      // ISSUE-037：session.prompt() 出错时不抛异常，而是把 stopReason="error" + errorMessage
+      // 记在最后一条 assistant 消息里。必须像孩子会话（pi:prompt）一样显式检查并回发
+      // pi:reply_error / pi:reply，否则前端（SkillEditor 等）只靠 streaming 事件、无任何错误反馈，
+      // 表现为「发送后完全没反应、输入框一直转圈」。
+      const lastAssistant = findLastAssistant((session as any).messages || []);
+      const errMsg = assistantError(lastAssistant);
+      if (errMsg) {
+        const friendly = friendlyError(errMsg);
+        console.error(`[pi:prompt_parent] LLM 调用失败:`, errMsg);
+        // ISSUE-010：失败轮也记账（input 通常已实际发生），ok=false
+        logRound({ session, beforeCount, channel: "parent", ok: false });
+        _e.sender.send("pi:reply_error", { childId: "parent", error: friendly });
+        _e.sender.send("pi:reply_end", { childId: "parent" });
+        return { success: false, error: friendly };
+      }
+
+      // 提取最后一条 assistant 文本，作为最终回复回发（与流式 delta 同源，前端替换式展示，不重复）
+      let replyText = "";
+      const messages: any[] = (session as any).messages || [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role === "assistant") {
+          for (const c of m.content || []) {
+            if (c.type === "text") replyText = c.text + replyText;
+          }
+          if (replyText) break;
+        }
+      }
+      if (replyText) {
+        _e.sender.send("pi:reply", { childId: "parent", text: replyText });
+      } else {
+        // 没有可展示的文本回复（异常兜底，正常应有 text）
+        _e.sender.send("pi:reply_error", { childId: "parent", error: "没有收到回复，请重试" });
+      }
+      _e.sender.send("pi:reply_end", { childId: "parent" });
+      // ISSUE-010：正常轮记账
+      logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyText.length });
       return { success: true };
     } catch (err) {
+      console.error(`[pi:prompt_parent] error:`, (err as Error).message);
+      _e.sender.send("pi:reply_error", { childId: "parent", error: friendlyError((err as Error).message) });
+      _e.sender.send("pi:reply_end", { childId: "parent" });
       return { success: false, error: (err as Error).message };
     }
   });
@@ -735,9 +767,43 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const session = await getParentContentSession();
       const beforeCount = (session as any).messages?.length ?? 0;
       await session.prompt(text);
-      logRound({ session, beforeCount, channel: "parent", ok: true });
+      // ISSUE-037：同 pi:prompt_parent——prompt 失败不抛异常，错误在最后一条 assistant 消息里，
+      // 必须显式检查并回发 pi:reply_error / pi:reply（childId=parent-content，前端 TopicDetail /
+      // TopicEditor 据此展示），否则家长「课程管理」页聊天发送后静默无反应、busy 卡死。
+      const lastAssistant = findLastAssistant((session as any).messages || []);
+      const errMsg = assistantError(lastAssistant);
+      if (errMsg) {
+        const friendly = friendlyError(errMsg);
+        console.error(`[pi:prompt_parent_content] LLM 调用失败:`, errMsg);
+        logRound({ session, beforeCount, channel: "parent", ok: false });
+        _e.sender.send("pi:reply_error", { childId: "parent-content", error: friendly });
+        _e.sender.send("pi:reply_end", { childId: "parent-content" });
+        return { success: false, error: friendly };
+      }
+
+      let replyText = "";
+      const messages: any[] = (session as any).messages || [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role === "assistant") {
+          for (const c of m.content || []) {
+            if (c.type === "text") replyText = c.text + replyText;
+          }
+          if (replyText) break;
+        }
+      }
+      if (replyText) {
+        _e.sender.send("pi:reply", { childId: "parent-content", text: replyText });
+      } else {
+        _e.sender.send("pi:reply_error", { childId: "parent-content", error: "没有收到回复，请重试" });
+      }
+      _e.sender.send("pi:reply_end", { childId: "parent-content" });
+      logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyText.length });
       return { success: true };
     } catch (err) {
+      console.error(`[pi:prompt_parent_content] error:`, (err as Error).message);
+      _e.sender.send("pi:reply_error", { childId: "parent-content", error: friendlyError((err as Error).message) });
+      _e.sender.send("pi:reply_end", { childId: "parent-content" });
       return { success: false, error: (err as Error).message };
     }
   });

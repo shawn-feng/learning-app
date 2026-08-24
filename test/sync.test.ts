@@ -56,11 +56,12 @@ describe("Phase 9: 同步管理器", () => {
     const childDir = config.getChildDir(child.childId);
     const files = scanChildFiles(childDir);
 
-    // Should have profile.json、AGENTS.md、kb.sqlite 等（ISSUE-032：SQLite 唯一真源，不再建 learning/*.md）
-    expect(files.length).toBeGreaterThanOrEqual(3);
+    // Should have profile.json、kb.sqlite 等（ISSUE-032：SQLite 唯一真源，不再建 learning/*.md；
+    // ISSUE-033 修订：AGENTS.md 不再存在于孩子目录——AGENTS 归家长目录，孩子只读、不参与同步）
+    expect(files.length).toBeGreaterThanOrEqual(2);
     const paths = files.map((f) => f.path);
     expect(paths).toContain("profile.json");
-    expect(paths).toContain("AGENTS.md");
+    expect(paths).not.toContain("AGENTS.md");
     expect(paths).toContain("kb.sqlite");
 
     // .pi directory should NOT be included (sync excludes it)

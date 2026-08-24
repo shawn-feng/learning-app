@@ -3,13 +3,13 @@ import { getSharedRuntime, getAvailableModels } from "../electron/lib/pi-runtime
 
 // 验证 ISSUE-007 实施：经 DashScope 同端点挂入 qwen provider 的 DeepSeek V4 模型。
 // 核心要求（避免「思考混进正文」bug）：
-//   1. 4 个 DeepSeek 模型都被注册进 qwen provider；
+//   1. 3 个 DeepSeek 模型都被注册进 qwen provider（无后缀 deepseek-v4-flash 已随百炼下线移除，
+//      仅保留定点快照 -0731 与 pro/-0813）；
 //   2. compat.thinkingFormat === "deepseek"（不是 "qwen"，否则 reasoning_content 会进正文）；
 //   3. compat.requiresReasoningContentOnAssistantMessages === true；
 //   4. maxTokens === 384000（DeepSeek-V4 思考+输出共享上限，区别于 qwen 的 16k/32k/65k）。
 
 const EXPECTED_DS = [
-  "deepseek-v4-flash",
   "deepseek-v4-flash-0731",
   "deepseek-v4-pro",
   "deepseek-v4-pro-0813",
@@ -22,7 +22,7 @@ describe("ISSUE-007 qwen provider 挂载 DeepSeek 模型", () => {
     runtime = await getSharedRuntime();
   });
 
-  it("qwen provider 下存在全部 4 个 DeepSeek 模型", () => {
+  it("qwen provider 下存在全部 3 个 DeepSeek 模型", () => {
     for (const id of EXPECTED_DS) {
       const model = runtime.getModel("qwen", id);
       expect(model, `qwen/${id} 应被注册`).toBeTruthy();

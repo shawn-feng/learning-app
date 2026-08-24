@@ -3,7 +3,6 @@ import path from "path";
 import { app } from "electron";
 import { getChildDir, getSkillsDir } from "./config";
 import type { ChildProfile } from "./child-auth";
-import { writeAgentsMd } from "./pi-session";
 import { openKbDb } from "./kb-sqlite";
 
 // 受控标签词表（初版 20 个，四维）。记录生活事件 / 给知识点打标签只能从本表选。
@@ -90,7 +89,8 @@ export async function initChildDirectory(
     "utf-8"
   );
 
-  writeAgentsMd(childId, profile);
+  // ISSUE-033：AGENTS 纯 SQLite（data/agents.sqlite）——新建孩子不写任何 AGENTS 物理文件，
+  // 开会话时 buildChildPrompt 经 resolveChildAgents 实时取「SQLite 用户版本 / 代码默认」。
 
   initSharedSkills();
 }

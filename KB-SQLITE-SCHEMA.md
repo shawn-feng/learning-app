@@ -1,9 +1,9 @@
 # 知识库 SQLite Schema（KB-SQLITE-SCHEMA）
 
 > **状态**：定稿（2026-08-21，schema v5：标签体系改造——倒排索引 → 定义表 + 数据行打标；rules 并入 topics；ISSUE-029 courses 加 lesson_method/html_path/teaching_copy）。
-> **适用范围**：桌面应用「学习伙伴」的每个孩子数据目录 `data/children/{childId}/kb.sqlite`。
+> **适用范围**：桌面应用「学习伙伴」的每个孩子数据目录 `data/children/{childId}/kb.sqlite`；另有全局共享的 `data/agents.sqlite`（AGENTS/提示词用户版本库，见附录 A）。
 > **权威性**：本文件是 `kb.sqlite` 数据库结构（表 / 视图 / 列 / 约束 / 索引 / 写入语义）的**唯一权威**。与 `LEARNING-DATA-SPEC.md`（数据结构与生命周期）配合使用——SPEC 描述「数据长什么样、怎么流转」，本文件描述「数据在 SQLite 里怎么存」。
-> **实现位置**：schema 定义在 `electron/lib/kb-sqlite.ts`（`SCHEMA_TABLES` / `SCHEMA_VIEWS` 常量），工具面 `kb_query / kb_insert / kb_update` 与 lint（`electron/lib/kb-lint.ts`）均以本文件 + 该常量一致。
+> **实现位置**：schema 定义在 `electron/lib/kb-sqlite.ts`（`SCHEMA_TABLES` / `SCHEMA_VIEWS` 常量），工具面 `kb_query / kb_insert / kb_update` 与 lint（`electron/lib/kb-lint.ts`）均以本文件 + 该常量一致。`data/agents.sqlite` 的 schema 定义在 `electron/lib/agent-prompts.ts`。
 
 ---
 
@@ -231,6 +231,82 @@ CREATE TABLE meta (
 - **v4 补丁**：`scripts/fix-v4-tags-rules.mjs`（rules 按中文名回填 + tags 归一化）、`scripts/fix-v4-backfill-tags.mjs`（历史用过的非词表标签补入定义表，保持历史可检索）。
 - **幂等**：迁移按主键 INSERT OR REPLACE，重复执行不重复入库；无数据孩子不建库（`hasAnyKbData()`）。
 - **markdown 归档**：迁移后保留为归档（不再读写）。
+
+---
+
+## 附录 A：`data/agents.sqlite` — AGENTS / 提示词用户版本库（ISSUE-033）
+
+> **状态**：定稿（2026-08-24，schema v1；表结构自 2026-08-22 首版未变——**AGENTS 纯 SQLite 终版只改读写方式，不落任何物理文件，未动 DDL**）。
+> **库位置**：`data/agents.sqlite`（**全局单库**，非每孩子；与 `kb.sqlite` 按 childId 隔离不同，本库在数据根目录平级管理家长/孩子的提示词用户版本）。
+> **权威性**：本库是**孩子 AGENTS 与家长提示词的唯一真源**——ISSUE-033 终版（2026-08-24）后不落任何物理 AGENTS 文件（孩子目录、家长目录均无 AGENTS.md）；查看/编辑唯一入口 = 家长页面 AgentPromptEditor（`agents:get/save/history/restore` + 兼容口 `child:getAgentsMd/child:saveAgentsMd`）。
+> **实现位置**：`electron/lib/agent-prompts.ts`（建表 + 读写函数）；消费方 `electron/lib/pi-session.ts`（`resolveChildAgents` / `buildParentPrompt` / `buildParentContentPrompt` / `getDefaultPrompt`）与 `electron/lib/ipc-handlers.ts`。
+
+### A.1 `prompts` — 用户版本（当前生效）
+
+```sql
+CREATE TABLE prompts (
+  scope TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  content TEXT NOT NULL,
+  updated TEXT NOT NULL,
+  PRIMARY KEY (scope, ref)
+);
+```
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `scope` | TEXT | `child`（孩子 AGENTS）/ `parent`（家长提示词） |
+| `ref` | TEXT | scope=child 时 = `<childId>`；scope=parent 时 = `main`（通用家长工作台助手）/ `content`（教学内容生成助手） |
+| `content` | TEXT | **用户版本全文**（整体替换，与代码默认完全解耦） |
+| `updated` | TEXT | 保存时间（ISO） |
+
+**语义**：
+- **无行 = 用代码默认**：孩子开会话时 `resolveChildAgents` = SQLite 用户版本 → 代码默认 `buildAgentsMd(profile)`（`LEARNING_NAV_INSTRUCTIONS` 生成）；家长 `buildParentPrompt`/`buildParentContentPrompt` 同理。
+- **整体替换**：保存的内容即该 scope/ref 唯一权威，代码默认不再叠加；编辑坏了可「恢复默认」（清空用户版本 = 删除行，历史保留可回退）。
+- 保存前先把旧版本推入 `prompt_history`，再覆盖/插入当前版（`ON CONFLICT(scope, ref) DO UPDATE`）。
+
+### A.2 `prompt_history` — 历史版本（可回退）
+
+```sql
+CREATE TABLE prompt_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  content TEXT NOT NULL,
+  updated TEXT NOT NULL
+);
+CREATE INDEX idx_prompt_history ON prompt_history(scope, ref, id);
+```
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | INTEGER | 自增主键（历史排序依据，最新 = id 最大） |
+| `scope` / `ref` | TEXT | 与 `prompts` 同约定 |
+| `content` / `updated` | TEXT | 每次保存前的旧版本快照 |
+
+**语义**：
+- 每次 `saveAgentPrompt` 把旧版入历史（append-only，不覆盖、不删除）；`content` 为空/纯空白 = 恢复默认（只删 `prompts` 当前行，**历史保留**）。
+- 回退：`restoreAgentPromptVersion(scope, ref, updated)` 按 `updated` 定位历史版，**以该内容再次 save**（回退本身也会沉淀一版，可再回退）。
+- 读取上限：`listAgentPromptHistory` 按 `id DESC LIMIT 50`（仅暴露最近 50 版）。
+
+### A.3 数据量参考（2026-08-24）
+
+| 对象 | 行数 |
+|---|---|
+| `prompts` | 1（child/1f050a7f… 珊珊，886 字符用户版本；闻闻无用户版本走代码默认） |
+| `prompt_history` | 0（尚未沉淀历史） |
+
+### A.4 写入 / 查询语义（IPC 面对应）
+
+| 操作 | IPC | 说明 |
+|---|---|---|
+| 读当前 | `agents:get {scope, ref}` → `{content, customized}` | customized=true 有用户版本；false = 返回代码默认（编辑器初始填充，`getDefaultPrompt`） |
+| 保存 | `agents:save {scope, ref, content}` | 旧版入历史 + 覆盖当前版；空内容 = 恢复默认 |
+| 历史 | `agents:history {scope, ref}` | 最近 50 版（倒序） |
+| 回退 | `agents:restore {scope, ref, updated}` | 指定历史版重新保存 |
+| 兼容口 | `child:getAgentsMd / child:saveAgentsMd` | 孩子 AGENTS 专用（用户版本 → 代码默认），preload 暴露，前端主走 `agents:*` |
+
+> **⚠️ 与 kb.sqlite 的边界**：`agents.sqlite` 存「提示词/AGENTS 用户版本」；`kb.sqlite` 存「孩子学习数据」（daily/courses/topics/tags）。两者互不读写，AI 的 kb 工具只碰 `kb.sqlite`，碰不到 `agents.sqlite`。
 
 ---
 

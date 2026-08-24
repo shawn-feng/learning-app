@@ -25,7 +25,7 @@ const cacheKey = "__learningAppModelRuntime";
 // "developer is not one of ['system','assistant','user','tool','function']"）。
 // 故 compat 里必须显式 supportsDeveloperRole:false，让 system 保持 system。
 // 性能：qwen3 思考很冗长（实测 flash/plus 思考约 1900 字符、占 10~20s，正文迟迟不出，
-// 远慢于 deepseek-v4-flash 的 ~158 字符/1s）。reasoning_effort 对 qwen3.7 无效（low/medium 无差异），
+// 远慢于 deepseek-v4-flash-0731 的 ~158 字符/1s）。reasoning_effort 对 qwen3.7 无效（low/medium 无差异），
 // 正确参数是 thinking_budget（限制思考 token 数）。实测 flash 自由思考约 1900 字符/12s，
 // budget=512 可压到 770 字符/7.4s，但会把「需查证/多步推理」的复杂问题思考腰斩、偶发幻觉；
 // 故 flash 现用 thinking_budget=2048（复杂问题基本想得完、速度仍远快于 max）。
@@ -88,21 +88,10 @@ const QWEN_MODELS: ProviderModelConfig[] = [
 //   maxTokens=384000（思考+最终输出共享，DeepSeek-V4 的 384k 限制，区别于 qwen 的 16k/32k/65k）；
 //   contextWindow=1000000；thinkingLevelMap 与 SDK 对齐（min/low/medium 置 null，仅 high/max 有效，
 //   配合 pi-session.ts 对 thinkingLevel==="off" 的强制纠正为 high）。
-// 注：千问平台（platform.qianwenai.com 模型清单）同时提供稳定别名 deepseek-v4-flash-0731 /
-// deepseek-v4-pro-0813（定点快照）与无后缀别名（自动路由最新版）；两者都登记，用户可按需选定点版。
+// 注：百炼平台同时提供定点快照（deepseek-v4-flash-0731 / deepseek-v4-pro-0813）与无后缀别名
+// （自动路由最新版）。⚠️ 无后缀别名已从百炼下线（2026-08-24 实测调用报 403 AccessDenied.Unpurchased），
+// 故只登记定点快照，避免设置页出现「可选但必报错」的模型。
 const QWEN_DEEPSEEK_MODELS: ProviderModelConfig[] = [
-  {
-    id: "deepseek-v4-flash",
-    name: "DeepSeek V4 Flash (百炼)",
-    api: "openai-completions",
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 1000000,
-    maxTokens: 384000,
-    compat: { thinkingFormat: "deepseek", supportsDeveloperRole: false, requiresReasoningContentOnAssistantMessages: true },
-    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
-  },
   {
     id: "deepseek-v4-flash-0731",
     name: "DeepSeek V4 Flash 0731 (百炼)",
@@ -199,7 +188,8 @@ function registerQwenProvider(runtime: ModelRuntime): void {
 //   - 按量付费：https://dashscope.aliyuncs.com/compatible-mode/v1
 //   - token-plan：https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
 // 套餐内的第三方模型（DeepSeek V4 系列等）必须走 token-plan 端点才能被套餐抵扣。
-// 鉴权复用 auth.json 的 qwen.key（同属阿里百炼账号，token-plan 与按量共用同一 API Key）。
+// 鉴权：qwen-tokenplan 走 auth.json 中独立的 key 段（auth["qwen-tokenplan"]，sk-sp- 开头，
+// 套餐专属），与按量付费的 auth.qwen 不是同一个 Key，切勿互相拷贝或同步。
 const QWEN_TOKENPLAN_PROVIDER: ProviderConfig = {
   name: "通义千问 (Qwen) · token-plan 套餐",
   baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -338,12 +328,13 @@ export async function getAvailableModels() {
   return models.filter((m: any) => ALLOWED_MODEL_PROVIDERS.includes(m.provider));
 }
 
-// 显式指定的默认模型：token-plan 套餐内的 deepseek 便宜档 flash（qwen-tokenplan/deepseek-v4-flash），
+// 显式指定的默认模型：token-plan 套餐内的 deepseek 便宜档 flash 定点快照（qwen-tokenplan/deepseek-v4-flash-0731），
 // 避免未配置时落到更贵的档位。注意：这是 qwen-tokenplan provider 下的 DeepSeek，走 token-plan 套餐端点，
 // 与 SDK 内置 deepseek/*（DeepSeek 官方直连，独立 key）是两条不同通道。
 // 这是「兜底默认」——仅当用户未在设置里指定默认模型时生效。
+// 注：无后缀 deepseek-v4-flash 已从百炼下线，只登记 -0731 定点快照。
 const DEFAULT_PROVIDER = "qwen-tokenplan";
-const DEFAULT_MODEL = "deepseek-v4-flash";
+const DEFAULT_MODEL = "deepseek-v4-flash-0731";
 
 export async function getDefaultModel() {
   const runtime = await getSharedRuntime();
@@ -359,7 +350,7 @@ export async function getDefaultModel() {
       if (model) return model;
     }
   }
-  // 未设置或指定模型无法解析（如 provider 未注册）→ 回退到 qwen-tokenplan 的 deepseek-v4-flash（套餐端点）。
+  // 未设置或指定模型无法解析（如 provider 未注册）→ 回退到 qwen-tokenplan 的 deepseek-v4-flash-0731（套餐端点）。
   return runtime.getModel(DEFAULT_PROVIDER, DEFAULT_MODEL);
 }
 

@@ -1,11 +1,12 @@
 # 项目长期记忆（pi 学习伴侣）
 
-## 架构约定：孩子 AI 的 prompt 构成（2026-08-18 确立）
-- **孩子会话 prompt = 身份（systemPromptOverride）+ 全部行为规范（AGENTS.md）**。
+## 架构约定：孩子 AI 的 prompt 构成（2026-08-18 确立；2026-08-24 终版修订）
+- **孩子会话 prompt = 身份（systemPromptOverride）+ 全部行为规范（AGENTS）**。
 - `buildChildPrompt`（electron/lib/pi-session.ts）**只描述身份**，不写任何行为约束，也不要写「不是XXX」、只写「是XXX」。
-- 所有行为约束（交流准则、学习方法、内容展示、角色）放在 `LEARNING_NAV_INSTRUCTIONS`，经 `buildAgentsMd` 生成 `data/children/<id>/AGENTS.md`，由 SDK 自动附加为 `<project_context>`。**AGENTS.md 是孩子规范的唯一真源**；家长可在 `<!-- custom:start/end -->` 段手动编辑。
-- `getChildSession` 每次开会话前调 `writeAgentsMd(childId, profile)` 刷新磁盘 AGENTS.md（保留 custom 段），避免源码改了但磁盘陈旧、旧文案与新设计矛盾。
-- 改动 LEARNING_NAV 后，跑 `scripts/regenerate-agents.mjs` 可一次性为所有孩子重新生成 AGENTS.md。
+- 所有行为约束（交流准则、学习方法、内容展示、角色）放在 `LEARNING_NAV_INSTRUCTIONS`，经 `buildAgentsMd` 生成「代码默认」AGENTS。
+- **⚠️ AGENTS 纯 SQLite（2026-08-24 终版，ISSUE-033）**：`data/agents.sqlite` 的 `prompts(scope,ref,content,updated)` 存「用户版本」（scope=child/ref=<childId>；scope=parent/ref=main|content），`prompt_history` 存每次保存的历史版本（可回退）。**不落任何物理 AGENTS 文件**（孩子目录、家长目录均无 AGENTS.md；`writeAgentsMd`/`getChildAgentsPath`/`scripts/regenerate-agents.mjs` 已删除）。查看/编辑唯一入口 = 家长页面 AgentPromptEditor（`agents:get/save/history/restore` IPC 走 SQLite）。
+- `resolveChildAgents(childId, profile)`（pi-session.ts）优先级：**SQLite 用户版本（整体替换）→ 代码默认 buildAgentsMd**；`buildChildPrompt` 将其**内联注入 system prompt**（无 `<project_context>` 文件注入），孩子只读、不可写。改 profile / 新建孩子**无需刷新任何 AGENTS 文件**（与 profile 解耦）。
+- 改动 `LEARNING_NAV_INSTRUCTIONS` 后无需跑任何脚本——代码默认随源码生效；已保存用户版本（整体替换）不受影响。
 
 ## 架构约定：recording = 纯定时任务，不是技能（2026-08-21 确立）
 - **recording 不再作为技能**：`data/shared/skills/recording/` 已删除（不进 `<available_skills>`），改由 scheduler 定时任务驱动。
@@ -26,6 +27,8 @@
 - ⚠️ **绝不依赖 `setState(updater)` 闭包给外部变量赋值、再同步读取**——React 18+ 中 updater 异步执行（render 阶段才跑），同步检查时变量恒为旧值/初始值。ISSUE-014 教训：旧代码「updater 里赋 `targetId` → 同步 `if (targetId) setSelectedMaterialId(targetId)`」恒为 null，自动弹开从未生效（初次登记误判为正常，用户实测第二份资料不切换才暴露）。**「状态变更后的派生行为」一律用 `useEffect` 监听状态**；需要 updater 内部分支结果时（如去重返回原引用），依赖「返回原引用 → React bail-out → effect 不触发」这一行为。
 
 ## 构建与验证
+- ⚠️ **WorkBuddy 沙箱内禁止 `git stash`（push/pop）**：stash 内部会删 refs/stash + reset 工作区，被环境 safe-delete 机制误删 **.git/refs/ 目录与旧 pack 数据（.pack）** → 仓库损坏（not a git repository / bad object / missing blob）。2026-08-24 实测事故。验证「未提交改动」用 `git diff`/`git show HEAD:<file>` 代替。
+- **git 仓库损坏恢复范式**（2026-08-24 实测 4 步）：① `git update-ref -d refs/heads/master` 删坏引用 → `git fetch origin` 拉远端完整对象；② `git update-ref refs/heads/master <远端hash>` + `git read-tree HEAD` 重建 index（index 引用丢失 blob 时 read-tree 可绕过，勿用 reset）；③ 删孤立 `objects/pack/*.idx`（无配对 .pack 的索引）与失效 multi-pack-index；④ `git fsck --full` 确认 missing=0。注意：**未推送的本地 commit 对象可能无法找回**，但内容都在工作区文件里，重新 commit 即可（git status 会显示全部差异）。
 - 主进程/渲染改动后需 `rm -rf out && npm run build`（electron-vite）才生效；`electron-vite build` 清空 out 时可能撞环境 safe-delete 回收站报错，先 `rm -rf out` 可规避（注：`rm -rf out` 本身也可能被 safe-delete 拦，拦完目录其实已删，直接再跑 `npm run build` 即可）。
 - `tsc --noEmit` 项目里长期有 5 条环境相关的全局类型告警（TS7/@types/node26 不兼容），非业务代码引入，忽略即可。
 - ⚠️ **这 5 条 TS2318/TS2552 全局类型损坏会导致 tsc 终止大部分语义分析，可能掩盖真实业务错误**——如 ISSUE-008 白屏事故：`ChatWindow` 组件漏解构 `notice` prop（JSX 里用了 `notice` 变量）→ 运行时 ReferenceError → 进孩子模式整页白屏，而 tsc 只报了 5 条环境告警、electron-vite build（esbuild）不做类型检查，双双漏过。**验证时把 tsc 输出过滤掉 TS2318/TS2552 后再看是否有其它错误**；改组件后要核对「Props 字段是否都解构了」。

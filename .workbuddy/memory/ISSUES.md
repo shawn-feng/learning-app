@@ -890,7 +890,7 @@
 - **排查 / 修改入口（可直接执行）**：`src/components/ChatWindow.tsx:220-224`（滚动 useEffect）、`573`（容器）、`583-600`（消息结构/锚点）。
 - **关联**：ISSUE-004（气泡时间显示，同文件历史恢复链路）；ISSUE-018（thinking/tools 恢复——trace 展开会让消息更高，加剧此问题）。
 - **已修复（2026-08-22 实施）**：`src/components/ChatWindow.tsx` 重写滚动逻辑——从「无条件滚到底」改为「滚到**最后一条消息顶部**」：`target = min(scrollHeight - clientHeight, lastMsgTop)`，消息能整条放进视口时仍滚到底（自然、整条可见），超一屏时把开头显示在一屏内。用 `getBoundingClientRect` 计算 `lastMsgTop`（不受定位祖先影响）；新增 `nearBottomRef` + scroll 监听，用户主动上滚阅读历史时（`distanceFromBottom > 80px`）不打断、不强行拉回，滚回底部附近才恢复自动滚动。流式 working 阶段同样锚定开头。验证：`tsc --noEmit` 仅余基线 `TS2318/TS2552` 全局类型错误（与本次无关）。⚠️ 渲染层改动需 `npm run build` 后手测：长 AI 回复开头可见、用户上滚读历史不被拉回、用户发新消息正常跟到底。
-- **优先级**：已修复（代码完成，待构建后手测确认）
+- **优先级**：已完成（2026-08-24 手测确认）
 - **记录时间**：2026-08-21 / 2026-08-22 修复
 
 ## [ISSUE-029] 主题教学资料与 method 入 SQLite（家长中心库 + 主题分配/拷贝给孩子）；method 存全文而非文件链接；每课 method 与 html 地址入库；资料移出孩子目录、改由家长目录统一管理
@@ -949,7 +949,7 @@
 - **parent_content 增加 htmlPath 查询**：用户要求「parent_content 还要能查询课程学习资料的 html 文件路径」。实施：① `ParentContentType` 增加 `htmlPath`，`getParentContentForChild` 按课程查 html_path 并**校验文件真实存在**（避免返回失效指针），返回家长库相对路径 `materials/<topic>/<file>.html`；② `parent_content` 工具 description/参数/错误文案同步（type=method|teachingCopy|htmlPath，course 必填）；③ `display_content` 的 path 解析扩展为**同时接受家长库相对路径** `materials/<topic>/<file>.html` 与旧 `learning/<topic>/materials/<file>.html`（正则 `^(?:learning\/[^/]+\/)?materials\/...`），描述注明 htmlPath 返回格式可直接传入。测试 +2 断言（htmlPath 文件不存在 → not found；造文件后返回正确路径）→ 28/28、tsc 0、build 0。
 - **提示词分层去重（method/AGENTS/技能）**：用户问「既然工具描述写清楚了，为什么 AGENTS 和 method 还重复写怎么使用」——定位为「怎么调（工具描述唯一真源）vs 何时用/红线（AGENTS）vs 教学协议（method）」三层混叠，且 method 已与 parent_content 设计**漂移**（仍写「先读 learning/lunyu/materials/{课程名}.md」）。按用户拍板清理：① **8 个主题 method**（家长库 topics.method，`scripts/fix-method-tool-refs.py` 可重复执行，先备份 parent.sqlite.bak-dedup）：删 kb_update/kb_insert 参数级 JSON 示例 → 语义描述；教学文案读取 → `parent_content teachingCopy`；display_content 路径 → 家长库相对路径 `materials/<topic>/<file>.html`（论语 2 处）；tags 文件 `tags/{tag}.md` → kb_query 按 tag 查；小篆/陶笛「读索引文件定位」→ kb_query 课程清单、考核「读 materials 对应课」→ parent_content；春风阅读「读 reading.md 顺序」→ 系统 next；汉字宫保留索引 md + 字卡 html 内容文件流程（仅清 kb JSON）。每主题精简 ~190-250 字符；② **AGENTS.md（LEARNING_NAV）**：学习/记录/进度查询段去掉 `{query:"topics"}`/`{table:"course"}` 等 JSON，只留策略红线；③ **recording 技能 SKILL.md**：同步去 JSON 示例，保留领域语义（复习次数 +1、标签行、写入顺序），「课程名一致」改指课程表；④ 刷新真实孩子磁盘 AGENTS.md（保留 custom 段）；⑤ 测试加固：agents-md.test.ts 新增断言 AGENTS 不含 `{table:"course"`/`{query:"topics"`/`{query:"tags"`/`{query:"progress"` → 28/28、tsc 0、build 0。
 - **method/技能二次去参数（只描述「用什么工具做什么」）**：用户指出「method 里还是有工具的调用参数，应该只描述用工具获取什么东西」——上一轮保留的 `（type:"teachingCopy"，topic 传…、course 传…）`、`（table 用 course：topic 传…、field 传…、value 传…）` 等仍是调用参数。二次清理（并入 `scripts/fix-method-tool-refs.py` 的 pass2，对当前库幂等）：method 里 parent_content 只写「获取该课教学文案/该篇教学文案/html 资料路径」；kb_update 只写「更新该课进度：状态→✅、掌握度、首次学习、最近复习」；kb_insert 只写「写入当日「学习」记录（### 课程名 标题 + 原文）」；kb_query 只写「查相关生活事件」；论语 display 改「（html 资料路径可先用 parent_content 获取）」。保留的仅领域语义字段名（状态/掌握度/首次学习/最近复习/### 课程名）与规则（learned/total/next 视图自动计算、字段缺失追加）。recording 技能同步清 `table 用`/`query 用`/`field 传`/`value 传` 及 `kb_query {query:"tags"}` JSON。验证：method 8/8 零参数残留、recording 零残留、每主题再精简 ~110-300 字符（论语 -305）；28/28、tsc 0、build 0。新增 `scripts/verify-method-clean.py` 可复查。
-- **优先级**：已实施（数据层 + 迁移 + 分配 UI 落地；管理端深化为后续项）。
+- **优先级**：已完成（2026-08-24 用户确认告一段落；管理端深化列为后续项）。
 
 ## [ISSUE-031] 给孩子分配学习主题时没有「每天学习量」的设置入口——应在家长界面分配时设置
 
@@ -978,7 +978,7 @@
   - 旧数据：`data/children/<id>/learning/rules.md`（daily 真源）、迁移 `kb-sqlite.ts:512`（rules_json 硬编码 `{}`）。
   - 消费方：`electron/lib/learning-summary.ts`（getLearningSummary 的 daily 字段）、study-tracker/学习提示词（kb_query topics）。
 - **关联**：ISSUE-029（主题分配/快照语义——daily 量随分配一起拷贝）；ISSUE-019（家长页「进度 vs 计划」展示依赖此量做偏差计算）；ISSUE-013（kb 工具族查询）。
-- **优先级**：已实施（代码完成，待构建后手测；用户拍板「孩子库独立存储 + 父库默认带入 / 分配时弹框 + 分配后可编辑」）。
+- **优先级**：已完成（2026-08-24 用户确认；构建后手测通过）。
 - **记录时间**：2026-08-21 / 2026-08-22 实施
 
 ## [ISSUE-031 处理记录] 2026-08-22（已实施）
@@ -1022,7 +1022,7 @@
   - 库初始化：`electron/lib/kb-sqlite.ts:155-167`（openKbDb，建表幂等，可直接在 init 调用）。
   - 实测残留：`data/children/1f050a7f-…/`（study-topics.md / study-rules.md / life-events.md / daily-logs/ 存在）。
 - **关联**：ISSUE-013（kb-lint/目录规范同源，本 issue 是结构侧收敛）；ISSUE-029（主题/资料已上移父库）；ISSUE-031（rules.md 的 daily 量入库后，rules.md 更无存在必要）。
-- **优先级**：已实施（代码完成，待构建后手测；用户拍板「只建最小集 `.pi/`+profile.json+AGENTS.md+空 kb.sqlite` + 默认标签种子入 tags 表；kb-lint 去掉目录结构检查、topics/rules 改查库」）。
+- **优先级**：已完成（2026-08-24 用户确认；构建后手测通过）。
 - **记录时间**：2026-08-21 / 2026-08-22 实施
 
 ## [ISSUE-032 处理记录] 2026-08-22（已实施）
@@ -1082,24 +1082,58 @@
 
 ## [ISSUE-033 方向修订] 2026-08-24 —— 孩子目录里不要 AGENTS 文件，孩子不能改它
 - **用户新增诉求（原话）**：「孩子的数据目录里不能有 AGENTS 文件，孩子不可以修改这个文件。」
-- **与已实施的 033 冲突**：033 处理记录（2026-08-22）拍板「**保留孩子 AGENTS.md 文件**（内容=用户版本），`child:saveAgentsMd` 即时落盘生效」。本修订要求孩子目录**彻底不出现 AGENTS.md 文件**——即推翻 033 的"保留文件"决策，改为**纯内联注入**。
-- **现状（已定位）**：当前 `writeAgentsMd`（`pi-session.ts:96-119`）每开孩子会话都写 `data/children/<id>/AGENTS.md`（:98）；`getChildSession`（:413）每次调 `writeAgentsMd` 刷新；SDK `DefaultResourceLoader`（:418-436，cwd=childDir）在 customPrompt 模式下**自动把磁盘 AGENTS.md 附加为 `<project_context>`**——所以 AGENTS.md 是孩子规范当前唯一注入通道。**去掉文件 = 必须改为 `systemPromptOverride`（:423 `buildChildPrompt`）内联注入身份+规范**，且 `cwd` 下的 AGENTS.md 不再被 loader 读取。
-- **修订方案要点（候选）**：
-  1. **孩子 AGENTS 彻底内联**：`buildChildPrompt(profile, progressContext)` 直接拼「身份段（`buildAgentsMd` 的 75-89 行）+ `LEARNING_NAV_INSTRUCTIONS` 规范 + 用户版本（若有，从 `data/agents.sqlite` 取）」经 `systemPromptOverride` 注入；**删除 `writeAgentsMd` 对孩子目录的 AGENTS.md 写盘**（或保留函数为家长侧/兼容，但不再对孩子落盘）。
-  2. **孩子不能改**：AGENTS 真源改为 `data/agents.sqlite`（scope=child, ref=childId 的用户版本）或代码默认；文件不存在 → 孩子端（即使能访问目录）也无文件可改；UI 编辑入口只在家长中心 `AgentPromptEditor`，孩子界面无此能力（现状已满足：编辑器只在 Dashboard/家长中心）。
-  3. **向后兼容**：已存在孩子目录里的旧 `AGENTS.md`（珊珊/闻闻）应清理（仅删文件，规范由 SQLite/代码提供，无丢失风险）；`child:saveAgentsMd` / `child:getAgentsMd` IPC 改为只读写 `data/agents.sqlite`，不再触碰孩子目录文件。
-- **待确认（冲突点，需用户拍板）**：
-  1. **是否回退 033 已实施的"保留孩子 AGENTS.md 文件"方案**？本修订要求去掉 → 需把 `writeAgentsMd` 对孩子落盘去掉，并清掉存量孩子目录的 AGENTS.md。
-  2. 内联注入后，用户版本（家长编辑）与代码默认如何合并进 `buildChildPrompt`？建议：有用户版本整体替换、否则代码默认（与 033「整体替换」一致）。
-  3. 家长侧 AGENTS（`buildParentPrompt`/`buildParentContentPrompt`）维持现状（代码默认 + SQLite 用户版本，无落盘文件）——本修订仅约束**孩子**。
+- **澄清（同日后续）**：「文件要保留，但是不能保留在孩子的目录里，孩子的 agent 不能修改这个 AGENTS 文件。可以保留到家长的目录里。」
+  → **最终方向确定**：AGENTS 文件**保留**，但**从孩子目录移到家长目录**存放；孩子 agent **只读**该文件（由 SDK loader 从家长目录读），**不可写**（孩子目录无此文件、无写权限路径）。
+- **与已实施的 033 冲突点**：033 处理记录（2026-08-22）拍板「**保留孩子 AGENTS.md 文件**（内容=用户版本），`child:saveAgentsMd` 即时落盘 `data/children/<id>/AGENTS.md` 生效」。本修订要求：**文件改存家长目录 `data/parents/<pid>/agents/<childId>.md`（或类似路径），孩子目录彻底不出现 AGENTS 文件**；孩子端只读、家长端（AgentPromptEditor）可写。
+- **现状（已定位，全部落盘点）**：
+  - `writeAgentsMd`（`pi-session.ts:96-119`）：写 `data/children/<id>/AGENTS.md`（:98）→ **需改为写家长目录**。
+  - `getChildSession`（:413）每次开会话前调 `writeAgentsMd` 刷新孩子目录文件 → **改为刷新家长目录文件 / 不再对孩子目录写**。
+  - `getChildSession`（:418-436）用 `DefaultResourceLoader({cwd: childDir})` → SDK 自动从 cwd 读 `AGENTS.md` 注入 `<project_context>`；**要让它读家长目录文件，需把 cwd 指向家长目录，或用 `contextFiles`/`systemPromptOverride` 显式加载家长目录文件**。候选：cwd 仍为 childDir（保证工具 read/write 落在孩子目录），AGENTS 改由 `systemPromptOverride`（`buildChildPrompt`，:423）从家长目录文件/SQLite 读取后内联注入——**最干净**：孩子目录无文件、孩子不可写、规范来自家长侧。
+  - `child-auth.ts:132` 改 profile 后 `writeAgentsMd` 刷新 → 同步改写家长目录。
+  - `user-init.ts:93` 新建孩子时 `writeAgentsMd` → 同步改为写家长目录（或在家长目录预建空/默认 AGENTS）。
+  - IPC `child:saveAgentsMd`（:154-163）、`child:getAgentsMd`（:143-152）、`agents:save`（:174-185，scope=child 分支 :178-180 落盘孩子目录）→ **改为读写家长目录文件 + `data/agents.sqlite`**，不再 `writeFileSync`/`readFileSync` 孩子目录。
+  - 存量：`data/children/{珊珊,闻闻}/AGENTS.md` 需删除（规范转移到家长目录）。
+- **修订方案要点（已澄清，可执行）**：
+  1. **文件存家长目录**：新增 `data/parents/<pid>/agents/<childId>.md`（每孩子一份，内容=用户版本，无用户版本时由代码默认生成）。管理者=家长（AgentPromptEditor 走 `agents:save` 写此文件 + SQLite）。
+  2. **孩子只读、不可写**：孩子会话注入 `buildChildPrompt` 改为从「家长目录 AGENTS 文件 或 `data/agents.sqlite` 用户版本」取内容，经 `systemPromptOverride` 内联；孩子目录无 AGENTS 文件、工具白名单不含对该路径的写、UI 无孩子侧编辑入口（现状已满足）。
+  3. **回退 033「写孩子目录文件」逻辑**：`writeAgentsMd` 入参加 `targetDir` 或新增 `writeParentAgentsMd(parentId, childId, content)`；`getChildSession`/`child-auth.ts`/`user-init.ts` 调用处改指向家长目录。
+  4. **向后兼容**：存量孩子目录 AGENTS.md 删除（规范由家长目录/SQLite 提供，无丢失风险）；`child:getAgentsMd`/`agents:get` scope=child 改为读家长目录文件优先、SQLite 兜底。
+- **待确认（仅剩细节，方向已定）**：
+  1. 家长目录 AGENTS 文件路径：`data/parents/<pid>/agents/<childId>.md` 还是并入现有 `agents.sqlite`（033 已建，文本存 SQLite 即可，文件可不落盘）？——**建议：SQLite 为权威（033 已有），家长目录可不再落盘文件，仅保留「文件可读」选项供高级用户**。需你拍板是否还要物理文件。→ **曾拍板保留物理文件（2026-08-24 首版实施）**：`data/parents/default/agents/<childId>.md` + SQLite 双写；**2026-08-24 二次拍板（终版）**：**AGENTS 全部放 SQLite（data/agents.sqlite），不落任何物理文件**，查看/编辑均在家长页面 AgentPromptEditor（见下方「终版修订实施记录」）。
+  2. 多家长（pid 非 default）时孩子 AGENTS 归属哪个 pid？当前单家长 default，暂定 default。→ **已拍板**：`getChildAgentsPath(childId, parentId=DEFAULT_PARENT_ID)` 已参数化，当前单家长走 default，未来多家长无需改结构。
 - **排查 / 修改入口**：
-  - `electron/lib/pi-session.ts`：`writeAgentsMd`（:96-119，去孩子落盘）、`buildChildPrompt`（在 :423 systemPromptOverride 内联）、`getChildSession`（:413 删 writeAgentsMd 调用）、`getDefaultPrompt`（:128-135 孩子分支改查 SQLite 而非读 AGENTS.md 文件）。
-  - IPC：`electron/lib/ipc-handlers.ts` `child:saveAgentsMd`/`child:getAgentsMd` → 改走 `agent-prompts.ts`（SQLite），不再 `writeFileSync`/`readFileSync` 孩子目录。
-  - 清理：`data/children/{珊珊,闻闻}/AGENTS.md` 存量文件删除。
-  - SQLite：`electron/lib/agent-prompts.ts`（`data/agents.sqlite` 已是 033 实施产物，复用即可）。
-- **关联**：ISSUE-032（孩子目录结构精简——去掉 AGENTS.md 与"只建最小集"方向一致，032 已落实其余目录）；ISSUE-038（提示词去重——内联后 AGENTS 与工具 description 重叠治理可一并做）。
-- **优先级**：待定（建议高：与已实施 033 冲突，需先拍板是否回退"保留文件"方案再动手；改动小但影响孩子规范注入通道）。
+  - `electron/lib/pi-session.ts`：`writeAgentsMd`（:96-119，改写家长目录/去孩子落盘）、`getChildSession`（:413 删孩子目录写、:418-436 cwd 保留 childDir、:423 buildChildPrompt 内联家长侧规范）、`buildChildPrompt`（:259 起，拼家长目录 AGENTS 内容）、`getDefaultPrompt`（:128-135 孩子分支改查家长目录/SQLite）、`child-auth.ts:6,132` 调用。
+  - `electron/lib/user-init.ts:6,93` 新建孩子调用。
+  - IPC：`electron/lib/ipc-handlers.ts` `child:saveAgentsMd`/`child:getAgentsMd`（:143-163）、`agents:save`/`agents:get`（:166-185，scope=child 分支去孩子落盘）。
+  - 清理：`data/children/{珊珊,闻闻}/AGENTS.md` 删除。
+  - SQLite：`electron/lib/agent-prompts.ts`（`data/agents.sqlite` 复用，scope=child/ref=childId）。
+- **关联**：ISSUE-032（孩子目录精简——去掉 AGENTS.md 与"只建最小集"一致）；ISSUE-038（提示词去重——内联后 AGENTS 与工具 description 重叠治理可一并做）；ISSUE-029（家长库为中心——AGENTS 归家长目录与之同源）。
+- **优先级**：✅ 已实施（2026-08-24 修订完成，构建/测试通过；待手测）→ **2026-08-24 终版已实施**（AGENTS 纯 SQLite、删物理文件，见下方「终版修订实施记录」）
 - **记录时间**：2026-08-24
+
+### ISSUE-033 修订实施记录（2026-08-24）
+- **改动文件**：
+  - `electron/lib/parent-library.ts`：新增 `getParentAgentsDir(parentId)` + `getChildAgentsPath(childId, parentId=DEFAULT_PARENT_ID)`（→ `data/parents/<pid>/agents/<childId>.md`）。
+  - `electron/lib/pi-session.ts`：`writeAgentsMd` 改写家长目录（含 mkdir，不再碰孩子目录）；新增 `resolveChildAgents(childId, profile)`（优先级：SQLite 用户版本 → 家长目录文件 → 代码默认+custom 段）；`buildChildPrompt(childId, profile, progressContext)` 改为从 resolveChildAgents 取内容**内联注入 system prompt**（孩子目录无 AGENTS.md，SDK 不再附加 `<project_context>`，语义等价）；`getDefaultPrompt` child 分支改读家长目录文件；createChildSession 传 childId 给 buildChildPrompt。
+  - `electron/lib/ipc-handlers.ts`：`child:getAgentsMd` / `child:saveAgentsMd` / `agents:save`（scope=child）全部改读写家长目录文件（`getChildAgentsPath` + mkdir），不再 `writeFileSync`/`readFileSync` 孩子目录。
+  - `test/app.test.ts`、`test/functional.test.ts`、`test/sync.test.ts`：断言从「孩子目录含 AGENTS.md」改为「孩子目录**不**含 + 家长目录 agents/<childId>.md 存在」；sync 的 ≥3 文件断言调为 ≥2。
+  - 新增 `test/agents-parent-dir.test.ts`：锁定 3 不变量（writeAgentsMd 写家长目录不写孩子目录 / resolveChildAgents 无用户版本→代码默认 / 有用户版本→整体替换）。
+- **存量迁移**：`data/children/{09406c05…闻闻,1f050a7f…珊珊}/AGENTS.md` 已删除；家长目录 `data/parents/default/agents/` 已生成两份 `<childId>.md`（闻闻=代码默认 2433 字符；珊珊=SQLite 用户版本 886 字符，与磁盘一致）。
+- **验证**：`tsc --noEmit` 过滤 TS2318/TS2552 后 0 错；`npm run build` 通过；测试 agents-md(3)/agents-parent-dir(3)/parent-library/app「initializes child directory」/functional「孩子目录包含所有必要文件」/sync(8) 全过。剩余失败均为既有：app.test.ts 云端 ECONNREFUSED 8005、functional `app.isPackaged` 未定义 + shared/skills 残留 recording/study-tracker + ISSUE-032 过时断言（tags/taxonomy.md、daily 目录）。
+- **手测清单**：① 家长中心「编辑 AI 提示词」孩子侧：保存即生效（写家长目录 + SQLite）、恢复默认、历史回退；② 孩子会话行为规范仍生效（内联注入后交流准则/学习规则照常）；③ 孩子目录无 AGENTS.md、家长目录 agents/ 有文件。
+
+### ISSUE-033 终版修订实施记录（2026-08-24，二次修订：AGENTS 纯 SQLite，删物理文件）
+- **用户诉求（原话）**：「把孩子的 AGENTS 文件放到数据库 sqlite 里。修改后的也存在数据库里。查看和编辑就在家长页面里。」
+- **终版拍板**：**AGENTS 全部存 `data/agents.sqlite`（prompts 当前版 + prompt_history 历史版），不落任何物理文件**（孩子目录、家长目录均无 AGENTS 文件）；查看/编辑均在家长页面 AgentPromptEditor（`agents:get/save/history/restore` 走 SQLite）。孩子开会话时 `buildChildPrompt` 内联注入 `resolveChildAgents`（SQLite 用户版本 → 代码默认 buildAgentsMd），孩子只读、不可写（无文件可写）。
+- **核心改动**：
+  1. `pi-session.ts`：删除 `writeAgentsMd`/`extractCustomSection`/custom 段占位（AGENTS 不再落盘，custom 段载体已无）；`resolveChildAgents` 简化为「SQLite 用户版本 → 代码默认」；`getDefaultPrompt` child 分支纯 `buildAgentsMd(getProfile(ref))`（无文件读取，profile 缺失返回空串防崩）；`createChildSession` 删开会话前 `writeAgentsMd` 刷新调用；删 `getChildAgentsPath` import。
+  2. `parent-library.ts`：删除 `getParentAgentsDir`/`getChildAgentsPath`（无引用）。
+  3. `ipc-handlers.ts`：`child:getAgentsMd`（用户版本 → 代码默认）、`child:saveAgentsMd`、`agents:save` 全部纯 SQLite，删 `fs.mkdirSync`/`writeFileSync` 落盘与 `getChildAgentsPath` import。
+  4. `child-auth.ts` / `user-init.ts`：删 `writeAgentsMd` 调用与 import（AGENTS 与 profile 解耦，无需刷新）。
+  5. 存量迁移：`data/parents/default/agents/` 两个 `<childId>.md` 删除（SQLite 已有珊珊用户版本 886 字符、闻闻走代码默认，无数据丢失）；孩子目录无 AGENTS.md 残留；删除过时脚本 `scripts/regenerate-agents.mjs`（写孩子目录 AGENTS.md，与纯 SQLite 矛盾且无引用）。
+  6. 测试：`agents-parent-dir.test.ts` → 重写为 `test/agents-sqlite.test.ts`（4 用例：无物理文件/无用户版本→代码默认/有用户版本→整体替换/getDefaultPrompt child 分支）；app.test.ts「initializes child directory」、functional.test.ts「孩子目录包含所有必要文件」断言改为「孩子目录无 AGENTS.md + 家长目录无 agents 目录」；sync.test.ts 不变（断言本就正确）。
+- **验证**：tsc（滤 TS2318/TS2552）0 错；`npm run build` 通过；agents-sqlite(4)/agents-md(3)/app 初始化用例/functional 必要文件用例/sync(8) 全过；单独跑 programming-agent(4)/kb-sqlite(23)/parent-library(12) 全过。完整套件 19 个失败均为既有（云端 ECONNREFUSED 8005、shared/skills 残留 recording/study-tracker、ISSUE-032 过时断言、learning-summary 依赖真实 data、qwen 运行时模型未初始化、并发偶发），零新增回归。
+- **手测清单**：① 家长页面「编辑 AI 提示词」（孩子侧 + 家长侧）：保存即生效、恢复默认、历史回退；② 孩子会话行为规范照常生效（内联注入）；③ 磁盘确认：孩子目录与家长目录均无 AGENTS 文件，`data/agents.sqlite` 的 prompts 表为唯一真源。
 
 ## [ISSUE-034] SQLite 模糊匹配能力 + 需要模糊检索的场景分析（目标：减少 listOnly 操作，省 token）
 - **现状 / 问题**：
@@ -1169,7 +1203,7 @@
   4. `SchedulerSettings.tsx`：改「每日学习记录总结」，启用后显示多时间点列表（time 输入 + 删除 + 添加，默认 21:00）+「每次新建会话前自动总结」开关；
   5. 测试：`test/daily-summary.test.ts`（按天过滤/最近会话日/无会话跳过共 6 用例）；archive-limit 配置结构同步。
 - **关键点**：AI 工具与定时/会话前三路共用 `summarizeDailyConversation`，幂等（kb_insert 同主键不重复写）；`pi-session ↔ scheduler` 循环 import（getChildSchedulerConfig / resetChildSession 均在函数内使用，ESM 安全）；`pi-session.ts` 本次改动与 ISSUE-033（agent-prompts）同文件，未提交（等 033 批）。
-- **优先级**：已完成（2026-08-23，commit 待提交）
+- **优先级**：已完成（2026-08-24 commit 已提交）
 - **补充（2026-08-23 晚，同天多次汇总去重）**：用户选择「每次都跑 + 增量去重」策略——`summarizeDailyConversation` 跑 AI 前先 `queryDaily` 查当天已有条目，经 `formatDailyExistingList` 拼成「已存在清单 + 不重复规则」进 prompt（① 清单中已存在条目禁止重复插入；② 新信息用 kb_update 更新已有条目；③ 只对清单外新条目 kb_insert）；`daily_entries` 主键 (date,block,title) 幂等兜底。三路触发（定时多时间点/会话前/AI 工具）统一走此去重。`formatDailyExistingList` 为纯函数（raw 截断 120 字符省 token），新增 2 单测（daily-summary 共 9 用例全过）。
 
 ## [ISSUE-037] 家长「课程管理」页里的 AI 对话没有任何反应（发送后无回复、无报错）
@@ -1189,23 +1223,23 @@
   - 事件绑定：`electron/lib/ipc-handlers.ts:1152-1214` `attachSessionEvents`：`session.subscribe` → `message_update` 的 `text_delta` 发 `pi:streaming`、其它 type 发 `tool_*`/`agent_end`/`message_end`/`error`；用 `subscribedSessions.has(session)` 去重。
   - 桥接：`electron/preload.ts:14-33`（`onPiStreaming`/`onPiAgentEnd` 等）、`piPromptParentContent`（64）。
   - 工具名校验：已确认 `parent_course_save`/`parent_course_delete` 同时出现在 `tools` 白名单（`pi-session.ts:533`）与 `customTools` 的 `defineTool({name})`（`custom-tools.ts:473/516`）——**排除 ISSUE-006 同类「customTools 未进白名单被过滤」坑**。
-- **根因假设（按可能性排序，待验证，非结论）**：
-  1. **【最吻合】前端静默吞错 + 后端任一步抛错 → 用户看到「完全没反应」**：`piStartParentContent` 是 fire-and-forget，若 `getParentContentSession()` 在**首次**构造时抛错（model 未配置 / `getDefaultModel()` 取不到 / `learningGuardExtension` 加载异常 / SDK 0.84 创建 session 失败），`attachSessionEvents` 永不执行 → 后续 `pi:prompt_parent_content` 复用同一抛错路径、返回 `{success:false}`，而 `handleSend` 的 catch 只 `setBusy(false)` 不提示。这与「没有任何反应、连错误都没有」完全吻合，也违反用户既定的「网络/调用失败必须显式提示 UI 错误，禁止静默回退」原则。
-  2. **`pi:start_parent_content` 与监听注册的顺序/生命周期问题**：监听在 `useEffect([])`（挂载即注册），`piStartParentContent` 在 `useEffect([topicDir])` 异步触发；若会话构造较慢或抛错，事件未绑定。但 childId 过滤与订阅去重逻辑本身正确。
-  3. **`session.subscribe` 的事件结构不匹配 SDK 0.84.1**：若 `message_update` 的 `assistantMessageEvent.type` 不是 `text_delta`（或字段改名），`pi:streaming` 永不发送 → 前端无文本；但 `agent_end` 仍会发 → busy 会复位。此情形用户应看到「转圈停止但仍无文字」，与「完全没反应」略有出入。
-  4. **模型/额度问题**：`getDefaultModel()` 返回的模型对家长内容会话不可用（如未配 key、超出额度），`session.prompt` 抛错 → 走假设 1 的静默路径。
-- **验证手段（定位用）**：
-  1. 打开 `node .` 主进程控制台 + 渲染进程 DevTools：**主进程** `attachSessionEvents` 的 `console.log("[pi:event] child=parent-content type=...")`（ipc-handlers.ts:1158）是否打印、`pi:prompt_parent_content` 的 catch（740）是否报错；**渲染进程** `handleSend` 的 `await window.api.piPromptParentContent(...)` 返回 `success:false` 还是抛异常。
-  2. 在 `TopicDetail.tsx:61` 把 `window.api.piStartParentContent()` 改为 `await window.api.piStartParentContent().catch(e=>console.error("start err",e))`，并把 `handleSend` 的 catch 改成 `catch(e){ setBusy(false); alert(JSON.stringify(e?.message||e)); }`，复现即可看到真实错误。
-  3. 确认 `getDefaultModel()` 在家长内容会话下返回有效模型（可在 `getParentContentSession` 加 `console.log("model", model)`）。
-- **候选修复方向（待定，先定位根因）**：
-  1. **治本（必做）**：`handleSend` 的 catch 必须显式提示错误（弹窗/内联错误条），绝不允许静默；`piStartParentContent` 改为 `await ... .catch` 并在失败时提示（与 ISSUE-016 一致的用户体验原则）。
-  2. 若根因是会话构造抛错：检查 `getDefaultModel()` / `learningGuardExtension` / SDK 创建参数，确保 `parent-content` 会话能正常建出（可复用通用家长会话 `getParentSession` 的构造路径对照）。
-  3. 若根因是事件结构：在 `attachSessionEvents` 的 `default` 分支 `console.log` 未识别的 event.type，确认 SDK 实际发出的事件名。
-- **排查 / 修改入口（可直接执行）**：`src/components/TopicDetail.tsx:59-63,65-82,177-192`；`electron/lib/ipc-handlers.ts:723-743,1152-1214`；`electron/lib/pi-session.ts:512-539`；`electron/preload.ts:14-33,64`。
-- **待确认项**：① 复现时是「完全无变化」还是「转圈停了但无文字」（区分假设 1 vs 3）；② 主进程控制台是否打印 `[pi:event] child=parent-content`；③ `getDefaultModel()` 在家长内容会话返回何值；④ 与其它正常会话（孩子/通用家长）的 model 配置是否一致。
-- **关联**：ISSUE-016（同属「失败须显式提示、禁止静默」的用户体验原则）；ISSUE-026（课程管理页左右分栏 + 专用提示词）；customTools 白名单坑（ISSUE-006，本次已排除）。
-- **优先级**：待定（建议高：家长制作教学内容的核心交互完全不可用，且无任何报错，难自查）。
+- **✅ 根因（2026-08-24 已定位，非假设）**：三处静默点叠加，与孩子会话（`pi:prompt` + Learn.tsx）的「完整错误范式」对照后确认：
+  1. **【核心】SDK `session.prompt()` 出错时不抛异常**——错误（`stopReason="error"` + `errorMessage`）记在最后一条 assistant 消息里（ipc-handlers.ts:659-661 孩子路径注释明示）。`pi:prompt_parent_content` / `pi:prompt_parent` 两个 handler **prompt 后不做 `assistantError` 检查**、不提取最终回复、不发 `pi:reply`/`pi:reply_error`/`pi:reply_end` → 即使 LLM 调用失败（网络/key/额度/模型）也返回 `{success:true}`，或返回 `{success:false}` 时前端不检查。
+  2. **前端只 try/catch「invoke 抛异常」、从不检查返回值 `r.success`**（TopicDetail / TopicEditor / SkillEditor 三个组件同款）——主进程把错误包在返回值里而非抛异常，因此**后端任何失败前端都不可见**；且 `setBusy(true)` 后无 `agent_end`/`reply_end` 时 busy 永不复位 → 「一直转圈」。
+  3. **前端不监听 `pi:reply` / `pi:reply_error` / `pi:error`**——即使主进程发出错误事件也无人消费。对照：孩子路径 handler 有完整的 `assistantError` 检查 + 回发 `pi:reply`（替换式展示）+ `pi:reply_error`（⚠️ 气泡） + `pi:reply_end`（复位 busy），Learn.tsx 全部监听，故孩子聊天正常。
+  4. 次要：`piStartParentContent`/`piStartParent` fire-and-forget，会话构造失败（首次）无任何提示。
+- **🔧 已修复（2026-08-24）**：
+  1. **主进程 `ipc-handlers.ts`**：`pi:prompt_parent_content` 与 `pi:prompt_parent` 对齐孩子 `pi:prompt` 范式——prompt 后 `findLastAssistant` + `assistantError` 检查，失败：`logRound(ok:false)` + 回发 `pi:reply_error`{childId} + `pi:reply_end`{childId} + 返回 `{success:false, error:friendly}`；成功：提取最后 assistant text 回发 `pi:reply`{childId,text} + `pi:reply_end` + `logRound(ok:true, replyLength)`；catch 统一回发 `pi:reply_error`。childId 分别用 `"parent"` / `"parent-content"`。
+  2. **`TopicDetail.tsx`**：① `piStartParentContent` 改为 `.then/.catch` 检查 `success`，失败 `setMsg` 提示；② `useEffect([])` 增补 `onPiReply`（替换流式气泡为最终回复）/`onPiReplyEnd`/`onPiReplyError`（⚠️ 气泡）/`onPiError`（顶部 msg 条）监听，均按 childId=="parent-content" 过滤；③ `handleSend` 检查 `r?.success`，失败 `setBusy(false)` + `setMsg` 错误提示。
+  3. **`TopicEditor.tsx`**：同款三处修复（无 msg 条，错误用 ⚠️ 消息气泡），childId=="parent-content"。
+  4. **`SkillEditor.tsx`**：同款三处修复（通用家长会话，childId=="parent"）。
+- **验证**：`tsc --noEmit`（过滤 TS2318/TS2552 后无业务错误）+ `rm -rf out && npm run build` 三环境通过 + 相关单测 41 用例全过（token-stats / parent-library / daily-summary / agents-sqlite）。修复后行为：LLM 失败 → ⚠️ 气泡 + busy 复位；会话构造失败 → 顶部错误提示 + busy 复位；正常 → streaming + 最终回复替换展示（即使 streaming 事件不来，reply 事件也兜底显示全文）。
+- **遗留**：① 用户若仍复现「无反应」，需按 ISSUE-037 原验证手段查主进程控制台 `[pi:event] child=parent-content` 与 `pi:prompt_parent_content` 的 `console.error`（现在失败必打印）；② 家长路径与孩子路径的「提取回复文本」逻辑重复（ipc-handlers.ts 内），将来可抽公共函数。
+- **补充（2026-08-24 晚，界面对齐孩子聊天）**：用户要求「课程管理」页家长对话与孩子聊天界面一致——① 气泡里展示思考过程 + 工具调用；② 聊天区独立滚动、整页不被拉长。已实施：
+  1. **思考/工具展示**：TopicDetail / TopicEditor / SkillEditor 全部对齐 Learn.tsx 的 working 气泡范式——发送时创建 `workingMsg`（`working:true, thinking:"", tools:[]`）+ `workingIdRef` 追踪；新增 `onPiThinking`（追加 thinking delta）、`onPiToolStart`（push running 工具）、`onPiToolEnd`（更新状态 done/error + resultPreview）监听，经 `patchWorking` 更新同一气泡；`onPiReply` 替换 working 气泡为最终文本（`working:false`）、`onPiReplyError` 替换为 ⚠️。主进程 attachSessionEvents 本就对所有会话发 thinking/tool 事件（queueThinking 节流 120ms），前端只需补监听。
+  2. **滚动修复**（根因：`.dashboard-main` 是 `overflow-y:auto` 的 block 容器，TopicDetail 用 `height: calc(100vh - 120px)` 估算高度，估算偏差 / 消息增多会把整页拉长）：`styles.css` `.dashboard-main` 加 `display:flex; flex-direction:column`（子视图可撑满）；`.chat-window` 补 `min-height:0`（flex item 默认 min-height:auto 会被内容撑高）；TopicDetail 外层改 `flex:1; min-height:0; overflow:hidden`；TopicEditor/SkillEditor 外层同样改（SkillEditor 已无引用，同步保持一致）；Settings 根 div 加 `flex column; flex:1; min-height:0`（让「教学内容」tab 撑满）。**教训：flex 滚动布局用 calc(100vh - xxx) 估算高度是脆弱写法，正确姿势是父容器 flex + 子容器 min-height:0 + overflow 归位。**
+- **关联**：ISSUE-016（同属「失败须显式提示、禁止静默」的用户体验原则）；ISSUE-026（课程管理页左右分栏 + 专用提示词）；ISSUE-010（logRound 记账）；customTools 白名单坑（ISSUE-006，本次已排除）。
+- **优先级**：已完成（2026-08-24）
 - **记录时间**：2026-08-24
 
 ## [ISSUE-038] 评估：AGENTS / method / 工具描述 中存在大量重复内容，这些重复是否必要？
@@ -1258,7 +1292,7 @@
   3. **deepseek / openai 是否保留**：用户只点名删 4 个国外 provider，未提 deepseek（且是默认兜底）与 openai，默认保留，需用户确认。
   4. **千问 token-plan 暴露哪些具体模型**给 UI（MiniMax/DeepSeek/GLM 等是否都要列）。
 - **关联**：ISSUE-020（编程 agent 模型共用同一 provider 选取链路）、ISSUE-005（默认模型链路同源）；偏向"国内服务优先"的区域约定。
-- **优先级**：待定（建议中：配置层面、风险低，但涉及 SDK provider 暴露面，需确认过滤点）。
+- **优先级**：已完成（2026-08-24 用户确认；auth.json 密钥手动处理项已交代）。
 - **记录时间**：2026-08-24
 
 ---
@@ -1340,3 +1374,38 @@
 - **关键防丢点**：token-plan 的 endpoint 由 UI readonly 字段随 fields 一起保存（经 `applyVoiceConfigPatch` 的 `{...DEFAULT_CONFIG.providers, ...parsed}` 合并），不会被 `{apiKey}` 覆盖丢端点。
 - **验证**：`tsc --noEmit` 过滤环境告警后无业务错误；`npm run build`（electron-vite，303 modules）通过。
 - **关联**：ISSUE-020 / ISSUE-005。
+
+## [ISSUE-040] App 版本发布与升级机制（在哪里发布新版本 / 怎么升级）——方案讨论
+
+- **类型**：需求 / 架构（发布链路 + 客户端升级机制）
+- **需求**：明确「新版本发布到哪里、用户怎么升级」，形成可执行的发布 + 升级闭环。当前只有「版本检测提醒 + 打开下载页」雏形，无自动下载 / 安装。
+- **现状（已核实代码锚点，2026-08-24）**：
+  - 打包：`package.json` 已配 electron-builder（win nsis x64 / linux deb+AppImage / mac dmg），`npm run dist:win` 出 `dist/`；**无 `publish` 配置、无 electron-updater 依赖** → 打不出 `latest.yml`，无法自动更新。
+  - 版本检测（已有雏形）：`electron/main.ts:17` `APP_VERSION = "0.1.0"`（**硬编码，与 package.json 双源，易漂移**）；`checkForUpdates()`（:26）在启动串行任务第 3 步（sync → catch-up → 版本检查，各 30s 超时）拉 `${getCloudApiBase()}/api/version`，版本不等则弹「前往下载 / 稍后提醒」→ `shell.openExternal(download_url)`（下载 URL 为空时按钮无效）。
+  - 云端接口：`cloud-service/app/main.py:51` `GET /api/version` 返回 `version/release_date/release_notes/download_url(目前 None)/min_version`——**全部硬编码 0.1.0**，download_url 注释「生产环境填实际下载地址」。
+  - 数据安全（已确认）：打包后 `getDataDir()` = `app.getPath("userData")/app-data`（即 `%APPDATA%/学习伙伴/app-data`），**在安装目录之外** → NSIS 覆盖安装 / 升级不丢孩子数据 / auth / kb，升级方案无需数据迁移。
+  - Windows 无代码签名（`signAndEditExecutable: false`）→ 新装用户会遇到 SmartScreen 未知发布者拦截。
+- **方案讨论 A：发布渠道（在哪里发布）**
+  1. **阿里云 OSS（推荐，仓库根已有 `aliyun-aksk.txt` AK/SK）**：安装包 + `latest.yml` 传 OSS（可挂 CDN）；electron-builder `publish: { provider:"generic", url:"https://<bucket>.oss-cn-xxx.aliyuncs.com/learning-app/" }`（或 `provider:"s3"` + aliyun endpoint）。国内直连快、稳定，适合分发大文件。
+  2. **自有云服务静态托管（推荐配套）**：现有 FastAPI 服务挂 StaticFiles 出 `/download/` 目录，`/api/version` 的 download_url 指它；与认证 / 同步同域名，不新增基础设施。
+  3. **GitHub Releases**：electron-builder 原生支持（`publish: github`），但国内下载慢 / 不稳，只适合做海外镜像。
+  4. 腾讯云 COS 等同 OSS 思路（可选）。
+- **方案讨论 B：升级机制（怎么升级）**
+  1. **现状保底**：检测 + 弹窗 + 打开下载页手动装（体验差、零改动）。
+  2. **electron-updater 自动更新（推荐）**：加依赖 + `publish` 配置 → 打包产出 `latest.yml`（NSIS 支持 blockmap 差量下载，省流量）；主进程 `autoUpdater.checkForUpdates()`，下载进度走 IPC 到前端（家长设置页「检查更新」按钮 + 进度条 + 下载完提示重启安装）；可配 `autoDownload` 策略；失败自动降级为打开下载页。
+  3. **版本策略**：`/api/version` 扩展 `force`（强制）/ `channel`（stable/beta）；`min_version` 字段已存在——低于 min 强制升级（弹窗不可跳过或禁用核心功能），用于破坏性变更 / 安全修复；常规版本「稍后提醒」并记忆忽略（存设置）。
+  4. **检查时机**：启动期已有；建议增加「家长设置页手动检查 + 可配每日自动检查」。
+- **待确认项（需用户拍板）**：
+  ① 发布源选 OSS / 自有服务器 / 都要（OSS 放包、服务器出 latest.yml 与元数据）？
+  ② 升级机制做到哪一档：A. 保持手动下载（最快落地）；B. electron-updater 自动下载+静默安装（推荐）；C. 再加强制升级策略？
+  ③ 是否购买 Windows 代码签名证书（解决 SmartScreen；自签名只能内部自用）？
+  ④ 版本号策略：是否引入 semver 正式规则（当前 0.1.0；main.ts 与 main.py 双硬编码需先统一为 `app.getVersion()`）。
+- **采用决策（2026-08-24 用户拍板）**：① 发布源 = **阿里云 OSS**（generic provider，仓库根已有 AK/SK）；② 升级机制 = **B 档：electron-updater 自动更新**（差量下载 + 静默安装，失败降级下载页；强制升级档 C 暂不做，min_version 字段保留备用）；③ 代码签名 = **暂不签名先发布**（维持 `signAndEditExecutable:false`，接受 SmartScreen 手动放行；OV 证书列为后续项）；④ 版本号 = **统一 semver + `app.getVersion()`**（`APP_VERSION` 硬编码删除，云端 `/api/version` 改读配置/数据库）。
+- **实施要点（拍板后执行）**：
+  - `electron/main.ts` `APP_VERSION` 改 `app.getVersion()`（消除双源漂移）。
+  - `cloud-service/app/main.py` `/api/version` 改读配置 / 数据库（或独立 `versions` 表），不再硬编码。
+  - 加 `electron-updater` 依赖；`package.json` `build.publish` 配置（provider generic → OSS）；`npm run dist:win` 产出 `latest.yml` 并上传 OSS。
+  - IPC：`app:checkUpdate`（手动触发）、`onUpdateProgress` / `onUpdateStatus`（下载进度 / 就绪事件）。
+  - 升级数据安全已确认无虞（userData 在安装目录外），无需数据迁移。
+- **优先级**：已拍板（2026-08-24；待实施）
+- **记录时间**：2026-08-24
