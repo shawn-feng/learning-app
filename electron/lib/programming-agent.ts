@@ -7,6 +7,7 @@ import {
 import path from "path";
 import fs from "fs";
 import { getChildDir } from "./config";
+import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getProgrammingModel } from "./pi-runtime";
 import learningGuardExtension from "../extensions/learning-guard";
 
@@ -34,14 +35,14 @@ function buildProgrammingPrompt(): string {
 - 面向儿童：大字号、高对比度、明亮的配色、点击卡片等交互，让低龄孩子也能独立操作。
 
 ## 工作方式
-- 收到需求后，把 HTML 写到调用方指定的输出路径（相对 cwd），不要写到别处。
+- 收到需求后，把 HTML 写到调用方指定的输出路径（相对 cwd）。具体落到什么路径由调用方（学习 agent）决定，你只负责写到这个路径，不关心学习资料等其它类型的归档位置。
 - 修改已有文件时，先 read 原文件再 edit/write，保留已有内容结构，只改需要改的部分。
 - 写完必须确认文件已落盘（write 成功返回即已落盘）。
 
-## 禁止
-- 不要使用 kb_* 工具、display_content 工具——它们不属于你。
-- 不要写 cwd 之外的文件。
-- 不要输出教学步骤、不要给孩子讲课——你只产出 HTML 文件。`;
+## 职责边界
+- 你只负责 HTML 代码生成与修改，不负责教学内容设计与传达：kb_* 工具与 display_content 工具由调用方学习 agent 使用，你不需要也无法调用它们；教学内容由学习 agent 提供，你只把它落成 HTML 文件。
+- 你只写调用方指定的输出路径（可能是孩子本地的 \`outputs/\` 目录，或父库共享的 \`materials/\` 目录），不写到其它位置；不要去读或写其它孩子的数据，也不要调用 kb_*/display_content。
+- 你只产出 HTML 文件，不在回复里写教学步骤或给孩子讲课——教学内容由学习 agent 负责传达。`;
 }
 
 /**
@@ -68,6 +69,10 @@ export async function getProgrammingAgentSession(
 
   const loader = new DefaultResourceLoader({
     cwd: childDir,
+    // 必须显式传 agentDir：SDK 构造时对 agentDir 调 resolvePath，Windows 下传 undefined 会
+    // 在 normalizeWindowsShellPath 里 undefined.startsWith 崩溃（珊珊会话 create_html_lesson 实测报错）。
+    // 与学习 agent 一致，隔离到该孩子的 .pi/agent。
+    agentDir: path.join(childDir, ".pi", "agent"),
     systemPromptOverride: () => buildProgrammingPrompt(),
     // 编程 agent 同样不需要全局技能索引（~/.agents/skills 60 个无关技能），noSkills 关掉。
     noSkills: true,
@@ -98,7 +103,7 @@ export interface GenerateHtmlLessonInput {
   title: string;
   /** 需求描述：结构、内容、交互要求等（由学习 agent 从 method/材料整理） */
   requirement: string;
-  /** 输出路径（相对孩子学习目录），如 learning/lunyu/materials/论语先进篇第十三章.html */
+  /** 输出路径（相对格式：工具/游戏用 outputs/{名称}.html，学习资料用 materials/{topic}/{课程名}.html；函数内部锚定到正确根目录并以绝对路径写出） */
   outputPath: string;
   /** 会话键：同一份 HTML 的生成/修改复用同一会话；缺省按 outputPath 派生 */
   sessionKey?: string;
@@ -110,6 +115,58 @@ export interface GenerateHtmlLessonResult {
   /** 相对学习目录的路径（供 display_content 使用） */
   relPath: string;
   title: string;
+}
+
+interface PhaseStats {
+  /** 首 token 延迟（ms）：prompt 发起 → 第一个 thinking/text delta */
+  firstTokenMs: number;
+  /** 思考流式时长（ms）：首个 thinking_delta → 首个 text_delta（无思考则为 0） */
+  thinkMs: number;
+  /** 正文输出流式时长（ms）：首个 text_delta → 最后一次 agent_end（含期间工具执行，近似） */
+  textMs: number;
+  /** 工具调用次数 */
+  toolCalls: number;
+}
+
+/**
+ * 订阅会话流式事件，统计一次 prompt 的「思考 vs 输出」阶段耗时（近似拆分）：
+ * 思考 = 首个 thinking_delta → 首个 text_delta；输出 = 首个 text_delta → 最后一次 agent_end。
+ * 返回取数函数；prompt 结束后调用取统计并取消订阅。
+ */
+function collectPhaseStats(session: any, t0: number): () => PhaseStats {
+  let thinkStart: number | null = null;
+  let textStart: number | null = null;
+  let textEnd: number | null = null;
+  let toolCalls = 0;
+  const unsub = session.subscribe((event: any) => {
+    const now = Date.now();
+    if (event.type === "message_update") {
+      const t = event.assistantMessageEvent?.type;
+      if (t === "thinking_delta") {
+        if (thinkStart === null) thinkStart = now;
+      } else if (t === "text_delta") {
+        if (textStart === null) textStart = now;
+      }
+    } else if (event.type === "tool_execution_start") {
+      toolCalls++;
+    } else if (event.type === "agent_end" || event.type === "message_end") {
+      textEnd = now;
+    }
+  });
+  return () => {
+    try {
+      unsub();
+    } catch {
+      /* 忽略取消订阅失败 */
+    }
+    const first = thinkStart ?? textStart ?? 0;
+    return {
+      firstTokenMs: first ? first - t0 : 0,
+      thinkMs: thinkStart && textStart ? textStart - thinkStart : 0,
+      textMs: textStart && textEnd ? textEnd - textStart : 0,
+      toolCalls,
+    };
+  };
 }
 
 /**
@@ -124,41 +181,63 @@ export async function generateHtmlLesson(
   const { childId, title, requirement, outputPath, sessionKey } = input;
   const childDir = getChildDir(childId);
 
-  // 路径守卫：只允许写学习目录内文件
-  const resolved = path.resolve(childDir, outputPath);
-  if (resolved !== childDir && !resolved.startsWith(childDir + path.sep)) {
-    throw new Error(`输出路径超出学习目录范围: ${outputPath}`);
+  // 锚定到正确根目录：工具/游戏（outputs/...）落在孩子学习目录；学习资料（materials/...）落在父库共享目录。
+  // 之后以绝对路径交给编程 agent 写出——资料直接落盘到唯一真源，不需要镜像或软链接。
+  const isMaterial = outputPath.startsWith("materials/");
+  const base = isMaterial ? getParentMaterialsDir() : childDir;
+  const relInBase = isMaterial ? outputPath.slice("materials/".length) : outputPath;
+  const resolved = path.resolve(base, relInBase);
+  const guardRoot = base;
+  if (resolved !== guardRoot && !resolved.startsWith(guardRoot + path.sep)) {
+    throw new Error(`输出路径超出允许范围: ${outputPath}`);
   }
   const ext = path.extname(resolved).toLowerCase();
   if (ext !== ".html" && ext !== ".htm") {
     throw new Error(`编程 agent 只产出 .html/.htm 文件（当前: ${outputPath}）`);
   }
 
-  const session = await getProgrammingAgentSession(childId, sessionKey ?? outputPath);
+  // 环节计时：定位耗时（2026-08-24 用户反馈单次生成 ~4 分钟，需区分会话创建 / LLM 生成 / 落盘）
+  const t0 = Date.now();
 
-  // 预建目录（如 learning/{topic}/materials/），避免 write 因目录不存在失败
+  const session = await getProgrammingAgentSession(childId, sessionKey ?? outputPath);
+  const t1 = Date.now();
+
+  // 预建目录（materials/{topic}/ 或 outputs/），避免 write 因目录不存在失败
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
 
   const existedBefore = fs.existsSync(resolved);
   const prompt = [
     existedBefore ? "修改已有文件：" : "生成新文件：",
     `标题：${title}`,
-    `输出路径：${outputPath}（相对 cwd，务必写到这个路径，不要写到其他位置）`,
+    `输出路径：${resolved}（绝对路径，务必写到这个绝对路径，不要写到其他位置）`,
     "",
     "需求：",
     requirement,
     "",
     existedBefore
-      ? `原文件已存在（${outputPath}），请先 read 原文件，在保留原有内容结构的基础上按需求修改，改完用 write 覆盖同一路径。`
+      ? `原文件已存在（${resolved}），请先 read 原文件，在保留原有内容结构的基础上按需求修改，改完用 write 覆盖同一绝对路径。`
       : "文件还不存在，请用 write 创建；写完确认落盘成功。",
   ].join("\n");
 
+  // 订阅流式事件，统计本次 prompt 的「思考 vs 输出」阶段耗时
+  const stats = collectPhaseStats(session, Date.now());
   await session.prompt(prompt);
+  const t2 = Date.now();
+  const s = stats();
+  console.log(
+    `[programming-agent] LLM 阶段：首 token ${(s.firstTokenMs / 1000).toFixed(1)}s + 思考 ${(s.thinkMs / 1000).toFixed(1)}s + 正文输出 ${(s.textMs / 1000).toFixed(1)}s（工具调用 ${s.toolCalls} 次）`
+  );
 
   // 校验落盘：文件必须存在且非空（阈值 100 字节，防空壳/半截写入）
   if (!fs.existsSync(resolved) || fs.statSync(resolved).size < 100) {
     throw new Error(`编程 agent 未能成功写入 ${outputPath}（文件不存在或为空），请重试`);
   }
+  const t3 = Date.now();
+  console.log(
+    `[programming-agent] generateHtmlLesson 耗时 ${((t3 - t0) / 1000).toFixed(1)}s：` +
+      `会话获取/创建 ${((t1 - t0) / 1000).toFixed(1)}s + LLM 生成 ${((t2 - t1) / 1000).toFixed(1)}s + 落盘校验 ${((t3 - t2) / 1000).toFixed(1)}s` +
+      `（file=${outputPath} size=${fs.statSync(resolved).size}B）`
+  );
 
   return {
     path: resolved,

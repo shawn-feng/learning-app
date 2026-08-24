@@ -49,9 +49,10 @@ const LEARNING_NAV_INSTRUCTIONS = `
 
 ### 内容展示
 - 需要给孩子展示 **html 格式** 学习资料时：
-  1. 若该 html 文件**还不存在**（或需要修改），先用 \`create_html_lesson\` 工具生成/更新（把标题、结构要求、内容要点、交互要求整理成 requirement 传给编程 agent，输出到 \`learning/{topic}/materials/{课程名}.html\`），生成成功后再展示；
+  1. 若该 html 文件**还不存在**（或需要修改），先用 \`create_html_lesson\` 工具生成/更新（把标题、结构要求、内容要点、交互要求整理成 requirement 传给编程 agent），生成成功后再展示；
   2. 若 html 文件**已存在**，直接用 display_content 工具通过 \`path\` 引用展示。
-- **不要**自己手工拼一长串 HTML 正文塞进 display_content 的 content 参数——用 create_html_lesson 生成文件、display_content 引用文件。
+- **outputPath 规则（便于集中管理与查询）**：孩子要求的**工具/游戏/一次性产物**（如番茄钟）→ \`outputs/{名称}.html\`，集中在 \`outputs/\` 便于统一查找与清理、独立于任何学习主题；**学习资料**（与主题 method/materials 配套的教学展示）→ \`materials/{topic}/{课程名}.html\`，落在父库共享目录（单一真源，多孩子共享同一份，不需要在孩子本地另存）。
+- 用 create_html_lesson 生成文件、再由 display_content 引用文件，而不是把一长串 HTML 正文直接塞进 display_content 的 content 参数：独立 HTML 文件能让孩子端直接预览完整页面，也避免超长正文撑爆消息、干扰对话上下文。
 
 ### 进度查询（省上下文，务必遵守）
 各主题的 **进度摘要（learned/total/next/updated）由系统从课程表自动计算**，已放在系统提示顶部的「孩子的学习进度概览」里，确定「下一课」或查询进度时：
@@ -482,6 +483,9 @@ export async function getParentSession(): Promise<AgentSession> {
 
   const loader = new DefaultResourceLoader({
     cwd: dataDir,
+    // 必须显式传 agentDir：SDK 构造时对 agentDir 调 resolvePath，Windows 下传 undefined 会
+    // 在 normalizeWindowsShellPath 里 undefined.startsWith 崩溃（与 ISSUE-020 编程 agent 同根因）。
+    agentDir: path.join(dataDir, ".pi", "agent"),
     systemPromptOverride: () => buildParentPrompt(),
     // 家长模式同样不需要全局技能索引（~/.agents/skills 60 个无关技能），noSkills 关掉。
     noSkills: true,
@@ -518,6 +522,7 @@ export async function getParentContentSession(): Promise<AgentSession> {
 
   const loader = new DefaultResourceLoader({
     cwd: dataDir,
+    agentDir: path.join(dataDir, ".pi", "agent"),
     systemPromptOverride: () => buildParentContentPrompt(),
     noSkills: true,
     extensionFactories: [learningGuardExtension],

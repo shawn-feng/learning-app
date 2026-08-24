@@ -6,13 +6,9 @@ import { getDataDir } from "./config";
 
 // media://local 协议：把沙盒 iframe 里的音视频请求映射到本地媒体文件。
 //
-// 两种 URL 格式（2026-08-21 ISSUE-029 后）：
-//   新格式（父库共享，多孩子同一份，与 childId 解耦）：
-//     media://local/parent/{parentId}/{topic}/media/{文件}
-//       → data/parents/{parentId}/materials/{topic}/media/{文件}
-//   旧格式（兼容存量，html 仍引用孩子路径时兜底）：
-//     media://local/{childId}/learning/{topic}/media/{文件}
-//       → data/children/{childId}/learning/{topic}/media/{文件}
+// URL 格式（父库共享，与 childId 解耦，单一真源）：
+//   media://local/parent/{parentId}/{topic}/media/{文件}
+//     → data/parents/{parentId}/materials/{topic}/media/{文件}
 //
 // 音视频固定存放在主题的 media/ 子目录下（不随 app 打包，作为主题包额外下载）。
 const ALLOWED_EXT = new Set([
@@ -32,7 +28,7 @@ const ALLOWED_EXT = new Set([
  * 返回 null 表示格式非法 / 目录穿越 / 越权。
  *
  * @param dataDir 数据根（getDataDir()）
- * @param pathname 如 `/parent/default/lunyu/media/论语.mp3` 或 `/1f050a7f.../learning/lunyu/media/x.mp3`
+ * @param pathname 如 `/parent/default/lunyu/media/论语.mp3`
  */
 export function resolveMediaTarget(dataDir: string, pathname: string): string | null {
   const segs = decodeURIComponent(pathname)
@@ -41,25 +37,14 @@ export function resolveMediaTarget(dataDir: string, pathname: string): string | 
     .filter(Boolean);
   if (segs.length < 2) return null;
 
-  let base: string;
-  let rel: string[];
-  const first = segs[0];
-
-  if (first === "parent") {
-    // media://local/parent/{parentId}/{topic}/media/{文件}
-    if (segs.length < 4) return null;
-    const [, parentId, topic, ...rest] = segs;
-    if (!parentId || parentId.includes("..") || parentId.includes("\\")) return null;
-    base = path.join(dataDir, "parents", parentId, "materials", topic);
-    rel = rest; // media/<file>
-  } else {
-    // 旧格式：media://local/{childId}/learning/{topic}/media/{文件}
-    if (segs.length < 4) return null;
-    const childId = first;
-    if (!childId || childId.includes("..") || childId.includes("\\")) return null;
-    base = path.join(dataDir, "children", childId);
-    rel = segs.slice(1); // learning/<topic>/media/<file>
-  }
+  // 仅支持新格式（父库共享，与 childId 解耦）：
+  //   media://local/parent/{parentId}/{topic}/media/{文件}
+  if (segs[0] !== "parent") return null;
+  if (segs.length < 4) return null;
+  const [, parentId, topic, ...rest] = segs;
+  if (!parentId || parentId.includes("..") || parentId.includes("\\")) return null;
+  const base = path.join(dataDir, "parents", parentId, "materials", topic);
+  const rel = rest; // media/<file>
 
   const filePath = path.resolve(base, ...rel);
   // 防目录穿越：解析后必须仍在 base 内

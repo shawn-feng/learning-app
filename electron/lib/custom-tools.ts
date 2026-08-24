@@ -32,13 +32,13 @@ export const displayContentTool = defineTool({
   label: "展示 HTML 资料",
   description:
     "在孩子学习资料面板展示一份 **HTML 格式** 的学习资料（在沙盒 iframe 中渲染，可运行内联 <script>、onclick 等交互，可播放 <audio>/<video>，src 用 media://local/ 本地地址）。\n\n" +
-    "**用法**：传 `path` 引用预生成的学习资料文件（必填）。支持两种写法：家长库相对路径 `materials/lunyu/论语先进篇第十三章.html`（**parent_content 工具 htmlPath 返回的格式**）或孩子视角旧路径 `learning/lunyu/materials/论语先进篇第十三章.html`；仅支持 .html / .htm。\n\n" +
+    "**用法**：传 `path` 引用预生成的学习资料文件（必填）。路径格式：`materials/{topic}/{课程名}.html`（**parent_content 工具 htmlPath 返回的格式**，即父库共享目录，单一真源）或孩子本地的 `outputs/{名称}.html`（工具/游戏类产物）；仅支持 .html / .htm。\n\n" +
     "**何时调用**：仅当需要展示资料时——引导学习时展示该课预生成的 html 资料，或孩子主动要求查看某份资料。\n\n" +
     "**展示什么、何时展示，以 parent_content 工具取到的该主题教学方法（method）为准**。",
   parameters: Type.Object({
     path: Type.String({
       description:
-        "预生成资料文件路径（必填），相对学习目录，必须以 .html 或 .htm 结尾，如 learning/lunyu/materials/论语先进篇第十三章.html",
+        "预生成资料文件路径（必填），如 materials/lunyu/论语先进篇第十三章.html（父库共享目录）或 outputs/番茄钟.html（孩子本地）；必须以 .html 或 .htm 结尾",
     }),
     title: Type.Optional(Type.String({ description: "内容标题（缺省取文件名）" })),
   }),
@@ -46,18 +46,15 @@ export const displayContentTool = defineTool({
     if (!params.path) {
       throw new Error("display_content 必须提供 path 参数（预生成的 html 资料文件路径）");
     }
-    // ISSUE-029：html 资料已上移到父库共享目录（data/parents/<pid>/materials/）。
-    // 解析顺序：① 父库共享目录（新家）→ ② 孩子学习目录（旧路径，兼容存量）。
-    // 支持两种路径写法：
-    //   `learning/<topic>/materials/<file>.html`（孩子视角，旧写法）
-    //   `materials/<topic>/<file>.html`（家长库相对路径，courses.html_path 的规范写法，parent_content htmlPath 返回的格式）
-    const m = /^(?:learning\/[^/]+\/)?materials\/([^/]+)\/([^/]+\.(?:html|htm))$/i.exec(params.path);
-    let resolved: string | null = null;
-    if (m) {
-      const parentPath = path.join(getParentMaterialsDir(), m[1], m[2]);
-      if (fs.existsSync(parentPath)) resolved = parentPath;
-    }
-    if (!resolved) {
+    // 资料唯一真源在父库共享目录；孩子本地工具/游戏产物在 cwd 的 outputs/。
+    // 两种写法：
+    //   `materials/<topic>/<file>.html`（父库共享目录，parent_content htmlPath 返回的格式）
+    //   `outputs/<name>.html`（孩子本地，工具/游戏类产物）
+    let resolved: string;
+    const matM = /^materials\/([^/]+)\/([^/]+\.(?:html|htm))$/i.exec(params.path);
+    if (matM) {
+      resolved = path.join(getParentMaterialsDir(), matM[1], matM[2]);
+    } else {
       resolved = path.resolve(ctx.cwd, params.path);
       // 路径守卫：只允许访问当前学习目录（cwd）内的文件
       if (resolved !== ctx.cwd && !resolved.startsWith(ctx.cwd + path.sep)) {
@@ -412,15 +409,16 @@ export const createHtmlLessonTool = defineTool({
   name: "create_html_lesson",
   label: "编程 agent 生成/修改 HTML 学习资料",
   description:
-    "把一份 HTML 学习资料的生成或修改需求交给「编程 agent」完成，产出落盘文件。\n\n" +
-    "**用途**：当需要给孩子展示一份 html 格式学习资料、而该文件还不存在或需要修改时，先调用本工具生成/更新文件，再用 display_content 展示。\n\n" +
-    "**参数**：`title`（课程标题）、`requirement`（需求描述：页面结构、内容要点、交互要求，尽可能具体）、`outputPath`（输出路径，相对学习目录，如 `learning/lunyu/materials/论语先进篇第十三章.html`，必须以 .html 结尾）、`sessionKey`（可选，同一份资料的生成与后续修改传相同值以复用上下文；缺省按 outputPath 自动派生）。\n\n" +
+    "把一份可交互 HTML 产物（工具/游戏/一次性页面等）的生成或修改需求交给「编程 agent」完成，产出落盘文件。\n\n" +
+    "**用途**：当孩子需要一份可交互的 html 工具/游戏/一次性页面（如番茄钟、小游戏、贺卡），而该文件还不存在或需要修改时，先调用本工具生成/更新文件，再用 display_content 展示。\n\n" +
+    "**outputPath**：输出路径，相对学习目录，必须以 .html 结尾。这类独立产物统一放在 `outputs/{名称}.html`（如 `outputs/番茄钟.html`），集中在 `outputs/` 便于统一查找、复用与清理；具体落到什么路径由调用方（学习 agent）按实际需要决定，本工具只负责把 HTML 写到该路径，不关心学习资料等其它类型的归档位置。\n\n" +
+    "**参数**：`title`（标题）、`requirement`（需求描述：页面结构、内容要点、交互要求，尽可能具体）、`outputPath`（见上方，相对学习目录、.html 结尾）、`sessionKey`（可选，同一份资料的生成与后续修改传相同值以复用上下文；缺省按 outputPath 自动派生）。\n\n" +
     "**返回**：生成的文件相对路径。成功后请立即用 display_content 展示给孩子。\n\n" +
     "**未配置时**：若家长未在设置页配置「编程 agent 模型」，本工具会报错，请告诉家长到设置页配置后重试。",
   parameters: Type.Object({
-    title: Type.String({ description: "课程标题（如 论语先进篇第十三章）" }),
+    title: Type.String({ description: "标题（如 番茄钟 / 论语先进篇第十三章）" }),
     requirement: Type.String({ description: "需求描述：页面结构、内容要点、交互要求（尽量具体，直接决定产出质量）" }),
-    outputPath: Type.String({ description: "输出路径（相对学习目录，.html/.htm 结尾），如 learning/lunyu/materials/论语先进篇第十三章.html" }),
+    outputPath: Type.String({ description: "输出路径（.html/.htm 结尾，相对数据根目录；工具/游戏用 outputs/xxx.html，学习资料用 materials/{topic}/xxx.html，具体落到哪里由调用方按 LEARNING_NAV 决定）" }),
     sessionKey: Type.Optional(Type.String({ description: "会话键：同一份资料的生成/修改复用同一编程会话；缺省按 outputPath 派生" })),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
@@ -435,18 +433,6 @@ export const createHtmlLessonTool = defineTool({
       outputPath: params.outputPath,
       sessionKey: params.sessionKey,
     });
-    // ISSUE-029：生成成功后同步镜像到父库共享目录（资料统一由家长管理；孩子侧保留一份兼容旧链路）
-    const m = /^learning\/([^/]+)\/materials\/([^/]+\.(?:html|htm))$/i.exec(result.relPath);
-    if (m) {
-      try {
-        const src = path.join(ctx.cwd, result.relPath);
-        const dstDir = path.join(getParentMaterialsDir(), m[1]);
-        fs.mkdirSync(dstDir, { recursive: true });
-        fs.copyFileSync(src, path.join(dstDir, m[2]));
-      } catch (e) {
-        console.error(`[custom-tools] 镜像 html 到父库失败:`, e);
-      }
-    }
     return {
       content: [
         {

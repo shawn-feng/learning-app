@@ -15,6 +15,7 @@
 
 ## 关键 SDK 坑（踩过的，别再踩）
 - 扩展必须挂 `DefaultResourceLoader({ extensionFactories: [...] })`；`createAgentSession({ extensions })` 是死参数，从不读取。
+- ⚠️ **Windows 下 `DefaultResourceLoader` 必须显式传 `agentDir`**：构造时对 `options.agentDir` 调 `resolvePath()`（resource-loader.js:156），传 undefined → `normalizeWindowsShellPath(undefined)` → `undefined.startsWith` 崩（报错 "Cannot read properties of undefined (reading 'startsWith')"）。2026-08-24 珊珊会话 create_html_lesson 首用即崩（编程 agent 漏传）；**getParentSession/getParentContentSession 曾同样漏传，一并修复**。规矩：新建任何会话（学习/家长/编程/ephemeral）都要传 `agentDir`（孩子会话 = `childDir/.pi/agent`，家长 = `dataDir/.pi/agent`）。
 - `noSkills: true` + `additionalSkillPaths` 才能把 `~/.agents/skills` 的 60 个全局技能挡掉、只留教学技能。
 - system prompt 是 LLM 前缀缓存公共前缀：时间注入只到「日期」，不要到「秒」，否则缓存失效。
 - 会话模型 append-only：重置用 `newSession()`（归档保留旧文件），不要用 `resetLeaf()`（会无限堆叠分支）。

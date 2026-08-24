@@ -2,13 +2,18 @@ import fs from "fs";
 import path from "path";
 import { getSharedDir, getAuthPath } from "../config";
 
-export type VoiceProviderId = "aliyun" | "tencent" | "qwen" | "iflytek" | "baidu";
+export type VoiceProviderId = "aliyun" | "tencent" | "qwen" | "qwen-tokenplan" | "iflytek" | "baidu";
 
 export interface VoiceConfig {
   enabled: boolean;
   provider: VoiceProviderId;
   providers: Record<VoiceProviderId, Record<string, string>>;
 }
+
+// 千问 token-plan 语音 ASR 端点（套餐通道）。按量端点不在 DEFAULT_CONFIG 里写死，
+// 由 providers/qwen.ts 在未填 endpoint 时回退 dashscope 按量域名。
+const QWEN_TOKENPLAN_ASR_ENDPOINT =
+  "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 
 const DEFAULT_CONFIG: VoiceConfig = {
   enabled: false,
@@ -17,13 +22,14 @@ const DEFAULT_CONFIG: VoiceConfig = {
     aliyun: { appKey: "", accessKeyId: "", accessKeySecret: "" },
     tencent: { secretId: "", secretKey: "" },
     qwen: { apiKey: "" },
+    "qwen-tokenplan": { apiKey: "", endpoint: QWEN_TOKENPLAN_ASR_ENDPOINT },
     iflytek: { appId: "", apiKey: "", apiSecret: "" },
     baidu: { appId: "", apiKey: "", secretKey: "" },
   },
 };
 
 // 服务回退顺序（默认服务优先，其余按此顺序尝试）
-export const VOICE_PROVIDER_ORDER: VoiceProviderId[] = ["aliyun", "tencent", "qwen"];
+export const VOICE_PROVIDER_ORDER: VoiceProviderId[] = ["aliyun", "tencent", "qwen", "qwen-tokenplan"];
 
 // 判断某个语音服务是否已配置可用
 export function isProviderConfigured(cfg: VoiceConfig, id: VoiceProviderId): boolean {
@@ -39,6 +45,16 @@ export function isProviderConfigured(cfg: VoiceConfig, id: VoiceProviderId): boo
       try {
         const auth = JSON.parse(fs.readFileSync(getAuthPath(), "utf-8"));
         const key = auth?.qwen?.key || auth?.qwen?.apiKey;
+        return typeof key === "string" && key.trim().length > 0;
+      } catch {
+        return false;
+      }
+    case "qwen-tokenplan":
+      // token-plan 与按量是两套独立 API Key，不回退 qwen.key，必须自身 key 段有值
+      if (creds.apiKey) return true;
+      try {
+        const auth = JSON.parse(fs.readFileSync(getAuthPath(), "utf-8"));
+        const key = auth?.["qwen-tokenplan"]?.key || auth?.["qwen-tokenplan"]?.apiKey;
         return typeof key === "string" && key.trim().length > 0;
       } catch {
         return false;

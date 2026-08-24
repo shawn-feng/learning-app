@@ -4,25 +4,37 @@ import SchedulerSettings from "../components/SchedulerSettings";
 import GeneralSettings from "../components/GeneralSettings";
 import TopicEditor from "../components/TopicEditor";
 
+// ISSUE-039 + token-plan 拆分：
+// 仅保留国内/已确认的 provider，移除国外 provider（anthropic / google / openrouter / groq）。
+// qwen（按量付费）与 qwen-tokenplan（token-plan 套餐）是**两个完全独立的 provider**：
+//   - 各自的 API Key 不相同（用户明确：按量与 token-plan 的 key 是两套）；
+//   - 各自的 base URL 也不相同（dashscope.aliyuncs.com vs token-plan.cn-beijing.maas.aliyuncs.com）；
+//   - 故 Settings 提供两个独立 key 入口，分别写入 auth.json 的 qwen / qwen-tokenplan 段，互不拷贝。
+// - openai 用户未点名删除，默认保留；minimax 为新增的国内 provider。
+// 注：DeepSeek 有两处独立通道，互不冲突——
+//   ① qwen-tokenplan/deepseek-v4-*：百炼 token-plan 套餐内的 DeepSeek，走 token-plan key + token-plan URL；
+//   ② SDK 内置 deepseek/*：DeepSeek 官方直连，走用户自己的 deepseek key（auth.json 的 deepseek 段）。
+//   两者都在白名单 ALLOWED_MODEL_PROVIDERS 中保留，故这里 deepseek 也要给独立 key 入口。
 const PROVIDERS = [
-  { id: "deepseek", name: "DeepSeek", keyHint: "sk-..." },
-  { id: "qwen", name: "通义千问", keyHint: "sk-..." },
-  { id: "anthropic", name: "Anthropic Claude", keyHint: "sk-ant-..." },
+  { id: "qwen", name: "通义千问 (按量付费)", keyHint: "sk-..." },
+  { id: "qwen-tokenplan", name: "通义千问 (token-plan 套餐)", keyHint: "sk-...（与按量不同的 key）" },
+  { id: "deepseek", name: "DeepSeek (官方直连)", keyHint: "sk-..." },
   { id: "openai", name: "OpenAI", keyHint: "sk-..." },
-  { id: "google", name: "Google Gemini", keyHint: "AIza..." },
-  { id: "openrouter", name: "OpenRouter", keyHint: "sk-or-..." },
-  { id: "groq", name: "Groq", keyHint: "gsk_..." },
+  { id: "minimax", name: "MiniMax", keyHint: "请填写 MiniMax API Key" },
 ];
 
 export default function Settings() {
   const [tab, setTab] = useState<"models" | "voice" | "scheduler" | "general" | "topics">("models");
-  const [selectedProvider, setSelectedProvider] = useState("deepseek");
+  const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [defaultModel, setDefaultModel] = useState(() => localStorage.getItem("defaultModel") || "");
-  // ISSUE-020：编程 agent 模型（空 = 未启用，create_html_lesson 不可用）
+  // ISSUE-020：编程 agent 模型（空 = 未启用，create_html_lesson 不可用）。
+  // programmingModel = 已保存值（显示「当前已保存」）；programmingModelDraft = 下拉暂存（未保存的选择）。
+  // 两者独立：下拉不跟随上方 provider 切换、保存走独立按钮，与「默认模型」配置互不耦合。
   const [programmingModel, setProgrammingModel] = useState("");
+  const [programmingModelDraft, setProgrammingModelDraft] = useState("");
 
   // 初始值以主进程存储（app-settings.json）为准，与 ModelSelector / 会话建链同源；
   // 若主进程尚无记录但有旧的 localStorage 值，则迁移过去。
@@ -42,10 +54,14 @@ export default function Settings() {
     }).catch(() => {});
   }, []);
 
-  // 编程 agent 模型初始值（主进程 app-settings.json 为准）
+  // 编程 agent 模型初始值（主进程 app-settings.json 为准）；草稿同步为已保存值
   useEffect(() => {
     window.api.piGetProgrammingModel().then((r: any) => {
-      if (r?.success) setProgrammingModel(r.key || "");
+      if (r?.success) {
+        const k = r.key || "";
+        setProgrammingModel(k);
+        setProgrammingModelDraft(k);
+      }
     }).catch(() => {});
   }, []);
 
@@ -66,12 +82,17 @@ export default function Settings() {
     setKeyStatus(r?.success ? `已将 ${modelId} 设为默认模型` : `默认模型保存失败: ${r?.error || ""}`);
   }
 
-  // ISSUE-020：编程 agent 模型（modelId 为空 = 停用）
-  async function handleSetProgramming(provider: string, modelId: string) {
+  // ISSUE-020：编程 agent 模型「保存」动作（由独立按钮触发，不随下拉 onChange 即时保存）。
+  // modelId 为空 = 停用。
+  async function handleSaveProgramming(provider: string, modelId: string) {
     const key = modelId ? `${provider}/${modelId}` : "";
-    setProgrammingModel(key);
     const r = await window.api.piSetProgrammingModel(key);
-    setKeyStatus(r?.success ? (key ? `已将 ${modelId} 设为编程 agent 模型` : "已停用编程 agent 模型") : `编程 agent 模型保存失败: ${r?.error || ""}`);
+    if (r?.success) {
+      setProgrammingModel(key); // 已保存值更新
+      setKeyStatus(key ? `已保存编程 agent 模型：${modelId}` : "已停用编程 agent 模型");
+    } else {
+      setKeyStatus(`编程 agent 模型保存失败: ${r?.error || ""}`);
+    }
   }
 
   async function handleSaveKey() {
@@ -171,7 +192,7 @@ export default function Settings() {
           {keyStatus && <p style={{ fontSize: 13, color: keyStatus.startsWith("保存失败") ? "red" : "#667eea", marginBottom: 16 }}>{keyStatus}</p>}
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <h4 style={{ fontSize: 15 }}>当前可用模型</h4>
+            <h4 style={{ fontSize: 15 }}>当前可用模型（{PROVIDERS.find((p) => p.id === selectedProvider)?.name || selectedProvider}）</h4>
             <button
               onClick={handleRefreshModels}
               style={{
@@ -187,10 +208,15 @@ export default function Settings() {
             </button>
           </div>
 
-          {availableModels.length === 0 ? (
-            <p style={{ color: "#888", fontSize: 13 }}>还没有可用的模型，先保存一个 API key。</p>
-          ) : (
-            availableModels.map((m) => {
+          {(() => {
+            const filtered = availableModels.filter((m) => m.provider === selectedProvider);
+            if (availableModels.length === 0) {
+              return <p style={{ color: "#888", fontSize: 13 }}>还没有可用的模型，先保存一个 API key。</p>;
+            }
+            if (filtered.length === 0) {
+              return <p style={{ color: "#888", fontSize: 13 }}>该 provider 暂无可用模型，请确认已保存其 API key 后点「刷新」。</p>;
+            }
+            return filtered.map((m) => {
               const modelKey = `${m.provider}/${m.id}`;
               const isDefault = defaultModel === modelKey;
               return (
@@ -225,38 +251,55 @@ export default function Settings() {
                   </div>
                 </div>
               );
-            })
-          )}
+            });
+          })()}
 
           <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #eee" }}>
             <h4 style={{ fontSize: 15, marginBottom: 4 }}>编程 agent 模型</h4>
             <p style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>
-              用于自动生成 / 修改孩子学习的 HTML 资料（create_html_lesson 工具）。未选择则此功能不可用，学习 agent 需要时会提示先在这里配置。
+              用于自动生成 / 修改孩子学习的 HTML 资料（create_html_lesson 工具）。独立于上方「默认模型」配置，不跟随 provider 切换；选好后点「保存」生效，未选择则功能不可用。
             </p>
-            <select
-              value={programmingModel}
-              onChange={(e) => {
-                const v = e.target.value;
-                const sep = v.indexOf("/");
-                handleSetProgramming(sep > 0 ? v.slice(0, sep) : "", sep > 0 ? v.slice(sep + 1) : "");
-              }}
-              disabled={availableModels.length === 0}
-              style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 260 }}
-            >
-              <option value="">未启用（默认）</option>
-              {availableModels.map((m) => (
-                <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                  {m.name}（{m.provider}/{m.id}）
-                </option>
-              ))}
-            </select>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <select
+                value={programmingModelDraft}
+                onChange={(e) => setProgrammingModelDraft(e.target.value)}
+                disabled={availableModels.length === 0}
+                style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 260 }}
+              >
+                <option value="">未启用（默认）</option>
+                {availableModels.map((m) => (
+                  <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                    {m.name}（{m.provider}/{m.id}）
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  const v = programmingModelDraft;
+                  const sep = v.indexOf("/");
+                  handleSaveProgramming(sep > 0 ? v.slice(0, sep) : "", sep > 0 ? v.slice(sep + 1) : "");
+                }}
+                disabled={programmingModelDraft === programmingModel || availableModels.length === 0}
+                style={{
+                  padding: "8px 16px",
+                  background: programmingModelDraft === programmingModel ? "#ddd" : "#667eea",
+                  color: programmingModelDraft === programmingModel ? "#666" : "white",
+                  border: "none",
+                  borderRadius: 8,
+                  fontSize: 13,
+                  cursor: programmingModelDraft === programmingModel ? "default" : "pointer",
+                }}
+              >
+                保存编程 agent 模型
+              </button>
+            </div>
             {availableModels.length === 0 && (
               <p style={{ fontSize: 12, color: "#c0392b", marginTop: 6 }}>
                 暂无可用模型：请先在「API key」区配置并保存一个模型提供商的 key，模型列表加载后可在这里选择编程 agent 模型。
               </p>
             )}
             {programmingModel && (
-              <p style={{ fontSize: 12, color: "#667eea", marginTop: 6 }}>当前编程 agent 模型：{programmingModel}</p>
+              <p style={{ fontSize: 12, color: "#667eea", marginTop: 6 }}>当前已保存的编程 agent 模型：{programmingModel}</p>
             )}
           </div>
         </div>

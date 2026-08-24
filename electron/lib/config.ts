@@ -6,7 +6,12 @@ let dataDir: string;
 
 export function getDataDir(): string {
   if (!dataDir) {
-    if (app?.isPackaged) {
+    // 测试隔离：显式设置 PI_TEST_DATA_DIR 时（仅 vitest 设置），所有数据落到临时目录，
+    // 避免测试读写污染真实的 data/（例如 app-settings.json 被清空导致用户编程模型配置丢失）。
+    const testDir = process.env["PI_TEST_DATA_DIR"];
+    if (testDir) {
+      dataDir = testDir;
+    } else if (app?.isPackaged) {
       dataDir = path.join(app.getPath("userData"), "app-data");
     } else {
       dataDir = path.join(process.cwd(), "data");

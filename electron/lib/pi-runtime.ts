@@ -178,11 +178,13 @@ const QWEN_VL_MODELS: ProviderModelConfig[] = [
 export const DEFAULT_VISION_MODEL = { provider: "qwen", modelId: "qwen3-vl-flash" };
 
 const QWEN_PROVIDER: ProviderConfig = {
-  name: "通义千问 (Qwen)",
+  name: "通义千问 (Qwen) · 按量付费",
   baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   api: "openai-completions",
-  // qwen 官方三款 + 经同端点可调用的 DeepSeek V4 系列（费用更低）+ Qwen3-VL 视觉系列（图片上传用）。
-  models: [...QWEN_MODELS, ...QWEN_DEEPSEEK_MODELS, ...QWEN_VL_MODELS],
+  // qwen 官方三款 + Qwen3-VL 视觉系列（图片上传用）+ DeepSeek V4 系列（百炼生态，按量端点亦可调用）。
+  // DeepSeek 同时在 QWEN_PROVIDER（按量）与 QWEN_TOKENPLAN_PROVIDER（套餐）下各注册一份，
+  // 用户在两个千问 provider 里都能看到并选择 DeepSeek；走哪种计费由选中的 provider 端点决定。
+  models: [...QWEN_MODELS, ...QWEN_VL_MODELS, ...QWEN_DEEPSEEK_MODELS],
 };
 
 function registerQwenProvider(runtime: ModelRuntime): void {
@@ -190,6 +192,118 @@ function registerQwenProvider(runtime: ModelRuntime): void {
     runtime.registerProvider("qwen", QWEN_PROVIDER);
   } catch (err) {
     console.error("[qwen] register provider failed:", (err as Error).message);
+  }
+}
+
+// 阿里云百炼 token-plan 套餐通道（与按量付费是不同的 base URL，打到哪个 URL 决定走哪种计费）。
+//   - 按量付费：https://dashscope.aliyuncs.com/compatible-mode/v1
+//   - token-plan：https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+// 套餐内的第三方模型（DeepSeek V4 系列等）必须走 token-plan 端点才能被套餐抵扣。
+// 鉴权复用 auth.json 的 qwen.key（同属阿里百炼账号，token-plan 与按量共用同一 API Key）。
+const QWEN_TOKENPLAN_PROVIDER: ProviderConfig = {
+  name: "通义千问 (Qwen) · token-plan 套餐",
+  baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  api: "openai-completions",
+  // 经 token-plan 套餐可调用的 DeepSeek V4 系列（费用低于直连 deepseek 官方 / 按量）。
+  models: QWEN_DEEPSEEK_MODELS,
+};
+
+function registerQwenTokenplanProvider(runtime: ModelRuntime): void {
+  try {
+    runtime.registerProvider("qwen-tokenplan", QWEN_TOKENPLAN_PROVIDER);
+  } catch (err) {
+    console.error("[qwen-tokenplan] register provider failed:", (err as Error).message);
+  }
+}
+
+// MiniMax 国内大模型（OpenAI 兼容接口）。官方文档：
+//   - OpenAI 兼容 baseUrl（中国国内账号）：https://api.minimaxi.com/v1 ；国际账号用 https://api.minimax.io/v1
+//   - 鉴权：HTTP Bearer（Authorization: Bearer <API_KEY>），与 OpenAI 一致
+//   - 模型清单（OpenAI 兼容）：MiniMax-M3 / M2.7(+highspeed) / M2.5(+highspeed) / M2.1(+highspeed) / M2
+// 注意：SDK 的 thinkingFormat 仅支持 openai/deepseek/qwen 等固定枚举，**没有 "minimax"**，
+// 故 MiniMax 此处按普通 openai-completions 模型接入（reasoning 不开启），不猜测思考格式；
+// 若将来要启用 M3 的 thinking（adaptive），需先在 SDK 增加 "minimax" thinkingFormat 处理（超出本 issue 范围）。
+// M3 虽支持多模态（图/视频），但本应用视觉模型切换固定走 qwen（DEFAULT_VISION_MODEL），
+// 故 MiniMax 仅登记 text 输入，避免意外接管视觉通道。
+const MINIMAX_MODELS: ProviderModelConfig[] = [
+  {
+    id: "MiniMax-M3",
+    name: "MiniMax M3 (1M 上下文)",
+    api: "openai-completions",
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 16384,
+  },
+  {
+    id: "MiniMax-M2.7-highspeed",
+    name: "MiniMax M2.7 HighSpeed",
+    api: "openai-completions",
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 204800,
+    maxTokens: 8192,
+  },
+  {
+    id: "MiniMax-M2.7",
+    name: "MiniMax M2.7",
+    api: "openai-completions",
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 204800,
+    maxTokens: 8192,
+  },
+  {
+    id: "MiniMax-M2.5-highspeed",
+    name: "MiniMax M2.5 HighSpeed",
+    api: "openai-completions",
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 204800,
+    maxTokens: 8192,
+  },
+  {
+    id: "MiniMax-M2.5",
+    name: "MiniMax M2.5",
+    api: "openai-completions",
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 204800,
+    maxTokens: 8192,
+  },
+  {
+    id: "MiniMax-M2.1-highspeed",
+    name: "MiniMax M2.1 HighSpeed",
+    api: "openai-completions",
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 204800,
+    maxTokens: 8192,
+  },
+  {
+    id: "MiniMax-M2.1",
+    name: "MiniMax M2.1",
+    api: "openai-completions",
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 204800,
+    maxTokens: 8192,
+  },
+];
+
+const MINIMAX_PROVIDER: ProviderConfig = {
+  name: "MiniMax (国内)",
+  // 国内账号走 api.minimaxi.com；若用户的 MiniMax 是国际账号，改回 https://api.minimax.io/v1 即可。
+  baseUrl: "https://api.minimaxi.com/v1",
+  api: "openai-completions",
+  models: MINIMAX_MODELS,
+};
+
+function registerMinimaxProvider(runtime: ModelRuntime): void {
+  try {
+    runtime.registerProvider("minimax", MINIMAX_PROVIDER);
+  } catch (err) {
+    console.error("[minimax] register provider failed:", (err as Error).message);
   }
 }
 
@@ -201,20 +315,34 @@ export async function getSharedRuntime(): Promise<ModelRuntime> {
     if (!fs.existsSync(authPath) || fs.statSync(authPath).size < 4) {
       fs.writeFileSync(authPath, "{}", "utf-8");
     }
+    // 注意：qwen（按量付费）与 qwen-tokenplan（token-plan 套餐）是**两个完全独立的 provider**，
+    // 各自使用 auth.json 中独立的 key 段（auth.qwen / auth["qwen-tokenplan"]）和独立的 base URL。
+    // 两者 API Key 不相同，切勿互相拷贝或同步——这是用户明确的账号事实。
     g[cacheKey] = await ModelRuntime.create({ authPath });
     registerQwenProvider(g[cacheKey]);
+    registerQwenTokenplanProvider(g[cacheKey]);
+    registerMinimaxProvider(g[cacheKey]);
   }
   return g[cacheKey];
 }
 
+// ISSUE-039：provider 白名单——只暴露国内/已保留的 provider，屏蔽 SDK 内置的国外 provider
+// （anthropic / google / openrouter / groq 等），避免前端「设为默认模型」下拉泄漏国外模型。
+// 即使未来 SDK 升级又注册了新国外 provider，也只会被挡在白名单之外。
+// 注：openai 用户未点名删除，默认保留；如需一并去掉，从本数组移除 "openai" 即可。
+const ALLOWED_MODEL_PROVIDERS = ["qwen", "qwen-tokenplan", "deepseek", "openai", "minimax"];
+
 export async function getAvailableModels() {
   const runtime = await getSharedRuntime();
-  return runtime.getAvailable();
+  const models = await runtime.getAvailable();
+  return models.filter((m: any) => ALLOWED_MODEL_PROVIDERS.includes(m.provider));
 }
 
-// 显式指定的默认模型：deepseek 的便宜档 flash，避免走 SDK 默认的 deepseek-v4-pro（更贵）
+// 显式指定的默认模型：token-plan 套餐内的 deepseek 便宜档 flash（qwen-tokenplan/deepseek-v4-flash），
+// 避免未配置时落到更贵的档位。注意：这是 qwen-tokenplan provider 下的 DeepSeek，走 token-plan 套餐端点，
+// 与 SDK 内置 deepseek/*（DeepSeek 官方直连，独立 key）是两条不同通道。
 // 这是「兜底默认」——仅当用户未在设置里指定默认模型时生效。
-const DEFAULT_PROVIDER = "deepseek";
+const DEFAULT_PROVIDER = "qwen-tokenplan";
 const DEFAULT_MODEL = "deepseek-v4-flash";
 
 export async function getDefaultModel() {
@@ -231,7 +359,7 @@ export async function getDefaultModel() {
       if (model) return model;
     }
   }
-  // 未设置或指定模型无法解析（如 provider 未注册）→ 回退到 deepseek flash。
+  // 未设置或指定模型无法解析（如 provider 未注册）→ 回退到 qwen-tokenplan 的 deepseek-v4-flash（套餐端点）。
   return runtime.getModel(DEFAULT_PROVIDER, DEFAULT_MODEL);
 }
 

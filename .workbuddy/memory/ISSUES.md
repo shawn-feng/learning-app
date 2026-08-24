@@ -1034,6 +1034,10 @@
   - 测试同步：`test/app.test.ts`、`test/functional.test.ts`、`test/sync.test.ts` 的文件存在性断言改为断言 `kb.sqlite` + `AGENTS.md`；`functional.test.ts`「文件模板」两个 `it` 改写为断言 kb.sqlite + tags 表 20 行；`sync.test.ts` 的 hash 变更测试改用 `profile.json`。
 - **验证**：`tsc --noEmit` 相关文件 0 错。`npm run build` 后需手测：新增孩子目录干净、kb-lint 对新孩子无「缺失目录」报错、默认标签词表就绪。
 
+## [ISSUE-032 二次确认] 2026-08-24
+- **用户再次提出**：「新建孩子账户时不要创建旧的路径文件夹，目前数据结构都调整到 sqlite 里，只需要生成 sqlite 文件即可。」
+- **核实结论**：与 ISSUE-032 需求完全一致，且该 issue 已于 2026-08-22 实施完成。当前 `electron/lib/user-init.ts:63-96` 的 `initChildDirectory` 已仅建最小集（`childDir` + `.pi/agent/sessions` + `.pi/skills` + `profile.json` + 空 `kb.sqlite`（`initChildKb`）+ `.pi/agent/settings.json` + `AGENTS.md`），**不再创建** `daily/learning/life/inquiries/tasks/outputs/tags` 等旧归档目录与 `study-topics.md`/`study-rules.md`/`life-events.md`/`tags/taxonomy.md`/`learning/topics.md`/`learning/rules.md` 等废弃模板。无需新增 issue，确认闭环。
+
 ## [ISSUE-033] AGENTS 改为「代码默认 + 用户版本」：用户可编辑（每孩子 + 家长各一份），带历史版本可回退
 
 - **类型**：架构 / 新功能（待拍板后实施）
@@ -1075,6 +1079,27 @@
   - IPC/preload：新增 `agents:get/save/history/restore` 通用接口（child:getAgentsMd/child:saveAgentsMd 改为走 SQLite，并即时落盘 AGENTS.md 生效）。
   - UI：新增 `src/components/AgentPromptEditor.tsx`（通用编辑器：textarea + 保存/恢复默认/历史版本列表回退）；`Dashboard.tsx` 孩子卡片「编辑 AI 提示词」与家长中心头部「家长 AI 提示词」均用它（家长端带 main/content 切换）。
 - **验证**：`tsc --noEmit` 相关文件 0 错。`npm run build` 后需手测：编辑孩子/家长提示词保存即生效、恢复默认回退代码提示、历史版本回退。
+
+## [ISSUE-033 方向修订] 2026-08-24 —— 孩子目录里不要 AGENTS 文件，孩子不能改它
+- **用户新增诉求（原话）**：「孩子的数据目录里不能有 AGENTS 文件，孩子不可以修改这个文件。」
+- **与已实施的 033 冲突**：033 处理记录（2026-08-22）拍板「**保留孩子 AGENTS.md 文件**（内容=用户版本），`child:saveAgentsMd` 即时落盘生效」。本修订要求孩子目录**彻底不出现 AGENTS.md 文件**——即推翻 033 的"保留文件"决策，改为**纯内联注入**。
+- **现状（已定位）**：当前 `writeAgentsMd`（`pi-session.ts:96-119`）每开孩子会话都写 `data/children/<id>/AGENTS.md`（:98）；`getChildSession`（:413）每次调 `writeAgentsMd` 刷新；SDK `DefaultResourceLoader`（:418-436，cwd=childDir）在 customPrompt 模式下**自动把磁盘 AGENTS.md 附加为 `<project_context>`**——所以 AGENTS.md 是孩子规范当前唯一注入通道。**去掉文件 = 必须改为 `systemPromptOverride`（:423 `buildChildPrompt`）内联注入身份+规范**，且 `cwd` 下的 AGENTS.md 不再被 loader 读取。
+- **修订方案要点（候选）**：
+  1. **孩子 AGENTS 彻底内联**：`buildChildPrompt(profile, progressContext)` 直接拼「身份段（`buildAgentsMd` 的 75-89 行）+ `LEARNING_NAV_INSTRUCTIONS` 规范 + 用户版本（若有，从 `data/agents.sqlite` 取）」经 `systemPromptOverride` 注入；**删除 `writeAgentsMd` 对孩子目录的 AGENTS.md 写盘**（或保留函数为家长侧/兼容，但不再对孩子落盘）。
+  2. **孩子不能改**：AGENTS 真源改为 `data/agents.sqlite`（scope=child, ref=childId 的用户版本）或代码默认；文件不存在 → 孩子端（即使能访问目录）也无文件可改；UI 编辑入口只在家长中心 `AgentPromptEditor`，孩子界面无此能力（现状已满足：编辑器只在 Dashboard/家长中心）。
+  3. **向后兼容**：已存在孩子目录里的旧 `AGENTS.md`（珊珊/闻闻）应清理（仅删文件，规范由 SQLite/代码提供，无丢失风险）；`child:saveAgentsMd` / `child:getAgentsMd` IPC 改为只读写 `data/agents.sqlite`，不再触碰孩子目录文件。
+- **待确认（冲突点，需用户拍板）**：
+  1. **是否回退 033 已实施的"保留孩子 AGENTS.md 文件"方案**？本修订要求去掉 → 需把 `writeAgentsMd` 对孩子落盘去掉，并清掉存量孩子目录的 AGENTS.md。
+  2. 内联注入后，用户版本（家长编辑）与代码默认如何合并进 `buildChildPrompt`？建议：有用户版本整体替换、否则代码默认（与 033「整体替换」一致）。
+  3. 家长侧 AGENTS（`buildParentPrompt`/`buildParentContentPrompt`）维持现状（代码默认 + SQLite 用户版本，无落盘文件）——本修订仅约束**孩子**。
+- **排查 / 修改入口**：
+  - `electron/lib/pi-session.ts`：`writeAgentsMd`（:96-119，去孩子落盘）、`buildChildPrompt`（在 :423 systemPromptOverride 内联）、`getChildSession`（:413 删 writeAgentsMd 调用）、`getDefaultPrompt`（:128-135 孩子分支改查 SQLite 而非读 AGENTS.md 文件）。
+  - IPC：`electron/lib/ipc-handlers.ts` `child:saveAgentsMd`/`child:getAgentsMd` → 改走 `agent-prompts.ts`（SQLite），不再 `writeFileSync`/`readFileSync` 孩子目录。
+  - 清理：`data/children/{珊珊,闻闻}/AGENTS.md` 存量文件删除。
+  - SQLite：`electron/lib/agent-prompts.ts`（`data/agents.sqlite` 已是 033 实施产物，复用即可）。
+- **关联**：ISSUE-032（孩子目录结构精简——去掉 AGENTS.md 与"只建最小集"方向一致，032 已落实其余目录）；ISSUE-038（提示词去重——内联后 AGENTS 与工具 description 重叠治理可一并做）。
+- **优先级**：待定（建议高：与已实施 033 冲突，需先拍板是否回退"保留文件"方案再动手；改动小但影响孩子规范注入通道）。
+- **记录时间**：2026-08-24
 
 ## [ISSUE-034] SQLite 模糊匹配能力 + 需要模糊检索的场景分析（目标：减少 listOnly 操作，省 token）
 - **现状 / 问题**：
@@ -1211,3 +1236,107 @@
 - **关联**：ISSUE-029（method 随主题拷贝进孩子库 → 重复被 N×M 放大，去重收益最大）；ISSUE-033（AGENTS/家长提示词版本化——本 issue 去重后版本更干净）；ISSUE-013 / ISSUE-034（省 token 目标一致）；ISSUE-026（课程管理专用提示词，同属提示词治理）。
 - **优先级**：待定（建议中：纯提示词治理、不改功能，但能明显省 token、降漂移；建议与 ISSUE-029/033 一并拍板）。
 - **记录时间**：2026-08-24
+
+## [ISSUE-039] 精简模型 provider：去掉国外 provider，保留千问 token-plan，新增 MiniMax
+
+- **类型**：需求 / 配置（仅记录的模型/provider 清单治理）
+- **需求**（拆分为 3 项）：
+  1. **移除国外 provider**：从可选模型列表里去掉 `anthropic`、`google`（Gemini）、`openrouter`、`groq` 这四个国外 provider（用户明确要求，符合国内环境默认）。
+  2. **保留千问 token-plan**：保留通义千问（含 SDK 内置的 `qwen-token-plan*` 百炼 token-plan 套餐——MiniMax/DeepSeek/GLM 等经百炼调用），这是国内服务，不删。
+  3. **新增 MiniMax 国内 provider**：作为新的可选国内模型源。
+- **现状 / 根因（已定位锚点）**：
+  1. **前端 API key 配置清单**（`src/pages/Settings.tsx:7-15` 的 `PROVIDERS` 数组）硬编码了：`deepseek` / `qwen` / `anthropic` / `openai` / `google`(Gemini) / `openrouter` / `groq`。其中 `anthropic`、`google`、`openrouter`、`groq` 即用户要去掉的；`deepseek`、`openai` 用户未点名，**默认保留**（不擅自删 deepseek，因为它是默认兜底模型）。
+  2. **可用模型列表来源**：`electron/lib/pi-runtime.ts:210` 的 `getAvailableModels()` 直接 `return runtime.getAvailable()`——这是 SDK `ModelRuntime` 已注册 provider 的并集。当前仅显式 `registerQwenProvider`（:188）；`deepseek` 是 SDK 内置。若 SDK 默认还内置 anthropic/openai/google/openrouter/groq，**仅改 Settings.tsx 的前端下拉还不够**，列表仍会从 `getAvailableModels()` 暴露出来 → 必须在主进程层做**白名单过滤**（见下）。
+  3. 千问 token-plan：`pi-runtime.ts:14-15` 注释已说明 `qwen-token-plan*` 是百炼 token-plan 套餐，与 qwen 官方模型不是一回事，需确认这些模型在 `runtime.getAvailable()` 中如何归类（归于 qwen provider 还是独立 provider），避免误删。
+- **修改入口 / 方案要点（可直接执行）**：
+  - `src/pages/Settings.tsx:7-15`：从 `PROVIDERS` 删除 `anthropic`/`google`/`openrouter`/`groq` 四项；新增 `{ id: "minimax", name: "MiniMax", keyHint: "请填写 MiniMax API Key" }`。
+  - `electron/lib/pi-runtime.ts`：新增 `MINIMAX_PROVIDER`（参考 `QWEN_PROVIDER` 写法，MiniMax 走 OpenAI 兼容端点 `https://api.minimax.chat/v1`，`api:"openai-completions"`），并在 `getSharedRuntime()` 里 `registerMinimaxProvider(g[cacheKey])`；同时在 `getAvailableModels()` 增加 provider 白名单（如 `['qwen','deepseek','minimax']`）过滤掉 SDK 默认暴露的国外 provider。
+  - 默认模型兜底（:217-218）`DEFAULT_PROVIDER="deepseek"` 保持不变。
+- **待确认项**：
+  1. **MiniMax 接入细节**：官方端点/模型清单/鉴权方式（Bearer header vs query ApiKey）——需查官方文档确认，不要猜 unsupported 字段。
+  2. **是否要在 `getAvailableModels()` 加白名单**：若 SDK 默认注册了 anthropic 等，必须加；若 SDK 仅注册 qwen/deepseek，则前端 `PROVIDERS` 改了即可（建议两处都收敛，避免未来 SDK 升级又暴露）。
+  3. **deepseek / openai 是否保留**：用户只点名删 4 个国外 provider，未提 deepseek（且是默认兜底）与 openai，默认保留，需用户确认。
+  4. **千问 token-plan 暴露哪些具体模型**给 UI（MiniMax/DeepSeek/GLM 等是否都要列）。
+- **关联**：ISSUE-020（编程 agent 模型共用同一 provider 选取链路）、ISSUE-005（默认模型链路同源）；偏向"国内服务优先"的区域约定。
+- **优先级**：待定（建议中：配置层面、风险低，但涉及 SDK provider 暴露面，需确认过滤点）。
+- **记录时间**：2026-08-24
+
+---
+
+### ISSUE-039 实施记录（2026-08-24）
+
+- **状态**：✅ 已实施（代码改动 + 构建通过）。两处 待确认项按下方"采用决策"落地，待用户二次核验。
+- **改动文件 / 要点（可直接对照）**：
+  1. `src/pages/Settings.tsx`：`PROVIDERS` 数组移除 `anthropic`/`google`/`openrouter`/`groq` 四项，新增 `{ id:"minimax", name:"MiniMax", keyHint:"请填写 MiniMax API Key" }`；保留 `deepseek`/`qwen`/`openai`。
+  2. `electron/lib/pi-runtime.ts`：
+     - 新增 `MINIMAX_MODELS`（7 个模型：M3 / M2.7(+highspeed) / M2.5(+highspeed) / M2.1(+highspeed)，contextWindow M3=1M、其余 204800；`api:"openai-completions"`、`input:["text"]`、`reasoning` 不开启）。
+     - 新增 `MINIMAX_PROVIDER`（`baseUrl:"https://api.minimaxi.com/v1"`，国内端点）+ `registerMinimaxProvider()`，并在 `getSharedRuntime()` 里 `registerMinimaxProvider(g[cacheKey])` 注册。
+     - `getAvailableModels()` 增加白名单 `ALLOWED_MODEL_PROVIDERS = ["qwen","deepseek","openai","minimax"]`，过滤掉 SDK 内置的国外 provider（确认 `ModelRuntime.create()` 会 `builtinProviders()` 全部注册，故白名单为必须且是防未来 SDK 升级再暴露的防御层）。
+- **采用决策（对应原 待确认项）**：
+  1. **MiniMax 接入细节**：端点/鉴权/模型清单均按官方文档核实（OpenAI 兼容、Bearer 鉴权、国内 `api.minimaxi.com/v1`、模型 M3/M2.x）。**未猜测 thinkingFormat**——SDK `thinkingFormat` 枚举无 `"minimax"`，故 MiniMax 按普通 `openai-completions` 接入、`reasoning` 关闭；M3 的 thinking（adaptive）暂不启用，待 SDK 增加 minimax thinkingFormat 再开（超出本 issue）。
+  2. **白名单**：已加（见上），两处（前端 PROVIDERS + 主进程 getAvailableModels 白名单）都已收敛。
+  3. **deepseek / openai 保留**：按用户原话只点名删 4 个国外 provider，默认保留 `deepseek`（默认兜底）与 `openai`。**⚠️ openai 同为国外 provider，若用户也想一并去掉，从 `ALLOWED_MODEL_PROVIDERS` 移除 `"openai"` 并从 `PROVIDERS` 删 openai 项即可——待用户确认。**
+  4. **千问 token-plan 暴露**：`qwen` 在白名单内，含经百炼调用的 `deepseek-v4-*` 等 token-plan 模型一并保留暴露（符合"保留千问 token-plan"需求）。
+- **非破坏性说明**：若 `auth.json` 中此前存过 anthropic/groq 等国外 provider 的 key，本次**不删除**这些条目（避免破坏性操作），只是前端不再提供配置入口、且 `getAvailableModels` 白名单不再暴露其模型；它们不会被实际使用。
+- **验证**：`tsc --noEmit` 仅余 5 条环境性 TS2318/TS2552 全局类型告警（与改动无关）；`npm run build`（electron-vite）通过（out/main + preload + renderer 均构建成功）。
+- **关联**：ISSUE-020 / ISSUE-005（同模型选取链路）；区域约定"国内服务优先"。
+
+### ISSUE-039 二次修订：token-plan / 按量付费 拆分（2026-08-24 下午）
+
+- **状态**：✅ 已实施（代码改动 + 构建通过）。**更正 2026-08-24 上午一处错误表述**：原实施记录 / 对话中称"计费方式代码控制不了、只能看账单"，**错误**——token-plan 与按量付费是**两个不同 base URL**，打到哪个 URL 即决定走哪种计费，故代码必须按 URL 拆分。
+  - 按量付费：`https://dashscope.aliyuncs.com/compatible-mode/v1`（聊天 LLM）/ `https://dashscope.aliyuncs.com/api/v1/...`（千问 ASR）
+  - token-plan：`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`（聊天 LLM）/ `https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/...`（千问 ASR）
+- **方向 A 落地（聊天 LLM，`electron/lib/pi-runtime.ts`）**：
+  1. `QWEN_PROVIDER` 现仅挂 qwen 官方三款（max/plus/flash）+ Qwen3-VL（走 dashscope 按量 URL）。
+  2. 新增 `QWEN_TOKENPLAN_PROVIDER`（`baseUrl` = token-plan 兼容端点），仅挂 `QWEN_DEEPSEEK_MODELS`（deepseek-v4-flash / flash-0731 / pro / pro-0813）；`registerQwenTokenplanProvider()` 在 `getSharedRuntime()` 注册。
+  3. 白名单 `ALLOWED_MODEL_PROVIDERS` 增 `"qwen-tokenplan"`。
+  4. **默认兜底模型**从 `deepseek/deepseek-v4-flash` 改为 `qwen-tokenplan/deepseek-v4-flash`（DeepSeek 已不再归属 SDK 内置 `deepseek` provider，否则默认模型会落到按量/SDK 默认 URL，与套餐意图冲突）。
+  5. `getSharedRuntime()` 在 `ModelRuntime.create()` 前，若 `auth.qwen.key` 存在而 `auth["qwen-tokenplan"]` 缺失，则同步一份（同值）——token-plan 与按量共用同一阿里百炼 API Key，用户只需在 Settings 填一次千问 key。
+- **语音 (STT) 同样拆分（`electron/lib/voice/`）**：
+  1. `providers/qwen.ts`：`transcribe()` 接受 `creds.endpoint`，缺省回退 dashscope 按量 ASR 端点；token-plan 端点常量 = `token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`。
+  2. `voice-config.ts`：`VoiceProviderId` 增 `"qwen-tokenplan"`；`DEFAULT_CONFIG.providers["qwen-tokenplan"]` 预填 `{ apiKey:"", endpoint: <token-plan ASR 端点> }`；`isProviderConfigured` 的 qwen case 同时覆盖 `qwen-tokenplan`（回退 `auth.qwen.key`）。
+  3. `voice/index.ts`：`PROVIDER_NAMES` 加「千问(token-plan)」；`dispatch` 的 `qwen`/`qwen-tokenplan` 共用 `qwenTranscribe`（endpoint 已在 creds）。
+- **Settings 下拉（`src/pages/Settings.tsx`）**：`PROVIDERS` 删掉 `deepseek` 项（DeepSeek 已归入 `qwen-tokenplan`，鉴权复用 qwen key，无需独立 key 入口），现仅 `qwen`（含 token-plan 说明）/ `openai` / `minimax`。模型下拉里 `qwen-tokenplan/deepseek-*` 由白名单自动出现。
+- **验证**：`tsc --noEmit` 过滤环境告警后无业务错误；`npm run build`（electron-vite）通过。
+- **未做（用户指示"先不管 minimax"，且语音/聊天 token-plan 已覆盖）**：MiniMax 当前仍走 `api.minimaxi.com/v1` 直连（非阿里百炼 token-plan 通道）；若你的 MiniMax 是百炼 token-plan 套餐购买，需把 `MINIMAX_PROVIDER.baseUrl` 改为百炼 token-plan 端点（待你确认）。
+- **关联**：ISSUE-020 / ISSUE-005（同模型选取链路）。
+
+### ISSUE-039 三次修订：两个 provider 完全独立（含独立 API Key）（2026-08-24 下午晚）
+
+- **状态**：✅ 已实施（代码改动 + 构建通过）。**更正二次修订第 5 点的错误**：上轮称"token-plan 与按量共用同一 API Key、自动同步一份"——**错误**。用户明确：按量付费与 token-plan 的 **API Key 也不相同**，应按**两个完全独立的 provider** 处理，各自用自己 `auth.json` 的 key 段、各自独立 base URL，绝不互相拷贝。
+- **改动（撤销"同步 key"，改为独立）**：
+  1. `pi-runtime.ts` 的 `getSharedRuntime()`：**删除**原先"把 `auth.qwen.key` 同步到 `auth["qwen-tokenplan"]`"的块。`qwen-tokenplan` provider 仅读 `auth["qwen-tokenplan"].key`，与 `qwen` 的 key 完全无关。
+  2. `voice-config.ts` 的 `isProviderConfigured`：`qwen-tokenplan` case **不再回退 `auth.qwen.key`**，改为读自身 `auth["qwen-tokenplan"]` 段（必须自身有 key 才算配置可用）。
+  3. `Settings.tsx` 的 `PROVIDERS`：**补回 `qwen-tokenplan` 独立 key 入口**（之前为"只填一次"误删），现四项：`qwen`（按量付费）/ `qwen-tokenplan`（token-plan 套餐，keyHint 标明"与按量不同的 key"）/ `openai` / `minimax`。两通道各自在 Settings 独立填写、分别写入 `auth.qwen` 与 `auth["qwen-tokenplan"]`。
+- **⚠️ 需用户手动处理（个人密钥文件，AI 不擅自动）**：`data/shared/auth.json` 当前 `qwen-tokenplan.key` 是上轮错误同步的、与 `qwen.key` 相同的副本。请打开设置页「通义千问 (token-plan 套餐)」填入你**真正的 token-plan key** 覆盖它（保存即写入正确值）。AI 不改 auth.json 既有密钥值，避免误删真实 key。
+- **验证**：`tsc --noEmit` 过滤环境告警后无业务错误；`npm run build`（electron-vite）通过。
+- **关联**：ISSUE-020 / ISSUE-005。
+
+### ISSUE-039 四次修订：DeepSeek 直连不要去掉（2026-08-24 14:16）
+
+- **状态**：✅ 已实施 + 构建通过。用户纠正"provider 里不要去掉 deepseek"——此前仅在 `Settings.tsx` 的 `PROVIDERS` key 入口误删 `deepseek` 项，而 SDK 内置 `deepseek` provider 与白名单 `ALLOWED_MODEL_PROVIDERS` 里的 `"deepseek"` 始终保留。现 DeepSeek 两条通道并存互不冲突：① `qwen-tokenplan/deepseek-v4-*`（百炼 token-plan 套餐，token-plan key+URL）；② SDK 内置 `deepseek/*`（官方直连，独立 deepseek key）。
+- **改动**：`Settings.tsx` `PROVIDERS` 补回 `{ id:"deepseek", name:"DeepSeek (官方直连)" }` 独立 key 入口（现五项：qwen 按量 / qwen-tokenplan 套餐 / deepseek 直连 / openai / minimax）；`pi-runtime.ts` 把 `getDefaultModel` 兜底注释从"回退到 SDK deepseek"改为明确指向 `qwen-tokenplan/deepseek-v4-flash`，消除误读。
+- **验证**：tsc/build 通过。
+
+### ISSUE-039 五次修订：两个千问 provider 都挂 DeepSeek + 按 provider 筛选（2026-08-24 14:22）
+
+- **状态**：✅ 已实施 + 构建通过。用户两点要求：① 点击 provider 只显示该 provider 的模型；② 千问按量与套餐两个 provider 都显示 DeepSeek 全部模型。
+- **决策（用户拍板）**：DeepSeek 在 `qwen`（按量）与 `qwen-tokenplan`（套餐）**两个 provider 各注册一份**（`QWEN_DEEPSEEK_MODELS` 同时并入两者 models），分别走各自 baseUrl；按 provider 筛选应用到 Settings 与 ModelSelector 两处。
+- **改动**：
+  1. `pi-runtime.ts`：`QWEN_PROVIDER.models` 由 `[...QWEN_MODELS, ...QWEN_VL_MODELS]` 改为 `[...QWEN_MODELS, ...QWEN_VL_MODELS, ...QWEN_DEEPSEEK_MODELS]`（按量端点也挂 DeepSeek）；`qwen-tokenplan` 本就含 DeepSeek，实现两通道都可见可选。
+  2. `src/components/ModelSelector.tsx`：新增 `activeProvider` 状态 + provider chip 栏（provider>1 时显示）；点击 provider 仅渲染该 provider 模型并切到其首个模型；默认激活 provider = 默认模型所属 provider；引入 `useMemo` 分组/过滤。`onPiDefaultModelChanged` 同步切 activeProvider。
+  3. `src/pages/Settings.tsx`：① `selectedProvider` 初值由 `"deepseek"` 改为 `"qwen"`；② 「当前可用模型」列表与「编程 agent 模型」下拉均按 `selectedProvider` 过滤（复用既有 chip 切换），标题显示当前 provider 名；无模型时给空态提示。
+- **验证**：`tsc --noEmit` 过滤环境告警后无业务错误；`npm run build`（electron-vite，303 modules）通过。
+- **关联**：ISSUE-020 / ISSUE-005。
+
+### ISSUE-039 六次修订：语音配置同样按量/token-plan 拆两个 provider（2026-08-24 14:33）
+
+- **状态**：✅ 已实施 + 构建通过。用户要求语音配置（VoiceSettings）也像聊天那样把按量与 token-plan 拆成两个独立 provider 可选。
+- **后端此前已具备**（前几轮）：`voice/providers/qwen.ts` 支持 `creds.endpoint`（缺省回退按量 dashscope 域名）；`voice-config.ts` 类型含 `qwen-tokenplan`、DEFAULT_CONFIG 预填 token-plan ASR 端点（`token-plan.cn-beijing.maas.aliyuncs.com/api/v1/...`）、`isProviderConfigured` 独立读 `auth["qwen-tokenplan"]`；`voice/index.ts` dispatch 的 `qwen`/`qwen-tokenplan` 共用 `qwenTranscribe`。**本次补齐前端 UI 与 key 路由细节**。
+- **改动**：
+  1. `src/components/VoiceSettings.tsx`：`VOICE_PROVIDERS` 加 `qwen-tokenplan`（千问·token-plan 套餐）独立项，fields = apiKey（标注"套餐专用 Key，与按量不同"）+ endpoint（readonly 文本框，显示固定套餐 ASR 端点、不可改，避免保存时丢失）；`fields` 类型加 `readonly?` 标记，渲染时 readonly 用 disabled 灰底 input。原 `qwen` 项改名为「千问 (按量付费)」。
+  2. `electron/lib/voice/voice-config.ts`：`VOICE_PROVIDER_ORDER` 加 `"qwen-tokenplan"`（使套餐通道可作默认/回退候选）。
+  3. `electron/lib/voice/providers/qwen.ts`：`loadQwenKeyFromAuth(isTokenPlan)` 增加 token-plan 分支——endpoint 含 `token-plan` 时读 `auth["qwen-tokenplan"].key`，否则读 `auth.qwen.key`；错误提示也区分两通道。
+- **关键防丢点**：token-plan 的 endpoint 由 UI readonly 字段随 fields 一起保存（经 `applyVoiceConfigPatch` 的 `{...DEFAULT_CONFIG.providers, ...parsed}` 合并），不会被 `{apiKey}` 覆盖丢端点。
+- **验证**：`tsc --noEmit` 过滤环境告警后无业务错误；`npm run build`（electron-vite，303 modules）通过。
+- **关联**：ISSUE-020 / ISSUE-005。

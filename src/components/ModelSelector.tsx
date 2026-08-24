@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 
 interface ModelOption {
   provider: string;
@@ -14,10 +14,27 @@ export default function ModelSelector({ childId }: Props) {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selected, setSelected] = useState("");
   const [status, setStatus] = useState("");
+  // 当前选中的 provider：点击 provider chip 后只显示该 provider 的模型
+  const [activeProvider, setActiveProvider] = useState("");
   // 已成功切到当前 session 的模型 key（用于去重，避免重复切换）
   const appliedKey = useRef("");
   // 期望切到的模型 key（用于丢弃已过期的重试）
   const desiredKey = useRef("");
+
+  // 按 provider 分组，供 chip 栏展示
+  const providers = useMemo(() => {
+    const set = new Map<string, string>();
+    for (const m of models) {
+      if (!set.has(m.provider)) set.set(m.provider, m.provider);
+    }
+    return Array.from(set.keys());
+  }, [models]);
+
+  // 当前 provider 下的模型
+  const visibleModels = useMemo(() => {
+    if (!activeProvider) return models;
+    return models.filter((m) => m.provider === activeProvider);
+  }, [models, activeProvider]);
 
   useEffect(() => {
     let mounted = true;
@@ -36,12 +53,15 @@ export default function ModelSelector({ childId }: Props) {
       setModels(modelsResult);
       setStatus("");
       const defaultKey = defResult?.success ? defResult.key : "";
-      // 若默认模型在可用列表里，预选它；否则回退到列表第一项（deepseek 排最前）
+      // 若默认模型在可用列表里，预选它；否则回退到列表第一项
       const initial =
         defaultKey && modelsResult.some((m: any) => `${m.provider}/${m.id}` === defaultKey)
           ? defaultKey
           : `${modelsResult[0].provider}/${modelsResult[0].id}`;
       setSelected(initial);
+      // 默认模型所属 provider 作为初始激活的 provider
+      const defProvider = initial.split("/")[0];
+      setActiveProvider(defProvider);
       switchTo(initial, 0);
     }).catch(() => {
       if (mounted) setStatus("加载模型失败");
@@ -50,6 +70,18 @@ export default function ModelSelector({ childId }: Props) {
       mounted = false;
     };
   }, []);
+
+  // 切换 provider chip：仅展示该 provider 模型，并切到其第一个模型
+  function handleProviderClick(provider: string) {
+    if (provider === activeProvider) return;
+    setActiveProvider(provider);
+    const first = models.find((m) => m.provider === provider);
+    if (first) {
+      const key = `${first.provider}/${first.id}`;
+      setSelected(key);
+      switchTo(key, 0);
+    }
+  }
 
   // 设置页改了默认模型 → 若当前会话还没切到它，自动切过去（仅当该模型可用）
   useEffect(() => {
@@ -60,6 +92,7 @@ export default function ModelSelector({ childId }: Props) {
         : `${models[0].provider}/${models[0].id}`;
       if (target && target !== appliedKey.current) {
         setSelected(target);
+        setActiveProvider(target.split("/")[0]);
         switchTo(target, 0);
       }
     });
@@ -97,9 +130,22 @@ export default function ModelSelector({ childId }: Props) {
 
   return (
     <div className="model-selector">
-      {models.length > 0 ? (
+      {models.length > 0 && providers.length > 1 && (
+        <div className="provider-list" style={{ marginBottom: 8 }}>
+          {providers.map((p) => (
+            <div
+              key={p}
+              className={`provider-chip ${activeProvider === p ? "active" : ""}`}
+              onClick={() => handleProviderClick(p)}
+            >
+              {p}
+            </div>
+          ))}
+        </div>
+      )}
+      {visibleModels.length > 0 ? (
         <select value={selected} onChange={(e) => handleChange(e.target.value)}>
-          {models.map((m) => (
+          {visibleModels.map((m) => (
             <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
               {m.name}
             </option>

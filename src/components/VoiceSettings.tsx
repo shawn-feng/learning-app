@@ -5,7 +5,7 @@ interface VoiceProviderDef {
   id: string;
   name: string;
   available: boolean;
-  fields: { key: string; label: string }[];
+  fields: { key: string; label: string; readonly?: boolean }[];
 }
 
 const VOICE_PROVIDERS: VoiceProviderDef[] = [
@@ -30,9 +30,22 @@ const VOICE_PROVIDERS: VoiceProviderDef[] = [
   },
   {
     id: "qwen",
-    name: "千问",
+    name: "千问 (按量付费)",
     available: true,
-    fields: [{ key: "apiKey", label: "API Key（留空自动复用模型配置里的千问 Key）" }],
+    fields: [{ key: "apiKey", label: "API Key（留空自动复用模型配置里的千问按量 Key）" }],
+  },
+  {
+    id: "qwen-tokenplan",
+    name: "千问 (token-plan 套餐)",
+    available: true,
+    fields: [
+      { key: "apiKey", label: "API Key（token-plan 套餐专用 Key，与按量不同）" },
+      {
+        key: "endpoint",
+        label: "ASR 端点（token-plan 套餐通道，固定不可改）",
+        readonly: true,
+      },
+    ],
   },
   {
     id: "iflytek",
@@ -228,11 +241,19 @@ export default function VoiceSettings() {
         <div key={f.key} style={{ marginBottom: 12 }}>
           <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>{f.label}</label>
           <input
-            type="password"
+            type={f.readonly ? "text" : "password"}
             value={fields[f.key] || ""}
             onChange={(e) => setField(f.key, e.target.value)}
             placeholder={f.label}
-            style={{ width: "100%", padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
+            disabled={f.readonly}
+            style={{
+              width: "100%",
+              padding: 10,
+              border: "1px solid #ddd",
+              borderRadius: 8,
+              background: f.readonly ? "#f5f5f5" : "white",
+              color: f.readonly ? "#666" : "inherit",
+            }}
           />
         </div>
       ))}

@@ -8,7 +8,7 @@ import { resolveMediaTarget } from "../electron/lib/media-protocol";
 
 const DATA = path.join("C:", "data"); // 任意 data 根，只测路径解析
 
-describe("ISSUE-029 media:// 协议解析（父库共享 + 旧格式兜底 + 防穿越）", () => {
+describe("ISSUE-029 media:// 协议解析（父库共享 + 防穿越）", () => {
   it("新格式 parent/{pid}/{topic}/media/{file} → 父库 materials 共享目录", () => {
     const p = resolveMediaTarget(DATA, "/parent/default/lunyu/media/论语学而篇第一章.mp3");
     expect(p).toBe(path.join(DATA, "parents", "default", "materials", "lunyu", "media", "论语学而篇第一章.mp3"));
@@ -19,9 +19,10 @@ describe("ISSUE-029 media:// 协议解析（父库共享 + 旧格式兜底 + 防
     expect(p).toBe(path.join(DATA, "parents", "default", "materials", "lunyu", "media", "论语学而篇第一章.mp3"));
   });
 
-  it("旧格式 {childId}/learning/{topic}/media/{file} 仍解析到孩子目录（兼容存量）", () => {
-    const p = resolveMediaTarget(DATA, "/abc123/learning/lunyu/media/论语.mp3");
-    expect(p).toBe(path.join(DATA, "children", "abc123", "learning", "lunyu", "media", "论语.mp3"));
+  // 旧格式 {childId}/learning/{topic}/media/{file} 已废弃（资料统一走父库共享目录），
+  // 解析层不再支持，返回 null（防误用旧链接访问孩子目录）。
+  it("旧格式 {childId}/learning/... 不再解析（返回 null）", () => {
+    expect(resolveMediaTarget(DATA, "/abc123/learning/lunyu/media/论语.mp3")).toBeNull();
   });
 
   it("目录穿越被拒绝（parent 段内 ../）", () => {
