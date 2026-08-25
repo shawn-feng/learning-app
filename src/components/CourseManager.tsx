@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import { GraduationCap, BookText, FolderOpen, Plus } from "lucide-react";
+import IconButton from "./IconButton";
 import TopicDetail from "./TopicDetail";
 import MaterialManagerModal from "./MaterialManagerModal";
 
@@ -85,9 +88,9 @@ export default function CourseManager() {
         />
         <button
           onClick={createTopic}
-          style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer" }}
+          style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
         >
-          + 新建主题
+          <Plus size={16} /> 新建主题
         </button>
       </div>
 
@@ -130,9 +133,9 @@ export default function CourseManager() {
                 {t.rules?.daily ? ` · 每日 ${t.rules.daily} 课` : ""}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <CardBtn label="📖 教学方法" onClick={() => setDetail({ topic: t, tab: "method" })} />
-                <CardBtn label="📚 课程详情" primary onClick={() => setDetail({ topic: t, tab: "course" })} />
-                <CardBtn label="🗂 学习资料管理" onClick={() => setMatTopic(t)} />
+                <CardBtn icon={GraduationCap} title="教学方法" onClick={() => setDetail({ topic: t, tab: "method" })} />
+                <CardBtn icon={BookText} title="课程详情" primary onClick={() => setDetail({ topic: t, tab: "course" })} />
+                <CardBtn icon={FolderOpen} title="学习资料管理" onClick={() => setMatTopic(t)} />
               </div>
             </div>
           ))}
@@ -143,23 +146,14 @@ export default function CourseManager() {
   );
 }
 
-function CardBtn({ label, onClick, primary }: { label: string; onClick: () => void; primary?: boolean }) {
+function CardBtn({ icon, title, onClick, primary }: { icon: LucideIcon; title: string; onClick: () => void; primary?: boolean }) {
   return (
-    <button
+    <IconButton
+      icon={icon}
+      title={title}
+      className={primary ? "card-primary" : ""}
+      style={{ flex: 1 }}
       onClick={onClick}
-      style={{
-        flex: 1,
-        padding: "8px 6px",
-        borderRadius: 8,
-        border: "none",
-        fontSize: 12,
-        cursor: "pointer",
-        background: primary ? "#667eea" : "#f0f4ff",
-        color: primary ? "#fff" : "#667eea",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {label}
-    </button>
+    />
   );
 }

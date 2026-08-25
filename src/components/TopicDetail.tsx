@@ -1,8 +1,11 @@
 import { useEffect, useRef, useCallback, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import { ArrowLeft, FolderOpen, Plus, ChevronUp, ChevronDown, Trash2, Pencil, Upload, X, Tag } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "./ChatWindow";
 import MaterialManagerModal from "./MaterialManagerModal";
+import IconButton from "./IconButton";
 
 interface ParentTopic {
   name: string;
@@ -415,12 +418,11 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
       {/* 头部：返回 + 主题名 + 标签切换 */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-        <button
+        <IconButton
+          icon={ArrowLeft}
+          title="返回主题列表"
           onClick={onBack}
-          style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 13, cursor: "pointer" }}
-        >
-          ← 返回主题列表
-        </button>
+        />
         <div style={{ fontSize: 16, fontWeight: 700 }}>
           {topic.name}
           <span style={{ color: "#aaa", fontWeight: 400, fontSize: 13 }}>（{topicDir} · {courses.length} 课）</span>
@@ -429,7 +431,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
           {(
             [
               ["info", "基本信息"],
-              ["__mat__", "🗂 学习资料管理"],
+              ["__mat__", "学习资料管理"],
               ["method", "教学方法"],
               ["course", "课程详情"],
             ] as Array<[string, string]>
@@ -446,9 +448,12 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   cursor: "pointer",
                   background: "#f0f0f0",
                   color: "#555",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
                 }}
               >
-                {label}
+                <FolderOpen size={14} /> {label}
               </button>
             ) : (
               <button
@@ -500,9 +505,9 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
             />
             <button
               onClick={addCourse}
-              style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}
+              style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}
             >
-              + 添加
+              <Plus size={16} /> 添加
             </button>
           </div>
           <div style={{ overflowY: "auto", flex: 1 }}>
@@ -525,9 +530,9 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.title}</span>
                 </div>
                 <div style={{ display: "flex", gap: 4, marginTop: 4, justifyContent: "flex-end" }}>
-                  <MiniBtn label="↑" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveCourse(c, -1); }} />
-                  <MiniBtn label="↓" disabled={i === courses.length - 1} onClick={(e) => { e.stopPropagation(); moveCourse(c, 1); }} />
-                  <MiniBtn label="删" danger onClick={(e) => { e.stopPropagation(); deleteCourse(c); }} />
+                  <MiniBtn icon={ChevronUp} title="上移" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveCourse(c, -1); }} />
+                  <MiniBtn icon={ChevronDown} title="下移" disabled={i === courses.length - 1} onClick={(e) => { e.stopPropagation(); moveCourse(c, 1); }} />
+                  <MiniBtn icon={Trash2} title="删除" danger onClick={(e) => { e.stopPropagation(); deleteCourse(c); }} />
                 </div>
               </div>
             ))}
@@ -546,7 +551,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>📖 教学方法</div>
                 {!editingMethod ? (
-                  <button onClick={() => setEditingMethod(true)} style={smallBtn}>✏️ 编辑</button>
+                  <IconButton icon={Pencil} title="编辑" onClick={() => setEditingMethod(true)} />
                 ) : (
                   <div style={{ display: "flex", gap: 6 }}>
                     <button onClick={() => { setMethodText(savedMethod); setEditingMethod(false); }} style={smallBtn}>取消</button>
@@ -578,7 +583,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                     <div style={{ fontSize: 15, fontWeight: 700 }}>{selected.title}</div>
-                    <button onClick={uploadMaterials} style={smallBtn}>📤 上传资料</button>
+                    <IconButton icon={Upload} title="上传资料" onClick={uploadMaterials} />
                   </div>
                   <Section label="标签">
                     <div>
@@ -593,9 +598,9 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                             <button
                               onClick={() => removeTag(t)}
                               title="移除"
-                              style={{ border: "none", background: "transparent", color: "#3b4cca", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0 }}
+                              style={{ border: "none", background: "transparent", color: "#3b4cca", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0, display: "inline-flex" }}
                             >
-                              ×
+                              <X size={14} />
                             </button>
                           </span>
                         ))}
@@ -619,18 +624,14 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                               );
                             })}
                         </select>
-                        <button onClick={addSelectedTag} disabled={!addValue} style={smallBtn}>
-                          添加
-                        </button>
+                        <IconButton icon={Plus} title="添加" onClick={addSelectedTag} disabled={!addValue} />
                         <input
                           value={tagDraft}
                           onChange={(e) => setTagDraft(e.target.value)}
                           placeholder="自定义新标签"
                           style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #ddd", fontSize: 12, width: 110 }}
                         />
-                        <button onClick={addNewTag} disabled={!tagDraft.trim()} style={smallBtn}>
-                          新增
-                        </button>
+                        <IconButton icon={Tag} title="新增标签" onClick={addNewTag} disabled={!tagDraft.trim()} />
                       </div>
                     </div>
                   </Section>
@@ -642,7 +643,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                           <button onClick={saveCopy} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>保存</button>
                         </div>
                       ) : (
-                        <button onClick={() => { setCopyText(selected.teachingCopy || ""); setEditingCopy(true); }} style={smallBtn}>✏️ 编辑</button>
+                        <IconButton icon={Pencil} title="编辑" onClick={() => { setCopyText(selected.teachingCopy || ""); setEditingCopy(true); }} />
                       )}
                     </div>
                     {editingCopy ? (
@@ -672,8 +673,8 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                     <StudentMaterial course={selected} />
                   </Section>
                   <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                    <button onClick={() => deleteCourse(selected)} style={{ ...smallBtn, background: "#fff0f0", color: "#e53e3e" }}>删除课程</button>
-                    <button onClick={uploadMaterials} style={smallBtn}>📤 上传资料</button>
+                    <IconButton icon={Trash2} title="删除课程" danger onClick={() => deleteCourse(selected)} />
+                    <IconButton icon={Upload} title="上传资料" onClick={uploadMaterials} />
                   </div>
                 </div>
               )}
@@ -749,24 +750,9 @@ function InfoRow({ k, v }: { k: string; v: string }) {
   );
 }
 
-function MiniBtn({ label, onClick, disabled, danger }: { label: string; onClick: (e: React.MouseEvent) => void; disabled?: boolean; danger?: boolean }) {
+function MiniBtn({ icon, title, onClick, disabled, danger }: { icon: LucideIcon; title: string; onClick: (e: React.MouseEvent) => void; disabled?: boolean; danger?: boolean }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        padding: "2px 8px",
-        borderRadius: 5,
-        border: "1px solid #e5e5e5",
-        background: danger ? "#fff0f0" : "#fff",
-        color: danger ? "#e53e3e" : "#555",
-        fontSize: 11,
-        cursor: disabled ? "default" : "pointer",
-        opacity: disabled ? 0.4 : 1,
-      }}
-    >
-      {label}
-    </button>
+    <IconButton icon={icon} title={title} onClick={onClick} disabled={disabled} danger={danger} />
   );
 }
 

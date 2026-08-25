@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
+import { History, Brain, Volume2, Square, Play, X, Paperclip, Mic, Send } from "lucide-react";
+import IconButton from "./IconButton";
 
 export interface ToolCallState {
   id: string;
@@ -554,13 +556,12 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
   return (
     <div className="chat-window">
       <div className="chat-toolbar">
-        <button
-          className="history-toggle-btn"
-          onClick={historyOpen ? () => setHistoryOpen(false) : openHistory}
+        <IconButton
+          icon={History}
           title="显示/隐藏历史会话"
-        >
-          📜 {historyOpen ? "关闭历史" : "历史会话"}
-        </button>
+          active={historyOpen}
+          onClick={historyOpen ? () => setHistoryOpen(false) : openHistory}
+        />
       </div>
 
       {historyOpen && (
@@ -661,7 +662,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
                       onClick={() => toggleTrace(m.id)}
                       title={traceOpen ? "收起思考过程" : "查看思考过程"}
                     >
-                      🧠
+                      <Brain size={14} />
                     </button>
                   )}
                   <button
@@ -669,7 +670,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
                     onClick={() => handleSpeak(m)}
                     title="朗读"
                   >
-                    {speakingId === m.id ? "⏹" : "🔊"}
+                    {speakingId === m.id ? <Square size={14} /> : <Volume2 size={14} />}
                   </button>
                   {traceOpen && hasTrace && (
                     <div className="trace-detail">
@@ -735,7 +736,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
                       onClick={() => toggleMessageAudio(m)}
                       title="播放语音"
                     >
-                      {playingAudioId === m.id ? "⏹" : "🎤"}
+                      {playingAudioId === m.id ? <Square size={14} /> : <Play size={14} />}
                     </button>
                   )}
                 </>
@@ -757,14 +758,14 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
             onClick={togglePendingAudio}
             title="播放/停止录音"
           >
-            {playingAudioId === "__pending__" ? "⏹ 停止" : "🔊 播放"}
+            {playingAudioId === "__pending__" ? <Square size={14} /> : <Play size={14} />}
           </button>
           <button
             className="voice-preview-clear"
             onClick={() => setPendingAudios([])}
             title="移除录音"
           >
-            ✕
+            <X size={12} />
           </button>
         </div>
       )}
@@ -779,7 +780,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
                 onClick={() => setPendingImages((p) => p.filter((_, j) => j !== i))}
                 title="移除"
               >
-                ✕
+                <X size={12} />
               </button>
             </div>
           ))}
@@ -796,7 +797,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
                 onClick={() => setPendingTextFiles((p) => p.filter((_, j) => j !== i))}
                 title="移除"
               >
-                ✕
+                <X size={12} />
               </button>
             </div>
           ))}
@@ -810,7 +811,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
           disabled={disabled}
           title="上传文件（图片→识别 / 音频→转写 / txt·md→读取）"
         >
-          📎
+          <Paperclip size={18} />
         </button>
         {voiceEnabled && (
           <button
@@ -823,7 +824,7 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
             disabled={disabled || transcribing}
             title="按住说话"
           >
-            🎤
+            <Mic size={20} />
           </button>
         )}
         <textarea
@@ -840,8 +841,8 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
           rows={1}
           style={{ minHeight: 44 }}
         />
-        <button onClick={handleSend} disabled={disabled}>
-          {disabled ? "..." : "发送"}
+        <button className="send-btn" onClick={handleSend} disabled={disabled} title="发送">
+          <Send size={20} />
         </button>
         <input
           ref={fileInputRef}

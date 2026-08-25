@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { Bot, ArrowLeft, LogOut, UserPlus, BarChart3, KeyRound, ListTree, Pencil, Trash2 } from "lucide-react";
+import IconButton from "../components/IconButton";
 import AddChildModal from "../components/AddChildModal";
 import ProgressView from "../components/ProgressView";
 import TokenStatsPanel from "../components/TokenStatsPanel";
@@ -64,15 +66,15 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
       <div className="dashboard-header">
         <h1>家长中心</h1>
         <div className="actions">
-          <button
+          <IconButton
+            icon={Bot}
+            title="家长 AI 提示词"
             onClick={() =>
               setAgentPrompt({ scope: "parent", ref: "main", title: "编辑家长 AI 提示词" })
             }
-          >
-            家长 AI 提示词
-          </button>
-          <button onClick={onEnterChildMode}>← 返回主页</button>
-          <button onClick={onLogout}>退出登录</button>
+          />
+          <IconButton icon={ArrowLeft} title="返回主页" onClick={onEnterChildMode} />
+          <IconButton icon={LogOut} title="退出登录" onClick={onLogout} />
         </div>
       </div>
 
@@ -162,9 +164,13 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
               borderRadius: 8,
               marginTop: 8,
               fontSize: 14,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
             }}
           >
-            + 添加孩子
+            <UserPlus size={18} /> 添加孩子
           </button>
         </div>
 
@@ -194,42 +200,11 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                           </div>
                         </div>
                         <div style={{ display: "flex", gap: 8, marginTop: 12, width: "100%", flexWrap: "wrap" }}>
-                          <button
-                            onClick={() => { setSelectedChild(child); setView("progress"); }}
-                            style={{ flex: 1, minWidth: 88, padding: "6px 12px", background: "#eef6ff", color: "#2b6cb0", border: "none", borderRadius: 6, fontSize: 12 }}
-                          >
-                            学习进度
-                          </button>
-                          <button
-                            onClick={() => { setResetChildId(child.childId); setNewPassword(""); setError(""); }}
-                            style={{ flex: 1, padding: "6px 12px", background: "#f0f4ff", color: "#667eea", border: "none", borderRadius: 6, fontSize: 12 }}
-                          >
-                            重置密码
-                          </button>
-                          <button
-                            onClick={() => setTopicsChild(child)}
-                            style={{ flex: 1, padding: "6px 12px", background: "#fdf6e3", color: "#b7791f", border: "none", borderRadius: 6, fontSize: 12 }}
-                          >
-                            学习主题
-                          </button>
-                          <button
-                            onClick={() =>
-                              setAgentPrompt({
-                                scope: "child",
-                                ref: child.childId,
-                                title: `编辑 AI 提示词 — ${child.aiName}`,
-                              })
-                            }
-                            style={{ flex: 1, padding: "6px 12px", background: "#f0fff0", color: "#38a169", border: "none", borderRadius: 6, fontSize: 12 }}
-                          >
-                            编辑 AI 提示词
-                          </button>
-                          <button
-                            onClick={() => handleDeleteChild(child.childId, child.name)}
-                            style={{ flex: 1, padding: "6px 12px", background: "#fff0f0", color: "#e53e3e", border: "none", borderRadius: 6, fontSize: 12 }}
-                          >
-                            删除
-                          </button>
+                          <IconButton icon={BarChart3} title="学习进度" style={{ flex: 1, minWidth: 44 }} onClick={() => { setSelectedChild(child); setView("progress"); }} />
+                          <IconButton icon={KeyRound} title="重置密码" style={{ flex: 1, minWidth: 44 }} onClick={() => { setResetChildId(child.childId); setNewPassword(""); setError(""); }} />
+                          <IconButton icon={ListTree} title="学习主题" style={{ flex: 1, minWidth: 44 }} onClick={() => setTopicsChild(child)} />
+                          <IconButton icon={Pencil} title="编辑 AI 提示词" style={{ flex: 1, minWidth: 44 }} onClick={() => setAgentPrompt({ scope: "child", ref: child.childId, title: `编辑 AI 提示词 — ${child.aiName}` })} />
+                          <IconButton icon={Trash2} title="删除" danger style={{ flex: 1, minWidth: 44 }} onClick={() => handleDeleteChild(child.childId, child.name)} />
                         </div>
                       </div>
                     ))}

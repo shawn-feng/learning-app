@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import IconButton from "./IconButton";
+import { Download, Power, RefreshCw, Save } from "lucide-react";
 
 // ISSUE-040: 通用设置页新增「软件更新」区块（手动检查 / 下载进度 / 重启安装）。
 // 状态机来自主进程 updater.ts，经 window.api.onUpdateStatus / onUpdateProgress 事件驱动；
@@ -99,12 +101,12 @@ export default function GeneralSettings() {
             onChange={(e) => setLimit(parseInt(e.target.value, 10) || 1)}
             style={{ width: 120, padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
           />
-          <button
+          <IconButton
+            icon={Save}
+            title="保存"
             onClick={save}
             style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8 }}
-          >
-            保存
-          </button>
+          />
         </div>
         {msg && (
           <p style={{ fontSize: 13, color: msg === "已保存" ? "#48bb78" : "red", marginTop: 8 }}>
@@ -120,7 +122,9 @@ export default function GeneralSettings() {
           当前版本 <b>{appVersion || "…"}</b>。检查并安装最新版本（差量下载，升级不影响本地数据）。
         </p>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <button
+          <IconButton
+            icon={RefreshCw}
+            title="检查更新"
             onClick={checkUpdate}
             disabled={busy}
             style={{
@@ -131,24 +135,22 @@ export default function GeneralSettings() {
               borderRadius: 8,
               cursor: busy ? "default" : "pointer",
             }}
-          >
-            {downloading ? "下载中…" : checking ? "检查中…" : "检查更新"}
-          </button>
+          />
           {updStatus === "available" && (
-            <button
+            <IconButton
+              icon={Download}
+              title="开始下载"
               onClick={() => window.api.downloadUpdate()}
               style={{ padding: "10px 20px", background: "#f0f4ff", color: "#667eea", border: "none", borderRadius: 8, cursor: "pointer" }}
-            >
-              开始下载
-            </button>
+            />
           )}
           {updStatus === "downloaded" && (
-            <button
+            <IconButton
+              icon={Power}
+              title="重启并安装"
               onClick={() => window.api.quitAndInstall()}
               style={{ padding: "10px 20px", background: "#48bb78", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
-            >
-              重启并安装
-            </button>
+            />
           )}
         </div>
 

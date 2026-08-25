@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { Minus, Square, Copy, X } from "lucide-react";
+import IconButton from "./IconButton";
 
 interface MenuItem {
   label: string;
@@ -105,33 +107,27 @@ export default function TitleBar() {
       <div className="title-bar-title">学习伙伴</div>
 
       <div className="title-bar-controls">
-        <button className="tb-ctrl" onClick={() => window.api.windowMinimize()} title="最小化">
-          <svg width="10" height="10" viewBox="0 0 10 10">
-            <line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" strokeWidth="1" />
-          </svg>
-        </button>
-        <button
-          className="tb-ctrl"
-          onClick={() => window.api.windowMaximizeToggle()}
+        <IconButton
+          icon={Minus}
+          title="最小化"
+          size={14}
+          className="tb-ctrl window-ctrl"
+          onClick={() => window.api.windowMinimize()}
+        />
+        <IconButton
+          icon={maximized ? Copy : Square}
           title={maximized ? "还原" : "最大化"}
-        >
-          {maximized ? (
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1" />
-              <path d="M2.5 2.5 V0.5 H9.5 V7.5 H7.5" fill="none" stroke="currentColor" strokeWidth="1" />
-            </svg>
-          ) : (
-            <svg width="10" height="10" viewBox="0 0 10 10">
-              <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1" />
-            </svg>
-          )}
-        </button>
-        <button className="tb-ctrl tb-close" onClick={() => window.api.windowClose()} title="关闭">
-          <svg width="10" height="10" viewBox="0 0 10 10">
-            <line x1="0.5" y1="0.5" x2="9.5" y2="9.5" stroke="currentColor" strokeWidth="1" />
-            <line x1="9.5" y1="0.5" x2="0.5" y2="9.5" stroke="currentColor" strokeWidth="1" />
-          </svg>
-        </button>
+          size={14}
+          className="tb-ctrl window-ctrl"
+          onClick={() => window.api.windowMaximizeToggle()}
+        />
+        <IconButton
+          icon={X}
+          title="关闭"
+          size={14}
+          className="tb-ctrl tb-close window-ctrl"
+          onClick={() => window.api.windowClose()}
+        />
       </div>
     </div>
   );

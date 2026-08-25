@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import IconButton from "./IconButton";
+import { ArrowLeft, ChevronDown, ChevronRight, Folder, Trash2 } from "lucide-react";
 
 interface MaterialNode {
   name: string;
@@ -90,17 +92,18 @@ export default function MaterialManagerModal({ topicDir, topicName, onClose }: {
             <div style={{ ...rowStyle, ...pad, display: "flex", alignItems: "center", background: sel ? "#eef3ff" : "transparent", borderRadius: 6 }}>
               <button
                 onClick={() => toggle(n.relPath)}
-                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 11, color: "#888", padding: "2px 4px", flexShrink: 0 }}
+                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 11, color: "#888", padding: "2px 4px", flexShrink: 0, display: "flex", alignItems: "center" }}
                 title={open ? "折叠" : "展开"}
               >
-                {open ? "▾" : "▸"}
+                {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </button>
               <button
                 onClick={() => setTargetDir(sel ? null : n.relPath)}
-                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, color: sel ? "#667eea" : "#555", padding: "4px 2px", textAlign: "left", flex: 1 }}
+                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, color: sel ? "#667eea" : "#555", padding: "4px 2px", textAlign: "left", flex: 1, display: "flex", alignItems: "center" }}
                 title={`上传到 ${n.relPath}/`}
               >
-                📁 {n.name}
+                <Folder size={14} style={{ marginRight: 4, flexShrink: 0 }} />
+                {n.name}
                 {n.children && n.children.length > 0 ? `（${n.children.length}）` : ""}
               </button>
             </div>
@@ -119,7 +122,7 @@ export default function MaterialManagerModal({ topicDir, topicName, onClose }: {
               </span>
             )}
           </span>
-          <button onClick={() => onDelete(n)} style={{ ...smallBtn, background: "#fff0f0", color: "#e53e3e", borderColor: "#f3c0c0", flexShrink: 0 }}>删除</button>
+          <IconButton icon={Trash2} title="删除" danger onClick={() => onDelete(n)} style={{ ...smallBtn, background: "#fff0f0", color: "#e53e3e", borderColor: "#f3c0c0", flexShrink: 0 }} />
         </div>
       );
     });
@@ -138,7 +141,7 @@ export default function MaterialManagerModal({ topicDir, topicName, onClose }: {
           上传到：{targetDir ? (
             <>
               <b style={{ color: "#667eea" }}>materials/{topicDir}/{targetDir}/</b>
-              <button onClick={() => setTargetDir(null)} style={{ ...smallBtn, marginLeft: 8, padding: "2px 8px", fontSize: 11 }}>↩ 根目录</button>
+              <IconButton icon={ArrowLeft} title="返回根目录" onClick={() => setTargetDir(null)} style={{ ...smallBtn, marginLeft: 8, padding: "2px 8px", fontSize: 11 }} />
             </>
           ) : (
             <b style={{ color: "#667eea" }}>主题根目录 materials/{topicDir}/</b>

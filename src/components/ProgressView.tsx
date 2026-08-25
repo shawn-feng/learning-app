@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import CourseDetail, { matchesCourseSearch } from "./CourseDetail";
+import IconButton from "./IconButton";
+import { ArrowLeft } from "lucide-react";
 
 interface Props {
   childrenList: any[];
@@ -153,7 +155,7 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
               {drill?.detail && !drill.course && (
                 <div>
                   <div className="dash-breadcrumb" style={{ marginBottom: 12 }}>
-                    <button className="dash-back" onClick={goBack}>← 返回</button>
+                    <IconButton icon={ArrowLeft} title="返回" onClick={goBack} className="dash-back" />
                     <span className="dash-crumb-current">{drill.topic.name}</span>
                     <span className="dash-crumb-sep">·</span>
                     <span className="dash-crumb">{drill.detail.learned}/{drill.detail.total} 课</span>

@@ -1938,6 +1938,34 @@ input, textarea {
   cursor: not-allowed;
 }
 
+/* 发送按钮：改为紫色圆形 icon（ISSUE-047），与麦克风/上传风格统一 */
+.chat-input .send-btn {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0;
+  border-radius: 50%;
+  background: #667eea;
+  color: #fff;
+  font-size: 20px;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.chat-input .send-btn:hover {
+  background: #5a67d8;
+}
+
+.chat-input .send-btn:disabled {
+  background: #ccc;
+  color: #fff;
+  cursor: not-allowed;
+}
+
 /* 发送前附件预览条（图片缩略 / 文本文件） */
 .attachment-preview {
   display: flex;
@@ -2471,4 +2499,104 @@ input, textarea {
   color: #e53e3e;
   font-size: 13px;
   padding: 8px 0;
+}
+
+/* ===== 统一 IconButton（ISSUE-047）=====
+   把「emoji + 文字」按钮收敛为「纯 icon + 原生 title tooltip」。
+   风格：紫色主题、儿童友好（固定较大尺寸、高对比 hover、focus 可见）。 */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  color: #555;
+  border-radius: 10px;
+  padding: 9px;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.icon-btn:hover {
+  background: #eef1ff;
+  color: #667eea;
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid #667eea;
+  outline-offset: 2px;
+}
+
+.icon-btn:active {
+  transform: translateY(0.5px);
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.icon-btn.active {
+  background: #667eea;
+  color: #fff;
+}
+
+.icon-btn.active:hover {
+  background: #5a67d8;
+}
+
+/* 破坏性操作：hover 红色提示，配合确认弹窗防误触 */
+.icon-btn.danger:hover {
+  background: #fff0f0;
+  color: #e53e3e;
+}
+
+.icon-btn.danger:focus-visible {
+  outline-color: #e53e3e;
+}
+
+/* 卡片主操作按钮（如「课程详情」）保持紫色填充，区别于普通透明图标按钮 */
+.icon-btn.card-primary {
+  background: #667eea;
+  color: #fff;
+}
+
+.icon-btn.card-primary:hover {
+  background: #5a67d8;
+  color: #fff;
+}
+
+.icon-btn-glyph {
+  display: block;
+  flex-shrink: 0;
+}
+
+/* icon+文字 模式（主 CTA 兼顾可读性与紧凑） */
+.icon-btn.with-label {
+  padding: 9px 14px;
+}
+
+.icon-btn-label {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* 复用 IconButton 体系时，可覆盖尺寸（如窗口控制 46px 高条） */
+.icon-btn.window-ctrl {
+  width: 46px;
+  height: 100%;
+  border-radius: 0;
+  color: #555;
+}
+
+.icon-btn.window-ctrl:hover {
+  background: #e8eaf2;
+}
+
+.icon-btn.window-ctrl.tb-close:hover {
+  background: #e81123;
+  color: #fff;
 }

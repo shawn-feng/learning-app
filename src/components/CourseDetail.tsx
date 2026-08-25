@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import IconButton from "./IconButton";
+import { ArrowLeft } from "lucide-react";
 
 /** 课程进度字段（两端钻取共用，字段取自 SQLite courses 表）。 */
 export interface CourseItemLite {
@@ -77,9 +79,7 @@ export default function CourseDetail({ childId, topicDir, topicName, course, onB
   return (
     <div className="dashboard-panel">
       <div className="dash-breadcrumb">
-        <button className="dash-back" onClick={onBack}>
-          ← 返回
-        </button>
+        <IconButton icon={ArrowLeft} title="返回" onClick={onBack} className="dash-back" />
         <span className="dash-crumb">{topicName}</span>
         <span className="dash-crumb-sep">›</span>
         <span className="dash-crumb-current">{course.title}</span>

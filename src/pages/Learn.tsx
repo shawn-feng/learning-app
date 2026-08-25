@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import type { LucideIcon } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Bot, Gauge, Settings, KeyRound, LogOut, BookOpen, BarChart3 } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
@@ -21,9 +23,9 @@ const RATE_OPTIONS = [
 
 // 左侧展示页配置（可扩展：新增展示页只需在此追加一项 + 对应渲染组件）
 type PanelViewKey = "materials" | "progress";
-const PANEL_VIEWS: Array<{ key: PanelViewKey; icon: string; label: string; desc: string }> = [
-  { key: "materials", icon: "📖", label: "学习资料", desc: "AI 老师展示的课文、卡片、练习" },
-  { key: "progress", icon: "📊", label: "学习进度看板", desc: "各学习主题的进度总览" },
+const PANEL_VIEWS: Array<{ key: PanelViewKey; icon: LucideIcon; label: string; desc: string }> = [
+  { key: "materials", icon: BookOpen, label: "学习资料", desc: "AI 老师展示的课文、卡片、练习" },
+  { key: "progress", icon: BarChart3, label: "学习进度看板", desc: "各学习主题的进度总览" },
 ];
 
 let msgCounter = 0;
@@ -576,7 +578,7 @@ export default function Learn({ child, onExit }: Props) {
             onClick={() => setSidebarCollapsed((v) => !v)}
             title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
           >
-            {sidebarCollapsed ? "»" : "«"}
+            {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
           </button>
 
           <div className="sidebar-profile">
@@ -601,13 +603,8 @@ export default function Learn({ child, onExit }: Props) {
               className={`sidebar-btn view-switcher-btn ${viewMenuOpen ? "open" : ""}`}
               title="切换展示页"
             >
-              <span className="sidebar-btn-icon">{currentView.icon}</span>
-              {!sidebarCollapsed && (
-                <>
-                  <span className="sidebar-btn-text">{currentView.label}</span>
-                  <span className="view-switcher-caret">▾</span>
-                </>
-              )}
+              <currentView.icon size={18} className="sidebar-btn-icon" />
+              {!sidebarCollapsed && <span className="view-switcher-caret">▾</span>}
             </button>
 
             {viewMenuOpen && (
@@ -622,7 +619,7 @@ export default function Learn({ child, onExit }: Props) {
                       setViewMenuOpen(false);
                     }}
                   >
-                    <span className="view-option-icon">{v.icon}</span>
+                    <span className="view-option-icon"><v.icon size={18} /></span>
                     <span className="view-option-body">
                       <span className="view-option-label">{v.label}</span>
                       <span className="view-option-desc">{v.desc}</span>
@@ -640,7 +637,7 @@ export default function Learn({ child, onExit }: Props) {
                 title="模型"
                 onClick={() => setSidebarCollapsed(false)}
               >
-                🤖
+                <Bot size={20} />
               </button>
             )}
             {/* 保持 ModelSelector 常驻挂载，折叠时仅用 CSS 隐藏，避免卸载后重新挂载时重置为默认模型 */}
@@ -660,7 +657,7 @@ export default function Learn({ child, onExit }: Props) {
                 title={`朗读语速 ${RATE_OPTIONS.find((o) => o.value === rate)?.display || "1.0x"}`}
                 onClick={() => setSidebarCollapsed(false)}
               >
-                🔉
+                <Gauge size={20} />
               </button>
             ) : (
               <>
@@ -690,8 +687,7 @@ export default function Learn({ child, onExit }: Props) {
                 setShowAiSettings(true);
               }}
             >
-              <span className="sidebar-btn-icon">⚙️</span>
-              {!sidebarCollapsed && <span className="sidebar-btn-text">AI 伙伴设置</span>}
+              <Settings size={18} className="sidebar-btn-icon" />
             </button>
             <button
               className="sidebar-btn"
@@ -704,15 +700,13 @@ export default function Learn({ child, onExit }: Props) {
                 setShowChangePassword(true);
               }}
             >
-              <span className="sidebar-btn-icon">🔑</span>
-              {!sidebarCollapsed && <span className="sidebar-btn-text">修改密码</span>}
+              <KeyRound size={18} className="sidebar-btn-icon" />
             </button>
           </div>
 
           <div className="sidebar-footer">
             <button className="sidebar-btn danger" title="退出" onClick={handleExit}>
-              <span className="sidebar-btn-icon">🚪</span>
-              {!sidebarCollapsed && <span className="sidebar-btn-text">退出</span>}
+              <LogOut size={18} className="sidebar-btn-icon" />
             </button>
           </div>
         </div>

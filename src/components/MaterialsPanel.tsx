@@ -1,5 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import IconButton from "./IconButton";
+import { ArrowLeft } from "lucide-react";
 
 export interface Material {
   id: string;
@@ -47,9 +49,7 @@ export default function MaterialsPanel({ materials, selectedId, onOpen, onBack }
   if (selected) {
     return (
       <div className="content-panel">
-        <button className="material-back" onClick={onBack}>
-          ← 返回列表
-        </button>
+        <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
         {selected.title && <h2 className="material-title">{selected.title}</h2>}
         {selected.format === "html" ? (
           <HtmlFrame html={selected.content} title={selected.title} />

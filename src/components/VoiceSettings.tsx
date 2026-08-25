@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import IconButton from "./IconButton";
+import { Save } from "lucide-react";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
 
 interface VoiceProviderDef {
@@ -259,12 +261,12 @@ export default function VoiceSettings() {
       ))}
 
       <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
-        <button
+        <IconButton
+          icon={Save}
+          title="保存"
           onClick={handleSave}
           style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
-        >
-          保存
-        </button>
+        />
         <button
           onClick={setDefault}
           style={{

@@ -1714,7 +1714,7 @@
 
 ## [ISSUE-047] 大部分按钮改为 icon 表示、去掉文字描述，鼠标悬停 icon 时显示按钮名称
 
-- **类型**：UI 重构 / 待实施（跨多组件，统一图标 + tooltip 规范）
+- **类型**：UI 重构 / 已实施（2026-08-25，跨多组件统一图标 + tooltip）
 - **用户原话**：记录 issue 将大部分按钮用一个 icon 表示，把文字描述去掉，文字描述太占空间。鼠标移动上 icon 时显示按钮名称。
 - **需求拆解**：
   1. 把界面上**大部分按钮**由「emoji + 中文文字」改成**纯 icon**（去掉文字标签）。
@@ -1766,5 +1766,46 @@
   - 文字按钮清单：`Dashboard.tsx`、`Settings.tsx`、`TopicDetail.tsx`、`AgentPromptEditor.tsx`、`SchedulerSettings.tsx`、`GeneralSettings.tsx`、`VoiceSettings.tsx`、`ChildTopicsModal.tsx`、`ProgressView.tsx`、`LearningDashboard.tsx`（见上"分布广"逐条）。
 
 - **关联**：ISSUE-046（上下课提醒的铃铛动画——同为 UI 紧凑化/图标化方向，铃铛 icon 可复用 IconButton 体系）；长期记忆「儿童友好视觉（大字体、紫色主题、高对比）」——图标尺寸/对比度需遵守，不能因省空间牺牲可读性；ISSUE-038（提示词去重——独立，但同属"界面整洁"审美目标）。
-- **优先级**：待定（建议中：机制 60% 已就绪——无图标库是主要硬缺口、需引入依赖；范围跨 ~15 个组件，属中大型 UI 重构，建议分批（先 Learn/ChatWindow 工具栏，再家长页）而非一次性全改）。
+- **优先级**：已落地（2026-08-25）。
+- **实施记录（2026-08-25）**：
+  - **依赖**：新增 `lucide-react`（SVG 矢量图标库，tree-shakeable）。安装时因项目既有 `edge-tts⊛typescript` peer 冲突，用 `npm i lucide-react --legacy-peer-deps` 绕过（冲突与本次无关）。
+  - **统一组件**：新建 `src/components/IconButton.tsx`（`icon` + `title`(=tooltip+aria-label) + `active`(紫底高亮) + `danger`(红色 hover) + `label`(icon+文字) + `size`(默认20) + `...rest`）；`src/styles.css` 加 `.icon-btn` / `.icon-btn.window-ctrl`(窗口控制) / `.icon-btn.card-primary`(卡片主操作紫底) / `.chat-input .send-btn`(紫色圆形发送)。风格统一紫色主题、儿童友好（大图标、高对比、focus 可见）。
+  - **Tooltip 策略**：复用原生 `title`（零成本、项目里大量按钮已有），未做样式化气泡。
+  - **范围**：确认"大部分改纯 icon、保留关键文字"——破坏性/确认/表单保存（取消/确认/保存/关闭）保留文字或 `danger` 图标；tab 导航标签保留文字；带特殊形状/动画的按钮（mic/upload/speak/trace）只换 lucide 矢量图标、保留原 className。
+  - **已改造文件**：ChatWindow（历史/朗读/录音/上传/发送/移除）、Learn（侧边栏收起/展示页/模型/语速/设置/密码/退出 + 窗口控制复用）、TitleBar（最小/最大/关闭内联 svg→IconButton）、Dashboard（返回/退出/家长AI提示词/孩子操作行/添加孩子 icon+文字）、CourseManager（CardBtn→图标+card-primary）、TopicDetail（返回/上传/编辑/删除课程/MiniBtn↑↓删/移除标签/添加标签）、Settings（刷新模型/设为默认）；家长页由子代理批量改：AgentPromptEditor/SchedulerSettings/GeneralSettings/VoiceSettings/BackupSettings/MaterialManagerModal/ChildTopicsModal/ProgressView/LearningDashboard/CourseDetail/MaterialsPanel（其余无纯文字操作按钮的文件未动）。
+  - **验证**：`npm run build` 通过（renderer/main/preload 均编译，无 TS 报错）；vitest 跑（与改动无关既有失败见下）。
+- **记录时间**：2026-08-25
+
+## [ISSUE-048] 去掉孩子「课程添加」里的"存量迁移"功能（过渡功能，不应在 app 体现）
+
+- **类型**：UI/功能清理（去除过渡态的"孩子资料迁移到家长库"入口；破坏性迁移逻辑是否保留为 dev 工具待拍板）
+- **用户原话**：新增 issue，去掉孩子的课程添加里的存量迁移功能，这个是把孩子里的学习资料迁移到家长库，这只是个过渡功能，不需要再 app 里体现。
+- **需求拆解**：删除 app 里"存量迁移"的用户入口（按钮 + 空状态引导文案），让"孩子资料 → 家长库"的迁移只在需要时通过 dev/CLI 手段进行，普通用户界面不再出现。
+- **现状（已定位全链路）**：
+  1. **UI 入口（前端）**：
+     - `src/components/ChildTopicsModal.tsx:127-148` 的 `runMigrate()`——点「迁移存量资料」按钮后 `confirm` 警告 + 调 `window.api.parentMigrate()` + 显示迁移结果。
+     - `ChildTopicsModal.tsx:158-166` 的 `<IconButton icon={RefreshCw} title="迁移存量资料到家长库" onClick={runMigrate} />`——孩子"学习主题"面板顶部的迁移按钮。
+     - `ChildTopicsModal.tsx:183-184` 空状态提示：「家长库暂无主题。点击上方「迁移存量资料」把现有孩子的主题/资料导入家长库。」
+     - `src/pages/CourseManager.tsx:113` 提示文案：「家长库暂无主题。可先新建主题，或在「孩子管理 → 学习主题」里迁移存量资料。」（引导用户去点迁移）。
+  2. **preload 通道**：`electron/preload.ts:161` `parentMigrate: () => ipcRenderer.invoke("parent:migrate")`。
+  3. **IPC handler**：`electron/lib/ipc-handlers.ts:338-345` `ipcMain.handle("parent:migrate", ...)` → 调 `migrateChildrenToParent()`。
+  4. **后端迁移实现**：`electron/lib/parent-library.ts:762-863+` `migrateChildrenToParent(parentId)`（一次性存量迁移：method.md→父库 topics.method 全文、html→父库共享目录 materials/、孩子 courses 回填 html_path、删孩子侧空 materials 目录；破坏性，调用前需备份）。
+  5. **历史背景**：这是 2026-08-21 ISSUE-029 落地的"现在一次性迁移"产物，当时用于把既有孩子目录里的 `learning/<topic>/{method.md,materials/*.html}` 上移到家长库（资料库上移 + method 全文入库）。迁移已完成、架构已切换为「资料在父库、孩子经 parent_content 取」，该按钮纯属过渡期便利入口，长期不应留在 app。
+- **方案要点（候选）**：
+  1. **必做（前台收敛）**：删 `ChildTopicsModal.tsx` 的迁移按钮（:158-166）与 `runMigrate` 函数（:127-148），并把两处空状态/引导文案（:184、CourseManager.tsx:113）改为「家长库暂无主题，请新建主题或从课程内容页制作」（去掉"迁移存量资料"引导）。
+  2. **待拍板（后台去留）**：`migrateChildrenToParent` + IPC `parent:migrate` + preload `parentMigrate` 是否一并删除？
+     - 方案 A（推荐，彻底清理）：连 IPC/preload/后端函数一并删，避免死代码与误触发破坏性迁移；若未来真要迁移，改为临时脚本/cli 一次性跑。
+     - 方案 B（保留后台、只去 UI）：删 UI 入口即可，后端函数留作 dev 工具（风险：死代码 + 误用破坏性操作）。
+  3. **类型清理**：`ChildTopicsModal.tsx` 里的 `MigrateResult` 类型引用（:134）一并移除（若走方案 A）。
+- **待确认项**：
+  1. 后台迁移逻辑直接删（方案 A）还是仅去 UI（方案 B）？
+  2. 删除按钮后，空状态文案怎么写（是否提示"新建主题/制作教学内容"即可）？
+  3. 是否确认存量迁移**早已跑过、所有孩子资料已在父库**（验证：`data/parents/default/materials/` 已有各主题目录、孩子目录 `learning/<topic>/materials/` 已清空）——若还有孩子未迁移，删按钮会堵死补救路径，需先确认无遗漏。
+- **排查 / 修改入口（可直接执行）**：
+  - 前端：`src/components/ChildTopicsModal.tsx`（删按钮 :158-166、删 `runMigrate` :127-148、改空状态文案 :184、去 `MigrateResult` 引用）、`src/pages/CourseManager.tsx:113`（改引导文案）。
+  - preload：`electron/preload.ts:161`（删 `parentMigrate`）。
+  - IPC：`electron/lib/ipc-handlers.ts:338-345`（删 `parent:migrate` handler）。
+  - 后端：`electron/lib/parent-library.ts:762-863+`（`migrateChildrenToParent` 及 `MigrateStats` 接口，方案 A 才删）。
+- **关联**：ISSUE-029（资料上移家长库 + method 全文入库——本 issue 是清理其过渡迁移入口）；ISSUE-041（备份——迁移破坏性，删入口前确保已备份更稳妥）；ISSUE-047（图标化——删按钮不影响，但 `RefreshCw` icon 若只这一个用途可一并清理）。
+- **优先级**：待定（建议中：过渡功能清理，UI 改动极小、风险低；确认存量已迁移干净即可动）。
 - **记录时间**：2026-08-25

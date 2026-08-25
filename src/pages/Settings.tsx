@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { RefreshCw, CheckCircle } from "lucide-react";
+import IconButton from "../components/IconButton";
 import VoiceSettings from "../components/VoiceSettings";
 import SchedulerSettings from "../components/SchedulerSettings";
 import BackupSettings from "../components/BackupSettings";
@@ -197,19 +199,11 @@ export default function Settings() {
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <h4 style={{ fontSize: 15 }}>当前可用模型（{PROVIDERS.find((p) => p.id === selectedProvider)?.name || selectedProvider}）</h4>
-            <button
+            <IconButton
+              icon={RefreshCw}
+              title="刷新模型"
               onClick={handleRefreshModels}
-              style={{
-                padding: "6px 12px",
-                background: "#f0f4ff",
-                color: "#667eea",
-                border: "none",
-                borderRadius: 6,
-                fontSize: 13,
-              }}
-            >
-              刷新
-            </button>
+            />
           </div>
 
           {(() => {
@@ -237,21 +231,13 @@ export default function Settings() {
                         默认
                       </span>
                     )}
-                    <button
-                      onClick={() => handleSetDefault(m.provider, m.id)}
-                      style={{
-                        padding: "4px 10px",
-                        background: isDefault ? "#ddd" : "#667eea",
-                        color: isDefault ? "#666" : "white",
-                        border: "none",
-                        borderRadius: 4,
-                        fontSize: 12,
-                        cursor: isDefault ? "default" : "pointer",
-                      }}
+                    <IconButton
+                      icon={CheckCircle}
+                      title={isDefault ? "已设为默认" : "设为默认"}
+                      active={isDefault}
                       disabled={isDefault}
-                    >
-                      {isDefault ? "已设为默认" : "设为默认"}
-                    </button>
+                      onClick={() => handleSetDefault(m.provider, m.id)}
+                    />
                   </div>
                 </div>
               );

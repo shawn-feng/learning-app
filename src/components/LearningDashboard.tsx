@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import CourseDetail, { matchesCourseSearch } from "./CourseDetail";
+import IconButton from "./IconButton";
+import { ArrowLeft, RefreshCw } from "lucide-react";
 
 interface TopicSummary {
   name: string;
@@ -168,7 +170,7 @@ export default function LearningDashboard({ childId }: Props) {
     return (
       <div className="dashboard-panel">
         <div className="dash-breadcrumb">
-          <button className="dash-back" onClick={goBack}>← 返回</button>
+          <IconButton icon={ArrowLeft} title="返回" onClick={goBack} className="dash-back" />
           <span className="dash-crumb-current">{drill.topic.name}</span>
           <span className="dash-crumb-sep">·</span>
           <span className="dash-crumb">{d.learned}/{d.total} 课</span>
@@ -226,7 +228,7 @@ export default function LearningDashboard({ childId }: Props) {
       <div className="dashboard-header">
         <h2>学习进度看板</h2>
         <button className="dashboard-refresh" onClick={load} title="刷新">
-          🔄
+          <RefreshCw size={18} />
         </button>
       </div>
 

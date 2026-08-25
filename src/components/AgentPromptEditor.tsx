@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import IconButton from "./IconButton";
+import { History, RotateCcw, Undo2 } from "lucide-react";
 
 interface Props {
   scope: string;
@@ -162,19 +164,19 @@ export default function AgentPromptEditor({ scope, refKey, title, onClose }: Pro
           >
             保存
           </button>
-          <button
+          <IconButton
+            icon={RotateCcw}
+            title="恢复默认"
             onClick={reset}
             disabled={busy || !customized}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 13, cursor: "pointer" }}
-          >
-            恢复默认
-          </button>
-          <button
+          />
+          <IconButton
+            icon={History}
+            title="历史版本"
             onClick={() => setShowHistory((v) => !v)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 13, cursor: "pointer" }}
-          >
-            {showHistory ? "隐藏历史" : `历史版本 (${history.length})`}
-          </button>
+          />
           <button className="cancel" onClick={onClose} style={{ marginLeft: "auto" }}>
             关闭
           </button>
@@ -189,13 +191,13 @@ export default function AgentPromptEditor({ scope, refKey, title, onClose }: Pro
                 {history.map((h) => (
                   <div key={h.updated} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
                     <span style={{ color: "#666", flex: 1 }}>{new Date(h.updated).toLocaleString()}</span>
-                    <button
-                      onClick={() => restore(h.updated)}
-                      disabled={busy}
-                      style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer" }}
-                    >
-                      回退到此版本
-                    </button>
+                  <IconButton
+                    icon={Undo2}
+                    title="回退到此版本"
+                    onClick={() => restore(h.updated)}
+                    disabled={busy}
+                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer" }}
+                  />
                   </div>
                 ))}
               </div>

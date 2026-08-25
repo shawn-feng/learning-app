@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import IconButton from "./IconButton";
+import { Plus, RefreshCw } from "lucide-react";
 
 interface ChildInfo {
   childId: string;
@@ -154,13 +156,13 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
         </p>
 
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <button
+          <IconButton
+            icon={RefreshCw}
+            title="迁移存量资料到家长库"
             onClick={runMigrate}
             disabled={busy !== null}
             style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer" }}
-          >
-            {busy === "migrate" ? "迁移中…" : "🔄 迁移存量资料到家长库"}
-          </button>
+          />
         </div>
 
         {msg && (
@@ -222,7 +224,9 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                     ) : isAdding ? (
                       <span style={{ fontSize: 12, color: "#38a169", whiteSpace: "nowrap" }}>设置中…</span>
                     ) : (
-                      <button
+                      <IconButton
+                        icon={Plus}
+                        title="添加主题"
                         onClick={() =>
                           setAddPanel({
                             file: t.file,
@@ -241,9 +245,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                           cursor: "pointer",
                           whiteSpace: "nowrap",
                         }}
-                      >
-                        + 添加主题
-                      </button>
+                      />
                     )}
                   </div>
 
