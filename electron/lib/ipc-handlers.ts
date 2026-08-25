@@ -29,7 +29,7 @@ import {
   queryParentTags,
   upsertParentTag,
 } from "./parent-library";
-import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig } from "./scheduler";
+import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
@@ -291,14 +291,22 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("parent:allocate", async (_e, childId: string, topicDir: string) => {
     try {
       const data = allocateTopicToChild(undefined, childId, topicDir);
-      // ISSUE-041 层 C：分配后写 assign_topic 事件，提醒孩子端（另一台设备）轮询时同步新资料
+      // ISSUE-041 层 C：分配后 ① 立即把本机孩子数据+家长库推到云端（不等下次同步），
+      // ② 写 assign_topic 事件提醒孩子端（另一台设备）拉取。均 fire-and-forget，失败静默。
       try {
-        const { writeEvent } = await import("./sync-events");
+        const { writeEvent, pushParentLibraryWithEvent } = await import("./sync-events");
         writeEvent(childId, "assign_topic", { topicDir }).catch((e) =>
           console.error("writeEvent(assign_topic) failed:", e)
         );
+        // 推本机孩子数据（含刚分配的主题/课程）到云端
+        const { syncChild } = await import("./sync-manager");
+        syncChild(childId).catch((e) => console.error("syncChild after allocate failed:", e));
+        // 家长库（材料真源）也推送一次，并给其它孩子补 send_materials 事件
+        pushParentLibraryWithEvent([]).catch((e) =>
+          console.error("pushParentLibraryWithEvent after allocate failed:", e)
+        );
       } catch (e) {
-        console.error("assign_topic event skipped:", e);
+        console.error("allocate sync hooks skipped:", e);
       }
       return { success: true, data };
     } catch (err) {
@@ -704,6 +712,16 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       attachSessionEvents(session, childId, getMainWindow);
       const history = getSessionHistory(session);
       const materials = getSessionMaterials(session, getChildDir(childId)).slice(-getMaterialsLimit());
+      // ISSUE-041 层 C：孩子打开会话时立即轮询一次事件（不等定时），
+      // 家长刚发的课程/分配能马上拉到（fire-and-forget，失败静默，等下一轮定时轮询）
+      try {
+        const { handleChildEvents } = await import("./sync-events");
+        handleChildEvents(childId)
+          .then((r) => {
+            if (r.handled > 0) console.log(`[start_child] events handled: ${r.handled}`);
+          })
+          .catch(() => {});
+      } catch { /* 忽略 */ }
       return { success: true, history, materials, materialsLimit: getMaterialsLimit() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1111,6 +1129,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("backup:config:get", () => getBackupSchedulerConfig());
 
   ipcMain.handle("backup:config:set", (_e, cfg: any) => setBackupSchedulerConfig(cfg));
+
+  // ISSUE-041 层 C：云端事件轮询配置（设备级，默认开启 2 分钟）
+  ipcMain.handle("eventpoll:config:get", () => getEventPollConfig());
+  ipcMain.handle("eventpoll:config:set", (_e, cfg: any) => setEventPollConfig(cfg));
 
   // 文件上传落盘（ISSUE-008）：保存到 data/children/<childId>/uploads/，按 childId 隔离
   ipcMain.handle(

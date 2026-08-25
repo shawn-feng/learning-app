@@ -19,8 +19,8 @@ export interface SyncEvent {
   created_at: string;
 }
 
-/** 孩子端事件轮询间隔（分钟）。低频场景，默认 30 分钟。 */
-export const EVENT_POLL_INTERVAL_MIN = 30;
+// 轮询间隔由 scheduler-config.json 的 eventPoll 段配置（默认 2 分钟，见 scheduler.ts
+// DEFAULT_EVENT_POLL_CONFIG）；此处不再持有常量，避免双源漂移。
 
 async function apiCall(endpoint: string, options: RequestInit = {}): Promise<any> {
   const license = getCachedLicense();

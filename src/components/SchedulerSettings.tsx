@@ -17,8 +17,17 @@ interface ParentSchedulerConfig {
   autoNewSession: { enabled: boolean; hour: number; minute: number };
 }
 
+interface EventPollConfig {
+  enabled: boolean;
+  intervalMinutes: number;
+}
+
 function defaultParentConfig(): ParentSchedulerConfig {
   return { autoNewSession: { enabled: false, hour: 21, minute: 0 } };
+}
+
+function defaultEventPollConfig(): EventPollConfig {
+  return { enabled: true, intervalMinutes: 2 };
 }
 
 function defaultConfig(): SchedulerChildConfig {
@@ -38,6 +47,9 @@ export default function SchedulerSettings() {
   // 家长会话配置（autoNewSession，2026-08-24：家长会话持久化 + 自动新建策略）
   const [parentCfg, setParentCfg] = useState<ParentSchedulerConfig>(defaultParentConfig());
   const [parentStatus, setParentStatus] = useState("");
+  // 云端事件轮询（ISSUE-041 层 C：家长发课→孩子收到的延迟上界）
+  const [eventPoll, setEventPoll] = useState<EventPollConfig>(defaultEventPollConfig());
+  const [eventPollStatus, setEventPollStatus] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -55,6 +67,10 @@ export default function SchedulerSettings() {
         if (res.parent) {
           setParentCfg({ ...defaultParentConfig(), ...res.parent });
         }
+      }
+      const ep = await window.api.eventPollConfigGet();
+      if (ep) {
+        setEventPoll({ ...defaultEventPollConfig(), ...ep });
       }
       for (const c of childrenList) {
         // 用 defaultConfig 兜底，确保旧配置（缺 autoNewSession 等字段）也能正常渲染
@@ -99,6 +115,23 @@ export default function SchedulerSettings() {
     const [h, m] = value.split(":").map((x) => Number(x));
     if (Number.isFinite(h) && Number.isFinite(m)) {
       setParentCfg((p) => ({ ...p, autoNewSession: { ...p.autoNewSession, hour: h, minute: m } }));
+    }
+  }
+
+  async function saveEventPoll() {
+    const interval = Number(eventPoll.intervalMinutes);
+    if (!Number.isFinite(interval) || interval < 1 || interval > 60) {
+      setEventPollStatus("间隔需为 1-60 分钟");
+      return;
+    }
+    const res = await window.api.eventPollConfigSet({
+      enabled: eventPoll.enabled,
+      intervalMinutes: Math.floor(interval),
+    });
+    if (res && typeof res.enabled === "boolean") {
+      setEventPollStatus("已保存");
+    } else {
+      setEventPollStatus("保存失败");
     }
   }
 
@@ -183,6 +216,76 @@ export default function SchedulerSettings() {
             {parentStatus && (
               <div style={{ fontSize: 12, color: parentStatus.includes("失败") ? "red" : "#48bb78", marginTop: 6 }}>
                 {parentStatus}
+              </div>
+            )}
+          </div>
+
+          {/* 云端事件轮询配置区（ISSUE-041 层 C：家长发课→孩子收到的延迟上界，设备级） */}
+          <div
+            style={{
+              border: "1px solid #eee",
+              borderRadius: 10,
+              padding: 16,
+              background: "#fafbff",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 10,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 15 }}>云端事件轮询</div>
+              <button
+                onClick={saveEventPoll}
+                style={{
+                  padding: "6px 14px",
+                  background: "#667eea",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                保存
+              </button>
+            </div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
+              应用定期向云端询问「有没有家长发来的课程 / 分配 / 进度请求」，有则立即同步。间隔越短，家长在另一台电脑发课后孩子收到得越快（默认 2 分钟）。孩子打开学习会话时还会额外立即检查一次，无需等待轮询。
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={eventPoll.enabled}
+                onChange={(e) => setEventPoll((p) => ({ ...p, enabled: e.target.checked }))}
+              />
+              开启事件轮询
+            </label>
+            <div style={{ marginTop: 8, marginLeft: 26, display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 13, color: "#666" }}>轮询间隔（分钟）：</span>
+              <input
+                type="number"
+                min={1}
+                max={60}
+                value={eventPoll.intervalMinutes}
+                onChange={(e) =>
+                  setEventPoll((p) => ({ ...p, intervalMinutes: Number(e.target.value) }))
+                }
+                style={{
+                  width: 72,
+                  padding: "4px 6px",
+                  border: "1px solid #ddd",
+                  borderRadius: 6,
+                  fontSize: 13,
+                }}
+              />
+            </div>
+            {eventPollStatus && (
+              <div style={{ fontSize: 12, color: eventPollStatus.includes("失败") ? "red" : "#48bb78", marginTop: 6 }}>
+                {eventPollStatus}
               </div>
             )}
           </div>

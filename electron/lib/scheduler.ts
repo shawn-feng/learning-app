@@ -6,7 +6,7 @@ import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config"
 import { listChildren } from "./child-auth";
 import { summarizeDailyConversation, formatLocalDate } from "./daily-summary";
 import { resetChildSession } from "./pi-session";
-import { EVENT_POLL_INTERVAL_MIN, handleChildEvents } from "./sync-events";
+import { handleChildEvents } from "./sync-events";
 
 export interface TaskState {
   children: Record<
@@ -44,6 +44,8 @@ interface SchedulerConfig {
   parent?: SchedulerParentConfig;
   // 本地定时备份（2026-08-25：ISSUE-041 层 A，设备级）
   backup?: SchedulerBackupConfig;
+  // 云端事件轮询（2026-08-25：ISSUE-041 层 C，设备级）
+  eventPoll?: SchedulerEventPollConfig;
 }
 
 /** 家长会话（parent / parent-content）配置。目前只有 autoNewSession（自动新建会话策略）。 */
@@ -59,6 +61,16 @@ export interface SchedulerBackupConfig {
   destDir: string;
 }
 
+/**
+ * 云端事件轮询配置（设备级，ISSUE-041 层 C）。
+ * 轮询很轻（一次空 GET），间隔即「家长发课→孩子收到」的延迟上界；
+ * 默认 2 分钟（1~60 可调）。除定时轮询外，孩子端打开会话时也会即时轮询一次。
+ */
+export interface SchedulerEventPollConfig {
+  enabled: boolean;
+  intervalMinutes: number;
+}
+
 export const DEFAULT_PARENT_CONFIG: SchedulerParentConfig = {
   autoNewSession: { enabled: false, hour: 21, minute: 0 },
 };
@@ -68,6 +80,11 @@ export const DEFAULT_BACKUP_CONFIG: SchedulerBackupConfig = {
   hour: 22,
   minute: 30,
   destDir: "",
+};
+
+export const DEFAULT_EVENT_POLL_CONFIG: SchedulerEventPollConfig = {
+  enabled: true,
+  intervalMinutes: 2,
 };
 
 export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
@@ -238,6 +255,34 @@ export function setBackupSchedulerConfig(cfg: SchedulerBackupConfig): SchedulerB
   return config.backup;
 }
 
+/** 云端事件轮询配置读取（设备级；未配置/损坏返回默认，默认开启 2 分钟）。 */
+export function getEventPollConfig(): SchedulerEventPollConfig {
+  const config = loadSchedulerConfig();
+  const e = config.eventPoll;
+  if (!e) return JSON.parse(JSON.stringify(DEFAULT_EVENT_POLL_CONFIG));
+  const interval = Number.isFinite(e.intervalMinutes)
+    ? Math.min(60, Math.max(1, Math.floor(e.intervalMinutes)))
+    : DEFAULT_EVENT_POLL_CONFIG.intervalMinutes;
+  return {
+    enabled: e.enabled ?? DEFAULT_EVENT_POLL_CONFIG.enabled,
+    intervalMinutes: interval,
+  };
+}
+
+/** 云端事件轮询配置保存（整体替换 eventPoll 段）。 */
+export function setEventPollConfig(cfg: SchedulerEventPollConfig): SchedulerEventPollConfig {
+  const config = loadSchedulerConfig();
+  const interval = Number.isFinite(cfg.intervalMinutes)
+    ? Math.min(60, Math.max(1, Math.floor(cfg.intervalMinutes)))
+    : DEFAULT_EVENT_POLL_CONFIG.intervalMinutes;
+  config.eventPoll = {
+    enabled: cfg.enabled ?? DEFAULT_EVENT_POLL_CONFIG.enabled,
+    intervalMinutes: interval,
+  };
+  saveSchedulerConfig(config);
+  return config.eventPoll;
+}
+
 // ---- 会话与任务执行 ----
 
 // 每日学习记录总结（recording）：按天汇总今天（本地）的会话——有会话则 AI 提取写 daily，无会话跳过。
@@ -359,25 +404,28 @@ export function startScheduler(): void {
         }
       }
 
-      // ISSUE-041 层 C：事件轮询（低频，默认 30 分钟一次）。
+      // ISSUE-041 层 C：事件轮询（设备级配置，默认 2 分钟一次，可关闭）。
       // 事件=唤醒信号（分配主题/资料更新/请求进度），处理时触发一次对应同步后 ack；
-      // 云不可达时静默跳过，等下一轮。
+      // 云不可达时静默跳过，等下一轮。除定时轮询外，孩子端开会话时也会即时轮询（ipc pi:start_child）。
       {
-        const POLL_MS = EVENT_POLL_INTERVAL_MIN * 60_000;
-        const lastPoll = cs["event-poll"].lastRun
-          ? new Date(cs["event-poll"].lastRun).getTime()
-          : 0;
-        if (now.getTime() - lastPoll >= POLL_MS) {
-          try {
-            const r = await handleChildEvents(child.childId);
-            if (r.handled > 0) {
-              console.log(`Events handled for child ${child.childId}: ${r.handled}`);
+        const ep = getEventPollConfig();
+        if (ep.enabled) {
+          const POLL_MS = ep.intervalMinutes * 60_000;
+          const lastPoll = cs["event-poll"].lastRun
+            ? new Date(cs["event-poll"].lastRun).getTime()
+            : 0;
+          if (now.getTime() - lastPoll >= POLL_MS) {
+            try {
+              const r = await handleChildEvents(child.childId);
+              if (r.handled > 0) {
+                console.log(`Events handled for child ${child.childId}: ${r.handled}`);
+              }
+            } catch (e) {
+              console.error(`Event poll failed for child ${child.childId}:`, e);
             }
-          } catch (e) {
-            console.error(`Event poll failed for child ${child.childId}:`, e);
+            cs["event-poll"].lastRun = new Date().toISOString();
+            saveTaskState(state);
           }
-          cs["event-poll"].lastRun = new Date().toISOString();
-          saveTaskState(state);
         }
       }
     }

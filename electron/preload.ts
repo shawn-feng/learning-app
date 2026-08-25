@@ -219,6 +219,9 @@ const api = {
   restoreBackup: () => ipcRenderer.invoke("backup:restore"),
   backupConfigGet: () => ipcRenderer.invoke("backup:config:get"),
   backupConfigSet: (cfg: any) => ipcRenderer.invoke("backup:config:set", cfg),
+  // 云端事件轮询配置（ISSUE-041 层 C，设备级）
+  eventPollConfigGet: () => ipcRenderer.invoke("eventpoll:config:get"),
+  eventPollConfigSet: (cfg: any) => ipcRenderer.invoke("eventpoll:config:set", cfg),
 
   // Voice (STT + TTS)
   voiceConfigGet: () => ipcRenderer.invoke("voice:config:get"),
