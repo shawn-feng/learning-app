@@ -1,60 +1,29 @@
 # 项目长期记忆（pi 学习伴侣）
 
-## 架构约定：家长 AI（2026-08-24 统一；落盘/记录/策略）
-- **家长提示词统一不分场景**：`buildParentPrompt`（pi-session.ts）一个版本 = 家长工作台全职责（孩子管理/课程管理/配置查看/统计）+ 数据结构与流转说明；`getParentSession` 与 `getParentContentSession` 共用（后者仅保留独立单例与 childId="parent-content" 供前端事件过滤）。SQLite 用户版本读 `scope=parent, ref="main"`，**content 旧行兜底**（main 无自定义时生效）；AgentPromptEditor 只留 main 入口。
-- **家长工具集（两会话一致）**：read/write/edit/**ls**（列目录——家长直接放文件进 materials/ 后 agent 要看目录）/get_date/parent_course_save/parent_course_delete/parent_stats（只读统计：tokens/progress/daily；SQLite 二进制 read 读不了，查统计必须用它）/log_activity。
-- **家长会话落盘**：`continueRecent(dataDir, data/.pi/agent/sessions/{parent|parent-content}/)`——两个会话**独立子目录**，避免互相选中对方历史；不再 inMemory。
-- **操作记录**：家长改动记 `parents/default/activity-log.md`（`appendActivityLog` 追加写）；parent_course_save/delete **自动记录**，write/edit 改资料后 agent 调 `log_activity` 记录。
-- **家长 autoNewSession**：scheduler-config.json `parent.autoNewSession {enabled,hour,minute}`（默认关 21:00）；pi-session `shouldAutoNewSessionForParent(sessionsDir)` 复用孩子同款跨天/定点判定（`lastMessageTimestampInDir`/`shouldAutoNewSessionInDir` 泛化）；SchedulerSettings 顶部「家长会话」配置区；IPC `scheduler:parent_config:set`。
+## 架构约定
+- **孩子 prompt = 身份(systemPromptOverride) + 行为规范(AGENTS)**。行为规范全在 `LEARNING_NAV_INSTRUCTIONS`(pi-session.ts)，经 `buildAgentsMd` 生成代码默认 AGENTS；`buildChildPrompt` 只写身份、不写约束。
+- **AGENTS 纯 SQLite(ISSUE-033)**：`data/agents.sqlite` 存用户版本(scope=child/ref=<id>；parent/ref=main)，`prompt_history` 可回退；无物理 AGENTS 文件。编辑入口=家长页 AgentPromptEditor(agents:get/save/history/restore)。`resolveChildAgents` 优先级：SQLite用户版本(整体替换)→buildAgentsMd。改 `LEARNING_NAV_INSTRUCTIONS` 后代码默认随源码生效，无需跑脚本。
+- **家长提示词统一不分场景**：`buildParentPrompt` 一个版本；`getParentSession`/`getParentContentSession` 共用(后者仅独立单例+childId="parent-content")。工具集：read/write/edit/ls/get_date/parent_course_save/delete/parent_stats/log_activity/move_file/copy_file。落盘 `data/.pi/agent/sessions/{parent|parent-content}/` 独立子目录；autoNewSession 用 scheduler-config.json `parent.autoNewSession`。
+- **recording=纯定时任务(ISSUE-024)**：非技能，`electron/lib/recording-prompt.ts` 为真源；`createEphemeralSession` 用 `DefaultResourceLoader({noContextFiles:true,noSkills:true})`——noContextFiles 是禁 AGENTS.md 唯一开关；工具只挂 kb_query/kb_insert/kb_update。
 
-## 架构约定：孩子 AI 的 prompt 构成（2026-08-18 确立；2026-08-24 终版修订）
-- **孩子会话 prompt = 身份（systemPromptOverride）+ 全部行为规范（AGENTS）**。
-- `buildChildPrompt`（electron/lib/pi-session.ts）**只描述身份**，不写任何行为约束，也不要写「不是XXX」、只写「是XXX」。
-- 所有行为约束（交流准则、学习方法、内容展示、角色）放在 `LEARNING_NAV_INSTRUCTIONS`，经 `buildAgentsMd` 生成「代码默认」AGENTS。
-- **⚠️ AGENTS 纯 SQLite（2026-08-24 终版，ISSUE-033）**：`data/agents.sqlite` 的 `prompts(scope,ref,content,updated)` 存「用户版本」（scope=child/ref=<childId>；scope=parent/ref=main|content），`prompt_history` 存每次保存的历史版本（可回退）。**不落任何物理 AGENTS 文件**（孩子目录、家长目录均无 AGENTS.md；`writeAgentsMd`/`getChildAgentsPath`/`scripts/regenerate-agents.mjs` 已删除）。查看/编辑唯一入口 = 家长页面 AgentPromptEditor（`agents:get/save/history/restore` IPC 走 SQLite）。
-- `resolveChildAgents(childId, profile)`（pi-session.ts）优先级：**SQLite 用户版本（整体替换）→ 代码默认 buildAgentsMd**；`buildChildPrompt` 将其**内联注入 system prompt**（无 `<project_context>` 文件注入），孩子只读、不可写。改 profile / 新建孩子**无需刷新任何 AGENTS 文件**（与 profile 解耦）。
-- 改动 `LEARNING_NAV_INSTRUCTIONS` 后无需跑任何脚本——代码默认随源码生效；已保存用户版本（整体替换）不受影响。
-
-## 架构约定：recording = 纯定时任务，不是技能（2026-08-21 确立）
-- **recording 不再作为技能**：`data/shared/skills/recording/` 已删除（不进 `<available_skills>`），改由 scheduler 定时任务驱动。
-- 真源是 `electron/lib/recording-prompt.ts`：`RECORDING_SYSTEM_PROMPT`（极简记录助手身份）+ `RECORDING_PROMPT`（流程与要求：详细度/四类提取/kb 写入/daily 格式/标签）。
-- `createEphemeralSession`（scheduler.ts）用 `DefaultResourceLoader({ noContextFiles:true, noSkills:true, systemPromptOverride })`——**noContextFiles 是禁 AGENTS.md 的唯一开关**（即使 customPrompt 存在，SDK 也会把 contextFiles 拼进 `<project_context>`）；工具只挂 `kb_query/kb_insert/kb_update`（白名单+customTools 缺一不可），不给 read/write/edit。
-- `runRecording` 每次开独立 in-memory session：prompt = RECORDING_PROMPT + 本地当天日期 + `readTodayConversation`（当天无对话直接跳过，不消耗 token）。
-
-## 关键 SDK 坑（踩过的，别再踩）
-- 扩展必须挂 `DefaultResourceLoader({ extensionFactories: [...] })`；`createAgentSession({ extensions })` 是死参数，从不读取。
-- ⚠️ **Windows 下 `DefaultResourceLoader` 必须显式传 `agentDir`**：构造时对 `options.agentDir` 调 `resolvePath()`（resource-loader.js:156），传 undefined → `normalizeWindowsShellPath(undefined)` → `undefined.startsWith` 崩（报错 "Cannot read properties of undefined (reading 'startsWith')"）。2026-08-24 珊珊会话 create_html_lesson 首用即崩（编程 agent 漏传）；**getParentSession/getParentContentSession 曾同样漏传，一并修复**。规矩：新建任何会话（学习/家长/编程/ephemeral）都要传 `agentDir`（孩子会话 = `childDir/.pi/agent`，家长 = `dataDir/.pi/agent`）。
-- `noSkills: true` + `additionalSkillPaths` 才能把 `~/.agents/skills` 的 60 个全局技能挡掉、只留教学技能。
-- system prompt 是 LLM 前缀缓存公共前缀：时间注入只到「日期」，不要到「秒」，否则缓存失效。
-- 会话模型 append-only：重置用 `newSession()`（归档保留旧文件），不要用 `resetLeaf()`（会无限堆叠分支）。
-- **customTools 的每个 `name` 必须同时出现在 `createAgentSession({ tools })` 的白名单里**，否则 `agent-session.js` 的 `isAllowedTool` 会把它过滤掉——工具既不注册也不激活，agent 会报告「没有这个技能」。ISSUE-006 的 `get_progress` 当初漏列进 `tools` 就是这个坑（2026-08-19 修复：`tools` 加 `"get_progress"`，并加 `test/get-progress-registration.test.ts` 锁不变量）。
-- **Pi SDK 会话 jsonl 真实结构（type=message + message.role）**：条目 `{"type":"message","timestamp":ISO,"message":{"role":"user"|"assistant"|"toolResult","content":[...]}}`；content 数组里 part 有 `text`/`thinking`/`toolCall` 三种 type。**没有 `user_message/assistant_message` 这种条目类型**——scheduler 旧 extractText 按后者判断导致提取恒为空（2026-08-21 修复）。提取「对话文本」：只取 type=message、role∈{user,assistant}、content 里 type=text 的 part（排除 thinking/toolCall，toolResult 整体跳过），按本地时区过滤「当天」用 `new Date(y,m,d).getTime()`（不用 toISOString，那是 UTC 日期）。
-
-## React 状态坑（踩过的，别再踩）
-- ⚠️ **绝不依赖 `setState(updater)` 闭包给外部变量赋值、再同步读取**——React 18+ 中 updater 异步执行（render 阶段才跑），同步检查时变量恒为旧值/初始值。ISSUE-014 教训：旧代码「updater 里赋 `targetId` → 同步 `if (targetId) setSelectedMaterialId(targetId)`」恒为 null，自动弹开从未生效（初次登记误判为正常，用户实测第二份资料不切换才暴露）。**「状态变更后的派生行为」一律用 `useEffect` 监听状态**；需要 updater 内部分支结果时（如去重返回原引用），依赖「返回原引用 → React bail-out → effect 不触发」这一行为。
+## 关键 SDK 坑（别再踩）
+- 扩展挂 `DefaultResourceLoader({extensionFactories:[...]})`；`createAgentSession({extensions})` 是死参数不读。
+- ⚠️ Windows 下 `DefaultResourceLoader` 必须显式传 `agentDir`(孩子=`childDir/.pi/agent`，家长=`dataDir/.pi/agent`)，否则 `undefined.startsWith` 崩。
+- **customTools 的 name 必须同时出现在 `createAgentSession({tools})` 白名单**，否则被 isAllowedTool 过滤(agent 报"没有这个技能")。注：`ls`/`read`/`write`/`edit` 是 SDK 内置，只需列 tools、无需 customTools 条目。
+- system prompt 是 LLM 前缀缓存公共前缀：时间注入只到「日期」不到「秒」，否则缓存失效。
+- 会话 append-only：重置用 `newSession()`(归档)，勿用 `resetLeaf()`(堆叠分支)。
+- Pi SDK jsonl 结构：`{"type":"message","message":{"role":user|assistant|toolResult,"content":[{type:text|thinking|toolCall}]}}`；提取文本只取 role∈{user,assistant} 且 content.type=text 的 part，按本地时区 `new Date(y,m,d).getTime()` 过滤当天。
 
 ## 构建与验证
-- ⚠️ **WorkBuddy 沙箱内禁止 `git stash`（push/pop）**：stash 内部会删 refs/stash + reset 工作区，被环境 safe-delete 机制误删 **.git/refs/ 目录与旧 pack 数据（.pack）** → 仓库损坏（not a git repository / bad object / missing blob）。2026-08-24 实测事故。验证「未提交改动」用 `git diff`/`git show HEAD:<file>` 代替。
-- **git 仓库损坏恢复范式**（2026-08-24 实测 4 步）：① `git update-ref -d refs/heads/master` 删坏引用 → `git fetch origin` 拉远端完整对象；② `git update-ref refs/heads/master <远端hash>` + `git read-tree HEAD` 重建 index（index 引用丢失 blob 时 read-tree 可绕过，勿用 reset）；③ 删孤立 `objects/pack/*.idx`（无配对 .pack 的索引）与失效 multi-pack-index；④ `git fsck --full` 确认 missing=0。注意：**未推送的本地 commit 对象可能无法找回**，但内容都在工作区文件里，重新 commit 即可（git status 会显示全部差异）。
-- 主进程/渲染改动后需 `rm -rf out && npm run build`（electron-vite）才生效；`electron-vite build` 清空 out 时可能撞环境 safe-delete 回收站报错，先 `rm -rf out` 可规避（注：`rm -rf out` 本身也可能被 safe-delete 拦，拦完目录其实已删，直接再跑 `npm run build` 即可）。
-- `tsc --noEmit` 项目里长期有 5 条环境相关的全局类型告警（TS7/@types/node26 不兼容），非业务代码引入，忽略即可。
-- ⚠️ **这 5 条 TS2318/TS2552 全局类型损坏会导致 tsc 终止大部分语义分析，可能掩盖真实业务错误**——如 ISSUE-008 白屏事故：`ChatWindow` 组件漏解构 `notice` prop（JSX 里用了 `notice` 变量）→ 运行时 ReferenceError → 进孩子模式整页白屏，而 tsc 只报了 5 条环境告警、electron-vite build（esbuild）不做类型检查，双双漏过。**验证时把 tsc 输出过滤掉 TS2318/TS2552 后再看是否有其它错误**；改组件后要核对「Props 字段是否都解构了」。
-- 既有失败用例：app.test.ts 云端注册（ECONNREFUSED 8005）、sync.test.ts 并发超时——均非本地改动引入。2026-08-19 起另有环境性失败：auto-new-session/archive-limit 的测试清理 `rmSync` 被 safe-delete 拦截（SAFE_DELETE_BULK_CONFIRM_REQUIRED）导致测试残留目录堆积、级联失败；functional.test.ts 的 `app.isPackaged` 在 vitest 未定义——均与业务改动无关。
-- ⚠️ **vitest（threads 池）测试用例里残留 `setInterval` 会让 worker 静默崩溃**：无任何输出、直接 exit 1，`--pool=forks` 可绕过但不应全局改；验证「事件循环让出」这类行为改用 `vi.spyOn(global, "setImmediate")` + `finally mockRestore` 统计调用（ISSUE-011 的 sync-scan.test.ts 踩过）。
-- **同步重 IO 阻塞主进程时 `withTimeout` 无效**：`setTimeout` 回调也要事件循环跑，事件循环被 `readFileSync`/全量哈希堵死时超时永不触发。修复范式（ISSUE-011）：扫描用 `fs.promises` + 每 N 文件 `await setImmediate()` 让出 + 流式哈希（`createReadStream` 管道）+ 「size 预过滤」只对 size 相同的文件算哈希（size 不同 → hash 必不同，语义等价）。
+- ⚠️ 沙箱内禁止 `git stash`(戳坏 .git/refs 致仓库损坏)；验证未提交改动用 `git diff`/`git show HEAD:<file>`。坏仓恢复：update-ref -d 坏引用→fetch→update-ref 复位+read-tree HEAD→删孤立 pack idx→fsck。
+- 主进程/渲染改动后 `rm -rf out && npm run build`(electron-vite)；`rm -rf out` 可能被 safe-delete 拦，拦完已删直接再 build。
+- `tsc --noEmit` 长期有 5 条环境相关全局告警(TS2318/TS2552，@types/node26 不兼容)，**会掩盖真实业务错误**——验证时先过滤这 5 条再看有无其它错误；改组件核对 Props 是否都解构(ISSUE-008 白屏即此漏过)。
+- ⚠️ vitest(threads 池)用例残留 `setInterval` 致 worker 静默 exit 1；验证事件循环让出改 `vi.spyOn(global,"setImmediate")`+finally mockRestore。
 
-## 前后端分离架构决策（2026-08-22）
-- 目标：当前 Electron 一体应用 → **前端（Electron 壳 / 浏览器 PWA，共用一份 React）+ 服务端后端**。
-- **硬约束（已验证）**：Pi SDK、`edge-tts`、`ffmpeg-static`、`tencentcloud-asr` 均为 Node-only（`require('fs')`/`child_process`），**无法进浏览器** → AI 引擎 + 语音必须留在服务端 Node 进程，浏览器端经 HTTP/SSE 通信。
-- 渲染层已统一经 `window.api`（electron/preload.ts 暴露）通信，约 70+ 处 `window.api.*` 散落组件；方案是先抽 `src/lib/api.ts` 统一收口，再让 client 按环境选 Electron preload 或 fetch+SSE，组件零改动。
-- 后端拆分：把 `electron/lib/*`（pi-session/pi-runtime/voice/scheduler/parent-library/kb-*/custom-tools/learning-guard）平移为常驻 Node 服务 `engine-server/`，IPC 通道改写为 HTTP/SSE；Python 云端（cloud-service/benefit-auth）不动，继续做认证/许可证/同步/权益中台。
-- 数据归属：拆分后**服务端磁盘为唯一真源**（`engine-server/data/children/<id>/`），路径守卫 + childId 路由隔离保留；孩子本地密码仍不进 Python 云端账号库。Electron 厚壳以子进程拉起 engine-server 可保离线能力。
-- 完整方案见 `ARCHITECTURE-SPLIT.md`；迁移分 P0 抽象 → P1 引擎骨架 → P2 路由全平移 → P3 多端前端 → P4 数据迁移（最高风险，单独灰度）→ P5 收尾。
+## React 状态坑
+- ⚠️ 绝不依赖 `setState(updater)` 闭包给外部变量赋值再同步读取(updater 异步)；派生行为一律用 `useEffect` 监听(ISSUE-014)。
 
-## 独立 Web 新项目已落地（2026-08-22，替代改造现有 pi）
-- **用户决策**：不动现有 `pi` 项目，**新建独立目录 `C:\Users\79734\Documents\pi-web`**，只做 **Web 浏览器前端 + Node 后端**，不考虑 Electron 客户端。
-- 结构：`pi-web/server`（Fastify+tsx 后端，端口 8787，数据落 `pi-web/data/children/<id>/`）+ `pi-web/web`（Vite+React+TS 前端，紫色儿童主题）+ `README.md`。
-- 已验证端到端：孩子增删查（按 childId 隔离）、SSE 流式聊天占位、后端同源托管前端 build（生产单端口 8787）、API 代理现有 Python 云端（/api/cloud/*）。浏览器端 TTS 用 Web Speech API（en-GB 优先，语速 1.0）。
-- **未做（占位待迁移）**：真实 Pi SDK 引擎（会话/AGENTS.md/上下文截断）、Node-only 语音生成（edge-tts 等）、定时任务。引擎接口在 `server/src/lib/engine.ts`，云端代理在 `server/src/lib/cloud.ts`。
-- 运行：dev 双进程（server:8787 + web:5173 Vite 代理 /api）；prod 先 `web npm run build` 再 `server npm run dev` 同源托管。
-- ⚠️ **踩坑记录（pi-web 后端）**：① Windows 下 `import.meta.url` 的 `pathname` 带前导 `/` 致 `new URL('../data/').pathname` 拼出 `C:\C:\...`，须用 `fileURLToPath` + `path.dirname`；② `import.meta.url` 在 tsx 运行时 dirname 不可靠（指向 server 而非 server/src），前端 build 路径改用 `path.resolve(process.cwd(),'../web/dist')`（进程约定在 server/ 启动）；③ 沙箱 safe-delete 回收站二进制超时，导致 `rm -rf`/`fs.rmSync` 在 WorkBuddy 内报 ETIMEDOUT（环境故障，用户本地不受影响）。
+## 前后端分离 / pi-web
+- 决策：保留 Electron 一体应用，另起独立 `pi-web/`(Web前端+Node后端，端口8787)做替代，不动现有 pi。
+- 硬约束：Pi SDK/edge-tts/ffmpeg/tencentcloud-asr 均 Node-only，AI+语音留服务端，浏览器走 HTTP/SSE。
+- 引擎拆分目标 `engine-server/`(平移 electron/lib/*)，IPC→HTTP/SSE；数据归属服务端磁盘唯一真源、childId 路由隔离。
