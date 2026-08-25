@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 import hashlib
 import shutil
 import base64
@@ -64,20 +65,21 @@ def _keep_version(parent_id: str, child_id: str, file_path: str) -> None:
             pass
 
 
-def _upsert_meta(db, parent_id: str, child_id: str, file_path: str, content_hash: str, size: int) -> None:
+async def _upsert_meta(db, parent_id: str, child_id: str, file_path: str, content_hash: str, size: int) -> None:
+    """写入/更新 sync_files_meta（必须 async：aiosqlite 的 execute 系列是协程，需 await 才会真正执行）。"""
     now = datetime.now(timezone.utc).isoformat()
-    existing = db.execute_fetchall(
+    existing = await db.execute_fetchall(
         "SELECT id FROM sync_files_meta WHERE parent_id = ? AND child_id = ? AND file_path = ?",
         (parent_id, child_id, file_path),
     )
     if existing:
-        db.execute(
+        await db.execute(
             "UPDATE sync_files_meta SET content_hash = ?, size = ?, updated_at = ? "
             "WHERE parent_id = ? AND child_id = ? AND file_path = ?",
             (content_hash, size, now, parent_id, child_id, file_path),
         )
     else:
-        db.execute(
+        await db.execute(
             "INSERT INTO sync_files_meta (id, parent_id, child_id, file_path, content_hash, size, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (str(uuid.uuid4()), parent_id, child_id, file_path, content_hash, size, now),
@@ -157,7 +159,7 @@ async def upload_file(
     disk_path.parent.mkdir(parents=True, exist_ok=True)
     disk_path.write_bytes(content)
 
-    _upsert_meta(db, parent_id, child_id, file_path, content_hash, size)
+    await _upsert_meta(db, parent_id, child_id, file_path, content_hash, size)
     await db.commit()
 
     return {"path": file_path, "hash": content_hash, "size": size, "uploaded": True, "changed": True}
@@ -272,7 +274,7 @@ async def restore_file(
     disk_path.parent.mkdir(parents=True, exist_ok=True)
     disk_path.write_bytes(content)
 
-    _upsert_meta(db, parent_id, child_id, file_path, content_hash, size)
+    await _upsert_meta(db, parent_id, child_id, file_path, content_hash, size)
     await db.commit()
     return {"path": file_path, "hash": content_hash, "size": size, "restored": True}
 
@@ -343,7 +345,7 @@ async def upload_parent_file(
     _keep_version(parent_id, PARENT_SPACE_CHILD, file_path)
     disk_path.parent.mkdir(parents=True, exist_ok=True)
     disk_path.write_bytes(content)
-    _upsert_meta(db, parent_id, PARENT_SPACE_CHILD, file_path, content_hash, size)
+    await _upsert_meta(db, parent_id, PARENT_SPACE_CHILD, file_path, content_hash, size)
     await db.commit()
     return {"path": file_path, "hash": content_hash, "size": size, "uploaded": True}
 
@@ -388,13 +390,24 @@ async def post_event(
     """家长写入一条待处理事件（发送给指定孩子）。"""
     if event.type not in ("assign_topic", "send_materials", "request_progress"):
         raise HTTPException(status_code=400, detail="未知事件类型")
+    # payload 是 dict，必须序列化为 JSON 文本再入库（aiosqlite 不能直接绑 dict）
     await db.execute(
         "INSERT INTO sync_events (id, parent_id, child_id, type, payload, status) "
         "VALUES (?, ?, ?, ?, ?, 'pending')",
-        (str(uuid.uuid4()), parent_id, child_id, event.type, event.payload),
+        (str(uuid.uuid4()), parent_id, child_id, event.type, json.dumps(event.payload, ensure_ascii=False)),
     )
     await db.commit()
     return {"ok": True}
+
+
+def _load_payload(raw) -> dict:
+    """payload 库内为 JSON 文本，读回时解析为 dict。"""
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
 
 
 @router.get("/events/{child_id}")
@@ -414,7 +427,7 @@ async def poll_events(
             {
                 "id": r["id"],
                 "type": r["type"],
-                "payload": r["payload"] or {},
+                "payload": _load_payload(r["payload"]),
                 "created_at": r["created_at"],
             }
             for r in rows
