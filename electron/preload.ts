@@ -206,12 +206,7 @@ const api = {
   learningWrite: (childId: string, relPath: string, content: string) =>
     ipcRenderer.invoke("learning:write", childId, relPath, content),
 
-  // Sync
-  syncPull: () => ipcRenderer.invoke("sync:pull"),
-  syncPush: (childId: string) => ipcRenderer.invoke("sync:push", childId),
-  syncFull: (childId: string) => ipcRenderer.invoke("sync:full", childId),
-  // ISSUE-041 层 C：家长异地（推送资料到云端 + 云端查孩子进度）
-  syncEventSend: (childIds: string[]) => ipcRenderer.invoke("sync:event_send", childIds),
+  // 跨机消息交换（ISSUE-041）：家长云端查孩子进度（打请求标记 + 读摘要）
   syncQueryProgress: (childId: string) => ipcRenderer.invoke("sync:query_progress", childId),
 
   // Backup / restore (ISSUE-041 层 A)：弹系统对话框选目录/文件，主进程执行

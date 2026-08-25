@@ -9,7 +9,6 @@ import { initSharedSkills } from "./lib/user-init";
 import { registerIpcHandlers } from "./lib/ipc-handlers";
 import { disposeAllSessions } from "./lib/pi-session";
 import { startScheduler, runCatchUp } from "./lib/scheduler";
-import { syncAllData } from "./lib/sync-manager";
 import { lintAllChildren } from "./lib/kb-lint";
 import { registerMediaScheme, registerMediaProtocol } from "./lib/media-protocol";
 import { initUpdater, silentCheckForUpdates } from "./lib/updater";
@@ -51,20 +50,13 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * 整条链不阻塞 whenReady，窗口立即可用。
  */
 async function runStartupNetworkTasks(): Promise<void> {
-  // 1) 云同步（数据拉取，最重，放最前）——ISSUE-041 层 B：孩子（云端∪本地）+ 家长空间
-  try {
-    const results = await withTimeout(syncAllData(), STARTUP_TASK_TIMEOUT_MS, "Sync");
-    console.log("Sync complete:", JSON.stringify(results));
-  } catch (e) {
-    console.error("Sync failed on startup:", e?.message || e);
-  }
-  // 2) 定时任务补跑（默认全部关闭，通常立即返回）
+  // 1) 定时任务补跑（默认全部关闭，通常立即返回）
   try {
     await withTimeout(runCatchUp(), STARTUP_TASK_TIMEOUT_MS, "Catch-up");
   } catch (e) {
     console.error("Catch-up failed:", e);
   }
-  // 3) 版本检查（最轻，放最后）——ISSUE-040: 自动更新（electron-updater），失败降级云端手动下载
+  // 2) 版本检查（最轻，放最后）——ISSUE-040: 自动更新（electron-updater），失败降级云端手动下载
   try {
     await withTimeout(silentCheckForUpdates(), STARTUP_TASK_TIMEOUT_MS, "Version check");
   } catch (e) {

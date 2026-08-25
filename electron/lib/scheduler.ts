@@ -6,7 +6,7 @@ import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config"
 import { listChildren } from "./child-auth";
 import { summarizeDailyConversation, formatLocalDate } from "./daily-summary";
 import { resetChildSession } from "./pi-session";
-import { handleChildEvents } from "./sync-events";
+import { handleCloudInbox } from "./delivery";
 
 export interface TaskState {
   children: Record<
@@ -404,8 +404,8 @@ export function startScheduler(): void {
         }
       }
 
-      // ISSUE-041 层 C：事件轮询（设备级配置，默认 2 分钟一次，可关闭）。
-      // 事件=唤醒信号（分配主题/资料更新/请求进度），处理时触发一次对应同步后 ack；
+      // ISSUE-041 消息交换轮询（设备级配置，默认 2 分钟一次，可关闭）。
+      // 云端只做消息交换：拉分配包 → 本地落库合并 → ack；顺带响应家长「请求刷新进度」标记。
       // 云不可达时静默跳过，等下一轮。除定时轮询外，孩子端开会话时也会即时轮询（ipc pi:start_child）。
       {
         const ep = getEventPollConfig();
@@ -416,12 +416,12 @@ export function startScheduler(): void {
             : 0;
           if (now.getTime() - lastPoll >= POLL_MS) {
             try {
-              const r = await handleChildEvents(child.childId);
-              if (r.handled > 0) {
-                console.log(`Events handled for child ${child.childId}: ${r.handled}`);
+              const r = await handleCloudInbox(child.childId);
+              if (r.applied > 0 || r.pushed) {
+                console.log(`Cloud inbox handled for child ${child.childId}: applied=${r.applied} pushed=${r.pushed}`);
               }
             } catch (e) {
-              console.error(`Event poll failed for child ${child.childId}:`, e);
+              console.error(`Cloud inbox poll failed for child ${child.childId}:`, e);
             }
             cs["event-poll"].lastRun = new Date().toISOString();
             saveTaskState(state);

@@ -291,22 +291,15 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("parent:allocate", async (_e, childId: string, topicDir: string) => {
     try {
       const data = allocateTopicToChild(undefined, childId, topicDir);
-      // ISSUE-041 层 C：分配后 ① 立即把本机孩子数据+家长库推到云端（不等下次同步），
-      // ② 写 assign_topic 事件提醒孩子端（另一台设备）拉取。均 fire-and-forget，失败静默。
+      // ISSUE-041 架构转向：跨机分发 = 只传「分配数据包」（不含文件），孩子端本地落库。
+      // 家长端生成包上传云端暂存（fire-and-forget，失败静默）；本地分配已生效（同机可用）。
       try {
-        const { writeEvent, pushParentLibraryWithEvent } = await import("./sync-events");
-        writeEvent(childId, "assign_topic", { topicDir }).catch((e) =>
-          console.error("writeEvent(assign_topic) failed:", e)
-        );
-        // 推本机孩子数据（含刚分配的主题/课程）到云端
-        const { syncChild } = await import("./sync-manager");
-        syncChild(childId).catch((e) => console.error("syncChild after allocate failed:", e));
-        // 家长库（材料真源）也推送一次，并给其它孩子补 send_materials 事件
-        pushParentLibraryWithEvent([]).catch((e) =>
-          console.error("pushParentLibraryWithEvent after allocate failed:", e)
+        const { buildAllocPackage, uploadDelivery } = await import("./delivery");
+        uploadDelivery(childId, buildAllocPackage(topicDir)).catch((e) =>
+          console.error("uploadDelivery failed:", e)
         );
       } catch (e) {
-        console.error("allocate sync hooks skipped:", e);
+        console.error("delivery upload skipped:", e);
       }
       return { success: true, data };
     } catch (err) {
@@ -712,13 +705,12 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       attachSessionEvents(session, childId, getMainWindow);
       const history = getSessionHistory(session);
       const materials = getSessionMaterials(session, getChildDir(childId)).slice(-getMaterialsLimit());
-      // ISSUE-041 层 C：孩子打开会话时立即轮询一次事件（不等定时），
-      // 家长刚发的课程/分配能马上拉到（fire-and-forget，失败静默，等下一轮定时轮询）
+      // ISSUE-041：孩子打开会话时立即处理一轮云端收件箱（分配包/进度请求），不等定时轮询
       try {
-        const { handleChildEvents } = await import("./sync-events");
-        handleChildEvents(childId)
+        const { handleCloudInbox } = await import("./delivery");
+        handleCloudInbox(childId)
           .then((r) => {
-            if (r.handled > 0) console.log(`[start_child] events handled: ${r.handled}`);
+            if (r.applied > 0 || r.pushed) console.log(`[start_child] inbox: applied=${r.applied} pushed=${r.pushed}`);
           })
           .catch(() => {});
       } catch { /* 忽略 */ }
@@ -1032,57 +1024,15 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // ---- Sync handlers ----
+  // ---- ISSUE-041 消息交换（跨机课程分发 + 进度查询）----
+  // 云端只做消息交换：分配包（家长→孩子，投递即删）+ 进度摘要（孩子→家长，只存最新）。
+  // 不再有整库云同步；多 PC 数据迁移走本地 zip 备份/恢复。
 
-  ipcMain.handle("sync:pull", async () => {
-    try {
-      // ISSUE-041 层 B：全量同步 = 全部孩子（云端∪本地）+ 家长空间（家长库/全局配置）
-      const { syncAllData } = await import("./sync-manager");
-      const results = await syncAllData();
-      return { success: true, results };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle("sync:push", async (_e: IpcMainInvokeEvent, childId: string) => {
-    try {
-      const { pushChildChanges } = await import("./sync-manager");
-      const result = await pushChildChanges(childId);
-      return { success: true, ...result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle("sync:full", async (_e: IpcMainInvokeEvent, childId: string) => {
-    try {
-      const { fullSnapshot } = await import("./sync-manager");
-      const result = await fullSnapshot(childId);
-      return { success: true, ...result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ---- ISSUE-041 层 C：家长异地（事件信箱 + 云端查进度） ----
-
-  // 家长推送资料到云端：同步家长库 + 给指定孩子写 send_materials 事件
-  ipcMain.handle("sync:event_send", async (_e: IpcMainInvokeEvent, childIds: string[]) => {
-    try {
-      const { pushParentLibraryWithEvent } = await import("./sync-events");
-      const r = await pushParentLibraryWithEvent(Array.isArray(childIds) ? childIds : []);
-      return { success: true, ...r };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // 家长云端查进度：写 request_progress 事件 + 返回当前云端进度摘要
+  // 家长云端查进度：打「请求刷新」标记 + 返回当前云端进度摘要（孩子端轮询后会上传新摘要）
   ipcMain.handle("sync:query_progress", async (_e: IpcMainInvokeEvent, childId: string) => {
     try {
-      const { requestAndQueryProgress } = await import("./sync-events");
-      const data = await requestAndQueryProgress(childId);
+      const { fetchProgressSummary } = await import("./delivery");
+      const data = await fetchProgressSummary(childId, true);
       return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };

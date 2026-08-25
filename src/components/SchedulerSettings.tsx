@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import IconButton from "./IconButton";
+import { Plus, Save, Trash2 } from "lucide-react";
 
 interface SchedulerChildConfig {
   recording: { enabled: boolean; times: string[]; onNewSession: boolean };
@@ -166,7 +168,9 @@ export default function SchedulerSettings() {
               }}
             >
               <div style={{ fontWeight: 600, fontSize: 15 }}>家长会话（自动新建会话）</div>
-              <button
+              <IconButton
+                icon={Save}
+                title="保存"
                 onClick={saveParent}
                 style={{
                   padding: "6px 14px",
@@ -177,9 +181,7 @@ export default function SchedulerSettings() {
                   fontSize: 13,
                   cursor: "pointer",
                 }}
-              >
-                保存
-              </button>
+              />
             </div>
             <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
               家长工作台的 AI 会话（课程管理 / 教学内容）会持久保存对话历史。开启后：跨天自动开新会话；或每天到设定时间自动开新会话（与孩子一致）。旧会话保留为归档。
@@ -238,7 +240,9 @@ export default function SchedulerSettings() {
               }}
             >
               <div style={{ fontWeight: 600, fontSize: 15 }}>云端事件轮询</div>
-              <button
+              <IconButton
+                icon={Save}
+                title="保存"
                 onClick={saveEventPoll}
                 style={{
                   padding: "6px 14px",
@@ -249,12 +253,12 @@ export default function SchedulerSettings() {
                   fontSize: 13,
                   cursor: "pointer",
                 }}
-              >
-                保存
-              </button>
+              />
             </div>
             <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
-              应用定期向云端询问「有没有家长发来的课程 / 分配 / 进度请求」，有则立即同步。间隔越短，家长在另一台电脑发课后孩子收到得越快（默认 2 分钟）。孩子打开学习会话时还会额外立即检查一次，无需等待轮询。
+              应用定期向云端询问「有没有家长发来的课程分配包 / 进度查询请求」，有则立即在本地处理：
+              分配包写入本机数据库（学习进度不受影响），进度请求则生成摘要上传。间隔越短，家长在另一台
+              电脑分配后孩子收到得越快（默认 2 分钟）。孩子打开学习会话时还会额外立即检查一次，无需等待轮询。
             </div>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
               <input
@@ -318,7 +322,9 @@ export default function SchedulerSettings() {
                     {child.aiEmoji ? `${child.aiEmoji} ` : ""}
                     {child.name}
                   </div>
-                  <button
+                  <IconButton
+                    icon={Save}
+                    title="保存"
                     onClick={() => save(child.childId)}
                     style={{
                       padding: "6px 14px",
@@ -329,9 +335,7 @@ export default function SchedulerSettings() {
                       fontSize: 13,
                       cursor: "pointer",
                     }}
-                  >
-                    保存
-                  </button>
+                  />
                 </div>
 
                 {/* 每日学习记录总结（recording）：多时间点触发 + 会话前自动总结 */}
@@ -387,7 +391,10 @@ export default function SchedulerSettings() {
                               fontSize: 13,
                             }}
                           />
-                          <button
+                          <IconButton
+                            icon={Trash2}
+                            title="删除"
+                            danger
                             onClick={() =>
                               updateConfig(child.childId, (p) => ({
                                 ...p,
@@ -405,33 +412,31 @@ export default function SchedulerSettings() {
                               fontSize: 13,
                               cursor: "pointer",
                             }}
-                          >
-                            删除
-                          </button>
+                          />
                         </div>
                       ))}
                       <div>
-                        <button
-                          onClick={() =>
-                            updateConfig(child.childId, (p) => ({
-                              ...p,
-                              recording: {
-                                ...p.recording,
-                                times: [...p.recording.times, "21:00"],
-                              },
-                            }))
-                          }
-                          style={{
-                            padding: "4px 10px",
-                            border: "1px solid #ddd",
-                            borderRadius: 6,
-                            background: "white",
-                            fontSize: 13,
-                            cursor: "pointer",
-                          }}
-                        >
-                          + 添加时间点
-                        </button>
+                          <IconButton
+                            icon={Plus}
+                            title="添加时间点"
+                            onClick={() =>
+                              updateConfig(child.childId, (p) => ({
+                                ...p,
+                                recording: {
+                                  ...p.recording,
+                                  times: [...p.recording.times, "21:00"],
+                                },
+                              }))
+                            }
+                            style={{
+                              padding: "4px 10px",
+                              border: "1px solid #ddd",
+                              borderRadius: 6,
+                              background: "white",
+                              fontSize: 13,
+                              cursor: "pointer",
+                            }}
+                          />
                       </div>
                       <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                         <input
