@@ -1552,7 +1552,7 @@
 - **需求**：把「标签」Section 移到课程详情最顶部（即：① 标签 → ② 每课方法 → ③ 教学文案 → ④ 教学资料说明 → ⑤ 发给学生）。
 - **修改入口（待实施）**：`src/components/TopicDetail.tsx:460-498` 的课程详情 `<div>` 内，将 `:492-494` 的「标签」`<Section>` 块整体移到 `selected.title` 标题下方（:467 之后、:470 每课方法之前）。注意「上传资料」按钮（:468）在标题行，不需动。
 - **说明**：基本信息 tab（:504-514）的「学习方法/每日目标/主题类型」等不在此次范围，仅课程详情（course tab）的每课 tags 置顶。
-- **优先级**：待定（建议低：纯展示顺序，改动 1 处、风险极低，可顺手做）。
+- **优先级**：已完成（用户确认 2026-08-25 已处理；与 ISSUE-042 同批实施）。
 - **记录时间**：2026-08-25
 - **✅ 已实施（2026-08-25，与 ISSUE-042 同批）**：`src/components/TopicDetail.tsx` 课程详情区，将「标签」`<Section>`（原 :492-494）整体移至课程标题行（:467）之后、**「教学文案」之前**；同时因 ISSUE-042 删除了「每课方法」块，最终顺序为：① 标签 → ② 教学文案 → ③ 教学资料说明（material 非空时）→ ④ 发给学生的学习材料 → ⑤ 删除/上传按钮。底部原「标签」块已删除，无重复。
 
@@ -1641,7 +1641,7 @@
   - 前端拉取：TopicDetail.tsx 需加 `useEffect` 在打开课程详情时 `window.api.parentGetTags()` 拉选项。
 
 - **关联**：ISSUE-013（标签定义表 vs 应用列分离的设计——父库应照搬此模式）；ISSUE-043（标签置顶展示——与本条同处课程详情，建议一并做：先置顶 :043 + 再补可编辑本 issue）；ISSUE-029（家长库为唯一真源，标签定义放家长库符合架构）；ISSUE-038（标签字段与其他提示词重复治理是另一层，本条只管"编辑 + 选项来源"）。
-- **优先级**：已实施（2026-08-25）。
+- **优先级**：已完成（2026-08-25 实施，2026-08-25 用户确认已处理）。
 - **✅ 已实施（2026-08-25）**：
   - **后端**：`parent-library.ts` ① `PARENT_SCHEMA_TABLES` 新增 `tags(tag, dimension, criteria)` 定义表；② `openParentDb` 调 `ensureParentTags` 在空表时播种 `PARENT_DEFAULT_TAGS`（20 个，四维，与 initChildKb 的 DEFAULT_TAGS 同源设计、父库独立维护一份）；③ 新增 `queryParentTags(parentId, tag?)`（照搬 kb-sqlite `queryTags`）与 `upsertParentTag(parentId, tag, dimension?, criteria?)`（INSERT OR REPLACE）。
   - **IPC + preload**：`ipc-handlers.ts` 新增 `parent:getTags`（返回 `queryParentTags(undefined)`）、`parent:upsertTag`（写回定义表）；`preload.ts` 暴露 `window.api.parentGetTags()` / `parentUpsertTag(tag, dimension?, criteria?)`（`window.api` 为 `any`，无需补类型声明）。
@@ -1809,3 +1809,35 @@
 - **关联**：ISSUE-029（资料上移家长库 + method 全文入库——本 issue 是清理其过渡迁移入口）；ISSUE-041（备份——迁移破坏性，删入口前确保已备份更稳妥）；ISSUE-047（图标化——删按钮不影响，但 `RefreshCw` icon 若只这一个用途可一并清理）。
 - **优先级**：待定（建议中：过渡功能清理，UI 改动极小、风险低；确认存量已迁移干净即可动）。
 - **记录时间**：2026-08-25
+
+## [ISSUE-049] 给孩子 agent 增加 `ls` 工具（列目录），并补 learning-guard 对 `ls` 的越界拦截
+
+- **类型**：功能增强 / 安全补全
+- **用户原话**：增加 issue 给孩子的 agent 也增加 ls 工具，能够读取文件列表
+- **需求拆解**：把孩子会话的工具白名单加上 `ls`（目录列举），使学习 agent 能列出自己 cwd 下的文件/目录（如 `outputs/` 已生成的 html、`uploads/` 上传资料、`materials/` 学习资料），同时补上越界防护（见下方安全缺口）。
+- **现状（已定位）**：
+  1. **`ls` 是 Pi SDK 内置工具（非自定义）**：全仓 grep `defineTool` + `name: "ls"` **无任何自定义实现**；家长会话已在 `tools` 白名单里直接用 `"ls"`（`pi-session.ts:486`、`:529`）且无对应 customTool 条目——证明 `ls` 是 SDK 内置、无需注册 customTool。
+  2. **孩子会话白名单缺 `ls`**：`pi-session.ts:424` 的 `tools` 为 `["read","write","edit","display_content","get_date","get_progress","kb_query","kb_insert","kb_update","create_html_lesson","parent_content","summarize_conversation"]`——**没有 `ls`**。孩子当前能 `read`/`write`/`edit`（内置），唯独不能列目录。
+  3. **孩子已有文件写能力**：`create_html_lesson`（`custom-tools.ts:417-455`）把 html 写进 `outputs/{名称}.html` 或 `materials/{topic}/`，返回 `relPath`；孩子若想"看看已生成了哪些、复用/改名/清理"，现只能靠 `read` 逐个猜路径，缺 `ls` 不便。同理 `uploads/`（聊天上传、未在 SQLite）也是孩子侧需列举的场景。
+  4. **⚠️ 安全缺口（关键）**：`electron/extensions/learning-guard.ts:6` 的路径越界拦截 `if (!["read","write","edit"].includes(toolName)) return;`——**只拦 read/write/edit，不含 `ls`**。若给孩子加 `ls` 而不补 guard，`ls` 是唯一不受 cwd 边界约束的文件工具：虽只读、内容外泄被 `read` 的 guard 挡住，但 `ls ../` 之类可能**暴露目录结构/文件名**（含 `data/shared/auth.json` 文件名等）。属有限信息泄露，但应补上。
+- **方案要点（候选）**：
+  1. **最小改动**：`pi-session.ts:424` 的 `tools` 数组加一项 `"ls"`（与家长的 `:486`/`:529` 对齐）。无需 customTool。
+  2. **必补安全**：`learning-guard.ts:6` 的拦截名单加入 `"ls"`，并按 `ls` 的实际入参字段（`path`/`dir`，需确认 SDK 内置 `ls` 的 param 名）做 `path.resolve(cwd, inputPath)` 越界比对，逻辑复用 read/write/edit 那段（`:8-16`）。若内置 `ls` 不传 path（默认列 cwd），则无需比对、天然安全。
+  3. **AGENTS 引导（建议）**：孩子 `buildChildPrompt` / `LEARNING_NAV_INSTRUCTIONS` 现有强约束「用 kb_query 看清单、不要 read 文件、孩子库不存 method 与教学文案」（`pi-session.ts:39-62`）。加 `ls` 后应在引导里**明确 `ls` 的合法用途**（枚举自己 `outputs/`、`uploads/`、`materials/` 以复用/展示 html），并强调**不要用 `ls` 翻 SQLite 数据目录**（那应走 kb_query）——避免与"数据库为唯一真源"原则冲突。
+- **待确认项**：
+  1. `ls` 是否只需列 cwd（默认），还是允许传 path（如 `ls outputs/`）？这决定 guard 是否需要处理其入参（影响方案 2 的实现量）。
+  2. 是否同步更新孩子 AGENTS 引导（方案 3）？还是先加工具、引导后置？
+  3. 家长侧 `ls` 已存在且同样未受 guard 约束（guard 名单无 `ls`）——是否顺带把家长 `ls` 也纳入越界拦截（统一收口）？
+- **排查 / 修改入口（可直接执行）**：
+  - 加工具：`electron/lib/pi-session.ts:424`（孩子 `tools` 加 `"ls"`）。
+  - 补 guard：`electron/extensions/learning-guard.ts:6`（拦截名单加 `"ls"`）+ `:8-16`（按 `ls` 入参做越界比对，需先确认内置 `ls` 的 path 参数名）。
+  - 引导（可选）：`electron/lib/pi-session.ts` 的 `buildChildPrompt` / `LEARNING_NAV_INSTRUCTIONS`（:39-62 区域）补 `ls` 合法用途说明。
+- **关联**：ISSUE-033（AGENTS 内联注入——引导补 `ls` 用法在这改）；ISSUE-038（提示词去重——`ls` 用法说明若与工具 description 重复需治理）；家长侧同款 `ls`（:486/:529）可作对照样板；长期记忆「孩子目录隔离 / 数据归属边界」——`ls` 越界拦截正是边界保障。
+- **优先级**：已解决 / P2（功能增强 + 安全补全；改动极小：孩子 tools 加一项 + guard 名单加一项 + 一段 AGENTS 引导；tsc --noEmit 过滤环境告警后 0 新增类型错误）。
+- **记录时间**：2026-08-25
+- **处理结论（2026-08-25）**：
+  1. **加工具（已做）**：`electron/lib/pi-session.ts` 孩子 `tools` 数组在 `"edit"` 后加 `"ls"`（现 `["read","write","edit","ls","display_content",...]`）。`ls` 是 SDK 内置（`@earendil-works/pi-coding-agent/dist/core/tools/ls.js`，无需 customTools 条目），与家长的 `:486`/`:529` 对齐。
+  2. **补 guard（已做 + 待确认项 3 一并解决）**：`electron/extensions/learning-guard.ts` 拦截名单由 `["read","write","edit"]` 改为 `["read","write","edit","ls"]`，复用同一段 `path.resolve(cwd, inputPath)` 越界比对。**该扩展同时挂在孩子与家长会话，故一处加入即统一收口两侧 `ls` 越界拦截**（家长侧 `ls` 此前同样未受约束，现已一并保护）。
+  3. **AGENTS 引导（已做，待确认项 2）**：`LEARNING_NAV_INSTRUCTIONS` 新增「### 目录查看（ls）」段，说明合法用途（列自己 cwd 下 `outputs/`/`uploads/`/`materials/` 以复用/展示/清理 html，只读目录名不读内容）与边界（越界路径被拦截、保护 `data/shared/`），并强调知识/进度清单走 `kb_query`、不要用 `ls` 翻 SQLite 数据目录。
+  4. **待确认项 1 结论**：读 SDK `ls.js` 确认内置 `ls` 接受可选 `path`（默认列 cwd），故 guard 必须处理其入参——用 `event.input?.path` 走既有 `path.resolve` 比对即可；`path` 缺省（列 cwd）时 guard 提前 return，天然安全。
+  5. **验证**：改动仅字符串/模板文本，tsc --noEmit（过滤 5 条环境相关 TS2318/TS2552 全局告警）0 新增错误；主进程编译验证未单独跑 `rm -rf out && npm run build`（改动极小，类型检查已覆盖）。

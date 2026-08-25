@@ -47,6 +47,11 @@ const LEARNING_NAV_INSTRUCTIONS = `
 - 孩子上传的图片会随消息直接发送给你（你可见），无需读取文件；
 - 孩子上传的文本文件（txt/md）已保存在 \`uploads/\` 目录下，消息里有 \`【附件文件：文件名|路径】\` 标记（路径如 \`uploads/xxx.txt\`）。需要文件内容时用 read 工具读取标记里的路径再回应，不要凭空猜测内容；不必要时不读。
 
+### 目录查看（ls）
+- 用 \`ls\` 查看你自己工作目录（cwd）下的 \`outputs/\`、\`uploads/\`、\`materials/\` 里已有哪些文件，便于复用 / 展示 / 清理已生成的 html 或资料——它只列「文件名 + 是否文件夹」，不读内容，省上下文。
+- 列目录受边界保护：只能列自己 cwd 范围内的目录，列 \`../\` 等越界路径会被系统拦截（保护共享数据区 data/shared/）。
+- **数据库不用 \`ls\` 翻**：SQLite 数据文件（kb.sqlite）及 learning/、daily/、life/ 等归档目录一律用 kb_query 看清单，不要用 \`ls\` 去列这些数据目录——列名字本身无意义，知识 / 进度清单应走结构化工具。
+
 ### 内容展示
 - 需要给孩子展示 **html 格式** 学习资料时：
   1. 若该 html 文件**还不存在**（或需要修改），先用 \`create_html_lesson\` 工具生成/更新（把标题、结构要求、内容要点、交互要求整理成 requirement 传给编程 agent），生成成功后再展示；
@@ -421,7 +426,11 @@ async function createChildSession(
     // display_content / get_date / get_progress / kb_query / kb_insert / kb_update / create_html_lesson
     // / summarize_conversation 都是 customTools，故名字都要列在 tools 里，缺一不可
     // ——此前 get_progress 漏列导致 agent 根本拿不到该工具（ISSUE-006 配套修复）。
-    tools: ["read", "write", "edit", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation"],
+    // ls 是 SDK 内置工具（node_modules/@earendil-works/pi-coding-agent/dist/core/tools/ls.js），
+    // 仅需列在 tools 白名单即启用、无需 customTools 条目——让孩子能列自己 cwd 下的目录
+    // （outputs/ 已生成 html、uploads/ 上传资料、materials/ 学习资料）以复用/展示/清理；
+    // 越界防护由 learning-guard 统一拦截（ISSUE-049）。
+    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation"],
     customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool],
   });
 

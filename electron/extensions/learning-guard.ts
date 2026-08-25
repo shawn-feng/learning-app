@@ -3,7 +3,10 @@ import path from "path";
 export default function (pi: any) {
   pi.on("tool_call", async (event: any, ctx: any) => {
     const toolName: string = event.toolName;
-    if (!["read", "write", "edit"].includes(toolName)) return;
+    // 仅对会触碰文件系统的工具做越界拦截；ls 是 SDK 内置（参数名 path，默认列 cwd），
+    // 与 read/write/edit 共用同一套 path.resolve(cwd, inputPath) 边界比对即可（ISSUE-049）。
+    // 本扩展同时挂在孩子与家长会话，故一处加入即统一收口两侧 ls 越界拦截。
+    if (!["read", "write", "edit", "ls"].includes(toolName)) return;
 
     const inputPath: string | undefined = event.input?.path;
     if (!inputPath) return;
