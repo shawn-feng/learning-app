@@ -97,7 +97,7 @@ const api = {
     ipcRenderer.invoke("pi:set_api_key", provider, apiKey),
   piCheckProvider: (provider: string) => ipcRenderer.invoke("pi:check_provider", provider),
 
-  // Auth
+  // Auth（认证统一走公网云端，不暴露本地地址配置）
   authLogin: (email: string, password: string) =>
     ipcRenderer.invoke("auth:login", email, password),
   authRegister: (email: string, password: string) =>

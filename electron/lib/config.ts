@@ -97,7 +97,7 @@ export function getAppSettingsPath(): string {
 
 export function getCloudApiBase(): string {
   if (process.env["CLOUD_API_URL"]) return process.env["CLOUD_API_URL"];
-  // 统一走公网云服务（开发/打包一致）；本地联调可用 CLOUD_API_URL 覆盖
+  // 所有认证统一走公网云端；不连接任何本地地址。云端域名变动可通过 CLOUD_API_URL 环境变量覆盖。
   return "https://www.aixuexihao.top";
 }
 

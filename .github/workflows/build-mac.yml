@@ -1,0 +1,39 @@
+name: Build macOS
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        # 项目存在 typescript@7 与 edge-tts 的 peer 冲突，必须 --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
+
+      - name: Build (electron-vite + electron-builder --mac)
+        run: npm run dist:mac
+        env:
+          # 海外 runner 用官方源下载 electron 二进制，比 package.json 里的 npmmirror 镜像更快
+          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
+          # 不签名（ad-hoc）：无 Developer ID 证书时 electron-builder 自动 fallback ad-hoc 签名
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            dist/*.dmg
+          if-no-files-found: error

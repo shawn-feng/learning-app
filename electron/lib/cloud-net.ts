@@ -1,37 +1,34 @@
 /**
- * 云端 HTTP 封装：统一走 Electron 的 Chromium 网络栈。
- *
- * 为什么不用全局 fetch？
- * Electron 主进程里的全局 fetch 是 Node 的 undici 实现，**不会自动应用系统代理**。
- * 在需要代理上网的环境（企业网络 / VPN / 加速器）下，直连云端会失败，
- * 表现为登录/注册等报 "fetch failed"。Electron 的 net.fetch 走 Chromium 网络栈，
- * 自动使用系统代理设置，与渲染进程行为一致。
- *
- * 兼容性：非 Electron 环境（vitest 单测等）或 electron mock 无 net 导出时，
- * 安全回退到全局 fetch，保持可测试性。
+ * 云端 HTTP 封装。
+ * 优先使用 electron.net.fetch（Chromium 网络栈）：与浏览器行为一致，
+ * 会遵循系统代理设置并读取系统证书库，因此"本机浏览器能访问的地址"
+ * 在应用内也能访问——可避免 Node 全局 fetch 在企业代理 / 自签证书
+ * （MITM）环境下报 "fetch failed" 的问题。
+ * 仅当 electron.net.fetch 不可用时（理论不会）才降级到 Node 全局 fetch。
  */
-type NetFetchFn = (input: any, init?: any) => Promise<Response>;
+import { net } from "electron";
 
-function resolveNetFetch(): NetFetchFn | null {
-  try {
-    // 运行时动态获取，避免静态 import { net } 在无 net 导出的 mock 环境下抛错
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const electron = require("electron") as { net?: { fetch?: NetFetchFn } };
-    const f = electron?.net?.fetch;
-    return typeof f === "function" ? f : null;
-  } catch {
-    return null; // 非 Electron 环境：require("electron") 失败
-  }
-}
-
-const _netFetch = resolveNetFetch();
-
-export function cloudFetch(
+export async function cloudFetch(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<Response> {
-  if (_netFetch) {
-    return _netFetch(input, init);
+  const url = typeof input === "string" ? input : String(input);
+
+  const doNodeFetch = async (): Promise<Response> => {
+    try {
+      return await fetch(input, init);
+    } catch (e) {
+      throw new Error(`无法连接云端服务（${url}）：${(e as Error).message}`);
+    }
+  };
+
+  if (net && typeof net.fetch === "function") {
+    try {
+      // 与浏览器同栈：系统代理 + 系统证书库，本机能访问的云端这里也能访问
+      return (await net.fetch(input as any, init as any)) as unknown as Response;
+    } catch (e) {
+      console.warn("[cloudFetch] electron.net.fetch 失败，降级到 Node fetch：", e);
+    }
   }
-  return fetch(input, init);
+  return doNodeFetch();
 }
