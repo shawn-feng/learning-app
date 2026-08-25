@@ -1719,3 +1719,37 @@ ffmpeg 解析输入 webm 时在 pos 36 处 EOF——**录到的 blob 只有 ~36 
 - 配套测试：新增 `test/sync-scan.test.ts`（4 用例全过）——相对路径/size/mtimeMs 正确、排除 `.pi` 且 `.` 开头文件不排除、不存在目录返回 `[]` 不抛错、流式哈希与同步 sha256 一致（512KB）、扫描期间 `setImmediate` 被调用（验证让出）。
   - ⚠️ 测试踩坑：用例里用 `setInterval` 计数会让 vitest threads worker **静默崩溃**（无任何输出直接 exit 1，`--pool=forks` 可绕过）；改用 `vi.spyOn(global, "setImmediate")` + `finally mockRestore` 规避。
 - 验证：`tsc --noEmit` 过滤 TS2318/TS2552 后 0 业务错误 ✅；`rm -rf out && npm run build` 通过 ✅；全量 `vitest run` **65 用例 53 通过 / 12 失败**（基线 61/49/12，+4 用例全过，失败项零新增）——12 个失败全为既有：learning-summary 数据漂移（280→282、下一课十五章→十七章）、sync.test 本地模拟扫描真实大目录超时（其 `scanChildFiles` 为测试内嵌模拟函数，不 import sync-manager，与本次无关）、functional `app.isPackaged`、app.test 云端 ECONNREFUSED、auto-new-session/archive-limit safe-delete 拦截。⚠️ 主进程改动需重启 `npm run dev` 生效。
+
+---
+
+## 改动：开发模式认证接入公网（config.ts）
+
+### 需求
+开发模式（未打包）的家长认证也要连公网云端，不再默认连 localhost。
+
+### 改动（`electron/lib/config.ts`）
+- `getCloudApiBase()`：统一返回 `https://www.aixuexihao.top`（开发/打包一致），`CLOUD_API_URL` 环境变量仍可覆盖（本地联调用）。
+- `getUpdateFeedUrl()`：同样统一公网 `https://www.aixuexihao.top/download/`，`UPDATE_FEED_URL` 可覆盖。
+
+### 验证
+- 新增 `test/verify-config.test.ts`（4 用例）：开发模式默认公网 ✅、环境变量覆盖 ✅、update feed 同规则 ✅。
+- tsc：我改的文件无类型错误；构建产物 out/main/index.js 含公网地址 2 处、无 localhost:8000 ✅。
+- 既有失败用例（app.test.ts 8005 云端注册、learning-summary SQLite 数据、voice ffmpeg、functional 残留目录）均为环境/数据残留问题，与本次无关。
+
+---
+
+## 修复：开发环境登录报 fetch failed（Electron 网络栈）
+
+### 现象
+`npm run dev` 下登录 `test@qq.com` 报 `fetch failed`（网络层错误）。云端实测正常（登录接口返回标准 401 JSON，API 可达）。
+
+### 根因
+主进程 `auth-manager.ts` 等用的是全局 `fetch`（Node undici），**不会自动应用系统代理**。在需代理上网的环境（企业网络 / VPN / 加速器）下直连云端失败 → `fetch failed`。Electron 的 `net.fetch`（Chromium 网络栈）会自动应用系统代理。
+
+### 改动
+- 新增 `electron/lib/cloud-net.ts`：`cloudFetch()` 封装——运行时动态获取 `electron.net.fetch`（避免静态 import 在无 net 的 mock 环境抛错），非 Electron 环境（vitest）安全回退全局 fetch。
+- 替换 3 处云端 fetch：`auth-manager.ts`（register/login/license/verify）、`sync-manager.ts`（apiCall）、`updater.ts`（fallback 下载检查）。
+
+### 验证
+- tsc 无类型错误；构建产物含 net.fetch 动态获取。
+- 测试：verify-config 4/4 ✅；sync.test 8/8 ✅；app.test 既有 2 失败（8005 本地无服务、残留目录）均为环境问题，与本次无关。

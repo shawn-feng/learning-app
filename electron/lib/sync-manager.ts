@@ -1,8 +1,10 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { getChildDir, getCloudApiBase } from "./config";
+import { getChildDir, getDataDir, getCloudApiBase } from "./config";
 import { getCachedLicense } from "./auth-manager";
+import { cloudFetch } from "./cloud-net";
+import { isBackupExcluded } from "./backup";
 
 interface SyncFileEntry {
   path: string;
@@ -85,6 +87,45 @@ function scanChildFiles(childId: string): Promise<LocalFileMeta[]> {
   return scanDirectory(getChildDir(childId));
 }
 
+// ---- ISSUE-041 层 B：profile.json 去敏（云端不存孩子密码哈希） ----
+
+function isChildProfilePath(rel: string): boolean {
+  return rel.startsWith("children/") && rel.endsWith("/profile.json");
+}
+
+/** 上传前脱敏：children/<id>/profile.json 剥离 passwordHash（源文件不动）。 */
+export function sanitizeUploadContent(rel: string, content: Buffer): Buffer {
+  if (!isChildProfilePath(rel)) return content;
+  try {
+    const obj = JSON.parse(content.toString("utf-8"));
+    if (obj && typeof obj === "object" && "passwordHash" in obj) {
+      delete obj.passwordHash;
+      return Buffer.from(JSON.stringify(obj, null, 2), "utf-8");
+    }
+  } catch {
+    /* 解析失败保持原样 */
+  }
+  return content;
+}
+
+/** 下载后合并：profile.json 若本机已有 passwordHash 则保留（换机不丢解锁；新机无则需重置）。 */
+export function mergeDownloadContent(rel: string, destAbs: string, content: Buffer): Buffer {
+  if (!isChildProfilePath(rel)) return content;
+  try {
+    const remote = JSON.parse(content.toString("utf-8"));
+    if (remote && typeof remote === "object" && fs.existsSync(destAbs)) {
+      const local = JSON.parse(fs.readFileSync(destAbs, "utf-8"));
+      if (local && typeof local === "object" && typeof local.passwordHash === "string") {
+        remote.passwordHash = local.passwordHash;
+        return Buffer.from(JSON.stringify(remote, null, 2), "utf-8");
+      }
+    }
+  } catch {
+    /* 保持原样 */
+  }
+  return content;
+}
+
 /** 流式 sha256 哈希：createReadStream 管道，天然异步、大文件不整篇入内存 */
 export async function hashFile(filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -115,7 +156,7 @@ async function apiCall(endpoint: string, options: RequestInit = {}): Promise<any
   if (!license) throw new Error("Not authenticated");
 
   const url = `${getCloudApiBase()}${endpoint}`;
-  const res = await fetch(url, {
+  const res = await cloudFetch(url, {
     ...options,
     headers: {
       ...(options.headers || {}),
@@ -170,7 +211,7 @@ async function uploadAllLocal(childId: string, localFiles: LocalFileMeta[]): Pro
   let uploaded = 0;
   await mapLimit(localFiles, CONCURRENCY, async (lf) => {
     try {
-      const content = await fs.promises.readFile(path.join(childDir, lf.path));
+      const content = sanitizeUploadContent(lf.path, await fs.promises.readFile(path.join(childDir, lf.path)));
       await uploadFile(childId, lf.path, content);
       uploaded++; // 单线程 JS，无 await 打断，自增安全
     } catch {
@@ -240,7 +281,7 @@ export async function syncChild(childId: string): Promise<{ uploaded: number; do
     if (!cloud) {
       // Only local: upload
       try {
-        await uploadFile(childId, lf.path, await fs.promises.readFile(absPath));
+        await uploadFile(childId, lf.path, sanitizeUploadContent(lf.path, await fs.promises.readFile(absPath)));
         uploaded++;
       } catch { skipped++; }
     } else {
@@ -251,7 +292,7 @@ export async function syncChild(childId: string): Promise<{ uploaded: number; do
         if (lf.mtimeMs > cloudTime) {
           // Local is newer: upload
           try {
-            await uploadFile(childId, lf.path, await fs.promises.readFile(absPath));
+            await uploadFile(childId, lf.path, sanitizeUploadContent(lf.path, await fs.promises.readFile(absPath)));
             uploaded++;
           } catch { skipped++; }
         } else {
@@ -259,7 +300,7 @@ export async function syncChild(childId: string): Promise<{ uploaded: number; do
           try {
             const content = await downloadFile(childId, lf.path);
             await fs.promises.mkdir(path.dirname(absPath), { recursive: true });
-            await fs.promises.writeFile(absPath, content);
+            await fs.promises.writeFile(absPath, mergeDownloadContent(lf.path, absPath, content));
             downloaded++;
           } catch { skipped++; }
         }
@@ -276,7 +317,7 @@ export async function syncChild(childId: string): Promise<{ uploaded: number; do
       const content = await downloadFile(childId, fp);
       const destPath = path.join(childDir, fp);
       await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
-      await fs.promises.writeFile(destPath, content);
+      await fs.promises.writeFile(destPath, mergeDownloadContent(fp, destPath, content));
       downloaded++;
     } catch { /* skip */ }
   }
@@ -317,4 +358,224 @@ export async function fullSnapshot(childId: string): Promise<{ uploaded: number 
   const localFiles = await scanChildFiles(childId);
   const uploaded = await uploadAllLocal(childId, localFiles);
   return { uploaded };
+}
+
+// ---- ISSUE-041 层 B：家长空间同步（家长库 + 全局配置跨设备迁移） ----
+
+/**
+ * 扫描家长空间本地文件（相对 data/ 的路径）：
+ * parents/<pid>/**（parent.sqlite/materials/activity-log/uploads）、agents.sqlite、
+ * scheduler-config.json、app-settings.json、token-log.jsonl、shared/skills/**。
+ * 复用 backup 的 denylist（排除敏感数据/临时备份/会话）。
+ */
+/** 扫描家长空间本地文件（相对 data/ 的路径）。导出供单测校验清单。 */
+export async function scanParentSpaceFiles(): Promise<LocalFileMeta[]> {  const dataDir = getDataDir();
+  const results: LocalFileMeta[] = [];
+  const jobs: Array<{ relPrefix: string; abs: string }> = [
+    { relPrefix: "parents", abs: path.join(dataDir, "parents") },
+    { relPrefix: "", abs: path.join(dataDir, "agents.sqlite") },
+    { relPrefix: "", abs: path.join(dataDir, "scheduler-config.json") },
+    { relPrefix: "", abs: path.join(dataDir, "app-settings.json") },
+    { relPrefix: "", abs: path.join(dataDir, "token-log.jsonl") },
+    { relPrefix: "shared/skills", abs: path.join(dataDir, "shared", "skills") },
+  ];
+
+  async function walk(rootAbs: string, relPrefix: string): Promise<void> {
+    const stat = await fs.promises.stat(rootAbs).catch(() => null);
+    if (!stat) return;
+    if (stat.isFile()) {
+      const rel = (relPrefix ? `${relPrefix}/` : "") + path.basename(rootAbs);
+      if (isBackupExcluded(rel)) return;
+      results.push({ path: rel, size: stat.size, mtimeMs: stat.mtimeMs });
+      return;
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(rootAbs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(rootAbs, entry.name);
+      const rel = (relPrefix ? `${relPrefix}/` : "") + entry.name;
+      if (entry.isDirectory()) {
+        if (entry.name === ".pi") continue;
+        await walk(full, rel);
+      } else {
+        if (isBackupExcluded(rel)) continue;
+        try {
+          const s = await fs.promises.stat(full);
+          if (s.isFile()) results.push({ path: rel, size: s.size, mtimeMs: s.mtimeMs });
+        } catch {
+          /* skip */
+        }
+      }
+      if (results.length % 20 === 0) {
+        await new Promise<void>((r) => setImmediate(r));
+      }
+    }
+  }
+
+  for (const j of jobs) await walk(j.abs, j.relPrefix);
+  return results;
+}
+
+async function uploadParentFile(filePath: string, content: Buffer): Promise<void> {
+  const formData = new FormData();
+  formData.append("file_path", filePath);
+  formData.append("file", new Blob([content]), path.basename(filePath));
+  await apiCall(`/api/sync/parent/upload`, { method: "POST", body: formData });
+}
+
+async function downloadParentFileAndWrite(filePath: string): Promise<void> {
+  const formData = new FormData();
+  formData.append("file_path", filePath);
+  const resp = await apiCall(`/api/sync/parent/download`, { method: "POST", body: formData });
+  const content = Buffer.from(resp.content_base64, "base64");
+  const abs = path.join(getDataDir(), filePath);
+  await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+  await fs.promises.writeFile(abs, content);
+}
+
+/**
+ * 同步家长空间（家长库 + 全局配置）：与孩子同步同款 last-write-wins + size 预过滤。
+ */
+export async function syncParentLibrary(): Promise<{ uploaded: number; downloaded: number; skipped: number }> {
+  const license = getCachedLicense();
+  if (!license) throw new Error("Not authenticated");
+
+  let uploaded = 0;
+  let downloaded = 0;
+  let skipped = 0;
+
+  const localFiles = await scanParentSpaceFiles();
+  let cloudFiles: SyncFileEntry[] = [];
+  try {
+    const resp = await apiCall(`/api/sync/parent/status`);
+    cloudFiles = Array.isArray(resp?.files) ? (resp.files as SyncFileEntry[]) : [];
+  } catch {
+    // 云不可达：并发上传全部本地文件
+    await mapLimit(localFiles, CONCURRENCY, async (lf) => {
+      try {
+        const content = sanitizeUploadContent(
+          lf.path,
+          await fs.promises.readFile(path.join(getDataDir(), lf.path))
+        );
+        await uploadParentFile(lf.path, content);
+        uploaded++;
+      } catch {
+        /* skip failures */
+      }
+    });
+    return { uploaded, downloaded, skipped };
+  }
+
+  const cloudMap = new Map(cloudFiles.map((f) => [f.path, f]));
+  const needHash = localFiles.filter((lf) => {
+    const c = cloudMap.get(lf.path);
+    return c && c.size === lf.size;
+  });
+  const localHashByPath = new Map<string, string>();
+  if (needHash.length > 0) {
+    const hashes = await mapLimit(needHash, CONCURRENCY, async (lf) => {
+      try {
+        return { path: lf.path, hash: await hashFile(path.join(getDataDir(), lf.path)) };
+      } catch {
+        return { path: lf.path, hash: "" };
+      }
+    });
+    for (const h of hashes) localHashByPath.set(h.path, h.hash);
+  }
+
+  for (const lf of localFiles) {
+    const cloud = cloudMap.get(lf.path);
+    const abs = path.join(getDataDir(), lf.path);
+    if (!cloud) {
+      try {
+        await uploadParentFile(
+          lf.path,
+          sanitizeUploadContent(lf.path, await fs.promises.readFile(abs))
+        );
+        uploaded++;
+      } catch {
+        skipped++;
+      }
+    } else {
+      const sameContent = cloud.size === lf.size && localHashByPath.get(lf.path) === cloud.hash;
+      if (!sameContent) {
+        if (lf.mtimeMs > new Date(cloud.updated_at).getTime()) {
+          try {
+            await uploadParentFile(
+              lf.path,
+              sanitizeUploadContent(lf.path, await fs.promises.readFile(abs))
+            );
+            uploaded++;
+          } catch {
+            skipped++;
+          }
+        } else {
+          try {
+            await downloadParentFileAndWrite(lf.path);
+            downloaded++;
+          } catch {
+            skipped++;
+          }
+        }
+      } else {
+        skipped++;
+      }
+    }
+    cloudMap.delete(lf.path);
+  }
+
+  for (const [fp] of cloudMap) {
+    try {
+      await downloadParentFileAndWrite(fp);
+      downloaded++;
+    } catch {
+      /* skip */
+    }
+  }
+
+  return { uploaded, downloaded, skipped };
+}
+
+/**
+ * 全量同步（ISSUE-041 层 B：换机/多设备迁移入口）：
+ * 云端孩子清单 ∪ 本地孩子 → 逐个 syncChild；再同步家长空间。
+ * 新机登录同账号后调用一次即可拉回全部孩子数据 + 家长库/全局配置。
+ */
+export async function syncAllData(): Promise<{
+  children: Record<string, { uploaded: number; downloaded: number; skipped: number } | { error: string }>;
+  parent: { uploaded: number; downloaded: number; skipped: number } | { error: string };
+}> {
+  const { listChildren } = await import("./child-auth");
+  const localIds = listChildren().map((c) => c.childId);
+  let cloudIds: string[] = [];
+  try {
+    const resp = await apiCall(`/api/sync/children`);
+    cloudIds = Array.isArray(resp?.children) ? (resp.children as string[]) : [];
+  } catch {
+    /* 云不可达：只同步本地已知孩子 */
+  }
+  const allIds = Array.from(new Set([...localIds, ...cloudIds]));
+
+  const children: Record<string, { uploaded: number; downloaded: number; skipped: number } | { error: string }> = {};
+  await mapLimit(allIds, 4, async (id) => {
+    try {
+      const dir = getChildDir(id);
+      await fs.promises.mkdir(dir, { recursive: true });
+      children[id] = await syncChild(id);
+    } catch (e) {
+      children[id] = { error: (e as Error).message };
+    }
+  });
+
+  let parent: { uploaded: number; downloaded: number; skipped: number } | { error: string };
+  try {
+    parent = await syncParentLibrary();
+  } catch (e) {
+    parent = { error: (e as Error).message };
+  }
+  return { children, parent };
 }

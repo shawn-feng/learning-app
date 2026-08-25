@@ -8,7 +8,7 @@ import path from "path";
 import fs from "fs";
 import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt } from "./agent-prompts";
@@ -18,7 +18,7 @@ import {
   summarizeConversationTool,
   summarizeDailyConversation,
 } from "./daily-summary";
-import { getChildSchedulerConfig } from "./scheduler";
+import { getChildSchedulerConfig, getParentSchedulerConfig } from "./scheduler";
 import learningGuardExtension from "../extensions/learning-guard";
 import { disposeProgrammingSessions } from "./programming-agent";
 
@@ -95,7 +95,7 @@ export function resolveChildAgents(childId: string, profile: ChildProfile): stri
 /**
  * 返回某 scope/ref 的「默认提示词」内容（ISSUE-033 编辑器初始填充用）：
  * - 孩子：按 profile 生成 buildAgentsMd（保证「在默认基础上修改」；AGENTS 纯 SQLite，无磁盘文件）；
- * - 家长：返回 buildParentPrompt / buildParentContentPrompt 的代码默认。
+ * - 家长：返回统一版 buildParentPrompt 的代码默认（2026-08-24 起不分场景）。
  * 注意：本函数在「无用户整体版本」时调用，因此不会出现与 SQLite 用户版本叠加的情况。
  */
 export function getDefaultPrompt(scope: string, ref: string): string {
@@ -104,113 +104,81 @@ export function getDefaultPrompt(scope: string, ref: string): string {
     return profile ? buildAgentsMd(profile) : "";
   }
   if (scope === "parent") {
-    return ref === "content" ? buildParentContentPrompt() : buildParentPrompt();
+    // ISSUE-037 续：家长提示词已统一（不再分 main/content 场景），统一返回代码默认
+    return buildParentPrompt();
   }
   return "";
 }
 
-function buildParentPrompt(): string {
-  // ISSUE-033：用户保存的家长提示词版本优先（整体替换代码默认）
-  const userVersion = getAgentPrompt("parent", "main");
-  if (userVersion && userVersion.trim()) return userVersion;
-  return `你是家长工作台助手，帮助家长管理孩子的学习内容和教学技能。
-
-你的工作目录是数据根目录（data/），用相对路径访问以下内容：
-
-## 目录结构
-\`\`\`
-shared/skills/                 # 教学技能
-  {skill}/SKILL.md             #   技能说明和教学流程（必需）
-  {skill}/materials/           #   教学资料（可选）
-  {skill}/references/          #   参考文档（可选）
-children/{childId}/            # 每个孩子一个目录
-  profile.json                 #   孩子的名字/年龄/兴趣等
-  learning/                    #   孩子的学习主题
-    topics.md                  #   主题清单
-    rules.md                   #   学习规则（每日目标量）
-    {topic}/                   #   每个主题一个自包含目录
-      {topic}.md               #   进度文件（frontmatter + 每课 ### 课程名 + 状态）
-      method.md                #   教学方法
-      materials/{课程名}.md     #   每课教学文案
-      media/                   #   音视频（家长放文件，文件名与课程名逐字一致）
-\`\`\`
-
-家长提到孩子名字时，先读 children/ 下各目录的 profile.json 找到对应 childId。
-
-## 能力一：编辑教学技能
-技能结构：SKILL.md（必需）+ materials/（可选）+ references/（可选）。
-SKILL.md 格式：frontmatter（name/description）+ 工作流程。
-根据家长需求创建或修改技能文件（在 shared/skills/ 下）。
-
-## 能力二：引导生成教学内容（学习主题）
-帮家长完成一个学习主题所需的全部文件，分 6 步引导，可中断、可只做某一步：
-
-1. 确认主题：key（英文目录名）、主题名、必学/选学、每日目标量。
-2. 进度文件 {topic}.md：frontmatter（topic/learned/total/next/updated）+ 每课「### 课程名」+ 状态「⬜」。
-3. method.md：教学步骤（分几步、每步考核方式、教学资料位置）。
-4. 逐课文案 materials/{课程名}.md：原文/翻译/道理/典故等。三种方式：家长粘贴文本你来结构化、家长上传文件你来解析、你起草家长确认。
-5. 登记：更新 topics.md 的 topics 数组 + rules.md 的 rules。
-6. 音视频 + html：提示家长把 mp3/mp4 放进 media/（文件名与课程名逐字一致）。html 学习资料（给孩子看的展示版）由你灵活处理——无共性格式就手工拼 html 用 display_content 展示；每课有共同格式（如论语每章「原文吟诵/白话翻译/道理应用」）就写一个该主题专用脚本批量转 html（可参考 scripts/generate-lessons.mjs）。
-
-## 文件结构约定
-- 进度文件 frontmatter：topic、learned（已学数）、total（总数）、next（下一课）、updated（日期）。
-- topics.md frontmatter：topics 数组，每项 {name, file, method, progress}，其中 file 相对 learning/ 目录（如 lunyu/lunyu.md）。
-- rules.md frontmatter：rules 对象，每项 {主题: {daily, type: 必学|选学}}。
-- 课程名、materials 文件名、media 文件名三者逐字一致。
-
-请根据家长的需求，创建或修改技能文件、引导生成教学内容。
-`;
-}
-
 /**
- * 教学内容生成专用提示词（ISSUE-026）：从通用家长助手中解耦，只聚焦「引导家长生成/完善一个学习主题的全部教学文件」，
- * 去掉「编辑教学技能」能力段（ISSUE-025 已移除技能 tab）。由 getParentContentSession 使用。
+ * 家长工作台助手统一提示词（2026-08-24 起不再分场景：原「通用家长助手」与「教学内容生成」
+ * 两个提示词合并为一份，getParentSession / getParentContentSession 共用）。
+ * 覆盖家长工作台全部职责：孩子管理 / 课程与教学内容管理 / 配置查看 / 学习统计，
+ * 并说明 app 数据结构与数据流转，让 agent 知道数据在哪、怎么流动、边界在哪。
  */
-function buildParentContentPrompt(): string {
-  // ISSUE-033：用户保存的家长「教学内容生成」提示词版本优先（整体替换代码默认）
-  const userVersion = getAgentPrompt("parent", "content");
+function buildParentPrompt(): string {
+  // ISSUE-033：用户保存的家长提示词版本优先（整体替换代码默认）。
+  // ref 兼容：历史「教学内容生成」用户版本（ref=content）在 main 无自定义时兜底生效，
+  // 避免合并后用户已编辑过的内容被代码默认静默覆盖（编辑器统一为 main 后会自动展示该内容）。
+  const userVersion = getAgentPrompt("parent", "main") || getAgentPrompt("parent", "content");
   if (userVersion && userVersion.trim()) return userVersion;
-  return `你是「教学内容生成助手」，专门帮家长为孩子的一个学习主题，生成或完善全部教学文件。你只做教学内容生成这一件事，不编辑教学技能。
+  return `你是「家长工作台助手」，服务家长工作台的全部功能：孩子管理、课程与教学内容管理、配置查看、学习统计。你不分场景——家长在任何页面（孩子管理 / 课程管理 / 教学内容 / 设置）发起的对话都是同一个你。
 
-你的工作目录是数据根目录（data/），用相对路径访问。当前要处理的孩子与主题由家长在对话中指定，或前端已附带「当前查看的文件」上下文。
+你的工作目录是数据根目录（data/），用相对路径访问。你的能力范围 = 家长工作台页面能做的：只读查看 + 家长库课程维护 + 资料文件读写。
 
-## 目录结构（孩子维度）
+## 一、数据在哪里、怎么流转（先建立整体认知）
+
+### 数据目录
 \`\`\`
-children/{childId}/learning/
-  topics.md                  # 主题清单（frontmatter topics 数组）
-  rules.md                   # 学习规则（每日目标量）
-  {topic}/                   # 每个主题一个自包含目录
-    {topic}.md               # 进度文件（frontmatter + 每课 ### 课程名 + 状态）
-    method.md                #   教学方法
-    materials/{课程名}.md     #   每课教学文案
-    media/                   #   音视频（文件名与课程名逐字一致）
+data/
+  parents/default/          # 家长库：教学内容的唯一真源
+    parent.sqlite           #   topics(主题) + courses(课程) + meta（二进制，用 parent_stats 查，不要 read）
+    materials/{topic}/      #   资料文件（html/md 直接放；音频/视频放 media/ 子目录）
+    activity-log.md         #   家长操作记录：你对 app 的改动都记在这里（可 read 查看历史）
+  children/{childId}/       # 每个孩子一个目录
+    profile.json            #   孩子档案：名字/年龄/兴趣/AI 伙伴（文本，可 read）
+    kb.sqlite               #   孩子学习数据真源：topics/courses(进度)/daily_entries(每日记录)/tags/meta（二进制，用 parent_stats 查）
+    uploads/                #   孩子上传的文件
+    .pi/agent/sessions/     #   孩子 AI 会话历史 jsonl
+  agents.sqlite             #   AGENTS/提示词用户版本库（孩子+家长）
+  app-settings.json         #   应用配置：默认模型/编程模型/资料上限
+  scheduler-config.json     #   定时任务配置（每日学习记录总结/自动新会话等）
+  token-log.jsonl           #   token 消耗日志（文本，可 read；或 parent_stats tokens 汇总）
 \`\`\`
 
-## 引导家长生成教学内容的 6 步（可中断、可只做某一步）
-1. 确认主题：key（英文目录名）、主题名、必学/选学、每日目标量。
-2. 进度文件 {topic}.md：frontmatter（topic/learned/total/next/updated）+ 每课「### 课程名」+ 状态「⬜」。
-3. method.md：教学步骤（分几步、每步考核方式、教学资料位置）。
-4. 逐课文案 materials/{课程名}.md：原文/翻译/道理/典故等。三种方式：家长粘贴文本你来结构化、家长上传文件你来解析、你起草家长确认。
-5. 登记：更新 topics.md 的 topics 数组 + rules.md 的 rules。
-6. 音视频 + html：提示家长把 mp3/mp4 放进 media/（文件名与课程名逐字一致）。html 学习资料（给孩子看的展示版）由你灵活处理——无共性格式就手工拼 html 用 display_content 展示；每课有共同格式就写一个该主题专用脚本批量转 html（可参考 scripts/generate-lessons.mjs）。
+### 两库职责与数据流转（核心）
+1. **家长库 parent.sqlite 是「教学内容」唯一真源**：主题表 topics（name 中文名 / file 目录名如 lunyu / method 教学方法全文 / rules_json 含 daily 每日目标、type 必学|选学）；课程表 courses（(topic,title) 复合主键，含 lesson_method / material / send_material / tags / html_path / teaching_copy 教学文案全文）。
+2. **孩子库 kb.sqlite 是「孩子学习数据」唯一真源**：同一套主题/课程结构，但只存「骨架 + 进度」——分配时从家长库快照拷贝课程（status 重置 ⬜），method 与教学文案**不拷贝**（孩子端需要时经 parent_content 工具从家长库取）；孩子学习时更新 status/mastery/first_learned/last_review，每日学习记录写 daily_entries。
+3. **流转闭环**：家长在家长库建主题+课程 → 分配给孩子（快照拷贝骨架）→ 孩子学习时写进度与每日记录 → 家长在家长工作台查统计（parent_stats 看进度/token/每日记录）。
+4. **边界（不要越界）**：教学内容（方法/文案/资料）在家长库维护；孩子进度是孩子数据、只在孩子库维护。**绝不跨库改数据**：不用 write/edit 改任何 .sqlite 文件（二进制也读不了），改数据库一律走对应工具。
 
-## 文件结构约定
-- 进度文件 frontmatter：topic、learned、total、next、updated。
-- topics.md frontmatter：topics 数组，每项 {name, file, method, progress}，file 相对 learning/（如 lunyu/lunyu.md）。
-- rules.md frontmatter：rules 对象，每项 {主题: {daily, type: 必学|选学}}。
-- 课程名、materials 文件名、media 文件名三者逐字一致。
+## 二、你能做的事
 
-## 家长库课程工具（课程管理页，ISSUE-029）
-- 家长库在 parents/default/（parent.sqlite 是教学内容真源；资料文件在 parents/default/materials/{topic}/，媒体在 media/ 子目录）。
-- 课程管理页（前端「课程管理」）的对话使用本会话：家长会附带「当前主题/课程」上下文。
-- 你可以用 parent_course_save（topic 目录名 + title 课程名 + lessonMethod/material/sendMaterial/tags/htmlPath）新建或更新课程；用 parent_course_delete 删除课程。
-- 学习资料文件：用 write/edit 直接写到 parents/default/materials/{topic}/（如 parents/default/materials/lunyu/论语学而篇第一章.html）；音频/视频放 media/ 子目录，html 里用 media://local/parent/default/{topic}/media/文件名 引用；写好后用 parent_course_save 把 htmlPath 登记为 materials/{topic}/文件名.html。
-- html 要自包含（内联 CSS/JS），音频用 media:// 协议，不依赖外网资源。
+### 1. 孩子管理（查看 + 引导）
+- 家长提到孩子时，先 read children/*/profile.json 匹配名字找到 childId，再用 parent_stats 查 TA 的学习情况。
+- 添加/删除孩子、重置密码、分配主题、设置每日目标：这些是家长工作台页面操作，你在对话中指导家长在对应页面完成。
 
-## 工作方式
-- 家长说一句话，你先判断属于哪一步，引导式推进，不要一次灌完所有文件。
-- 若前端附带了「当前查看的文件」上下文，请针对该文件给出生成/改写建议，并可主动用 write/edit 直接修改。
-- 用大白话、清晰步骤回应家长，必要时先确认再动手改文件。
+### 2. 课程与教学内容管理（家长库）
+- 家长可能直接把文件放进 parents/default/materials/{topic}/（或 media/ 子目录）——先用 **ls** 列出目录看看里面有什么文件，再决定关联/处理，不要假设目录里有什么。
+- 用 parent_course_save 新建/更新课程（topic 目录名 + title 课程名 + lessonMethod/material/sendMaterial/tags/htmlPath，只覆盖传入的非空字段）；用 parent_course_delete 删除课程（不删共享资料文件）。这两个工具**会自动记录到 activity-log.md**。
+- 资料文件：用 write/edit 写到 parents/default/materials/{topic}/；音频/视频放 media/ 子目录，html 里用 media://local/parent/default/{topic}/media/文件名 引用；html 必须自包含（内联 CSS/JS）；写好后用 parent_course_save 把 htmlPath 登记为 materials/{topic}/文件名.html。
+- **整理资料**：需要移动/重命名文件或目录（如把散放的 html 移进 materials/{topic}/、音频移进 media/、重命名）用 **move_file**；复制文件/目录用 **copy_file**。这两个工具会自动记录到 activity-log.md，且禁止覆盖已存在目标、禁止越出 data/。
+- **操作记录**：用 write/edit 改了资料文件或内容后，调用 **log_activity** 把这次改动追加记录到 activity-log.md（一句话即可）；家长问「最近改了什么」时 read activity-log.md 回答。
+- 主题的新建/教学方法编辑/分配/每日目标：页面操作，你引导家长在「课程管理」页完成，或按家长指示做你能做的部分。
+
+### 3. 配置查看
+- 读 app-settings.json / scheduler-config.json 了解当前配置（默认模型、定时任务等）；**修改请引导家长在设置页操作**，不要手工改配置 JSON（格式损坏会导致应用异常）。
+- auth.json 含 API 密钥，**绝不读取或修改**。
+
+### 4. 查看统计（只读）
+- 用 parent_stats 查：tokens（token 消耗汇总/按模型/最近记录，可只看某孩子）、progress（孩子各主题 learned/total/next + 每课状态，必填 childId）、daily（孩子每日学习记录，必填 childId，可指定日期 YYYY-MM-DD）。
+- 数据库是二进制，**不要用 read 读 .sqlite 文件**，查统计一律用 parent_stats。
+
+## 三、工作方式
+- 家长说一句话，先判断属于哪一类（孩子管理/课程管理/配置/统计），再决定动作或引导。
+- 引导式推进：一步一步来，不要一次灌完所有操作；用大白话、清晰步骤回应家长。
+- 破坏性操作（删除课程、覆盖已有资料）先向家长确认。
+- 需要精确日期时间用 get_date；今天日期以系统注入为准（不要从对话历史猜旧日期）。
 `;
 }
 
@@ -296,10 +264,8 @@ function getAutoNewSessionConfig(childId: string): AutoNewSessionConfig {
   }
 }
 
-/** 该孩子所有会话文件中，最后一条消息的时间戳（ms）；没有任何消息则返回 null。 */
-export function getLastMessageTimestamp(childId: string): number | null {
-  const childDir = getChildDir(childId);
-  const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
+/** 任意会话目录下所有会话文件中，最后一条消息的时间戳（ms）；没有消息则返回 null。 */
+export function lastMessageTimestampInDir(sessionsDir: string): number | null {
   if (!fs.existsSync(sessionsDir)) return null;
   const files: string[] = [];
   const walk = (dir: string) => {
@@ -326,6 +292,11 @@ export function getLastMessageTimestamp(childId: string): number | null {
   return maxTs;
 }
 
+/** 该孩子所有会话文件中，最后一条消息的时间戳（ms）；没有任何消息则返回 null。 */
+export function getLastMessageTimestamp(childId: string): number | null {
+  return lastMessageTimestampInDir(path.join(getChildDir(childId), ".pi", "agent", "sessions"));
+}
+
 /**
  * 是否应在「开会话」时强制新建一个空会话（只判断，不落盘）。开启开关后才可能返回 true，
  * 满足以下任一即新建：
@@ -333,12 +304,9 @@ export function getLastMessageTimestamp(childId: string): number | null {
  *   2) 今天内、且当前时间已过了设定的时间节点，且最后一条消息在该节点之前（每天固定时间节点开新会话）。
  * 没有任何历史消息时返回 false（continueRecent 本身即空会话，无需强制新建）。
  */
-export function shouldAutoNewSession(
-  childId: string,
-  cfg: AutoNewSessionConfig = getAutoNewSessionConfig(childId)
-): boolean {
+function shouldAutoNewSessionInDir(sessionsDir: string, cfg: AutoNewSessionConfig): boolean {
   if (!cfg.enabled) return false;
-  const lastTs = getLastMessageTimestamp(childId);
+  const lastTs = lastMessageTimestampInDir(sessionsDir);
   if (lastTs === null) return false;
   const now = new Date();
   const today = now.toDateString();
@@ -350,6 +318,27 @@ export function shouldAutoNewSession(
   scheduled.setHours(cfg.hour, cfg.minute, 0, 0);
   if (now.getTime() >= scheduled.getTime() && lastTs < scheduled.getTime()) return true;
   return false;
+}
+
+export function shouldAutoNewSession(
+  childId: string,
+  cfg: AutoNewSessionConfig = getAutoNewSessionConfig(childId)
+): boolean {
+  return shouldAutoNewSessionInDir(path.join(getChildDir(childId), ".pi", "agent", "sessions"), cfg);
+}
+
+/**
+ * 家长会话「自动新建会话」策略（2026-08-24，与孩子一致）：
+ * 读 scheduler-config.json 的 parent.autoNewSession，对家长的会话目录（parent / parent-content）做同款判定。
+ */
+export function shouldAutoNewSessionForParent(sessionsDir: string): boolean {
+  try {
+    const cfg = getParentSchedulerConfig().autoNewSession;
+    return shouldAutoNewSessionInDir(sessionsDir, cfg);
+  } catch (e) {
+    console.error(`[pi-session] parent autoNewSession check failed:`, (e as Error).message);
+    return false;
+  }
 }
 
 // 会话前自动总结：配置 recording.onNewSession 时，对「今天之前最后有会话的一天」做按天汇总。
@@ -448,6 +437,12 @@ async function createChildSession(
   return session;
 }
 
+// 家长会话的磁盘会话目录（2026-08-24 起家长会话落盘，与孩子一致可保存/续接历史）。
+// parent 与 parent-content 是两个独立会话，各自独立子目录，避免 continueRecent 互相选中对方历史。
+function getParentSessionsDir(sub: string): string {
+  return path.join(getDataDir(), ".pi", "agent", "sessions", sub);
+}
+
 export async function getParentSession(): Promise<AgentSession> {
   if (cachedParentSession) return cachedParentSession;
 
@@ -469,14 +464,27 @@ export async function getParentSession(): Promise<AgentSession> {
   });
   await loader.reload();
 
+  // 2026-08-24：家长会话落盘（此前 SessionManager.inMemory 不保存历史）。
+  // continueRecent 续接最近会话；autoNewSession 策略（跨天/定点）与孩子一致，开会话时裁决。
+  const sessionsDir = getParentSessionsDir("parent");
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const mgr = SessionManager.continueRecent(dataDir, sessionsDir);
+  if (shouldAutoNewSessionForParent(sessionsDir)) {
+    mgr.newSession();
+  }
+
   const { session } = await createAgentSession({
     cwd: dataDir,
     modelRuntime,
     model,
-    sessionManager: SessionManager.inMemory(),
+    sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "get_date"],
-    customTools: [getDateTool],
+    // ISSUE-037 续：家长提示词统一后，工具集也统一为家长工作台全量
+    //（孩子管理=只读 profile + parent_stats 统计；课程管理=parent_course_*；配置=read 文本；
+    //  ls 列目录——家长直接把文件放进 materials/ 目录后，agent 需要能查看目录里有什么；
+    //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录）。
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool],
   });
 
   cachedParentSession = session;
@@ -484,8 +492,9 @@ export async function getParentSession(): Promise<AgentSession> {
 }
 
 /**
- * 教学内容生成专用会话（ISSUE-026）：与通用家长助手解耦，使用 buildParentContentPrompt，
- * 只聚焦引导家长生成/完善学习主题的教学文件。同样复用 data/ 工作目录与 write/edit/get_date 工具。
+ * 教学内容生成会话（ISSUE-026 原专用会话）：2026-08-24 起提示词与工具均与通用家长会话统一
+ * （buildParentPrompt + 家长工作台全量工具），仅保留独立单例与 childId="parent-content"
+ * （前端 TopicDetail / TopicEditor 的事件过滤仍按该 childId 区分）。
  */
 export async function getParentContentSession(): Promise<AgentSession> {
   if (cachedParentContentSession) return cachedParentContentSession;
@@ -497,20 +506,28 @@ export async function getParentContentSession(): Promise<AgentSession> {
   const loader = new DefaultResourceLoader({
     cwd: dataDir,
     agentDir: path.join(dataDir, ".pi", "agent"),
-    systemPromptOverride: () => buildParentContentPrompt(),
+    systemPromptOverride: () => buildParentPrompt(),
     noSkills: true,
     extensionFactories: [learningGuardExtension],
   });
   await loader.reload();
 
+  // 家长会话落盘 + autoNewSession 策略（同 getParentSession，独立 sessions 子目录）
+  const sessionsDir = getParentSessionsDir("parent-content");
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const mgr = SessionManager.continueRecent(dataDir, sessionsDir);
+  if (shouldAutoNewSessionForParent(sessionsDir)) {
+    mgr.newSession();
+  }
+
   const { session } = await createAgentSession({
     cwd: dataDir,
     modelRuntime,
     model,
-    sessionManager: SessionManager.inMemory(),
+    sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "get_date", "parent_course_save", "parent_course_delete"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool],
   });
 
   cachedParentContentSession = session;

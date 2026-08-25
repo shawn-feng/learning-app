@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import VoiceSettings from "../components/VoiceSettings";
 import SchedulerSettings from "../components/SchedulerSettings";
+import BackupSettings from "../components/BackupSettings";
 import GeneralSettings from "../components/GeneralSettings";
 import TopicEditor from "../components/TopicEditor";
 
@@ -24,7 +25,7 @@ const PROVIDERS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "voice" | "scheduler" | "general" | "topics">("models");
+  const [tab, setTab] = useState<"models" | "voice" | "scheduler" | "general" | "topics" | "backup">("models");
   const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
@@ -131,6 +132,7 @@ export default function Settings() {
             ["topics", "教学内容"],
             ["voice", "语音配置"],
             ["scheduler", "定时任务"],
+            ["backup", "数据备份"],
             ["general", "通用设置"],
           ] as const
         ).map(([id, label]) => (
@@ -312,6 +314,8 @@ export default function Settings() {
       {tab === "voice" && <VoiceSettings />}
 
       {tab === "scheduler" && <SchedulerSettings />}
+
+      {tab === "backup" && <BackupSettings />}
 
       {tab === "general" && <GeneralSettings />}
     </div>

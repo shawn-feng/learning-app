@@ -13,6 +13,14 @@ interface ChildItem {
   aiEmoji?: string;
 }
 
+interface ParentSchedulerConfig {
+  autoNewSession: { enabled: boolean; hour: number; minute: number };
+}
+
+function defaultParentConfig(): ParentSchedulerConfig {
+  return { autoNewSession: { enabled: false, hour: 21, minute: 0 } };
+}
+
 function defaultConfig(): SchedulerChildConfig {
   return {
     recording: { enabled: false, times: ["21:00"], onNewSession: false },
@@ -27,6 +35,9 @@ export default function SchedulerSettings() {
   const [configs, setConfigs] = useState<Record<string, SchedulerChildConfig>>({});
   const [status, setStatus] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
+  // 家长会话配置（autoNewSession，2026-08-24：家长会话持久化 + 自动新建策略）
+  const [parentCfg, setParentCfg] = useState<ParentSchedulerConfig>(defaultParentConfig());
+  const [parentStatus, setParentStatus] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -39,6 +50,10 @@ export default function SchedulerSettings() {
       if (res?.success) {
         for (const [childId, cfg] of Object.entries(res.configs || {})) {
           map[childId] = cfg as SchedulerChildConfig;
+        }
+        // 家长会话配置（scheduler:config:get 现在返回 parent 段）
+        if (res.parent) {
+          setParentCfg({ ...defaultParentConfig(), ...res.parent });
         }
       }
       for (const c of childrenList) {
@@ -71,6 +86,24 @@ export default function SchedulerSettings() {
     }
   }
 
+  async function saveParent() {
+    const res = await window.api.schedulerParentConfigSet(parentCfg);
+    if (res?.success) {
+      setParentStatus("已保存");
+    } else {
+      setParentStatus(`保存失败: ${res?.error || "未知错误"}`);
+    }
+  }
+
+  function updateParentTime(value: string) {
+    const [h, m] = value.split(":").map((x) => Number(x));
+    if (Number.isFinite(h) && Number.isFinite(m)) {
+      setParentCfg((p) => ({ ...p, autoNewSession: { ...p.autoNewSession, hour: h, minute: m } }));
+    }
+  }
+
+  const pad2 = (n: number) => String(n).padStart(2, "0");
+
   return (
     <div className="settings-section">
       <h3>定时任务</h3>
@@ -80,12 +113,86 @@ export default function SchedulerSettings() {
 
       {!loaded ? (
         <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>
-      ) : children.length === 0 ? (
-        <p style={{ color: "#888", fontSize: 13 }}>还没有孩子账号。</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {children.map((child) => {
-            const cfg = configs[child.childId] || defaultConfig();
+          {/* 家长会话（自动新建会话）配置区——2026-08-24：家长会话持久化，策略与孩子一致 */}
+          <div
+            style={{
+              border: "1px solid #eee",
+              borderRadius: 10,
+              padding: 16,
+              background: "#fafbff",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 10,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 15 }}>家长会话（自动新建会话）</div>
+              <button
+                onClick={saveParent}
+                style={{
+                  padding: "6px 14px",
+                  background: "#667eea",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                保存
+              </button>
+            </div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
+              家长工作台的 AI 会话（课程管理 / 教学内容）会持久保存对话历史。开启后：跨天自动开新会话；或每天到设定时间自动开新会话（与孩子一致）。旧会话保留为归档。
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={parentCfg.autoNewSession.enabled}
+                onChange={(e) =>
+                  setParentCfg((p) => ({
+                    ...p,
+                    autoNewSession: { ...p.autoNewSession, enabled: e.target.checked },
+                  }))
+                }
+              />
+              自动新建会话
+            </label>
+            {parentCfg.autoNewSession.enabled && (
+              <div style={{ marginTop: 8, marginLeft: 26, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13, color: "#666" }}>每天新建时间：</span>
+                <input
+                  type="time"
+                  value={`${pad2(parentCfg.autoNewSession.hour)}:${pad2(parentCfg.autoNewSession.minute)}`}
+                  onChange={(e) => updateParentTime(e.target.value)}
+                  style={{
+                    padding: "4px 6px",
+                    border: "1px solid #ddd",
+                    borderRadius: 6,
+                    fontSize: 13,
+                  }}
+                />
+              </div>
+            )}
+            {parentStatus && (
+              <div style={{ fontSize: 12, color: parentStatus.includes("失败") ? "red" : "#48bb78", marginTop: 6 }}>
+                {parentStatus}
+              </div>
+            )}
+          </div>
+
+          {children.length === 0 ? (
+            <p style={{ color: "#888", fontSize: 13 }}>还没有孩子账号。</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {children.map((child) => {
+                const cfg = configs[child.childId] || defaultConfig();
             return (
               <div
                 key={child.childId}
@@ -410,6 +517,8 @@ export default function SchedulerSettings() {
           })}
         </div>
       )}
+    </div>
+  )}
     </div>
   );
 }

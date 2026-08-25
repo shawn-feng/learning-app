@@ -39,11 +39,11 @@ describe("getChildState 向前兼容老结构", () => {
     expect(cs.recording.lastRun).toBe("2026-08-10T08:00:00.000Z");
   });
 
-  it("全新孩子初始化出完整三键结构", () => {
+  it("全新孩子初始化出完整四键结构（含 ISSUE-041 层 C 的 event-poll）", () => {
     const state: TaskState = { children: {} };
     const cs = getChildState(state, "kid-3");
     expect(Object.keys(cs).sort()).toEqual(
-      ["auto-new-session", "recording", "session-reset"].sort()
+      ["auto-new-session", "event-poll", "recording", "session-reset"].sort()
     );
     for (const key of Object.keys(cs)) {
       expect((cs as any)[key].lastRun).toBe("");

@@ -1,7 +1,7 @@
 /**
  * AGENTS / 系统提示词「用户可编辑版本」存储（ISSUE-033）。
  *
- * 设计：代码默认提示词（buildAgentsMd / buildParentPrompt / buildParentContentPrompt）与
+ * 设计：代码默认提示词（buildAgentsMd / buildParentPrompt）与
  * 用户版本**完全解耦**——用户一旦保存自己的版本，即以「整体替换」方式成为该 scope/ref 的
  * 唯一权威，开会话时直接写入用户版本，不再被源码默认覆盖。编辑坏了可「恢复默认」（删除用户版本），
  * 且每次保存都会沉淀历史版本，可随时回退。
@@ -12,8 +12,8 @@
  *
  * scope/ref：
  *   - 孩子：scope="child",  ref=<childId>   （对应 AGENTS.md）
- *   - 家长：scope="parent", ref="main"      （通用家长工作台助手提示词）
- *   - 家长：scope="parent", ref="content"   （教学内容生成专用提示词）
+ *   - 家长：scope="parent", ref="main"      （统一家长工作台提示词，2026-08-24 起不分场景；
+ *                                           历史 ref="content" 行仅在 main 无自定义时兜底读取）
  */
 import path from "path";
 import { DatabaseSync } from "node:sqlite";

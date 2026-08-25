@@ -1383,7 +1383,7 @@
   - 打包：`package.json` 已配 electron-builder（win nsis x64 / linux deb+AppImage / mac dmg），`npm run dist:win` 出 `dist/`；**无 `publish` 配置、无 electron-updater 依赖** → 打不出 `latest.yml`，无法自动更新。
   - 版本检测（已有雏形）：`electron/main.ts:17` `APP_VERSION = "0.1.0"`（**硬编码，与 package.json 双源，易漂移**）；`checkForUpdates()`（:26）在启动串行任务第 3 步（sync → catch-up → 版本检查，各 30s 超时）拉 `${getCloudApiBase()}/api/version`，版本不等则弹「前往下载 / 稍后提醒」→ `shell.openExternal(download_url)`（下载 URL 为空时按钮无效）。
   - 云端接口：`cloud-service/app/main.py:51` `GET /api/version` 返回 `version/release_date/release_notes/download_url(目前 None)/min_version`——**全部硬编码 0.1.0**，download_url 注释「生产环境填实际下载地址」。
-  - 数据安全（已确认）：打包后 `getDataDir()` = `app.getPath("userData")/app-data`（即 `%APPDATA%/学习伙伴/app-data`），**在安装目录之外** → NSIS 覆盖安装 / 升级不丢孩子数据 / auth / kb，升级方案无需数据迁移。
+  - 数据安全（已确认，2026-08-24 实测修正路径）：打包后 `getDataDir()` = `app.getPath("userData")/app-data` = **`%APPDATA%/learning-app/app-data`**（userData 目录名取 package.json 的 `name`=learning-app，**不是** productName「学习伙伴」），**在安装目录之外** → NSIS 覆盖安装 / 升级不丢孩子数据 / auth / kb，升级方案无需数据迁移。
   - Windows 无代码签名（`signAndEditExecutable: false`）→ 新装用户会遇到 SmartScreen 未知发布者拦截。
 - **方案讨论 A：发布渠道（在哪里发布）**
   1. **阿里云 OSS（推荐，仓库根已有 `aliyun-aksk.txt` AK/SK）**：安装包 + `latest.yml` 传 OSS（可挂 CDN）；electron-builder `publish: { provider:"generic", url:"https://<bucket>.oss-cn-xxx.aliyuncs.com/learning-app/" }`（或 `provider:"s3"` + aliyun endpoint）。国内直连快、稳定，适合分发大文件。
@@ -1407,5 +1407,307 @@
   - 加 `electron-updater` 依赖；`package.json` `build.publish` 配置（provider generic → OSS）；`npm run dist:win` 产出 `latest.yml` 并上传 OSS。
   - IPC：`app:checkUpdate`（手动触发）、`onUpdateProgress` / `onUpdateStatus`（下载进度 / 就绪事件）。
   - 升级数据安全已确认无虞（userData 在安装目录外），无需数据迁移。
-- **优先级**：已拍板（2026-08-24；待实施）
+- **实施结果（2026-08-24 已落地）**：
+  - 版本号统一：`electron/main.ts` 删硬编码 `APP_VERSION`，全部走 `app.getVersion()`（package.json）。云端 `GET /api/version` 改读 `app_versions` 表（`database.py` 新表，startup 无记录时 seed 0.1.0）；新增 `POST /api/version` 登记接口（`X-Admin-Token` 头 + 环境变量 `ADMIN_TOKEN` 鉴权，未配置返回 503）。
+  - 依赖：`electron-updater@6.8.9` 装入 dependencies（`npm install electron-updater --legacy-peer-deps`——项目 edge-tts 声明 peer typescript^5 与 TS7 冲突，需 legacy-peer-deps）。
+  - 新模块 `electron/lib/updater.ts`：`initUpdater`（事件→IPC，仅打包后生效，dev 推 disabled）、`silentCheckForUpdates`（启动静默，dialog 立即更新/稍后提醒→下载→重启）、`checkForUpdatesManually`（设置页手动，自动下载）、失败降级拉 `/api/version` 的 download_url 打开下载页。运行时 `autoUpdater.setFeedURL({provider:"generic", url: getUpdateFeedUrl()})` 覆盖内嵌 app-update.yml。
+  - `electron/lib/config.ts` 新增 `getUpdateFeedUrl()`（默认 `https://www.aixuexihao.top/download/`，env `UPDATE_FEED_URL` 可覆盖）。
+  - IPC：`app:get_version / app:check_update / app:download_update / app:quit_and_install` + 事件 `app:update_status / app:update_progress`（preload 独立 listener，不被 piRemoveListeners 误清）。
+  - 前端：`GeneralSettings.tsx` 新增「软件更新」区块（当前版本、检查更新、进度条+速度、重启并安装、错误/最新/开发模式提示）。
+  - 发布脚本 `scripts/publish-update.py`：读 aliyun-aksk.txt 的 OSS AK/SK，上传 `latest.yml + *.exe + *.exe.blockmap`（`--dist` 指定产物目录），可选 `--register` 登记版本（需 --admin-token）。oss2 2.19 无 `bucket_exists`/`Permission`（用 `get_bucket_info`+NoSuchBucket、`BUCKET_ACL_PUBLIC_READ`）。
+- **⚠️ 重大决策变更（2026-08-24，替代原拍板的 OSS 公共读）**：阿里云 2024 新规**禁止新建 bucket 的公共读**（ACL 与 Policy 均返回 `Put public bucket acl/policy is not allowed`，需控制台申请）。**升级包托管降级为自有服务器**：ECS Nginx 正则加 `|download` 反代 8000，FastAPI `app.mount("/download", StaticFiles(dir=DOWNLOAD_DIR))`，文件放 `/opt/learning-cloud/download/`（latest.yml + 安装包 + blockmap），公网 `https://www.aixuexihao.top/download/`。OSS 仅作本地→服务器的中转通道（私有桶 + 签名 URL + 云助手 curl）。**已发布 0.1.1 到生产**（`/download/latest.yml` 200、云端登记 0.1.1、download_url 指向 /download/ 安装包）。若日后要恢复 OSS 分发：控制台申请公共读后把 `getUpdateFeedUrl()` 与 `build.publish.url` 改回 OSS URL 即可。
+- **遗留待办**：
+  - **GUI 升级动作未实测**（沙箱无桌面会话，客户端起不来）：本机装 0.1.1 后点「设置→通用设置→检查更新」应显示「已是最新版本」；发 0.1.2 后再验「检测→下载→重启安装」全链路。
+  - `dist/` 与 `dist2/` 的 `win-unpacked/resources/app.asar` 被 Windows Defender 锁定（EBUSY 无法删除），打包用新目录 `dist3`；锁释放后可清掉旧目录。
+  - Windows 打包需 `NODE_OPTIONS=`（清掉 WorkBuddy shim）在沙箱外跑，否则 fs.rm 被 safe-delete 拦。
+- **优先级**：已拍板（2026-08-24；已实施，遗留 GUI 实测）
 - **记录时间**：2026-08-24
+
+## [ISSUE-041] 用户使用数据备份（排除敏感数据：模型 API key、登录/权限数据）
+
+- **类型**：需求 / 工具（本地备份与可选恢复；与云端同步 sync-manager 互补）
+- **需求（用户原话）**：怎么备份数据，备份用户的数据，**不是**登录权限数据，而是**使用数据**（例如孩子的学习生活记录、家长的课程管理等等）。**不要备份敏感数据**，例如模型 apikey 等等。
+- **已核实的数据清单（2026-08-25 实地核查 `data/` 全部落盘）**：
+
+  ### ✅ 应备份（用户使用数据 / 内容）
+  1. **孩子知识库（核心「学习生活记录」）**：`data/children/<id>/kb.sqlite`（daily 记录、主题进度、标签定义——ISSUE-023/013 后已是唯一真源）。
+  2. **孩子主题教学资料与媒体**：`data/children/<id>/learning/`（method.md、课程文案、`<topic>/media/*.mp3` 等音频）；`data/children/<id>/life/`（生活记录，若有）。
+  3. **孩子上传与产出**：`data/children/<id>/uploads/`、`data/children/<id>/outputs/`（html 游戏/练习等）。
+  4. **孩子身份元数据**：`data/children/<id>/profile.json`（name/age/grade/interests/aiName 等）——**但需剔除 `passwordHash` 字段**（见排除项）。
+  5. **家长课程管理（核心「课程管理」）**：`data/parents/<pid>/parent.sqlite`（topics/courses/teaching_copy/method 全文——ISSUE-029 后已是唯一真源）。
+  6. **家长教学资料文件**：`data/parents/<pid>/materials/`（html 资料 + `media/` 音频视频）。
+  7. **家长操作日志**：`data/parents/<pid>/activity-log.md`。
+  8. **AI 提示词用户版本**：`data/agents.sqlite`（`prompts` 当前版 + `prompt_history` 历史版——ISSUE-033 产物，含孩子/家长 AGENTS 自定义）。
+  9. **调度配置**：`data/scheduler-config.json`（各孩子 recording 开关/间隔等——ISSUE-035/036）。
+  10. **token 使用统计**：`data/token-log.jsonl`（用量数据，不含 key；用户可观察消耗）。
+  11. **用户自编教学技能**：`data/shared/skills/`（SKILL.md + materials/references——家长创作的教学流程内容）。
+  12. **模型偏好（非 key）**：`data/app-settings.json`（`materialsLimit`/`defaultModel`/`programmingModel` 为 "provider/modelId" 字符串，不含明文 key）——可选纳入。
+
+  ### 🚫 应排除（敏感 / 登录权限 / 内部状态）
+  1. **模型 API key（最关键的敏感数据）**：`data/shared/auth.json`（`pi-runtime.ts:375-390` `setProviderApiKey` 写入，实测含 `deepseek`/`qwen`/`qwen-tokenplan` 的 `{type:"api_key",key:"..."}` 明文）。**绝对不能进备份**。
+  2. **登录 / 订阅 / 云端 token（权限数据）**：`data/license.json`（`plan`/`max_children`/`token`/`cached_at`——auth-manager 缓存）、`data/.pi/`（license 缓存与云 token）。用户明确「不备份登录权限数据」。
+  3. **孩子密码哈希**：`data/children/<id>/profile.json` 的 `passwordHash`（bcrypt，child-auth.ts:12/40）——即便 profile.json 整体备份，也应剥离此字段。
+  4. **agent 会话 jsonl（内部状态，非使用记录）**：`data/children/<id>/.pi/agent/sessions/*.jsonl`、`data/.pi/`——这些是会话历史（可能含 prompts 但不含 key；体积大且非「学习生活记录」本身，kb.sqlite 已承载记录）。**默认排除**，如用户想要可加选项。
+  5. **调度内部状态**：`data/task-state.json`（scheduler 运行时状态，非用户数据）。
+  6. **临时/缓存备份**：`*.bak-*`、`*.bak-dedup`（如 `app-settings.json.bak-20260824`、`parent.sqlite.bak-dedup`）——备份时跳过。
+
+- **与现有 sync-manager 的关系（已核实，2026-08-25）**：
+  - `electron/lib/sync-manager.ts` 已有云同步（`scanDirectory` :41 遍历、`fullSnapshot` :316 全量上传、`syncAllChildren` :290 逐个孩子），但**只同步 `data/children/<id>/` 单个孩子目录、上传到云端**，且 `scanDirectory` 默认 `excludeDirs:[".pi"]`（已避开会话）。它**不是本地备份**：① 不含家长库 `parent.sqlite`/`materials`、不含 `agents.sqlite`、不含 `scheduler-config.json`；② 不区分敏感/非敏感（只是恰好 auth.json 不在孩子目录内、没被传）；③ 是「同步」不是「可携带的备份包」。
+  - **建议**：备份功能**复用 `scanDirectory`/`hashFile`/`mapLimit`/`crypto`**（sync-manager.ts:41/89/100），但根目录改为 `data/` 全量 + **显式 denylist**（auth.json/license.json/.pi/task-state.json/profile.passwordHash/临时 baks），产出**本地 zip 到用户指定路径**，与云同步不冲突（云同步继续走孩子目录，备份走本地包）。
+
+- **建议方案要点（候选，待拍板）**：
+  1. 新增 `electron/lib/backup.ts`：
+     - `BACKUP_DENYLIST`（相对路径/目录名）：`shared/auth.json`、`license.json`、`.pi/`、`task-state.json`、各 `profile.json` 的 `passwordHash` 字段、所有 `*.bak-*`/`*.bak-dedup`。
+     - `createBackup(destPath)`：遍历 `data/`，按 denylist 过滤，复制或打 zip（`archiver` 或 Node `zlib`+流式），写入 `backup-<YYYYMMDD-HHmmss>.zip`；含 `manifest.json`（来源版本、时间、含文件清单、已排除项）。
+     - `restoreBackup(zipPath, {keepAuth:true})`：解压回 `data/`，**默认不覆盖** `shared/auth.json`/`license.json`（保护本机 key 与订阅）——即「恢复使用数据、保留本机敏感配置」。
+  2. 前端：家长设置页新增「数据备份 / 恢复」入口（选目标目录、一键备份、选 zip 恢复）。
+  3. 可选：备份时一并剥离 profile.json 的 passwordHash（写备份包时 delete 该字段，源文件不动）。
+- **方案拍板（2026-08-25 讨论结论，用户逐项确认）**：
+  - **范围 = 三位一体**：在原有「本地备份 zip」定位上扩展为 **① 备份防损 + ② 换机全量迁移 + ③ 家长异地发课/查进度**，不再只是本地 zip。
+  - **备份触发模型**：备份 = **时间点快照**，**客户端手动按钮 + 定时任务（scheduler）发起，非实时连续同步**；与「持续双向同步」明确区分（q-1 用户原话：备份在客户端有发起按钮和定时任务设置，不需要实时备份）。
+  - **防损深度 = 云端版本历史**：云端每文件保留最近 N 版 + 定期不可变快照，损坏/误删可回滚到时间点，避免 last-write-wins 把本地坏版本反向污染云端真源（覆盖原单镜像方案）。
+  - **异地模式 = 异步（现在可做）**：家长上传进孩子云空间 → 孩子下次同步自动拉到；查进度走新增**只读云接口**解析云端 kb.sqlite / learning 摘要，孩子电脑不开也能查。不做实时（实时需等 ARCHITECTURE-SPLIT 引擎服务端，不在本 issue）。
+  - **技术路线 = 复用现有体系**：沿用 `sync-manager.ts` + Python 云端 `storage/{parent_id}/{child_id}/` 与 `sync_files_meta` 表，增量实现；**不等待** ARCHITECTURE-SPLIT 引擎服务端重写。
+  - **最终拍板（2026-08-25 三拍，用户原话「本地用zip，jsonl不纳入备份，A B C都实施完」）**：① 本地备份形式 = **zip 文件**；② `data/children/<id>/.pi/agent/sessions/*.jsonl` 会话历史**不纳入**备份/同步（kb.sqlite 已承载记录）；③ **层 A（备份防损）+ 层 B（换机迁移）+ 层 C（家长异地事件信箱）全部实施**，顺序 A→B→C。
+  - **异地场景细化（2026-08-25 用户二轮澄清，已并入层 C）**：
+    - **云端 = 存储 + 事件信箱（inbox）**：家长库数据（`parent.sqlite` + `materials/` + `activity-log.md`）整体跨设备同步（**家长目录纳入层 B 全量清单**）；每个孩子云端空间 + 事件队列 `sync_events`（`assign_topic` / `send_materials` / `request_progress` / `push_data` 等）。
+    - **流程（全异步·轮询·低频）**：① 课程资料：家长手动/定时上传家长库到云端 → 其他 app 拉取到本地家长目录 → 主题分配后孩子可读（复用 ISSUE-029 主题分配）；② 主题分配：家长分配主题 → 写 `assign_topic` 事件 → 孩子 app 定时轮询拉到 → 应用进 child `learning/`；③ 进度查询：家长请求 → 云端发 `request_progress` 事件 → 孩子轮询到 → 推送最新 kb.sqlite/learning 摘要到云端 → 家长读云端（孩子也可定时自动推送，家长直接读云端最新，请求事件仅用于即时刷新）。
+    - **关键简化（用户拍板）**：① **同一孩子单终端学习** → 孩子数据无并发写，last-write-wins 安全，无需复杂冲突合并；② 备份/同步/查询/分发**均低频、非实时** → 全部定时或手动触发，云端**无需实时推送**（轮询即可，省掉 SSE/长连接）。
+
+- **分层落地计划（建议顺序，每层可独立交付/回退）**：
+  - **层 A — 备份防损（基础，风险最低）**：
+    1. 客户端扩展 `scanDirectory` denylist 到 ISSUE-041 全清单（家长库 `parent.sqlite`/`materials/`/`activity-log.md`、`agents.sqlite`、`scheduler-config.json`、`app-settings.json`、各 `profile.json` 剥离 `passwordHash`；仍排除 `shared/auth.json`/`license.json`/`.pi`/`task-state.json`/`*.bak*`）。
+    2. 本地加密 zip + `manifest.json`（沿用原 `createBackup`/`restoreBackup`，`keepAuth:true` 保护本机 key/订阅）；前端家长设置页「数据备份/恢复」入口 + 发起按钮。
+    3. 定时任务接入现有 `scheduler` 框架（按钮 + cron 双触发）。
+    4. 云端版本历史：`cloud-service/app/sync.py` 上传时保留 prev 版本（N 版）+ 不可变快照；新增 `/api/sync/restore/{child_id}` 回滚端点。
+  - **层 B — 换机全量迁移**：
+    1. 同步范围从「仅孩子目录」扩到全清单（复用 `sync-manager`，根目录改 `data/` 全量 + denylist，或新增独立全量同步任务）。
+    2. 新机登录同账号 → 一键拉回全清单（download）；`profile.passwordHash` 不跨机同步，新机用本机/重置解锁。
+  - **层 C — 家长异地（场景 3，2026-08-25 二轮细化）**：
+    - **云端 = 存储 + 事件信箱**：家长库数据（`parent.sqlite` + `materials/` + `activity-log.md`）整体跨设备同步（家长目录纳入层 B 全量清单）；每孩子云端空间 + 事件队列 `sync_events`（`assign_topic`/`send_materials`/`request_progress`/`push_data`）。
+    - **流程（全异步·轮询·低频）**：① 课程资料：家长手动/定时上传家长库到云端 → 其他 app 拉取到本地家长目录 → 主题分配后孩子可读；② 主题分配：家长分配 → 写 `assign_topic` 事件 → 孩子 app 定时轮询拉到 → 应用进 child `learning/`；③ 进度查询：家长请求 → 云端发 `request_progress` 事件 → 孩子轮询到 → 推送最新 kb.sqlite/learning 摘要到云端 → 家长读云端（孩子也可定时自动推送，家长直接读最新）。
+    - **新落点**：`cloud-service/app/sync.py` 增事件表 + `POST/GET /api/sync/events/{child_id}`（+ack）；`electron/lib/sync-manager.ts` 增轮询事件循环（并入 `scheduler`）；家长端 UI 上传/分配/查询入口（复用 ISSUE-029 主题分配）。
+  - **复用入口**：`electron/lib/sync-manager.ts`(`scanDirectory`/`hashFile`/`mapLimit`)、`electron/lib/backup.ts`(新增)、`cloud-service/app/sync.py`(版本历史+progress+restore)、`electron/lib/scheduler.ts`(备份定时)、家长 UI(`CourseManager`/`TopicDetail`/设置页 发课+查进度入口)。
+
+- **✅ 已实施（2026-08-25，A/B/C 全部落地，本地已构建+单测验证）**：
+  - **客户端**：
+    1. `electron/lib/backup.ts`（新增）：零依赖 zip（手写 ZIP 格式 + Node zlib，UTF-8 文件名，兼容 7-Zip/Python zipfile）；`createBackup`（denylist 过滤 + profile 剥离 passwordHash + manifest.json + 流式写盘）、`restoreBackup`（keepAuth 默认保护本机 auth/license + 路径穿越防护）、`zipUnpack`/`zipPack` 导出。
+    2. `electron/lib/scheduler.ts`：新增 `SchedulerBackupConfig`（enabled/hour/minute/destDir，设备级）+ 定时备份任务（每分钟 tick 判断 + runCatchUp 补跑）+ 孩子事件轮询（`event-poll` task-state，默认 30 分钟一次）。
+    3. `electron/lib/sync-manager.ts`：新增 `scanParentSpaceFiles`/`syncParentLibrary`/`syncAllData`（云端孩子清单 ∪ 本地 → 逐孩子同步 + 家长空间）；孩子 profile.json **上传剥离 passwordHash、下载合并保留本机 hash**（`sanitizeUploadContent`/`mergeDownloadContent`）。
+    4. `electron/lib/sync-events.ts`（新增）：`writeEvent`/`pollEvents`/`ackEvents`/`queryCloudProgress`/`handleChildEvents`（assign_topic|send_materials → 同步孩子+家长库；request_progress → 推送孩子数据；统一 ack）/`pushParentLibraryWithEvent`/`requestAndQueryProgress`。
+    5. `electron/lib/ipc-handlers.ts`：`backup:create`/`backup:restore`/`backup:config:get|set`、`dialog:pick_dir`、`sync:event_send`、`sync:query_progress`；`sync:pull` 改走 `syncAllData`；**`parent:allocate` 分配后自动写 assign_topic 事件**。
+    6. `electron/preload.ts`：`createBackup`/`restoreBackup`/`backupConfigGet|Set`/`pickDirectory`/`syncEventSend`/`syncQueryProgress`。
+    7. `electron/main.ts`：启动同步 `syncAllChildren` → `syncAllData`。
+    8. 前端：`src/components/BackupSettings.tsx`（新增，设置页「数据备份」tab）：一键备份/从备份恢复/定时备份配置 + 云端同步区（推送资料到云端、云端查进度表格+最近 daily）；`src/pages/Settings.tsx` 加 tab。
+  - **云端（cloud-service，仅改代码，**部署到 ECS 需另行执行**）**：
+    1. `app/database.py`：新增 `sync_events` 表 + 索引。
+    2. `app/sync.py`：上传覆盖前快照旧版本（`.versions/<b64path>/<ts>.bin`，保留 5 份）+ `GET /versions/{child_id}` + `POST /restore/{child_id}`；家长空间（`storage/{parent_id}/_parent/`，meta 用 child_id="_parent"）`GET /parent/status` + `POST /parent/upload|download`；`GET /children`（云端孩子清单）；事件 `POST/GET /events/{child_id}` + `POST /events/{child_id}/ack`；`GET /progress/{child_id}`（sqlite3 读云端 kb.sqlite 返回主题完成数 + 最近 daily）；download/upload-batch 补 `_safe_storage_path` 穿越防护。
+  - **单测（新增 13 用例全过）**：`test/backup.test.ts`（4：denylist/zip 往返+脱敏/keepAuth）、`test/sync-parent-space.test.ts`（3：去敏合并/家长空间清单）、`test/sync-events.test.ts`（3：事件写→轮询→处理触发同步+ack→进度查询，mock cloudFetch 端到端）；`test/scheduler-task-state.test.ts` 更新为四键结构（3 过）。tsc 过滤环境噪声 0 业务错误；`npm run build` 通过；zip 经 Python zipfile 交叉验证（中文路径 + CRC 全过）。
+  - **待办/边界**：① 云端需部署后 `init_db` 建表生效（sync_events）；② 新机首次登录 → 启动 syncAllData 自动拉回孩子+家长库，孩子解锁需在家长端重置密码（passwordHash 不上云）；③ 事件轮询间隔默认 30 分钟（无 UI 配置，后续可加）；④ 备份 zip 未加密（denylist 已排除敏感数据，加密可选后续加）。
+- **排查 / 修改入口（可直接执行）**：
+  - 敏感数据落点：`electron/lib/pi-runtime.ts:375-390`（`setProviderApiKey`→`getAuthPath()`→`data/shared/auth.json`）；`electron/lib/config.ts:34` `getAuthPath`；`electron/lib/auth-manager.ts`（license 缓存）；`electron/lib/child-auth.ts:12,40` `passwordHash`。
+  - 复用：`electron/lib/sync-manager.ts:41` `scanDirectory`、`:89` `hashFile`、`:100` `mapLimit`。
+  - 数据真源：`electron/lib/kb-sqlite.ts`（孩子 kb）、`electron/lib/parent-library.ts`（家长 parent.sqlite）、`electron/lib/agent-prompts.ts`（`data/agents.sqlite`）。
+  - 数据根：`electron/lib/config.ts` `getDataDir()`。
+- **关联**：ISSUE-040（版本/升级——同一「数据安全与可携带」主题，备份增强升级鲁棒性）；ISSUE-029/033（备份包需覆盖家长库与 agents.sqlite）；ISSUE-023/013（kb.sqlite 是唯一记录真源，备份即备份它）。
+- **优先级**：待定（建议中：用户数据可携带/防丢的刚需；改动独立、可复用 sync-manager 工具函数，风险低）。
+- **记录时间**：2026-08-25
+
+## [ISSUE-042] 课程级「每课方法」(lesson_method) 与主题级「教学方法」(topics.method) 的区别与是否冗余
+
+- **类型**：设计澄清 / 潜在精简（需用户拍板是否去掉课程里的 lesson_method 字段）
+- **用户原话**：在家长页面的每个主题的单个课程为什么还有每课方法？这个方法和主题的教学方法在使用上有什么区别吗？如果没有这个区别，是否应该去掉课程里的每课方法？
+- **已核实的两字段现状（2026-08-25）**：
+
+  | 维度 | 主题教学方法 `topics.method` | 每课方法 `courses.lesson_method` |
+  |---|---|---|
+  | 存储 | `topics` 表 `method` 列（`kb-sqlite.ts:116`；入库见 `:495-512`，从 `learning/<topic>/method.md` 读全文） | `courses` 表 `lesson_method` 列（`kb-sqlite.ts:106`；v4→v5 迁移加列 `:177`） |
+  | 编辑入口 | TopicDetail「教学方法」tab（`TopicDetail.tsx:431-457`，`parentUpsertTopic` 写库 `:233`） | 课程详情「每课方法」框（`TopicDetail.tsx:470-472`，随 `parentUpsertCourse` 写库） |
+  | 送达 AI | 经 `parent_content` 工具 / AGENTS 注入（家长制作教学内容时取主题 method）；孩子侧经 method.md 或 kb_query 取 | 经 `get_progress` 返回（`kb-sqlite.ts:672` `lessonMethod` 字段已映射到返回对象）给**孩子 agent 学这课时** |
+  | 语义定位 | 整主题通用教学法（如论语「三步吟诵→翻译→应用」） | 该课专属引导（理论上覆盖/补充通用法） |
+
+- **分析（是否功能不同）**：
+  1. **设计意图上确实不同**：`topics.method` = 整门课的通用方法（对所有课生效）；`lesson_method` = 单课特例（某课特殊步骤/重点，优先级应高于通用法）。二者在代码里**都是真字段、都送达 AI**，且孩子 agent 取 lesson_method 的路径（get_progress）与取 topics.method 的路径（method.md/kb_query）是分开的——所以**机制上不冗余，是有意做的「通用 + 特例」两层**。
+  2. **但用户观察到的问题真实存在**：method.md（通用法）里往往已经写了「每课都按 X 走」，而 lesson_method 默认空（`:471`（未填）），家长很少填——结果**绝大多数课 lesson_method 为空、实际只靠通用法**。即「两层」在实践里塌缩成「一层」，lesson_method 形同冗余字段。
+  3. **与 ISSUE-038 呼应**：method.md 通用法 + lesson_method 特例法，本质是「同一套教学规则在两处表达」，与 AGENTS/工具描述三重重复同属「提示词/方法冗余」问题。
+- **建议方案（候选，待拍板）**：
+  - **方案 A（保留但明确分工）**：保留 lesson_method，但在 UI/提示词里明确「lesson_method 仅在某课与通用法不同时才填」，并把 get_progress 返回的 lesson_method 设计为「有则覆盖通用法、无则忽略」——消除歧义。改动小。
+  - **方案 B（去掉 lesson_method）**：从 courses 表删 `lesson_method` 列 + 课程详情去掉该框 + get_progress 不再返回；所有课统一用 topics.method。若某课确有特例，由家长在 topics.method 里用「第 X 课例外：…」表述，或未来引入「课内步骤」结构化字段。**最省 token、最去重**，但失去「逐课独立方法」的表达力。
+  - 倾向：先确认用户要不要「逐课独立方法」这个能力——不要就走 B（与 ISSUE-038 去重方向一致）。
+- **待确认项**：① 是否保留逐课独立方法能力？② 若要保留，get_progress 返回 lesson_method 的「覆盖语义」是否要明确写进提示词？③ 去掉时 courses 表迁移（DROP COLUMN 或留空列废弃）怎么处理？
+- **排查 / 修改入口**：`electron/lib/kb-sqlite.ts:106`（列定义）、`:177`（迁移加列）、`:672`（get_progress 返回）、`:843-846`（kb 字段映射 `课时方法/每课教学方法→lesson_method`）；`electron/lib/parent-library.ts:268-274,329-343,491-516`（parentUpsertCourse 写 lesson_method）；前端 `src/components/TopicDetail.tsx:19,202,470-472,276`（lesson_method 展示/编辑/上下文）。
+- **关联**：ISSUE-038（提示词/方法去重——lesson_method 与 topics.method 是方法冗余的子集）；ISSUE-029（课程/方法已入库，删列成本低）。
+- **优先级**：待定（建议中：纯设计澄清 + 潜在 schema 精简，不影响功能；与 ISSUE-038 一并拍板最省事）。
+- **记录时间**：2026-08-25
+- **✅ 用户拍板（2026-08-25）**：走**方案 B（去显示，不保留逐课独立方法）**——课程详情**不再展示「每课方法」**，教学方法统一以**主题级 `topics.method`** 为准（即「教学方法按照主题的方法进行」）。
+  - **已实施（2026-08-25）**：`src/components/TopicDetail.tsx` 课程详情（`tab==="course"` 区，原 :470-472）删除「每课方法」`<Section>` 块；教学方法只通过主题「教学方法」tab（`topics.method`）呈现。
+  - **范围说明（窄改动）**：本次仅去 UI 展示，**未**删 `courses.lesson_method` 数据库列、未改 `get_progress` 的 `lessonMethod` 返回（`kb-sqlite.ts:672` 仍映射）。理由：用户原话是「在课程详情里不要显示每课方法」，属展示层决定；DB 列保留以便后续若需彻底清 schema 再单独走迁移。孩子侧取教学法的语义维持「主题 method 为主」即可，lesson_method 字段虽仍返回但前端不再展示、家长不再填写。
+  - **关联代码点（如需后续彻底去列）**：`kb-sqlite.ts:106`（列定义）、`:177`（v4→v5 迁移加列）、`:672`（get_progress 返回）、`:843-846`（kb 字段映射）；`parent-library.ts:268-274,329-343,491-516`（parentUpsertCourse 写 lesson_method）；`TopicDetail.tsx` 已无展示引用。
+
+## [ISSUE-043] 课程详情页把「标签」放到最上面（每课的 tags 置顶展示）
+
+- **类型**：UI 调整（家长课程管理，课程详情区布局重排）
+- **用户原话**：把每一课的标签放到课程详情的最上面。
+- **现状（已定位，2026-08-25）**：课程详情渲染在 `src/components/TopicDetail.tsx:460-498`，Section 顺序为：① 每课方法（:470-472）→ ② 教学文案（:473-481）→ ③ 教学资料说明（:482-488，仅 material 非空时）→ ④ 发给学生（:489-491）→ ⑤ 标签（:492-494）。**标签当前在最后**。
+- **需求**：把「标签」Section 移到课程详情最顶部（即：① 标签 → ② 每课方法 → ③ 教学文案 → ④ 教学资料说明 → ⑤ 发给学生）。
+- **修改入口（待实施）**：`src/components/TopicDetail.tsx:460-498` 的课程详情 `<div>` 内，将 `:492-494` 的「标签」`<Section>` 块整体移到 `selected.title` 标题下方（:467 之后、:470 每课方法之前）。注意「上传资料」按钮（:468）在标题行，不需动。
+- **说明**：基本信息 tab（:504-514）的「学习方法/每日目标/主题类型」等不在此次范围，仅课程详情（course tab）的每课 tags 置顶。
+- **优先级**：待定（建议低：纯展示顺序，改动 1 处、风险极低，可顺手做）。
+- **记录时间**：2026-08-25
+- **✅ 已实施（2026-08-25，与 ISSUE-042 同批）**：`src/components/TopicDetail.tsx` 课程详情区，将「标签」`<Section>`（原 :492-494）整体移至课程标题行（:467）之后、**「教学文案」之前**；同时因 ISSUE-042 删除了「每课方法」块，最终顺序为：① 标签 → ② 教学文案 → ③ 教学资料说明（material 非空时）→ ④ 发给学生的学习材料 → ⑤ 删除/上传按钮。底部原「标签」块已删除，无重复。
+
+## [ISSUE-044] 课程资料「上传资料」 vs 聊天框「上传文件」：落点、用途、异同
+
+- **类型**：澄清 / 行为说明（用户问"点了上传资料会放哪里、与聊天框上传有何异同"）
+- **用户原话**：课程资料里的上传资料，点击了上传，会把资料放到哪里？和聊天框的上传资料有什么异同？
+- **已核实的两个上传通道（2026-08-25）**：
+
+  ### A. 课程资料上传（家长课程管理）
+  - 触发：TopicDetail「📤 上传资料」按钮（:468 / :497）→ `uploadMaterials()`（:249-269）→ `window.api.parentUploadMaterial(topicDir)`。
+  - 后端：`ipc-handlers.ts:336` `parent:uploadMaterial` → 弹系统文件选择框 → `copyMaterialIntoParent(undefined, topicDir, p)`（`parent-library.ts:602-611`）。
+  - **落点**：`data/parents/<pid>/materials/<topicDir>/` —— 媒体文件（mp3/mp4/…）进 `materials/<topicDir>/media/`，其余（html/md/pdf/图片）直接进主题目录（`parent-library.ts:593-610`）。
+  - 自动关联：上传的 html 若文件名 = 某课程标题，自动 `parentUpsertCourse` 把 `htmlPath` 写入该课（:259-265），即进 `courses.html_path` 列（父库 `parent.sqlite`，共享给所有被分配的孩子）。
+  - 用途：**教学资料文件**（持久、按主题归到家长库、跨孩子共享）。
+
+  ### B. 聊天框上传（孩子聊天）
+  - 触发：ChatWindow「📎 上传」按钮（:792-795）→ 落盘 `data/children/<childId>/uploads/`（`ipc-handlers.ts:984-1010` `file:save_upload`，`getUploadsDir` 按 childId 隔离）。
+  - 处理：图片→视觉模型识别、音频→转写、txt/md→读全文进上下文（ISSUE-008）；`pruneUploads` 上限 200 个裁剪。
+  - 用途：**临时会话附件**（仅本次对话使用，不进课程库、不共享、按孩子隔离）。
+
+  ### C. 家长聊天框上传（ISSUE-044 修正，2026-08-25 已实施）
+  - 触发：家长页 ChatWindow（TopicDetail / TopicEditor 的 AI 对话）「📎 上传」按钮，现传 `owner="parent"`。
+  - **修正前**：家长聊天框未传 `childId`，上传落点塌成 `data/children/undefined/uploads/`（错误且污染孩子目录）。
+  - **修正后**：落盘 `data/parents/<pid>/uploads/`（`ipc-handlers.ts` 新增 `file:save_upload_parent` / `file:open_upload_parent` / `file:read_upload_parent`，走 `getParentUploadsDir`（`parent-library.ts` 新增）；preload 新增 `saveParentUpload` / `openParentUpload` / `readParentUpload`；`ChatWindow.tsx` 据 `owner==="parent"` 路由，默认 `pid="default"`）。
+  - 处理：与孩子聊天框一致（图片识别 / 音频转写 / txt·md 读取进上下文）；同样受 `pruneUploads` 上限裁剪。
+  - 用途：**家长临时会话附件**，归到家长库 uploads，与孩子目录隔离（呼应 ISSUE-029 家长库为唯一真源）。
+
+  ### 异同小结
+  | 维度 | 课程资料上传（A） | 聊天框上传（B） |
+  |---|---|---|
+  | 落盘位置 | `data/parents/<pid>/materials/<topicDir>/`（父库共享） | `data/children/<childId>/uploads/`（孩子隔离） |
+  | 隔离维度 | 按主题 / 家长 | 按孩子 |
+  | 用途 | 教学资料文件，持久、进课程库、跨孩子共享 | 临时会话附件，仅本对话、不入课程 |
+  | 是否进课程库 | 是（html 自动关联 `courses.html_path`） | 否 |
+  | 生命周期 | 持久（家长库） | 会话级（200 个裁剪） |
+  | 媒体处理 | media/ 子目录供 html `media://` 引用 | 图片识别 / 音频转写 |
+  | 共享范围 | 所有分配到该主题的孩子可见 | 仅该孩子本会话 |
+
+- **结论（直接回答用户）**：课程资料上传**不放孩子目录、放家长库的 `materials/<主题>/`**，是教学资料库的一部分（与聊天框上传完全两套、不共享）。两者容易混淆是因为按钮文案都叫"上传"，但目的与落点完全不同。家长聊天框上传（ISSUE-044 修正后）归到 `data/parents/<pid>/uploads/`，不再误落孩子目录。
+- **潜在优化（候选，非必须）**：① 课程上传按钮文案改为「上传教学资料」、聊天按钮保持「上传文件」，降低混淆（呼应 ISSUE-038 的去歧义）；② 课程上传是否也该有"按孩子隔离/临时"选项——当前设计是"家长资料共享给孩子"，符合 ISSUE-029 架构，无需改。
+- **实施记录（2026-08-25）**：已修复家长聊天框上传落点。改动：① `electron/lib/parent-library.ts` 新增 `getParentUploadsDir(parentId="default")`；② `electron/lib/ipc-handlers.ts` 新增 `file:save_upload_parent` / `file:open_upload_parent` / `file:read_upload_parent`（镜像孩子三件套，落点切到家长 uploads，路径校验/裁剪一致）；③ `electron/preload.ts` 新增 `saveParentUpload` / `openParentUpload` / `readParentUpload`；④ `src/components/ChatWindow.tsx` `Props` 增 `owner?: "child"|"parent"` + `parentId?`，`persistUpload`/`openUploaded`/`toggleMessageAudio` 据 `owner` 路由；`childId` 改为可选；⑤ `TopicDetail.tsx` 与 `TopicEditor.tsx` 的 ChatWindow 加 `owner="parent"`。验证：`tsc --noEmit` 过滤 TS2318/TS2552 全局噪声后无业务错误。`window.api` 类型为 `any`，无需改 d.ts。注意：家长聊天"历史会话"列表/读取（piListSessions/piGetSessionMessages）仍按 `childId` 走 `getChildDir`，家长会话存于 `data/.pi/agent/sessions/` 不走该路径——属独立的家长会话历史问题，不在本 issue 范围，未动。
+- **排查 / 修改入口**：`electron/lib/ipc-handlers.ts:336`（parent:uploadMaterial）、`:984`（file:save_upload）；`electron/lib/parent-library.ts:593-611`（copyMaterialIntoParent + MEDIA_EXTS）；`electron/lib/config.ts` `getParentMaterialsDir`(:38) / `getUploadsDir`；前端 `src/components/TopicDetail.tsx:249-269,468,497`、`src/components/ChatWindow.tsx:285-303,792-795`。
+- **关联**：ISSUE-029（家长库资料共享、courses.html_path 真源）；ISSUE-008（聊天框上传的识别/转写路由）。
+- **优先级**：已完成（ISSUE-044 修正：家长聊天框上传落点已改为家长库 uploads，2026-08-25 实施；剩余候选仅为文案去歧义，未做）。
+- **记录时间**：2026-08-25
+
+## [ISSUE-045] 课程详情页「标签」家长可编辑，且标签选项从数据库获取
+
+- **类型**：功能缺口 / 待实施（前端可编辑 + 后端家长库缺标签定义表）
+- **用户原话**：课程详情里的标签，家长可以编辑修改，标签选项从数据库里获取。
+- **现状（已定位，2026-08-25）**：
+
+  ### 1. 前端：课程详情标签当前只读、无编辑入口
+  - `src/components/TopicDetail.tsx:492-494` 的「标签」`<Section>` 仅做展示：`{selected.tags || <span>（无）</span>}`，**没有输入框/选择器/保存按钮**。
+  - 对比：同页「教学方法」tab 已有完整的「✏️ 编辑 / 取消 / 保存」内联编辑态（:435-456，`editingMethod`+`methodText`+`saveMethod`），但「每课方法」「标签」均只读——编辑态是缺的。
+  - `selected.tags` 来自 `parentUpsertCourse` 查询返回（`parent-library.ts:226,718-724`），是 `courses.tags` 列的逗号分隔字符串。
+
+  ### 2. 后端：家长库（parent.sqlite）没有标签定义表 → 「选项从数据库获取」当前不成立
+  - 家长库 schema（`parent-library.ts:68-98` `PARENT_SCHEMA_TABLES`）只建 `topics` / `courses` / `meta` 三表；`courses.tags` 是**纯 TEXT 列**（:87），**没有 `tags` 定义表**。
+  - IPC 层 grep `parent:getTags` / `parentTags` / `getSubjectTags`：**无匹配**——即家长端根本没有「拉取标签选项」的接口，前端无从获取可选项。
+  - 对照**孩子库已具备完备的标签定义机制**（可作为父库参照）：
+    - `kb-sqlite.ts:121` 有 `tags(tag TEXT PRIMARY KEY, dimension, criteria)` 定义表（与 `daily_entries.tags` / `courses.tags` 应用列分离，符合 ISSUE-013 设计）；
+    - `kb-sqlite.ts:759` `queryTags(childDir, tag?)` 按维度/词序返回全部定义 → 即「从数据库获取标签选项」的现成实现；
+    - `kb-sqlite.ts:928` `tagsToMarkdown` 把定义表渲染成 markdown 供 AI 打标签前查；
+    - 孩子 init 时 `initChildKb` 会播种默认标签词表（见 ISSUE-032 实施记录，默认 20 个）。
+  - **结论**：「标签选项从数据库获取」在孩子侧已落地，家长侧**完全缺失**——这正是本 issue 要补的。家长是标签词表的拥有者（定义教学维度与标准），孩子只是应用方，所以从架构上标签定义本就该在家长库。
+
+- **建议方案（候选，待拍板）**：
+  - **后端**：在 `parent-library.ts` 的 `PARENT_SCHEMA_TABLES` 增加 `tags(tag TEXT PRIMARY KEY, dimension TEXT NOT NULL DEFAULT '', criteria TEXT NOT NULL DEFAULT '')` 表（结构照搬 kb-sqlite :121），并新增 `queryParentTags(parentId, tag?)`（照搬 `queryTags` :759）；首次建库时从一份默认词表播种（参照 initChildKb 的默认 20 标签，或单独一份家长默认词表）。加 IPC `parent:getTags` 返回选项。
+  - **前端**：课程详情「标签」Section 改为可编辑——`selected.tags` 字符串 → 拆成 chip 列表 + 多选下拉（选项来自 `parent:getTags`）+ 自由新增（新增时写回 `tags` 定义表）；保存复用现有 `parentUpsertCourse`（已支持写 `tags` 列，`parent-library.ts:268-274,491-516`）或新增 `parent:courseSaveTags` IPC。建议把「标签」与「每课方法」都补齐内联编辑态，与「教学方法」tab 一致。
+  - **可选**：标签定义（维度/判断标准）是否也要一套「家长维护 UI」——当前 kb-sqlite 的 tags 定义只能靠 init 播种或 AI 写，家长无法在界面维护维度/标准；若只做"选项下拉"可先不管定义维护，但中长期建议加（呼应 ISSUE-013 的"标签只能从定义表选"约束在家长侧也要可维护）。
+
+- **待确认项**：
+  1. 家长标签词表来源：复用孩子 init 播种的那 20 个默认标签？还是家长库单独一套默认词表？是否要支持家长在界面增删标签？
+  2. 编辑保存走 `parent_course_save` AI 工具（现有：`TopicDetail.tsx:277` 已引导 AI 用此工具写 tags），还是新增显式 `parent:courseSaveTags` IPC 直接写库（更可靠、不依赖 AI 听话）？
+  3. 是否要把「每课方法」(:470-472) 也一并补成可编辑（与标签编辑态同时做，统一 UX）？
+  4. 标签定义表（dimension/criteria）是否本期就要家长可维护，还是仅先做"选项下拉 + 应用"？
+
+- **排查 / 修改入口（可直接执行）**：
+  - 前端只读点：`src/components/TopicDetail.tsx:492-494`（标签展示）、`:470-472`（每课方法展示，同样缺编辑态）；
+  - 家长库 schema：`electron/lib/parent-library.ts:68-98`（缺 tags 定义表）、`openParentDb`（:122 可加 ensureParentV3 播种默认标签）；
+  - 参照实现：`electron/lib/kb-sqlite.ts:121`（tags 定义表）、`:759` `queryTags`、`:928` `tagsToMarkdown`、initChildKb 默认标签播种；
+  - 写库：家长 `parentUpsertCourse`（`parent-library.ts:268-274, 491-516`）已支持 tags 列；
+  - IPC：需新增 `parent:getTags`（ipc-handlers.ts 仿 `parent:listTopics` / `parent:getCourses` 风格）；
+  - 前端拉取：TopicDetail.tsx 需加 `useEffect` 在打开课程详情时 `window.api.parentGetTags()` 拉选项。
+
+- **关联**：ISSUE-013（标签定义表 vs 应用列分离的设计——父库应照搬此模式）；ISSUE-043（标签置顶展示——与本条同处课程详情，建议一并做：先置顶 :043 + 再补可编辑本 issue）；ISSUE-029（家长库为唯一真源，标签定义放家长库符合架构）；ISSUE-038（标签字段与其他提示词重复治理是另一层，本条只管"编辑 + 选项来源"）。
+- **优先级**：已实施（2026-08-25）。
+- **✅ 已实施（2026-08-25）**：
+  - **后端**：`parent-library.ts` ① `PARENT_SCHEMA_TABLES` 新增 `tags(tag, dimension, criteria)` 定义表；② `openParentDb` 调 `ensureParentTags` 在空表时播种 `PARENT_DEFAULT_TAGS`（20 个，四维，与 initChildKb 的 DEFAULT_TAGS 同源设计、父库独立维护一份）；③ 新增 `queryParentTags(parentId, tag?)`（照搬 kb-sqlite `queryTags`）与 `upsertParentTag(parentId, tag, dimension?, criteria?)`（INSERT OR REPLACE）。
+  - **IPC + preload**：`ipc-handlers.ts` 新增 `parent:getTags`（返回 `queryParentTags(undefined)`）、`parent:upsertTag`（写回定义表）；`preload.ts` 暴露 `window.api.parentGetTags()` / `parentUpsertTag(tag, dimension?, criteria?)`（`window.api` 为 `any`，无需补类型声明）。
+  - **前端**：`TopicDetail.tsx` 课程详情「标签」Section 改为可编辑——当前标签渲染为可移除 chip；下拉从 `parent:getTags` 选项（过滤已选中项、标注维度）添加；输入框「新增」先调 `parentUpsertTag` 写回定义表再应用到本课；保存复用既有 `parentUpsertCourse(topicDir, { title, tags })`（`COALESCE(NULLIF(...))` 语义，部分字段更新安全，不覆盖其它列）。打开主题时 `useEffect` 拉取选项。
+  - **验证**：`tsc --noEmit` 四个改动文件（parent-library / ipc-handlers / preload / TopicDetail）无新增类型错误（已过滤环境级 TS2318/TS2552 噪声）。未跑 electron-vite 全量构建、未 git 提交。
+  - **范围说明（窄改动）**：本期只做"选项下拉 + 应用 + 自由新增写回定义表"，**未**做"标签定义（dimension/criteria）的家长 UI 维护"——属原待确认项 4，后续可加（呼应 ISSUE-013）。标签应用列仍是 `courses.tags` 逗号分隔字符串，与定义表分离（符合 ISSUE-013「定义表 vs 应用列」模式）。
+- **记录时间**：2026-08-25
+
+## [ISSUE-046] 上下课提醒：家长设置每孩子每日学习时间点，到点页面弹铃铛动画 + 上课/下课铃声
+
+- **类型**：新功能 / 待实施（定时提醒 + 前端动画 + 音频播放）
+- **用户原话**：增加 issue，上下课提醒，类似于时间表，只是每节课学生么由孩子自己安排。家长设置每个孩子每天的学习时间点，到时间了，就在页面上进行提醒。例如出现铃铛的动画，并有下课或上课铃的声音。
+- **需求拆解**：
+  1. **家长配置**：在孩子维度设置「每日学习时间点」列表（如 `["09:00","10:30","14:00",...]`）。语义上有两种候选：① 每个时间点 = 一个「上课铃」提醒（孩子自由安排内容）；② 配置为「时间段」`[{start,end}]`，到点分别触发「上课铃 / 下课铃」。用户说"每节课由孩子自己安排"，故家长**只设时间、不设内容**——最简单是方案①（纯时间点 + 上课铃）；若想要"下课铃"则需方案②（成对 start/end）或额外区分类型字段 `type: "start"|"end"`。
+  2. **到点触发**：主进程 cron 每分检测命中 → 向所有窗口广播该孩子的提醒事件（含 childId + 类型）。
+  3. **前端表现**：页面出现铃铛动画（SVG/CSS 抖动 + 渐显覆盖层），并播放对应铃声（上课铃 / 下课铃）。
+  4. **范围**：用户明确"在页面上进行提醒"= 应用内提醒（in-app overlay），非系统通知（Electron Notification 可选增强）。
+
+- **现状（已定位，2026-08-25）——可高度复用现有调度/广播机制，无需另起炉灶**：
+
+  ### 1. 配置落点（天然适配现有 per-child 调度配置）
+  - `electron/lib/scheduler.ts:22-34` `SchedulerChildConfig` 接口 + `:51-56` `DEFAULT_CHILD_CONFIG` 已定义每孩子配置（recording/sessionReset/autoNewSession/archiveLimit），**新增 `classReminder: { enabled: boolean; times: string[] }`（方案①）或 `slots: { start: string; end: string }[]`（方案②）即可**。
+  - 配置文件 `data/scheduler-config.json`（`getSchedulerConfigPath()` = `config.ts:91`）已是 per-child 结构（实测含 `cfg-kid-1`/`1f050a7f…` 等），存新字段零成本。
+  - `getChildSchedulerConfig`（scheduler.ts:127-144）+ `setChildSchedulerConfig`（:146-169）的合并缺省逻辑需补新字段（仿 `recording` 处理：`enabled ?? false`、`times` 兜底）。
+
+  ### 2. 触发机制（直接复用现有 cron 每分钟巡检）
+  - `scheduler.ts:219-290` `startScheduler` 的 `cron.schedule("* * * * *", ...)` 每分遍历每个孩子、用 `hhmm(now)` 比对配置时间点——**与 `recording.times.includes(nowMin)` 判重逻辑（:231-247）几乎一模一样**，新增一段 `classReminder` 检测即可，每天每点只提醒一次靠 `task-state.json` 的 `lastRun` 防重（同 `recording` 的 `cs.recording.lastRun` 模式，state 结构 `scheduler.ts:10-19` + `getChildState` :93-109）。
+
+  ### 3. 广播机制（已有现成样板，照搬即可）
+  - `scheduler.ts:210-216` `broadcastSessionReset(childId)` 用 `w.webContents.send("pi:session_reset", { childId })` 向所有窗口广播——新增 `broadcastClassReminder(childId, type)` 发 `pi:class_reminder` 即可。
+  - `electron/preload.ts:34-35` `onPiSessionReset` 注册 `pi:session_reset` 监听——新增 `onPiClassReminder` 注册 `pi:class_reminder`。
+  - 前端已在 `src/pages/Learn.tsx:315` 通过 `window.api.onPiSessionReset(handleSessionReset)` 接收（回调 :290 清空状态）——新增全局监听组件即可（建议放 App 根或 Learn 页，保证任意子页面打开都能弹动画）。
+
+  ### 4. 音频播放（已有播放通道，但**缺铃声资源**）
+  - 前端已有 `new Audio(url).play()` 播放模式：`ChatWindow.tsx:388-396`（TTS 回放）、`:504-514`（语音消息）。**复用同一通道播 `url` 即可**。
+  - **关键缺口**：全仓搜 `*.mp3/*.wav/*.ogg` 与 `*bell*` —— **没有任何铃声音频文件**（grep `bell/ding/class` 仅命中 `recording` 目录与无关词）。铃声需新增：① 打包资源（放 `public/` 或 `assets/`，如 `bell-start.mp3`/`bell-end.mp3`）；② 或用 Web Audio API 合成铃声（无外部文件）；③ 或 Edge TTS 生成（但"铃声"非语音，不如①②自然）。**需拍板音频来源**。
+  - 播放需注意：用户可能在静音环境，建议动画 + 可选 OS 通知（Electron Notification）双保险。
+
+  ### 5. 铃铛动画（全新，需新建组件）
+  - 现有 UI 无铃铛/提醒动画组件；建议新建 `src/components/ClassReminderOverlay.tsx`（全屏半透明覆盖层 + 居中铃铛 SVG，`@keyframes` 抖动/缩放 + 渐显渐隐），监听 `pi:class_reminder` 显示 3~5 秒后自动消失，可点关闭。
+
+- **建议方案（候选，待拍板）**：
+  - **配置**：`scheduler.ts` 给 `SchedulerChildConfig` 加 `classReminder: { enabled, times: string[] }`；`SchedulerSettings.tsx` 每孩子卡片加「上课提醒」开关 + 多时间点输入（仿现有 `recording.times` 编辑 UI）；保存走现有 `scheduler:config:set`（ipc-handlers.ts:433）。
+  - **触发+广播**：`scheduler.ts` 的 cron 循环新增 `classReminder` 段（仿 recording :231-247），命中 → `broadcastClassReminder(childId, "start")`；preload 加 `onPiClassReminder`。
+  - **前端**：新建 `ClassReminderOverlay` 全局挂载，听 `pi:class_reminder` → 显示铃铛动画 + `new Audio("/bell-start.mp3").play()`。
+  - **下课铃**：若采用方案②（时间段），到点再发 `"end"` 类型播 `bell-end.mp3`。
+
+- **待确认项**：
+  1. **时间点语义**：纯「上课铃」时间点（方案①，最简单）？还是「时间段」需上下课两种铃（方案②，需 start/end 配对）？—— 决定配置字段形状。
+  2. **铃声音频来源**：打包 mp3 资源 / Web Audio 合成 / Edge TTS？当前全仓无铃声文件，需新建或合成。
+  3. **是否叠加系统通知**：仅应用内动画，还是也发 Electron Notification（孩子切到别的窗口也能看到）？
+  4. **提醒展示位置**：仅 Learn（孩子学习页）弹，还是全局覆盖层（任意页都能弹）？建议全局。
+  5. **是否关联 ISSUE-031 的「每日学习量」**：提醒只是"时间点到了"，与"今天学几课"无强绑定（用户说内容孩子自己安排），但 UI 可在提醒里顺带显示"今日目标 X 课"增强引导——可选。
+
+- **排查 / 修改入口（可直接执行）**：
+  - 配置类型：`electron/lib/scheduler.ts:22-56`（`SchedulerChildConfig` + `DEFAULT_CHILD_CONFIG`）；
+  - 配置读写合并：`scheduler.ts:127-169`（`getChildSchedulerConfig` / `setChildSchedulerConfig` 补新字段）；
+  - 触发+广播：`scheduler.ts:219-290`（`startScheduler` cron 循环加段）、`:210-216`（`broadcastSessionReset` 仿写 `broadcastClassReminder`）；
+  - 配置文件：`data/scheduler-config.json`（per-child，零成本扩字段）；
+  - IPC：`electron/lib/ipc-handlers.ts:419-440`（`scheduler:config:get` / `:set` 已透传整个 config，新字段自动进出）；
+  - preload：`electron/preload.ts:34-35`（仿 `onPiSessionReset` 加 `onPiClassReminder`）；
+  - 前端监听样板：`src/pages/Learn.tsx:290-320`（仿 `onPiSessionReset` 模式）；
+  - 前端播放样板：`src/components/ChatWindow.tsx:388-396,504-514`（`new Audio(url).play()`）；
+  - 前端配置 UI：`src/components/SchedulerSettings.tsx:33-96`（每孩子卡片加提醒配置，仿 recording 编辑）；
+  - 音频资源：需新建 `public/bell-start.mp3` + `public/bell-end.mp3`（或合成方案），并在 `package.json`/构建里确保打包。
+
+- **关联**：ISSUE-031（每孩子每日「学习量」入库——本 issue 是「学习时间点」提醒，二者正交：量=学多少，点=何时学；UI 可协同展示）；ISSUE-041（备份——scheduler-config.json 含本提醒配置，应纳入备份范围，已排除敏感数据）；ISSUE-040（升级——配置向后兼容需注意）。
+- **优先级**：待定（建议中：调度/广播机制可高度复用、风险低；唯一硬缺口是铃声资源 + 新建动画组件，工作量可控）。
+- **记录时间**：2026-08-25

@@ -53,6 +53,29 @@ async def init_db():
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(parent_id, child_id, file_path)
             );
+
+            -- ISSUE-040: App 版本发布记录（Electron 客户端 /api/version 查询，POST /api/version 登记）
+            CREATE TABLE IF NOT EXISTS app_versions (
+                version TEXT PRIMARY KEY,
+                release_date TEXT NOT NULL,
+                release_notes TEXT,
+                download_url TEXT,
+                min_version TEXT NOT NULL DEFAULT '0.0.0',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- ISSUE-041 层 C: 家长→孩子事件信箱（异步轮询；事件=唤醒信号，数据走文件同步）
+            CREATE TABLE IF NOT EXISTS sync_events (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL REFERENCES parents(id),
+                child_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                payload TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_sync_events_child_pending
+                ON sync_events(child_id, status, created_at);
             """
         )
         await db.commit()

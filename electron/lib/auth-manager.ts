@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { getLicensePath, getCloudApiBase } from "./config";
+import { cloudFetch } from "./cloud-net";
 
 export interface License {
   parent_id: string;
@@ -20,7 +21,7 @@ export async function register(
   email: string,
   password: string
 ): Promise<{ token: string; parent_id: string }> {
-  const res = await fetch(`${getCloudApiBase()}/api/auth/register`, {
+  const res = await cloudFetch(`${getCloudApiBase()}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -36,7 +37,7 @@ export async function login(
   email: string,
   password: string
 ): Promise<{ token: string; parent_id: string }> {
-  const res = await fetch(`${getCloudApiBase()}/api/auth/login`, {
+  const res = await cloudFetch(`${getCloudApiBase()}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -49,7 +50,7 @@ export async function login(
 }
 
 export async function fetchLicense(token: string): Promise<Omit<License, "token" | "cached_at">> {
-  const res = await fetch(`${getCloudApiBase()}/api/license`, {
+  const res = await cloudFetch(`${getCloudApiBase()}/api/license`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) {
@@ -64,7 +65,7 @@ export async function verifyLicenseWithCloud(
   token: string
 ): Promise<{ valid: boolean; max_children: number } | null> {
   try {
-    const res = await fetch(`${getCloudApiBase()}/api/license/verify`, {
+    const res = await cloudFetch(`${getCloudApiBase()}/api/license/verify`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     });

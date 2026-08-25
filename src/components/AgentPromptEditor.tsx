@@ -2,16 +2,15 @@ import { useEffect, useState } from "react";
 
 interface Props {
   scope: string;
-  /** 引用键（孩子=childId；家长="main" 通用助手 / "content" 教学内容生成）。命名 refKey 避免与 React 保留字冲突 */
+  /** 引用键（孩子=childId；家长="main" 统一家长工作台提示词）。命名 refKey 避免与 React 保留字冲突 */
   refKey: string;
   title: string;
   onClose: () => void;
 }
 
-const PARENT_REFS = [
-  { ref: "main", label: "家长工作台助手" },
-  { ref: "content", label: "教学内容生成助手" },
-];
+// ISSUE-037 续：家长提示词已统一（不再分「工作台助手 / 教学内容生成」两个场景），只保留 main 一个入口；
+// 历史保存过的 ref=content 用户版本会在 buildParentPrompt 里作为 main 的兜底兼容读取，编辑器统一展示 main。
+const PARENT_REFS = [{ ref: "main", label: "家长工作台助手（统一）" }];
 
 /**
  * AGENTS / 系统提示词「用户可编辑版本」编辑器（ISSUE-033）。

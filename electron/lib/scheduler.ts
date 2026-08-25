@@ -6,6 +6,7 @@ import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config"
 import { listChildren } from "./child-auth";
 import { summarizeDailyConversation, formatLocalDate } from "./daily-summary";
 import { resetChildSession } from "./pi-session";
+import { EVENT_POLL_INTERVAL_MIN, handleChildEvents } from "./sync-events";
 
 export interface TaskState {
   children: Record<
@@ -14,8 +15,12 @@ export interface TaskState {
       recording: { lastRun: string };
       "session-reset": { lastRun: string };
       "auto-new-session": { lastRun: string };
+      // ISSUE-041 层 C：家长→孩子事件轮询
+      "event-poll": { lastRun: string };
     }
   >;
+  // 顶层任务：本地定时备份（ISSUE-041 层 A）
+  backup?: { lastRun: string };
 }
 
 // 每个孩子独立的定时任务配置。默认（未配置）全部关闭。
@@ -35,7 +40,35 @@ export interface SchedulerChildConfig {
 
 interface SchedulerConfig {
   children: Record<string, SchedulerChildConfig>;
+  // 家长会话配置（2026-08-24：家长会话也支持自动新建会话策略，与孩子一致）
+  parent?: SchedulerParentConfig;
+  // 本地定时备份（2026-08-25：ISSUE-041 层 A，设备级）
+  backup?: SchedulerBackupConfig;
 }
+
+/** 家长会话（parent / parent-content）配置。目前只有 autoNewSession（自动新建会话策略）。 */
+export interface SchedulerParentConfig {
+  autoNewSession: { enabled: boolean; hour: number; minute: number };
+}
+
+/** 本地定时备份配置（设备级，非 per-child；ISSUE-041 层 A）。destDir 由家长在设置页选定。 */
+export interface SchedulerBackupConfig {
+  enabled: boolean;
+  hour: number;
+  minute: number;
+  destDir: string;
+}
+
+export const DEFAULT_PARENT_CONFIG: SchedulerParentConfig = {
+  autoNewSession: { enabled: false, hour: 21, minute: 0 },
+};
+
+export const DEFAULT_BACKUP_CONFIG: SchedulerBackupConfig = {
+  enabled: false,
+  hour: 22,
+  minute: 30,
+  destDir: "",
+};
 
 export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
   recording: { enabled: false, times: ["21:00"], onNewSession: false },
@@ -76,6 +109,7 @@ function defaultChildTaskState() {
     recording: { lastRun: "" },
     "session-reset": { lastRun: "" },
     "auto-new-session": { lastRun: "" },
+    "event-poll": { lastRun: "" },
   };
 }
 
@@ -92,6 +126,7 @@ export function getChildState(state: TaskState, childId: string) {
       recording: { ...base.recording, ...existing.recording },
       "session-reset": { ...base["session-reset"], ...existing["session-reset"] },
       "auto-new-session": { ...base["auto-new-session"], ...existing["auto-new-session"] },
+      "event-poll": { ...base["event-poll"], ...existing["event-poll"] },
     };
   }
   return state.children[childId];
@@ -157,6 +192,52 @@ export function setChildSchedulerConfig(
   return config.children[childId];
 }
 
+/** 家长会话配置读取（scheduler-config.json 的 parent 段；未配置/损坏返回默认，全部关闭）。 */
+export function getParentSchedulerConfig(): SchedulerParentConfig {
+  const config = loadSchedulerConfig();
+  const p = config.parent;
+  if (!p) return JSON.parse(JSON.stringify(DEFAULT_PARENT_CONFIG));
+  return {
+    autoNewSession: { ...DEFAULT_PARENT_CONFIG.autoNewSession, ...(p.autoNewSession || {}) },
+  };
+}
+
+/** 家长会话配置保存（整体替换 parent 段）。 */
+export function setParentSchedulerConfig(parentConfig: SchedulerParentConfig): SchedulerParentConfig {
+  const config = loadSchedulerConfig();
+  config.parent = {
+    autoNewSession: { ...DEFAULT_PARENT_CONFIG.autoNewSession, ...(parentConfig.autoNewSession || {}) },
+  };
+  saveSchedulerConfig(config);
+  return config.parent;
+}
+
+/** 本地定时备份配置读取（设备级；未配置/损坏返回默认，默认关闭）。 */
+export function getBackupSchedulerConfig(): SchedulerBackupConfig {
+  const config = loadSchedulerConfig();
+  const b = config.backup;
+  if (!b) return JSON.parse(JSON.stringify(DEFAULT_BACKUP_CONFIG));
+  return {
+    enabled: b.enabled ?? DEFAULT_BACKUP_CONFIG.enabled,
+    hour: Number.isFinite(b.hour) ? b.hour : DEFAULT_BACKUP_CONFIG.hour,
+    minute: Number.isFinite(b.minute) ? b.minute : DEFAULT_BACKUP_CONFIG.minute,
+    destDir: typeof b.destDir === "string" ? b.destDir : "",
+  };
+}
+
+/** 本地定时备份配置保存（整体替换 backup 段）。 */
+export function setBackupSchedulerConfig(cfg: SchedulerBackupConfig): SchedulerBackupConfig {
+  const config = loadSchedulerConfig();
+  config.backup = {
+    enabled: cfg.enabled ?? DEFAULT_BACKUP_CONFIG.enabled,
+    hour: Number.isFinite(cfg.hour) ? cfg.hour : DEFAULT_BACKUP_CONFIG.hour,
+    minute: Number.isFinite(cfg.minute) ? cfg.minute : DEFAULT_BACKUP_CONFIG.minute,
+    destDir: typeof cfg.destDir === "string" ? cfg.destDir : "",
+  };
+  saveSchedulerConfig(config);
+  return config.backup;
+}
+
 // ---- 会话与任务执行 ----
 
 // 每日学习记录总结（recording）：按天汇总今天（本地）的会话——有会话则 AI 提取写 daily，无会话跳过。
@@ -184,12 +265,35 @@ function broadcastSessionReset(childId: string): void {
   }
 }
 
+// 本地定时备份：设备级，按 backup.hour:minute 每天跑一次（需已选定 destDir）。
+// 动态 import backup.ts，避免 electron-vite 把 zip 逻辑打进无关 chunk 时互相耦合。
+async function runBackupIfDue(state: TaskState, now: Date): Promise<void> {
+  const bc = getBackupSchedulerConfig();
+  if (!bc.enabled || !bc.destDir) return;
+  const isTime = now.getHours() === bc.hour && now.getMinutes() === bc.minute;
+  if (!isTime) return;
+  const lastDay = state.backup?.lastRun ? new Date(state.backup.lastRun).toDateString() : "";
+  if (lastDay === now.toDateString()) return;
+  try {
+    const { createBackup } = await import("./backup");
+    const r = await createBackup(bc.destDir);
+    state.backup = { lastRun: new Date().toISOString() };
+    saveTaskState(state);
+    console.log(`Scheduled backup done: ${r.file} (${r.count} files)`);
+  } catch (e) {
+    console.error("Scheduled backup failed:", e);
+  }
+}
+
 // 每分钟检查一次：按每个孩子各自的配置决定是否执行。默认未配置的孩子不执行。
 export function startScheduler(): void {
   cron.schedule("* * * * *", async () => {
     const state = loadTaskState();
     const children = listChildren();
     const now = new Date();
+
+    // 设备级：本地定时备份（ISSUE-041 层 A）
+    await runBackupIfDue(state, now);
 
     for (const child of children) {
       const cc = getChildSchedulerConfig(child.childId);
@@ -254,6 +358,28 @@ export function startScheduler(): void {
           }
         }
       }
+
+      // ISSUE-041 层 C：事件轮询（低频，默认 30 分钟一次）。
+      // 事件=唤醒信号（分配主题/资料更新/请求进度），处理时触发一次对应同步后 ack；
+      // 云不可达时静默跳过，等下一轮。
+      {
+        const POLL_MS = EVENT_POLL_INTERVAL_MIN * 60_000;
+        const lastPoll = cs["event-poll"].lastRun
+          ? new Date(cs["event-poll"].lastRun).getTime()
+          : 0;
+        if (now.getTime() - lastPoll >= POLL_MS) {
+          try {
+            const r = await handleChildEvents(child.childId);
+            if (r.handled > 0) {
+              console.log(`Events handled for child ${child.childId}: ${r.handled}`);
+            }
+          } catch (e) {
+            console.error(`Event poll failed for child ${child.childId}:`, e);
+          }
+          cs["event-poll"].lastRun = new Date().toISOString();
+          saveTaskState(state);
+        }
+      }
     }
   });
 }
@@ -264,6 +390,25 @@ export async function runCatchUp(): Promise<void> {
   const children = listChildren();
   const now = new Date();
   const today = now.toDateString();
+
+  // 设备级备份 catch-up：今天已过设定时间点且还没跑过 → 补跑一次（休眠恢复/开机场景）
+  const bc = getBackupSchedulerConfig();
+  if (bc.enabled && bc.destDir) {
+    const due = `${String(bc.hour).padStart(2, "0")}:${String(bc.minute).padStart(2, "0")}`;
+    if (due <= hhmm(now)) {
+      const lastDay = state.backup?.lastRun ? new Date(state.backup.lastRun).toDateString() : "";
+      if (lastDay !== today) {
+        try {
+          const { createBackup } = await import("./backup");
+          const r = await createBackup(bc.destDir);
+          state.backup = { lastRun: new Date().toISOString() };
+          console.log(`Backup catch-up done: ${r.file} (${r.count} files)`);
+        } catch (e) {
+          console.error("Backup catch-up failed:", e);
+        }
+      }
+    }
+  }
 
   for (const child of children) {
     const cc = getChildSchedulerConfig(child.childId);

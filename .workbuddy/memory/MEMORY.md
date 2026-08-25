@@ -1,5 +1,12 @@
 # 项目长期记忆（pi 学习伴侣）
 
+## 架构约定：家长 AI（2026-08-24 统一；落盘/记录/策略）
+- **家长提示词统一不分场景**：`buildParentPrompt`（pi-session.ts）一个版本 = 家长工作台全职责（孩子管理/课程管理/配置查看/统计）+ 数据结构与流转说明；`getParentSession` 与 `getParentContentSession` 共用（后者仅保留独立单例与 childId="parent-content" 供前端事件过滤）。SQLite 用户版本读 `scope=parent, ref="main"`，**content 旧行兜底**（main 无自定义时生效）；AgentPromptEditor 只留 main 入口。
+- **家长工具集（两会话一致）**：read/write/edit/**ls**（列目录——家长直接放文件进 materials/ 后 agent 要看目录）/get_date/parent_course_save/parent_course_delete/parent_stats（只读统计：tokens/progress/daily；SQLite 二进制 read 读不了，查统计必须用它）/log_activity。
+- **家长会话落盘**：`continueRecent(dataDir, data/.pi/agent/sessions/{parent|parent-content}/)`——两个会话**独立子目录**，避免互相选中对方历史；不再 inMemory。
+- **操作记录**：家长改动记 `parents/default/activity-log.md`（`appendActivityLog` 追加写）；parent_course_save/delete **自动记录**，write/edit 改资料后 agent 调 `log_activity` 记录。
+- **家长 autoNewSession**：scheduler-config.json `parent.autoNewSession {enabled,hour,minute}`（默认关 21:00）；pi-session `shouldAutoNewSessionForParent(sessionsDir)` 复用孩子同款跨天/定点判定（`lastMessageTimestampInDir`/`shouldAutoNewSessionInDir` 泛化）；SchedulerSettings 顶部「家长会话」配置区；IPC `scheduler:parent_config:set`。
+
 ## 架构约定：孩子 AI 的 prompt 构成（2026-08-18 确立；2026-08-24 终版修订）
 - **孩子会话 prompt = 身份（systemPromptOverride）+ 全部行为规范（AGENTS）**。
 - `buildChildPrompt`（electron/lib/pi-session.ts）**只描述身份**，不写任何行为约束，也不要写「不是XXX」、只写「是XXX」。

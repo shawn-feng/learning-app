@@ -2,19 +2,19 @@
 // which prevents require('electron') from working correctly
 delete process.env.ELECTRON_RUN_AS_NODE;
 
-import { app, BrowserWindow, dialog, session } from "electron";
+import { app, BrowserWindow, session } from "electron";
 import path from "path";
-import { getDataDir, getCloudApiBase } from "./lib/config";
+import { getDataDir } from "./lib/config";
 import { initSharedSkills } from "./lib/user-init";
 import { registerIpcHandlers } from "./lib/ipc-handlers";
 import { disposeAllSessions } from "./lib/pi-session";
 import { startScheduler, runCatchUp } from "./lib/scheduler";
-import { syncAllChildren } from "./lib/sync-manager";
+import { syncAllData } from "./lib/sync-manager";
 import { lintAllChildren } from "./lib/kb-lint";
 import { registerMediaScheme, registerMediaProtocol } from "./lib/media-protocol";
+import { initUpdater, silentCheckForUpdates } from "./lib/updater";
 
 let mainWindow: BrowserWindow | null = null;
-const APP_VERSION = "0.1.0";
 
 // 必须在 app ready 之前注册自定义 scheme（media:// 用于沙盒 iframe 内播放本地音视频）
 registerMediaScheme();
@@ -23,32 +23,7 @@ function getMainWindow() {
   return mainWindow;
 }
 
-async function checkForUpdates() {
-  try {
-    const res = await fetch(`${getCloudApiBase()}/api/version`);
-    if (!res.ok) return;
-    const info = await res.json();
-    console.log("Version check: current=%s, latest=%s", APP_VERSION, info.version);
-
-    if (info.version !== APP_VERSION) {
-      const result = await dialog.showMessageBox({
-        type: "info",
-        title: "发现新版本",
-        message: `学习伙伴 ${info.version} 已发布！`,
-        detail: info.release_notes || "包含功能改进和问题修复。",
-        buttons: ["前往下载", "稍后提醒"],
-        defaultId: 0,
-      });
-      if (result.response === 0 && info.download_url) {
-        const { shell } = require("electron");
-        shell.openExternal(info.download_url);
-      }
-    }
-  } catch (e) {
-    // Silently fail - version check is non-critical
-    console.debug("Version check failed:", (e as Error).message);
-  }
-}
+// ISSUE-040: 版本号统一走 app.getVersion()（读 package.json，消除与云端硬编码的双源漂移）
 
 // 启动时网络请求错峰延迟：等窗口创建、network service 稳定后再发起，
 // 避免在 Chromium network service 刚初始化时多路请求并发扎堆
@@ -76,9 +51,9 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * 整条链不阻塞 whenReady，窗口立即可用。
  */
 async function runStartupNetworkTasks(): Promise<void> {
-  // 1) 云同步（数据拉取，最重，放最前）
+  // 1) 云同步（数据拉取，最重，放最前）——ISSUE-041 层 B：孩子（云端∪本地）+ 家长空间
   try {
-    const results = await withTimeout(syncAllChildren(), STARTUP_TASK_TIMEOUT_MS, "Sync");
+    const results = await withTimeout(syncAllData(), STARTUP_TASK_TIMEOUT_MS, "Sync");
     console.log("Sync complete:", JSON.stringify(results));
   } catch (e) {
     console.error("Sync failed on startup:", e?.message || e);
@@ -89,9 +64,9 @@ async function runStartupNetworkTasks(): Promise<void> {
   } catch (e) {
     console.error("Catch-up failed:", e);
   }
-  // 3) 版本检查（最轻，放最后）
+  // 3) 版本检查（最轻，放最后）——ISSUE-040: 自动更新（electron-updater），失败降级云端手动下载
   try {
-    await withTimeout(checkForUpdates(), STARTUP_TASK_TIMEOUT_MS, "Version check");
+    await withTimeout(silentCheckForUpdates(), STARTUP_TASK_TIMEOUT_MS, "Version check");
   } catch (e) {
     console.debug("Version check error:", e);
   }
@@ -172,6 +147,8 @@ app.whenReady().then(() => {
   lintOnce();
   setInterval(lintOnce, 24 * 60 * 60 * 1000);
   createWindow();
+  // ISSUE-040: 注册自动更新事件推送（需在窗口创建后，事件才能送达渲染层）
+  initUpdater(getMainWindow);
   // 启动网络请求串行 + 错峰：窗口先出，network service 稳定后再逐个发起
   setTimeout(() => {
     runStartupNetworkTasks().catch((e) => console.error("Startup network tasks failed:", e));

@@ -256,12 +256,12 @@ CREATE TABLE prompts (
 | 列 | 类型 | 说明 |
 |---|---|---|
 | `scope` | TEXT | `child`（孩子 AGENTS）/ `parent`（家长提示词） |
-| `ref` | TEXT | scope=child 时 = `<childId>`；scope=parent 时 = `main`（通用家长工作台助手）/ `content`（教学内容生成助手） |
+| `ref` | TEXT | scope=child 时 = `<childId>`；scope=parent 时 = `main`（**统一家长工作台提示词**，2026-08-24 起不分场景；历史 `content` 行仅在 main 无自定义时被 `buildParentPrompt` 兜底读取，编辑器统一展示 main） |
 | `content` | TEXT | **用户版本全文**（整体替换，与代码默认完全解耦） |
 | `updated` | TEXT | 保存时间（ISO） |
 
 **语义**：
-- **无行 = 用代码默认**：孩子开会话时 `resolveChildAgents` = SQLite 用户版本 → 代码默认 `buildAgentsMd(profile)`（`LEARNING_NAV_INSTRUCTIONS` 生成）；家长 `buildParentPrompt`/`buildParentContentPrompt` 同理。
+- **无行 = 用代码默认**：孩子开会话时 `resolveChildAgents` = SQLite 用户版本 → 代码默认 `buildAgentsMd(profile)`（`LEARNING_NAV_INSTRUCTIONS` 生成）；家长 `buildParentPrompt`（统一版，覆盖孩子管理/课程管理/配置/统计 + 数据结构与流转）同理。
 - **整体替换**：保存的内容即该 scope/ref 唯一权威，代码默认不再叠加；编辑坏了可「恢复默认」（清空用户版本 = 删除行，历史保留可回退）。
 - 保存前先把旧版本推入 `prompt_history`，再覆盖/插入当前版（`ON CONFLICT(scope, ref) DO UPDATE`）。
 

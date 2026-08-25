@@ -303,7 +303,7 @@ export default function TopicEditor() {
 
         {/* 右栏：与 AI 沟通 */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} />
+          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} owner="parent" />
         </div>
       </div>
     </div>

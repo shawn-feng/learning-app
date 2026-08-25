@@ -38,6 +38,35 @@ export function getParentMaterialsDir(parentId: string = DEFAULT_PARENT_ID): str
   return path.join(getParentDir(parentId), "materials");
 }
 
+/** 家长聊天框上传文件的落盘目录（ISSUE-044 修正：家长聊天上传归到家长库 uploads，与孩子的 children/<id>/uploads 隔离）。 */
+export function getParentUploadsDir(parentId: string = DEFAULT_PARENT_ID): string {
+  return path.join(getParentDir(parentId), "uploads");
+}
+
+// ==================== 家长操作记录（activity-log.md，2026-08-24） ====================
+// 家长 agent 对 app 的改动（新增/修改课程、写资料、调整配置等）记录到 markdown 文件，
+// 便于家长回看「谁在什么时候改了什么」。位置：parents/{parentId}/activity-log.md。
+
+export function getActivityLogPath(parentId: string = DEFAULT_PARENT_ID): string {
+  return path.join(getParentDir(parentId), "activity-log.md");
+}
+
+/** 追加一条操作记录（首次自动创建表头；追加写，不覆盖历史）。 */
+export function appendActivityLog(parentId: string, entry: string): void {
+  const p = getActivityLogPath(parentId);
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (!fs.existsSync(p)) {
+    fs.writeFileSync(
+      p,
+      "# 家长操作记录（activity-log）\n\n家长工作台助手对 app 的改动会记录在这里（新增/修改课程、写资料、调整配置等）。\n\n",
+      "utf-8"
+    );
+  }
+  fs.appendFileSync(p, `- ${ts}：${entry.trim()}\n`, "utf-8");
+}
+
 // ==================== schema（父库 v1） ====================
 
 const PARENT_SCHEMA_TABLES = `
@@ -67,6 +96,12 @@ CREATE TABLE IF NOT EXISTS courses (
   PRIMARY KEY (topic, title)
 );
 CREATE INDEX IF NOT EXISTS idx_parent_courses_topic ON courses(topic, sort_order);
+
+CREATE TABLE IF NOT EXISTS tags (
+  tag TEXT PRIMARY KEY,
+  dimension TEXT NOT NULL DEFAULT '',
+  criteria TEXT NOT NULL DEFAULT ''
+);
 
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -100,6 +135,7 @@ export function openParentDb(parentId: string = DEFAULT_PARENT_ID): DatabaseSync
   db.exec("PRAGMA busy_timeout = 10000");
   db.exec(PARENT_SCHEMA_TABLES);
   ensureParentV2(db);
+  ensureParentTags(db);
   // 视图已存在则跳过重建（避免每次打开都写锁；视图定义变更时才需要显式重建）
   const hasView = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name = 'topic_progress'")
@@ -116,6 +152,75 @@ function ensureParentV2(db: DatabaseSync): void {
   const cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
   if (!cols.includes("teaching_copy")) {
     db.exec("ALTER TABLE courses ADD COLUMN teaching_copy TEXT NOT NULL DEFAULT ''");
+  }
+}
+
+// 受控标签词表（初版 20 个，四维）。家长给孩子课程打标签只能从本表选（ISSUE-045：选项从数据库获取）。
+// 与 initChildKb 的 DEFAULT_TAGS 同源设计，父库独立维护一份便于后续家长自定义维度/标准。
+const PARENT_DEFAULT_TAGS: Array<{ tag: string; dimension: string; criteria: string }> = [
+  { tag: "诚实", dimension: "品格", criteria: "不撒谎，说真话" },
+  { tag: "自律", dimension: "品格", criteria: "管住自己，该做什么就做什么" },
+  { tag: "责任", dimension: "品格", criteria: "做好自己该做的事" },
+  { tag: "坚持", dimension: "品格", criteria: "遇到困难不放弃" },
+  { tag: "感恩", dimension: "品格", criteria: "感谢别人的帮助和付出" },
+  { tag: "勇敢", dimension: "品格", criteria: "面对害怕的事不退缩" },
+  { tag: "谦虚", dimension: "品格", criteria: "不自满，愿意向别人学习" },
+  { tag: "亲情", dimension: "关系", criteria: "和家人之间的爱" },
+  { tag: "友情", dimension: "关系", criteria: "和朋友之间的情谊" },
+  { tag: "助人", dimension: "关系", criteria: "主动帮助别人" },
+  { tag: "分享", dimension: "关系", criteria: "愿意和别人一起分享" },
+  { tag: "礼貌", dimension: "关系", criteria: "对人友善、有礼" },
+  { tag: "开心", dimension: "情绪", criteria: "高兴、愉快" },
+  { tag: "难过", dimension: "情绪", criteria: "伤心、不开心" },
+  { tag: "生气", dimension: "情绪", criteria: "发怒、不满" },
+  { tag: "害怕", dimension: "情绪", criteria: "恐惧、担心" },
+  { tag: "学习习惯", dimension: "学习", criteria: "按时学习、认真完成等好习惯" },
+  { tag: "好奇心", dimension: "学习", criteria: "对新事物感兴趣、爱问为什么" },
+  { tag: "专注", dimension: "学习", criteria: "专心做一件事" },
+  { tag: "兴趣", dimension: "学习", criteria: "对某个领域的喜爱" },
+];
+
+/** 父库标签定义表播种（空表才种，幂等）。 */
+function ensureParentTags(db: DatabaseSync): void {
+  const cnt = (db.prepare("SELECT COUNT(*) AS c FROM tags").get() as { c: number }).c;
+  if (cnt === 0) {
+    const ins = db.prepare("INSERT OR IGNORE INTO tags (tag, dimension, criteria) VALUES (?, ?, ?)");
+    for (const t of PARENT_DEFAULT_TAGS) ins.run(t.tag, t.dimension, t.criteria);
+  }
+}
+
+/** 父库标签定义（tags 表一行）：词表 + 判断标准。 */
+export interface ParentTagDef {
+  tag: string;
+  dimension: string;
+  criteria: string;
+}
+
+/** 查询父库标签定义表（tag 缺省 = 全部，按维度、词序返回）。 */
+export function queryParentTags(parentId: string = DEFAULT_PARENT_ID, tag?: string): ParentTagDef[] {
+  const db = openParentDb(parentId);
+  try {
+    const rows = tag
+      ? db.prepare("SELECT tag, dimension, criteria FROM tags WHERE tag = ?").all(tag)
+      : db.prepare("SELECT tag, dimension, criteria FROM tags ORDER BY dimension, tag").all();
+    return rows as unknown as ParentTagDef[];
+  } finally {
+    db.close();
+  }
+}
+
+/** 新增 / 更新父库标签定义（家长自由新增标签写回定义表；INSERT OR REPLACE 语义）。 */
+export function upsertParentTag(
+  parentId: string = DEFAULT_PARENT_ID,
+  tag: string,
+  dimension = "",
+  criteria = ""
+): void {
+  const db = openParentDb(parentId);
+  try {
+    db.prepare("INSERT OR REPLACE INTO tags (tag, dimension, criteria) VALUES (?, ?, ?)").run(tag, dimension, criteria);
+  } finally {
+    db.close();
   }
 }
 
@@ -571,19 +676,87 @@ const MEDIA_EXTS = new Set([".mp3", ".mp4", ".webm", ".ogg", ".wav", ".m4a", ".a
 
 /**
  * 把外部文件复制进家长库共享资料目录（课程管理「上传资料」落盘）。
- * - 媒体文件 → `materials/<topicDir>/media/<file>`（html 用 `media://local/parent/<pid>/<topicDir>/media/<file>` 引用）；
- * - 其它（html/md/pdf/图片…）→ `materials/<topicDir>/<file>`。
+ * - 未指定 subDir：媒体 → `materials/<topicDir>/media/<file>`（html 用 `media://local/parent/<pid>/<topicDir>/media/<file>` 引用）；
+ *   其它（html/md/pdf/图片…）→ `materials/<topicDir>/<file>`。
+ * - 指定 subDir：全部文件（含媒体）→ `materials/<topicDir>/<subDir>/<file>`（不再按媒体分流）。
  * 返回保存后的相对路径（相对父库根），如 `materials/lunyu/xxx.html`。
  */
-export function copyMaterialIntoParent(parentId: string, topicDir: string, srcPath: string): string {
+export function copyMaterialIntoParent(parentId: string, topicDir: string, srcPath: string, subDir?: string): string {
   const ext = path.extname(srcPath).toLowerCase();
   const fileName = path.basename(srcPath);
   const topicDirAbs = path.join(getParentMaterialsDir(parentId), topicDir);
-  const targetDir = MEDIA_EXTS.has(ext) ? path.join(topicDirAbs, "media") : topicDirAbs;
+  let targetDir: string;
+  let relPrefix: string;
+  if (subDir) {
+    // 指定子目录：所有文件（含媒体）都进该子目录；防路径穿越
+    const sub = path.normalize(subDir).replace(/\\/g, "/");
+    if (sub.startsWith("..") || path.isAbsolute(sub) || sub.split("/").includes("..")) {
+      throw new Error("非法子目录路径");
+    }
+    targetDir = path.join(topicDirAbs, sub);
+    relPrefix = `materials/${topicDir}/${sub}`;
+  } else {
+    targetDir = MEDIA_EXTS.has(ext) ? path.join(topicDirAbs, "media") : topicDirAbs;
+    relPrefix = `materials/${topicDir}${MEDIA_EXTS.has(ext) ? "/media" : ""}`;
+  }
   fs.mkdirSync(targetDir, { recursive: true });
   const dst = path.join(targetDir, fileName);
   fs.copyFileSync(srcPath, dst);
-  return `materials/${topicDir}/${MEDIA_EXTS.has(ext) ? "media/" : ""}${fileName}`;
+  return `${relPrefix}/${fileName}`;
+}
+
+/** 学习资料树节点（供「学习资料管理」弹框分级展示）。relPath 为相对 materials/<topicDir>/ 的路径。 */
+export interface ParentMaterialNode {
+  name: string;
+  relPath: string; // 相对 materials/<topicDir>/，如 `xxx.html`、`media/yyy.mp3`、`docs/1.pdf`
+  isDir: boolean;
+  ext?: string; // 文件时
+  children?: ParentMaterialNode[]; // 目录时
+}
+
+/**
+ * 列出某主题下全部学习资料（递归，含所有子目录），供「学习资料管理」弹框分级展示。
+ * 返回树状结构：目录在前、文件在后，各自按名排序；每个目录带 children。
+ */
+export function listParentTopicMaterials(parentId: string, topicDir: string): ParentMaterialNode[] {
+  const root = path.join(getParentMaterialsDir(parentId), topicDir);
+  if (!fs.existsSync(root)) return [];
+  function walk(dir: string, rel: string): ParentMaterialNode[] {
+    const out: ParentMaterialNode[] = [];
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const node: ParentMaterialNode = {
+        name: e.name,
+        relPath: rel ? `${rel}/${e.name}` : e.name,
+        isDir: e.isDirectory(),
+      };
+      if (e.isDirectory()) {
+        node.children = walk(path.join(dir, e.name), node.relPath);
+      } else {
+        node.ext = path.extname(e.name).toLowerCase();
+      }
+      out.push(node);
+    }
+    out.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
+    return out;
+  }
+  return walk(root, "");
+}
+
+/**
+ * 删除某主题下的学习资料文件（「学习资料管理」弹框删除用）。
+ * relPath 为相对 materials/<topicDir>/ 的路径（如 `xxx.html`、`media/yyy.mp3`、`docs/1.pdf`），
+ * 严格限定在 materials/<topicDir>/ 内，杜绝路径穿越。
+ */
+export function deleteParentMaterial(parentId: string, topicDir: string, relPath: string): void {
+  const base = path.join(getParentMaterialsDir(parentId), topicDir);
+  const resolved = path.resolve(base, relPath);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error("非法路径：超出主题资料目录");
+  }
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+    throw new Error("文件不存在");
+  }
+  fs.unlinkSync(resolved);
 }
 
 // ==================== 存量迁移（一次性） ====================

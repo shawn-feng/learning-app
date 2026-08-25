@@ -70,7 +70,12 @@ interface Props {
   disabled?: boolean;
   aiEmoji?: string;
   rate?: string;
-  childId: string;
+  /** 孩子聊天上下文：上传/打开/读取附件走 data/children/<childId>/uploads/（ISSUE-008） */
+  childId?: string;
+  /** 家长聊天上下文（ISSUE-044 修正）：上传/打开/读取附件改走 data/parents/<parentId>/uploads/，与家长库隔离 */
+  owner?: "child" | "parent";
+  /** owner="parent" 时的家长 id，默认 "default" */
+  parentId?: string;
   /** 输入区上方的一次性提示（如「已切到视觉模型」），显示后由父组件负责清除 */
   notice?: string | null;
 }
@@ -145,7 +150,10 @@ function TraceDetails({ m }: { m: ChatMessage }) {
   );
 }
 
-export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate = "+0%", childId, notice }: Props) {
+export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate = "+0%", childId, owner, parentId, notice }: Props) {
+  // ISSUE-044 修正：家长聊天上下文（owner==="parent"）的上传/打开/读取附件走家长库 uploads，与孩子隔离
+  const isParent = owner === "parent";
+  const pid = parentId || "default";
   const [input, setInput] = useState("");
   const messagesRef = useRef<HTMLDivElement>(null);
   // ISSUE-028: 记录用户是否贴近底部，贴近才自动滚动（上滚读历史不打断）
@@ -300,11 +308,15 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
     });
   }
 
-  // 落盘上传文件到 data/children/<childId>/uploads/（失败不阻断，仅提示）
+  // 落盘上传文件：孩子上下文 → data/children/<childId>/uploads/；家长上下文（ISSUE-044）→ data/parents/<pid>/uploads/
   async function persistUpload(file: File): Promise<string | undefined> {
     try {
       const buf = await file.arrayBuffer();
-      const r: any = await window.api.saveUpload(childId, file.name, file.type || "application/octet-stream", buf);
+      const name = file.name;
+      const mime = file.type || "application/octet-stream";
+      const r: any = isParent
+        ? await window.api.saveParentUpload(pid, name, mime, buf)
+        : await window.api.saveUpload(childId as string, name, mime, buf);
       return r?.success ? (r.path as string) : undefined;
     } catch {
       return undefined;
@@ -314,7 +326,9 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
   // 点击气泡里的附件：调用本地默认程序打开落盘文件（仅当已落盘，path 存在）
   async function openUploaded(relPath: string) {
     try {
-      const r: any = await window.api.openUpload(childId, relPath);
+      const r: any = isParent
+        ? await window.api.openParentUpload(pid, relPath)
+        : await window.api.openUpload(childId as string, relPath);
       if (!r?.success) setFileError(r?.error || "打开文件失败");
     } catch {
       setFileError("打开文件失败");
@@ -437,7 +451,9 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
     }
     if (m.audioPath) {
       try {
-        const r: any = await window.api.readUpload(childId, m.audioPath);
+        const r: any = isParent
+          ? await window.api.readParentUpload(pid, m.audioPath)
+          : await window.api.readUpload(childId as string, m.audioPath);
         if (r?.success && r.data) {
           playAudioBase64(r.data, () => setPlayingAudioId(null));
         } else {

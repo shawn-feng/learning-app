@@ -3,7 +3,9 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
 import path from "path";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
-import { deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse } from "./parent-library";
+import { appendActivityLog, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse } from "./parent-library";
+import { getChildrenDir } from "./config";
+import { getTokenSummary, readTokenLog } from "./token-stats";
 import {
   dailyToMarkdown,
   insertCourse,
@@ -47,13 +49,20 @@ export const displayContentTool = defineTool({
       throw new Error("display_content 必须提供 path 参数（预生成的 html 资料文件路径）");
     }
     // 资料唯一真源在父库共享目录；孩子本地工具/游戏产物在 cwd 的 outputs/。
-    // 两种写法：
-    //   `materials/<topic>/<file>.html`（父库共享目录，parent_content htmlPath 返回的格式）
+    // 三种写法：
+    //   `materials/<topic>/<file>.html`（父库共享目录，两层平铺，parent_content htmlPath 返回格式之一）
+    //   `materials/<topic>/<course>/index.html`（父库共享目录，每课一子目录结构——历史迁移产物，2026-08-24 修复支持）
     //   `outputs/<name>.html`（孩子本地，工具/游戏类产物）
     let resolved: string;
-    const matM = /^materials\/([^/]+)\/([^/]+\.(?:html|htm))$/i.exec(params.path);
+    // 匹配父库共享目录：materials/<topic>/<剩余路径含 / 也允许>.html（剩余路径经下方守卫防 ../ 越界）
+    const matM = /^materials\/([^/]+)\/(.+\.(?:html|htm))$/i.exec(params.path);
     if (matM) {
-      resolved = path.join(getParentMaterialsDir(), matM[1], matM[2]);
+      const parentMatRoot = getParentMaterialsDir();
+      resolved = path.join(parentMatRoot, matM[1], matM[2]);
+      // 越界守卫：resolved 必须仍在父库共享目录内（防 matM[2] 含 ../ 逃逸）
+      if (resolved !== parentMatRoot && !resolved.startsWith(parentMatRoot + path.sep)) {
+        throw new Error("资料路径超出共享资料目录范围");
+      }
     } else {
       resolved = path.resolve(ctx.cwd, params.path);
       // 路径守卫：只允许访问当前学习目录（cwd）内的文件
@@ -486,6 +495,19 @@ export const parentUpsertCourseTool = defineTool({
       tags: params.tags,
       htmlPath: params.htmlPath,
     });
+    // 2026-08-24：改动自动记录到 activity-log.md（家长操作记录）
+    try {
+      const fields: string[] = [];
+      if (params.lessonMethod) fields.push(`lessonMethod=${params.lessonMethod}`);
+      if (params.htmlPath) fields.push(`htmlPath=${params.htmlPath}`);
+      if (params.teachingCopy) fields.push("教学文案");
+      if (params.sendMaterial) fields.push("学习材料");
+      if (params.material) fields.push("资料说明");
+      if (params.tags) fields.push(`tags=${params.tags}`);
+      appendActivityLog("default", `保存家长库课程 ${params.topic}「${params.title}」${fields.length ? `（${fields.join("，")}）` : ""}`);
+    } catch (e) {
+      console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
+    }
     return {
       content: [
         {
@@ -509,6 +531,12 @@ export const parentDeleteCourseTool = defineTool({
   }),
   execute: async (_toolCallId, params) => {
     const ok = deleteParentCourse(undefined, params.topic, params.title);
+    // 2026-08-24：删除课程也自动记录到 activity-log.md
+    try {
+      appendActivityLog("default", ok ? `删除家长库课程 ${params.topic}「${params.title}」` : `尝试删除不存在的课程 ${params.topic}「${params.title}」`);
+    } catch (e) {
+      console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
+    }
     return {
       content: [
         {
@@ -564,6 +592,212 @@ export const parentContentTool = defineTool({
         {
           type: "text" as const,
           text: r.content,
+        },
+      ],
+    };
+  },
+});
+
+/** 路径守卫：解析后必须在 cwd 内。自定义文件工具（move/copy）没有 learningGuard 的 tool_call 拦截，必须自守。 */
+function guardCwd(cwd: string, p: string): string {
+  const resolved = path.resolve(cwd, p);
+  if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
+    throw new Error(`路径超出工作空间范围: ${p}`);
+  }
+  return resolved;
+}
+
+/**
+ * move_file：移动/重命名文件或目录（2026-08-24）。家长 agent 整理资料用
+ *（如把散放的 html 移进 materials/{topic}/、重命名、把音频移进 media/ 子目录）。
+ * 自动记录 activity-log；禁止覆盖已存在目标；禁止越出 data/。
+ */
+export const moveFileTool = defineTool({
+  name: "move_file",
+  label: "移动/重命名文件或目录",
+  description:
+    "把文件或目录从 `source` 移动到 `dest`（跨目录移动或重命名）。路径相对 data/ 根。\n\n" +
+    "**规则**：目标已存在时报错（不会覆盖）；源不存在时报错；不能移到 data/ 之外。\n\n" +
+    "**用途**：整理家长库资料——把散放的 html 移进 materials/{topic}/、重命名文件、把音频移进 media/ 子目录。",
+  parameters: Type.Object({
+    source: Type.String({ description: "源路径（相对 data/，如 parents/default/materials/lunyu/旧名.html）" }),
+    dest: Type.String({ description: "目标路径（相对 data/，如 parents/default/materials/lunyu/新名.html）" }),
+  }),
+  execute: async (_id, params, _signal, _onUpdate, ctx) => {
+    const src = guardCwd(ctx.cwd, params.source);
+    const dest = guardCwd(ctx.cwd, params.dest);
+    if (!fs.existsSync(src)) throw new Error(`源文件不存在: ${params.source}`);
+    if (fs.existsSync(dest)) throw new Error(`目标已存在: ${params.dest}`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.renameSync(src, dest);
+    try {
+      appendActivityLog("default", `移动/重命名 ${params.source} → ${params.dest}`);
+    } catch (e) {
+      console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
+    }
+    return {
+      content: [{ type: "text" as const, text: `已移动/重命名：${params.source} → ${params.dest}` }],
+    };
+  },
+});
+
+/**
+ * copy_file：复制文件或目录（2026-08-24）。用途：复制一份资料到另一主题、备份等。
+ * 自动记录 activity-log；禁止覆盖已存在目标；禁止越出 data/。
+ */
+export const copyFileTool = defineTool({
+  name: "copy_file",
+  label: "复制文件或目录",
+  description:
+    "把文件或目录从 `source` 复制到 `dest`（目录递归复制）。路径相对 data/ 根。\n\n" +
+    "**规则**：目标已存在时报错（不会覆盖）；源不存在时报错；不能复制到 data/ 之外。\n\n" +
+    "**用途**：复制一份资料到另一主题、备份资料等。",
+  parameters: Type.Object({
+    source: Type.String({ description: "源路径（相对 data/）" }),
+    dest: Type.String({ description: "目标路径（相对 data/）" }),
+  }),
+  execute: async (_id, params, _signal, _onUpdate, ctx) => {
+    const src = guardCwd(ctx.cwd, params.source);
+    const dest = guardCwd(ctx.cwd, params.dest);
+    if (!fs.existsSync(src)) throw new Error(`源文件不存在: ${params.source}`);
+    if (fs.existsSync(dest)) throw new Error(`目标已存在: ${params.dest}`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.cpSync(src, dest, { recursive: true });
+    try {
+      appendActivityLog("default", `复制 ${params.source} → ${params.dest}`);
+    } catch (e) {
+      console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
+    }
+    return {
+      content: [{ type: "text" as const, text: `已复制：${params.source} → ${params.dest}` }],
+    };
+  },
+});
+
+/**
+ * parent_stats：家长会话专用只读统计工具（统一家长提示词配套，2026-08-24）。
+ * 背景：家长库 parent.sqlite / 孩子库 kb.sqlite 是二进制 SQLite，read 工具读不了，
+ * 家长 agent 要「查看孩子学习情况 / token 统计」必须经本工具只读查询。
+ * 三档：tokens（token 汇总+最近明细）| progress（孩子主题进度）| daily（孩子每日记录）。
+ */
+export const parentStatsTool = defineTool({
+  name: "parent_stats",
+  label: "查看统计（token / 孩子学习进度 / 每日记录）",
+  description:
+    "**只读**查询家长工作台统计信息（数据库是二进制 SQLite，read 工具读不了，查统计一律用本工具，不要尝试用 read 读 .sqlite 文件）：\n\n" +
+    "- `type`=`tokens`：token 消耗汇总（总 token / 成本 / 按模型分组）+ 最近明细。传 `childId` 只看该孩子，缺省=全部（家长+孩子）；\n" +
+    "- `type`=`progress`：孩子学习进度，**必填 `childId`**：各主题 learned/total/next + 每课状态/首次学习/最近复习；\n" +
+    "- `type`=`daily`：孩子每日学习记录，**必填 `childId`**，`date`=YYYY-MM-DD 查某一天（缺省=最近 7 天）。",
+  parameters: Type.Object({
+    type: Type.Union([Type.Literal("tokens"), Type.Literal("progress"), Type.Literal("daily")], {
+      description: "tokens=token 统计 | progress=学习进度 | daily=每日学习记录",
+    }),
+    childId: Type.Optional(Type.String({ description: "孩子 childId（progress / daily 必填；tokens 缺省=全部）" })),
+    date: Type.Optional(Type.String({ description: "daily 专用：YYYY-MM-DD 查某一天，缺省=最近 7 天" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    if (params.type === "tokens") {
+      const s = getTokenSummary(params.childId || undefined);
+      const recent = readTokenLog(params.childId || undefined, 15);
+      const modelLines = Object.entries(s.byModel)
+        .map(([m, v]) => `- ${m}：${v.rounds} 轮，输入 ${v.input} / 输出 ${v.output} token，成本 ¥${v.cost.toFixed(4)}`)
+        .join("\n");
+      const recentLines = recent
+        .slice(-10)
+        .reverse()
+        .map((e) => `- ${e.ts?.slice(0, 16) ?? ""} ${e.channel || ""}${e.childId ? `/${e.childId}` : ""} ${e.model || ""}：${e.totalTokens ?? 0} token（${e.ok ? "成功" : "失败"}）`)
+        .join("\n");
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `## token 消耗统计${params.childId ? `（孩子 ${params.childId}）` : "（全部）"}\n` +
+              `- 轮次：${s.rounds}，总 token：${s.totalTokens}（输入 ${s.totalInput} / 输出 ${s.totalOutput}），成本 ¥${s.totalCost.toFixed(4)}\n` +
+              `- 最近时间：${s.lastTs ? new Date(s.lastTs).toLocaleString() : "无"}\n\n` +
+              `### 按模型\n${modelLines || "（无数据）"}\n\n` +
+              `### 最近记录\n${recentLines || "（无记录）"}`,
+          },
+        ],
+      };
+    }
+    if (params.type === "progress") {
+      if (!params.childId) throw new Error("parent_stats 的 progress 需要 childId 参数");
+      const childDir = path.join(getChildrenDir(), params.childId);
+      if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) {
+        return {
+          content: [{ type: "text" as const, text: `孩子 ${params.childId} 暂无学习数据（无 kb.sqlite）` }],
+        };
+      }
+      const list = queryTopicProgress(childDir);
+      if (!list.length) {
+        return {
+          content: [{ type: "text" as const, text: `孩子 ${params.childId} 尚未分配任何学习主题` }],
+        };
+      }
+      return {
+        content: [{ type: "text" as const, text: `## 孩子 ${params.childId} 学习进度\n\n` + progressToMarkdown(list) }],
+      };
+    }
+    // daily
+    if (!params.childId) throw new Error("parent_stats 的 daily 需要 childId 参数");
+    const childDir = path.join(getChildrenDir(), params.childId);
+    if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) {
+      return {
+        content: [{ type: "text" as const, text: `孩子 ${params.childId} 暂无学习数据（无 kb.sqlite）` }],
+      };
+    }
+    const entries = params.date
+      ? queryDaily(childDir, { date: params.date })
+      : (() => {
+          // 缺省=最近 7 天（逐天查询合并，保证语义与描述一致）
+          const out: Array<{ date: string; block: string; title: string; raw: string; tags: string }> = [];
+          for (let i = 0; i < 7; i++) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, "0");
+            const day = String(d.getDate()).padStart(2, "0");
+            out.push(...queryDaily(childDir, { date: `${y}-${m}-${day}` }));
+          }
+          return out;
+        })();
+    if (!entries.length) {
+      return {
+        content: [{ type: "text" as const, text: `孩子 ${params.childId} 无每日学习记录${params.date ? `（${params.date}）` : "（最近）"}` }],
+      };
+    }
+    return {
+      content: [{ type: "text" as const, text: `## 孩子 ${params.childId} 每日学习记录\n\n` + dailyToMarkdown(entries) }],
+    };
+  },
+});
+
+/**
+ * log_activity：家长操作记录工具（2026-08-24）。
+ * 家长 agent 用 write/edit 改资料文件、调整内容等（parent_course_save/delete 已自动记录）后，
+ * 调用本工具把这次改动追加记录到 parents/default/activity-log.md，供家长回看。
+ */
+export const logActivityTool = defineTool({
+  name: "log_activity",
+  label: "记录家长操作（activity-log）",
+  description:
+    "把家长工作台的一次改动追加记录到 `parents/default/activity-log.md`（纯文本 markdown，追加不覆盖）。\n\n" +
+    "**何时调用**：用 write/edit 写了或改了资料文件（html/md）、调整了内容之后调用一次；新建/删除课程（parent_course_save / parent_course_delete）**已自动记录**，无需再调。\n\n" +
+    "**参数**：`entry` 一句话简述做了什么（如「更新 论语学而篇第一章 的资料为 新版.html」）。",
+  parameters: Type.Object({
+    entry: Type.String({ description: "记录内容（一句话，如「更新 论语学而篇第一章 的资料为 新版.html」）" }),
+  }),
+  execute: async (_toolCallId, params) => {
+    if (!params.entry || !params.entry.trim()) {
+      throw new Error("log_activity 需要 entry 参数（一句话描述做了什么改动）");
+    }
+    appendActivityLog("default", params.entry);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: "已记录到 activity-log.md：" + params.entry.trim(),
         },
       ],
     };

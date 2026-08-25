@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, shell, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, app, BrowserWindow, dialog, shell, type IpcMainInvokeEvent } from "electron";
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads } from "./config";
@@ -15,6 +15,8 @@ import {
   deleteParentCourse,
   listChildAllocatedTopics,
   listParentMaterials,
+  listParentTopicMaterials,
+  deleteParentMaterial,
   setChildTopicDaily,
   listParentTopics,
   listParentTopicCourses,
@@ -23,10 +25,14 @@ import {
   readParentMaterial,
   upsertParentCourse,
   upsertParentTopic,
+  getParentUploadsDir,
+  queryParentTags,
+  upsertParentTag,
 } from "./parent-library";
-import { getChildSchedulerConfig, setChildSchedulerConfig } from "./scheduler";
+import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
+import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("auth:register", async (_e, email: string, password: string) => {
@@ -119,6 +125,18 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     };
     const result = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
     return { confirmed: result.response === 1 };
+  });
+
+  // 选择目录（备份目标等，ISSUE-041）
+  ipcMain.handle("dialog:pick_dir", async (_e, title?: string) => {
+    const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+    if (!win) return { canceled: true };
+    const res = await dialog.showOpenDialog(win, {
+      title: title || "选择目录",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (res.canceled || !res.filePaths[0]) return { canceled: true };
+    return { canceled: false, path: res.filePaths[0] };
   });
 
   ipcMain.handle("child:resetPassword", async (_e, childId: string, newPassword: string) => {
@@ -241,6 +259,25 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // ISSUE-045：标签选项从父库 tags 定义表获取（家长可编辑课程标签的下拉源）
+  ipcMain.handle("parent:getTags", async () => {
+    try {
+      return { success: true, data: queryParentTags(undefined) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ISSUE-045：家长自由新增标签写回父库 tags 定义表
+  ipcMain.handle("parent:upsertTag", async (_e, tag: string, dimension?: string, criteria?: string) => {
+    try {
+      upsertParentTag(undefined, tag, dimension || "", criteria || "");
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // 新建/更新家长库主题（课程管理页「新建主题」，method 全文、courses 可空）
   ipcMain.handle("parent:upsertTopic", async (_e, topic: any) => {
     try {
@@ -253,7 +290,17 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("parent:allocate", async (_e, childId: string, topicDir: string) => {
     try {
-      return { success: true, data: allocateTopicToChild(undefined, childId, topicDir) };
+      const data = allocateTopicToChild(undefined, childId, topicDir);
+      // ISSUE-041 层 C：分配后写 assign_topic 事件，提醒孩子端（另一台设备）轮询时同步新资料
+      try {
+        const { writeEvent } = await import("./sync-events");
+        writeEvent(childId, "assign_topic", { topicDir }).catch((e) =>
+          console.error("writeEvent(assign_topic) failed:", e)
+        );
+      } catch (e) {
+        console.error("assign_topic event skipped:", e);
+      }
+      return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -331,8 +378,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // 上传课程资料：主进程弹文件选择框 → 复制进父库共享 materials/<topicDir>/（媒体进 media/ 子目录）
-  ipcMain.handle("parent:uploadMaterial", async (e: IpcMainInvokeEvent, topicDir: string) => {
+  // 上传课程资料：主进程弹文件选择框 → 复制进父库共享 materials/<topicDir>/（未指定 subDir 时媒体进 media/ 子目录）
+  ipcMain.handle("parent:uploadMaterial", async (e: IpcMainInvokeEvent, topicDir: string, subDir?: string) => {
     try {
       const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
       const result = await dialog.showOpenDialog(win!, {
@@ -346,10 +393,29 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         return { success: true, data: { files: [] } };
       }
       const files = result.filePaths.map((p) => {
-        const rel = copyMaterialIntoParent(undefined, topicDir, p);
+        const rel = copyMaterialIntoParent(undefined, topicDir, p, subDir);
         return { name: path.basename(p), relPath: rel };
       });
       return { success: true, data: { files } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 列出某主题全部学习资料（含 media/ 子目录），供课程详情「学习资料管理」弹框
+  ipcMain.handle("parent:listTopicMaterials", async (_e, topicDir: string) => {
+    try {
+      return { success: true, data: listParentTopicMaterials(undefined, topicDir) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 删除某主题学习资料文件（弹框删除用），relPath 为相对 materials/<topicDir>/ 的路径
+  ipcMain.handle("parent:deleteMaterial", async (_e, topicDir: string, relPath: string) => {
+    try {
+      deleteParentMaterial(undefined, topicDir, relPath);
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -422,7 +488,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       for (const child of children) {
         configs[child.childId] = getChildSchedulerConfig(child.childId);
       }
-      return { success: true, configs };
+      // ISSUE-037 续：家长会话配置（autoNewSession）随 children 一起返回
+      return { success: true, configs, parent: getParentSchedulerConfig() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -431,6 +498,15 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("scheduler:config:set", async (_e, childId: string, config: any) => {
     try {
       const saved = setChildSchedulerConfig(childId, config);
+      return { success: true, config: saved };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:parent_config:set", async (_e, config: any) => {
+    try {
+      const saved = setParentSchedulerConfig(config);
       return { success: true, config: saved };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -453,6 +529,28 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
+  });
+
+  // ---- 软件更新（ISSUE-040）----
+  // 当前版本号统一读 app.getVersion()（package.json），与云端 /api/version 对比
+  ipcMain.handle("app:get_version", async () => {
+    return { success: true, version: app.getVersion() };
+  });
+
+  // 手动检查更新：状态/进度经 app:update_status / app:update_progress 事件推送
+  ipcMain.handle("app:check_update", async () => {
+    return checkForUpdatesManually();
+  });
+
+  // 手动触发下载（前端「available」状态下显式下载时用；默认 available 后自动下载）
+  ipcMain.handle("app:download_update", async () => {
+    return downloadUpdate();
+  });
+
+  // 重启并安装（下载完成后）
+  ipcMain.handle("app:quit_and_install", async () => {
+    quitAndInstall();
+    return { success: true };
   });
 
   // 默认模型（与渲染侧 Settings / ModelSelector 同源，存于 app-settings.json）
@@ -920,8 +1018,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("sync:pull", async () => {
     try {
-      const { syncAllChildren } = await import("./sync-manager");
-      const results = await syncAllChildren();
+      // ISSUE-041 层 B：全量同步 = 全部孩子（云端∪本地）+ 家长空间（家长库/全局配置）
+      const { syncAllData } = await import("./sync-manager");
+      const results = await syncAllData();
       return { success: true, results };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -947,6 +1046,71 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // ---- ISSUE-041 层 C：家长异地（事件信箱 + 云端查进度） ----
+
+  // 家长推送资料到云端：同步家长库 + 给指定孩子写 send_materials 事件
+  ipcMain.handle("sync:event_send", async (_e: IpcMainInvokeEvent, childIds: string[]) => {
+    try {
+      const { pushParentLibraryWithEvent } = await import("./sync-events");
+      const r = await pushParentLibraryWithEvent(Array.isArray(childIds) ? childIds : []);
+      return { success: true, ...r };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 家长云端查进度：写 request_progress 事件 + 返回当前云端进度摘要
+  ipcMain.handle("sync:query_progress", async (_e: IpcMainInvokeEvent, childId: string) => {
+    try {
+      const { requestAndQueryProgress } = await import("./sync-events");
+      const data = await requestAndQueryProgress(childId);
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- Backup handlers（ISSUE-041 层 A：本地 zip 备份 / 恢复）----
+
+  ipcMain.handle("backup:create", async () => {
+    try {
+      const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+      if (!win) return { success: false, error: "无窗口" };
+      const res = await dialog.showOpenDialog(win, {
+        title: "选择备份保存目录",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (res.canceled || !res.filePaths[0]) return { success: false, canceled: true };
+      const { createBackup } = await import("./backup");
+      const r = await createBackup(res.filePaths[0]);
+      return { success: true, file: r.file, count: r.count, bytes: r.bytes };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("backup:restore", async () => {
+    try {
+      const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+      if (!win) return { success: false, error: "无窗口" };
+      const res = await dialog.showOpenDialog(win, {
+        title: "选择备份文件（zip）",
+        properties: ["openFile"],
+        filters: [{ name: "备份文件", extensions: ["zip"] }],
+      });
+      if (res.canceled || !res.filePaths[0]) return { success: false, canceled: true };
+      const { restoreBackup } = await import("./backup");
+      const r = await restoreBackup(res.filePaths[0]);
+      return { success: true, restored: r.restored, skipped: r.skipped };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("backup:config:get", () => getBackupSchedulerConfig());
+
+  ipcMain.handle("backup:config:set", (_e, cfg: any) => setBackupSchedulerConfig(cfg));
 
   // 文件上传落盘（ISSUE-008）：保存到 data/children/<childId>/uploads/，按 childId 隔离
   ipcMain.handle(
@@ -1003,6 +1167,72 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("file:read_upload", async (_e: IpcMainInvokeEvent, childId: string, relPath: string) => {
     try {
       const uploadsDir = getUploadsDir(childId);
+      const full = path.resolve(uploadsDir, path.basename(relPath));
+      if (path.dirname(full) !== path.resolve(uploadsDir)) throw new Error("非法路径");
+      if (!fs.existsSync(full)) throw new Error("文件不存在（可能已被清理）");
+      const buf = fs.readFileSync(full);
+      return { success: true, data: buf.toString("base64") };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 家长聊天框上传落盘（ISSUE-044 修正）：保存到 data/parents/<parentId>/uploads/，与孩子的 children/<id>/uploads 隔离。
+  // 完全镜像 file:save_upload，仅落盘根目录从孩子切换到家长。
+  ipcMain.handle(
+    "file:save_upload_parent",
+    async (
+      _e: IpcMainInvokeEvent,
+      payload: { parentId: string; name: string; mime: string; data: ArrayBuffer | Buffer }
+    ) => {
+      try {
+        const uploadsDir = getParentUploadsDir(payload.parentId);
+        fs.mkdirSync(uploadsDir, { recursive: true });
+        // 安全文件名：只取 basename（防目录穿越）→ 剔除危险字符 → 前缀时间戳防重名
+        const rawBase = path
+          .basename(payload.name || "file")
+          .replace(/[^\w.\-\u4e00-\u9fa5()]/g, "_")
+          .slice(0, 80);
+        const finalName = `${Date.now()}-${rawBase || "file"}`;
+        const full = path.join(uploadsDir, finalName);
+        // 双保险：解析后必须仍在 uploads 目录内
+        if (path.dirname(path.resolve(full)) !== path.resolve(uploadsDir)) {
+          throw new Error("非法上传路径");
+        }
+        fs.writeFileSync(full, Buffer.from(payload.data));
+        pruneUploads(uploadsDir);
+        return {
+          success: true,
+          // 相对路径（相对 data/），统一正斜杠，便于前端展示/后续读取
+          path: path.join("parents", payload.parentId, "uploads", finalName).replace(/\\/g, "/"),
+          size: Buffer.byteLength(payload.data),
+        };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  // 点击气泡附件：用本地默认程序打开家长 uploads 目录内的文件（严格限定，防路径穿越）
+  ipcMain.handle("file:open_upload_parent", async (_e: IpcMainInvokeEvent, parentId: string, relPath: string) => {
+    try {
+      const uploadsDir = getParentUploadsDir(parentId);
+      // 只取 basename 后拼入 uploads 目录并 resolve 双校验：杜绝任何穿越可能
+      const full = path.resolve(uploadsDir, path.basename(relPath));
+      if (path.dirname(full) !== path.resolve(uploadsDir)) throw new Error("非法路径");
+      if (!fs.existsSync(full)) throw new Error("文件不存在（可能已被清理）");
+      const err = await shell.openPath(full);
+      if (err) return { success: false, error: err };
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 读取家长 uploads 目录内文件内容（base64），用于历史消息播放语音录音（防路径穿越同 open_upload_parent）
+  ipcMain.handle("file:read_upload_parent", async (_e: IpcMainInvokeEvent, parentId: string, relPath: string) => {
+    try {
+      const uploadsDir = getParentUploadsDir(parentId);
       const full = path.resolve(uploadsDir, path.basename(relPath));
       if (path.dirname(full) !== path.resolve(uploadsDir)) throw new Error("非法路径");
       if (!fs.existsSync(full)) throw new Error("文件不存在（可能已被清理）");

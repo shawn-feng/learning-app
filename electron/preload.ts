@@ -59,6 +59,15 @@ const api = {
   // 读取已落盘的上传文件内容（base64），用于历史消息播放语音录音
   readUpload: (childId: string, relPath: string) =>
     ipcRenderer.invoke("file:read_upload", childId, relPath),
+  // 家长聊天框上传落盘（ISSUE-044 修正）：保存到 data/parents/<parentId>/uploads/，与孩子隔离
+  saveParentUpload: (parentId: string, name: string, mime: string, data: ArrayBuffer) =>
+    ipcRenderer.invoke("file:save_upload_parent", { parentId, name, mime, data }),
+  // 用本地默认程序打开家长 uploads 目录内已落盘的上传文件
+  openParentUpload: (parentId: string, relPath: string) =>
+    ipcRenderer.invoke("file:open_upload_parent", parentId, relPath),
+  // 读取家长 uploads 目录内文件内容（base64），用于家长聊天历史消息播放语音录音
+  readParentUpload: (parentId: string, relPath: string) =>
+    ipcRenderer.invoke("file:read_upload_parent", parentId, relPath),
   piPromptParent: (text: string) => ipcRenderer.invoke("pi:prompt_parent", text),
   piStartParentContent: () => ipcRenderer.invoke("pi:start_parent_content"),
   piPromptParentContent: (text: string) => ipcRenderer.invoke("pi:prompt_parent_content", text),
@@ -108,6 +117,8 @@ const api = {
   // ISSUE-016: 原生确认对话框（替代渲染进程 confirm()，避免 Windows 模态对话框焦点残留）
   confirmDialog: (opts: { title?: string; message: string; detail?: string; confirmLabel?: string; cancelLabel?: string }) =>
     ipcRenderer.invoke("dialog:confirm", opts),
+  // 选择目录（备份目标等，ISSUE-041）
+  pickDirectory: (title?: string) => ipcRenderer.invoke("dialog:pick_dir", title),
   childResetPassword: (childId: string, newPassword: string) =>
     ipcRenderer.invoke("child:resetPassword", childId, newPassword),
   childChangePassword: (childId: string, oldPassword: string, newPassword: string) =>
@@ -138,6 +149,9 @@ const api = {
   // Parent library (ISSUE-029)
   parentListTopics: () => ipcRenderer.invoke("parent:listTopics"),
   parentListCourses: (topicDir: string) => ipcRenderer.invoke("parent:listCourses", topicDir),
+  parentGetTags: () => ipcRenderer.invoke("parent:getTags"),
+  parentUpsertTag: (tag: string, dimension?: string, criteria?: string) =>
+    ipcRenderer.invoke("parent:upsertTag", tag, dimension, criteria),
   parentAllocate: (childId: string, topicDir: string) =>
     ipcRenderer.invoke("parent:allocate", childId, topicDir),
   parentListChildTopics: (childId: string) =>
@@ -156,13 +170,20 @@ const api = {
     ipcRenderer.invoke("parent:readMaterial", relPath),
   parentListMaterials: (topicDir: string) =>
     ipcRenderer.invoke("parent:listMaterials", topicDir),
-  parentUploadMaterial: (topicDir: string) =>
-    ipcRenderer.invoke("parent:uploadMaterial", topicDir),
+  parentUploadMaterial: (topicDir: string, subDir?: string) =>
+    ipcRenderer.invoke("parent:uploadMaterial", topicDir, subDir),
+  parentListTopicMaterials: (topicDir: string) =>
+    ipcRenderer.invoke("parent:listTopicMaterials", topicDir),
+  parentDeleteMaterial: (topicDir: string, relPath: string) =>
+    ipcRenderer.invoke("parent:deleteMaterial", topicDir, relPath),
 
   // Scheduler config (per-child, managed in parent settings)
   schedulerConfigGet: () => ipcRenderer.invoke("scheduler:config:get"),
   schedulerConfigSet: (childId: string, config: any) =>
     ipcRenderer.invoke("scheduler:config:set", childId, config),
+  // 家长会话配置（autoNewSession 等，2026-08-24）
+  schedulerParentConfigSet: (config: any) =>
+    ipcRenderer.invoke("scheduler:parent_config:set", config),
 
   // General settings (materials limit)
   materialsLimitGet: () => ipcRenderer.invoke("settings:materials_limit:get"),
@@ -189,6 +210,15 @@ const api = {
   syncPull: () => ipcRenderer.invoke("sync:pull"),
   syncPush: (childId: string) => ipcRenderer.invoke("sync:push", childId),
   syncFull: (childId: string) => ipcRenderer.invoke("sync:full", childId),
+  // ISSUE-041 层 C：家长异地（推送资料到云端 + 云端查孩子进度）
+  syncEventSend: (childIds: string[]) => ipcRenderer.invoke("sync:event_send", childIds),
+  syncQueryProgress: (childId: string) => ipcRenderer.invoke("sync:query_progress", childId),
+
+  // Backup / restore (ISSUE-041 层 A)：弹系统对话框选目录/文件，主进程执行
+  createBackup: () => ipcRenderer.invoke("backup:create"),
+  restoreBackup: () => ipcRenderer.invoke("backup:restore"),
+  backupConfigGet: () => ipcRenderer.invoke("backup:config:get"),
+  backupConfigSet: (cfg: any) => ipcRenderer.invoke("backup:config:set", cfg),
 
   // Voice (STT + TTS)
   voiceConfigGet: () => ipcRenderer.invoke("voice:config:get"),
@@ -220,6 +250,23 @@ const api = {
   viewZoomIn: () => ipcRenderer.invoke("view:zoom-in"),
   viewZoomOut: () => ipcRenderer.invoke("view:zoom-out"),
   viewZoomReset: () => ipcRenderer.invoke("view:zoom-reset"),
+
+  // App updates (ISSUE-040)
+  getAppVersion: () => ipcRenderer.invoke("app:get_version"),
+  checkUpdate: () => ipcRenderer.invoke("app:check_update"),
+  downloadUpdate: () => ipcRenderer.invoke("app:download_update"),
+  quitAndInstall: () => ipcRenderer.invoke("app:quit_and_install"),
+  // 更新状态/进度事件（独立 listener，避免被 piRemoveListeners 误清）
+  onUpdateStatus: (callback: (data: { status: string; info?: any; error?: string }) => void) => {
+    const wrapper = (_e: any, data: any) => callback(data);
+    ipcRenderer.on("app:update_status", wrapper);
+    return () => ipcRenderer.removeListener("app:update_status", wrapper);
+  },
+  onUpdateProgress: (callback: (data: { percent: number; transferred: number; total: number; bytesPerSecond: number }) => void) => {
+    const wrapper = (_e: any, data: any) => callback(data);
+    ipcRenderer.on("app:update_progress", wrapper);
+    return () => ipcRenderer.removeListener("app:update_progress", wrapper);
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);

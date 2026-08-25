@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "./ChatWindow";
+import MaterialManagerModal from "./MaterialManagerModal";
 
 interface ParentTopic {
   name: string;
@@ -43,6 +44,16 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
   const [selected, setSelected] = useState<CourseRow | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [matOpen, setMatOpen] = useState(false);
+
+  // 标签可编辑（ISSUE-045）：选项来自父库 tags 定义表
+  const [tagOptions, setTagOptions] = useState<Array<{ tag: string; dimension: string; criteria: string }>>([]);
+  const [tagDraft, setTagDraft] = useState("");
+  const [addValue, setAddValue] = useState("");
+
+  // 教学文案可编辑（保存到 courses.teaching_copy）
+  const [editingCopy, setEditingCopy] = useState(false);
+  const [copyText, setCopyText] = useState("");
 
   // method 编辑器
   const [savedMethod, setSavedMethod] = useState(topic.method); // 已保存到数据库的 method（页面显示源）
@@ -66,6 +77,10 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
   const topicDir = topic.file;
 
   useEffect(() => {
+    setEditingCopy(false);
+  }, [selected]);
+
+  useEffect(() => {
     refreshCourses();
     // ISSUE-037：会话初始化结果必须显式检查——失败时提示，禁止 fire-and-forget 静默吞错
     window.api
@@ -76,6 +91,12 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
       .catch((e: any) => {
         setMsg({ ok: false, text: `AI 会话初始化失败：${e?.message || e}` });
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topicDir]);
+
+  // ISSUE-045：打开主题时拉取父库标签定义表作为下拉选项
+  useEffect(() => {
+    loadTagOptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topicDir]);
 
@@ -217,6 +238,79 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
     }
   }
 
+  // ==================== 标签可编辑（ISSUE-045）====================
+  async function loadTagOptions() {
+    try {
+      const r: any = await window.api.parentGetTags();
+      if (r?.success) setTagOptions(r.data || []);
+    } catch {
+      /* 标签选项加载失败不阻断主流程 */
+    }
+  }
+
+  function currentTagList(): string[] {
+    if (!selected) return [];
+    return (selected.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+  }
+
+  async function saveCourseTags(tags: string[]) {
+    if (!selected) return;
+    const joined = tags.join(",");
+    const r: any = await window.api.parentUpsertCourse(topicDir, { title: selected.title, tags: joined });
+    if (r?.success) {
+      const updated = { ...selected, tags: joined };
+      setSelected(updated);
+      setCourses((prev) => prev.map((c) => (c.title === updated.title ? updated : c)));
+      setMsg({ ok: true, text: "✓ 标签已保存" });
+    } else {
+      setMsg({ ok: false, text: r?.error || "标签保存失败" });
+    }
+  }
+
+  function removeTag(t: string) {
+    saveCourseTags(currentTagList().filter((x) => x !== t));
+  }
+
+  function addSelectedTag() {
+    if (!addValue) return;
+    saveCourseTags([...currentTagList(), addValue]);
+    setAddValue("");
+  }
+
+  async function addNewTag() {
+    const t = tagDraft.trim();
+    if (!t) return;
+    try {
+      await window.api.parentUpsertTag(t);
+    } catch {
+      /* 写回定义表失败不阻断，仍可应用到本课 */
+    }
+    await loadTagOptions();
+    const list = currentTagList();
+    if (!list.includes(t)) saveCourseTags([...list, t]);
+    setTagDraft("");
+  }
+
+  // 教学文案：编辑保存到 courses.teaching_copy（upsert 为部分更新，传 title + teachingCopy）
+  async function saveCopy() {
+    if (!selected) return;
+    if (!copyText.trim()) {
+      setMsg({ ok: false, text: "教学文案为空，未保存（可重新填写后保存）" });
+      return;
+    }
+    const r: any = await window.api.parentUpsertCourse(topicDir, { title: selected.title, teachingCopy: copyText });
+    if (r?.success) {
+      const updated = { ...selected, teachingCopy: copyText };
+      setSelected(updated);
+      setCourses((prev) => prev.map((c) => (c.title === updated.title ? updated : c)));
+      setMsg({ ok: true, text: "✓ 教学文案已保存" });
+      setEditingCopy(false);
+    } else {
+      setMsg({ ok: false, text: r?.error || "保存失败" });
+    }
+  }
+
+
   async function moveCourse(c: CourseRow, direction: -1 | 1) {
     const r = await window.api.parentMoveCourse(topicDir, c.title, direction);
     if (r?.success && r.data) {
@@ -331,30 +425,49 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
           {topic.name}
           <span style={{ color: "#aaa", fontWeight: 400, fontSize: 13 }}>（{topicDir} · {courses.length} 课）</span>
         </div>
-        <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+        <div style={{ display: "flex", gap: 6, marginLeft: "auto", flexWrap: "wrap" }}>
           {(
             [
+              ["info", "基本信息"],
+              ["__mat__", "🗂 学习资料管理"],
               ["method", "教学方法"],
               ["course", "课程详情"],
-              ["info", "基本信息"],
-            ] as Array<[Tab, string]>
-          ).map(([k, label]) => (
-            <button
-              key={k}
-              onClick={() => setTab(k)}
-              style={{
-                padding: "6px 14px",
-                borderRadius: 6,
-                border: "none",
-                fontSize: 13,
-                cursor: "pointer",
-                background: tab === k ? "#667eea" : "#f0f0f0",
-                color: tab === k ? "#fff" : "#555",
-              }}
-            >
-              {label}
-            </button>
-          ))}
+            ] as Array<[string, string]>
+          ).map(([k, label]) =>
+            k === "__mat__" ? (
+              <button
+                key={k}
+                onClick={() => setMatOpen(true)}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "none",
+                  fontSize: 13,
+                  cursor: "pointer",
+                  background: "#f0f0f0",
+                  color: "#555",
+                }}
+              >
+                {label}
+              </button>
+            ) : (
+              <button
+                key={k}
+                onClick={() => setTab(k as Tab)}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "none",
+                  fontSize: 13,
+                  cursor: "pointer",
+                  background: tab === k ? "#667eea" : "#f0f0f0",
+                  color: tab === k ? "#fff" : "#555",
+                }}
+              >
+                {label}
+              </button>
+            )
+          )}
         </div>
       </div>
 
@@ -423,7 +536,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
 
         {/* 中：AI 对话 */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
-          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} />
+          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} owner="parent" />
         </div>
 
         {/* 右：标签内容 */}
@@ -467,16 +580,85 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                     <div style={{ fontSize: 15, fontWeight: 700 }}>{selected.title}</div>
                     <button onClick={uploadMaterials} style={smallBtn}>📤 上传资料</button>
                   </div>
-                  <Section label="每课方法">
-                    {selected.lessonMethod || <span style={{ color: "#aaa" }}>（未填）</span>}
+                  <Section label="标签">
+                    <div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                        {currentTagList().length === 0 && <span style={{ color: "#aaa" }}>（无）</span>}
+                        {currentTagList().map((t) => (
+                          <span
+                            key={t}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#eef2ff", color: "#3b4cca", borderRadius: 12, padding: "2px 8px", fontSize: 12 }}
+                          >
+                            {t}
+                            <button
+                              onClick={() => removeTag(t)}
+                              title="移除"
+                              style={{ border: "none", background: "transparent", color: "#3b4cca", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0 }}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                        <select
+                          value={addValue}
+                          onChange={(e) => setAddValue(e.target.value)}
+                          style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #ddd", fontSize: 12, maxWidth: 160 }}
+                        >
+                          <option value="">+ 从词库添加…</option>
+                          {tagOptions
+                            .map((o) => o.tag)
+                            .filter((t) => !currentTagList().includes(t))
+                            .map((t) => {
+                              const def = tagOptions.find((o) => o.tag === t);
+                              return (
+                                <option key={t} value={t}>
+                                  {def ? `${t}（${def.dimension}）` : t}
+                                </option>
+                              );
+                            })}
+                        </select>
+                        <button onClick={addSelectedTag} disabled={!addValue} style={smallBtn}>
+                          添加
+                        </button>
+                        <input
+                          value={tagDraft}
+                          onChange={(e) => setTagDraft(e.target.value)}
+                          placeholder="自定义新标签"
+                          style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #ddd", fontSize: 12, width: 110 }}
+                        />
+                        <button onClick={addNewTag} disabled={!tagDraft.trim()} style={smallBtn}>
+                          新增
+                        </button>
+                      </div>
+                    </div>
                   </Section>
                   <Section label="教学文案">
-                    {selected.teachingCopy ? (
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+                      {editingCopy ? (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => { setCopyText(selected.teachingCopy || ""); setEditingCopy(false); }} style={smallBtn}>取消</button>
+                          <button onClick={saveCopy} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>保存</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { setCopyText(selected.teachingCopy || ""); setEditingCopy(true); }} style={smallBtn}>✏️ 编辑</button>
+                      )}
+                    </div>
+                    {editingCopy ? (
+                      <textarea
+                        value={copyText}
+                        onChange={(e) => setCopyText(e.target.value)}
+                        rows={8}
+                        placeholder="教学文案（Markdown 支持）…"
+                        style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, boxSizing: "border-box", resize: "vertical" }}
+                      />
+                    ) : selected.teachingCopy ? (
                       <div className="markdown-body">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{selected.teachingCopy}</ReactMarkdown>
                       </div>
                     ) : (
-                      <span style={{ color: "#aaa" }}>（数据库暂无教学文案；AI 可用 parent_course_save 写入）</span>
+                      <span style={{ color: "#aaa" }}>（数据库暂无教学文案；AI 可用 parent_course_save 写入，或点「编辑」填写）</span>
                     )}
                   </Section>
                   {selected.material && (
@@ -488,9 +670,6 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   )}
                   <Section label="发给学生的学习材料">
                     <StudentMaterial course={selected} />
-                  </Section>
-                  <Section label="标签">
-                    {selected.tags || <span style={{ color: "#aaa" }}>（无）</span>}
                   </Section>
                   <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                     <button onClick={() => deleteCourse(selected)} style={{ ...smallBtn, background: "#fff0f0", color: "#e53e3e" }}>删除课程</button>
@@ -515,6 +694,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
           )}
         </div>
       </div>
+      {matOpen && <MaterialManagerModal topicDir={topicDir} topicName={topic.name} onClose={() => setMatOpen(false)} />}
     </div>
   );
 }
@@ -598,3 +778,4 @@ const smallBtn: React.CSSProperties = {
   fontSize: 12,
   cursor: "pointer",
 };
+

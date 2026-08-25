@@ -97,6 +97,17 @@ export function getAppSettingsPath(): string {
 
 export function getCloudApiBase(): string {
   if (process.env["CLOUD_API_URL"]) return process.env["CLOUD_API_URL"];
-  // 生产打包默认走公网云服务，开发环境走本地联调
-  return app?.isPackaged ? "https://www.aixuexihao.top" : "http://localhost:8000";
+  // 统一走公网云服务（开发/打包一致）；本地联调可用 CLOUD_API_URL 覆盖
+  return "https://www.aixuexihao.top";
+}
+
+/**
+ * ISSUE-040: 自动更新 feed 地址（latest.yml + 安装包托管目录）。
+ * 原定阿里云 OSS 公共读被阿里云 2024 新规禁止（bucket ACL / policy 均不允许公开，需控制台申请），
+ * 降级为自有服务器 Nginx 静态目录 /download/（与认证同域名）。环境变量可覆盖。
+ */
+export function getUpdateFeedUrl(): string {
+  if (process.env["UPDATE_FEED_URL"]) return process.env["UPDATE_FEED_URL"];
+  // 统一走公网（开发/打包一致）；本地联调可用 UPDATE_FEED_URL 覆盖
+  return "https://www.aixuexihao.top/download/";
 }

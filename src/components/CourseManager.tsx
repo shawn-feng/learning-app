@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import TopicDetail from "./TopicDetail";
+import MaterialManagerModal from "./MaterialManagerModal";
 
 interface ParentTopic {
   name: string;
@@ -23,6 +24,7 @@ export default function CourseManager() {
   const [detail, setDetail] = useState<{ topic: ParentTopic; tab: Tab } | null>(null);
   const [newTopic, setNewTopic] = useState({ name: "", file: "" });
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [matTopic, setMatTopic] = useState<ParentTopic | null>(null);
 
   useEffect(() => {
     refreshTopics();
@@ -130,12 +132,13 @@ export default function CourseManager() {
               <div style={{ display: "flex", gap: 8 }}>
                 <CardBtn label="📖 教学方法" onClick={() => setDetail({ topic: t, tab: "method" })} />
                 <CardBtn label="📚 课程详情" primary onClick={() => setDetail({ topic: t, tab: "course" })} />
-                <CardBtn label="📋 基本信息" onClick={() => setDetail({ topic: t, tab: "info" })} />
+                <CardBtn label="🗂 学习资料管理" onClick={() => setMatTopic(t)} />
               </div>
             </div>
           ))}
         </div>
       )}
+      {matTopic && <MaterialManagerModal topicDir={matTopic.file} topicName={matTopic.name} onClose={() => setMatTopic(null)} />}
     </div>
   );
 }
