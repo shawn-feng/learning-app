@@ -80,8 +80,12 @@
     },
     "mac": {
       "category": "Education",
+      "minimumSystemVersion": "10.15",
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": "universal"
+        }
       ]
     },
     "publish": {

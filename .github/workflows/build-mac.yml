@@ -29,6 +29,8 @@ jobs:
           # 海外 runner 用官方源下载 electron 二进制，比 package.json 里的 npmmirror 镜像更快
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
           # 不签名（ad-hoc）：无 Developer ID 证书时 electron-builder 自动 fallback ad-hoc 签名
+          # 锁部署目标为 10.15，防止 macos-latest (Sequoia 15) 抬高最低系统版本导致旧 Mac 报“不支持此应用”
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
