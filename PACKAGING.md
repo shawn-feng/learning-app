@@ -178,9 +178,9 @@ plink -ssh -hostkey "SHA256:u90140y+d4butWm1tF/Jlsx6CvNO9AoPE+bxW2R5nK4" shansha
 
 ### 9.1 已完成的配置（本机直接复用）
 
-- `package.json`：新增脚本 `"dist:mac": "electron-vite build && electron-builder --mac"`；`build.mac` 补 `"category": "Education"`，`target` 改为 **`[{ "target": "dmg", "arch": "x64" }]`（x64 架构）**，并显式锁 `"minimumSystemVersion": "10.15"`。**不写 `identity`** → 无 Developer ID 证书时 electron-builder 自动 fallback 为 ad-hoc 签名（零成本，用户下载后手动放行）。
-- **为何 x64 而非 universal**：GitHub `macos-latest` 是 Apple Silicon 机器，默认打出 **arm64-only** dmg；Intel Mac 无法执行 arm64 二进制，会报"该 Mac 不支持这个应用"。实测用户为 **Intel Mac（macOS 12.7.6）**，故直接打 **x64** 包：Intel 原生运行，Apple Silicon 也可经 Rosetta 2 运行。另外 `universal` 合并阶段会因依赖 `@earendil-works/pi-tui` 的原生 `.node` 同时出现在 x64/arm64 两包而报错（`Detected file ... darwin-arm64/darwin-modifiers.node ... same in both`），x64 单次打包不经合并、无此问题。`minimumSystemVersion: 10.15` 防止 Runner 抬高最低系统版本误拦旧 macOS。
-- `.github/workflows/build-mac.yml`：**已可用**。GitHub 仓库 `shawn-feng/learning-app` 已建立，push `v*` tag 或到 Actions 页手动 Run 即触发 macos-latest 自动构建并产出 dmg Artifact。本机已配置 deploy key 用于推送（见 §9.7）。
+- `package.json`：新增脚本 `"dist:mac": "electron-vite build && electron-builder --mac"`；`build.mac` 补 `"category": "Education"`、`"minimumSystemVersion": "10.15"`、`"artifactName": "${productName}-${version}-${arch}.${ext}"`，`target` 为 **两个独立 dmg：`[{ "target": "dmg", "arch": "x64" }, { "target": "dmg", "arch": "arm64" }]`**（即 `学习伙伴-0.1.0-x64.dmg` + `学习伙伴-0.1.0-arm64.dmg`）。**不写 `identity`** → 无 Developer ID 证书时 electron-builder 自动 fallback 为 ad-hoc 签名（零成本，用户下载后手动放行）。
+- **为何「两个独立 dmg」而非 universal**：GitHub `macos-latest` 是 Apple Silicon 机器，默认打出 **arm64-only** dmg；Intel Mac（实测用户为 **Intel macOS 12.7.6**）无法执行 arm64 二进制，会报"该 Mac 不支持这个应用"。先试 `universal`（x64+arm64 合一）在合并阶段报错：`@earendil-works/pi-tui` 的原生 `.node` 被同时打进 x64/arm64 两临时包（`Detected file ... darwin-arm64/darwin-modifiers.node ... same in both`）。最终改为**两个独立单架构 dmg**（各自打包、不经合并）绕开冲突：x64 给 Intel 原生、arm64 给 Apple Silicon 原生。`minimumSystemVersion: 10.15` 防止 Runner 抬高最低系统版本误拦旧 macOS。
+- `.github/workflows/build-mac.yml`：**已可用**。GitHub 仓库 `shawn-feng/learning-app` 已建立，push `v*` tag 或到 Actions 页手动 Run 即触发 macos-latest 自动构建，产出 **x64 + arm64 两个 dmg**（Artifact `macos-dmg`，约 340MB）。本机已配置 deploy key 用于推送（见 §9.7）。
 
 ### 9.2 环境准备（Mac 上）
 
@@ -211,7 +211,7 @@ npm run dist:mac               # electron-vite build + electron-builder --mac
 - 报 `xcodebuild` / `hdiutil` 相关错误 → 没装 Xcode CLT，执行 `xcode-select --install`。
 - `npm ci` 报 ERESOLVE → 漏了 `--legacy-peer-deps`，务必加上。
 - Node 版本过低 → 升级到 22+。
-- **安装时弹"该 Mac 不支持这个应用"** → 旧版 dmg 是 arm64-only，Intel Mac 无法执行。已改为 `arch: "x64"` + `minimumSystemVersion: 10.15`（见 §9.1），重新下载 Actions 里的 `macos-dmg` 即可；若仍报，确认下载的是最新一次构建产物而非旧 arm64 包。
+- **安装时弹"该 Mac 不支持这个应用"** → 旧版 dmg 是 arm64-only，Intel Mac 无法执行。现已产出 **x64 + arm64 两个独立 dmg**（见 §9.1）：Intel Mac 装 `*-x64.dmg`、Apple Silicon 装 `*-arm64.dmg`，均锁 `minimumSystemVersion: 10.15`。重新下载 Actions 里最新 `macos-dmg` 即可；若仍报，确认下载的是对应架构的最新包而非旧的 arm64 包。
 
 ### 9.6 升级签名（可选）
 
