@@ -224,7 +224,7 @@ export const kbQueryTool = defineTool({
         }
         const lines: string[] = ["主题清单："];
         for (const t of topics) {
-          const dirName = t.file.split("/")[0];
+          const dirName = t.topicKey;
           const p = progress.find((x) => x.topic === dirName);
           const next = p?.next?.trim() ? `，下一课「${p.next.trim()}」` : "";
           const daily = t.rules.daily ? ` 每日目标 ${t.rules.daily} 课` : "";

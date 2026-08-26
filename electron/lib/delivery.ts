@@ -39,7 +39,7 @@ export function buildAllocPackage(topicDir: string): AllocPackage {
   const db = openParentDb(DEFAULT_PARENT_ID);
   try {
     const topic = db
-      .prepare("SELECT name, method, rules_json FROM topics WHERE file LIKE ?")
+      .prepare("SELECT name, method, rules_json FROM topics WHERE topic_key LIKE ?")
       .get(`%${topicDir}%`) as { name: string; method: string; rules_json: string } | undefined;
     if (!topic) throw new Error(`家长库中未找到主题 ${topicDir}`);
     const courses = listParentTopicCourses(DEFAULT_PARENT_ID, topicDir).map((c) => ({
@@ -81,8 +81,8 @@ export function applyAllocPackage(childId: string, pkg: AllocPackage): { applied
   try {
     parentDb
       .prepare(
-        "INSERT INTO topics (name, file, method, rules_json) VALUES (?, ?, ?, ?) " +
-          "ON CONFLICT(name) DO UPDATE SET file = excluded.file, method = excluded.method, rules_json = excluded.rules_json"
+        "INSERT INTO topics (name, topic_key, method, rules_json) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT(name) DO UPDATE SET topic_key = excluded.topic_key, method = excluded.method, rules_json = excluded.rules_json"
       )
       .run(pkg.topicName, pkg.topicDir, pkg.method, pkg.rulesJson);
   } finally {
@@ -129,15 +129,16 @@ export function buildProgressSummary(childId: string): any {
   const db = openKbDb(childDir);
   try {
     const topics = db
-      .prepare("SELECT name, file, progress FROM topics ORDER BY file")
-      .all() as unknown as Array<{ name: string; file: string; progress: string }>;
+      .prepare("SELECT name, topic_key, progress FROM topics ORDER BY topic_key")
+      .all() as unknown as Array<{ name: string; topic_key: string; progress: string }>;
     const list = topics.map((t) => {
-      const key = t.file.split("/")[0];
+      const key = t.topic_key;
       const total = (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ?").get(key) as any)?.c ?? 0;
       const done =
         (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ? AND status = '✅'").get(key) as any)?.c ??
         0;
-      return { name: t.name, file: t.file, progress: t.progress, courses: total, done };
+      // 注：云端摘要 JSON 字段名沿用 `file`（与 cloud-service API 契约兼容），值取 topic_key（纯拼音主题键）
+      return { name: t.name, file: t.topic_key, progress: t.progress, courses: total, done };
     });
     let daily: Array<{ date: string; summary: string }> = [];
     try {

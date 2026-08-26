@@ -23,7 +23,7 @@ import {
 
 export interface TopicSummary {
   name: string; // 主题名
-  file: string; // 进度文件相对 childDir 路径
+  topicKey: string; // 拼音主题键（= courses.topic = 目录名）
   learned: number;
   total: number;
   percent: number; // 0-100，保留一位小数
@@ -55,8 +55,8 @@ export function getLearningSummary(childId: string): LearningSummary {
   const progress = queryTopicProgress(childDir);
 
   const list: TopicSummary[] = topics.map((t) => {
-    // 关联键：topics.file 相对 learning/（如 "lunyu/lunyu.md"）→ 目录名 = file 第一段
-    const dirName = t.file.split("/")[0];
+    // 关联键：topics.topic_key 即拼音目录名（如 "lunyu"），直接等于 courses.topic
+    const dirName = t.topicKey;
     const p = progress.find((x) => x.topic === dirName);
     const learned = p?.learned ?? 0;
     const total = p?.total ?? 0;
@@ -67,7 +67,7 @@ export function getLearningSummary(childId: string): LearningSummary {
     const daily = dailyRaw ? parseInt(dailyRaw, 10) : null;
     return {
       name: t.name,
-      file: t.file,
+      topicKey: t.topicKey,
       learned,
       total,
       percent: percent(learned, total),
@@ -102,7 +102,7 @@ export function getLearningSummary(childId: string): LearningSummary {
  *   `learning/<topic>/materials/<课程名>.html`（给孩子看的预生成友好版，可能内嵌相对路径音频，iframe 中音频不保证可播放）
  * 优先返回 `.md`（自包含、可全文渲染），缺省回退 `.html`。
  *
- * @param topic 主题目录名（如 "lunyu"，即 topics.file 的第一段）
+ * @param topic 主题目录名（如 "lunyu"，即 topics.topic_key）
  * @param title 课程名（与 materials 下文件名完全同名）
  */
 /**
@@ -123,7 +123,7 @@ export function getCourseDailySummary(
  * 单个主题的进度明细（含每课 CourseItem 列表），供进度看板「主题 → 每课 → 当课汇总」钻取使用。
  * 数据来自 SQLite topic_progress 视图 + courses 表（与 getLearningSummary 同一真源）。
  *
- * @param topic 主题目录名（如 "lunyu"，即 topics.file 的第一段）
+ * @param topic 主题目录名（如 "lunyu"，即 topics.topic_key）
  */
 export function getTopicProgress(childId: string, topic: string): TopicProgress | null {
   const childDir = getChildDir(childId);
@@ -151,7 +151,7 @@ export function progressSummaryToMarkdown(summary: LearningSummary): string {
       ? `下一课：「${t.next.trim()}」`
       : "（已全部学完或暂无下一课）";
     const type = t.type ? `（${t.type}）` : "";
-    const key = t.file.split("/")[0];
+    const key = t.topicKey;
     const daily = t.daily != null ? ` 每日目标 ${t.daily} 课` : "";
     lines.push(
       `- ${t.name}${type}（${key}）：已学 ${t.learned}/${t.total}（${t.percent}%），${next}${daily}`

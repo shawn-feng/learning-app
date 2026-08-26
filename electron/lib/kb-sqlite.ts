@@ -10,7 +10,7 @@
  *   courses(topic, title, sort_order, status, mastery, first_learned, last_review,
  *           review_count, material, send_material, tags) —— 每主题每课一行（进度明细）
  *   topic_progress —— **视图**（非表）：learned/total/next/updated 由 courses 实时计算
- *   topics(name, file, method, progress, rules_json) —— 主题清单 + 每日目标（rules 并入）
+ *   topics(name, topic_key, method, progress, rules_json) —— 主题清单 + 每日目标（rules 并入；topic_key=纯拼音主题键=目录名）
  *   tags(tag, dimension, criteria) —— **标签定义表**（词表 + 判断标准），替代倒排索引
  *   meta(key, value) —— 迁移标记 / schema 版本
  *
@@ -112,7 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_courses_topic ON courses(topic, sort_order);
 
 CREATE TABLE IF NOT EXISTS topics (
   name TEXT PRIMARY KEY,
-  file TEXT NOT NULL,
+  topic_key TEXT NOT NULL,
   method TEXT NOT NULL DEFAULT '',
   progress TEXT NOT NULL DEFAULT '',
   rules_json TEXT NOT NULL DEFAULT '{}'
@@ -152,6 +152,28 @@ GROUP BY topic;
 `;
 
 /** 打开（必要时创建）孩子的 kb.sqlite；调用方负责 close。 */
+/** 把 topics 来源的各类「文件标识」归一化为纯拼音主题键（= courses.topic = 目录名）。
+ * 兼容：目录路径 `hanzigong/hanzigong.md`、纯目录名 `hanzigong`、裸文件名 `hanzigong.md`。 */
+export function normalizeTopicKey(raw: string): string {
+  const seg = raw.split("/")[0].trim();
+  return seg.replace(/\.md$/i, "");
+}
+
+/**
+ * v5 → v6 就地迁移（ISSUE-052）：topics 表 `file` 列改名为 `topic_key`（纯拼音主题键），
+ * 并把存量值归一化（剥 `dir/x.md` 路径、去末尾 .md），与 courses.topic / parent 库一致。
+ * 幂等：通过列存在性判断，只在仍是 `file` 的库上执行一次。
+ */
+function ensureV6(db: DatabaseSync): void {
+  const cols = (db.prepare("PRAGMA table_info(topics)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cols.includes("file")) return; // 已是 v6（新库或已迁移）
+  db.exec("ALTER TABLE topics RENAME COLUMN file TO topic_key");
+  const rows = db.prepare("SELECT name, topic_key FROM topics").all() as unknown as Array<{ name: string; topic_key: string }>;
+  const upd = db.prepare("UPDATE topics SET topic_key = ? WHERE name = ?");
+  for (const r of rows) upd.run(normalizeTopicKey(r.topic_key), r.name);
+  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "6");
+}
+
 export function openKbDb(childDir: string): DatabaseSync {
   const db = new DatabaseSync(path.join(childDir, "kb.sqlite"));
   // 并发写（如测试多文件并行、主进程与其它进程同库）时等待锁而不是立即报错
@@ -160,6 +182,7 @@ export function openKbDb(childDir: string): DatabaseSync {
   ensureV3(db);
   ensureV4(db, childDir);
   ensureV5(db);
+  ensureV6(db);
   // 视图每次重建（廉价、幂等）：视图定义变更时无需迁移即可生效
   db.exec("DROP VIEW IF EXISTS topic_progress");
   db.exec(SCHEMA_VIEWS);
@@ -255,7 +278,7 @@ function ensureV3(db: DatabaseSync): void {
 
 /**
  * v3 → v4 就地迁移：
- *   1) topics 加 rules_json 列，rules 表数据并入（rules.topic 目录名 ↔ topics.file 目录名），删 rules 表
+ *   1) topics 加 rules_json 列，rules 表数据并入（rules.topic 目录名 ↔ topics.topic_key 目录名），删 rules 表
  *   2) daily_entries 加 tags 列，从存量 raw 的「- 标签：」行回填
  *   3) tag_links 倒排表 → tags 定义表（从归档 tags/taxonomy.md 导入；tag_links 里词表外的标签兜底收录），删 tag_links 表
  * 幂等：通过列/表存在性判断，只在 v3 库上执行一次。
@@ -482,7 +505,7 @@ export function migrateAllToSqlite(childDir: string): {
             const re = /-\s*\{([^}]*)\}/g;
             let m: RegExpExecArray | null;
             const insert = db.prepare(
-              "INSERT OR REPLACE INTO topics (name, file, method, progress, rules_json) VALUES (?, ?, ?, ?, ?)"
+              "INSERT OR REPLACE INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, ?, ?, ?)"
             );
             while ((m = re.exec(fm.data)) !== null) {
               const kv: Record<string, string> = {};
@@ -509,7 +532,7 @@ export function migrateAllToSqlite(childDir: string): {
                     break;
                   }
                 }
-                insert.run(kv.name, kv.file, methodFull || link, kv.progress || "", "{}");
+                insert.run(kv.name, normalizeTopicKey(kv.file), methodFull || link, kv.progress || "", "{}");
               }
             }
           }
@@ -619,7 +642,7 @@ export function queryDaily(childDir: string, q: DailyQuery): DailyEntry[] {
 /**
  * 主题键解析：把 agent / 工具可能传入的「中文名」或「拼音目录名」统一成 courses.topic 用的键。
  *   - 已是 courses.topic（拼音目录名，如 hanzigong）→ 原样返回
- *   - 匹配 topics.name（中文显示名，如 汉字宫）→ 返回其 file 首段（拼音目录名）
+ *   - 匹配 topics.name（中文显示名，如 汉字宫）→ 返回其 topic_key（拼音目录名）
  *   - 否则原样返回（支持新建主题的拼音键直通）
  * 原因（主题键对齐）：topics.name 是中文显示名，courses.topic / topic_progress.topic 是拼音目录名，
  * 两者脱节会让 agent 拿中文名查进度/写课程时查不到、反复核对（如 珊珊会话里「汉字宫」查不到）。
@@ -628,8 +651,8 @@ export function resolveTopicKeyUsingDb(db: DatabaseSync, input: string): string 
   if (!input) return input;
   const byKey = db.prepare("SELECT 1 FROM courses WHERE topic = ? LIMIT 1").get(input);
   if (byKey) return input;
-  const byName = db.prepare("SELECT file FROM topics WHERE name = ?").get(input) as { file: string } | undefined;
-  if (byName) return byName.file.split("/")[0];
+  const byName = db.prepare("SELECT topic_key FROM topics WHERE name = ?").get(input) as { topic_key: string } | undefined;
+  if (byName) return byName.topic_key;
   return input;
 }
 
@@ -750,12 +773,12 @@ export function queryCourseDailySummaries(
 }
 
 /** 查询主题清单（topics 表，含 rules_json）。 */
-export function queryTopicsMeta(childDir: string): Array<{ name: string; file: string; method: string; progress: string; rules: Record<string, string> }> {
+export function queryTopicsMeta(childDir: string): Array<{ name: string; topicKey: string; method: string; progress: string; rules: Record<string, string> }> {
   const db = openKbDb(childDir);
   try {
-    const rows = db.prepare("SELECT name, file, method, progress, rules_json FROM topics ORDER BY name").all() as unknown as Array<{
+    const rows = db.prepare("SELECT name, topic_key, method, progress, rules_json FROM topics ORDER BY name").all() as unknown as Array<{
       name: string;
-      file: string;
+      topic_key: string;
       method: string;
       progress: string;
       rules_json: string;
@@ -767,7 +790,7 @@ export function queryTopicsMeta(childDir: string): Array<{ name: string; file: s
       } catch {
         rules = {};
       }
-      return { name: r.name, file: r.file, method: r.method, progress: r.progress, rules };
+      return { name: r.name, topicKey: r.topic_key, method: r.method, progress: r.progress, rules };
     });
   } finally {
     db.close();

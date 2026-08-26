@@ -11,7 +11,7 @@ interface Props {
 
 interface TopicSummary {
   name: string;
-  file: string;
+  topicKey: string;
   learned: number;
   total: number;
   percent: number;
@@ -80,7 +80,7 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
   }, [selectedChild]);
 
   function openTopic(t: TopicSummary) {
-    const topicDir = t.file.split("/")[0];
+    const topicDir = t.topicKey;
     setSearch("");
     setDrill({ topic: t, detail: null, course: null });
     setLoadingDetail(true);
@@ -144,7 +144,7 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
               {drill?.course && (
                 <CourseDetail
                   childId={selectedChild.childId}
-                  topicDir={drill.topic.file.split("/")[0]}
+                  topicDir={drill.topic.topicKey}
                   topicName={drill.topic.name}
                   course={drill.course}
                   onBack={goBack}

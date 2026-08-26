@@ -18,6 +18,7 @@ import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "node:url";
 import { getDataDir, getChildrenDir } from "./config";
+import { normalizeTopicKey } from "./kb-sqlite";
 import { buildAssetUrl } from "./media-protocol";
 import { openKbDb, type CourseItem } from "./kb-sqlite";
 
@@ -74,7 +75,7 @@ export function appendActivityLog(parentId: string, entry: string): void {
 const PARENT_SCHEMA_TABLES = `
 CREATE TABLE IF NOT EXISTS topics (
   name TEXT PRIMARY KEY,
-  file TEXT NOT NULL,
+  topic_key TEXT NOT NULL,
   method TEXT NOT NULL DEFAULT '',
   progress TEXT NOT NULL DEFAULT '',
   rules_json TEXT NOT NULL DEFAULT '{}'
@@ -137,6 +138,7 @@ export function openParentDb(parentId: string = DEFAULT_PARENT_ID): DatabaseSync
   db.exec("PRAGMA busy_timeout = 10000");
   db.exec(PARENT_SCHEMA_TABLES);
   ensureParentV2(db);
+  ensureParentV3(db);
   ensureParentTags(db);
   // 视图已存在则跳过重建（避免每次打开都写锁；视图定义变更时才需要显式重建）
   const hasView = db
@@ -155,6 +157,17 @@ function ensureParentV2(db: DatabaseSync): void {
   if (!cols.includes("teaching_copy")) {
     db.exec("ALTER TABLE courses ADD COLUMN teaching_copy TEXT NOT NULL DEFAULT ''");
   }
+}
+
+/** 父库 v2 → v3 就地迁移（ISSUE-052）：topics 表 `file` 列改名为 `topic_key`（纯拼音主题键），并归一化存量值。
+ * 幂等：通过列存在性判断，只在仍是 `file` 的库上执行一次。 */
+function ensureParentV3(db: DatabaseSync): void {
+  const cols = (db.prepare("PRAGMA table_info(topics)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cols.includes("file")) return;
+  db.exec("ALTER TABLE topics RENAME COLUMN file TO topic_key");
+  const rows = db.prepare("SELECT name, topic_key FROM topics").all() as unknown as Array<{ name: string; topic_key: string }>;
+  const upd = db.prepare("UPDATE topics SET topic_key = ? WHERE name = ?");
+  for (const r of rows) upd.run(normalizeTopicKey(r.topic_key), r.name);
 }
 
 // 受控标签词表（初版 20 个，四维）。家长给孩子课程打标签只能从本表选（ISSUE-045：选项从数据库获取）。
@@ -230,7 +243,7 @@ export function upsertParentTag(
 
 export interface ParentTopic {
   name: string; // 主题中文名（如 论语）
-  file: string; // 主题目录名（如 lunyu）
+  topicKey: string; // 拼音主题键（如 lunyu）
   method: string; // method.md 全文
   rules: Record<string, string>;
   learned: number;
@@ -241,9 +254,9 @@ export interface ParentTopic {
 export function listParentTopics(parentId: string = DEFAULT_PARENT_ID): ParentTopic[] {
   const db = openParentDb(parentId);
   try {
-    const rows = db.prepare("SELECT name, file, method, rules_json FROM topics ORDER BY name").all() as unknown as Array<{
+    const rows = db.prepare("SELECT name, topic_key, method, rules_json FROM topics ORDER BY name").all() as unknown as Array<{
       name: string;
-      file: string;
+      topicKey: string;
       method: string;
       rules_json: string;
     }>;
@@ -260,7 +273,7 @@ export function listParentTopics(parentId: string = DEFAULT_PARENT_ID): ParentTo
       } catch {
         rules = {};
       }
-      const topicDir = r.file.split("/")[0];
+      const topicDir = r.topic_key;
       const a = aggMap.get(topicDir);
       const materialsDir = path.join(getParentMaterialsDir(parentId), topicDir);
       let htmlCount = 0;
@@ -269,7 +282,7 @@ export function listParentTopics(parentId: string = DEFAULT_PARENT_ID): ParentTo
       }
       return {
         name: r.name,
-        file: r.file,
+        topicKey: r.topic_key,
         method: r.method,
         rules,
         learned: Number(a?.learned) || 0,
@@ -325,7 +338,7 @@ export function resolveParentMaterial(parentId: string, htmlPath: string): strin
  */
 export function upsertParentTopic(
   parentId: string,
-  topic: { name: string; file: string; method: string; progress?: string; rules?: Record<string, string> },
+  topic: { name: string; topicKey: string; method: string; progress?: string; rules?: Record<string, string> },
   courses: Array<{
     title: string;
     sortOrder?: number;
@@ -342,10 +355,10 @@ export function upsertParentTopic(
     db.exec("BEGIN");
     try {
       db.prepare(
-        "INSERT INTO topics (name, file, method, progress, rules_json) VALUES (?, ?, ?, ?, ?) " +
-          "ON CONFLICT(name) DO UPDATE SET file = excluded.file, method = excluded.method, " +
+        "INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, ?, ?, ?) " +
+          "ON CONFLICT(name) DO UPDATE SET topic_key = excluded.topic_key, method = excluded.method, " +
           "progress = excluded.progress, rules_json = excluded.rules_json"
-      ).run(topic.name, topic.file, topic.method, topic.progress || "", JSON.stringify(topic.rules || {}));
+      ).run(topic.name, normalizeTopicKey(topic.topicKey), topic.method, topic.progress || "", JSON.stringify(topic.rules || {}));
 
       const upsert = db.prepare(
         "INSERT INTO courses (topic, title, sort_order, status, mastery, first_learned, last_review, review_count, material, send_material, tags, lesson_method, html_path, teaching_copy) " +
@@ -354,10 +367,10 @@ export function upsertParentTopic(
           "send_material = excluded.send_material, tags = excluded.tags, lesson_method = excluded.lesson_method, html_path = excluded.html_path, teaching_copy = excluded.teaching_copy"
       );
       for (const c of courses) {
-        upsert.run(topic.file.split("/")[0], c.title, c.sortOrder ?? 0, c.material || "", c.sendMaterial || "", c.tags || "", c.lessonMethod || "", c.htmlPath || "", c.teachingCopy || "");
+        upsert.run(topic.topicKey, c.title, c.sortOrder ?? 0, c.material || "", c.sendMaterial || "", c.tags || "", c.lessonMethod || "", c.htmlPath || "", c.teachingCopy || "");
       }
       const topics = (db.prepare("SELECT COUNT(*) AS c FROM topics").get() as { c: number }).c;
-      const cnt = (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ?").get(topic.file.split("/")[0]) as { c: number }).c;
+      const cnt = (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ?").get(topic.topicKey) as { c: number }).c;
       db.exec("COMMIT");
       return { topics, courses: cnt };
     } catch (e) {
@@ -387,7 +400,7 @@ export function allocateTopicToChild(
   const db = openParentDb(parentId);
   let topicRow: { name: string; method: string; rules_json: string } | undefined;
   try {
-    topicRow = db.prepare("SELECT name, method, rules_json FROM topics WHERE file LIKE ?").get(`%${topicDir}%`) as
+    topicRow = db.prepare("SELECT name, method, rules_json FROM topics WHERE topic_key LIKE ?").get(`%${topicDir}%`) as
       | { name: string; method: string; rules_json: string }
       | undefined;
   } finally {
@@ -402,8 +415,8 @@ export function allocateTopicToChild(
         // 只记主题名/目录/规则，**不拷贝 method 全文**（孩子端经 parent_content 工具从家长库取，见 ISSUE-029）
         childDb
           .prepare(
-            "INSERT INTO topics (name, file, method, progress, rules_json) VALUES (?, ?, '', '', ?) " +
-              "ON CONFLICT(name) DO UPDATE SET file = excluded.file, method = '', rules_json = excluded.rules_json"
+        "INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, '', '', ?) " +
+          "ON CONFLICT(name) DO UPDATE SET topic_key = excluded.topic_key, method = '', rules_json = excluded.rules_json"
           )
           .run(topicRow.name, topicDir, topicRow.rules_json);
       }
@@ -441,14 +454,14 @@ export function allocateTopicToChild(
 /** 孩子已分配的主题清单（读取孩子 kb.sqlite 的 topics 表；无库返回空）。用于孩子管理页展示「已添加的主题」。 */
 export function listChildAllocatedTopics(
   childId: string
-): Array<{ name: string; file: string; daily: string; type: string }> {
+): Array<{ name: string; topicKey: string; daily: string; type: string }> {
   const childDir = path.join(getChildrenDir(), childId);
   if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) return [];
   const db = openKbDb(childDir);
   try {
-    const rows = db.prepare("SELECT name, file, rules_json FROM topics ORDER BY file").all() as unknown as Array<{
+    const rows = db.prepare("SELECT name, topic_key, rules_json FROM topics ORDER BY topic_key").all() as unknown as Array<{
       name: string;
-      file: string;
+      topicKey: string;
       rules_json: string;
     }>;
     return rows.map((r) => {
@@ -461,7 +474,7 @@ export function listChildAllocatedTopics(
       } catch {
         /* 损坏的 rules_json 视为空 */
       }
-      return { name: r.name, file: r.file.split("/")[0], daily, type };
+      return { name: r.name, topicKey: r.topic_key, daily, type };
     });
   } finally {
     db.close();
@@ -483,7 +496,7 @@ export function setChildTopicDaily(
   if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) return false;
   const db = openKbDb(childDir);
   try {
-    const row = db.prepare("SELECT rules_json FROM topics WHERE file LIKE ?").get(`%${topicDir}%`) as
+    const row = db.prepare("SELECT rules_json FROM topics WHERE topic_key LIKE ?").get(`%${topicDir}%`) as
       | { rules_json: string }
       | undefined;
     if (!row) return false;
@@ -495,7 +508,7 @@ export function setChildTopicDaily(
     }
     parsed.daily = daily;
     parsed.type = type;
-    db.prepare("UPDATE topics SET rules_json = ? WHERE file LIKE ?").run(
+    db.prepare("UPDATE topics SET rules_json = ? WHERE topic_key LIKE ?").run(
       JSON.stringify(parsed),
       `%${topicDir}%`
     );
@@ -523,14 +536,14 @@ export function getParentContentForChild(
 ): { found: boolean; content: string } {
   // 1) 校验分配
   const allocated = listChildAllocatedTopics(childId);
-  if (!allocated.some((t) => t.file === topicDir)) {
+  if (!allocated.some((t) => t.topicKey === topicDir)) {
     return { found: false, content: "" };
   }
   // 2) 从家长库查内容
   const db = openParentDb(DEFAULT_PARENT_ID);
   try {
     if (type === "method") {
-      const row = db.prepare("SELECT method FROM topics WHERE file LIKE ?").get(`%${topicDir}%`) as
+      const row = db.prepare("SELECT method FROM topics WHERE topic_key LIKE ?").get(`%${topicDir}%`) as
         | { method: string }
         | undefined;
       if (row?.method) return { found: true, content: row.method };
@@ -909,7 +922,7 @@ export function migrateChildrenToParent(parentId: string = DEFAULT_PARENT_ID): M
         let topicName = topicDir;
         const childDb0 = openKbDb(childDir);
         try {
-          const t0 = childDb0.prepare("SELECT name FROM topics WHERE file LIKE ?").get(`%${topicDir}%`) as
+          const t0 = childDb0.prepare("SELECT name FROM topics WHERE topic_key LIKE ?").get(`%${topicDir}%`) as
             | { name: string }
             | undefined;
           if (t0) topicName = t0.name;
@@ -919,8 +932,8 @@ export function migrateChildrenToParent(parentId: string = DEFAULT_PARENT_ID): M
         const db = openParentDb(parentId);
         try {
           db.prepare(
-            "INSERT INTO topics (name, file, method, progress, rules_json) VALUES (?, ?, ?, '', '{}') " +
-              "ON CONFLICT(name) DO UPDATE SET file = excluded.file, method = excluded.method"
+            "INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, ?, '', '{}') " +
+              "ON CONFLICT(name) DO UPDATE SET topic_key = excluded.topic_key, method = excluded.method"
           ).run(topicName, topicDir, methodFull);
         } finally {
           db.close();
@@ -979,7 +992,7 @@ export function migrateChildrenToParent(parentId: string = DEFAULT_PARENT_ID): M
           }>;
           const parentDb = openParentDb(parentId);
           try {
-            const t = parentDb.prepare("SELECT name, method FROM topics WHERE file LIKE ?").get(`%${topicDir}%`) as
+            const t = parentDb.prepare("SELECT name, method FROM topics WHERE topic_key LIKE ?").get(`%${topicDir}%`) as
               | { name: string; method: string }
               | undefined;
             const upsert = parentDb.prepare(

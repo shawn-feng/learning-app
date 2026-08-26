@@ -93,7 +93,7 @@ describe("ISSUE-027 进度看板钻取（主题 → 每课 → 当课汇总）",
   it("getTopicProgress 返回该主题的逐课明细（真实数据）", () => {
     const s = getLearningSummary(CHILD);
     const lunyu = s.topics.find((t) => t.name === "论语")!;
-    const topicDir = lunyu.file.split("/")[0]; // "lunyu"
+    const topicDir = lunyu.topicKey; // "lunyu"（已归一化为纯拼音主题键）
     const detail = getTopicProgress(CHILD, topicDir);
     expect(detail, "应取到 lunyu 主题明细").toBeTruthy();
     expect(detail!.topic).toBe(topicDir);

@@ -1,15 +1,14 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { ArrowLeft, FolderOpen, Plus, ChevronUp, ChevronDown, Trash2, Pencil, Upload, X, Tag } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "./ChatWindow";
 import MaterialManagerModal from "./MaterialManagerModal";
 import IconButton from "./IconButton";
 
 interface ParentTopic {
   name: string;
-  file: string;
+  topicKey: string;
   method: string;
   learned: number;
   total: number;
@@ -37,9 +36,10 @@ interface Props {
 }
 
 /**
- * 主题详情页（课程管理，三列）：
- * 左=课程列表（添加/删除/排序），中=AI 对话（可直接 parent_course_save 建课、write/edit 写资料），
- * 右=标签内容：教学方法(method markdown 可编辑) / 课程详情(名称+教学文案+发给学生的学习材料 html 渲染) / 基本信息。
+ * 主题详情页（课程管理，两列，ISSUE-050 移除原中列 AI 对话）：
+ * 左=课程列表（添加/删除/排序），右=标签内容：教学方法(method markdown 可编辑) /
+ * 课程详情(名称+教学文案+发给学生的学习材料 html 渲染) / 基本信息。
+ * 家长与 agent 的对话统一在家长中心右侧常驻聊天面板进行（ParentChatPanel，childId=parent）。
  */
 export default function TopicDetail({ topic, initialTab = "course", onBack }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -64,20 +64,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
   const [editingMethod, setEditingMethod] = useState(false);
   const [savingMethod, setSavingMethod] = useState(false);
 
-  // AI 聊天
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [busy, setBusy] = useState(false);
-  // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡，与孩子聊天界面一致）
-  const workingIdRef = useRef<string | null>(null);
-
-  // 更新当前工作气泡（按 id 定位）
-  const patchWorking = useCallback((patch: (m: ChatMessage) => ChatMessage) => {
-    const id = workingIdRef.current;
-    if (!id) return;
-    setMessages((prev) => prev.map((m) => (m.id === id ? patch(m) : m)));
-  }, []);
-
-  const topicDir = topic.file;
+  const topicDir = topic.topicKey;
 
   useEffect(() => {
     setEditingCopy(false);
@@ -85,15 +72,6 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
 
   useEffect(() => {
     refreshCourses();
-    // ISSUE-037：会话初始化结果必须显式检查——失败时提示，禁止 fire-and-forget 静默吞错
-    window.api
-      .piStartParentContent()
-      .then((r: any) => {
-        if (!r?.success) setMsg({ ok: false, text: `AI 会话初始化失败：${r?.error || "未知错误"}` });
-      })
-      .catch((e: any) => {
-        setMsg({ ok: false, text: `AI 会话初始化失败：${e?.message || e}` });
-      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topicDir]);
 
@@ -102,102 +80,6 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
     loadTagOptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topicDir]);
-
-  useEffect(() => {
-    // 流式文本：working 气泡期间累积到该气泡的 text（working 态不显示正文，reply 时整体替换）
-    window.api.onPiStreaming((data: any) => {
-      if (data.childId !== "parent-content") return;
-      setMessages((prev) => {
-        const clone = [...prev];
-        const last = clone[clone.length - 1];
-        if (last && last.role === "ai") {
-          clone[clone.length - 1] = { ...last, text: last.text + (data.delta || "") };
-        } else {
-          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: data.delta || "", time: nowTime() });
-        }
-        return clone;
-      });
-    });
-    window.api.onPiAgentEnd((data: any) => {
-      if (data.childId === "parent-content") setBusy(false);
-    });
-    // 思考增量（主进程已节流）——与孩子聊天界面一致，在 working 气泡里实时展示
-    window.api.onPiThinking((data: any) => {
-      if (data.childId !== "parent-content") return;
-      patchWorking((m) => ({ ...m, thinking: (m.thinking || "") + data.delta }));
-    });
-    // 工具开始调用
-    window.api.onPiToolStart((data: any) => {
-      if (data.childId !== "parent-content") return;
-      const call: ToolCallState = {
-        id: data.toolCallId || `tool-${Date.now()}`,
-        name: data.toolName,
-        argsPreview: data.argsPreview,
-        status: "running",
-      };
-      patchWorking((m) => ({ ...m, tools: [...(m.tools || []), call] }));
-    });
-    // 工具结束调用：更新对应工具状态
-    window.api.onPiToolEnd((data: any) => {
-      if (data.childId !== "parent-content") return;
-      patchWorking((m) => ({
-        ...m,
-        tools: (m.tools || []).map((t) =>
-          t.id === data.toolCallId
-            ? { ...t, status: data.isError ? ("error" as const) : ("done" as const), resultPreview: data.resultPreview }
-            : t
-        ),
-      }));
-    });
-    // 正式回复：替换 working 气泡为最终文本（与孩子聊天界面一致）
-    window.api.onPiReply((data: any) => {
-      if (data.childId !== "parent-content") return;
-      const id = workingIdRef.current;
-      workingIdRef.current = null;
-      setMessages((prev) => {
-        if (id && prev.some((m) => m.id === id)) {
-          return prev.map((m) => (m.id === id ? { ...m, text: data.text, working: false } : m));
-        }
-        const clone = [...prev];
-        const last = clone[clone.length - 1];
-        if (last && last.role === "ai") {
-          clone[clone.length - 1] = { ...last, text: data.text, working: false };
-        } else {
-          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: data.text, time: nowTime() });
-        }
-        return clone;
-      });
-      setBusy(false);
-    });
-    window.api.onPiReplyEnd((data: any) => {
-      if (data.childId === "parent-content") setBusy(false);
-    });
-    // 回复错误：替换 working 气泡为错误提示（不再静默）
-    window.api.onPiReplyError((data: any) => {
-      if (data.childId !== "parent-content") return;
-      const id = workingIdRef.current;
-      workingIdRef.current = null;
-      setMessages((prev) => {
-        if (id && prev.some((m) => m.id === id)) {
-          return prev.map((m) => (m.id === id ? { ...m, text: `⚠️ ${data.error}`, working: false } : m));
-        }
-        const clone = [...prev];
-        const last = clone[clone.length - 1];
-        if (last && last.role === "ai") {
-          clone[clone.length - 1] = { ...last, text: `⚠️ ${data.error}`, working: false };
-        } else {
-          clone.push({ id: `ai-${Date.now()}`, role: "ai", text: `⚠️ ${data.error}`, time: nowTime() });
-        }
-        return clone;
-      });
-      setBusy(false);
-    });
-    // SDK 会话级错误事件（attachSessionEvents 的 error 分支）兜底提示
-    window.api.onPiError((error: string) => {
-      setBusy(false);
-      setMsg({ ok: false, text: error });
-    });
-  }, [patchWorking]);
 
   async function refreshCourses(keepSelection = true) {
     const r = await window.api.parentListCourses(topicDir);
@@ -327,7 +209,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
     setSavingMethod(true);
     setMsg(null);
     try {
-      const r = await window.api.parentUpsertTopic({ name: topic.name, file: topicDir, method: methodText });
+      const r = await window.api.parentUpsertTopic({ name: topic.name, topicKey: topicDir, method: methodText });
       if (r?.success) {
         setSavedMethod(methodText); // 立即更新页面显示（markdown 渲染源）
         setMethodText(methodText);
@@ -363,52 +245,6 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
     }
     setMsg({ ok: true, text: `已上传 ${files.length} 个文件${linked ? `，关联 ${linked} 门课程资料` : ""}` });
     await refreshCourses();
-  }
-
-  async function handleSend(text: string) {
-    const sel = selected;
-    const context = [
-      `【家长库课程管理上下文】主题：「${topic.name}」（目录 ${topicDir}）`,
-      `资料目录：data/parents/default/materials/${topicDir}/（html/md 直接放这里；音频/视频放 media/ 子目录，html 里用 media://local/parent/default/${topicDir}/media/文件名 引用）`,
-      sel ? `当前课程：「${sel.title}」每课方法：${sel.lessonMethod || "（空）"}，教学文案：${(sel.teachingCopy || "").slice(0, 60)}，教学资料说明：${(sel.material || "").slice(0, 40)}，发给学生：${(sel.sendMaterial || "").slice(0, 60)}，html：${sel.htmlPath || "（无）"}` : "当前未选中课程",
-      "你可以用 parent_course_save 新建/更新课程（topic + title + lessonMethod/material/sendMaterial/tags/htmlPath），用 parent_course_delete 删除，用 write/edit 直接写资料文件。",
-    ].join("\n");
-    // 发送：创建用户气泡 + AI working 气泡（思考/工具/正式回复都进这一条，与孩子聊天界面一致）
-    const workingId = `ai-${Date.now()}`;
-    workingIdRef.current = workingId;
-    setMessages((prev) => [
-      ...prev,
-      { id: `u-${Date.now()}`, role: "user", text, time: nowTime() },
-      { id: workingId, role: "ai", text: "", thinking: "", tools: [], working: true, time: nowTime() },
-    ]);
-    setBusy(true);
-    try {
-      const r: any = await window.api.piPromptParentContent(`${context}\n\n家长需求：${text}`);
-      // ISSUE-037：主进程把错误包在返回值里（{success:false}）而不是抛异常——必须显式检查，
-      // 失败时复位 busy 并提示，禁止静默（此前 catch 只在 invoke 抛异常时触发，后端任何
-      // 失败都会表现为「发送后无任何反应、输入框一直转圈」）。
-      if (!r?.success) {
-        const id = workingIdRef.current;
-        workingIdRef.current = null;
-        if (id) {
-          setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text: `⚠️ ${r?.error || "发送失败，请重试"}`, working: false } : m)));
-        } else {
-          setMsg({ ok: false, text: r?.error || "发送失败，请重试" });
-        }
-        setBusy(false);
-      }
-    } catch (e: any) {
-      const id = workingIdRef.current;
-      workingIdRef.current = null;
-      if (id) {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === id ? { ...m, text: `⚠️ ${e?.message || "发送失败，请重试"}`, working: false } : m))
-        );
-      } else {
-        setMsg({ ok: false, text: e?.message || "发送失败，请重试" });
-      }
-      setBusy(false);
-    }
   }
 
   return (
@@ -491,7 +327,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
         </div>
       )}
 
-      {/* 三列：课程列表 | AI 对话 | 标签内容 */}
+      {/* 两列：课程列表 | 标签内容（ISSUE-050 移除原中列 AI 对话，家长对话在右侧常驻面板） */}
       <div style={{ display: "flex", flex: 1, minHeight: 0, gap: 16 }}>
         {/* 左：课程列表 */}
         <div style={{ width: 280, display: "flex", flexDirection: "column", minWidth: 0, borderRight: "1px solid #eee", paddingRight: 8 }}>
@@ -539,13 +375,8 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
           </div>
         </div>
 
-        {/* 中：AI 对话 */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
-          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} owner="parent" />
-        </div>
-
-        {/* 右：标签内容 */}
-        <div style={{ width: 420, minWidth: 0, overflowY: "auto", borderLeft: "1px solid #eee", paddingLeft: 12 }}>
+        {/* 右：标签内容（占满剩余宽度） */}
+        <div style={{ flex: 1, minWidth: 0, overflowY: "auto", borderLeft: "1px solid #eee", paddingLeft: 12 }}>
           {tab === "method" && (
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>

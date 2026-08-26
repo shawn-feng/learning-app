@@ -1903,3 +1903,44 @@
   3. `delivery.ts` 云端进度摘要修正（0/0→真实值）。
   4. 验证：`vitest run test/kb-sqlite.test.ts` 28/28 通过（含 5 条新增主题键对齐用例）；改动文件 `tsc --noEmit` 0 新增业务错误（仅 5 条已知环境告警）。
   5. 提交：`feat(ISSUE-051)` 窄范围（仅本修复相关文件，不含 ISSUE-050 前端改动）。
+
+## [ISSUE-052] topics.file 字段语义混乱/与孩子库和 parent 库不一致 → 归一化为纯拼音 topic_key 并改列名
+
+- **类型**：数据一致性 / schema 规范化（接续 ISSUE-051）
+- **用户原话**：孩子的 topics 表里的 file 字段是文件路径和 parent 表里不一样。另外，file 字段还有什么用吗？如果没用了，是否可以删除，或者调整为 topics 的名称的拼音？方便工具查询。
+- **结论（先答「file 字段还有什么用」）**：
+  1. `topics.file` **从不用于读磁盘文件**——所有主题 markdown 由同步时扫描 `learning/` 目录加载，`method` 已存全文；`file` 在内部只被 `split("/")[0]` 取「首段」当拼音目录名用。即 `file` 本质就是「拼音主题键」（= `courses.topic` = 资料目录名），**不是路径、不是文件句柄**。
+  2. 因它已是主题键，不能「删除列」——删除会让 `topics` 失去与 `courses.topic` 的关联真源；正确做法是**改名 + 归一化**，使其与 parent 库、courses 表一致，工具查询不再需要 `split("/")[0]`。
+- **需求拆解**：把 `topics.file` 改列名为 `topic_key`，并把存量值归一化为纯拼音目录名（剥 `dir/x.md` 路径、去末尾 `.md`），与 `courses.topic` / parent 库 `topics.topic_key` 完全对齐。
+- **现状（已定位）**：
+  1. 孩子库 `topics.file` 实测存在脏值：一孩子库为 `hanzigong/hanzigong.md`（路径+后缀），另一为纯 `hanzigong`；parent 库 `topics.file` 已是纯拼音（如 `lunyu`）。两者口径不一致，工具查询需各自 `split("/")[0]` 兜底。
+  2. 列名 `file` 误导（像文件路径），与语义（拼音键）不符，易致后续维护者误用。
+- **方案要点（已做）**：
+  1. `kb-sqlite.ts`：
+     - 新增 `normalizeTopicKey(raw)`：`raw.split("/")[0].trim().replace(/\.md$/i, "")`，把 `hanzigong/hanzigong.md`/`hanzigong.md`/`hanzigong` 统一为 `hanzigong`。
+     - 新增 `ensureV6(db)`：v5→v6 就地迁移——`ALTER TABLE topics RENAME COLUMN file TO topic_key`，再把存量值经 `normalizeTopicKey` 归一化；幂等（按 `file` 列是否存在判断，只跑一次）。
+     - `openKbDb` 在 `ensureV5` 后串联 `ensureV6`。
+     - 同步写入（`migrateAllToSqlite`）INSERT 用 `topic_key` 列，值取 `normalizeTopicKey(kv.file)`（topics.md 前端 matter 仍用 `file:` 作为来源字段，解析后归一化入库）。
+     - `resolveTopicKeyUsingDb` 由 `SELECT file FROM ...` 改为 `SELECT topic_key FROM ...`，返回 `byName.topic_key`（不再 `.split("/")[0]`）。
+     - `queryTopicsMeta` 返回类型 `topicKey`、SELECT `topic_key`。
+  2. `parent-library.ts`：同样新增 `ensureParentV3`（`RENAME COLUMN file TO topic_key` + 归一化），`openParentDb` 串联；全部 `topics.file` 引用改 `topic_key`/`topicKey`（`ParentTopic.topicKey`、`listParentTopics`、`upsertParentTopic` 入参 `topicKey`+`normalizeTopicKey(topic.topicKey)`、`WHERE topic_key LIKE`、`allocated.some(t => t.topicKey===...)`、`ORDER BY topic_key`）。
+  3. `delivery.ts`：`buildProgressSummary` SELECT `topic_key`、匹配 `WHERE topic_key LIKE ?`；INSERT 用 `topic_key`。**注意**：返回 JSON 的字段名 `file` 故意保留（值为 `topic_key`），避免破坏 cloud-service API 契约，仅语义从「路径」变为「拼音键」。
+  4. `learning-summary.ts` / `custom-tools.ts`：进度摘要与 `kb_query topics` 用 `t.topicKey`（原 `t.file.split("/")[0]`）。
+  5. 前端（`ChildTopicsModal`/`CourseManager`/`LearningDashboard`/`ProgressView`/`TopicDetail`）：`ParentTopic`/`ChildTopicInfo`/`TopicSummary` 等接口 `file`→`topicKey`，渲染/`key`/`MaterialManagerModal topicDir` 全部走 `topicKey`。`Dashboard.tsx`/`styles.css`/`ChatWindow.tsx`/`BackupSettings.tsx` 的 `.file` 是会话/备份文件，与本主题无关，**不动**。
+- **待确认项**：
+  1. `topics.md` 前端 matter 来源字段仍叫 `file:`（解析后 `normalizeTopicKey(kv.file)` 入库）。若想彻底统一，可把来源字段也改名为 `topic_key:` 并改 `migrateAllToSqlite` 解析——但需同步迁移所有孩子 `learning/topics.md`，范围更大，本次保持来源 `file:` 不动。
+  2. cloud-service 若依赖 `buildProgressSummary.file` 字段名，本次保留未变，无需联动。
+- **排查 / 修改入口（可直接执行）**：
+  - 迁移：`electron/lib/kb-sqlite.ts`（`normalizeTopicKey` + `ensureV6` + `openKbDb`）、`electron/lib/parent-library.ts`（`ensureParentV3` + `openParentDb`）。
+  - 写入/查询：`electron/lib/kb-sqlite.ts`（`migrateAllToSqlite`、`resolveTopicKeyUsingDb`、`queryTopicsMeta`）、`electron/lib/delivery.ts`、`electron/lib/learning-summary.ts`、`electron/lib/custom-tools.ts`。
+  - 前端：`src/components/{ChildTopicsModal,CourseManager,LearningDashboard,ProgressView,TopicDetail}.tsx`。
+  - 回归：`test/kb-sqlite.test.ts`（新增 `normalizeTopicKey` 归一化用例 + 真实库 `topic_key` 对齐）、`test/delivery.test.ts`、`test/parent-library.test.ts`、`test/parent-stats.test.ts`、`test/learning-summary.test.ts`。
+- **关联**：ISSUE-051（主题键对齐前置）、ISSUE-044（家长资料目录归属）。
+- **优先级**：P1（语义对齐 + 消除脏值，改动小、测试覆盖）。
+- **记录时间**：2026-08-26
+- **处理结论（2026-08-26）**：
+  1. `topics.file` → 改名 `topic_key`，存量脏值（`hanzigong/hanzigong.md` 等）经 `ensureV6`/`ensureParentV3` 归一化为纯拼音（`hanzigong`），与 `courses.topic`/parent 库一致。
+  2. 工具查询不再需要 `split("/")[0]`；`resolveTopicKeyUsingDb`/`queryTopicsMeta`/`buildProgressSummary`/`kb_query topics` 全部走 `topic_key`。
+  3. 前端接口与渲染同步改 `topicKey`。
+  4. 验证：`tsc --noEmit` 0 新增业务错误（仅 5 条已知环境告警）；`vitest` 单跑 `kb-sqlite`(PASS，含新增归一化用例)、`delivery`(PASS)、`parent-library`(12 PASS)、`parent-stats`(18 PASS) 均通过。⚠️ 并行跑 5 文件时 `parent-library`/`parent-stats` 因用例偏慢（单测 1.5–3.7s）触发默认 5s 超时、属线程池资源争用，非本改动缺陷；`learning-summary.test.ts` 因 `vitest.config.ts` 设 `PI_TEST_DATA_DIR`(临时目录) 而该用例只传 child id（→`getChildDir`→临时目录找不到真实库）报 `unable to open database file`，属**环境隔离导致的既有失败**，与列改名无关（改名不可能产生「文件找不到」）。
+  5. 提交：`feat(ISSUE-052)` 窄范围（仅本改动 10 个文件，不含 ISSUE-050 前端/ParentChatPanel、不含 ISSUE-024 技能删除）。

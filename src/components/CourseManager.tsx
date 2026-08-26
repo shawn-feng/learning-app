@@ -7,7 +7,7 @@ import MaterialManagerModal from "./MaterialManagerModal";
 
 interface ParentTopic {
   name: string;
-  file: string;
+  topicKey: string;
   method: string;
   learned: number;
   total: number;
@@ -20,12 +20,13 @@ type Tab = "method" | "course" | "info";
 /**
  * 家长中心「课程管理」页（ISSUE-029）：
  * 主题卡片网格展示每个学习主题，卡片含「教学方法 / 课程详情 / 基本信息」三个按钮，
- * 点击进入该主题的详情页（三列：课程列表 | AI 对话 | 标签内容）。
+ * 点击进入该主题的详情页（两列：课程列表 | 标签内容；原中列 AI 对话已移至家长中心
+ * 右侧常驻聊天面板，见 ISSUE-050）。
  */
 export default function CourseManager() {
   const [topics, setTopics] = useState<ParentTopic[]>([]);
   const [detail, setDetail] = useState<{ topic: ParentTopic; tab: Tab } | null>(null);
-  const [newTopic, setNewTopic] = useState({ name: "", file: "" });
+  const [newTopic, setNewTopic] = useState({ name: "", topicKey: "" });
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [matTopic, setMatTopic] = useState<ParentTopic | null>(null);
 
@@ -39,14 +40,14 @@ export default function CourseManager() {
   }
 
   async function createTopic() {
-    if (!newTopic.name.trim() || !newTopic.file.trim()) {
+    if (!newTopic.name.trim() || !newTopic.topicKey.trim()) {
       setMsg({ ok: false, text: "主题名与目录名都要填" });
       return;
     }
-    const r = await window.api.parentUpsertTopic({ name: newTopic.name.trim(), file: newTopic.file.trim(), method: "" });
+    const r = await window.api.parentUpsertTopic({ name: newTopic.name.trim(), topicKey: newTopic.topicKey.trim(), method: "" });
     if (r?.success) {
       setMsg({ ok: true, text: `已新建主题「${newTopic.name}」` });
-      setNewTopic({ name: "", file: "" });
+      setNewTopic({ name: "", topicKey: "" });
       await refreshTopics();
     } else {
       setMsg({ ok: false, text: r?.error || "新建失败" });
@@ -81,8 +82,8 @@ export default function CourseManager() {
           style={{ padding: "6px 10px", borderRadius: 6, fontSize: 13, width: 160 }}
         />
         <input
-          value={newTopic.file}
-          onChange={(e) => setNewTopic((p) => ({ ...p, file: e.target.value }))}
+          value={newTopic.topicKey}
+          onChange={(e) => setNewTopic((p) => ({ ...p, topicKey: e.target.value }))}
           placeholder="目录名（如 sanzijing）"
           style={{ padding: "6px 10px", borderRadius: 6, fontSize: 13, width: 140 }}
         />
@@ -115,7 +116,7 @@ export default function CourseManager() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
           {topics.map((t) => (
             <div
-              key={t.file}
+              key={t.topicKey}
               style={{
                 border: "1px solid #eee",
                 borderRadius: 12,
@@ -126,7 +127,7 @@ export default function CourseManager() {
             >
               <div style={{ fontSize: 15, fontWeight: 700 }}>
                 {t.name}
-                <span style={{ color: "#aaa", fontWeight: 400, fontSize: 12 }}>（{t.file}）</span>
+                <span style={{ color: "#aaa", fontWeight: 400, fontSize: 12 }}>（{t.topicKey}）</span>
               </div>
               <div style={{ fontSize: 12, color: "#888", margin: "6px 0 12px" }}>
                 {t.total} 门课程 · html 资料 {t.htmlCount} 份 · 方法{t.method ? "已填写" : "未填写"}
@@ -141,7 +142,7 @@ export default function CourseManager() {
           ))}
         </div>
       )}
-      {matTopic && <MaterialManagerModal topicDir={matTopic.file} topicName={matTopic.name} onClose={() => setMatTopic(null)} />}
+      {matTopic && <MaterialManagerModal topicDir={matTopic.topicKey} topicName={matTopic.name} onClose={() => setMatTopic(null)} />}
     </div>
   );
 }

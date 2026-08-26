@@ -81,7 +81,7 @@ describe("parent_stats 只读统计工具（统一家长提示词配套）", () 
   it("progress：有分配主题时输出进度 markdown（只读不改数据）", async () => {
     upsertParentTopic(
       "default",
-      { name: "论语", file: "lunyu", method: "# 方法" },
+      { name: "论语", topicKey: "lunyu", method: "# 方法" },
       [{ title: "论语学而篇第一章", lessonMethod: "朗读" }]
     );
     const childDir = path.join(mockTmpRoot, "children", CHILD);

@@ -352,7 +352,7 @@ describe("主题键对齐（中文名↔拼音键，临时库端到端，只读/
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-key-test-"));
     const db = require("../electron/lib/kb-sqlite.ts").openKbDb(tmpDir);
     // 模拟真实结构：topics.name 中文、courses.topic 拼音目录名
-    db.prepare("INSERT INTO topics (name, file) VALUES (?, ?)").run("汉字宫", "hanzigong");
+    db.prepare("INSERT INTO topics (name, topic_key) VALUES (?, ?)").run("汉字宫", "hanzigong");
     db.prepare("INSERT INTO courses (topic, title, sort_order, status) VALUES (?, ?, ?, ?)").run("hanzigong", "汉字宫第一课", 0, "⬜");
     db.prepare("INSERT INTO courses (topic, title, sort_order, status) VALUES (?, ?, ?, ?)").run("hanzigong", "汉字宫第二课", 1, "✅");
     db.close();
@@ -376,5 +376,21 @@ describe("主题键对齐（中文名↔拼音键，临时库端到端，只读/
     const p = queryTopicProgress(tmpDir, "汉字宫");
     expect(p[0].topic).toBe("hanzigong");
     expect(p[0].items.some((i) => i.title === "汉字宫第三课")).toBe(true);
+  });
+});
+
+describe("topic_key 归一化（ISSUE-052：纯拼音目录名，无 / 与 .md）", () => {
+  const { normalizeTopicKey } = require("../electron/lib/kb-sqlite.ts");
+
+  it("normalizeTopicKey：脏值（路径/后缀）归一化为纯拼音", () => {
+    expect(normalizeTopicKey("hanzigong/hanzigong.md")).toBe("hanzigong");
+    expect(normalizeTopicKey("hanzigong.md")).toBe("hanzigong");
+    expect(normalizeTopicKey("hanzigong/")).toBe("hanzigong");
+    expect(normalizeTopicKey("lunyu/lunyu.md ")).toBe("lunyu");
+  });
+
+  it("normalizeTopicKey：已是纯拼音则保持不变", () => {
+    expect(normalizeTopicKey("lunyu")).toBe("lunyu");
+    expect(normalizeTopicKey("qianziwen")).toBe("qianziwen");
   });
 });

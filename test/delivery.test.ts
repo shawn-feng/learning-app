@@ -51,7 +51,7 @@ beforeAll(() => {
   // 家长库：一个主题（含 method）+ 两门课
   upsertParentTopic(
     DEFAULT_PARENT_ID,
-    { name: "论语", file: "lunyu", method: "# 三步吟诵法\n逐句跟读，反复三遍。", rules: { daily: "每天一课" } },
+    { name: "论语", topicKey: "lunyu", method: "# 三步吟诵法\n逐句跟读，反复三遍。", rules: { daily: "每天一课" } },
     [
       {
         title: "学而篇第一章",
@@ -77,7 +77,7 @@ beforeAll(() => {
   fs.mkdirSync(childDir, { recursive: true });
   const kb = openKbDb(childDir);
   kb.prepare(
-    "INSERT INTO topics (name, file, method, progress, rules_json) VALUES ('论语', 'lunyu', '', '第一章', '{}') " +
+    "INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES ('论语', 'lunyu', '', '第一章', '{}') " +
       "ON CONFLICT(name) DO NOTHING"
   ).run();
   kb.prepare(
@@ -179,7 +179,7 @@ describe("分配包（跨机课程分发，只传数据）", () => {
 
     // ① 家长库 topics.method 已写入（parent_content 可读）
     const parentDb = openParentDb(DEFAULT_PARENT_ID);
-    const topic = parentDb.prepare("SELECT method FROM topics WHERE file LIKE '%lunyu%'").get() as any;
+    const topic = parentDb.prepare("SELECT method FROM topics WHERE topic_key LIKE '%lunyu%'").get() as any;
     parentDb.close();
     expect(topic.method).toContain("三步吟诵法");
     // ② 孩子库：第一章进度保留（✅/熟练），material 被补齐，第二章新增

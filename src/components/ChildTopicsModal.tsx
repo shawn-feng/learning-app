@@ -9,7 +9,7 @@ interface ChildInfo {
 
 interface ParentTopic {
   name: string;
-  file: string;
+  topicKey: string;
   method: string;
   learned: number;
   total: number;
@@ -32,7 +32,7 @@ interface MigrateResult {
 
 interface ChildTopicInfo {
   name: string;
-  file: string;
+  topicKey: string;
   daily: string;
   type: string;
 }
@@ -51,9 +51,9 @@ const DAILY_TYPES = ["必学", "选学", "复习"];
  */
 export default function ChildTopicsModal({ child, onClose }: Props) {
   const [topics, setTopics] = useState<ParentTopic[]>([]);
-  const [allocated, setAllocated] = useState<Map<string, ChildTopicInfo>>(new Map()); // file → 信息
+  const [allocated, setAllocated] = useState<Map<string, ChildTopicInfo>>(new Map()); // topicKey → 信息
   const [busy, setBusy] = useState<string | null>(null);
-  const [addPanel, setAddPanel] = useState<{ file: string; daily: string; type: string } | null>(null);
+  const [addPanel, setAddPanel] = useState<{ topicKey: string; daily: string; type: string } | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
@@ -69,7 +69,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
     setTopics(t?.success ? t.data || [] : []);
     const map = new Map<string, ChildTopicInfo>();
     for (const x of a?.success ? a.data || [] : []) {
-      map.set(x.file, { name: x.name, file: x.file, daily: x.daily || "", type: x.type || "" });
+      map.set(x.topicKey, { name: x.name, topicKey: x.topicKey, daily: x.daily || "", type: x.type || "" });
     }
     setAllocated(map);
   }
@@ -102,12 +102,12 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
   }
 
   async function saveDaily(info: ChildTopicInfo) {
-    setBusy(`daily-${info.file}`);
+    setBusy(`daily-${info.topicKey}`);
     setMsg(null);
     try {
       const r = await window.api.parentSetChildTopicDaily(
         child.childId,
-        info.file,
+        info.topicKey,
         info.daily,
         info.type
       );
@@ -185,12 +185,12 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" }}>
             {topics.map((t) => {
-              const info = allocated.get(t.file);
+              const info = allocated.get(t.topicKey);
               const has = !!info;
-              const isAdding = addPanel?.file === t.file;
+              const isAdding = addPanel?.topicKey === t.topicKey;
               return (
                 <div
-                  key={t.file}
+                  key={t.topicKey}
                   style={{
                     padding: "8px 12px",
                     background: "#fff",
@@ -202,7 +202,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 600 }}>
                         {t.name}
-                        <span style={{ color: "#aaa", fontWeight: 400 }}>（{t.file}）</span>
+                        <span style={{ color: "#aaa", fontWeight: 400 }}>（{t.topicKey}）</span>
                       </div>
                       <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
                         {t.total} 课 · html 资料 {t.htmlCount} 份 · method {t.method ? "已入库" : "未导入"}
@@ -229,7 +229,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                         title="添加主题"
                         onClick={() =>
                           setAddPanel({
-                            file: t.file,
+                            topicKey: t.topicKey,
                             daily: (t.rules?.daily as string) || "",
                             type: (t.rules?.type as string) || "必学",
                           })
@@ -281,11 +281,11 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                         ))}
                       </select>
                       <button
-                        onClick={() => addTopic(addPanel!.file, addPanel!.daily, addPanel!.type)}
+                        onClick={() => addTopic(addPanel!.topicKey, addPanel!.daily, addPanel!.type)}
                         disabled={busy !== null}
                         style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "#38a169", color: "#fff", fontSize: 12, cursor: "pointer" }}
                       >
-                        {busy === `add-${addPanel!.file}` ? "添加中…" : "确认添加"}
+                        {busy === `add-${addPanel!.topicKey}` ? "添加中…" : "确认添加"}
                       </button>
                       <button
                         onClick={() => setAddPanel(null)}
@@ -315,7 +315,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                         placeholder="如 3 或 1 内容单元"
                         onChange={(e) =>
                           setAllocated(
-                            new Map(allocated).set(t.file, { ...info, daily: e.target.value })
+                            new Map(allocated).set(t.topicKey, { ...info, daily: e.target.value })
                           )
                         }
                         style={{ width: 120, padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #ddd" }}
@@ -324,7 +324,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                         value={info.type}
                         onChange={(e) =>
                           setAllocated(
-                            new Map(allocated).set(t.file, { ...info, type: e.target.value })
+                            new Map(allocated).set(t.topicKey, { ...info, type: e.target.value })
                           )
                         }
                         style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #ddd" }}
@@ -340,7 +340,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                         disabled={busy !== null}
                         style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer" }}
                       >
-                        {busy === `daily-${t.file}` ? "保存中…" : "保存"}
+                        {busy === `daily-${t.topicKey}` ? "保存中…" : "保存"}
                       </button>
                     </div>
                   )}

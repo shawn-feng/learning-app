@@ -49,14 +49,14 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配 + 存量迁移
   it("upsertParentTopic 存 method 全文；listParentTopics 返回主题与资料数", () => {
     upsertParentTopic(
       "default",
-      { name: "论语", file: "lunyu", method: "# 教学方法全文\n\n1. 先读\n2. 再背" },
+      { name: "论语", topicKey: "lunyu", method: "# 教学方法全文\n\n1. 先读\n2. 再背" },
       [{ title: "论语学而篇第一章", lessonMethod: "朗读+讲解", htmlPath: "materials/lunyu/论语学而篇第一章.html" }]
     );
     const topics = listParentTopics("default");
     expect(topics.length).toBe(1);
     const t = topics[0];
     expect(t.name).toBe("论语");
-    expect(t.file).toBe("lunyu");
+    expect(t.topicKey).toBe("lunyu");
     expect(t.method).toContain("教学方法全文"); // 全文入库，不是文件链接
     expect(t.total).toBe(1);
   });
@@ -64,7 +64,7 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配 + 存量迁移
   it("listParentTopicCourses 返回每课的 lesson_method 与 html_path", () => {
     upsertParentTopic(
       "default",
-      { name: "论语", file: "lunyu", method: "m" },
+      { name: "论语", topicKey: "lunyu", method: "m" },
       [
         { title: "论语学而篇第一章", lessonMethod: "朗读+讲解", htmlPath: "materials/lunyu/论语学而篇第一章.html" },
         { title: "论语学而篇第二章", lessonMethod: "跟读", htmlPath: "materials/lunyu/论语学而篇第二章.html" },
@@ -82,7 +82,7 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配 + 存量迁移
   it("allocateTopicToChild 快照拷贝主题进孩子库；重复分配不丢孩子进度", () => {
     upsertParentTopic(
       "default",
-      { name: "论语", file: "lunyu", method: "# 方法全文" },
+      { name: "论语", topicKey: "lunyu", method: "# 方法全文" },
       [{ title: "论语学而篇第一章", lessonMethod: "朗读", htmlPath: "materials/lunyu/论语学而篇第一章.html" }]
     );
     const childDir = path.join(mockTmpRoot, "children", CHILD);
@@ -110,7 +110,7 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配 + 存量迁移
   it("getParentContentForChild 从家长库取 method/teachingCopy；未分配主题拒绝", () => {
     upsertParentTopic(
       "default",
-      { name: "论语", file: "lunyu", method: "# 论语教法全文\n\n三步教学" },
+      { name: "论语", topicKey: "lunyu", method: "# 论语教法全文\n\n三步教学" },
       [
         {
           title: "论语学而篇第一章",
@@ -152,19 +152,19 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配 + 存量迁移
   it("listChildAllocatedTopics 返回孩子已添加的主题（无库孩子返回空）", () => {
     upsertParentTopic(
       "default",
-      { name: "论语", file: "lunyu", method: "# 方法全文" },
+      { name: "论语", topicKey: "lunyu", method: "# 方法全文" },
       [{ title: "论语学而篇第一章", lessonMethod: "朗读", htmlPath: "materials/lunyu/论语学而篇第一章.html" }]
     );
     const childDir = path.join(mockTmpRoot, "children", CHILD);
     fs.mkdirSync(childDir, { recursive: true });
     // 未分配前：无 kb.sqlite → 空
     expect(listChildAllocatedTopics(CHILD)).toEqual([]);
-    // 分配后：返回该主题（file=目录名）
+    // 分配后：返回该主题（topicKey=目录名）
     allocateTopicToChild("default", CHILD, "lunyu");
     const list = listChildAllocatedTopics(CHILD);
     expect(list.length).toBe(1);
     expect(list[0].name).toBe("论语");
-    expect(list[0].file).toBe("lunyu");
+    expect(list[0].topicKey).toBe("lunyu");
   });
 
   it("upsertParentCourse / deleteParentCourse 维护家长库课程（只动内容字段）", () => {
@@ -261,7 +261,7 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配 + 存量迁移
     insertCourse(childDir, { topic: "lunyu", title: "论语学而篇第一章", status: "✅" });
     // 打开一次库让 topics 表有主题行（真实环境由迁移产生，这里直接用 openKbDb 建库）
     const db = openKbDb(childDir);
-    db.prepare("INSERT INTO topics (name, file, method, progress, rules_json) VALUES (?, ?, ?, '', '{}')").run(
+    db.prepare("INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, ?, '', '{}')").run(
       "论语",
       "lunyu",
       "learning/lunyu/method.md",
@@ -286,7 +286,7 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配 + 存量迁移
 
     // 父库 topics.method 全文、listParentTopics 有该主题
     const topics = listParentTopics("default");
-    const lunyu = topics.find((t) => t.file === "lunyu")!;
+    const lunyu = topics.find((t) => t.topicKey === "lunyu")!;
     expect(lunyu.method).toContain("论语教法全文");
     expect(lunyu.total).toBe(1);
     expect(lunyu.htmlCount).toBe(1);
@@ -305,7 +305,7 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配 + 存量迁移
     fs.writeFileSync(path.join(childDir, "learning", "topics.md"), "---\ntopics:\n  - {name: 论语, file: lunyu/lunyu.md, method: learning/lunyu/method.md}\n---\n", "utf-8");
     insertCourse(childDir, { topic: "lunyu", title: "论语学而篇第一章", status: "✅" });
     const db = openKbDb(childDir);
-    db.prepare("INSERT INTO topics (name, file, method, progress, rules_json) VALUES (?, ?, ?, '', '{}')").run(
+    db.prepare("INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, ?, '', '{}')").run(
       "论语",
       "lunyu",
       "learning/lunyu/method.md",
