@@ -84,7 +84,7 @@
       "target": [
         {
           "target": "dmg",
-          "arch": "universal"
+          "arch": "x64"
         }
       ]
     },
