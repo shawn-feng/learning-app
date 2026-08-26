@@ -81,10 +81,15 @@
     "mac": {
       "category": "Education",
       "minimumSystemVersion": "10.15",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
           "arch": "x64"
+        },
+        {
+          "target": "dmg",
+          "arch": "arm64"
         }
       ]
     },
