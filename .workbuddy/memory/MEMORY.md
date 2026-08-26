@@ -5,6 +5,13 @@
 - **AGENTS 纯 SQLite(ISSUE-033)**：`data/agents.sqlite` 存用户版本(scope=child/ref=<id>；parent/ref=main)，`prompt_history` 可回退；无物理 AGENTS 文件。编辑入口=家长页 AgentPromptEditor(agents:get/save/history/restore)。`resolveChildAgents` 优先级：SQLite用户版本(整体替换)→buildAgentsMd。改 `LEARNING_NAV_INSTRUCTIONS` 后代码默认随源码生效，无需跑脚本。
 - **家长提示词统一不分场景**：`buildParentPrompt` 一个版本；`getParentSession`/`getParentContentSession` 共用(后者仅独立单例+childId="parent-content")。工具集：read/write/edit/ls/get_date/parent_course_save/delete/parent_stats/log_activity/move_file/copy_file。落盘 `data/.pi/agent/sessions/{parent|parent-content}/` 独立子目录；autoNewSession 用 scheduler-config.json `parent.autoNewSession`。
 - **recording=纯定时任务(ISSUE-024)**：非技能，`electron/lib/recording-prompt.ts` 为真源；`createEphemeralSession` 用 `DefaultResourceLoader({noContextFiles:true,noSkills:true})`——noContextFiles 是禁 AGENTS.md 唯一开关；工具只挂 kb_query/kb_insert/kb_update。
+- **⚠️ html 资料渲染：用 `srcDoc` + 相对引用改写为 `asset://` 绝对地址（绝不能用 `<iframe src="file://">`）**。`TopicDetail.StudentMaterial` 渲染课程 html 文件：主进程 `readParentMaterial` 读取 html 后，用 `rewriteHtmlAssetRefs` 把内部 `href/src` 上的相对引用(`../xxx.css`、`../images/*`、同目录 `teach-data.js` 等)改写为 `asset://local/parent/<pid>/<topic>/<rel>` 绝对地址；前端继续用 `<iframe srcDoc={content}>` 渲染。原因与坑：
+  - 若用纯 `srcDoc` 不改写：文档 base 是 `about:blank`，相对资源全部失效→CSS/图片不加载（视频因绝对 `media://` 不受影响）。
+  - 若改用 `<iframe src="file://...">`：dev(渲染进程 http 源)下 Chromium 禁止加载本地资源、且 sandbox 与 file:// 组合常被整页拒绝→**所有主题资料空白**（2026-08-26 实测踩坑，已回退）。
+  - `asset://` 协议(`electron/lib/media-protocol.ts` 的 `registerCustomSchemes/registerAssetProtocol`)与 `media://` 同特权(standard+secure)，可从任意源(dev http / prod file)访问，无混合内容告警；`resolveAssetTarget` 限 `data/parents/<pid>/materials/<topic>/` 且白名单扩展名，防目录穿越。
+  - ⚠️ **standard scheme 的 URL 解析坑**：`asset://local/parent/...` 里 `local` 是 **host**，`new URL().pathname` 是 `/parent/...`（无 local）——`resolveAssetTarget`/`resolveMediaTarget` 必须检查 `segs[0]==='parent'`（`parentId=segs[1]`），检查 `segs[0]==='local'` 永远不成立、全部 403（2026-08-26 二轮修复）。另 `registerSchemesAsPrivileged` 只能调一次，多 scheme 合并进一次调用，分开调会互相覆盖。
+  - 仅限音视频的 `media://` 仍按原逻辑(`ALLOWED_EXT`)，`asset://` 覆盖 css/js/图片/字体等(`ASSET_ALLOWED_EXT`)。
+  - **meta-refresh 跳转占位页**：部分课程的 index.html 是 `<meta http-equiv="refresh" content="0; url=../learn/xxx.html">` 占位页（英语 01-11/45-50），srcDoc 下相对跳转会导航到不存在地址→空白。`readParentMaterial` 用 `followHtmlRedirect`（限 materials/ 内、最多 8 跳、防环）先跟随跳转拿到最终 html 再改写资源引用；无跳转则原样。识别技巧：html 仅数百字节且含 `http-equiv=refresh` 即为占位页。
 
 ## 关键 SDK 坑（别再踩）
 - 扩展挂 `DefaultResourceLoader({extensionFactories:[...]})`；`createAgentSession({extensions})` 是死参数不读。

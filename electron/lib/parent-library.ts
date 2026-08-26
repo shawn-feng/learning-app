@@ -16,7 +16,9 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "fs";
 import path from "path";
+import { pathToFileURL } from "node:url";
 import { getDataDir, getChildrenDir } from "./config";
+import { buildAssetUrl } from "./media-protocol";
 import { openKbDb, type CourseItem } from "./kb-sqlite";
 
 export const DEFAULT_PARENT_ID = "default";
@@ -646,18 +648,118 @@ export function moveParentCourse(parentId: string, topicDir: string, title: stri
 export function readParentMaterial(
   parentId: string,
   relPath: string
-): { found: boolean; format: "html" | "md" | "other"; content: string } {
+): { found: boolean; format: "html" | "md" | "other"; content: string; fileUrl: string } {
   const base = getParentDir(parentId);
   const resolved = path.resolve(base, relPath);
   if (resolved !== base && !resolved.startsWith(base + path.sep)) {
-    return { found: false, format: "other", content: "" };
+    return { found: false, format: "other", content: "", fileUrl: "" };
   }
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
-    return { found: false, format: "other", content: "" };
+    return { found: false, format: "other", content: "", fileUrl: "" };
   }
   const ext = path.extname(resolved).toLowerCase();
   const format = ext === ".html" || ext === ".htm" ? "html" : ext === ".md" ? "md" : "other";
-  return { found: true, format, content: fs.readFileSync(resolved, "utf-8") };
+  let content = fs.readFileSync(resolved, "utf-8");
+  let fileAbs = resolved;
+  if (format === "html") {
+    // 跟随 <meta http-equiv="refresh" url=...> 本地跳转（如英语 01-11/45-50 课指向 learn/*.html 的占位页），
+    // 否则 srcDoc(about:blank/父源) 下相对跳转会导航到不存在地址导致整页空白。
+    fileAbs = followHtmlRedirect(base, resolved, content);
+    content = fs.readFileSync(fileAbs, "utf-8");
+    // 把 html 内的相对资源引用(../xxx.css、images/..、同目录 js)改写为 asset:// 绝对地址，
+    // 使 srcDoc(about:blank 来源)下的 css/图片/脚本能跨源加载本地文件（dev/prod 均生效）。
+    const parts = fileAbs.split(path.sep);
+    const pIdx = parts.indexOf("parents");
+    const pid = pIdx >= 0 ? parts[pIdx + 1] : DEFAULT_PARENT_ID;
+    const materialsRoot = path.join(base, "materials");
+    const fileDir = path.relative(materialsRoot, path.dirname(fileAbs));
+    content = rewriteHtmlAssetRefs(content, pid, fileDir);
+  }
+  return { found: true, format, content, fileUrl: pathToFileURL(fileAbs).href };
+}
+
+/**
+ * 跟随 html 里的 <meta http-equiv="refresh" content="0; url=..."> 本地跳转，返回最终文件的绝对路径。
+ * - 仅跟随**本地相对跳转**且目标必须在 `materials/` 内（防越权/防跳向 http）；
+ * - 最多 8 跳、visited 防环；
+ * - 无跳转/跳转目标无效时原样返回 startAbs。
+ */
+function followHtmlRedirect(base: string, startAbs: string, startContent: string): string {
+  const matRoot = path.join(base, "materials");
+  const visited = new Set<string>([startAbs]);
+  let cur = startAbs;
+  let content = startContent;
+  for (let i = 0; i < 8; i++) {
+    const target = extractRedirectTarget(content);
+    if (!target) break;
+    const clean = target.split(/[?#]/)[0];
+    if (!clean) break;
+    const targetAbs = path.resolve(path.dirname(cur), clean);
+    if (targetAbs !== matRoot && !targetAbs.startsWith(matRoot + path.sep)) break; // 越界不跟
+    if (visited.has(targetAbs)) break;
+    if (!fs.existsSync(targetAbs) || !fs.statSync(targetAbs).isFile()) break;
+    if (path.extname(targetAbs).toLowerCase() !== ".html") break;
+    visited.add(targetAbs);
+    cur = targetAbs;
+    content = fs.readFileSync(targetAbs, "utf-8");
+  }
+  return cur;
+}
+
+/** 提取 <meta http-equiv="refresh" content="0; url=..."> 中的 url 目标；无则返回 null。 */
+function extractRedirectTarget(html: string): string | null {
+  const metaRe = /<meta[^>]*http-equiv=["']?refresh["']?[^>]*>/i;
+  const m = html.match(metaRe);
+  if (!m) return null;
+  const c = m[0].match(/content=["']([^"']+)["']/i);
+  if (!c) return null;
+  const u = c[1].match(/url\s*=\s*([^\s"']+)/i);
+  return u ? u[1] : null;
+}
+
+/**
+ * 把 html 内 href/src 上的相对资源引用改写为 asset:// 绝对 URL，使其能在 srcDoc(about:blank
+ * 来源)的沙盒 iframe 中跨源加载本地资料文件。
+ *
+ * - 跳过已绝对化的引用：含 scheme(http/https/media/data/...)、`//`、#锚点、data:/blob:/mailto:、以及绝对路径；
+ * - 仅改写落在 `<materialsRoot>/<topic>/...` 之下的本地相对引用；
+ * - fileDir 为 html 所在目录相对 materials 根（如 `english/12-yellow-01-...`），用于解析 `../` 上溯。
+ */
+function rewriteHtmlAssetRefs(html: string, parentId: string, fileDir: string): string {
+  const RE = /(\b(?:href|src)\s*=\s*["'])([^"']+?)(["'])/gi;
+  return html.replace(RE, (m, pre: string, val: string, post: string) => {
+    const trimmed = val.trim();
+    if (
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) || // 任何 scheme（http/https/media/data…）
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("#") ||
+      trimmed.startsWith("data:") ||
+      trimmed.startsWith("blob:") ||
+      trimmed.startsWith("mailto:") ||
+      path.isAbsolute(trimmed)
+    ) {
+      return m;
+    }
+    // 拆分 query/hash（如有）并保留
+    let core = trimmed;
+    let suffix = "";
+    const qIdx = core.search(/[?#]/);
+    if (qIdx >= 0) {
+      suffix = core.slice(qIdx);
+      core = core.slice(0, qIdx);
+    }
+    let absFromMaterials: string;
+    try {
+      absFromMaterials = path.normalize(path.join(fileDir, core));
+    } catch {
+      return m;
+    }
+    const segs = absFromMaterials.split(path.sep).filter(Boolean);
+    if (segs.length < 2) return m; // 需落在 主题/... 之下
+    const topic = segs[0];
+    const rest = segs.slice(1).join("/");
+    return pre + buildAssetUrl(parentId, topic, rest) + suffix + post;
+  });
 }
 
 /** 家长库某主题 materials 目录下的文件清单（html/md/其它，不含 media/ 子目录内容）。 */

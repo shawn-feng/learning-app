@@ -10,13 +10,13 @@ import { registerIpcHandlers } from "./lib/ipc-handlers";
 import { disposeAllSessions } from "./lib/pi-session";
 import { startScheduler, runCatchUp } from "./lib/scheduler";
 import { lintAllChildren } from "./lib/kb-lint";
-import { registerMediaScheme, registerMediaProtocol } from "./lib/media-protocol";
+import { registerCustomSchemes, registerMediaProtocol, registerAssetProtocol } from "./lib/media-protocol";
 import { initUpdater, silentCheckForUpdates } from "./lib/updater";
 
 let mainWindow: BrowserWindow | null = null;
 
-// 必须在 app ready 之前注册自定义 scheme（media:// 用于沙盒 iframe 内播放本地音视频）
-registerMediaScheme();
+// 必须在 app ready 之前注册自定义 scheme（media:// 播放本地音视频；asset:// 加载共享资料 css/js/图片），一次调用合并注册
+registerCustomSchemes();
 
 function getMainWindow() {
   return mainWindow;
@@ -113,6 +113,8 @@ app.whenReady().then(() => {
 
   // 注册 media:// 协议，把沙盒 iframe 里的音视频请求映射到本地媒体文件
   registerMediaProtocol();
+  // 注册 asset:// 协议，把沙盒 iframe(srcDoc) 里引用的共享资料文件映射到本地
+  registerAssetProtocol();
 
   registerIpcHandlers(getMainWindow);
   startScheduler(); // 本地 cron，无网络请求，立即注册

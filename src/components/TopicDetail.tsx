@@ -702,7 +702,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
 
 /** 学习材料渲染：优先 html 文件（iframe），否则 sendMaterial 是 html 片段 → iframe，否则 markdown。 */
 function StudentMaterial({ course }: { course: CourseRow }) {
-  const [fileHtml, setFileHtml] = useState<{ found: boolean; format: string; content: string } | null>(null);
+  const [fileHtml, setFileHtml] = useState<{ found: boolean; format: string; content: string; fileUrl: string } | null>(null);
 
   useEffect(() => {
     setFileHtml(null);
@@ -717,6 +717,8 @@ function StudentMaterial({ course }: { course: CourseRow }) {
   const looksHtml = /<(html|body|div|h1|h2|section|p\s|style|script)[\s>]/i.test(send);
 
   if (fileHtml?.found && fileHtml.format === "html") {
+    // 直接渲染主进程已改写好的 html：内部相对资源已被改写为 asset:// 绝对地址
+    // （见 electron/lib/parent-library.ts rewriteHtmlAssetRefs），srcDoc 在 dev/prod 均能跨源加载。
     return <iframe sandbox="allow-scripts allow-same-origin" srcDoc={fileHtml.content} style={{ width: "100%", minHeight: 360, border: "1px solid #eee", borderRadius: 8, background: "#fff" }} title="学习材料" />;
   }
   if (looksHtml) {
