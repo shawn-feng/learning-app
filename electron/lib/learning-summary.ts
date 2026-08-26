@@ -151,9 +151,10 @@ export function progressSummaryToMarkdown(summary: LearningSummary): string {
       ? `下一课：「${t.next.trim()}」`
       : "（已全部学完或暂无下一课）";
     const type = t.type ? `（${t.type}）` : "";
+    const key = t.file.split("/")[0];
     const daily = t.daily != null ? ` 每日目标 ${t.daily} 课` : "";
     lines.push(
-      `- ${t.name}${type}：已学 ${t.learned}/${t.total}（${t.percent}%），${next}${daily}`
+      `- ${t.name}${type}（${key}）：已学 ${t.learned}/${t.total}（${t.percent}%），${next}${daily}`
     );
   }
   return lines.join("\n");

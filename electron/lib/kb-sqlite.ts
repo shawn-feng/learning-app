@@ -616,10 +616,29 @@ export function queryDaily(childDir: string, q: DailyQuery): DailyEntry[] {
   }
 }
 
-/** 查询主题进度（视图聚合 + courses 明细）。topic 缺省 = 全部主题；tag 可选（courses.tags 过滤）。 */
+/**
+ * 主题键解析：把 agent / 工具可能传入的「中文名」或「拼音目录名」统一成 courses.topic 用的键。
+ *   - 已是 courses.topic（拼音目录名，如 hanzigong）→ 原样返回
+ *   - 匹配 topics.name（中文显示名，如 汉字宫）→ 返回其 file 首段（拼音目录名）
+ *   - 否则原样返回（支持新建主题的拼音键直通）
+ * 原因（主题键对齐）：topics.name 是中文显示名，courses.topic / topic_progress.topic 是拼音目录名，
+ * 两者脱节会让 agent 拿中文名查进度/写课程时查不到、反复核对（如 珊珊会话里「汉字宫」查不到）。
+ */
+export function resolveTopicKeyUsingDb(db: DatabaseSync, input: string): string {
+  if (!input) return input;
+  const byKey = db.prepare("SELECT 1 FROM courses WHERE topic = ? LIMIT 1").get(input);
+  if (byKey) return input;
+  const byName = db.prepare("SELECT file FROM topics WHERE name = ?").get(input) as { file: string } | undefined;
+  if (byName) return byName.file.split("/")[0];
+  return input;
+}
+
+/** 查询主题进度（视图聚合 + courses 明细）。topic 缺省 = 全部主题；tag 可选（courses.tags 过滤）。
+ * topic 接受拼音键（hanzigong）或中文名（汉字宫），自动解析为键。 */
 export function queryTopicProgress(childDir: string, topic?: string, tag?: string): TopicProgress[] {
   const db = openKbDb(childDir);
   try {
+    if (topic) topic = resolveTopicKeyUsingDb(db, topic);
     const agg = topic
       ? db.prepare("SELECT topic, learned, total, next, updated FROM topic_progress WHERE topic = ?").all(topic)
       : db.prepare("SELECT topic, learned, total, next, updated FROM topic_progress ORDER BY topic").all();
@@ -859,6 +878,7 @@ export function updateProgress(childDir: string, p: { topic: string; item: strin
   }
   const db = openKbDb(childDir);
   try {
+    p.topic = resolveTopicKeyUsingDb(db, p.topic);
     const exists = db.prepare("SELECT 1 FROM courses WHERE topic = ? AND title = ?").get(p.topic, p.item);
     if (!exists) return false;
     if (col === "review_count") {
@@ -898,6 +918,7 @@ export function insertCourse(
 ): boolean {
   const db = openKbDb(childDir);
   try {
+    c.topic = resolveTopicKeyUsingDb(db, c.topic);
     const exists = db.prepare("SELECT 1 FROM courses WHERE topic = ? AND title = ?").get(c.topic, c.title);
     if (exists) return false;
     const max = db.prepare("SELECT MAX(sort_order) AS m FROM courses WHERE topic = ?").get(c.topic) as { m: number | null };

@@ -1841,3 +1841,65 @@
   3. **AGENTS 引导（已做，待确认项 2）**：`LEARNING_NAV_INSTRUCTIONS` 新增「### 目录查看（ls）」段，说明合法用途（列自己 cwd 下 `outputs/`/`uploads/`/`materials/` 以复用/展示/清理 html，只读目录名不读内容）与边界（越界路径被拦截、保护 `data/shared/`），并强调知识/进度清单走 `kb_query`、不要用 `ls` 翻 SQLite 数据目录。
   4. **待确认项 1 结论**：读 SDK `ls.js` 确认内置 `ls` 接受可选 `path`（默认列 cwd），故 guard 必须处理其入参——用 `event.input?.path` 走既有 `path.resolve` 比对即可；`path` 缺省（列 cwd）时 guard 提前 return，天然安全。
   5. **验证**：改动仅字符串/模板文本，tsc --noEmit（过滤 5 条环境相关 TS2318/TS2552 全局告警）0 新增错误；主进程编译验证未单独跑 `rm -rf out && npm run build`（改动极小，类型检查已覆盖）。
+
+## [ISSUE-050] 家长界面改为三栏布局：左侧导航 | 中间内容页 | 右侧家长-Agent 聊天；移除「课程管理」页内的 AI 对话
+
+- **类型**：布局重构 / 功能调整
+- **用户原话**：把家长界面也分成三部分，在右边增加家长与 agent 的聊天界面。把课程管理里的聊天去掉。左侧是导航，中间是导航的内容页面，右边是聊天框。
+- **需求拆解**：
+  1. 家长中心（`Dashboard`）由两栏（左导航 + 右内容）改为三栏：**左=导航（现有 sidebar 不动）、中=导航内容页（现有 main 不动）、右=常驻家长-Agent 聊天面板**（新）。
+  2. 聊天面板用**通用家长会话**（`pi:start_parent` / `pi:prompt_parent`，childId=`"parent"`，`getParentSession`），**不是**教学内容会话（`parent-content`）——家长可在任意页面右侧直接与 agent 对话（建课、改资料、答疑等）。
+  3. 移除「课程管理」详情页（`TopicDetail`）中列的 AI 对话（该处用的是 `parent-content` 会话），页面由三列（课程列表 | AI 对话 | 标签内容）变**两列（课程列表 | 标签内容）**，标签内容列占满剩余宽度。
+- **现状（已定位）**：
+  1. 家长界面布局在 `src/pages/Dashboard.tsx`：`dashboard-body` 内 `dashboard-sidebar`（左）+ `dashboard-main`（中）两栏；样式 `styles.css:261-290`（`.dashboard-body` flex、`.dashboard-main` flex:1）。
+  2. **家长通用会话通道已存在且完整**：`electron/preload.ts:50`（`piStartParent`）、`:71`（`piPromptParent`）；主进程 `ipc-handlers.ts:723-731`（`pi:start_parent` + `attachSessionEvents(session,"parent",...)`）、`:811-860`（`pi:prompt_parent`，含 ISSUE-037 的显式错误回发）。**参考实现**：`src/pages/SkillEditor.tsx`（监听 `onPiStreaming/onPiThinking/onPiToolStart/onPiToolEnd/onPiReply/onPiReplyEnd/onPiReplyError/onPiAgentEnd`，均按 `data.childId === "parent"` 过滤；`handleSend` 内 `piPromptParent(text)` 并显式检查 `r?.success`）。
+  3. `ChatWindow`（`src/components/ChatWindow.tsx`）支持 `owner="parent"`（ISSUE-044：上传/打开/读取附件走 `data/parents/<pid>/uploads/`），直接复用。
+  4. 课程管理里的聊天在 `src/components/TopicDetail.tsx`：中列 `:542-545` 渲染 `ChatWindow`；`useEffect`（`:106-200`）挂全部 streaming 事件（childId=`parent-content`）；`:90-96` `piStartParentContent()` 初始化；`handleSend`（`:368-412`）拼主题上下文调 `piPromptParentContent`。**删除范围**：这些聊天相关状态/事件/发送逻辑 + 中列 UI。
+  5. **不受影响**：`TopicEditor.tsx`（Settings「教学内容」tab，同样用 `parent-content` 会话）不在「课程管理」范围内，本次不动。
+- **方案要点（候选）**：
+  1. 新建 `src/components/ParentChatPanel.tsx`：内部状态 `messages/busy/workingIdRef`，挂载时 `piStartParent()`（显式检查返回值，ISSUE-037 模式），事件监听按 `childId==="parent"` 过滤，`handleSend` 调 `piPromptParent`，渲染 `<ChatWindow owner="parent" />`（家长附件走 `data/parents/default/uploads/`）。
+  2. `Dashboard.tsx`：`dashboard-body` 内 `dashboard-main` 后追加右栏 `<div className="dashboard-chat">` 渲染 `<ParentChatPanel />`；`styles.css` 新增 `.dashboard-chat`（固定宽度 ~360px、flex column、内部滚动、左边框分隔）。
+  3. `TopicDetail.tsx`：删 `import ChatWindow/nowTime`、聊天状态（`messages/busy/workingIdRef/patchWorking`）、`piStartParentContent` 初始化、全部 streaming 事件 `useEffect`、`handleSend`；中列删除，右列（标签内容）`width:420` → `flex:1`；更新文件头注释（三列→两列）。注意：`nowTime` 仅聊天用，删后 `useRef/useCallback` 若不再用也一并清理，避免 tsc unused 报错。
+- **待确认项**：
+  1. 右侧聊天宽度（默认 ~360px，家长可后续调）；是否允许折叠（本次不做）。
+  2. 右侧聊天是否显示历史会话按钮（`ChatWindow` 的 history 走 `piListSessions(childId)`——家长会话传 `childId=undefined` 时读全局会话，需确认不会混入孩子会话列表；可先保留默认行为）。
+  3. `TopicDetail` 删聊天后，`parent-content` 会话仅剩 `TopicEditor`（Settings 教学内容页）使用，无功能回归。
+- **排查 / 修改入口（可直接执行）**：
+  - 新建面板：`src/components/ParentChatPanel.tsx`（参照 `src/pages/SkillEditor.tsx:20-175` 的家长会话实现）。
+  - 布局：`src/pages/Dashboard.tsx:81-231`（`dashboard-body` 追加右栏）+ `src/styles.css` 新增 `.dashboard-chat`。
+  - 删聊天：`src/components/TopicDetail.tsx`（`:6` import、`:67-71` 状态、`:82-200` 事件与初始化、`:368-412` handleSend、`:494-545` 三列布局改两列）。
+- **关联**：ISSUE-026（家长教学内容页右栏聊天，仍走 `parent-content` 会话，不迁移）；ISSUE-037（家长会话显式错误回发模式，本面板沿用）；ISSUE-044（家长附件归属 `data/parents/<pid>/uploads/`，面板传 `owner="parent"` 复用）；ISSUE-033（家长提示词统一不分场景——右侧面板直接用 `getParentSession`，无需新会话类型）。
+- **优先级**：P2（布局重构 + 功能调整；改动集中前端三文件 + 一个新组件，无主进程改动；`parent-content` 会话仍由 TopicEditor 使用，无删除风险）。
+- **记录时间**：2026-08-26
+
+## [ISSUE-051] 学习主题键对齐：topics.name（中文）与 courses.topic（拼音）脱节，agent 查不到主题
+
+- **类型**：数据一致性 / agent 可用性
+- **用户原话**：数据表 topics 里学习主题的 name 是中文，而 courses 表以及 progress 视图的 topic 字段又是拼音，这两个对不上，会导致 agent 反复核对，查不出内容。例如珊珊刚刚的会话里，汉字宫就查不到。
+- **需求拆解**：让 agent 用中文名或拼音键都能查到主题进度/课程，消除反复核对空结果。
+- **现状（已定位）**：
+  1. `topics.name` 存中文显示名（汉字宫/论语/千字文…），`courses.topic` 与 `topic_progress` 视图 `topic` 存拼音目录名（hanzigong/lunyu/qianziwen…），天然脱节。
+  2. 内部 join 靠 `topics.file` 首段（拼音）能对齐，但 `getLearningSummary`/`kb_query topics` 注入 agent 的摘要只显示中文名；工具要求传拼音键 → agent 拿「汉字宫」查 → 0 行 → 反复核对（珊珊会话实证）。
+  3. `delivery.ts buildProgressSummary` 用整条 `t.file`（如 `hanzigong/hanzigong.md`）当 topic join，云端进度摘要恒 0/0。
+  4. 两孩子库实测：`topics.name` 全中文、`courses.topic` 全拼音；`parent-library` 函数一律吃拼音目录名（无中文名问题），`parent_stats progress` 走 `kb-sqlite.queryTopicProgress`（已覆盖）。
+- **方案要点（已做）**：非破坏性，不动目录、不重迁 markdown。
+  1. `kb-sqlite.ts` 新增 `resolveTopicKeyUsingDb(db, input)`：已是 `courses.topic` 直通 / 匹配 `topics.name`→取 `topics.file` 首段 / 否则直通。应用到 `queryTopicProgress`、`updateProgress`、`insertCourse`。
+  2. `learning-summary.ts` + `custom-tools.ts`：进度摘要与 `kb_query topics` 每行标注拼音键，如 `汉字宫（hanzigong）`；工具 `topic` 参数描述改为「拼音键或中文名均可」。
+  3. `delivery.ts`：`buildProgressSummary` 改 `t.file.split("/")[0]` 匹配 topic，云端摘要不再恒 0/0。
+- **待确认项**：
+  1. 家长库 `parent-content` 工具 `topic` 参数同形同病（LLM 传中文名），本次未改，避免扩大面；需要则后续补同一解析。
+  2. 是否给 `topics` 增加冗余 `pinyin` 列做长期真源对齐（当前用 `file` 首段推导，够用）。
+- **排查 / 修改入口（可直接执行）**：
+  - 解析：`electron/lib/kb-sqlite.ts`（`resolveTopicKeyUsingDb` + `queryTopicProgress`/`updateProgress`/`insertCourse`）。
+  - 注入摘要：`electron/lib/learning-summary.ts`（`getLearningSummary` 行模板）、`electron/lib/custom-tools.ts`（`kb_query` topics 分支 + `topic` 参数描述）。
+  - 云端摘要：`electron/lib/delivery.ts`（`buildProgressSummary` topic 匹配）。
+  - 回归：`test/kb-sqlite.test.ts`（「主题键对齐」端到端用例，临时库自清理 + 真实数据只读）。
+- **关联**：ISSUE-044（家长资料目录归属）/ ISSUE-033（AGENTS 提示词）；家长 `parent-content` 同形问题（待确认项 1）。
+- **优先级**：P1（agent 可用性硬伤，致查不到内容反复重试；改动小、测试通过）。
+- **记录时间**：2026-08-26
+- **处理结论（2026-08-26）**：
+  1. 已实现 `resolveTopicKeyUsingDb` 并应用到三处 topic 键入口（查询+写入），中文名与拼音键互通。
+  2. 进度摘要/`kb_query topics` 标注拼音键；工具 `topic` 参数支持中文名。
+  3. `delivery.ts` 云端进度摘要修正（0/0→真实值）。
+  4. 验证：`vitest run test/kb-sqlite.test.ts` 28/28 通过（含 5 条新增主题键对齐用例）；改动文件 `tsc --noEmit` 0 新增业务错误（仅 5 条已知环境告警）。
+  5. 提交：`feat(ISSUE-051)` 窄范围（仅本修复相关文件，不含 ISSUE-050 前端改动）。

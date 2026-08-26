@@ -331,4 +331,50 @@ describe("真实数据冒烟（主孩子 1f050a7f，只读不写）", () => {
   it("kb.sqlite 已在真实孩子目录落盘", () => {
     expect(fs.existsSync(path.join(REAL_CHILD, "kb.sqlite"))).toBe(true);
   });
+
+  it("主题键对齐：中文名「汉字宫」能查到 hanzigong 进度（不再反复查不到）", () => {
+    const p = queryTopicProgress(REAL_CHILD, "汉字宫");
+    expect(p.length).toBe(1);
+    expect(p[0].topic).toBe("hanzigong");
+    expect(p[0].total).toBeGreaterThan(0);
+  });
+
+  it("主题键对齐：拼音键直通（hanzigong/lunyu）", () => {
+    expect(queryTopicProgress(REAL_CHILD, "hanzigong")[0].topic).toBe("hanzigong");
+    expect(queryTopicProgress(REAL_CHILD, "lunyu")[0].topic).toBe("lunyu");
+  });
+});
+
+describe("主题键对齐（中文名↔拼音键，临时库端到端，只读/自清理）", () => {
+  let tmpDir: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-key-test-"));
+    const db = require("../electron/lib/kb-sqlite.ts").openKbDb(tmpDir);
+    // 模拟真实结构：topics.name 中文、courses.topic 拼音目录名
+    db.prepare("INSERT INTO topics (name, file) VALUES (?, ?)").run("汉字宫", "hanzigong");
+    db.prepare("INSERT INTO courses (topic, title, sort_order, status) VALUES (?, ?, ?, ?)").run("hanzigong", "汉字宫第一课", 0, "⬜");
+    db.prepare("INSERT INTO courses (topic, title, sort_order, status) VALUES (?, ?, ?, ?)").run("hanzigong", "汉字宫第二课", 1, "✅");
+    db.close();
+  });
+
+  it("queryTopicProgress：中文名解析到拼音键并返回进度", () => {
+    const p = queryTopicProgress(tmpDir, "汉字宫");
+    expect(p.length).toBe(1);
+    expect(p[0].topic).toBe("hanzigong");
+    expect(p[0].total).toBe(2);
+    expect(p[0].learned).toBe(1);
+  });
+
+  it("updateProgress：中文名主题能定位到拼音键课程的行", () => {
+    expect(updateProgress(tmpDir, { topic: "汉字宫", item: "汉字宫第一课", field: "状态", value: "✅" })).toBe(true);
+    expect(queryTopicProgress(tmpDir, "汉字宫")[0].learned).toBe(2);
+  });
+
+  it("insertCourse：中文名主题写入时自动落到拼音键", () => {
+    expect(insertCourse(tmpDir, { topic: "汉字宫", title: "汉字宫第三课" })).toBe(true);
+    const p = queryTopicProgress(tmpDir, "汉字宫");
+    expect(p[0].topic).toBe("hanzigong");
+    expect(p[0].items.some((i) => i.title === "汉字宫第三课")).toBe(true);
+  });
 });

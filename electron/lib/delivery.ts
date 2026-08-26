@@ -132,9 +132,10 @@ export function buildProgressSummary(childId: string): any {
       .prepare("SELECT name, file, progress FROM topics ORDER BY file")
       .all() as unknown as Array<{ name: string; file: string; progress: string }>;
     const list = topics.map((t) => {
-      const total = (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ?").get(t.file) as any)?.c ?? 0;
+      const key = t.file.split("/")[0];
+      const total = (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ?").get(key) as any)?.c ?? 0;
       const done =
-        (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ? AND status = '✅'").get(t.file) as any)?.c ??
+        (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ? AND status = '✅'").get(key) as any)?.c ??
         0;
       return { name: t.name, file: t.file, progress: t.progress, courses: total, done };
     });

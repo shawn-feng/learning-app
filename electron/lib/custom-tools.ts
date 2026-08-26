@@ -180,7 +180,7 @@ export const kbQueryTool = defineTool({
     "**query 类型**：\n" +
     "- `query: \"daily\"`：查 daily 记录。定位：`date`（YYYY-MM-DD）或 `month`（YYYY-MM 聚合）+ `block`（学习/生活/问答/任务）+ `title`（条目标题）+ `tag`（按标签过滤，如 诚实）+ `listOnly`（只回标题清单）。非 listOnly 返回条目原文（字段由家长库 method 定义）。\n" +
     "- `query: \"topics\"`：查主题清单与进度摘要（无需其它参数）。\n" +
-    "- `query: \"progress\"`：查某主题进度，`topic` 必填（如 lunyu）+ `tag`（按课程标签过滤）+ `listOnly`（只回课程清单，不看字段）。\n" +
+    "- `query: \"progress\"`：查某主题进度，`topic` 必填（拼音目录名如 lunyu，或中文名如 论语/汉字宫，工具会自动匹配）+ `tag`（按课程标签过滤）+ `listOnly`（只回课程清单，不看字段）。\n" +
     "- `query: \"tags\"`：查**标签定义**（词表 + 判断标准，打标签前先查此表，只能从下表选择），`tag`（缺省 = 全部）。\n" +
     "**返回**：结构化 markdown，可直接用于教学反查相关生活事件、确认下一课、回顾某天记录。\n" +
     "**优先于 read 数据文件**：daily/、life/、inquiries/、tasks/、tags/、learning 进度文件都是 SQLite 管理的，不要用 read 读它们。",
@@ -191,7 +191,7 @@ export const kbQueryTool = defineTool({
     block: Type.Optional(Type.String({ description: "daily 查询：区块（学习/生活/问答/任务）" })),
     title: Type.Optional(Type.String({ description: "daily 查询：条目标题精确匹配" })),
     listOnly: Type.Optional(Type.Boolean({ description: "true 时只返回条目标题清单，不返回内容" })),
-    topic: Type.Optional(Type.String({ description: "progress 查询：主题名（如 lunyu）" })),
+    topic: Type.Optional(Type.String({ description: "progress 查询：主题键——拼音目录名（如 lunyu）或中文名（如 论语、汉字宫），工具自动匹配" })),
     tag: Type.Optional(Type.String({ description: "标签过滤：daily 查生活事件、progress 查课程、tags 查标签定义（如 诚实）；缺省 = 全部" })),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
@@ -229,7 +229,7 @@ export const kbQueryTool = defineTool({
           const next = p?.next?.trim() ? `，下一课「${p.next.trim()}」` : "";
           const daily = t.rules.daily ? ` 每日目标 ${t.rules.daily} 课` : "";
           const type = t.rules.type ? `（${t.rules.type}）` : "";
-          lines.push(`- ${t.name}${type}：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${next}${daily}`);
+          lines.push(`- ${t.name}${type}（${dirName}）：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${next}${daily}`);
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       }
