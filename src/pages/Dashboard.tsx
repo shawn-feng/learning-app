@@ -6,6 +6,7 @@ import ProgressView from "../components/ProgressView";
 import TokenStatsPanel from "../components/TokenStatsPanel";
 import ChildTopicsModal from "../components/ChildTopicsModal";
 import CourseManager from "../components/CourseManager";
+import ParentChatPanel from "../components/ParentChatPanel";
 import Settings from "./Settings";
 import AgentPromptEditor from "../components/AgentPromptEditor";
 
@@ -227,6 +228,11 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           {view === "tokens" && <TokenStatsPanel childrenList={children} />}
 
           {view === "settings" && <Settings />}
+        </div>
+
+        {/* 右：家长-Agent 常驻聊天（ISSUE-050） */}
+        <div className="dashboard-chat">
+          <ParentChatPanel />
         </div>
       </div>
 

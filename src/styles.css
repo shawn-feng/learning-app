@@ -289,6 +289,35 @@ input, textarea {
   flex-direction: column;
 }
 
+/* 右栏：家长-Agent 常驻聊天（ISSUE-050） */
+.dashboard-chat {
+  width: 360px;
+  min-width: 300px;
+  background: #fafbfe;
+  border-left: 1px solid #eee;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.parent-chat-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.parent-chat-title {
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #667eea;
+  background: #fff;
+  border-bottom: 1px solid #eee;
+}
+
 /* ===== Child list ===== */
 .child-card {
   display: flex;
