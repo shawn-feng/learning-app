@@ -2,7 +2,7 @@
 // which prevents require('electron') from working correctly
 delete process.env.ELECTRON_RUN_AS_NODE;
 
-import { app, BrowserWindow, session } from "electron";
+import { app, BrowserWindow, session, systemPreferences } from "electron";
 import path from "path";
 import { getDataDir } from "./lib/config";
 import { initSharedSkills } from "./lib/user-init";
@@ -110,6 +110,16 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(permission === "media");
   });
+
+  // macOS 系统级麦克风权限：主动申请一次，让 app 出现在「系统设置→隐私与安全性→麦克风」
+  // 列表并弹出授权询问。若缺 Info.plist 的 NSMicrophoneUsageDescription，系统会静默拒绝且 app 不登记。
+  // 仅 macOS 需要；权限已决定（已授权/已拒绝）时 askForMediaAccess 直接返回、不再弹窗。
+  if (process.platform === "darwin") {
+    systemPreferences
+      .askForMediaAccess("microphone")
+      .then((granted) => console.log("[mac] microphone access granted:", granted))
+      .catch((e) => console.error("[mac] askForMediaAccess failed:", e));
+  }
 
   // 注册 media:// 协议，把沙盒 iframe 里的音视频请求映射到本地媒体文件
   registerMediaProtocol();

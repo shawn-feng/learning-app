@@ -86,6 +86,10 @@
       "category": "Education",
       "minimumSystemVersion": "10.15",
       "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "需要访问麦克风以进行语音输入",
+        "NSSpeechRecognitionUsageDescription": "需要语音识别以将语音转换为文字"
+      },
       "target": [
         {
           "target": "dmg",
