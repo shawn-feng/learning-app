@@ -1,0 +1,24 @@
+[Unit]
+Description=学习伙伴服务端（Learning Server）
+Documentation=https://www.aixuexihao.top
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 部署路径：/opt/learning-server/learning-server（pkg 产物，Linux x64）
+ExecStart=/opt/learning-server/learning-server
+WorkingDirectory=/opt/learning-server
+# 数据目录（数据库 / materials / 大文件 / server-config.json）
+Environment=SERVER_DATA_DIR=/opt/learning-server/data
+# 默认端口 8788，如需修改取消注释：
+# Environment=SERVER_PORT=8788
+Restart=always
+RestartSec=3
+# 安全加固（最小权限，数据目录归属学习用户）
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
