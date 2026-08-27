@@ -26,6 +26,10 @@
     "directories": {
       "output": "dist"
     },
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**"
+    ],
     "files": [
       "out/**/*",
       "electron/**/*.js",

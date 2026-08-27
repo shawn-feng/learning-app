@@ -9,6 +9,12 @@ on:
 jobs:
   build-mac:
     runs-on: macos-latest
+    strategy:
+      # x64 与 arm64 分开构建：ffmpeg-static 是带原生二进制的包，
+      # 必须让它与 dmg 架构一致（x64 dmg 含 x64 ffmpeg，arm64 dmg 含 arm64 ffmpeg），
+      # 否则 Intel Mac 跑到 arm64 ffmpeg 会直接执行失败、语音输入不可用。
+      matrix:
+        arch: [x64, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,8 +29,19 @@ jobs:
         # 项目存在 typescript@7 与 edge-tts 的 peer 冲突，必须 --legacy-peer-deps
         run: npm ci --legacy-peer-deps
 
-      - name: Build (electron-vite + electron-builder --mac)
-        run: npm run dist:mac
+      - name: Ensure ffmpeg-static binary matches target arch
+        # 默认 npm ci 会按 runner 架构装二进制；此处强制 ffmpeg-static 下载与本次构建一致的架构，
+        # 只重建这一个包，不影响 electron 等其它依赖。
+        run: npm_config_arch=${{ matrix.arch }} npm rebuild ffmpeg-static || npm_config_arch=${{ matrix.arch }} npm install ffmpeg-static@^5.3.0 --legacy-peer-deps --force
+
+      - name: Verify ffmpeg-static binary (ground truth)
+        run: |
+          echo "== ffmpeg-static binary info =="
+          ls -l node_modules/ffmpeg-static/ffmpeg
+          file node_modules/ffmpeg-static/ffmpeg || true
+
+      - name: Build (electron-vite + electron-builder --mac --${{ matrix.arch }})
+        run: npm run dist:mac -- --${{ matrix.arch }}
         env:
           # 海外 runner 用官方源下载 electron 二进制，比 package.json 里的 npmmirror 镜像更快
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
@@ -35,7 +52,7 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: macos-dmg
+          name: macos-dmg-${{ matrix.arch }}
           path: |
             dist/*.dmg
           if-no-files-found: error

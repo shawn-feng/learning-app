@@ -1,19 +1,34 @@
-import ffmpegStatic from "ffmpeg-static";
 import { execFile } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
 
-// ffmpeg 候选路径（按优先级）：FFMPEG_BIN 环境变量 > ffmpeg-static 自带二进制 > 系统 PATH 里的 ffmpeg
-// 注意：ffmpeg-static 的 exe 可能因下载中断而残缺（PE 节表超出实际文件大小），
-// existsSync/MZ 头检查无法识别，必须实际执行探测。
-function ffmpegCandidates(): string[] {
-  const envBin = process.env.FFMPEG_BIN;
-  const list: string[] = [];
-  if (envBin && fs.existsSync(envBin)) list.push(envBin);
-  if (ffmpegStatic && typeof ffmpegStatic === "string" && fs.existsSync(ffmpegStatic)) {
-    list.push(ffmpegStatic);
+// ffmpeg-static 是带原生二进制的 npm 包：
+// 1) 打包后二进制必须在 asar 外才能 exec（已在 package.json 用 asarUnpack 解包到 app.asar.unpacked）；
+// 2) 二进制架构必须与运行的 dmg 一致（x64 dmg 必须含 x64 ffmpeg，arm64 dmg 必须含 arm64 ffmpeg），
+//    否则 Intel Mac 跑到 arm64 ffmpeg 会直接执行失败。
+// 用懒 require + 容错，避免该模块缺失/不可用时拖垮整个语音功能，并给出可操作的报错。
+function getFfmpegStaticPath(): string | null {
+  try {
+    // ffmpeg-static 经 electron-vite externalizeDepsPlugin 外部化，运行时直接 require
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const p = require("ffmpeg-static");
+    return typeof p === "string" ? p : null;
+  } catch (e) {
+    console.warn(`[voice] 无法加载 ffmpeg-static 模块（${os.platform()}/${os.arch()}）：${(e as Error).message}`);
+    return null;
   }
+}
+
+// ffmpeg 候选路径（按优先级）：FFMPEG_BIN 环境变量 > ffmpeg-static 自带二进制 > 系统 PATH 里的 ffmpeg
+// 注意：ffmpeg-static 的二进制可能因下载中断而残缺（PE 节表超出实际文件大小），
+// existsSync 检查无法识别，必须实际执行探测（见 probeFfmpeg）。
+function ffmpegCandidates(): string[] {
+  const list: string[] = [];
+  const envBin = process.env.FFMPEG_BIN;
+  if (envBin && fs.existsSync(envBin)) list.push(envBin);
+  const staticPath = getFfmpegStaticPath();
+  if (staticPath && fs.existsSync(staticPath)) list.push(staticPath);
   list.push("ffmpeg"); // 系统 PATH
   return list;
 }
