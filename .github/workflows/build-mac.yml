@@ -30,9 +30,12 @@ jobs:
         run: npm ci --legacy-peer-deps
 
       - name: Ensure ffmpeg-static binary matches target arch
-        # 默认 npm ci 会按 runner 架构装二进制；此处强制 ffmpeg-static 下载与本次构建一致的架构，
-        # 只重建这一个包，不影响 electron 等其它依赖。
-        run: npm_config_arch=${{ matrix.arch }} npm rebuild ffmpeg-static || npm_config_arch=${{ matrix.arch }} npm install ffmpeg-static@^5.3.0 --legacy-peer-deps --force
+        # 关键：ffmpeg-static 的 install.js 在二进制已存在时会直接跳过下载（exit 0），
+        # 所以必须先删掉默认按 runner 架构装的旧二进制，再按目标架构 rebuild 才会重新下载正确架构。
+        # 只动这一个包，不影响 electron 等其它依赖。
+        run: |
+          rm -f node_modules/ffmpeg-static/ffmpeg
+          npm_config_arch=${{ matrix.arch }} npm rebuild ffmpeg-static
 
       - name: Verify ffmpeg-static binary (ground truth)
         run: |
