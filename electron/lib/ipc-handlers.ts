@@ -1,4 +1,4 @@
-import { ipcMain, app, BrowserWindow, dialog, shell, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, app, BrowserWindow, dialog, shell, screen, type IpcMainInvokeEvent } from "electron";
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads } from "./config";
@@ -1290,11 +1290,28 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     getMainWindow()?.minimize();
   });
 
+  // macOS 下无边框窗口的 win.maximize() 不会像 Windows 那样占满整个工作区，
+  // 故改为按当前所在屏幕的 workArea 精确填满（即系统原生「缩放」行为，顶部留出菜单栏，
+  // 与系统其它 App 一致）；Windows/Linux 沿用原生 maximize()。
+  let macMaximizedPrevBounds: Electron.Rectangle | null = null;
   ipcMain.handle("window:maximize-toggle", () => {
     const w = getMainWindow();
     if (!w) return;
-    if (w.isMaximized()) w.unmaximize();
-    else w.maximize();
+    if (process.platform === "darwin") {
+      if (macMaximizedPrevBounds) {
+        w.setBounds(macMaximizedPrevBounds);
+        macMaximizedPrevBounds = null;
+        w.webContents.send("window:maximized-changed", false);
+      } else {
+        macMaximizedPrevBounds = w.getBounds();
+        const display = screen.getDisplayMatching(macMaximizedPrevBounds);
+        w.setBounds(display.workArea);
+        w.webContents.send("window:maximized-changed", true);
+      }
+    } else {
+      if (w.isMaximized()) w.unmaximize();
+      else w.maximize();
+    }
   });
 
   ipcMain.handle("window:close", () => {
@@ -1302,7 +1319,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("window:is-maximized", () => {
-    return getMainWindow()?.isMaximized() ?? false;
+    const w = getMainWindow();
+    if (!w) return false;
+    return process.platform === "darwin" ? macMaximizedPrevBounds !== null : (w.isMaximized() ?? false);
   });
 
   ipcMain.handle("window:fullscreen-toggle", () => {
