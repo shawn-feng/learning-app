@@ -81,7 +81,22 @@ SHA256:u90140y+d4butWm1tF/Jlsx6CvNO9AoPE+bxW2R5nK4
 plink -ssh -hostkey "SHA256:u90140y+d4butWm1tF/Jlsx6CvNO9AoPE+bxW2R5nK4" shanshan@192.168.1.201 -pw 123456 "cd /home/shanshan/pi && rm -rf out dist && npm run dist:linux"
 ```
 
-### 完整发版流程（远程机已初始化 node_modules 后，仅增量同步改动文件）
+### 完整发版流程
+
+**推荐同步方式（2026-08-27 起，远程 `~/pi` 已初始化为 git 仓库并跟踪 GitHub `origin/master`）**：
+远端直连 GitHub 拉最新代码，无需本机 pscp 来回传文件：
+
+```bash
+# 远端（plink 登录后）
+cd ~/pi
+git fetch origin master
+git checkout -f -B master origin/master   # 强检出最新 master（保留 node_modules，仅覆盖源码/配置）
+npm install --legacy-peer-deps             # 同步依赖（通常 up to date，无需重装）
+rm -rf out dist
+npm run dist:linux                         # = electron-vite build && electron-builder --linux
+```
+
+**兜底同步方式（pscp 增量传文件，适用于远程不可达 GitHub 时）**：
 
 1. 本机用 `pscp` 把**改动的文件**同步到 `/home/shanshan/pi/`（注意中文文件名会乱码，先改 ASCII 名再传，远端 `mv` 回去）。
 2. 远端执行干净构建：
