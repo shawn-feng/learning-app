@@ -19,8 +19,30 @@ import {
   tagsToMarkdown,
   updateDailyField,
   updateProgress,
+  type CourseItem,
+  type TopicProgress,
 } from "./kb-sqlite";
+import { dbExec, dbQuery, childIdFromCwd } from "./client-data";
 import { generateHtmlLesson } from "./programming-agent";
+
+/** 解析 topics.rules_json（损坏时回退空对象）。 */
+function safeParseRules(json: string): Record<string, string> {
+  try {
+    const v = JSON.parse(json || "{}");
+    return v && typeof v === "object" ? (v as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 远程解析主题键：topics 表按 topic_key/name 匹配，失败回退剥路径与扩展名。 */
+async function resolveRemoteTopicKey(child_id: string, topic: string): Promise<string> {
+  const topics = await dbQuery<Array<{ name: string; topic_key: string }>>("kb.topics.list", { child_id });
+  const hit = topics.find((t) => t.topic_key === topic || t.name === topic);
+  if (hit) return hit.topic_key;
+  const seg = topic.split("/")[0].trim();
+  return seg.replace(/\.md$/i, "");
+}
 
 export interface PanelContent {
   format: "html";
@@ -196,17 +218,20 @@ export const kbQueryTool = defineTool({
     tag: Type.Optional(Type.String({ description: "标签过滤：daily 查生活事件、progress 查课程、tags 查标签定义（如 诚实）；缺省 = 全部" })),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    const childDir = ctx.cwd;
+    // SPLIT M8-B：数据唯一真源在服务端，经 /db/query RPC 读写
+    const child_id = childIdFromCwd(ctx.cwd);
 
     switch (params.query) {
       case "daily": {
-        const entries = queryDaily(childDir, {
+        const entries = await dbQuery<
+          Array<{ date: string; block: string; title: string; raw: string; tags: string }>
+        >("kb.daily_entries.query", {
+          child_id,
           date: params.date,
           month: params.month,
           block: params.block,
           title: params.title,
           tag: params.tag,
-          listOnly: params.listOnly,
         });
         const scope = params.date
           ? `${params.date}${params.block ? ` ${params.block}` : ""}`
@@ -218,34 +243,55 @@ export const kbQueryTool = defineTool({
         };
       }
       case "topics": {
-        const topics = queryTopicsMeta(childDir);
-        const progress = queryTopicProgress(childDir);
-        if (topics.length === 0) {
+        const topicsRaw = await dbQuery<
+          Array<{ name: string; topic_key: string; method: string; progress: string; rules_json: string }>
+        >("kb.topics.list", { child_id });
+        const progressAgg = await dbQuery<
+          Array<{ topic: string; learned: number; total: number; next: string; updated: string }>
+        >("kb.progress.list", { child_id });
+        if (topicsRaw.length === 0) {
           return { content: [{ type: "text" as const, text: "暂无学习主题。" }] };
         }
         const lines: string[] = ["主题清单："];
-        for (const t of topics) {
-          const dirName = t.topicKey;
-          const p = progress.find((x) => x.topic === dirName);
+        for (const t of topicsRaw) {
+          const dirName = t.topic_key;
+          const p = progressAgg.find((x) => x.topic === dirName);
           const next = p?.next?.trim() ? `，下一课「${p.next.trim()}」` : "";
-          const daily = t.rules.daily ? ` 每日目标 ${t.rules.daily} 课` : "";
-          const type = t.rules.type ? `（${t.rules.type}）` : "";
+          const rules = safeParseRules(t.rules_json);
+          const daily = rules.daily ? ` 每日目标 ${rules.daily} 课` : "";
+          const type = rules.type ? `（${rules.type}）` : "";
           lines.push(`- ${t.name}${type}（${dirName}）：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${next}${daily}`);
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       }
       case "progress": {
         if (!params.topic) throw new Error("kb_query progress 需要 topic 参数（如 lunyu）");
-        const progress = queryTopicProgress(childDir, params.topic, params.tag);
-        if (progress.length === 0) {
+        const topicKey = await resolveRemoteTopicKey(child_id, params.topic);
+        const agg = (
+          await dbQuery<
+            Array<{ topic: string; learned: number; total: number; next: string; updated: string }>
+          >("kb.progress.list", { child_id })
+        ).find((p) => p.topic === topicKey);
+        let courses = await dbQuery<CourseItem[]>("kb.courses.list", { child_id, topic: topicKey });
+        if (params.tag) courses = courses.filter((c) => c.tags.includes(params.tag!));
+        if (courses.length === 0 && !agg) {
           return { content: [{ type: "text" as const, text: `主题「${params.topic}」暂无进度记录。` }] };
         }
+        const tp: TopicProgress = {
+          topic: topicKey,
+          learned: agg?.learned ?? 0,
+          total: agg?.total ?? 0,
+          next: agg?.next ?? "",
+          updated: agg?.updated ?? "",
+          items: courses,
+        };
         return {
-          content: [{ type: "text" as const, text: progressToMarkdown(progress, params.listOnly) }],
+          content: [{ type: "text" as const, text: progressToMarkdown([tp], params.listOnly) }],
         };
       }
       case "tags": {
-        const defs = queryTags(childDir, params.tag);
+        let defs = await dbQuery<Array<{ tag: string; dimension: string; criteria: string }>>("kb.tags.list", { child_id });
+        if (params.tag) defs = defs.filter((d) => d.tag === params.tag);
         return {
           content: [
             {
@@ -307,11 +353,16 @@ export const kbInsertTool = defineTool({
     tags: Type.Optional(Type.String({ description: "course：课程标签（逗号分隔，从 tags 定义表选）" })),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    const childDir = ctx.cwd;
+    // SPLIT M8-B：数据唯一真源在服务端，经 /db/exec RPC 写入
+    const child_id = childIdFromCwd(ctx.cwd);
     if (params.table === "daily") {
       if (params.entries?.length) {
         if (!params.date) throw new Error("kb_insert daily 批量需要 date + entries");
-        const r = insertDailyEntries(childDir, params.date, params.entries);
+        const r = await dbExec<{ inserted: number; skipped: number }>("kb.daily_entries.insertMany", {
+          child_id,
+          date: params.date,
+          entries: params.entries,
+        });
         return {
           content: [
             {
@@ -324,13 +375,19 @@ export const kbInsertTool = defineTool({
       if (!params.date || !params.block || !params.content) {
         throw new Error("kb_insert daily 需要 date + block + content（或批量 entries）");
       }
-      const ok = insertDailyEntry(childDir, { date: params.date, block: params.block, title: params.content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "", content: params.content });
+      // append-only：单条也走 insertMany（INSERT OR IGNORE，重复不覆盖）
+      const r = await dbExec<{ inserted: number }>("kb.daily_entries.insertMany", {
+        child_id,
+        date: params.date,
+        entries: [{ block: params.block, content: params.content }],
+      });
+      const title = params.content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "";
       return {
         content: [
           {
             type: "text" as const,
-            text: ok
-              ? `已写入 daily ${params.date}「${params.block}」：${params.content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "条目"}`
+            text: r.inserted > 0
+              ? `已写入 daily ${params.date}「${params.block}」：${title}`
               : `daily ${params.date}「${params.block}」已存在同名条目，未重复写入（历史不改）`,
           },
         ],
@@ -340,7 +397,8 @@ export const kbInsertTool = defineTool({
       if (!params.topic || !params.title) {
         throw new Error("kb_insert course 需要 topic + title（新课程名）");
       }
-      const ok = insertCourse(childDir, {
+      const r = await dbExec<{ ok: boolean }>("kb.courses.insert", {
+        child_id,
         topic: params.topic,
         title: params.title,
         status: params.status,
@@ -353,7 +411,7 @@ export const kbInsertTool = defineTool({
         content: [
           {
             type: "text" as const,
-            text: ok ? `已新增课程：${params.topic}「${params.title}」` : `课程已存在：${params.topic}「${params.title}」（未重复插入）`,
+            text: r.ok ? `已新增课程：${params.topic}「${params.title}」` : `课程已存在：${params.topic}「${params.title}」（未重复插入）`,
           },
         ],
       };
@@ -396,13 +454,21 @@ export const kbUpdateTool = defineTool({
     value: Type.String({ description: "新值（整字段替换）" }),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    const childDir = ctx.cwd;
+    // SPLIT M8-B：数据唯一真源在服务端，经 /db/exec RPC 写入
+    const child_id = childIdFromCwd(ctx.cwd);
     if (params.table === "daily") {
       if (!params.date || !params.block || !params.title) {
         throw new Error("kb_update daily 需要 date + block + title + field + value");
       }
-      const ok = updateDailyField(childDir, { date: params.date, block: params.block, title: params.title, field: params.field, value: params.value });
-      if (!ok) throw new Error(`daily 条目不存在: ${params.date}「${params.block}」${params.title}`);
+      const r = await dbExec<{ ok: boolean }>("kb.daily_entries.updateField", {
+        child_id,
+        date: params.date,
+        block: params.block,
+        title: params.title,
+        field: params.field,
+        value: params.value,
+      });
+      if (!r.ok) throw new Error(`daily 条目不存在: ${params.date}「${params.block}」${params.title}`);
       return {
         content: [
           {
@@ -415,8 +481,14 @@ export const kbUpdateTool = defineTool({
     if (params.table === "course" || params.table === "progress") {
       if (!params.topic) throw new Error("kb_update course 需要 topic（如 lunyu）");
       if (!params.item) throw new Error("kb_update course 需要 item（课程名，如 论语先进篇第十七章）");
-      const ok = updateProgress(childDir, { topic: params.topic, item: params.item, field: params.field, value: params.value });
-      if (!ok) throw new Error(`进度更新失败：主题「${params.topic}」课程「${params.item}」不存在`);
+      const r = await dbExec<{ ok: boolean }>("kb.courses.updateField", {
+        child_id,
+        topic: params.topic,
+        title: params.item,
+        field: params.field,
+        value: params.value,
+      });
+      if (!r.ok) throw new Error(`进度更新失败：主题「${params.topic}」课程「${params.item}」不存在`);
       return {
         content: [
           {

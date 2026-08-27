@@ -3,6 +3,7 @@ import path from "path";
 import cron from "node-cron";
 import { BrowserWindow } from "electron";
 import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config";
+import { pushConfig } from "./config-sync";
 import { listChildren } from "./child-auth";
 import { summarizeDailyConversation, formatLocalDate } from "./daily-summary";
 import { resetChildSession } from "./pi-session";
@@ -163,6 +164,8 @@ function loadSchedulerConfig(): SchedulerConfig {
 
 function saveSchedulerConfig(config: SchedulerConfig): void {
   fs.writeFileSync(getSchedulerConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  // SPLIT M8-C：配置唯一真源在服务端，保存后同步（跨设备 ≤2min 生效）
+  void pushConfig("scheduler_config", config).catch(() => {});
 }
 
 export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {

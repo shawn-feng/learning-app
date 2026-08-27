@@ -21,6 +21,7 @@ import { getDataDir, getChildrenDir } from "./config";
 import { normalizeTopicKey } from "./kb-sqlite";
 import { buildAssetUrl } from "./media-protocol";
 import { openKbDb, type CourseItem } from "./kb-sqlite";
+import { ensureMaterial } from "./material-cache";
 
 export const DEFAULT_PARENT_ID = "default";
 
@@ -657,12 +658,17 @@ export function moveParentCourse(parentId: string, topicDir: string, title: stri
   }
 }
 
-/** 读取父库共享资料文件（课程详情「学习材料 html 渲染」用）：按相对父库根路径读文件，防目录穿越。 */
-export function readParentMaterial(
+/** 读取父库共享资料文件（课程详情「学习材料 html 渲染」用）：按相对父库根路径读文件，防目录穿越。
+ * SPLIT M8-D：材料唯一真源在服务端，读取前先按需拉取到本地缓存（parents/<pid>/materials/ 路径不变，
+ * asset:// 解析零改动）；拉取失败时回退本地已有文件（断网可浏览已缓存资料）。 */
+export async function readParentMaterial(
   parentId: string,
   relPath: string
-): { found: boolean; format: "html" | "md" | "other"; content: string; fileUrl: string } {
-  const base = getParentDir(parentId);
+): Promise<{ found: boolean; format: "html" | "md" | "other"; content: string; fileUrl: string }> {
+  const pid = parentId ?? DEFAULT_PARENT_ID;
+  // 按需拉取：命中缓存立即用（后台比对版本）；未命中从服务端下载落盘
+  await ensureMaterial(pid, relPath).catch(() => null);
+  const base = getParentDir(pid);
   const resolved = path.resolve(base, relPath);
   if (resolved !== base && !resolved.startsWith(base + path.sep)) {
     return { found: false, format: "other", content: "", fileUrl: "" };

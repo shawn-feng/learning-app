@@ -11,7 +11,7 @@ import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
-import { getAgentPrompt } from "./agent-prompts";
+import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
 import {
   findLastConversationDate,
   formatLocalDate,
@@ -379,6 +379,10 @@ async function createChildSession(
   // ISSUE-033：AGENTS 纯 SQLite 存储（data/agents.sqlite），行为规范经 buildChildPrompt 内联注入
   // （resolveChildAgents：SQLite 用户版本 → 代码默认），不落任何物理文件——孩子只读、不可写，
   // 管理者=家长（家长页面 AgentPromptEditor 编辑）。
+  // SPLIT M8-B：AGENTS 唯一真源在服务端；systemPromptOverride 是 SDK 同步回调，故在创建会话前
+  // 先远程预取该孩子的用户版本写入本地缓存（buildChildPrompt 同步读缓存即取到服务端最新版）；
+  // 服务端不可达时回退本地缓存/代码默认。
+  await fetchAgentPromptRemote("child", childId).catch(() => null);
 
   const modelRuntime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -455,6 +459,10 @@ function getParentSessionsDir(sub: string): string {
 export async function getParentSession(): Promise<AgentSession> {
   if (cachedParentSession) return cachedParentSession;
 
+  // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存
+  await fetchAgentPromptRemote("parent", "main").catch(() => null);
+  await fetchAgentPromptRemote("parent", "content").catch(() => null);
+
   const dataDir = getDataDir();
   const modelRuntime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -507,6 +515,10 @@ export async function getParentSession(): Promise<AgentSession> {
  */
 export async function getParentContentSession(): Promise<AgentSession> {
   if (cachedParentContentSession) return cachedParentContentSession;
+
+  // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存
+  await fetchAgentPromptRemote("parent", "main").catch(() => null);
+  await fetchAgentPromptRemote("parent", "content").catch(() => null);
 
   const dataDir = getDataDir();
   const modelRuntime = await getSharedRuntime();

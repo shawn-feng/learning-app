@@ -3,7 +3,8 @@ import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCach
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl } from "./config";
 import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
-import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion } from "./agent-prompts";
+import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
+import { startConfigSync, stopConfigSync } from "./config-sync";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, DEFAULT_VISION_MODEL } from "./pi-runtime";
 import fs from "fs";
 import path from "path";
@@ -56,6 +57,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("auth:login", async (_e, email: string, password: string) => {
     try {
       const license = await loginAndCache(email, password);
+      // SPLIT M8-B/C：登录后预热 AGENTS 缓存 + 启动配置 2min 轮询
+      void prefetchAgents().catch(() => {});
+      startConfigSync();
       return { success: true, license };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -72,6 +76,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("auth:logout", async () => {
     clearCachedLicense();
+    stopConfigSync();
     return { success: true };
   });
 
@@ -168,17 +173,17 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("child:getAgentsMd", async (_e, childId: string) => {
-    // ISSUE-033：AGENTS 纯 SQLite（data/agents.sqlite）——优先返回用户版本（整体替换权威），
-    // 无用户版本返回代码默认（buildAgentsMd）。无任何物理 AGENTS 文件。
-    const userVer = getAgentPrompt("child", childId);
+    // ISSUE-033 + SPLIT M8-B：AGENTS 用户版本唯一真源在服务端（本地缓存为离线降级）。
+    // 编辑器实时读：先远程取，无用户版本返回代码默认（buildAgentsMd）。
+    const userVer = await fetchAgentPromptRemote("child", childId);
     if (userVer !== null) return { content: userVer };
     return { content: getDefaultPrompt("child", childId) };
   });
 
   ipcMain.handle("child:saveAgentsMd", async (_e, childId: string, content: string) => {
     try {
-      // 修改后的 AGENTS 只存 SQLite（data/agents.sqlite），不落任何物理文件
-      saveAgentPrompt("child", childId, content);
+      // SPLIT M8-B：AGENTS 用户版本唯一真源在服务端，本地缓存同步更新
+      await saveAgentPrompt("child", childId, content);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -187,7 +192,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   // ---- AGENTS / 系统提示词「用户可编辑版本」通用接口（ISSUE-033）----
   ipcMain.handle("agents:get", async (_e, scope: string, ref: string) => {
-    const userVer = getAgentPrompt(scope, ref);
+    // SPLIT M8-B：编辑器实时读服务端（远程取 + 缓存兜底）
+    const userVer = await fetchAgentPromptRemote(scope, ref);
     if (userVer !== null) return { content: userVer, customized: true };
     // 无用户整体版本：返回当前默认内容（孩子=buildAgentsMd 代码默认，家长=代码默认提示词），
     // 让家长在默认基础上修改（ISSUE-033 修：此前返回空串导致编辑器空白）。
@@ -196,9 +202,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("agents:save", async (_e, scope: string, ref: string, content: string) => {
     try {
-      // 保存只写 SQLite（data/agents.sqlite，prompts 当前版 + prompt_history 历史版），
-      // 不再落任何物理 AGENTS 文件（ISSUE-033：查看/编辑均在家长页面，SQLite 为唯一真源）
-      saveAgentPrompt(scope, ref, content);
+      // SPLIT M8-B：保存走服务端 RPC（prompts 当前版 + prompt_history 历史版），并更新本地缓存
+      await saveAgentPrompt(scope, ref, content);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -207,7 +212,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("agents:history", async (_e, scope: string, ref: string) => {
     try {
-      return { success: true, data: listAgentPromptHistory(scope, ref) };
+      return { success: true, data: await listAgentPromptHistory(scope, ref) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -215,7 +220,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("agents:restore", async (_e, scope: string, ref: string, updated: string) => {
     try {
-      return { success: true, data: restoreAgentPromptVersion(scope, ref, updated) };
+      return { success: true, data: await restoreAgentPromptVersion(scope, ref, updated) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -374,7 +379,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("parent:readMaterial", async (_e, relPath: string) => {
     try {
-      return { success: true, data: readParentMaterial(undefined, relPath) };
+      return { success: true, data: await readParentMaterial(undefined, relPath) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

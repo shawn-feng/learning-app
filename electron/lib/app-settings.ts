@@ -1,5 +1,6 @@
 import fs from "fs";
 import { getAppSettingsPath } from "./config";
+import { pushConfig } from "./config-sync";
 
 interface AppSettings {
   materialsLimit: number;
@@ -28,6 +29,8 @@ function loadSettings(): AppSettings {
 
 function saveSettings(settings: AppSettings): void {
   fs.writeFileSync(getAppSettingsPath(), JSON.stringify(settings, null, 2), "utf-8");
+  // SPLIT M8-C：配置唯一真源在服务端，保存后同步（跨设备 ≤2min 生效）
+  void pushConfig("app_settings", settings).catch(() => {});
 }
 
 // 学习资料保留数量（孩子模式左侧「学习资料」列表的上限），默认 20

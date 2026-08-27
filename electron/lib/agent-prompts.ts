@@ -1,137 +1,137 @@
 /**
- * AGENTS / 系统提示词「用户可编辑版本」存储（ISSUE-033）。
+ * AGENTS / 系统提示词「用户可编辑版本」存储（ISSUE-033 + SPLIT M8-B 纯服务端模式）。
  *
- * 设计：代码默认提示词（buildAgentsMd / buildParentPrompt）与
- * 用户版本**完全解耦**——用户一旦保存自己的版本，即以「整体替换」方式成为该 scope/ref 的
- * 唯一权威，开会话时直接写入用户版本，不再被源码默认覆盖。编辑坏了可「恢复默认」（删除用户版本），
- * 且每次保存都会沉淀历史版本，可随时回退。
- *
- * 存储：data/agents.sqlite
- *   - prompts(scope, ref, content, updated)：当前用户版本（无行 = 用代码默认）
- *   - prompt_history(id, scope, ref, content, updated)：每次保存的歷史快照
- *
- * scope/ref：
- *   - 孩子：scope="child",  ref=<childId>   （对应 AGENTS.md）
- *   - 家长：scope="parent", ref="main"      （统一家长工作台提示词，2026-08-24 起不分场景；
- *                                           历史 ref="content" 行仅在 main 无自定义时兜底读取）
+ * SPLIT 后唯一真源在**服务端 agents 库**（prompts / prompt_history），客户端不持有业务库：
+ *   - `getAgentPrompt` **同步读本地缓存**（会话构建是同步链，不阻塞网络）；缓存缺失 → null（调用方回退代码默认）。
+ *   - `saveAgentPrompt` / `listAgentPromptHistory` / `restoreAgentPromptVersion` **异步走服务端 RPC**，
+ *     保存/回退成功后同步更新本地缓存（本设备立即生效）。
+ *   - 跨设备一致性：家长在 A 设备编辑后，B 设备经配置轮询期内的保存操作或登录预热刷新缓存；
+ *     首次会话（本地无缓存）回退代码默认——已知限制。
+ * 缓存文件：data/cache/agents-cache.json（{ "<scope>:<ref>": { content, updated } }）。
  */
+import fs from "fs";
 import path from "path";
-import { DatabaseSync } from "node:sqlite";
 import { getDataDir } from "./config";
-
-function dbPath(): string {
-  return path.join(getDataDir(), "agents.sqlite");
-}
-
-function openDb(): DatabaseSync {
-  const db = new DatabaseSync(dbPath());
-  db.exec("PRAGMA busy_timeout = 10000");
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS prompts (
-      scope TEXT NOT NULL,
-      ref TEXT NOT NULL,
-      content TEXT NOT NULL,
-      updated TEXT NOT NULL,
-      PRIMARY KEY (scope, ref)
-    );
-    CREATE TABLE IF NOT EXISTS prompt_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      scope TEXT NOT NULL,
-      ref TEXT NOT NULL,
-      content TEXT NOT NULL,
-      updated TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_prompt_history ON prompt_history(scope, ref, id);
-  `);
-  return db;
-}
+import { dbExec, dbQuery } from "./client-data";
 
 export interface PromptVersion {
   content: string;
   updated: string;
 }
 
-/** 读取当前用户版本；无用户版本返回 null（调用方应回退到代码默认）。 */
-export function getAgentPrompt(scope: string, ref: string): string | null {
-  const db = openDb();
+type AgentsCache = Record<string, { content: string; updated: string }>;
+
+function cachePath(): string {
+  return path.join(getDataDir(), "cache", "agents-cache.json");
+}
+
+function cacheKey(scope: string, ref: string): string {
+  return `${scope}:${ref}`;
+}
+
+function readCache(): AgentsCache {
   try {
-    const row = db
-      .prepare("SELECT content FROM prompts WHERE scope = ? AND ref = ?")
-      .get(scope, ref) as { content: string } | undefined;
-    return row ? row.content : null;
-  } finally {
-    db.close();
+    return JSON.parse(fs.readFileSync(cachePath(), "utf-8")) as AgentsCache;
+  } catch {
+    return {};
+  }
+}
+
+function writeCache(cache: AgentsCache): void {
+  fs.mkdirSync(path.dirname(cachePath()), { recursive: true });
+  fs.writeFileSync(cachePath(), JSON.stringify(cache, null, 2), "utf-8");
+}
+
+/** 读取当前用户版本（同步，读本地缓存）；无用户版本返回 null（调用方回退代码默认）。 */
+export function getAgentPrompt(scope: string, ref: string): string | null {
+  const v = readCache()[cacheKey(scope, ref)];
+  return v && v.content.trim() ? v.content : null;
+}
+
+/**
+ * 远程取用户版本（会话创建前预取 / 编辑器实时读）：先调服务端 agents.get，
+ * 成功则更新本地缓存并返回内容；服务端不可达/未登录回退本地缓存（离线降级）。
+ */
+export async function fetchAgentPromptRemote(scope: string, ref: string): Promise<string | null> {
+  try {
+    const data = await dbQuery<{ content: string | null }>("agents.get", { scope, ref });
+    const cache = readCache();
+    if (data.content && data.content.trim()) {
+      cache[cacheKey(scope, ref)] = { content: data.content, updated: new Date().toISOString() };
+      writeCache(cache);
+      return data.content;
+    }
+    delete cache[cacheKey(scope, ref)];
+    writeCache(cache);
+    return null;
+  } catch {
+    return getAgentPrompt(scope, ref);
   }
 }
 
 /**
- * 保存用户版本（整体替换）。先把旧版本推入历史，再覆盖当前。
- * content 为空/纯空白视为「恢复默认」——删除当前用户版本（但不删历史）。
+ * 保存用户版本（整体替换）。空内容 = 恢复默认（服务端删当前行、保留历史）。
+ * 成功后更新本地缓存（本设备立即生效）。
  */
-export function saveAgentPrompt(scope: string, ref: string, content: string): void {
-  const db = openDb();
-  try {
-    const now = new Date().toISOString();
-    const trimmed = content.trim();
-    db.exec("BEGIN");
-    try {
-      const existing = db
-        .prepare("SELECT content, updated FROM prompts WHERE scope = ? AND ref = ?")
-        .get(scope, ref) as { content: string; updated: string } | undefined;
-      if (existing && existing.content.trim()) {
-        db.prepare(
-          "INSERT INTO prompt_history (scope, ref, content, updated) VALUES (?, ?, ?, ?)"
-        ).run(scope, ref, existing.content, existing.updated);
-      }
-      if (!trimmed) {
-        db.prepare("DELETE FROM prompts WHERE scope = ? AND ref = ?").run(scope, ref);
-      } else {
-        db.prepare(
-          "INSERT INTO prompts (scope, ref, content, updated) VALUES (?, ?, ?, ?) " +
-            "ON CONFLICT(scope, ref) DO UPDATE SET content = excluded.content, updated = excluded.updated"
-        ).run(scope, ref, content, now);
-      }
-      db.exec("COMMIT");
-    } catch (err) {
-      db.exec("ROLLBACK");
-      throw err;
-    }
-  } finally {
-    db.close();
+export async function saveAgentPrompt(scope: string, ref: string, content: string): Promise<void> {
+  await dbExec("agents.save", { scope, ref, content });
+  const cache = readCache();
+  const trimmed = content.trim();
+  if (trimmed) {
+    cache[cacheKey(scope, ref)] = { content, updated: new Date().toISOString() };
+  } else {
+    delete cache[cacheKey(scope, ref)];
   }
+  writeCache(cache);
 }
 
 /** 恢复默认：删除当前用户版本（历史保留，可回退）。 */
-export function resetAgentPrompt(scope: string, ref: string): void {
-  saveAgentPrompt(scope, ref, "");
+export async function resetAgentPrompt(scope: string, ref: string): Promise<void> {
+  await saveAgentPrompt(scope, ref, "");
 }
 
-/** 历史版本（按时间倒序，最新在前）。 */
-export function listAgentPromptHistory(scope: string, ref: string): PromptVersion[] {
-  const db = openDb();
-  try {
-    const rows = db
-      .prepare(
-        "SELECT content, updated FROM prompt_history WHERE scope = ? AND ref = ? ORDER BY id DESC LIMIT 50"
-      )
-      .all(scope, ref) as Array<{ content: string; updated: string }>;
-    return rows;
-  } finally {
-    db.close();
+/** 历史版本（服务端按时间倒序，最新在前，最多 50 条）。 */
+export async function listAgentPromptHistory(scope: string, ref: string): Promise<PromptVersion[]> {
+  return dbQuery<PromptVersion[]>("agents.history", { scope, ref });
+}
+
+/** 回退到指定历史版本（按 updated 定位）；成功后刷新本地缓存。 */
+export async function restoreAgentPromptVersion(scope: string, ref: string, updated: string): Promise<boolean> {
+  const r = await dbExec<{ ok: boolean }>("agents.restore", { scope, ref, updated });
+  if (r.ok) {
+    try {
+      const data = await dbQuery<{ content: string | null }>("agents.get", { scope, ref });
+      const cache = readCache();
+      if (data.content && data.content.trim()) {
+        cache[cacheKey(scope, ref)] = { content: data.content, updated: new Date().toISOString() };
+      } else {
+        delete cache[cacheKey(scope, ref)];
+      }
+      writeCache(cache);
+    } catch {
+      /* 缓存刷新失败不阻断回退结果 */
+    }
   }
+  return r.ok;
 }
 
-/** 回退到指定历史版本（按 updated 时间戳定位）；成功后该版本成为当前用户版本。 */
-export function restoreAgentPromptVersion(scope: string, ref: string, updated: string): boolean {
-  const db = openDb();
-  try {
-    const row = db
-      .prepare("SELECT content FROM prompt_history WHERE scope = ? AND ref = ? AND updated = ?")
-      .get(scope, ref, updated) as { content: string } | undefined;
-    if (!row) return false;
-    saveAgentPrompt(scope, ref, row.content);
-    return true;
-  } finally {
-    db.close();
+/** 登录成功后后台预热：家长侧用户版本拉取到本地缓存（child 版本经 save 时写入）。 */
+export async function prefetchAgents(): Promise<void> {
+  for (const [scope, ref] of [
+    ["parent", "main"],
+    ["parent", "content"],
+  ] as const) {
+    try {
+      const data = await dbQuery<{ content: string | null }>("agents.get", { scope, ref });
+      const cache = readCache();
+      if (data.content && data.content.trim()) {
+        cache[cacheKey(scope, ref)] = { content: data.content, updated: new Date().toISOString() };
+      } else {
+        delete cache[cacheKey(scope, ref)];
+      }
+      writeCache(cache);
+    } catch {
+      /* 预热失败静默（下次编辑/保存时再更新） */
+    }
   }
 }
