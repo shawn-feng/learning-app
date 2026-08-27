@@ -698,6 +698,33 @@ export function queryTopicProgress(childDir: string, topic?: string, tag?: strin
   }
 }
 
+/**
+ * 只取主题进度**聚合行**（learned/total/next/updated），不加载课程明细（items）。
+ * 记录总结（summarizeDailyConversation）首轮注入用：给孩子可能只有几百课的论语，全量 courses
+ * 明细（queryTopicProgress 非 listOnly）会把整张课程表塞进 LLM 上下文，这里只回主题级摘要，省 token。
+ */
+export function queryTopicSummary(childDir: string): Array<{ topic: string; learned: number; total: number; next: string; updated: string }> {
+  const db = openKbDb(childDir);
+  try {
+    const rows = db.prepare("SELECT topic, learned, total, next, updated FROM topic_progress ORDER BY topic").all() as unknown as Array<{
+      topic: string;
+      learned: number;
+      total: number;
+      next: string;
+      updated: string;
+    }>;
+    return rows.map((r) => ({
+      topic: r.topic,
+      learned: Number(r.learned) || 0,
+      total: Number(r.total) || 0,
+      next: r.next ?? "",
+      updated: r.updated ?? "",
+    }));
+  } finally {
+    db.close();
+  }
+}
+
 function rowToCourse(r: Record<string, unknown>): CourseItem {
   return {
     topic: String(r.topic),
@@ -828,6 +855,50 @@ export function insertDailyEntry(childDir: string, e: { date: string; block: str
       extractTagsFromRaw(e.content)
     );
     return true;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * 批量插入 daily 条目（kb_insert entries 批量用，2026-08-27）。
+ * 单事务执行：逐条幂等（同主键 date+block+title 已存在则跳过，daily 是 append-only 历史不改），
+ * 返回新增 / 跳过计数。content 无 `### 标题` 行的条目无法入库（标题是主键一部分），计入 skipped。
+ */
+export function insertDailyEntries(
+  childDir: string,
+  date: string,
+  entries: Array<{ block: string; content: string }>
+): { inserted: number; skipped: number } {
+  const db = openKbDb(childDir);
+  let inserted = 0;
+  let skipped = 0;
+  try {
+    db.exec("BEGIN");
+    const existsStmt = db.prepare("SELECT 1 FROM daily_entries WHERE date = ? AND block = ? AND title = ?");
+    const insertStmt = db.prepare("INSERT INTO daily_entries (date, block, title, raw, tags) VALUES (?, ?, ?, ?, ?)");
+    for (const e of entries) {
+      const title = e.content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "";
+      if (!title || !e.block) {
+        skipped++;
+        continue;
+      }
+      if (existsStmt.get(date, e.block, title)) {
+        skipped++;
+        continue;
+      }
+      insertStmt.run(date, e.block, title, e.content, extractTagsFromRaw(e.content));
+      inserted++;
+    }
+    db.exec("COMMIT");
+    return { inserted, skipped };
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // 忽略回滚失败（库可能已处于非事务态）
+    }
+    throw err;
   } finally {
     db.close();
   }

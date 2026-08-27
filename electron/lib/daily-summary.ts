@@ -1,6 +1,7 @@
 // 每日学习记录总结核心（recording 定时任务 / 新建会话前触发 / AI 工具 summarize_conversation 共用）。
 // 按天汇总：读取指定日期 jsonl 会话（滤掉 thinking / toolCall / toolResult，只留对话文本）→
-// 有会话则开 ephemeral session 按 RECORDING_PROMPT 提取写入 daily；当天无会话则跳过（不消耗 token）。
+// 有会话则开 ephemeral session，首轮注入「已提供上下文」（主题进度+标签定义表+已有条目）+ 当天对话，
+// 按 RECORDING_PROMPT 的「一次性完成」要求提取写入 daily；当天无会话则跳过（不消耗 token）。
 
 import fs from "fs";
 import path from "path";
@@ -13,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
-import { queryDaily, type DailyEntry } from "./kb-sqlite";
+import { queryDaily, queryTags, queryTopicsMeta, queryTopicSummary, tagsToMarkdown, type DailyEntry } from "./kb-sqlite";
 import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt";
 import { logRound } from "./token-stats";
 
@@ -201,6 +202,50 @@ export interface DailySummaryResult {
 }
 
 /**
+ * 组装「已提供上下文」：主题清单+进度摘要 + 标签定义表 + 当天已有 daily 条目清单（去重用）。
+ *
+ * 目的（2026-08-27 首轮注入）：把 LLM 原本要分轮 kb_query 才能拿到的信息（主题映射、标签定义表、
+ * 已有条目）一次性塞进首轮 prompt，让 LLM 在第一个回复里就完成全部提取与写入，工具调用一轮收尾，
+ * 避免「先查再写、逐条插入」导致的十几轮往返（每轮都重发全文 + thinking）。
+ *
+ * 只注入主题级聚合行（queryTopicSummary），绝不注入逐课清单——论语 514 课全量塞进上下文是灾难。
+ */
+export function buildProvidedContext(childDir: string, existingList: string): string {
+  const topics = queryTopicsMeta(childDir);
+  const summaries = queryTopicSummary(childDir);
+  const topicLines = summaries.map((p) => {
+    const meta = topics.find((t) => t.topicKey === p.topic);
+    const name = meta?.name ?? p.topic;
+    let line = `- ${name}（${p.topic}）：已学 ${p.learned}/${p.total}`;
+    if (p.next.trim()) line += `，下一课「${p.next.trim()}」`;
+    if (p.updated) line += `，最近更新 ${p.updated}`;
+    return line;
+  });
+  const tagsText = tagsToMarkdown(queryTags(childDir));
+  const parts = [
+    "## 已提供的上下文（直接使用，无需调用工具查询）",
+    "",
+    "【主题清单与进度摘要】",
+    topicLines.length ? topicLines.join("\n") : "（暂无学习主题）",
+    "",
+    "【标签定义表】",
+    tagsText,
+  ];
+  if (existingList) {
+    parts.push(
+      "",
+      "【当天 daily 已存在的记录（禁止重复插入）】",
+      existingList,
+      "规则：",
+      "1. 清单中已存在的条目（标题一致或内容重复）禁止重复插入；",
+      "2. 若清单中某条目有新信息需要补充，用 kb_update 更新它（不要新增条目）；",
+      "3. 只对清单中没有的新条目调用 kb_insert。"
+    );
+  }
+  return parts.join("\n");
+}
+
+/**
  * 按天汇总：读取指定日期会话 → 有会话则开 ephemeral session 提取写入 daily，无会话则跳过。
  *
  * @param childDir 孩子数据目录（data/children/<id>，也是工具 ctx.cwd）
@@ -218,13 +263,13 @@ export async function summarizeDailyConversation(
   // 先把当天已有的 daily 条目查出来，让 AI 跳过已写入的内容，避免重复入库（主键幂等仅兜底）。
   const existing = queryDaily(childDir, { date });
   const existingList = formatDailyExistingList(existing);
+  // 首轮注入全部上下文（主题进度 + 标签定义表 + 已有条目），配合 RECORDING_PROMPT 的「一次性完成」
+  // 要求，让 LLM 首轮就返回全部 kb_insert/kb_update 调用，不再为「了解信息」分轮调用 kb_query。
+  const provided = buildProvidedContext(childDir, existingList);
   const session = await createEphemeralSession(childDir);
   try {
     const beforeCount = (session as any).messages?.length ?? 0;
-    const dedupSection = existingList
-      ? `\n\n重要——同一天可能多次汇总，请遵守以下「不重复」规则：\n当天 daily 已存在的记录：\n${existingList}\n规则：\n1. 清单中已存在的条目（标题一致或内容重复）禁止重复插入；\n2. 若清单中某条目有新信息需要补充，用 kb_update 更新它（不要新增条目）；\n3. 只对清单中没有的新条目调用 kb_insert。`
-      : "";
-    const prompt = `${RECORDING_PROMPT}\n\n今天是 ${date}。以下是孩子 ${date} 的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}${dedupSection}`;
+    const prompt = `${RECORDING_PROMPT}\n\n${provided}\n\n今天是 ${date}。以下是孩子 ${date} 的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}`;
     await session.prompt(prompt);
     logRound({ session, beforeCount, channel: "scheduler", childId: path.basename(childDir), ok: true });
     return { date, summarized: true, skipped: false, note: `已总结 ${date} 的对话并写入 daily` };

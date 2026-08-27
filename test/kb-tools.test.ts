@@ -119,6 +119,74 @@ describe("kb_insert / kb_update（临时目录写测试）", () => {
     expect(q.content[0].text).toContain("2026-08-20 撒谎事件");
   });
 
+  it("kb_insert daily：entries 批量一次写入多条（同 date 多 block），返回新增/跳过计数", async () => {
+    const res = await runTool(
+      kbInsertTool,
+      {
+        table: "daily",
+        date: "2026-08-21",
+        entries: [
+          { block: "学习", content: "### 论语先进篇第二十二章\n- 考核：吟诵✓\n- 孩子表现：主动背诵" },
+          { block: "生活", content: "### 去公园玩\n- 标签：运动\n- 概要：在公园跑了三圈" },
+          { block: "问答", content: "### 为什么天是蓝的\n- 孩子的疑问：天为什么是蓝的？\n- 结论：散射" },
+        ],
+      },
+      tmpDir
+    );
+    expect(res.content[0].text).toContain("已批量写入 daily 2026-08-21");
+    expect(res.content[0].text).toContain("新增 3 条");
+    // 三条全部落库（跨区块）
+    const q1 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "学习" }, tmpDir);
+    expect(q1.content[0].text).toContain("论语先进篇第二十二章");
+    const q2 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "生活" }, tmpDir);
+    expect(q2.content[0].text).toContain("去公园玩");
+    const q3 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "问答" }, tmpDir);
+    expect(q3.content[0].text).toContain("为什么天是蓝的");
+  });
+
+  it("kb_insert daily：entries 批量重复条目自动跳过（append-only，不覆盖）", async () => {
+    const res = await runTool(
+      kbInsertTool,
+      {
+        table: "daily",
+        date: "2026-08-21",
+        entries: [
+          { block: "学习", content: "### 论语先进篇第二十二章\n- 考核：吟诵✓\n- 孩子表现：主动背诵" }, // 已存在
+          { block: "任务", content: "### 做个计分器\n- 需求：给练习打分的网页" }, // 新条目
+        ],
+      },
+      tmpDir
+    );
+    expect(res.content[0].text).toContain("新增 1 条");
+    expect(res.content[0].text).toContain("跳过重复/无效 1 条");
+    // 已存在条目内容未被覆盖（还是第一次的 content）
+    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "学习", title: "论语先进篇第二十二章" }, tmpDir);
+    expect(q.content[0].text).toContain("主动背诵");
+  });
+
+  it("kb_insert daily：entries 批量缺 date 报错", async () => {
+    await expect(
+      runTool(kbInsertTool, { table: "daily", entries: [{ block: "生活", content: "### 事件\n- 概要：x" }] }, tmpDir)
+    ).rejects.toThrow(/date \+ entries/);
+  });
+
+  it("kb_insert daily：entries 批量中无 ### 标题的条目计入跳过（不入库）", async () => {
+    const res = await runTool(
+      kbInsertTool,
+      {
+        table: "daily",
+        date: "2026-08-21",
+        entries: [
+          { block: "学习", content: "没有标题行" },
+          { block: "生活", content: "### 有效条目\n- 概要：ok" },
+        ],
+      },
+      tmpDir
+    );
+    expect(res.content[0].text).toContain("新增 1 条");
+    expect(res.content[0].text).toContain("跳过重复/无效 1 条");
+  });
+
   it("kb_update daily：更新条目字段", async () => {
     await runTool(
       kbInsertTool,

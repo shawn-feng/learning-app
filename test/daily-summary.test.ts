@@ -8,7 +8,9 @@ import {
   findLatestConversationDate,
   summarizeDailyConversation,
   formatDailyExistingList,
+  buildProvidedContext,
 } from "../electron/lib/daily-summary.ts";
+import { openKbDb } from "../electron/lib/kb-sqlite";
 
 // daily-summary 核心逻辑：jsonl 按天过滤（排除 think/toolCall/toolResult）、最近会话日期查找、
 // 无会话时跳过（不建 ephemeral session、不调 AI）。
@@ -132,5 +134,43 @@ describe("formatDailyExistingList（同天多次汇总的去重清单）", () =>
 
   it("无条目返回空串", () => {
     expect(formatDailyExistingList([])).toBe("");
+  });
+});
+
+describe("buildProvidedContext（首轮注入：主题进度 + 标签定义表 + 已有条目）", () => {
+  it("空库返回标题 + 暂无主题/无标签定义 + 保留已有条目清单", () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "daily-summary-ctx-"));
+    try {
+      openKbDb(empty).close(); // 建库（建表 + 视图）
+      const ctx = buildProvidedContext(empty, "【学习】\n- 论语先进篇第九章");
+      expect(ctx).toContain("已提供的上下文");
+      expect(ctx).toContain("（暂无学习主题）");
+      expect(ctx).toContain("无标签定义");
+      expect(ctx).toContain("论语先进篇第九章");
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("种子库返回主题进度摘要 + 标签定义表，且不含逐课清单", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "daily-summary-ctx2-"));
+    try {
+      const db = openKbDb(tmp);
+      db.prepare("INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, ?, ?, ?)").run("论语", "lunyu", "", "", "{}");
+      db.prepare("INSERT INTO courses (topic, title, sort_order, status, mastery) VALUES (?, ?, ?, ?, ?)").run("lunyu", "论语先进篇第十六章", 0, "✅", "熟练");
+      db.prepare("INSERT INTO courses (topic, title, sort_order, status, mastery) VALUES (?, ?, ?, ?, ?)").run("lunyu", "论语先进篇第十七章", 1, "⬜", "");
+      db.prepare("INSERT INTO tags (tag, dimension, criteria) VALUES (?, ?, ?)").run("诚实", "品格", "说真话、不撒谎");
+      db.close();
+
+      const ctx = buildProvidedContext(tmp, "");
+      expect(ctx).toContain("已提供的上下文");
+      expect(ctx).toContain("论语（lunyu）：已学 1/2");
+      expect(ctx).toContain("下一课「论语先进篇第十七章」");
+      expect(ctx).toContain("诚实：说真话、不撒谎");
+      // 绝不注入逐课清单（论语几百课全量塞上下文是灾难）
+      expect(ctx).not.toContain("### 论语先进篇第十六章");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

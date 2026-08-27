@@ -9,6 +9,7 @@ import { getTokenSummary, readTokenLog } from "./token-stats";
 import {
   dailyToMarkdown,
   insertCourse,
+  insertDailyEntries,
   insertDailyEntry,
   progressToMarkdown,
   queryDaily,
@@ -265,7 +266,9 @@ export const kbQueryTool = defineTool({
  *
  * 支持两类写入（table 必填）：
  *   "daily"  —— 写 daily 新条目：date（YYYY-MM-DD）+ block（学习/生活/问答/任务）+ content（### 标题 + 字段行原文；
- *                **生活事件在 content 里写 `- 标签：诚实,亲情`（从 tags 定义表选）**，工具自动解析进 tags 列）
+ *                **生活事件在 content 里写 `- 标签：诚实,亲情`（从 tags 定义表选）**，工具自动解析进 tags 列）。
+ *                **推荐批量**：同一天多条用 `entries: [{block, content}, ...]` 一次写完（单事务，重复自动跳过），
+ *                不要再逐条调用——批量能把多轮工具调用压到一轮。
  *   "course" —— 新增课程（courses 表）：topic（主题目录名，如 lunyu）+ title（课程名，如 论语先进篇第二十一章）
  *                （"progress" 是旧别名，兼容保留，新调用请用 "course"）
  *
@@ -277,14 +280,24 @@ export const kbInsertTool = defineTool({
   description:
     "向 SQLite 知识库插入新条目，**内容不进上下文**（ISSUE-023 P2，SQLite 唯一真源）。\n\n" +
     "**table: \"daily\"**：写 daily 记录。`date`（YYYY-MM-DD）+ `block`（学习/生活/问答/任务）+ `content`（一条完整条目，`### 标题` 开头 + 字段行，**直接用已在回复中输出给孩子的学习总结原文**）。生活事件需在 content 里写 `- 标签：诚实,亲情` 字段行（标签只能从 `kb_query {query:\"tags\"}` 的定义表选）。\n" +
+    "**批量（推荐）**：同一天的多条条目用 `entries: [{block, content}, ...]` 一次写入（date 统一、单事务、重复自动跳过）——**多个事件请合并到一次调用**，不要逐条插入。\n" +
     "**table: \"course\"**：新增课程（courses 表）。`topic`（主题目录名，如 lunyu）+ `title`（课程名）；可选 `status`（⬜/✅）/ `mastery`（掌握度）/ `material`（教学资料）/ `sendMaterial`（要发送的学习资料）/ `tags`（课程标签，逗号分隔）。\n" +
     "**重复插入**：同主键已存在时返回 false（daily 历史不改，不覆盖）。\n" +
     "**注意**：只用于数据写入；materials/ / uploads/ 等内容文件仍用 write/edit；主题教学方法与教学文案存家长库，一律用 parent_content 获取。",
   parameters: Type.Object({
     table: Type.String({ description: "写入目标：daily | course（旧名 progress 兼容）" }),
-    date: Type.Optional(Type.String({ description: "daily：日期 YYYY-MM-DD" })),
-    block: Type.Optional(Type.String({ description: "daily：区块（学习/生活/问答/任务）" })),
-    content: Type.Optional(Type.String({ description: "daily：完整条目文本（### 标题 + 字段行，生活事件含 - 标签：行）" })),
+    date: Type.Optional(Type.String({ description: "daily：日期 YYYY-MM-DD（批量时所有条目共用此日期）" })),
+    block: Type.Optional(Type.String({ description: "daily：区块（学习/生活/问答/任务）——与 content 组成单条写入，和 entries 二选一" })),
+    content: Type.Optional(Type.String({ description: "daily：完整条目文本（### 标题 + 字段行，生活事件含 - 标签：行）——与 entries 二选一" })),
+    entries: Type.Optional(
+      Type.Array(
+        Type.Object({
+          block: Type.String({ description: "daily：区块（学习/生活/问答/任务）" }),
+          content: Type.String({ description: "daily：完整条目文本（### 标题 + 字段行，生活事件含 - 标签：行）" }),
+        }),
+        { description: "批量写入 daily：同一 date 的多条条目（block + content）。**推荐一次写完全部条目**，避免逐条调用多轮往返" }
+      )
+    ),
     topic: Type.Optional(Type.String({ description: "course：主题目录名（如 lunyu）" })),
     title: Type.Optional(Type.String({ description: "course：新课程名（如 论语先进篇第二十一章）" })),
     status: Type.Optional(Type.String({ description: "course：初始掌握状态（⬜/✅，缺省 ⬜）" })),
@@ -296,8 +309,20 @@ export const kbInsertTool = defineTool({
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     const childDir = ctx.cwd;
     if (params.table === "daily") {
+      if (params.entries?.length) {
+        if (!params.date) throw new Error("kb_insert daily 批量需要 date + entries");
+        const r = insertDailyEntries(childDir, params.date, params.entries);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `已批量写入 daily ${params.date}：新增 ${r.inserted} 条${r.skipped ? `，跳过重复/无效 ${r.skipped} 条` : ""}`,
+            },
+          ],
+        };
+      }
       if (!params.date || !params.block || !params.content) {
-        throw new Error("kb_insert daily 需要 date + block + content");
+        throw new Error("kb_insert daily 需要 date + block + content（或批量 entries）");
       }
       const ok = insertDailyEntry(childDir, { date: params.date, block: params.block, title: params.content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "", content: params.content });
       return {
