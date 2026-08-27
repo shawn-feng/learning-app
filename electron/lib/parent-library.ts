@@ -660,21 +660,24 @@ export function moveParentCourse(parentId: string, topicDir: string, title: stri
 
 /** 读取父库共享资料文件（课程详情「学习材料 html 渲染」用）：按相对父库根路径读文件，防目录穿越。
  * SPLIT M8-D：材料唯一真源在服务端，读取前先按需拉取到本地缓存（parents/<pid>/materials/ 路径不变，
- * asset:// 解析零改动）；拉取失败时回退本地已有文件（断网可浏览已缓存资料）。 */
+ * asset:// 解析零改动）；拉取失败时回退本地已有文件（断网可浏览已缓存资料）。
+ * M8-E：本地无文件且拉取失败时返回 error（网络/服务端问题显式暴露，禁止静默降级）。 */
 export async function readParentMaterial(
   parentId: string,
   relPath: string
-): Promise<{ found: boolean; format: "html" | "md" | "other"; content: string; fileUrl: string }> {
+): Promise<{ found: boolean; format: "html" | "md" | "other"; content: string; fileUrl: string; error?: string }> {
   const pid = parentId ?? DEFAULT_PARENT_ID;
   // 按需拉取：命中缓存立即用（后台比对版本）；未命中从服务端下载落盘
-  await ensureMaterial(pid, relPath).catch(() => null);
+  const ensured = await ensureMaterial(pid, relPath).catch(() => null);
   const base = getParentDir(pid);
   const resolved = path.resolve(base, relPath);
   if (resolved !== base && !resolved.startsWith(base + path.sep)) {
     return { found: false, format: "other", content: "", fileUrl: "" };
   }
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
-    return { found: false, format: "other", content: "", fileUrl: "" };
+    // M8-E：区分「拉取失败（网络/服务端）」与「资料不存在」——拉取失败显式报错，禁止静默降级
+    const pullError = ensured && !ensured.ok ? ensured.error : undefined;
+    return { found: false, format: "other", content: "", fileUrl: "", error: pullError };
   }
   const ext = path.extname(resolved).toLowerCase();
   const format = ext === ".html" || ext === ".htm" ? "html" : ext === ".md" ? "md" : "other";

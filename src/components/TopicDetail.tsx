@@ -533,7 +533,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
 
 /** 学习材料渲染：优先 html 文件（iframe），否则 sendMaterial 是 html 片段 → iframe，否则 markdown。 */
 function StudentMaterial({ course }: { course: CourseRow }) {
-  const [fileHtml, setFileHtml] = useState<{ found: boolean; format: string; content: string; fileUrl: string } | null>(null);
+  const [fileHtml, setFileHtml] = useState<{ found: boolean; format: string; content: string; fileUrl: string; error?: string } | null>(null);
 
   useEffect(() => {
     setFileHtml(null);
@@ -546,6 +546,15 @@ function StudentMaterial({ course }: { course: CourseRow }) {
 
   const send = course.sendMaterial || "";
   const looksHtml = /<(html|body|div|h1|h2|section|p\s|style|script)[\s>]/i.test(send);
+
+  // M8-E：材料拉取失败（网络/服务端问题）显式提示，禁止静默降级
+  if (fileHtml && !fileHtml.found && fileHtml.error) {
+    return (
+      <div style={{ padding: "12px 16px", background: "#fdf0f0", border: "1px solid #f0c0c0", borderRadius: 8, color: "#b3261e", fontSize: 13 }}>
+        资料获取失败：{fileHtml.error}
+      </div>
+    );
+  }
 
   if (fileHtml?.found && fileHtml.format === "html") {
     // 直接渲染主进程已改写好的 html：内部相对资源已被改写为 asset:// 绝对地址
