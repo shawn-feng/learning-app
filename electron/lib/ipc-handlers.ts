@@ -228,7 +228,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("learning:summary", async (_e, childId: string) => {
     try {
-      return { success: true, data: getLearningSummary(childId) };
+      return { success: true, data: await getLearningSummary(childId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -237,7 +237,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 单主题进度明细（含每课 CourseItem 列表）—— 进度看板「主题 → 每课 → 当课汇总」钻取数据源
   ipcMain.handle("learning:topic", async (_e, childId: string, topic: string) => {
     try {
-      return { success: true, data: getTopicProgress(childId, topic) };
+      return { success: true, data: await getTopicProgress(childId, topic) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -248,7 +248,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     "learning:courseSummary",
     async (_e, childId: string, topicName: string, title: string) => {
       try {
-        return { success: true, data: getCourseDailySummary(childId, topicName, title) };
+        return { success: true, data: await getCourseDailySummary(childId, topicName, title) };
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
@@ -259,7 +259,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("parent:listTopics", async () => {
     try {
-      return { success: true, data: listParentTopics() };
+      return { success: true, data: await listParentTopics() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -267,7 +267,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("parent:listCourses", async (_e, topicDir: string) => {
     try {
-      return { success: true, data: listParentTopicCourses(undefined, topicDir) };
+      return { success: true, data: await listParentTopicCourses(undefined, topicDir) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -276,7 +276,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // ISSUE-045：标签选项从父库 tags 定义表获取（家长可编辑课程标签的下拉源）
   ipcMain.handle("parent:getTags", async () => {
     try {
-      return { success: true, data: queryParentTags(undefined) };
+      return { success: true, data: await queryParentTags(undefined) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -285,7 +285,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // ISSUE-045：家长自由新增标签写回父库 tags 定义表
   ipcMain.handle("parent:upsertTag", async (_e, tag: string, dimension?: string, criteria?: string) => {
     try {
-      upsertParentTag(undefined, tag, dimension || "", criteria || "");
+      await upsertParentTag(undefined, tag, dimension || "", criteria || "");
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -295,7 +295,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 新建/更新家长库主题（课程管理页「新建主题」，method 全文、courses 可空）
   ipcMain.handle("parent:upsertTopic", async (_e, topic: any) => {
     try {
-      const r = upsertParentTopic(undefined, topic, topic.courses || []);
+      const r = await upsertParentTopic(undefined, topic, topic.courses || []);
       return { success: true, data: r };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -304,12 +304,12 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("parent:allocate", async (_e, childId: string, topicDir: string) => {
     try {
-      const data = allocateTopicToChild(undefined, childId, topicDir);
+      const data = await allocateTopicToChild(undefined, childId, topicDir);
       // ISSUE-041 架构转向：跨机分发 = 只传「分配数据包」（不含文件），孩子端本地落库。
       // 家长端生成包上传云端暂存（fire-and-forget，失败静默）；本地分配已生效（同机可用）。
       try {
         const { buildAllocPackage, uploadDelivery } = await import("./delivery");
-        uploadDelivery(childId, buildAllocPackage(topicDir)).catch((e) =>
+        uploadDelivery(childId, await buildAllocPackage(topicDir)).catch((e) =>
           console.error("uploadDelivery failed:", e)
         );
       } catch (e) {
@@ -324,7 +324,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 孩子已分配的主题清单（孩子管理页「添加学习主题」展示用）
   ipcMain.handle("parent:listChildTopics", async (_e, childId: string) => {
     try {
-      return { success: true, data: listChildAllocatedTopics(childId) };
+      return { success: true, data: await listChildAllocatedTopics(childId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -335,7 +335,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     "parent:setChildTopicDaily",
     async (_e, childId: string, topicDir: string, daily: string, type: string) => {
       try {
-        return { success: true, data: setChildTopicDaily(childId, topicDir, daily, type) };
+        return { success: true, data: await setChildTopicDaily(childId, topicDir, daily, type) };
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
@@ -354,7 +354,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 家长库课程管理（课程管理页）
   ipcMain.handle("parent:upsertCourse", async (_e, topicDir: string, course: any) => {
     try {
-      upsertParentCourse(undefined, topicDir, course);
+      await upsertParentCourse(undefined, topicDir, course);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -363,7 +363,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("parent:deleteCourse", async (_e, topicDir: string, title: string) => {
     try {
-      return { success: true, data: deleteParentCourse(undefined, topicDir, title) };
+      return { success: true, data: await deleteParentCourse(undefined, topicDir, title) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -371,7 +371,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("parent:moveCourse", async (_e, topicDir: string, title: string, direction: -1 | 1) => {
     try {
-      return { success: true, data: moveParentCourse(undefined, topicDir, title, direction) };
+      return { success: true, data: await moveParentCourse(undefined, topicDir, title, direction) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

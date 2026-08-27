@@ -24,3 +24,16 @@ benefit-auth/.deps/
 
 # 数据迁移备份（不入库）
 data-backup-*/
+
+# 旧架构产物归档目录（2026-08-28：dist/cloud-service/benefit-auth 等历史产物，不入库）
+legacy/
+
+# WorkBuddy 临时文件
+.workbuddy/tmp/
+
+# 一次性调试/迁移脚本（2026-08-28 排查与迁移用，不入库）
+scripts/probe-electron.js
+scripts/test-render-iframe.js
+scripts/render-test-app/
+scripts/migrate-old-data.py
+dist4/

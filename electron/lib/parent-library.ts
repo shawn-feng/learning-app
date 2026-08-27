@@ -22,6 +22,7 @@ import { normalizeTopicKey } from "./kb-sqlite";
 import { buildAssetUrl } from "./media-protocol";
 import { openKbDb, type CourseItem } from "./kb-sqlite";
 import { ensureMaterial } from "./material-cache";
+import { dbExec, dbQuery } from "./client-data";
 
 export const DEFAULT_PARENT_ID = "default";
 
@@ -212,32 +213,23 @@ export interface ParentTagDef {
   criteria: string;
 }
 
-/** 查询父库标签定义表（tag 缺省 = 全部，按维度、词序返回）。 */
-export function queryParentTags(parentId: string = DEFAULT_PARENT_ID, tag?: string): ParentTagDef[] {
-  const db = openParentDb(parentId);
-  try {
-    const rows = tag
-      ? db.prepare("SELECT tag, dimension, criteria FROM tags WHERE tag = ?").all(tag)
-      : db.prepare("SELECT tag, dimension, criteria FROM tags ORDER BY dimension, tag").all();
-    return rows as unknown as ParentTagDef[];
-  } finally {
-    db.close();
-  }
+/** 查询父库标签定义表（SPLIT：服务端 parent_lib.tags.list；tag 缺省 = 全部）。 */
+export async function queryParentTags(
+  parentId: string = DEFAULT_PARENT_ID,
+  tag?: string
+): Promise<ParentTagDef[]> {
+  const rows = await dbQuery<ParentTagDef[]>("parent_lib.tags.list", { tag: tag ?? "" }).catch(() => []);
+  return rows ?? [];
 }
 
-/** 新增 / 更新父库标签定义（家长自由新增标签写回定义表；INSERT OR REPLACE 语义）。 */
-export function upsertParentTag(
+/** 新增 / 更新父库标签定义（SPLIT：服务端 parent_lib.tags.upsert，INSERT OR REPLACE 语义）。 */
+export async function upsertParentTag(
   parentId: string = DEFAULT_PARENT_ID,
   tag: string,
   dimension = "",
   criteria = ""
-): void {
-  const db = openParentDb(parentId);
-  try {
-    db.prepare("INSERT OR REPLACE INTO tags (tag, dimension, criteria) VALUES (?, ?, ?)").run(tag, dimension, criteria);
-  } finally {
-    db.close();
-  }
+): Promise<void> {
+  await dbExec("parent_lib.tags.upsert", { tag, dimension, criteria });
 }
 
 // ==================== 查询 ====================
@@ -252,60 +244,51 @@ export interface ParentTopic {
   htmlCount: number; // 该主题父库已有 html 资料数
 }
 
-export function listParentTopics(parentId: string = DEFAULT_PARENT_ID): ParentTopic[] {
-  const db = openParentDb(parentId);
-  try {
-    const rows = db.prepare("SELECT name, topic_key, method, rules_json FROM topics ORDER BY name").all() as unknown as Array<{
-      name: string;
-      topicKey: string;
-      method: string;
-      rules_json: string;
-    }>;
-    const agg = db.prepare("SELECT topic, learned, total FROM topic_progress").all() as unknown as Array<{
-      topic: string;
-      learned: number;
-      total: number;
-    }>;
-    const aggMap = new Map(agg.map((a) => [a.topic, a]));
-    return rows.map((r) => {
-      let rules: Record<string, string> = {};
-      try {
-        rules = JSON.parse(r.rules_json || "{}");
-      } catch {
-        rules = {};
-      }
-      const topicDir = r.topic_key;
-      const a = aggMap.get(topicDir);
-      const materialsDir = path.join(getParentMaterialsDir(parentId), topicDir);
-      let htmlCount = 0;
-      if (fs.existsSync(materialsDir)) {
-        htmlCount = fs.readdirSync(materialsDir).filter((f) => f.endsWith(".html") || f.endsWith(".htm")).length;
-      }
-      return {
-        name: r.name,
-        topicKey: r.topic_key,
-        method: r.method,
-        rules,
-        learned: Number(a?.learned) || 0,
-        total: Number(a?.total) || 0,
-        htmlCount,
-      };
-    });
-  } finally {
-    db.close();
-  }
+export async function listParentTopics(parentId: string = DEFAULT_PARENT_ID): Promise<ParentTopic[]> {
+  // SPLIT：主题/进度来自服务端 parent_lib（按 session parent_id 路由）；材料文件计数读本地缓存目录
+  const [topics, progress] = await Promise.all([
+    dbQuery<Array<{ name: string; topic_key: string; method: string; rules_json: string }>>(
+      "parent_lib.topics.list",
+      {}
+    ).catch(() => []),
+    dbQuery<Array<{ topic: string; learned: number; total: number }>>(
+      "parent_lib.progress.list",
+      {}
+    ).catch(() => []),
+  ]);
+  const aggMap = new Map((progress ?? []).map((a) => [a.topic, a]));
+  return (topics ?? []).map((r) => {
+    let rules: Record<string, string> = {};
+    try {
+      rules = JSON.parse(r.rules_json || "{}");
+    } catch {
+      rules = {};
+    }
+    const topicDir = r.topic_key;
+    const a = aggMap.get(topicDir);
+    const materialsDir = path.join(getParentMaterialsDir(parentId), topicDir);
+    let htmlCount = 0;
+    if (fs.existsSync(materialsDir)) {
+      htmlCount = fs.readdirSync(materialsDir).filter((f) => f.endsWith(".html") || f.endsWith(".htm")).length;
+    }
+    return {
+      name: r.name,
+      topicKey: r.topic_key,
+      method: r.method,
+      rules,
+      learned: Number(a?.learned) || 0,
+      total: Number(a?.total) || 0,
+      htmlCount,
+    };
+  });
 }
 
-export function listParentTopicCourses(parentId: string, topicDir: string): CourseItem[] {
-  const db = openParentDb(parentId);
-  try {
-    const rows = db
-      .prepare("SELECT * FROM courses WHERE topic = ? ORDER BY sort_order, title")
-      .all(topicDir) as unknown as Array<Record<string, unknown>>;
-    return rows.map(rowToParentCourse);
-  } finally {
-    db.close();
-  }
+export async function listParentTopicCourses(parentId: string, topicDir: string): Promise<CourseItem[]> {
+  // SPLIT：课程列表来自服务端 parent_lib.courses.list
+  const rows = await dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", {
+    topic: topicDir,
+  });
+  return (rows ?? []).map(rowToParentCourse);
 }
 
 function rowToParentCourse(r: Record<string, unknown>): CourseItem {
@@ -337,7 +320,7 @@ export function resolveParentMaterial(parentId: string, htmlPath: string): strin
  * upsert 语义：topics 按 name 覆盖；courses 按 (topic,title) 覆盖 content 字段、
  * 但**不覆盖** status/mastery/first_learned/last_review/review_count（进度属于孩子，家长库只存内容）。
  */
-export function upsertParentTopic(
+export async function upsertParentTopic(
   parentId: string,
   topic: { name: string; topicKey: string; method: string; progress?: string; rules?: Record<string, string> },
   courses: Array<{
@@ -350,37 +333,37 @@ export function upsertParentTopic(
     htmlPath?: string;
     teachingCopy?: string;
   }>
-): { topics: number; courses: number } {
-  const db = openParentDb(parentId);
-  try {
-    db.exec("BEGIN");
-    try {
-      db.prepare(
-        "INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, ?, ?, ?) " +
-          "ON CONFLICT(name) DO UPDATE SET topic_key = excluded.topic_key, method = excluded.method, " +
-          "progress = excluded.progress, rules_json = excluded.rules_json"
-      ).run(topic.name, normalizeTopicKey(topic.topicKey), topic.method, topic.progress || "", JSON.stringify(topic.rules || {}));
-
-      const upsert = db.prepare(
-        "INSERT INTO courses (topic, title, sort_order, status, mastery, first_learned, last_review, review_count, material, send_material, tags, lesson_method, html_path, teaching_copy) " +
-          "VALUES (?, ?, ?, '⬜', '', '', '', 0, ?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT(topic, title) DO UPDATE SET sort_order = excluded.sort_order, material = excluded.material, " +
-          "send_material = excluded.send_material, tags = excluded.tags, lesson_method = excluded.lesson_method, html_path = excluded.html_path, teaching_copy = excluded.teaching_copy"
-      );
-      for (const c of courses) {
-        upsert.run(topic.topicKey, c.title, c.sortOrder ?? 0, c.material || "", c.sendMaterial || "", c.tags || "", c.lessonMethod || "", c.htmlPath || "", c.teachingCopy || "");
-      }
-      const topics = (db.prepare("SELECT COUNT(*) AS c FROM topics").get() as { c: number }).c;
-      const cnt = (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ?").get(topic.topicKey) as { c: number }).c;
-      db.exec("COMMIT");
-      return { topics, courses: cnt };
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
-  } finally {
-    db.close();
+): Promise<{ topics: number; courses: number }> {
+  // SPLIT：写服务端 parent_lib.topics.upsert + 批量 courses.upsert
+  await dbExec("parent_lib.topics.upsert", {
+    name: topic.name,
+    topic_key: normalizeTopicKey(topic.topicKey),
+    method: topic.method,
+    progress: topic.progress || "",
+    rules_json: JSON.stringify(topic.rules || {}),
+  });
+  for (const c of courses) {
+    await dbExec("parent_lib.courses.upsert", {
+      topic: topic.topicKey,
+      title: c.title,
+      sort_order: c.sortOrder ?? 0,
+      status: "⬜",
+      mastery: "",
+      first_learned: "",
+      last_review: "",
+      review_count: 0,
+      material: c.material ?? "",
+      send_material: c.sendMaterial ?? "",
+      tags: c.tags ?? "",
+      lesson_method: c.lessonMethod ?? "",
+      html_path: c.htmlPath ?? "",
+      teaching_copy: c.teachingCopy ?? "",
+    });
   }
+  const rows = await dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", {
+    topic: topic.topicKey,
+  }).catch(() => []);
+  return { topics: 1, courses: (rows ?? []).length };
 }
 
 /**
@@ -391,132 +374,126 @@ export function upsertParentTopic(
  *
  * @returns 拷贝的课程数 / 已存在的课程数
  */
-export function allocateTopicToChild(
+export async function allocateTopicToChild(
   parentId: string,
   childId: string,
   topicDir: string
-): { copied: number; existing: number } {
-  const childDir = path.join(getChildrenDir(), childId);
-  const parentCourses = listParentTopicCourses(parentId, topicDir);
-  const db = openParentDb(parentId);
-  let topicRow: { name: string; method: string; rules_json: string } | undefined;
-  try {
-    topicRow = db.prepare("SELECT name, method, rules_json FROM topics WHERE topic_key LIKE ?").get(`%${topicDir}%`) as
-      | { name: string; method: string; rules_json: string }
-      | undefined;
-  } finally {
-    db.close();
+): Promise<{ copied: number; existing: number }> {
+  // SPLIT：家长库读服务端 parent_lib，孩子 kb 写服务端 kb.*（保留孩子既有进度）。
+  const [topics, pCourses, cCourses] = await Promise.all([
+    dbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>("parent_lib.topics.list", {}).catch(() => []),
+    dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", { topic: topicDir }).catch(() => []),
+    dbQuery<Array<Record<string, unknown>>>("kb.courses.list", { child_id: childId, topic: topicDir }).catch(() => []),
+  ]);
+  const topicRow = (topics ?? []).find((t) => t.topic_key === topicDir) || (topics ?? []).find((t) => String(t.topic_key).includes(topicDir));
+  if (topicRow) {
+    await dbExec("kb.topics.upsert", {
+      child_id: childId,
+      name: topicRow.name,
+      topic_key: topicRow.topic_key,
+      method: "",
+      progress: "",
+      rules_json: topicRow.rules_json || "{}",
+    });
   }
-
-  const childDb = openKbDb(childDir);
-  try {
-    childDb.exec("BEGIN");
-    try {
-      if (topicRow) {
-        // 只记主题名/目录/规则，**不拷贝 method 全文**（孩子端经 parent_content 工具从家长库取，见 ISSUE-029）
-        childDb
-          .prepare(
-        "INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, '', '', ?) " +
-          "ON CONFLICT(name) DO UPDATE SET topic_key = excluded.topic_key, method = '', rules_json = excluded.rules_json"
-          )
-          .run(topicRow.name, topicDir, topicRow.rules_json);
-      }
-      const existsCheck = childDb.prepare("SELECT 1 FROM courses WHERE topic = ? AND title = ?");
-      const insertNew = childDb.prepare(
-        "INSERT INTO courses (topic, title, sort_order, status, mastery, material, send_material, tags, lesson_method, html_path) " +
-          "VALUES (?, ?, ?, '⬜', '', ?, ?, ?, ?, ?)"
-      );
-      const updateContent = childDb.prepare(
-        "UPDATE courses SET sort_order = ?, material = ?, send_material = ?, tags = ?, lesson_method = ?, html_path = ? WHERE topic = ? AND title = ?"
-      );
-      let copied = 0;
-      let existing = 0;
-      for (const c of parentCourses) {
-        if (existsCheck.get(topicDir, c.title)) {
-          // 已存在（孩子有进度）：只补齐内容字段（不含 teaching_copy——孩子库不存教学文案），进度/掌握度原样保留
-          updateContent.run(c.sortOrder, c.material, c.sendMaterial, c.tags, c.lessonMethod, c.htmlPath, topicDir, c.title);
-          existing++;
-        } else {
-          insertNew.run(topicDir, c.title, c.sortOrder, c.material, c.sendMaterial, c.tags, c.lessonMethod, c.htmlPath);
-          copied++;
-        }
-      }
-      childDb.exec("COMMIT");
-      return { copied, existing };
-    } catch (e) {
-      childDb.exec("ROLLBACK");
-      throw e;
+  const existingMap = new Map((cCourses ?? []).map((c) => [String(c.title), c]));
+  let copied = 0;
+  let existing = 0;
+  for (const c of pCourses ?? []) {
+    const cur = existingMap.get(String(c.title));
+    const base = {
+      child_id: childId,
+      topic: topicDir,
+      title: String(c.title),
+      sort_order: Number(c.sort_order) || 0,
+      material: String(c.material ?? ""),
+      send_material: String(c.send_material ?? ""),
+      tags: String(c.tags ?? ""),
+      lesson_method: String(c.lesson_method ?? ""),
+      html_path: String(c.html_path ?? ""),
+      teaching_copy: String(c.teaching_copy ?? ""),
+    };
+    if (cur) {
+      // 已存在（孩子有进度）：内容字段补齐，进度/掌握度保留
+      existing++;
+      await dbExec("kb.courses.upsert", {
+        ...base,
+        status: String(cur.status ?? "⬜"),
+        mastery: String(cur.mastery ?? ""),
+        first_learned: String(cur.first_learned ?? ""),
+        last_review: String(cur.last_review ?? ""),
+        review_count: Number(cur.review_count) || 0,
+      });
+    } else {
+      copied++;
+      await dbExec("kb.courses.upsert", {
+        ...base,
+        status: "⬜",
+        mastery: "",
+        first_learned: "",
+        last_review: "",
+        review_count: 0,
+      });
     }
-  } finally {
-    childDb.close();
   }
+  return { copied, existing };
 }
 
-/** 孩子已分配的主题清单（读取孩子 kb.sqlite 的 topics 表；无库返回空）。用于孩子管理页展示「已添加的主题」。 */
-export function listChildAllocatedTopics(
+/** 孩子已分配的主题清单（SPLIT：读服务端 kb.topics.list）。用于孩子管理页展示「已添加的主题」。 */
+export async function listChildAllocatedTopics(
   childId: string
-): Array<{ name: string; topicKey: string; daily: string; type: string }> {
-  const childDir = path.join(getChildrenDir(), childId);
-  if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) return [];
-  const db = openKbDb(childDir);
-  try {
-    const rows = db.prepare("SELECT name, topic_key, rules_json FROM topics ORDER BY topic_key").all() as unknown as Array<{
-      name: string;
-      topicKey: string;
-      rules_json: string;
-    }>;
-    return rows.map((r) => {
-      let daily = "";
-      let type = "";
-      try {
-        const parsed = JSON.parse(r.rules_json || "{}") as { daily?: string; type?: string };
-        daily = parsed.daily || "";
-        type = parsed.type || "";
-      } catch {
-        /* 损坏的 rules_json 视为空 */
-      }
-      return { name: r.name, topicKey: r.topic_key, daily, type };
-    });
-  } finally {
-    db.close();
-  }
+): Promise<Array<{ name: string; topicKey: string; daily: string; type: string }>> {
+  const rows = await dbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>(
+    "kb.topics.list",
+    { child_id: childId }
+  ).catch(() => []);
+  return (rows ?? []).map((r) => {
+    let daily = "";
+    let type = "";
+    try {
+      const parsed = JSON.parse(r.rules_json || "{}") as { daily?: string; type?: string };
+      daily = parsed.daily || "";
+      type = parsed.type || "";
+    } catch {
+      /* 损坏的 rules_json 视为空 */
+    }
+    return { name: r.name, topicKey: r.topic_key, daily, type };
+  });
 }
 
 /**
- * 设置孩子某主题的「每天学习量」（ISSUE-031）。
- * 写入孩子库 topics.rules_json 的 `daily` / `type` 字段；该字段随分配从父库带入快照，
- * 之后每孩子可独立修改，不影响父库默认值。幂等：主题不存在则忽略。
+ * 设置孩子某主题的「每天学习量」（ISSUE-031，SPLIT：写服务端 kb.topics.upsert）。
+ * 写入孩子 kb topics.rules_json 的 `daily` / `type` 字段；主题不存在则忽略。
  */
-export function setChildTopicDaily(
+export async function setChildTopicDaily(
   childId: string,
   topicDir: string,
   daily: string,
   type: string
-): boolean {
-  const childDir = path.join(getChildrenDir(), childId);
-  if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) return false;
-  const db = openKbDb(childDir);
+): Promise<boolean> {
+  const topics = await dbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>(
+    "kb.topics.list",
+    { child_id: childId }
+  ).catch(() => []);
+  const row = (topics ?? []).find((t) => t.topic_key === topicDir) || (topics ?? []).find((t) => String(t.topic_key).includes(topicDir));
+  if (!row) return false;
+  let parsed: { daily?: string; type?: string; [k: string]: unknown } = {};
   try {
-    const row = db.prepare("SELECT rules_json FROM topics WHERE topic_key LIKE ?").get(`%${topicDir}%`) as
-      | { rules_json: string }
-      | undefined;
-    if (!row) return false;
-    let parsed: { daily?: string; type?: string; [k: string]: unknown } = {};
-    try {
-      parsed = JSON.parse(row.rules_json || "{}");
-    } catch {
-      parsed = {};
-    }
-    parsed.daily = daily;
-    parsed.type = type;
-    db.prepare("UPDATE topics SET rules_json = ? WHERE topic_key LIKE ?").run(
-      JSON.stringify(parsed),
-      `%${topicDir}%`
-    );
-    return true;
-  } finally {
-    db.close();
+    parsed = JSON.parse(row.rules_json || "{}");
+  } catch {
+    parsed = {};
   }
+  parsed.daily = daily;
+  parsed.type = type;
+  await dbExec("kb.topics.upsert", {
+    child_id: childId,
+    name: row.name,
+    topic_key: row.topic_key,
+    method: "",
+    progress: "",
+    rules_json: JSON.stringify(parsed),
+  });
+  return true;
 }
 
 // ==================== 孩子端「从家长库取内容」（ISSUE-029 专用工具后端） ====================
@@ -529,46 +506,43 @@ export type ParentContentType = "method" | "teachingCopy" | "htmlPath";
  * htmlPath 也以家长库为准（返回家长库相对路径 `materials/<topic>/<file>.html`，可直接传给 display_content）。
  * **隔离约束**：先校验该孩子确实分配了这个主题（读孩子 topics 表），未分配一律拒绝，防越权读家长库。
  */
-export function getParentContentForChild(
+export async function getParentContentForChild(
   childId: string,
   topicDir: string,
   type: ParentContentType,
   courseTitle?: string
-): { found: boolean; content: string } {
+): Promise<{ found: boolean; content: string }> {
+  // SPLIT：分配校验读服务端孩子 kb，内容查服务端家长库；html 校验本地缓存文件
   // 1) 校验分配
-  const allocated = listChildAllocatedTopics(childId);
+  const allocated = await listChildAllocatedTopics(childId);
   if (!allocated.some((t) => t.topicKey === topicDir)) {
     return { found: false, content: "" };
   }
-  // 2) 从家长库查内容
-  const db = openParentDb(DEFAULT_PARENT_ID);
-  try {
-    if (type === "method") {
-      const row = db.prepare("SELECT method FROM topics WHERE topic_key LIKE ?").get(`%${topicDir}%`) as
-        | { method: string }
-        | undefined;
-      if (row?.method) return { found: true, content: row.method };
-      return { found: false, content: "" };
-    }
-    // teachingCopy / htmlPath 都按课程查
-    if (!courseTitle) return { found: false, content: "" };
-    const row = db.prepare("SELECT teaching_copy, html_path FROM courses WHERE topic = ? AND title = ?").get(topicDir, courseTitle) as
-      | { teaching_copy: string; html_path: string }
-      | undefined;
-    if (!row) return { found: false, content: "" };
-    if (type === "teachingCopy") {
-      if (row.teaching_copy) return { found: true, content: row.teaching_copy };
-      return { found: false, content: "" };
-    }
-    // htmlPath：返回家长库相对路径，且校验文件真实存在（避免返回失效指针）
-    if (row.html_path) {
-      const abs = resolveParentMaterial(DEFAULT_PARENT_ID, row.html_path);
-      if (fs.existsSync(abs)) return { found: true, content: row.html_path };
-    }
+  // 2) 从服务端家长库查内容
+  if (type === "method") {
+    const topics = await dbQuery<Array<{ topic_key: string; method: string }>>("parent_lib.topics.list", {}).catch(() => []);
+    const row = (topics ?? []).find((t) => t.topic_key === topicDir) || (topics ?? []).find((t) => String(t.topic_key).includes(topicDir));
+    if (row?.method) return { found: true, content: row.method };
     return { found: false, content: "" };
-  } finally {
-    db.close();
   }
+  // teachingCopy / htmlPath 都按课程查
+  if (!courseTitle) return { found: false, content: "" };
+  const courses = await dbQuery<Array<{ title: string; teaching_copy: string; html_path: string }>>(
+    "parent_lib.courses.list",
+    { topic: topicDir }
+  ).catch(() => []);
+  const row = (courses ?? []).find((c) => c.title === courseTitle);
+  if (!row) return { found: false, content: "" };
+  if (type === "teachingCopy") {
+    if (row.teaching_copy) return { found: true, content: row.teaching_copy };
+    return { found: false, content: "" };
+  }
+  // htmlPath：返回家长库相对路径，且校验文件真实存在（本地缓存/已拉取）
+  if (row.html_path) {
+    const abs = resolveParentMaterial(DEFAULT_PARENT_ID, row.html_path);
+    if (fs.existsSync(abs)) return { found: true, content: row.html_path };
+  }
+  return { found: false, content: "" };
 }
 
 // ==================== 课程管理（家长端增删改 + 资料上传） ====================
@@ -579,7 +553,7 @@ export function getParentContentForChild(
  * 覆盖语义：**只覆盖传入的非空内容字段**（NULLIF-COALESCE），未传的字段保留旧值——
  * 避免「自动关联 html 资料」或「只改标题」时把其它字段清空。
  */
-export function upsertParentCourse(
+export async function upsertParentCourse(
   parentId: string,
   topicDir: string,
   c: {
@@ -592,70 +566,55 @@ export function upsertParentCourse(
     htmlPath?: string;
     teachingCopy?: string;
   }
-): boolean {
-  const db = openParentDb(parentId);
+): Promise<boolean> {
+  // SPLIT：写服务端 parent_lib.courses.upsert。服务端为全字段覆盖，先读旧值合并（保持本地
+  // 旧语义：COALESCE——未提供的字段保留原值），再整体 upsert。
+  let existing: Record<string, unknown> | undefined;
   try {
-    db.prepare(
-      "INSERT INTO courses (topic, title, sort_order, status, mastery, first_learned, last_review, review_count, material, send_material, tags, lesson_method, html_path, teaching_copy) " +
-        "VALUES (?, ?, ?, '⬜', '', '', '', 0, ?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT(topic, title) DO UPDATE SET " +
-        "sort_order = COALESCE(excluded.sort_order, courses.sort_order), " +
-        "material = COALESCE(NULLIF(excluded.material, ''), courses.material), " +
-        "send_material = COALESCE(NULLIF(excluded.send_material, ''), courses.send_material), " +
-        "tags = COALESCE(NULLIF(excluded.tags, ''), courses.tags), " +
-        "lesson_method = COALESCE(NULLIF(excluded.lesson_method, ''), courses.lesson_method), " +
-        "html_path = COALESCE(NULLIF(excluded.html_path, ''), courses.html_path), " +
-        "teaching_copy = COALESCE(NULLIF(excluded.teaching_copy, ''), courses.teaching_copy)"
-    ).run(
-      topicDir,
-      c.title,
-      c.sortOrder ?? 0,
-      c.material || "",
-      c.sendMaterial || "",
-      c.tags || "",
-      c.lessonMethod || "",
-      c.htmlPath || "",
-      c.teachingCopy || ""
-    );
-    return true;
-  } finally {
-    db.close();
+    const rows = await dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", {
+      topic: topicDir,
+    });
+    existing = (rows ?? []).find((r) => r.title === c.title);
+  } catch {
+    /* 读旧值失败：按空合并（离线时该操作本就会失败） */
   }
+  const merged = {
+    topic: topicDir,
+    title: c.title,
+    sort_order: c.sortOrder ?? existing?.sort_order ?? 0,
+    status: String(existing?.status ?? "⬜"),
+    mastery: String(existing?.mastery ?? ""),
+    first_learned: String(existing?.first_learned ?? ""),
+    last_review: String(existing?.last_review ?? ""),
+    review_count: Number(existing?.review_count) || 0,
+    material: c.material ?? String(existing?.material ?? ""),
+    send_material: c.sendMaterial ?? String(existing?.send_material ?? ""),
+    tags: c.tags ?? String(existing?.tags ?? ""),
+    lesson_method: c.lessonMethod ?? String(existing?.lesson_method ?? ""),
+    html_path: c.htmlPath ?? String(existing?.html_path ?? ""),
+    teaching_copy: c.teachingCopy ?? String(existing?.teaching_copy ?? ""),
+  };
+  await dbExec("parent_lib.courses.upsert", merged);
+  return true;
 }
 
-/** 删除家长库课程（同时不删共享 html 文件，避免其它主题/孩子引用失效）。 */
-export function deleteParentCourse(parentId: string, topicDir: string, title: string): boolean {
-  const db = openParentDb(parentId);
-  try {
-    const r = db.prepare("DELETE FROM courses WHERE topic = ? AND title = ?").run(topicDir, title);
-    return r.changes > 0;
-  } finally {
-    db.close();
-  }
+export async function deleteParentCourse(parentId: string, topicDir: string, title: string): Promise<boolean> {
+  const r = await dbExec<{ ok: boolean }>("parent_lib.courses.delete", { topic: topicDir, title });
+  return !!r?.ok;
 }
 
-/**
- * 调整家长库课程顺序（课程管理页「上移/下移」）：与相邻课程交换 sort_order。
- * direction: -1 上移 / 1 下移；越界或不存在返回 false。
- */
-export function moveParentCourse(parentId: string, topicDir: string, title: string, direction: -1 | 1): boolean {
-  const db = openParentDb(parentId);
-  try {
-    const rows = db
-      .prepare("SELECT title, sort_order FROM courses WHERE topic = ? ORDER BY sort_order, title")
-      .all(topicDir) as unknown as Array<{ title: string; sort_order: number }>;
-    const idx = rows.findIndex((r) => r.title === title);
-    const j = idx + direction;
-    if (idx < 0 || j < 0 || j >= rows.length) return false;
-    const a = rows[idx];
-    const b = rows[j];
-    const tmp = a.sort_order;
-    db.prepare("UPDATE courses SET sort_order = ? WHERE topic = ? AND title = ?").run(b.sort_order, topicDir, a.title);
-    db.prepare("UPDATE courses SET sort_order = ? WHERE topic = ? AND title = ?").run(tmp, topicDir, b.title);
-    return true;
-  } finally {
-    db.close();
-  }
+export async function moveParentCourse(
+  parentId: string,
+  topicDir: string,
+  title: string,
+  direction: -1 | 1
+): Promise<boolean> {
+  const r = await dbExec<{ ok: boolean }>("parent_lib.courses.move", {
+    topic: topicDir,
+    title,
+    direction,
+  });
+  return !!r?.ok;
 }
 
 /** 读取父库共享资料文件（课程详情「学习材料 html 渲染」用）：按相对父库根路径读文件，防目录穿越。

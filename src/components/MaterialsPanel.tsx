@@ -27,8 +27,12 @@ interface Props {
  * 保证 AI 生成的内容被隔离在安全边界内。
  */
 function HtmlFrame({ html, title }: { html: string; title?: string }) {
+  // key 强制 iframe 重建：React/Chromium 在 srcDoc 字符串变化时更新属性但不保证重载（已知
+  // Electron 沙箱 iframe 偶发"内容不渲染/白屏"，必现于 display_content 去重后再展示同一份资料
+  // 的场景）。用 html 长度做轻量 key，内容真有变化才重建（避免每次 set render 都销毁重建）。
   return (
     <iframe
+      key={html.length}
       className="html-frame"
       sandbox="allow-scripts allow-modals allow-forms"
       srcDoc={html}
@@ -47,15 +51,31 @@ export default function MaterialsPanel({ materials, selectedId, onOpen, onBack }
 
   // 详情视图
   if (selected) {
+    // 兜底：内容为空时显示提示，避免空 srcDoc iframe 白屏（display_content 文件读取竞态、
+    // IPC 截断等边缘场景曾触发）；同时清洗后端偶发的 \r 与首尾空白。
+    const cleanHtml = (selected.content ?? "").replace(/\r/g, "").trim();
+    if (!cleanHtml) {
+      return (
+        <div className="content-panel">
+          <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+          {selected.title && <h2 className="material-title">{selected.title}</h2>}
+          <div className="placeholder">
+            📄
+            <br />
+            资料内容为空，可让 AI 老师重新展示
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="content-panel">
         <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
         {selected.title && <h2 className="material-title">{selected.title}</h2>}
         {selected.format === "html" ? (
-          <HtmlFrame html={selected.content} title={selected.title} />
+          <HtmlFrame html={cleanHtml} title={selected.title} />
         ) : (
           <div className="markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{selected.content}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanHtml}</ReactMarkdown>
           </div>
         )}
       </div>

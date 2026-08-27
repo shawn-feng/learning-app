@@ -246,6 +246,29 @@ const queryHandlers: Record<string, QueryHandler> = {
       db.close();
     }
   },
+  "parent_lib.progress.list": (ctx) => {
+    // 家长库主题进度（topic_progress 视图：learned/total/next/updated），供家长页列表聚合
+    const db = openParentLib(ctx.dataDir, ctx.parentId);
+    try {
+      return db.prepare("SELECT * FROM topic_progress ORDER BY topic").all();
+    } finally {
+      db.close();
+    }
+  },
+  "parent_lib.tags.list": (ctx, args) => {
+    // 家长库标签定义表（课程标签下拉源）
+    const db = openParentLib(ctx.dataDir, ctx.parentId);
+    try {
+      const tag = str(args.tag, "");
+      const sql =
+        "SELECT tag, dimension, criteria FROM tags " +
+        (tag ? "WHERE tag = ? " : "") +
+        "ORDER BY tag";
+      return tag ? db.prepare(sql).all(tag) : db.prepare(sql).all();
+    } finally {
+      db.close();
+    }
+  },
 };
 
 // ==================== exec handlers ====================
@@ -550,6 +573,54 @@ const execHandlers: Record<string, ExecHandler> = {
         str(args.html_path),
         str(args.teaching_copy)
       );
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  },
+  "parent_lib.courses.delete": (ctx, args) => {
+    // 对齐本地 deleteParentCourse：按 (topic, title) 删除，返回是否删到
+    const db = openParentLib(ctx.dataDir, ctx.parentId);
+    try {
+      const r = db
+        .prepare("DELETE FROM courses WHERE topic = ? AND title = ?")
+        .run(str(args.topic), str(args.title));
+      return { ok: r.changes > 0 };
+    } finally {
+      db.close();
+    }
+  },
+  "parent_lib.courses.move": (ctx, args) => {
+    // 对齐本地 moveParentCourse：与相邻课程交换 sort_order（direction=-1 上移 / 1 下移）
+    const db = openParentLib(ctx.dataDir, ctx.parentId);
+    try {
+      const topic = str(args.topic);
+      const title = str(args.title);
+      const direction = args.direction === -1 ? -1 : 1;
+      const rows = db
+        .prepare("SELECT title, sort_order FROM courses WHERE topic = ? ORDER BY sort_order, title")
+        .all(topic) as Array<{ title: string; sort_order: number }>;
+      const idx = rows.findIndex((r) => r.title === title);
+      const j = idx + direction;
+      if (idx < 0 || j < 0 || j >= rows.length) return { ok: false };
+      const a = rows[idx];
+      const b = rows[j];
+      const tmp = a.sort_order;
+      db.prepare("UPDATE courses SET sort_order = ? WHERE topic = ? AND title = ?").run(b.sort_order, topic, a.title);
+      db.prepare("UPDATE courses SET sort_order = ? WHERE topic = ? AND title = ?").run(tmp, topic, b.title);
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  },
+  "parent_lib.tags.upsert": (ctx, args) => {
+    // 家长新增/更新标签定义（dimension/criteria）
+    const db = openParentLib(ctx.dataDir, ctx.parentId);
+    try {
+      db.prepare(
+        `INSERT INTO tags (tag, dimension, criteria) VALUES (?, ?, ?)
+         ON CONFLICT(tag) DO UPDATE SET dimension = excluded.dimension, criteria = excluded.criteria`
+      ).run(str(args.tag), str(args.dimension), str(args.criteria));
       return { ok: true };
     } finally {
       db.close();

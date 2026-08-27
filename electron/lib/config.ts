@@ -112,16 +112,22 @@ export interface ServerConnection {
   url: string;
 }
 
-/** 读取已配置的服务端地址；未配置返回空串。 */
+/** 服务端地址默认值（SPLIT 默认单机部署：本机服务端 8788；未配置时使用） */
+export const DEFAULT_SERVER_URL = "http://127.0.0.1:8788";
+
+/** 读取已配置的服务端地址；未配置时默认返回本机服务端地址。 */
 export function getServerUrl(): string {
   const p = getServerConnectionPath();
-  if (!fs.existsSync(p)) return "";
-  try {
-    const cfg = JSON.parse(fs.readFileSync(p, "utf-8")) as ServerConnection;
-    return (cfg.url ?? "").trim().replace(/\/+$/, "");
-  } catch {
-    return "";
+  if (fs.existsSync(p)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(p, "utf-8")) as ServerConnection;
+      const url = (cfg.url ?? "").trim().replace(/\/+$/, "");
+      if (url) return url;
+    } catch {
+      /* 解析失败走默认 */
+    }
   }
+  return DEFAULT_SERVER_URL;
 }
 
 /** 保存服务端地址（空串 = 清除配置）。 */

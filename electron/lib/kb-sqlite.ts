@@ -762,7 +762,7 @@ export interface CourseDailySummary {
  *  - 取不到（非 篇/章/课 体系）则退化为去装饰后的归一化串。
  * 例：课程「论语学而篇第三章」↔ daily「论语·巧言令色（学而篇第三章）」→ 同键「学而篇第三章」。
  */
-function chapterKey(title: string, topicName: string): string {
+export function chapterKey(title: string, topicName: string): string {
   const norm = title.replace(topicName, "").replace(/·/g, "");
   const parens = [...norm.matchAll(/[（(]([^）)]*)[）)]/g)].map((m) => m[1]);
   const main = norm.replace(/[（(][^）)]*[）)]/g, "");

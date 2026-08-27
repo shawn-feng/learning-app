@@ -14,7 +14,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
-import { queryDaily, queryTags, queryTopicsMeta, queryTopicSummary, tagsToMarkdown, type DailyEntry } from "./kb-sqlite";
+import { tagsToMarkdown, type DailyEntry, type TagDef } from "./kb-sqlite";
+import { dbQuery } from "./client-data";
 import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt";
 import { logRound } from "./token-stats";
 
@@ -210,18 +211,22 @@ export interface DailySummaryResult {
  *
  * 只注入主题级聚合行（queryTopicSummary），绝不注入逐课清单——论语 514 课全量塞进上下文是灾难。
  */
-export function buildProvidedContext(childDir: string, existingList: string): string {
-  const topics = queryTopicsMeta(childDir);
-  const summaries = queryTopicSummary(childDir);
-  const topicLines = summaries.map((p) => {
-    const meta = topics.find((t) => t.topicKey === p.topic);
+export async function buildProvidedContext(childDir: string, existingList: string): Promise<string> {
+  const childId = path.basename(childDir);
+  const [topics, summaries, tags] = await Promise.all([
+    dbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>("kb.topics.list", { child_id: childId }).catch(() => []),
+    dbQuery<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>("kb.progress.list", { child_id: childId }).catch(() => []),
+    dbQuery<TagDef[]>("kb.tags.list", { child_id: childId }).catch(() => []),
+  ]);
+  const topicLines = (summaries ?? []).map((p) => {
+    const meta = (topics ?? []).find((t) => t.topic_key === p.topic);
     const name = meta?.name ?? p.topic;
     let line = `- ${name}（${p.topic}）：已学 ${p.learned}/${p.total}`;
     if (p.next.trim()) line += `，下一课「${p.next.trim()}」`;
     if (p.updated) line += `，最近更新 ${p.updated}`;
     return line;
   });
-  const tagsText = tagsToMarkdown(queryTags(childDir));
+  const tagsText = tagsToMarkdown(tags ?? []);
   const parts = [
     "## 已提供的上下文（直接使用，无需调用工具查询）",
     "",
@@ -261,11 +266,15 @@ export async function summarizeDailyConversation(
   }
   // 同一天可能被多次汇总（多时间点 / 会话前 / AI 工具）：
   // 先把当天已有的 daily 条目查出来，让 AI 跳过已写入的内容，避免重复入库（主键幂等仅兜底）。
-  const existing = queryDaily(childDir, { date });
-  const existingList = formatDailyExistingList(existing);
+  const childId = path.basename(childDir);
+  const existing = await dbQuery<DailyEntry[]>("kb.daily_entries.queryByDate", {
+    child_id: childId,
+    date,
+  }).catch(() => []);
+  const existingList = formatDailyExistingList(existing ?? []);
   // 首轮注入全部上下文（主题进度 + 标签定义表 + 已有条目），配合 RECORDING_PROMPT 的「一次性完成」
   // 要求，让 LLM 首轮就返回全部 kb_insert/kb_update 调用，不再为「了解信息」分轮调用 kb_query。
-  const provided = buildProvidedContext(childDir, existingList);
+  const provided = await buildProvidedContext(childDir, existingList);
   const session = await createEphemeralSession(childDir);
   try {
     const beforeCount = (session as any).messages?.length ?? 0;

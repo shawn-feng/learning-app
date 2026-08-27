@@ -1,5 +1,5 @@
 import fs from "fs";
-import { getLicensePath } from "./config";
+import { getLicensePath, getServerUrl } from "./config";
 import { serverFetch, ServerError } from "./server-client";
 
 export interface License {
@@ -140,6 +140,13 @@ export async function checkAuth(): Promise<{ authenticated: boolean; license: Li
     (license.expires_at && new Date(license.expires_at).getTime() < Date.now());
   if (expired) {
     clearCachedLicense();
+    return { authenticated: false, license: null };
+  }
+
+  // SPLIT：未配置服务端地址 → 一律视为未登录（回到带配置区的登录页）。
+  // 否则用户被旧凭证直接带进主页，而主页/家长中心又依赖服务端验证，形成死循环。
+  // 本地凭证不删除，配置好服务端地址后重新登录即恢复。
+  if (!getServerUrl()) {
     return { authenticated: false, license: null };
   }
 

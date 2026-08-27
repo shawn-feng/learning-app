@@ -7,9 +7,10 @@ import {
 import path from "path";
 import fs from "fs";
 import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
+import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool } from "./custom-tools";
-import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
+import { getLearningSummary, progressSummaryToMarkdown, fetchProgressRemote } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
 import {
@@ -383,6 +384,9 @@ async function createChildSession(
   // 先远程预取该孩子的用户版本写入本地缓存（buildChildPrompt 同步读缓存即取到服务端最新版）；
   // 服务端不可达时回退本地缓存/代码默认。
   await fetchAgentPromptRemote("child", childId).catch(() => null);
+  // SPLIT 收尾：学习进度概览同样「会话前远程预取 → 本地缓存 → getLearningSummary 同步读缓存」
+  // （服务端不可达时降级为旧缓存/空，不阻断会话创建）。
+  await fetchProgressRemote(childId).catch(() => null);
 
   const modelRuntime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -847,13 +851,29 @@ export function getSessionMaterials(session: AgentSession, cwd?: string): Materi
       seen.add(filePath);
       // 历史里可能只有 path（新版工具）或同时带 content（旧版）；
       // 若没有 content，则从文件重新读取，保证恢复出的资料可正常展示。
+      // ⚠️ 路径语义必须与 display_content 工具一致（见 custom-tools.ts）：
+      //    materials/<topic>/<file> → 父库共享目录 data/parents/<pid>/materials/
+      //    （2026-08-27 修复：此前一律用孩子 cwd 解析，父库资料路径必然读不到 →
+      //     恢复出的条目 content 为空 → 退出孩子模式再进入时资料白屏）
+      //    outputs/<file> → 孩子本地 cwd/outputs/
       let content = typeof args.content === "string" ? args.content : "";
       if (!content && cwd) {
         try {
-          const resolved = path.resolve(cwd, filePath);
-          if (resolved === cwd || resolved.startsWith(cwd + path.sep)) {
-            content = fs.readFileSync(resolved, "utf-8");
+          let resolved: string;
+          const matM = /^materials\/([^/]+)\/(.+\.(?:html|htm))$/i.exec(filePath);
+          if (matM) {
+            const parentMatRoot = getParentMaterialsDir();
+            resolved = path.join(parentMatRoot, matM[1], matM[2]);
+            if (resolved !== parentMatRoot && !resolved.startsWith(parentMatRoot + path.sep)) {
+              throw new Error("资料路径超出父库共享目录");
+            }
+          } else {
+            resolved = path.resolve(cwd, filePath);
+            if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
+              throw new Error("资料路径超出学习目录");
+            }
           }
+          content = fs.readFileSync(resolved, "utf-8");
         } catch {
           content = "";
         }

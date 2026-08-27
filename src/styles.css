@@ -523,6 +523,80 @@ input, textarea {
   font-weight: 600;
 }
 
+/* SPLIT：主页右上角服务端设置按钮（深色渐变背景上白色半透明） */
+.child-select .home-server-btn {
+  position: absolute;
+  top: 44px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.16);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background 0.2s;
+}
+.child-select .home-server-btn:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+.child-select.home-page {
+  position: relative;
+}
+
+/* ===== 登录页服务端地址配置区（ParentLogin） ===== */
+.login-card .server-config {
+  background: #f8f9ff;
+  border: 1px solid #e3e6ff;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+.login-card .server-config label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4a5568;
+  margin-bottom: 8px;
+}
+.login-card .server-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.login-card .server-row input {
+  flex: 1;
+  margin-bottom: 0;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+.login-card .server-row button {
+  width: auto;
+  flex-shrink: 0;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  background: #667eea;
+  color: white;
+  cursor: pointer;
+}
+.login-card .server-row button:disabled {
+  background: #ddd;
+  color: #999;
+  cursor: default;
+}
+.login-card .server-config .hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #cc7b00;
+}
+
 /* ===== Learn page ===== */
 .learn-page {
   height: 100%;

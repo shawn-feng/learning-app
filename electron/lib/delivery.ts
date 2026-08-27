@@ -12,7 +12,8 @@ import fs from "fs";
 import path from "path";
 import { getDataDir, getChildDir } from "./config";
 import { apiCall } from "./sync-manager";
-import { openParentDb, upsertParentCourse, allocateTopicToChild, listParentTopicCourses, DEFAULT_PARENT_ID } from "./parent-library";
+import { allocateTopicToChild, DEFAULT_PARENT_ID } from "./parent-library";
+import { dbExec, dbQuery } from "./client-data";
 import { openKbDb } from "./kb-sqlite";
 
 // ================= 分配包（数据，不含文件） =================
@@ -34,34 +35,34 @@ export interface AllocPackage {
   createdAt: string;
 }
 
-/** 家长端：从本地家长库生成分配包（只读，不碰孩子库）。 */
-export function buildAllocPackage(topicDir: string): AllocPackage {
-  const db = openParentDb(DEFAULT_PARENT_ID);
-  try {
-    const topic = db
-      .prepare("SELECT name, method, rules_json FROM topics WHERE topic_key LIKE ?")
-      .get(`%${topicDir}%`) as { name: string; method: string; rules_json: string } | undefined;
-    if (!topic) throw new Error(`家长库中未找到主题 ${topicDir}`);
-    const courses = listParentTopicCourses(DEFAULT_PARENT_ID, topicDir).map((c) => ({
-      title: c.title,
-      sortOrder: c.sortOrder,
-      material: c.material,
-      sendMaterial: Number(c.sendMaterial) || 0,
-      tags: c.tags,
-      lessonMethod: c.lessonMethod,
-      htmlPath: c.htmlPath,
-    }));
-    return {
-      topicDir,
-      topicName: topic.name,
-      rulesJson: topic.rules_json || "",
-      method: topic.method || "",
-      courses,
-      createdAt: new Date().toISOString(),
-    };
-  } finally {
-    db.close();
-  }
+/** 家长端：从服务端家长库生成分配包（只读，不碰孩子库）。 */
+export async function buildAllocPackage(topicDir: string): Promise<AllocPackage> {
+  const [topics, courses] = await Promise.all([
+    dbQuery<Array<{ name: string; method: string; rules_json: string; topic_key: string }>>(
+      "parent_lib.topics.list",
+      {}
+    ).catch(() => []),
+    dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", { topic: topicDir }).catch(() => []),
+  ]);
+  const topic = (topics ?? []).find((t) => t.topic_key === topicDir) || (topics ?? []).find((t) => String(t.topic_key).includes(topicDir));
+  if (!topic) throw new Error(`家长库中未找到主题 ${topicDir}`);
+  const list = (courses ?? []).map((c) => ({
+    title: String(c.title),
+    sortOrder: Number(c.sort_order) || 0,
+    material: String(c.material ?? ""),
+    sendMaterial: Number(c.send_material) || 0,
+    tags: String(c.tags ?? ""),
+    lessonMethod: String(c.lesson_method ?? ""),
+    htmlPath: String(c.html_path ?? ""),
+  }));
+  return {
+    topicDir,
+    topicName: topic.name,
+    rulesJson: topic.rules_json || "",
+    method: topic.method || "",
+    courses: list,
+    createdAt: new Date().toISOString(),
+  };
 }
 
 /** 家长端：上传分配包到云端暂存（等待孩子端取走）。 */
@@ -73,34 +74,36 @@ export async function uploadDelivery(childId: string, pkg: AllocPackage): Promis
   });
 }
 
-/** 孩子端：应用分配包——① 写入本地家长库（topics.method + courses，供 parent_content 读取）；
- * ② 在自己最新的 kb.sqlite 上合并（allocateTopicToChild 为 DB 级合并：已存在课程只补内容，status/mastery 保留）。 */
-export function applyAllocPackage(childId: string, pkg: AllocPackage): { applied: boolean } {
-  // ① 家长库落库（本地真源，孩子端从此自包含：method 可读；html 文件需 zip 迁移）
-  const parentDb = openParentDb(DEFAULT_PARENT_ID);
-  try {
-    parentDb
-      .prepare(
-        "INSERT INTO topics (name, topic_key, method, rules_json) VALUES (?, ?, ?, ?) " +
-          "ON CONFLICT(name) DO UPDATE SET topic_key = excluded.topic_key, method = excluded.method, rules_json = excluded.rules_json"
-      )
-      .run(pkg.topicName, pkg.topicDir, pkg.method, pkg.rulesJson);
-  } finally {
-    parentDb.close();
-  }
+/** 孩子端：应用分配包——写入服务端家长库（topics.method + courses，供 parent_content 读取）+ 孩子 kb 合并。 */
+export async function applyAllocPackage(childId: string, pkg: AllocPackage): Promise<{ applied: boolean }> {
+  // ① 家长库落库（服务端真源；孩子端从此自包含：method 可读；html 文件需 zip 迁移）
+  await dbExec("parent_lib.topics.upsert", {
+    name: pkg.topicName,
+    topic_key: pkg.topicDir,
+    method: pkg.method,
+    progress: "",
+    rules_json: pkg.rulesJson,
+  });
   for (const c of pkg.courses) {
-    upsertParentCourse(DEFAULT_PARENT_ID, pkg.topicDir, {
+    await dbExec("parent_lib.courses.upsert", {
+      topic: pkg.topicDir,
       title: c.title,
-      sortOrder: c.sortOrder,
+      sort_order: c.sortOrder,
+      status: "⬜",
+      mastery: "",
+      first_learned: "",
+      last_review: "",
+      review_count: 0,
       material: c.material,
-      sendMaterial: c.sendMaterial,
+      send_material: String(c.sendMaterial),
       tags: c.tags,
-      lessonMethod: c.lessonMethod,
-      htmlPath: c.htmlPath,
+      lesson_method: c.lessonMethod,
+      html_path: c.htmlPath,
+      teaching_copy: "",
     });
   }
   // ② 孩子库合并（进度安全）
-  allocateTopicToChild(DEFAULT_PARENT_ID, childId, pkg.topicDir);
+  await allocateTopicToChild(DEFAULT_PARENT_ID, childId, pkg.topicDir);
   return { applied: true };
 }
 
@@ -212,7 +215,7 @@ export async function handleCloudInbox(
     const deliveries = await pollDeliveries(childId);
     for (const d of deliveries) {
       try {
-        applyAllocPackage(childId, d.payload);
+        await applyAllocPackage(childId, d.payload);
         applied++;
       } catch (e) {
         console.error(`apply delivery ${d.id} failed:`, e);

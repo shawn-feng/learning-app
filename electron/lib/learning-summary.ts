@@ -1,24 +1,19 @@
-import { getChildDir } from "./config";
-import {
-  queryCourseDailySummaries,
-  queryTopicProgress,
-  queryTopicsMeta,
-  type CourseDailySummary,
-  type TopicProgress,
-} from "./kb-sqlite";
+import fs from "fs";
+import path from "path";
+import { getChildDir, getDataDir } from "./config";
+import { dbQuery } from "./client-data";
+import { chapterKey, type CourseDailySummary } from "./kb-sqlite";
 
 /**
- * 学习进度汇总（ISSUE-023 P2：数据源改为 SQLite 唯一真源）。
+ * 学习进度汇总（SPLIT 收尾：数据唯一真源在服务端 kb 库）。
  *
- * 数据来源（childDir 下 kb.sqlite，v3）：
- *   - topics 表（来自 learning/topics.md frontmatter）：主题清单
- *   - topic_progress **视图**（由 courses 表实时计算）：各主题 learned/total/next/updated
- *   - rules 表（来自 learning/rules.md frontmatter）：每日目标/必学选学
+ * 数据来源（服务端 RPC）：
+ *   - kb.topics.list：主题清单（name/topic_key/method/progress/rules_json）
+ *   - kb.progress.list：topic_progress 视图（各主题 learned/total/next/updated）
  *
- * 汇总原则：
- *   - 以 topics 表为「主题清单」；
- *   - 每个主题的 learned/total 以 topic_progress 视图为准（courses 状态自动统计，无需手工维护）；
- *   - daily/type 来自 rules 表。
+ * 会话构建是**同步链**（systemPromptOverride 不支持 Promise），故进度概览采用
+ * 「会话创建前远程预取（fetchProgressRemote）→ 本地缓存 → getLearningSummary 同步读缓存」，
+ * 与 AGENTS 预取（fetchAgentPromptRemote）同一模式；缓存缺失返回空（降级为无进度上下文）。
  */
 
 export interface TopicSummary {
@@ -49,25 +44,76 @@ function percent(learned: number, total: number): number {
   return Math.round((learned / total) * 1000) / 10;
 }
 
+interface TopicsRow {
+  name: string;
+  topic_key: string;
+  method: string;
+  progress: string;
+  rules_json: string;
+}
+interface ProgressRow {
+  topic: string;
+  total: number;
+  learned: number;
+  next: string;
+  updated: string;
+}
+
+function progressCachePath(childId: string): string {
+  return path.join(getDataDir(), "cache", `progress-${childId}.json`);
+}
+
+/** 会话创建前远程预取学习进度到本地缓存（同步读链路的真源）。 */
+export async function fetchProgressRemote(childId: string): Promise<void> {
+  try {
+    const [topics, progress] = await Promise.all([
+      dbQuery<TopicsRow[]>("kb.topics.list", { child_id: childId }),
+      dbQuery<ProgressRow[]>("kb.progress.list", { child_id: childId }),
+    ]);
+    fs.mkdirSync(path.dirname(progressCachePath(childId)), { recursive: true });
+    fs.writeFileSync(
+      progressCachePath(childId),
+      JSON.stringify({ topics: topics ?? [], progress: progress ?? [], ts: Date.now() }),
+      "utf-8"
+    );
+  } catch {
+    /* 离线/未登录：保留旧缓存或留空，getLearningSummary 降级 */
+  }
+}
+
 export function getLearningSummary(childId: string): LearningSummary {
-  const childDir = getChildDir(childId);
-  const topics = queryTopicsMeta(childDir);
-  const progress = queryTopicProgress(childDir);
+  let topics: TopicsRow[] = [];
+  let progress: ProgressRow[] = [];
+  try {
+    const cached = JSON.parse(fs.readFileSync(progressCachePath(childId), "utf-8")) as {
+      topics: TopicsRow[];
+      progress: ProgressRow[];
+    };
+    topics = cached.topics ?? [];
+    progress = cached.progress ?? [];
+  } catch {
+    /* 无缓存：返回空 */
+  }
 
   const list: TopicSummary[] = topics.map((t) => {
     // 关联键：topics.topic_key 即拼音目录名（如 "lunyu"），直接等于 courses.topic
-    const dirName = t.topicKey;
+    const dirName = t.topic_key;
     const p = progress.find((x) => x.topic === dirName);
-    const learned = p?.learned ?? 0;
-    const total = p?.total ?? 0;
+    const learned = Number(p?.learned) || 0;
+    const total = Number(p?.total) || 0;
     const next = p?.next ?? "";
     const updated = p?.updated ?? "";
-    const rules = t.rules || {};
+    let rules: Record<string, string> = {};
+    try {
+      rules = JSON.parse(t.rules_json || "{}");
+    } catch {
+      rules = {};
+    }
     const dailyRaw = rules.daily;
-    const daily = dailyRaw ? parseInt(dailyRaw, 10) : null;
+    const daily = dailyRaw ? parseInt(String(dailyRaw), 10) : null;
     return {
       name: t.name,
-      topicKey: t.topicKey,
+      topicKey: t.topic_key,
       learned,
       total,
       percent: percent(learned, total),
@@ -95,40 +141,31 @@ export function getLearningSummary(childId: string): LearningSummary {
 }
 
 /**
- * 单个课程的教学资料（即「课程学习的总结内容」）。
- *
- * 资料文件命名与课程名**完全同名**（见各主题 method.md）：
- *   `learning/<topic>/materials/<课程名>.md`（源文件，含 frontmatter 知识要点/生活引导 + 教学正文）
- *   `learning/<topic>/materials/<课程名>.html`（给孩子看的预生成友好版，可能内嵌相对路径音频，iframe 中音频不保证可播放）
- * 优先返回 `.md`（自包含、可全文渲染），缺省回退 `.html`。
- *
- * @param topic 主题目录名（如 "lunyu"，即 topics.topic_key）
- * @param title 课程名（与 materials 下文件名完全同名）
+ * 单课「学习情况的总结」：来自服务端 daily_entries（block='学习'，数据库唯一真源）。
+ * 按标题章节课时键（chapterKey）关联到对应课程，返回该课全部学习记录，按日期升序。
  */
-/**
- * 单课「学习情况的总结」：来自 daily_entries（block='学习'，数据库唯一真源），
- * 不是从 materials 文件读取。按标题章节课时键关联到对应 courses 行，
- * 返回该课的全部学习记录（含知识点 / 掌握度 / 错题 / 亮点等），按日期升序。
- */
-export function getCourseDailySummary(
+export async function getCourseDailySummary(
   childId: string,
   topicName: string,
   courseTitle: string
-): CourseDailySummary[] {
-  const childDir = getChildDir(childId);
-  return queryCourseDailySummaries(childDir, topicName, courseTitle);
+): Promise<CourseDailySummary[]> {
+  const rows = await dbQuery<Array<{ date: string; title: string; raw: string; tags: string }>>(
+    "kb.daily_entries.query",
+    { child_id: childId, block: "学习" }
+  );
+  const courseKey = chapterKey(courseTitle, topicName);
+  return (rows ?? [])
+    .filter((r) => chapterKey(r.title, topicName) === courseKey)
+    .map((r) => ({ date: r.date, title: r.title, raw: r.raw, tags: r.tags }));
 }
 
 /**
- * 单个主题的进度明细（含每课 CourseItem 列表），供进度看板「主题 → 每课 → 当课汇总」钻取使用。
- * 数据来自 SQLite topic_progress 视图 + courses 表（与 getLearningSummary 同一真源）。
- *
- * @param topic 主题目录名（如 "lunyu"，即 topics.topic_key）
+ * 单个主题的进度明细（供进度看板「主题 → 每课 → 当课汇总」钻取使用）。
+ * 数据来自服务端 topic_progress 视图（与 getLearningSummary 同一真源）。
  */
-export function getTopicProgress(childId: string, topic: string): TopicProgress | null {
-  const childDir = getChildDir(childId);
-  const list = queryTopicProgress(childDir, topic);
-  return list[0] || null;
+export async function getTopicProgress(childId: string, topic: string): Promise<ProgressRow | null> {
+  const list = await dbQuery<ProgressRow[]>("kb.progress.list", { child_id: childId });
+  return (list ?? []).find((x) => x.topic === topic) || null;
 }
 
 /**

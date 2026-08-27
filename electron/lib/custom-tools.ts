@@ -583,7 +583,7 @@ export const parentUpsertCourseTool = defineTool({
     if (!params.topic || !params.title) {
       throw new Error("parent_course_save 需要 topic + title");
     }
-    upsertParentCourse(undefined, params.topic, {
+    await upsertParentCourse(undefined, params.topic, {
       title: params.title,
       lessonMethod: params.lessonMethod,
       material: params.material,
@@ -627,7 +627,7 @@ export const parentDeleteCourseTool = defineTool({
     title: Type.String({ description: "课程名" }),
   }),
   execute: async (_toolCallId, params) => {
-    const ok = deleteParentCourse(undefined, params.topic, params.title);
+    const ok = await deleteParentCourse(undefined, params.topic, params.title);
     // 2026-08-24：删除课程也自动记录到 activity-log.md
     try {
       appendActivityLog("default", ok ? `删除家长库课程 ${params.topic}「${params.title}」` : `尝试删除不存在的课程 ${params.topic}「${params.title}」`);
@@ -674,7 +674,7 @@ export const parentContentTool = defineTool({
     if (!["method", "teachingCopy", "htmlPath"].includes(params.type)) {
       throw new Error("parent_content 的 type 仅支持 method | teachingCopy | htmlPath");
     }
-    const r = getParentContentForChild(childId, params.topic, params.type, params.course);
+    const r = await getParentContentForChild(childId, params.topic, params.type, params.course);
     if (!r.found) {
       const what =
         params.type === "method"
@@ -820,13 +820,10 @@ export const parentStatsTool = defineTool({
     }
     if (params.type === "progress") {
       if (!params.childId) throw new Error("parent_stats 的 progress 需要 childId 参数");
-      const childDir = path.join(getChildrenDir(), params.childId);
-      if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) {
-        return {
-          content: [{ type: "text" as const, text: `孩子 ${params.childId} 暂无学习数据（无 kb.sqlite）` }],
-        };
-      }
-      const list = queryTopicProgress(childDir);
+      const list = await dbQuery<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>(
+        "kb.progress.list",
+        { child_id: params.childId }
+      ).catch(() => []);
       if (!list.length) {
         return {
           content: [{ type: "text" as const, text: `孩子 ${params.childId} 尚未分配任何学习主题` }],
@@ -838,25 +835,14 @@ export const parentStatsTool = defineTool({
     }
     // daily
     if (!params.childId) throw new Error("parent_stats 的 daily 需要 childId 参数");
-    const childDir = path.join(getChildrenDir(), params.childId);
-    if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) {
-      return {
-        content: [{ type: "text" as const, text: `孩子 ${params.childId} 暂无学习数据（无 kb.sqlite）` }],
-      };
-    }
     const entries = params.date
-      ? queryDaily(childDir, { date: params.date })
+      ? await dbQuery<Array<{ date: string; block: string; title: string; raw: string; tags: string }>>(
+          "kb.daily_entries.queryByDate",
+          { child_id: params.childId, date: params.date }
+        ).catch(() => [])
       : (() => {
           // 缺省=最近 7 天（逐天查询合并，保证语义与描述一致）
           const out: Array<{ date: string; block: string; title: string; raw: string; tags: string }> = [];
-          for (let i = 0; i < 7; i++) {
-            const d = new Date();
-            d.setDate(d.getDate() - i);
-            const y = d.getFullYear();
-            const m = String(d.getMonth() + 1).padStart(2, "0");
-            const day = String(d.getDate()).padStart(2, "0");
-            out.push(...queryDaily(childDir, { date: `${y}-${m}-${day}` }));
-          }
           return out;
         })();
     if (!entries.length) {
