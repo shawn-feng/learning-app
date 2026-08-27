@@ -212,6 +212,7 @@ npm run dist:mac               # electron-vite build + electron-builder --mac
 - `npm ci` 报 ERESOLVE → 漏了 `--legacy-peer-deps`，务必加上。
 - Node 版本过低 → 升级到 22+。
 - **安装时弹"该 Mac 不支持这个应用"** → 旧版 dmg 是 arm64-only，Intel Mac 无法执行。现已产出 **x64 + arm64 两个独立 dmg**（见 §9.1）：Intel Mac 装 `*-x64.dmg`、Apple Silicon 装 `*-arm64.dmg`，均锁 `minimumSystemVersion: 10.15`。重新下载 Actions 里最新 `macos-dmg` 即可；若仍报，确认下载的是对应架构的最新包而非旧的 arm64 包。
+- **语音输入报错"找不到 ffmpeg / 在 node_modules 找不到 ffmpeg-static"** → 根因是 `ffmpeg-static` 的**二进制架构与 dmg 架构不匹配**：GitHub `macos-latest` 是 arm64 机器，`npm ci` 默认装的是 **arm64** ffmpeg；若 x64 dmg 里塞了 arm64 二进制，Intel Mac 直接执行失败。修复方式（已固化进 `build-mac.yml` 的 matrix）：x64 / arm64 分开构建，每个 job 先 `rm -f node_modules/ffmpeg-static/ffmpeg` 再 `npm_config_arch=<arch> npm rebuild ffmpeg-static`（**必须删旧二进制**，否则 `install.js` 见文件已存在会跳过下载）；`package.json` 加 `"asarUnpack": ["**/node_modules/ffmpeg-static/**"]` 把二进制解包到 asar 外才能 exec；`electron/lib/voice/audio.ts` 改为懒 require + 容错，模块缺失时不再拖垮整个语音功能。验证：CI 的 `Verify ffmpeg-static binary` 步骤会 `file` 打印架构，x64 job 应为 `Mach-O 64-bit executable x86_64`。
 
 ### 9.6 升级签名（可选）
 
@@ -236,8 +237,10 @@ npm run dist:mac               # electron-vite build + electron-builder --mac
    ```
 3. **触发 Mac 构建**（二选一）：
    - **打 tag 自动触发**：`git tag v0.1.0 && git push github v0.1.0`
-   - **手动触发**：GitHub 仓库 `Actions → Build macOS → Run workflow`
-4. **下载产物**：运行结束后 `Artifacts → macos-dmg`（含 `学习伙伴-0.1.0.dmg`）。
+   - **手动触发**：GitHub 仓库 `Actions → Build macOS → Run workflow`（matrix 会并行跑 x64 / arm64 两个 job）
+4. **下载产物**：运行结束后 `Artifacts` 区有 **两个** artifact：
+   - `macos-dmg-x64`（含 `学习伙伴-0.1.0-x64.dmg`，给 Intel Mac）
+   - `macos-dmg-arm64`（含 `学习伙伴-0.1.0-arm64.dmg`，给 Apple Silicon）
 
 > 注意：`build-mac.yml` 的 `on` 是 `workflow_dispatch` + `push: tags: ['v*']`，**普通 push 到 master 不会自动构建**，必须打 `v*` tag 或手动 Run。
 > 安全提示：deploy key 私钥 `~/.ssh/github_learning_app` 无密码落在本地磁盘，仅限本机/可信环境使用；若机器不再使用，到 GitHub 删除对应 Deploy key 即可吊销。
