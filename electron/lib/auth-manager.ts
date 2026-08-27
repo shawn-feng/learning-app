@@ -1,7 +1,6 @@
 import fs from "fs";
-import path from "path";
-import { getLicensePath, getCloudApiBase } from "./config";
-import { cloudFetch } from "./cloud-net";
+import { getLicensePath } from "./config";
+import { serverFetch, ServerError } from "./server-client";
 
 export interface License {
   parent_id: string;
@@ -13,6 +12,7 @@ export interface License {
   expires_at: string;
   status: string;
   is_expired: boolean;
+  /** 服务端签发的 session token（SPLIT：cloud token 只存服务端，客户端不再持有） */
   token: string;
   cached_at: string;
 }
@@ -21,65 +21,49 @@ export async function register(
   email: string,
   password: string
 ): Promise<{ token: string; parent_id: string }> {
-  const res = await cloudFetch(`${getCloudApiBase()}/api/auth/register`, {
+  const data = await serverFetch<{ session_token: string; license: License }>("/auth/register", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: { email, password },
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail?.[0]?.msg || err.detail || "Registration failed");
-  }
-  return res.json();
+  return { token: data.session_token, parent_id: data.license.parent_id };
 }
 
 export async function login(
   email: string,
   password: string
 ): Promise<{ token: string; parent_id: string }> {
-  const res = await cloudFetch(`${getCloudApiBase()}/api/auth/login`, {
+  const data = await serverFetch<{ session_token: string; license: License }>("/auth/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: { email, password },
   });
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail?.[0]?.msg || err.detail || "Login failed");
-  }
-  return res.json();
+  return { token: data.session_token, parent_id: data.license.parent_id };
 }
 
-export async function fetchLicense(token: string): Promise<Omit<License, "token" | "cached_at">> {
-  const res = await cloudFetch(`${getCloudApiBase()}/api/license`, {
-    headers: { Authorization: `Bearer ${token}` },
+export async function fetchLicense(
+  sessionToken: string
+): Promise<Omit<License, "token" | "cached_at">> {
+  const data = await serverFetch<{ license: Omit<License, "token" | "cached_at"> }>("/auth/license", {
+    token: sessionToken,
   });
-  if (!res.ok) {
-    throw new Error("Failed to fetch license");
-  }
-  return res.json();
+  return data.license;
 }
 
-// 向云端校验 token / 订阅有效期，返回权威结果。
-// 返回 null 表示网络错误（连不上云端，无法判断），由调用方决定降级策略。
+// 向服务端校验 session / 授权有效期（服务端内部向公网刷新），返回权威结果。
+// 返回 null 表示网络错误（连不上服务端，无法判断），由调用方决定降级策略。
 export async function verifyLicenseWithCloud(
   token: string
 ): Promise<{ valid: boolean; max_children: number } | null> {
   try {
-    const res = await cloudFetch(`${getCloudApiBase()}/api/license/verify`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    // 401 = token 失效/过期；其它非 2xx 也视为无效
-    if (res.status === 401 || !res.ok) {
+    const data = await serverFetch<{ license: License }>("/auth/license", { token });
+    return {
+      valid: data.license.is_expired !== true,
+      max_children: typeof data.license.max_children === "number" ? data.license.max_children : 0,
+    };
+  } catch (err) {
+    if (err instanceof ServerError && err.status === 401) {
       return { valid: false, max_children: 0 };
     }
-    const data = await res.json();
-    return {
-      valid: data.valid === true,
-      max_children: typeof data.max_children === "number" ? data.max_children : 0,
-    };
-  } catch {
-    return null; // 网络错误
+    return null; // 网络错误 / 服务端不可达
   }
 }
 

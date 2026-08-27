@@ -101,6 +101,39 @@ export function getCloudApiBase(): string {
   return "https://www.aixuexihao.top";
 }
 
+// ==================== SPLIT：服务端连接配置（纯服务端模式） ====================
+
+export function getServerConnectionPath(): string {
+  return path.join(getDataDir(), "server-connection.json");
+}
+
+export interface ServerConnection {
+  /** 服务端地址（如 http://192.168.1.200:8788，去尾斜杠） */
+  url: string;
+}
+
+/** 读取已配置的服务端地址；未配置返回空串。 */
+export function getServerUrl(): string {
+  const p = getServerConnectionPath();
+  if (!fs.existsSync(p)) return "";
+  try {
+    const cfg = JSON.parse(fs.readFileSync(p, "utf-8")) as ServerConnection;
+    return (cfg.url ?? "").trim().replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+/** 保存服务端地址（空串 = 清除配置）。 */
+export function setServerUrl(url: string): void {
+  const clean = (url ?? "").trim().replace(/\/+$/, "");
+  fs.writeFileSync(
+    getServerConnectionPath(),
+    JSON.stringify({ url: clean } satisfies ServerConnection, null, 2),
+    "utf-8"
+  );
+}
+
 /**
  * ISSUE-040: 自动更新 feed 地址（latest.yml + 安装包托管目录）。
  * 原定阿里云 OSS 公共读被阿里云 2024 新规禁止（bucket ACL / policy 均不允许公开，需控制台申请），

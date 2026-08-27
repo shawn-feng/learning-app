@@ -1,7 +1,7 @@
 import { ipcMain, app, BrowserWindow, dialog, shell, screen, type IpcMainInvokeEvent } from "electron";
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
-import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads } from "./config";
+import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl } from "./config";
 import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion } from "./agent-prompts";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, DEFAULT_VISION_MODEL } from "./pi-runtime";
@@ -35,6 +35,15 @@ import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
+  // SPLIT：服务端连接配置（纯服务端模式必需）
+  ipcMain.handle("server:get_config", async () => {
+    return { url: getServerUrl() };
+  });
+  ipcMain.handle("server:set_config", async (_e, url: string) => {
+    setServerUrl(typeof url === "string" ? url : "");
+    return { ok: true, url: getServerUrl() };
+  });
+
   ipcMain.handle("auth:register", async (_e, email: string, password: string) => {
     try {
       const license = await registerAndCache(email, password);

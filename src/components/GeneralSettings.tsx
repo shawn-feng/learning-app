@@ -9,6 +9,11 @@ export default function GeneralSettings() {
   const [limit, setLimit] = useState(20);
   const [msg, setMsg] = useState("");
 
+  // ---- SPLIT：服务端地址配置（纯服务端模式必需） ----
+  const [serverUrl, setServerUrl] = useState("");
+  const [serverDirty, setServerDirty] = useState(false);
+  const [serverMsg, setServerMsg] = useState("");
+
   // ---- 软件更新状态 ----
   const [appVersion, setAppVersion] = useState("");
   const [updStatus, setUpdStatus] = useState<string>("idle");
@@ -26,6 +31,10 @@ export default function GeneralSettings() {
     window.api.getAppVersion().then((r: any) => {
       if (r?.success) setAppVersion(r.version);
     }).catch(() => {});
+    // SPLIT：加载服务端地址
+    window.api.serverGetConfig().then((cfg: { url?: string }) => {
+      setServerUrl(cfg?.url ?? "");
+    });
   }, []);
 
   // 监听主进程更新状态/进度事件；组件卸载时取消监听
@@ -85,6 +94,50 @@ export default function GeneralSettings() {
     <div className="settings-section">
       <h3>通用设置</h3>
       <p className="desc">调整学习伙伴的通用行为。</p>
+
+      {/* SPLIT：服务端地址（纯服务端模式：登录与数据读写均经服务端） */}
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>
+          服务端地址
+        </label>
+        <p style={{ fontSize: 13, color: "#888", margin: "0 0 8px", lineHeight: 1.6 }}>
+          填写学习伙伴服务端的地址（如家庭主机 http://192.168.1.200:8788 或云上 https://…）。登录、数据读写、学习资料同步均经此服务端；未配置时无法登录。
+        </p>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <input
+            type="text"
+            placeholder="如 http://192.168.1.200:8788"
+            value={serverUrl}
+            onChange={(e) => {
+              setServerUrl(e.target.value);
+              setServerDirty(true);
+              setServerMsg("");
+            }}
+            style={{ flex: 1, padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
+          />
+          <IconButton
+            icon={Save}
+            title="保存服务端地址"
+            onClick={() => {
+              window.api.serverSetConfig(serverUrl.trim()).then((r: any) => {
+                setServerUrl(r?.url ?? "");
+                setServerDirty(false);
+                setServerMsg("已保存");
+              });
+            }}
+            disabled={!serverDirty}
+            style={{ padding: "10px 20px", background: serverDirty ? "#667eea" : "#ddd", color: serverDirty ? "white" : "#666", border: "none", borderRadius: 8 }}
+          />
+        </div>
+        {serverMsg && (
+          <p style={{ fontSize: 13, color: "#48bb78", marginTop: 8 }}>{serverMsg}</p>
+        )}
+        {!serverUrl && (
+          <p style={{ fontSize: 13, color: "#cc7b00", marginTop: 8 }}>
+            尚未配置服务端地址，登录前请先填写。
+          </p>
+        )}
+      </div>
 
       <div style={{ marginBottom: 16 }}>
         <label style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>

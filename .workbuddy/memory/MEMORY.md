@@ -34,3 +34,10 @@
 - 决策：保留 Electron 一体应用，另起独立 `pi-web/`(Web前端+Node后端，端口8787)做替代，不动现有 pi。
 - 硬约束：Pi SDK/edge-tts/ffmpeg/tencentcloud-asr 均 Node-only，AI+语音留服务端，浏览器走 HTTP/SSE。
 - 引擎拆分目标 `engine-server/`(平移 electron/lib/*)，IPC→HTTP/SSE；数据归属服务端磁盘唯一真源、childId 路由隔离。
+
+## 客户端 + 服务端拆分（SPLIT，2026-08-27 需求已收敛，需求文档 `SPLIT-REQUIREMENTS.md`）
+- **核心目标=多设备共享数据**；双独立安装包（客户端包/服务端包，版本各自升级，需版本兼容约定）；服务端无 UI 常驻、可云上 ECS 或家庭局域网、本机可自用（同机装两包）。
+- **必须在线（写操作）**：数据库读写每次联网；**已缓存资料断网可离线浏览**（读不联网）。本地无业务数据库，仅缓存目录。
+- **会话 jsonl 留客户端本地、不上服务端**（换设备即新会话）；学习记录永远在服务端（家长端可见性唯一通道，预留"定时推送会话"扩展）。
+- 认证复用 benefit-auth（客户端→服务端→auth.aixuexihao.top）；孩子由家长创建、跟随授权、不单独认证；materials 版本=最新时间戳比对（无版本切换）；大文件存服务端磁盘；不做存量迁移。
+- **独立于 cloud-service/www 与 pi-web，三条线互不隶属**——pi-web 方向不受本次影响，本拆分不走 pi-web 路线。

@@ -97,7 +97,7 @@ const api = {
     ipcRenderer.invoke("pi:set_api_key", provider, apiKey),
   piCheckProvider: (provider: string) => ipcRenderer.invoke("pi:check_provider", provider),
 
-  // Auth（认证统一走公网云端，不暴露本地地址配置）
+  // Auth（SPLIT：认证经服务端转发公网；服务端地址在设置中配置）
   authLogin: (email: string, password: string) =>
     ipcRenderer.invoke("auth:login", email, password),
   authRegister: (email: string, password: string) =>
@@ -106,6 +106,10 @@ const api = {
   authLogout: () => ipcRenderer.invoke("auth:logout"),
   authVerify: (email: string, password: string) =>
     ipcRenderer.invoke("auth:verify", email, password),
+
+  // SPLIT：服务端连接配置
+  serverGetConfig: () => ipcRenderer.invoke("server:get_config"),
+  serverSetConfig: (url: string) => ipcRenderer.invoke("server:set_config", url),
 
   // Children
   childAdd: (data: any) => ipcRenderer.invoke("child:add", data),

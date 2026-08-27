@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface Props {
   onLogin: (email: string) => void;
@@ -12,8 +12,35 @@ export default function ParentLogin({ onLogin }: Props) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // SPLIT：服务端连接配置（纯服务端模式必需）
+  const [serverUrl, setServerUrl] = useState("");
+  const [serverDirty, setServerDirty] = useState(false);
+  const [serverLoaded, setServerLoaded] = useState(false);
+
+  useEffect(() => {
+    window.api.serverGetConfig().then((cfg: { url?: string }) => {
+      setServerUrl(cfg?.url ?? "");
+      setServerLoaded(true);
+    });
+  }, []);
+
+  async function handleSaveServer() {
+    const result = await window.api.serverSetConfig(serverUrl.trim());
+    setServerUrl(result?.url ?? "");
+    setServerDirty(false);
+    setError("");
+  }
+
   async function handleSubmit() {
     setError("");
+    if (!serverUrl.trim()) {
+      setError("请先填写服务端地址");
+      return;
+    }
+    if (serverDirty) {
+      setError("服务端地址已修改，请先点击「保存服务端地址」");
+      return;
+    }
     if (!email || !password) {
       setError("请输入邮箱和密码");
       return;
@@ -51,6 +78,28 @@ export default function ParentLogin({ onLogin }: Props) {
         </p>
 
         {error && <div className="error">{error}</div>}
+
+        {/* SPLIT：服务端地址配置 */}
+        <div className="server-config">
+          <label>服务端地址</label>
+          <div className="server-row">
+            <input
+              type="text"
+              placeholder="如 http://192.168.1.200:8788"
+              value={serverUrl}
+              onChange={(e) => {
+                setServerUrl(e.target.value);
+                setServerDirty(true);
+              }}
+            />
+            <button onClick={handleSaveServer} disabled={!serverDirty}>
+              保存
+            </button>
+          </div>
+          {serverLoaded && !serverUrl.trim() && (
+            <div className="hint">未配置服务端地址，登录前请先填写并保存</div>
+          )}
+        </div>
 
         <input
           type="email"
