@@ -54,9 +54,10 @@ jobs:
 
       - name: Verify Info.plist microphone permission declarations (ground truth)
         run: |
-          PLIST=$(find dist -type f -name Info.plist -path "*Contents*" | head -1)
+          # 只取主 app 的 Info.plist：*.app/Contents/Info.plist 且不在 Frameworks 下（排除 Helper/GPU 等子 app）
+          PLIST=$(find dist -type f -name Info.plist -path "*.app/Contents/Info.plist" ! -path "*/Frameworks/*" | head -1)
           if [ -z "$PLIST" ]; then
-            echo "::error:: 未找到打包后的 Info.plist，构建可能未产出 .app"
+            echo "::error:: 未找到主 app 的 Info.plist，构建可能未产出 .app"
             exit 1
           fi
           echo "== found Info.plist: $PLIST =="
