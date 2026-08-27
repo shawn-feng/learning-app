@@ -52,6 +52,19 @@ jobs:
           # 锁部署目标为 10.15，防止 macos-latest (Sequoia 15) 抬高最低系统版本导致旧 Mac 报“不支持此应用”
           MACOSX_DEPLOYMENT_TARGET: "10.15"
 
+      - name: Verify Info.plist microphone permission declarations (ground truth)
+        run: |
+          PLIST=$(find dist -type f -name Info.plist -path "*Contents*" | head -1)
+          if [ -z "$PLIST" ]; then
+            echo "::error:: 未找到打包后的 Info.plist，构建可能未产出 .app"
+            exit 1
+          fi
+          echo "== found Info.plist: $PLIST =="
+          echo "== NSMicrophoneUsageDescription =="
+          /usr/libexec/PlistBuddy -c "Print NSMicrophoneUsageDescription" "$PLIST"
+          echo "== NSSpeechRecognitionUsageDescription =="
+          /usr/libexec/PlistBuddy -c "Print NSSpeechRecognitionUsageDescription" "$PLIST"
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
