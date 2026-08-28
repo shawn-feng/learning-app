@@ -16,13 +16,64 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "fs";
 import path from "path";
-import { pathToFileURL } from "node:url";
-import { getDataDir, getChildrenDir } from "./config";
+import { getDataDir, getChildrenDir, getServerUrl } from "./config";
 import { normalizeTopicKey } from "./kb-sqlite";
-import { buildAssetUrl } from "./media-protocol";
+import { buildAssetUrl, fetchMaterialContent } from "./media-protocol";
 import { openKbDb, type CourseItem } from "./kb-sqlite";
-import { ensureMaterial } from "./material-cache";
 import { dbExec, dbQuery } from "./client-data";
+import { serverFetch } from "./server-client";
+import { currentSessionToken } from "./client-data";
+
+// ==================== 材料远程辅助（SPLIT 方案 A：无本地缓存，全走服务端） ====================
+
+interface MaterialMetaRemote {
+  id: string;
+  path: string;
+  type: string;
+  size: number;
+  updated_at: string;
+}
+
+async function materialsListRemote(): Promise<MaterialMetaRemote[]> {
+  const data = await serverFetch<{ materials?: MaterialMetaRemote[] }>("/materials/list", {
+    method: "GET",
+    token: currentSessionToken(),
+  });
+  return data.materials ?? [];
+}
+
+/** 上传文件到服务端材料库（multipart：file + topic + 可选 subDir）。返回相对路径。 */
+export async function uploadMaterialToServer(
+  topicDir: string,
+  subDir: string | undefined,
+  filePath: string
+): Promise<string> {
+  const base = getServerUrl();
+  if (!base) throw new Error("未配置服务端地址");
+  const token = currentSessionToken();
+  const form = new FormData();
+  form.append("topic", topicDir);
+  if (subDir) form.append("subDir", subDir);
+  const buf = fs.readFileSync(filePath);
+  form.append("file", new Blob([buf]), path.basename(filePath));
+  const res = await fetch(`${base}/api/v1/materials/upload`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = `上传失败 (HTTP ${res.status})`;
+    try {
+      const b = (await res.json()) as { error?: string };
+      if (b?.error) detail = b.error;
+    } catch {
+      /* 保留默认 */
+    }
+    throw new Error(detail);
+  }
+  const data = (await res.json()) as { material?: { path?: string } };
+  return data.material?.path ?? "";
+}
 
 export const DEFAULT_PARENT_ID = "default";
 
@@ -537,10 +588,15 @@ export async function getParentContentForChild(
     if (row.teaching_copy) return { found: true, content: row.teaching_copy };
     return { found: false, content: "" };
   }
-  // htmlPath：返回家长库相对路径，且校验文件真实存在（本地缓存/已拉取）
+  // htmlPath：返回家长库相对路径（新格式 `<topic>/<file>`，无 materials/ 前缀），
+  // 远程试拉校验文件真实存在（方案 A 无本地缓存，本地校验恒失败——2026-08-28 修复）
   if (row.html_path) {
-    const abs = resolveParentMaterial(DEFAULT_PARENT_ID, row.html_path);
-    if (fs.existsSync(abs)) return { found: true, content: row.html_path };
+    try {
+      await fetchMaterialContent(row.html_path);
+      return { found: true, content: row.html_path };
+    } catch {
+      return { found: false, content: "" };
+    }
   }
   return { found: false, content: "" };
 }
@@ -626,65 +682,66 @@ export async function readParentMaterial(
   relPath: string
 ): Promise<{ found: boolean; format: "html" | "md" | "other"; content: string; fileUrl: string; error?: string }> {
   const pid = parentId ?? DEFAULT_PARENT_ID;
-  // 按需拉取：命中缓存立即用（后台比对版本）；未命中从服务端下载落盘
-  const ensured = await ensureMaterial(pid, relPath).catch(() => null);
-  const base = getParentDir(pid);
-  const resolved = path.resolve(base, relPath);
-  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
-    return { found: false, format: "other", content: "", fileUrl: "" };
+  // SPLIT 方案 A：无本地缓存，全部从服务端拉取（断网时资料不可用；html 内资源经 asset:// 远程代理）
+  // 归一化相对路径（防穿越：剥 . / .. / 空段）。
+  // ⚠️ 入参历史语义是「相对父库根」（如 materials/lunyu/xxx.html，parent_content htmlPath 格式），
+  // 而服务端材料 id = base64url(相对 materials 根的路径)——必须剥掉 materials/ 前缀，
+  // 否则 id 查不到 → 404（2026-08-28 修复；display_content/恢复链路已同规则处理）。
+  const clean = relPath
+    .split("/")
+    .filter((s) => s && s !== "." && s !== "..")
+    .join("/")
+    .replace(/^materials\//, "");
+  if (!clean) return { found: false, format: "other", content: "", fileUrl: "" };
+  try {
+    let curRel = clean;
+    let content = (await fetchMaterialContent(curRel)).toString("utf-8");
+    const ext = path.extname(curRel).toLowerCase();
+    const format = ext === ".html" || ext === ".htm" ? "html" : ext === ".md" ? "md" : "other";
+    if (format === "html") {
+      // 远程跟随 <meta http-equiv="refresh" url=...> 跳转（如英语 01-11/45-50 课指向 learn/*.html 的占位页）
+      const finalRel = await followHtmlRedirectRemote(curRel, content);
+      if (finalRel !== curRel) content = (await fetchMaterialContent(finalRel)).toString("utf-8");
+      curRel = finalRel;
+      // 把 html 内的相对资源引用(../xxx.css、images/..、同目录 js)改写为 asset:// 绝对地址，
+      // 由协议 handler 远程代理加载（srcDoc about:blank 来源下跨源可用）。
+      const fileDir = path.posix.dirname(curRel);
+      content = rewriteHtmlAssetRefs(content, pid, fileDir);
+    }
+    return { found: true, format, content, fileUrl: "" };
+  } catch (err) {
+    return { found: false, format: "other", content: "", fileUrl: "", error: err instanceof Error ? err.message : "材料获取失败" };
   }
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
-    // M8-E：区分「拉取失败（网络/服务端）」与「资料不存在」——拉取失败显式报错，禁止静默降级
-    const pullError = ensured && !ensured.ok ? ensured.error : undefined;
-    return { found: false, format: "other", content: "", fileUrl: "", error: pullError };
-  }
-  const ext = path.extname(resolved).toLowerCase();
-  const format = ext === ".html" || ext === ".htm" ? "html" : ext === ".md" ? "md" : "other";
-  let content = fs.readFileSync(resolved, "utf-8");
-  let fileAbs = resolved;
-  if (format === "html") {
-    // 跟随 <meta http-equiv="refresh" url=...> 本地跳转（如英语 01-11/45-50 课指向 learn/*.html 的占位页），
-    // 否则 srcDoc(about:blank/父源) 下相对跳转会导航到不存在地址导致整页空白。
-    fileAbs = followHtmlRedirect(base, resolved, content);
-    content = fs.readFileSync(fileAbs, "utf-8");
-    // 把 html 内的相对资源引用(../xxx.css、images/..、同目录 js)改写为 asset:// 绝对地址，
-    // 使 srcDoc(about:blank 来源)下的 css/图片/脚本能跨源加载本地文件（dev/prod 均生效）。
-    const parts = fileAbs.split(path.sep);
-    const pIdx = parts.indexOf("parents");
-    const pid = pIdx >= 0 ? parts[pIdx + 1] : DEFAULT_PARENT_ID;
-    const materialsRoot = path.join(base, "materials");
-    const fileDir = path.relative(materialsRoot, path.dirname(fileAbs));
-    content = rewriteHtmlAssetRefs(content, pid, fileDir);
-  }
-  return { found: true, format, content, fileUrl: pathToFileURL(fileAbs).href };
 }
 
 /**
- * 跟随 html 里的 <meta http-equiv="refresh" content="0; url=..."> 本地跳转，返回最终文件的绝对路径。
- * - 仅跟随**本地相对跳转**且目标必须在 `materials/` 内（防越权/防跳向 http）；
+ * 远程跟随 html 里的 <meta http-equiv="refresh" content="0; url=..."> 跳转，返回最终材料相对路径。
+ * - 仅跟随**相对跳转**且目标必须在 materials 根内（归一化后不得以 ../ 开头，防越权/防跳向 http）；
  * - 最多 8 跳、visited 防环；
- * - 无跳转/跳转目标无效时原样返回 startAbs。
+ * - 无跳转/跳转目标无效时原样返回 startRel。
  */
-function followHtmlRedirect(base: string, startAbs: string, startContent: string): string {
-  const matRoot = path.join(base, "materials");
-  const visited = new Set<string>([startAbs]);
-  let cur = startAbs;
+async function followHtmlRedirectRemote(startRel: string, startContent: string): Promise<string> {
+  let curRel = startRel;
   let content = startContent;
+  const visited = new Set<string>([startRel]);
   for (let i = 0; i < 8; i++) {
     const target = extractRedirectTarget(content);
     if (!target) break;
     const clean = target.split(/[?#]/)[0];
     if (!clean) break;
-    const targetAbs = path.resolve(path.dirname(cur), clean);
-    if (targetAbs !== matRoot && !targetAbs.startsWith(matRoot + path.sep)) break; // 越界不跟
-    if (visited.has(targetAbs)) break;
-    if (!fs.existsSync(targetAbs) || !fs.statSync(targetAbs).isFile()) break;
-    if (path.extname(targetAbs).toLowerCase() !== ".html") break;
-    visited.add(targetAbs);
-    cur = targetAbs;
-    content = fs.readFileSync(targetAbs, "utf-8");
+    const nextRel = path.posix.normalize(path.posix.join(path.posix.dirname(curRel), clean));
+    if (nextRel === ".." || nextRel.startsWith("../")) break; // 越界不跟
+    if (visited.has(nextRel)) break;
+    if (!/\.(html|htm)$/i.test(nextRel)) break;
+    visited.add(nextRel);
+    try {
+      content = (await fetchMaterialContent(nextRel)).toString("utf-8");
+    } catch {
+      break;
+    }
+    curRel = nextRel;
   }
-  return cur;
+  return curRel;
 }
 
 /** 提取 <meta http-equiv="refresh" content="0; url=..."> 中的 url 目标；无则返回 null。 */
@@ -744,13 +801,13 @@ function rewriteHtmlAssetRefs(html: string, parentId: string, fileDir: string): 
 }
 
 /** 家长库某主题 materials 目录下的文件清单（html/md/其它，不含 media/ 子目录内容）。 */
-export function listParentMaterials(parentId: string, topicDir: string): string[] {
-  const dir = path.join(getParentMaterialsDir(parentId), topicDir);
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isFile())
-    .map((e) => e.name)
+export async function listParentMaterials(parentId: string, topicDir: string): Promise<string[]> {
+  // SPLIT 方案 A：材料在服务端，列表走 GET /materials/list（过滤第一层文件）
+  const all = await materialsListRemote().catch(() => []);
+  const prefix = `${topicDir}/`;
+  return (all ?? [])
+    .filter((m) => m.path.startsWith(prefix) && !m.path.slice(prefix.length).includes("/"))
+    .map((m) => m.path.slice(prefix.length))
     .sort();
 }
 
@@ -758,34 +815,17 @@ export function listParentMaterials(parentId: string, topicDir: string): string[
 const MEDIA_EXTS = new Set([".mp3", ".mp4", ".webm", ".ogg", ".wav", ".m4a", ".aac", ".flac"]);
 
 /**
- * 把外部文件复制进家长库共享资料目录（课程管理「上传资料」落盘）。
- * - 未指定 subDir：媒体 → `materials/<topicDir>/media/<file>`（html 用 `media://local/parent/<pid>/<topicDir>/media/<file>` 引用）；
+ * 上传文件到服务端材料库（SPLIT 方案 A：POST /materials/upload）。
+ * - 未指定 subDir：媒体 → `materials/<topicDir>/media/<file>`（html 用 media:// 引用）；
  *   其它（html/md/pdf/图片…）→ `materials/<topicDir>/<file>`。
- * - 指定 subDir：全部文件（含媒体）→ `materials/<topicDir>/<subDir>/<file>`（不再按媒体分流）。
+ * - 指定 subDir：全部文件（含媒体）→ `materials/<topicDir>/<subDir>/<file>`。
  * 返回保存后的相对路径（相对父库根），如 `materials/lunyu/xxx.html`。
  */
-export function copyMaterialIntoParent(parentId: string, topicDir: string, srcPath: string, subDir?: string): string {
+export async function copyMaterialIntoParent(parentId: string, topicDir: string, srcPath: string, subDir?: string): Promise<string> {
   const ext = path.extname(srcPath).toLowerCase();
-  const fileName = path.basename(srcPath);
-  const topicDirAbs = path.join(getParentMaterialsDir(parentId), topicDir);
-  let targetDir: string;
-  let relPrefix: string;
-  if (subDir) {
-    // 指定子目录：所有文件（含媒体）都进该子目录；防路径穿越
-    const sub = path.normalize(subDir).replace(/\\/g, "/");
-    if (sub.startsWith("..") || path.isAbsolute(sub) || sub.split("/").includes("..")) {
-      throw new Error("非法子目录路径");
-    }
-    targetDir = path.join(topicDirAbs, sub);
-    relPrefix = `materials/${topicDir}/${sub}`;
-  } else {
-    targetDir = MEDIA_EXTS.has(ext) ? path.join(topicDirAbs, "media") : topicDirAbs;
-    relPrefix = `materials/${topicDir}${MEDIA_EXTS.has(ext) ? "/media" : ""}`;
-  }
-  fs.mkdirSync(targetDir, { recursive: true });
-  const dst = path.join(targetDir, fileName);
-  fs.copyFileSync(srcPath, dst);
-  return `${relPrefix}/${fileName}`;
+  const mediaSubDir = subDir || (MEDIA_EXTS.has(ext) ? "media" : "");
+  const rel = await uploadMaterialToServer(topicDir, mediaSubDir || undefined, srcPath);
+  return rel;
 }
 
 /** 学习资料树节点（供「学习资料管理」弹框分级展示）。relPath 为相对 materials/<topicDir>/ 的路径。 */
@@ -799,47 +839,54 @@ export interface ParentMaterialNode {
 
 /**
  * 列出某主题下全部学习资料（递归，含所有子目录），供「学习资料管理」弹框分级展示。
- * 返回树状结构：目录在前、文件在后，各自按名排序；每个目录带 children。
+ * SPLIT 方案 A：数据来自服务端 GET /materials/list，客户端组树。
  */
-export function listParentTopicMaterials(parentId: string, topicDir: string): ParentMaterialNode[] {
-  const root = path.join(getParentMaterialsDir(parentId), topicDir);
-  if (!fs.existsSync(root)) return [];
-  function walk(dir: string, rel: string): ParentMaterialNode[] {
-    const out: ParentMaterialNode[] = [];
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const node: ParentMaterialNode = {
-        name: e.name,
-        relPath: rel ? `${rel}/${e.name}` : e.name,
-        isDir: e.isDirectory(),
-      };
-      if (e.isDirectory()) {
-        node.children = walk(path.join(dir, e.name), node.relPath);
-      } else {
-        node.ext = path.extname(e.name).toLowerCase();
+export async function listParentTopicMaterials(parentId: string, topicDir: string): Promise<ParentMaterialNode[]> {
+  const all = await materialsListRemote().catch(() => []);
+  const prefix = `${topicDir}/`;
+  const rels = (all ?? [])
+    .filter((m) => m.path.startsWith(prefix))
+    .map((m) => m.path.slice(prefix.length))
+    .sort();
+  const root: ParentMaterialNode[] = [];
+  for (const rel of rels) {
+    const segs = rel.split("/");
+    let cur: ParentMaterialNode[] = root;
+    let curRel = "";
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      const isLast = i === segs.length - 1;
+      curRel = curRel ? `${curRel}/${seg}` : seg;
+      let node = cur.find((n) => n.name === seg && (isLast ? !n.isDir : n.isDir));
+      if (!node) {
+        node = {
+          name: seg,
+          relPath: curRel,
+          isDir: !isLast,
+          ext: isLast ? path.extname(seg).toLowerCase() : undefined,
+          children: isLast ? undefined : [],
+        };
+        cur.push(node);
       }
-      out.push(node);
+      if (!isLast && node.children) cur = node.children;
     }
-    out.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
-    return out;
   }
-  return walk(root, "");
+  const sortNodes = (nodes: ParentMaterialNode[]): void => {
+    nodes.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
+    for (const n of nodes) if (n.children) sortNodes(n.children);
+  };
+  sortNodes(root);
+  return root;
 }
 
 /**
  * 删除某主题下的学习资料文件（「学习资料管理」弹框删除用）。
- * relPath 为相对 materials/<topicDir>/ 的路径（如 `xxx.html`、`media/yyy.mp3`、`docs/1.pdf`），
- * 严格限定在 materials/<topicDir>/ 内，杜绝路径穿越。
+ * SPLIT 方案 A：DELETE /materials/:id（id=base64url(相对 materials 根的路径)）。
  */
-export function deleteParentMaterial(parentId: string, topicDir: string, relPath: string): void {
-  const base = path.join(getParentMaterialsDir(parentId), topicDir);
-  const resolved = path.resolve(base, relPath);
-  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
-    throw new Error("非法路径：超出主题资料目录");
-  }
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
-    throw new Error("文件不存在");
-  }
-  fs.unlinkSync(resolved);
+export async function deleteParentMaterial(parentId: string, topicDir: string, relPath: string): Promise<void> {
+  const rel = `${topicDir}/${relPath}`;
+  const id = Buffer.from(rel, "utf-8").toString("base64url");
+  await serverFetch(`/materials/${id}`, { method: "DELETE", token: currentSessionToken() });
 }
 
 // ==================== 存量迁移（一次性） ====================

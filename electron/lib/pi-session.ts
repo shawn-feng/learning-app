@@ -7,6 +7,7 @@ import {
 import path from "path";
 import fs from "fs";
 import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
+import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool } from "./custom-tools";
@@ -826,8 +827,18 @@ function formatTime(ts: number | undefined): string {
  * 资料由 display_content 工具产生，参数（format/content/title）记录在 assistant 消息的
  * toolCall 里。退出孩子模式再进入时据此恢复，保证资料一直显示（除非会话被重置）。
  */
-export function getSessionMaterials(session: AgentSession, cwd?: string): MaterialItem[] {
+export async function getSessionMaterials(session: AgentSession, cwd?: string): Promise<MaterialItem[]> {
   const messages: any[] = (session as any).messages || [];
+  // SPLIT 方案 A：display_content 的完整内容在 toolResult.details.panelContent 里（服务端远程拉取，
+  // 无本地缓存）。恢复时优先取 toolResult 内容；旧会话（toolResult 无内容）则远程拉或读本地 outputs。
+  const resultContent = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role !== "toolResult" || m.toolName !== "display_content") continue;
+    const panel = m.details?.panelContent;
+    if (panel && typeof panel.content === "string" && panel.content.trim()) {
+      resultContent.set(m.toolCallId, panel.content);
+    }
+  }
   const materials: MaterialItem[] = [];
   const seen = new Set<string>();
   for (const m of messages) {
@@ -849,31 +860,29 @@ export function getSessionMaterials(session: AgentSession, cwd?: string): Materi
       // 避免「每步都重发学习资料」导致面板堆积重复条目。
       if (seen.has(filePath)) continue;
       seen.add(filePath);
-      // 历史里可能只有 path（新版工具）或同时带 content（旧版）；
-      // 若没有 content，则从文件重新读取，保证恢复出的资料可正常展示。
-      // ⚠️ 路径语义必须与 display_content 工具一致（见 custom-tools.ts）：
-      //    materials/<topic>/<file> → 父库共享目录 data/parents/<pid>/materials/
-      //    （2026-08-27 修复：此前一律用孩子 cwd 解析，父库资料路径必然读不到 →
-      //     恢复出的条目 content 为空 → 退出孩子模式再进入时资料白屏）
-      //    outputs/<file> → 孩子本地 cwd/outputs/
+      // 内容来源优先级：① 旧版工具参数自带 content → ② 对应 toolResult 的 panelContent → ③ 兜底拉取
       let content = typeof args.content === "string" ? args.content : "";
+      if (!content) content = resultContent.get(c.id) ?? "";
       if (!content && cwd) {
         try {
-          let resolved: string;
+          // 路径语义与 display_content 一致（见 custom-tools.ts）：
+          //   `<topic>/<file>`（新格式）或 `materials/<topic>/<file>`（旧格式兼容）→ 服务端远程拉取（方案 A 无本地缓存）
+          //   `outputs/<file>` → 孩子本地 cwd/outputs/
           const matM = /^materials\/([^/]+)\/(.+\.(?:html|htm))$/i.exec(filePath);
-          if (matM) {
-            const parentMatRoot = getParentMaterialsDir();
-            resolved = path.join(parentMatRoot, matM[1], matM[2]);
-            if (resolved !== parentMatRoot && !resolved.startsWith(parentMatRoot + path.sep)) {
-              throw new Error("资料路径超出父库共享目录");
-            }
+          const matN = matM ? null : /^(?!outputs\/)([^/]+)\/(.+\.(?:html|htm))$/i.exec(filePath);
+          if (matM || matN) {
+            const topic = matM ? matM[1] : (matN as RegExpExecArray)[1];
+            const rest = matM ? matM[2] : (matN as RegExpExecArray)[2];
+            const rel = `${topic}/${rest.split("/").filter((s) => s && s !== "." && s !== "..").join("/")}`;
+            if (rel.includes("..") || rel.includes("\\")) throw new Error("资料路径超出父库共享目录");
+            content = (await fetchMaterialContent(rel)).toString("utf-8");
           } else {
-            resolved = path.resolve(cwd, filePath);
+            const resolved = path.resolve(cwd, filePath);
             if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
               throw new Error("资料路径超出学习目录");
             }
+            content = fs.readFileSync(resolved, "utf-8");
           }
-          content = fs.readFileSync(resolved, "utf-8");
         } catch {
           content = "";
         }

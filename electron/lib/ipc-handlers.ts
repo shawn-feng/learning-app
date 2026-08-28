@@ -387,7 +387,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("parent:listMaterials", async (_e, topicDir: string) => {
     try {
-      return { success: true, data: listParentMaterials(undefined, topicDir) };
+      return { success: true, data: await listParentMaterials(undefined, topicDir) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -407,10 +407,12 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       if (result.canceled || result.filePaths.length === 0) {
         return { success: true, data: { files: [] } };
       }
-      const files = result.filePaths.map((p) => {
-        const rel = copyMaterialIntoParent(undefined, topicDir, p, subDir);
-        return { name: path.basename(p), relPath: rel };
-      });
+      const files = await Promise.all(
+        result.filePaths.map(async (p) => {
+          const rel = await copyMaterialIntoParent(undefined, topicDir, p, subDir);
+          return { name: path.basename(p), relPath: rel };
+        })
+      );
       return { success: true, data: { files } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -429,7 +431,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 删除某主题学习资料文件（弹框删除用），relPath 为相对 materials/<topicDir>/ 的路径
   ipcMain.handle("parent:deleteMaterial", async (_e, topicDir: string, relPath: string) => {
     try {
-      deleteParentMaterial(undefined, topicDir, relPath);
+      await deleteParentMaterial(undefined, topicDir, relPath);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -718,7 +720,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const session = await getChildSession(childId);
       attachSessionEvents(session, childId, getMainWindow);
       const history = getSessionHistory(session);
-      const materials = getSessionMaterials(session, getChildDir(childId)).slice(-getMaterialsLimit());
+      const materials = (await getSessionMaterials(session, getChildDir(childId))).slice(-getMaterialsLimit());
       // ISSUE-041：孩子打开会话时立即处理一轮云端收件箱（分配包/进度请求），不等定时轮询
       try {
         const { handleCloudInbox } = await import("./delivery");
