@@ -1,0 +1,8 @@
+# 运行数据与虚拟环境（不入库）
+.venv/
+venv/
+database/
+storage/
+__pycache__/
+*.pyc
+*.db

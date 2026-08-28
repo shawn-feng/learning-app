@@ -37,3 +37,4 @@ scripts/test-render-iframe.js
 scripts/render-test-app/
 scripts/migrate-old-data.py
 dist4/
+dist-release/
