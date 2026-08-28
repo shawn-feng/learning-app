@@ -24,7 +24,7 @@
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
     "directories": {
-      "output": "dist-release"
+      "output": "dist"
     },
     "asar": true,
     "asarUnpack": [
@@ -32,15 +32,9 @@
     ],
     "files": [
       "out/**/*",
-      "electron/**/*.js",
-      "templates/**/*"
+      "electron/**/*.js"
     ],
-    "extraResources": [
-      {
-        "from": "templates",
-        "to": "templates"
-      }
-    ],
+    "extraResources": [],
     "win": {
       "target": [
         {
