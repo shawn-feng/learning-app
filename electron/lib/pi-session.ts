@@ -66,7 +66,7 @@ const LEARNING_NAV_INSTRUCTIONS = `
 - **直接用**系统提示里给出的 \`next\` 值，或调用 \`get_progress\` 工具（只回摘要，不含逐课明细）；
 - **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 500+ 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
 - 需要逐课状态（如逐课核对掌握度）时，用 kb_query 查进度（listOnly 只看课程清单），不要 read 文件；
-- 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。
+- 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。同一课要写多个字段（状态/掌握度/首次学习/最近复习）时，用 kb_update 的 fields 批量参数一次完成（fields 传 [{field,value},...] 数组），不要拆成多次调用。
 `;
 
 export function buildAgentsMd(profile: ChildProfile): string {

@@ -1,29 +1,27 @@
 import { loadVoiceConfig, getTranscribeCandidates, type VoiceProviderId } from "./voice-config";
 import { webmToWav16k } from "./audio";
-import { transcribe as aliyunTranscribe } from "./providers/aliyun";
-import { transcribe as tencentTranscribe } from "./providers/tencent";
 import { transcribe as qwenTranscribe } from "./providers/qwen";
+import { transcribe as mimoTranscribe } from "./providers/mimo";
 
 const PROVIDER_NAMES: Record<string, string> = {
-  aliyun: "阿里云",
-  tencent: "腾讯云",
   qwen: "千问(按量)",
   "qwen-tokenplan": "千问(token-plan)",
-  iflytek: "讯飞",
-  baidu: "百度",
+  mimo: "小米 MiMo(按量)",
+  "mimo-tokenplan": "小米 MiMo(token-plan)",
 };
 
 function dispatch(id: VoiceProviderId, wav: Buffer, creds: Record<string, string>): Promise<string> {
   switch (id) {
-    case "aliyun":
-      return aliyunTranscribe(wav, creds);
-    case "tencent":
-      return tencentTranscribe(wav, creds);
     case "qwen":
     case "qwen-tokenplan":
       // 两个千问语音通道复用同一 transcribe 实现；token-plan 的 endpoint 已在 creds 中
       // （DEFAULT_CONFIG 已预填 token-plan ASR 端点，按量通道未填则回退 dashscope 域名）。
       return qwenTranscribe(wav, creds);
+    case "mimo":
+    case "mimo-tokenplan":
+      // 两个 MiMo 语音通道复用同一 transcribe 实现；token-plan 的 endpoint 已在 creds 中
+      // （DEFAULT_CONFIG 已预填 token-plan ASR 端点，按量通道未填则回退 api.xiaomimimo.com）。
+      return mimoTranscribe(wav, creds);
     default:
       return Promise.reject(new Error(`供应商 ${id} 尚未实现`));
   }
@@ -72,4 +70,5 @@ export async function transcribeAudio(webmBuffer: Buffer, onlyProvider?: string)
 }
 
 export { loadVoiceConfig, saveVoiceConfig, getMaskedConfig, applyVoiceConfigPatch, getTranscribeCandidates, isProviderConfigured } from "./voice-config";
-export { synthesize } from "./tts";
+export { loadTtsConfig, saveTtsConfig, getMaskedTtsConfig, applyTtsConfigPatch, TTS_PROVIDER_ORDER } from "./tts-config";
+export { synthesize, TTS_VOICES } from "./tts";

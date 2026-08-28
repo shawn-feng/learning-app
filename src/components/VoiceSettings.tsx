@@ -10,26 +10,9 @@ interface VoiceProviderDef {
   fields: { key: string; label: string; readonly?: boolean }[];
 }
 
+// 语音输入（ASR）供应商：只保留千问 + 小米 MiMo，各分按量/token-plan 套餐两通道。
+// 各通道 apiKey 均可留空——留空时自动复用「模型配置」里同名 provider 的 key（auth.json）。
 const VOICE_PROVIDERS: VoiceProviderDef[] = [
-  {
-    id: "aliyun",
-    name: "阿里云",
-    available: true,
-    fields: [
-      { key: "appKey", label: "AppKey" },
-      { key: "accessKeyId", label: "AccessKey ID" },
-      { key: "accessKeySecret", label: "AccessKey Secret" },
-    ],
-  },
-  {
-    id: "tencent",
-    name: "腾讯云",
-    available: true,
-    fields: [
-      { key: "secretId", label: "SecretId" },
-      { key: "secretKey", label: "SecretKey" },
-    ],
-  },
   {
     id: "qwen",
     name: "千问 (按量付费)",
@@ -41,7 +24,7 @@ const VOICE_PROVIDERS: VoiceProviderDef[] = [
     name: "千问 (token-plan 套餐)",
     available: true,
     fields: [
-      { key: "apiKey", label: "API Key（token-plan 套餐专用 Key，与按量不同）" },
+      { key: "apiKey", label: "API Key（留空自动复用模型配置里的千问套餐 Key）" },
       {
         key: "endpoint",
         label: "ASR 端点（token-plan 套餐通道，固定不可改）",
@@ -50,34 +33,49 @@ const VOICE_PROVIDERS: VoiceProviderDef[] = [
     ],
   },
   {
-    id: "iflytek",
-    name: "讯飞",
-    available: false,
-    fields: [
-      { key: "appId", label: "AppId" },
-      { key: "apiKey", label: "ApiKey" },
-      { key: "apiSecret", label: "ApiSecret" },
-    ],
+    id: "mimo",
+    name: "小米 MiMo (按量付费)",
+    available: true,
+    fields: [{ key: "apiKey", label: "API Key（留空自动复用模型配置里的小米 MiMo 按量 Key）" }],
   },
   {
-    id: "baidu",
-    name: "百度",
-    available: false,
+    id: "mimo-tokenplan",
+    name: "小米 MiMo (token-plan 套餐)",
+    available: true,
     fields: [
-      { key: "appId", label: "AppId" },
-      { key: "apiKey", label: "ApiKey" },
-      { key: "secretKey", label: "SecretKey" },
+      { key: "apiKey", label: "API Key（留空自动复用模型配置里的小米 MiMo 套餐 Key）" },
+      {
+        key: "endpoint",
+        label: "ASR 端点（token-plan 套餐通道，固定不可改）",
+        readonly: true,
+      },
     ],
   },
 ];
 
+// 语音合成（TTS）供应商：edge-tts（免费）+ 千问/小米（各分按量与套餐）。
+// 与语音输入一致：apiKey 留空自动复用「模型配置」同名 provider 的 key。
+const TTS_PROVIDERS: { id: string; name: string; needsKey: boolean }[] = [
+  { id: "edge-tts", name: "Edge TTS (免费)", needsKey: false },
+  { id: "qwen", name: "千问 (按量付费)", needsKey: true },
+  { id: "qwen-tokenplan", name: "千问 (token-plan 套餐)", needsKey: true },
+  { id: "mimo", name: "小米 MiMo (按量付费)", needsKey: true },
+  { id: "mimo-tokenplan", name: "小米 MiMo (token-plan 套餐)", needsKey: true },
+];
+
 export default function VoiceSettings() {
   const [enabled, setEnabled] = useState(false);
-  const [provider, setProvider] = useState("aliyun"); // 当前正在编辑的服务
-  const [defaultProvider, setDefaultProvider] = useState("aliyun"); // 默认服务（识别时优先）
+  const [provider, setProvider] = useState("qwen"); // 当前正在编辑的识别服务
+  const [defaultProvider, setDefaultProvider] = useState("qwen"); // 默认识别服务（识别时优先）
   const [fields, setFields] = useState<Record<string, string>>({});
   const [status, setStatus] = useState("");
   const [testing, setTesting] = useState(false);
+  // 语音合成（TTS）：当前编辑 provider / 默认 provider / 当前字段 / 全量音色清单
+  const [ttsProvider, setTtsProvider] = useState("edge-tts");
+  const [ttsDefaultProvider, setTtsDefaultProvider] = useState("edge-tts");
+  const [ttsFields, setTtsFields] = useState<Record<string, string>>({});
+  const [ttsConfigCache, setTtsConfigCache] = useState<any>(null); // 打码后的完整配置快照（切换 provider 时读字段）
+  const [ttsVoices, setTtsVoices] = useState<{ provider: string; voiceId: string; name: string }[]>([]);
   const { recording, start, stop } = useAudioRecorder();
 
   useEffect(() => {
@@ -91,6 +89,19 @@ export default function VoiceSettings() {
     });
   }, []);
 
+  // TTS 配置 + 可选音色清单
+  useEffect(() => {
+    window.api.piGetTtsConfig().then((r: any) => {
+      if (r?.success) {
+        setTtsConfigCache(r.config);
+        setTtsDefaultProvider(r.config.provider || "edge-tts");
+        setTtsProvider(r.config.provider || "edge-tts");
+        setTtsFields(r.config.providers?.[r.config.provider || "edge-tts"] || {});
+        if (Array.isArray(r.voices)) setTtsVoices(r.voices);
+      }
+    }).catch(() => {});
+  }, []);
+
   async function switchProvider(id: string) {
     setProvider(id);
     setStatus("");
@@ -102,7 +113,7 @@ export default function VoiceSettings() {
 
   async function setDefault() {
     setDefaultProvider(provider);
-    setStatus(`已将「${currentProvider.name}」设为默认语音服务`);
+    setStatus(`已将「${currentProvider.name}」设为默认语音输入服务`);
     // 立即持久化默认服务（不依赖点「保存」），避免退出设置页后丢失
     try {
       const r = await window.api.voiceConfigSet({ enabled, provider, providers: {} });
@@ -138,6 +149,45 @@ export default function VoiceSettings() {
       setFields(result.config.providers[provider] || {});
     } else {
       setStatus(`保存失败: ${result.error}`);
+    }
+  }
+
+  // ===== 语音合成（TTS）操作 =====
+  const currentTts = TTS_PROVIDERS.find((p) => p.id === ttsProvider)!;
+
+  function switchTtsProvider(id: string) {
+    setTtsProvider(id);
+    const cfg = ttsConfigCache;
+    setTtsFields(cfg?.providers?.[id] || {});
+  }
+
+  function setTtsField(key: string, value: string) {
+    setTtsFields((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function saveTts() {
+    setStatus("");
+    const providers: Record<string, any> = {};
+    providers[ttsProvider] = ttsFields;
+    const r = await window.api.piSetTtsConfig({ provider: ttsDefaultProvider, providers });
+    if (r?.success) {
+      setTtsConfigCache(r.config);
+      setTtsFields(r.config.providers?.[ttsProvider] || {});
+      setStatus(`朗读配置已保存（${currentTts.name}）`);
+    } else {
+      setStatus(`朗读配置保存失败: ${r?.error || ""}`);
+    }
+  }
+
+  async function setTtsDefault() {
+    setStatus("");
+    const r = await window.api.piSetTtsConfig({ provider: ttsProvider });
+    if (r?.success) {
+      setTtsDefaultProvider(r.provider);
+      setTtsConfigCache(r.config);
+      setStatus(`已将「${currentTts.name}」设为默认朗读引擎`);
+    } else {
+      setStatus(`默认朗读引擎保存失败: ${r?.error || ""}`);
     }
   }
 
@@ -184,8 +234,12 @@ export default function VoiceSettings() {
   return (
     <div className="settings-section">
       <h3>语音配置</h3>
+
+      {/* ===== 第一部分：语音输入（识别） ===== */}
+      <h4 style={{ fontSize: 15, marginTop: 8, marginBottom: 4 }}>语音输入（识别）</h4>
       <p className="desc">
-        配置云端语音识别服务（阿里云、千问、腾讯云等）。可配置多个服务，其中一个是默认服务——识别时优先用默认服务，若默认服务不可用（未配置凭证或识别失败），会自动切换到其他已配置的服务。凭证仅保存在本机。
+        配置语音识别服务（千问 / 小米 MiMo，各分按量与 token-plan 套餐）。API Key 留空时自动复用「模型配置」里对应 provider 的 Key。
+        可配置多个服务，其中一个是默认服务——识别时优先用默认服务，若默认服务不可用（未配置凭证或识别失败），会自动切换到其他已配置的服务。
       </p>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
@@ -294,6 +348,103 @@ export default function VoiceSettings() {
         >
           {testing ? "识别中…" : recording ? "停止并识别" : "测试识别 🎤"}
         </button>
+      </div>
+
+      {/* ===== 第二部分：语音合成（朗读） ===== */}
+      <div style={{ marginTop: 32, paddingTop: 20, borderTop: "1px solid #eee" }}>
+        <h4 style={{ fontSize: 15, marginBottom: 4 }}>语音合成（朗读）</h4>
+        <p style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>
+          孩子朗读 / 语音播报用的合成引擎。可选 <strong>Edge TTS</strong>（免费无需 Key）、<strong>千问</strong>、
+          <strong>小米 MiMo</strong>（各分按量与套餐）。各引擎 API Key 留空时自动复用「模型配置」里对应 provider 的 Key。
+        </p>
+
+        <div style={{ marginBottom: 8, fontSize: 13, color: "#888" }}>
+          选择引擎编辑凭证与音色；点「设为默认」把它设为朗读时的首选引擎：
+        </div>
+        <div className="provider-list">
+          {TTS_PROVIDERS.map((p) => (
+            <div
+              key={p.id}
+              className={`provider-chip ${ttsProvider === p.id ? "active" : ""}`}
+              onClick={() => switchTtsProvider(p.id)}
+              style={{ position: "relative" }}
+            >
+              {p.name}
+              {ttsDefaultProvider === p.id && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: -8,
+                    right: -8,
+                    background: "#f6ad55",
+                    color: "white",
+                    fontSize: 10,
+                    borderRadius: 8,
+                    padding: "0 5px",
+                    lineHeight: "16px",
+                  }}
+                >
+                  默认
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {currentTts.needsKey && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>
+              API Key（留空自动复用模型配置里的同名 Key）
+            </label>
+            <input
+              type="password"
+              value={ttsFields.apiKey || ""}
+              onChange={(e) => setTtsField("apiKey", e.target.value)}
+              placeholder="API Key（留空 = 用模型配置里的 Key）"
+              style={{ width: "100%", padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
+            />
+          </div>
+        )}
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>朗读音色</label>
+          <select
+            value={ttsFields.voice || ""}
+            onChange={(e) => setTtsField("voice", e.target.value)}
+            style={{ width: "100%", padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
+          >
+            <option value="">{currentTts.id === "edge-tts" ? "自动（按语言选音色）" : "默认音色"}</option>
+            {ttsVoices
+              .filter((v) => v.provider === ttsProvider)
+              .map((v) => (
+                <option key={v.voiceId} value={v.voiceId}>
+                  {v.name}
+                </option>
+              ))}
+          </select>
+        </div>
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <IconButton
+            icon={Save}
+            title="保存朗读配置"
+            onClick={saveTts}
+            style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
+          />
+          <button
+            onClick={setTtsDefault}
+            style={{
+              padding: "10px 20px",
+              background: ttsDefaultProvider === ttsProvider ? "#edf2f7" : "#f0f4ff",
+              color: ttsDefaultProvider === ttsProvider ? "#718096" : "#667eea",
+              border: "none",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            {ttsDefaultProvider === ttsProvider ? "✓ 当前默认" : "设为默认"}
+          </button>
+        </div>
       </div>
 
       {status && (

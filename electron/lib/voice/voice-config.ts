@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { getSharedDir, getAuthPath } from "../config";
 
-export type VoiceProviderId = "aliyun" | "tencent" | "qwen" | "qwen-tokenplan" | "iflytek" | "baidu";
+export type VoiceProviderId = "qwen" | "qwen-tokenplan" | "mimo" | "mimo-tokenplan";
 
 export interface VoiceConfig {
   enabled: boolean;
@@ -14,54 +14,43 @@ export interface VoiceConfig {
 // 由 providers/qwen.ts 在未填 endpoint 时回退 dashscope 按量域名。
 const QWEN_TOKENPLAN_ASR_ENDPOINT =
   "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+// 小米 MiMo token-plan 语音 ASR 端点（套餐通道）。按量端点由 providers/mimo.ts 在未填 endpoint 时回退。
+const MIMO_TOKENPLAN_ASR_ENDPOINT = "https://token-plan-cn.xiaomimimo.com/v1/chat/completions";
 
 const DEFAULT_CONFIG: VoiceConfig = {
   enabled: false,
-  provider: "aliyun",
+  provider: "qwen",
   providers: {
-    aliyun: { appKey: "", accessKeyId: "", accessKeySecret: "" },
-    tencent: { secretId: "", secretKey: "" },
+    // 各通道 apiKey 均可留空——留空时自动复用模型配置（auth.json）里同名 provider 的 key
+    //（qwen→auth.qwen、qwen-tokenplan→auth["qwen-tokenplan"]、mimo→auth.mimo、mimo-tokenplan→auth["mimo-tokenplan"]）
     qwen: { apiKey: "" },
     "qwen-tokenplan": { apiKey: "", endpoint: QWEN_TOKENPLAN_ASR_ENDPOINT },
-    iflytek: { appId: "", apiKey: "", apiSecret: "" },
-    baidu: { appId: "", apiKey: "", secretKey: "" },
+    mimo: { apiKey: "" },
+    "mimo-tokenplan": { apiKey: "", endpoint: MIMO_TOKENPLAN_ASR_ENDPOINT },
   },
 };
 
 // 服务回退顺序（默认服务优先，其余按此顺序尝试）
-export const VOICE_PROVIDER_ORDER: VoiceProviderId[] = ["aliyun", "tencent", "qwen", "qwen-tokenplan"];
+export const VOICE_PROVIDER_ORDER: VoiceProviderId[] = ["qwen", "qwen-tokenplan", "mimo", "mimo-tokenplan"];
 
-// 判断某个语音服务是否已配置可用
+// 从模型认证配置（auth.json）读 provider 段的 key（语音留空复用模型 key 的兜底）
+function loadModelKeyFromAuth(providerId: string): string {
+  try {
+    const auth = JSON.parse(fs.readFileSync(getAuthPath(), "utf-8"));
+    const seg = auth?.[providerId];
+    const key = seg?.key || seg?.apiKey;
+    return typeof key === "string" ? key.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+// 判断某个语音服务是否已配置可用：自身 apiKey 或模型配置（auth.json）同名 provider 的 key 任一存在即可。
 export function isProviderConfigured(cfg: VoiceConfig, id: VoiceProviderId): boolean {
   const creds = cfg.providers[id] || {};
-  switch (id) {
-    case "aliyun":
-      return !!(creds.appKey && creds.accessKeyId && creds.accessKeySecret);
-    case "tencent":
-      return !!(creds.secretId && creds.secretKey);
-    case "qwen":
-      if (creds.apiKey) return true;
-      // apiKey 未填时回退模型认证配置（auth.json 的 qwen.key）
-      try {
-        const auth = JSON.parse(fs.readFileSync(getAuthPath(), "utf-8"));
-        const key = auth?.qwen?.key || auth?.qwen?.apiKey;
-        return typeof key === "string" && key.trim().length > 0;
-      } catch {
-        return false;
-      }
-    case "qwen-tokenplan":
-      // token-plan 与按量是两套独立 API Key，不回退 qwen.key，必须自身 key 段有值
-      if (creds.apiKey) return true;
-      try {
-        const auth = JSON.parse(fs.readFileSync(getAuthPath(), "utf-8"));
-        const key = auth?.["qwen-tokenplan"]?.key || auth?.["qwen-tokenplan"]?.apiKey;
-        return typeof key === "string" && key.trim().length > 0;
-      } catch {
-        return false;
-      }
-    default:
-      return false; // iflytek / baidu 未实现
-  }
+  if (creds.apiKey) return true;
+  // apiKey 未填时回退模型认证配置（auth.json 同名 provider 段）
+  return loadModelKeyFromAuth(id).length > 0;
 }
 
 // 生成识别候选：默认服务在前，其余已配置的按固定顺序在后
@@ -91,7 +80,7 @@ export function loadVoiceConfig(): VoiceConfig {
     const parsed = JSON.parse(raw);
     return {
       enabled: !!parsed.enabled,
-      provider: parsed.provider || "aliyun",
+      provider: parsed.provider || "qwen",
       providers: {
         ...DEFAULT_CONFIG.providers,
         ...(parsed.providers || {}),

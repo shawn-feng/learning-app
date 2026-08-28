@@ -1,14 +1,14 @@
 import { useState, useEffect } from "react";
-import { Bot, ArrowLeft, LogOut, UserPlus, BarChart3, KeyRound, ListTree, Pencil, Trash2 } from "lucide-react";
+import { Bot, ArrowLeft, LogOut, UserPlus, KeyRound, ListTree, Pencil, Trash2, MessageSquare } from "lucide-react";
 import IconButton from "../components/IconButton";
 import AddChildModal from "../components/AddChildModal";
-import ProgressView from "../components/ProgressView";
 import TokenStatsPanel from "../components/TokenStatsPanel";
 import ChildTopicsModal from "../components/ChildTopicsModal";
 import CourseManager from "../components/CourseManager";
 import ParentChatPanel from "../components/ParentChatPanel";
 import Settings from "./Settings";
 import AgentPromptEditor from "../components/AgentPromptEditor";
+import { useChatPanel } from "../hooks/useChatPanel";
 
 interface Props {
   email: string;
@@ -22,12 +22,14 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [children, setChildren] = useState<any[]>([]);
   const [showAddChild, setShowAddChild] = useState(false);
   const [selectedChild, setSelectedChild] = useState<any>(null);
-  const [view, setView] = useState<"children" | "progress" | "courses" | "tokens" | "settings">("children");
+  const [view, setView] = useState<"children" | "courses" | "tokens" | "settings">("children");
   const [error, setError] = useState("");
   const [resetChildId, setResetChildId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [topicsChild, setTopicsChild] = useState<any>(null); // 学习主题弹窗目标孩子
   const [agentPrompt, setAgentPrompt] = useState<{ scope: string; ref: string; title: string } | null>(null);
+  // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
+  const parentChat = useChatPanel("parent", 360);
 
   async function refresh() {
     const list = await window.api.childList();
@@ -90,19 +92,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             <div className="child-avatar">👨‍👩‍👧</div>
             <div className="child-info">
               <div className="name">孩子管理</div>
-            </div>
-          </div>
-          <div
-            className="child-card"
-            style={{ border: "none" }}
-            onClick={() => {
-              setView("progress");
-              setSelectedChild(null);
-            }}
-          >
-            <div className="child-avatar">📊</div>
-            <div className="child-info">
-              <div className="name">学习进度</div>
             </div>
           </div>
           <div
@@ -201,7 +190,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                           </div>
                         </div>
                         <div style={{ display: "flex", gap: 8, marginTop: 12, width: "100%", flexWrap: "wrap" }}>
-                          <IconButton icon={BarChart3} title="学习进度" style={{ flex: 1, minWidth: 44 }} onClick={() => { setSelectedChild(child); setView("progress"); }} />
                           <IconButton icon={KeyRound} title="重置密码" style={{ flex: 1, minWidth: 44 }} onClick={() => { setResetChildId(child.childId); setNewPassword(""); setError(""); }} />
                           <IconButton icon={ListTree} title="学习主题" style={{ flex: 1, minWidth: 44 }} onClick={() => setTopicsChild(child)} />
                           <IconButton icon={Pencil} title="编辑 AI 提示词" style={{ flex: 1, minWidth: 44 }} onClick={() => setAgentPrompt({ scope: "child", ref: child.childId, title: `编辑 AI 提示词 — ${child.aiName}` })} />
@@ -215,14 +203,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           )}
 
-          {view === "progress" && (
-            <ProgressView
-              childrenList={children}
-              selectedChild={selectedChild}
-              onSelectChild={setSelectedChild}
-            />
-          )}
-
           {view === "courses" && <CourseManager />}
 
           {view === "tokens" && <TokenStatsPanel childrenList={children} />}
@@ -230,9 +210,35 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           {view === "settings" && <Settings />}
         </div>
 
-        {/* 右：家长-Agent 常驻聊天（ISSUE-050） */}
-        <div className="dashboard-chat">
-          <ParentChatPanel />
+        {/* 右：家长-Agent 常驻聊天（ISSUE-050），可折叠 + 拖拽调宽 */}
+        <div
+          className="dashboard-chat"
+          style={{
+            width: parentChat.collapsed ? 44 : parentChat.width,
+            minWidth: parentChat.collapsed ? 44 : undefined,
+          }}
+        >
+          {parentChat.collapsed ? (
+            <div
+              className="chat-collapsed-bar"
+              title="展开聊天"
+              onClick={() => parentChat.setCollapsed(false)}
+            >
+              <MessageSquare size={20} />
+            </div>
+          ) : (
+            <>
+              <div className="chat-resize-handle" onMouseDown={parentChat.startDrag} title="拖动调整聊天宽度" />
+              <button
+                className="chat-collapse-btn"
+                title="折叠聊天"
+                onClick={() => parentChat.setCollapsed(true)}
+              >
+                »
+              </button>
+              <ParentChatPanel />
+            </>
+          )}
         </div>
       </div>
 

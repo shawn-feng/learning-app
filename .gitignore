@@ -40,3 +40,6 @@ dist4/
 dist-release/
 dist-mac/
 dist-ubuntu/
+
+# 第三方平台密钥（切勿提交）
+douyin-client.txt

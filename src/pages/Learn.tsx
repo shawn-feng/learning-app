@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelLeftClose, PanelLeftOpen, Bot, Gauge, Settings, KeyRound, LogOut, BookOpen, BarChart3 } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Bot, Gauge, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
+import { useChatPanel } from "../hooks/useChatPanel";
 
 interface Props {
   child: any;
@@ -106,6 +107,8 @@ export default function Learn({ child, onExit }: Props) {
 
   // Sidebar collapse
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 右侧聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化，与家长端互不干扰）
+  const chat = useChatPanel("child", 440);
 
   // TTS 语速（默认正常 1.0x）
   const [rate, setRate] = useState("+0%");
@@ -740,7 +743,46 @@ export default function Learn({ child, onExit }: Props) {
           ) : (
             <LearningDashboard childId={child.childId} />
           )}
-          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} running={busy} onStop={handleStop} aiEmoji={aiEmoji} rate={rate} childId={child.childId} notice={visionNotice || null} />
+          <div
+            className="learn-chat"
+            style={{
+              width: chat.collapsed ? 44 : chat.width,
+              minWidth: chat.collapsed ? 44 : undefined,
+              flex: chat.collapsed ? "0 0 auto" : "0 0 auto",
+            }}
+          >
+            {chat.collapsed ? (
+              <div
+                className="chat-collapsed-bar"
+                title="展开聊天"
+                onClick={() => chat.setCollapsed(false)}
+              >
+                <MessageSquare size={20} />
+              </div>
+            ) : (
+              <>
+                <div className="chat-resize-handle" onMouseDown={chat.startDrag} title="拖动调整聊天宽度" />
+                <button
+                  className="chat-collapse-btn"
+                  title="折叠聊天"
+                  onClick={() => chat.setCollapsed(true)}
+                >
+                  »
+                </button>
+                <ChatWindow
+                  messages={messages}
+                  onSend={handleSend}
+                  disabled={busy}
+                  running={busy}
+                  onStop={handleStop}
+                  aiEmoji={aiEmoji}
+                  rate={rate}
+                  childId={child.childId}
+                  notice={visionNotice || null}
+                />
+              </>
+            )}
+          </div>
         </div>
       </div>
 

@@ -11,6 +11,9 @@ interface AppSettings {
   // 「编程 agent」模型（ISSUE-020），格式同 defaultModel："provider/modelId"。
   // 空/未设置 = 未启用编程 agent：create_html_lesson 工具会报错并提示家长先到设置页配置。
   programmingModel?: string;
+  // 默认视觉模型（图片上传时自动切换到的多模态模型），格式 "provider/modelId"。
+  // 空/未设置 = 回退 DEFAULT_VISION_MODEL（qwen/qwen3-vl-flash）。
+  visionModel?: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -73,6 +76,21 @@ export function setProgrammingModelKey(key: string): void {
     settings.programmingModel = key;
   } else {
     delete settings.programmingModel;
+  }
+  saveSettings(settings);
+}
+
+// 默认视觉模型（"provider/modelId"）。空字符串/未设置表示「未指定，回退 DEFAULT_VISION_MODEL」。
+export function getVisionModelKey(): string {
+  return loadSettings().visionModel || "";
+}
+
+export function setVisionModelKey(key: string): void {
+  const settings = loadSettings();
+  if (key) {
+    settings.visionModel = key;
+  } else {
+    delete settings.visionModel;
   }
   saveSettings(settings);
 }

@@ -291,8 +291,8 @@ input, textarea {
 
 /* 右栏：家长-Agent 常驻聊天（ISSUE-050） */
 .dashboard-chat {
+  position: relative;
   width: 360px;
-  min-width: 300px;
   background: #fafbfe;
   border-left: 1px solid #eee;
   display: flex;
@@ -929,7 +929,8 @@ input, textarea {
 }
 
 .content-panel {
-  width: 45%;
+  flex: 1;
+  min-width: 0;
   background: white;
   border-right: 1px solid #eee;
   overflow-y: auto;
@@ -1065,8 +1066,8 @@ input, textarea {
 
 /* 学习进度看板 */
 .dashboard-panel {
-  width: 45%;
-  min-width: 320px;
+  flex: 1;
+  min-width: 0;
   background: white;
   border-right: 1px solid #eee;
   overflow-y: auto;
@@ -1542,6 +1543,78 @@ input, textarea {
   /* ISSUE-037 续：flex item 默认 min-height:auto 会被内容撑高（消息多时把父容器拉长、
      整页出现滚动条）；置 0 后聊天区高度严格受父容器约束，消息只在 .chat-messages 内部滚动。 */
   min-height: 0;
+}
+
+/* ===== 聊天面板：可折叠 + 可拖拽调宽（家长端 / 孩子端通用） ===== */
+/* 孩子端聊天容器（learn-body 内固定宽度） */
+.learn-chat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid #eee;
+  background: #fafbfe;
+  overflow: hidden;
+}
+
+/* 折叠后的窄条（家长端右栏 / 孩子端右侧）：撑满整列高度，展开按钮居中 */
+.chat-collapsed-bar {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-left: 1px solid #eee;
+  background: #fafbfe;
+  cursor: pointer;
+  color: #667eea;
+}
+
+.chat-collapsed-bar:hover {
+  background: #f0f4ff;
+}
+
+/* 拖拽调宽手柄（面板左边缘，加宽便于按住拖动） */
+.chat-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  cursor: col-resize;
+  z-index: 20;
+  transition: background 0.15s ease;
+}
+
+.chat-resize-handle:hover {
+  background: rgba(102, 126, 234, 0.35);
+}
+
+/* 折叠按钮（吸附在面板左缘、拖拽手柄内侧，竖排胶囊，不遮挡右上角其它按钮） */
+.chat-collapse-btn {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 21;
+  width: 22px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e0e0e0;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #667eea;
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: background 0.15s ease;
+}
+
+.chat-collapse-btn:hover {
+  background: #eef2ff;
 }
 
 .rate-btn {

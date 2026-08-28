@@ -493,6 +493,53 @@ const execHandlers: Record<string, ExecHandler> = {
       db.close();
     }
   },
+  "kb.courses.updateFields": (ctx, args) => {
+    // 批量更新同一课程多字段（一次事务，减少工具调用与 RPC 往返）：
+    // args.fields = [{ field, value }×N]，字段白名单/自增/规范化语义与 kb.courses.updateField 一致；
+    // 任一字段非法则整体抛错回滚（防止「手动更新 learned/total」等被静默吞掉）。
+    const childId = requireChildId(ctx, args);
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      const topic = resolveKbTopicKey(db, str(args.topic));
+      const title = str(args.title);
+      const exists = db.prepare("SELECT 1 FROM courses WHERE topic = ? AND title = ?").get(topic, title);
+      if (!exists) return { ok: false };
+      const fields = Array.isArray(args.fields) ? (args.fields as Array<{ field?: unknown; value?: unknown }>) : [];
+      if (!fields.length) throw new ApiError(400, "kb.courses.updateFields 需要非空 fields 数组");
+      db.exec("BEGIN");
+      try {
+        for (const f of fields) {
+          const fname = str(f?.field);
+          const col = COURSE_FIELD_MAP[fname];
+          if (!col) {
+            throw new ApiError(400, `progress 字段「${fname}」不支持（合法: ${Object.keys(COURSE_FIELD_MAP).join(" / ")}）`);
+          }
+          const value = str(f?.value);
+          if (col === "review_count") {
+            const delta = value === "+1" ? 1 : parseInt(value, 10);
+            if (!Number.isFinite(delta) || delta < 0) {
+              throw new ApiError(400, `复习次数值非法: ${value}`);
+            }
+            if (value === "+1") {
+              db.prepare("UPDATE courses SET review_count = review_count + 1 WHERE topic = ? AND title = ?").run(topic, title);
+            } else {
+              db.prepare("UPDATE courses SET review_count = ? WHERE topic = ? AND title = ?").run(delta, topic, title);
+            }
+          } else {
+            const val = col === "tags" ? normalizeTags(value) : value;
+            db.prepare(`UPDATE courses SET ${col} = ? WHERE topic = ? AND title = ?`).run(val, topic, title);
+          }
+        }
+        db.exec("COMMIT");
+        return { ok: true, updated: fields.length };
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    } finally {
+      db.close();
+    }
+  },
   "agents.save": (ctx, args) => {
     const scope = str(args.scope);
     const ref = str(args.ref);

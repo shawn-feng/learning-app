@@ -2,10 +2,10 @@ import { useState, useEffect } from "react";
 import { RefreshCw, CheckCircle } from "lucide-react";
 import IconButton from "../components/IconButton";
 import VoiceSettings from "../components/VoiceSettings";
+import VisionSettings from "../components/VisionSettings";
 import SchedulerSettings from "../components/SchedulerSettings";
 import BackupSettings from "../components/BackupSettings";
 import GeneralSettings from "../components/GeneralSettings";
-import TopicEditor from "../components/TopicEditor";
 
 // ISSUE-039 + token-plan 拆分：
 // 仅保留国内/已确认的 provider，移除国外 provider（anthropic / google / openrouter / groq）。
@@ -24,10 +24,12 @@ const PROVIDERS = [
   { id: "deepseek", name: "DeepSeek (官方直连)", keyHint: "sk-..." },
   { id: "openai", name: "OpenAI", keyHint: "sk-..." },
   { id: "minimax", name: "MiniMax", keyHint: "请填写 MiniMax API Key" },
+  { id: "mimo", name: "小米 MiMo (按量付费)", keyHint: "sk-...（MiMo 按量 Key）" },
+  { id: "mimo-tokenplan", name: "小米 MiMo (token-plan 套餐)", keyHint: "tp-...（套餐 Key，与按量不同）" },
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "voice" | "scheduler" | "general" | "topics" | "backup">("models");
+  const [tab, setTab] = useState<"models" | "voice" | "vision" | "scheduler" | "general" | "backup">("models");
   const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
@@ -38,6 +40,7 @@ export default function Settings() {
   // 两者独立：下拉不跟随上方 provider 切换、保存走独立按钮，与「默认模型」配置互不耦合。
   const [programmingModel, setProgrammingModel] = useState("");
   const [programmingModelDraft, setProgrammingModelDraft] = useState("");
+  // 语音模型（TTS 音色）已在 VoiceSettings 独立配置；此处仅保留文本模型相关状态
 
   // 初始值以主进程存储（app-settings.json）为准，与 ModelSelector / 会话建链同源；
   // 若主进程尚无记录但有旧的 localStorage 值，则迁移过去。
@@ -122,8 +125,6 @@ export default function Settings() {
   }
 
   return (
-    // ISSUE-037 续：flex column 让「教学内容」tab（TopicEditor）可用 flex:1 + min-height:0
-    // 撑满可视区、聊天区内部滚动；其它 tab 内容高度不变（仍由 dashboard-main 滚动）。
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <h3 style={{ marginBottom: 16 }}>设置</h3>
 
@@ -131,7 +132,7 @@ export default function Settings() {
         {(
           [
             ["models", "模型配置"],
-            ["topics", "教学内容"],
+            ["vision", "视觉配置"],
             ["voice", "语音配置"],
             ["scheduler", "定时任务"],
             ["backup", "数据备份"],
@@ -295,7 +296,7 @@ export default function Settings() {
         </div>
       )}
 
-      {tab === "topics" && <TopicEditor />}
+      {tab === "vision" && <VisionSettings />}
 
       {tab === "voice" && <VoiceSettings />}
 

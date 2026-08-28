@@ -5,10 +5,10 @@ import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, s
 import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
-import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, DEFAULT_VISION_MODEL } from "./pi-runtime";
+import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, getVisionModel } from "./pi-runtime";
 import fs from "fs";
 import path from "path";
-import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize } from "./voice";
+import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary } from "./learning-summary";
 import {
   allocateTopicToChild,
@@ -31,7 +31,7 @@ import {
   upsertParentTag,
 } from "./parent-library";
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
-import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey } from "./app-settings";
+import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 
@@ -613,6 +613,43 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // 默认视觉模型（图片上传自动切换，缺省 qwen/qwen3-vl-flash）
+  ipcMain.handle("pi:get_vision_model", async () => {
+    try {
+      return { success: true, key: getVisionModelKey() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("pi:set_vision_model", async (_e: IpcMainInvokeEvent, key: string) => {
+    try {
+      setVisionModelKey(key || "");
+      return { success: true, key: key || "" };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 语音合成（TTS）配置：provider + 各 provider 的 apiKey（留空复用模型配置）+ 默认音色。
+  // config 为打码后的配置（apiKey 不返回明文）；voices = 可选音色清单（设置页下拉用）
+  ipcMain.handle("pi:get_tts_config", async () => {
+    try {
+      return { success: true, config: getMaskedTtsConfig(), voices: TTS_VOICES };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("pi:set_tts_config", async (_e: IpcMainInvokeEvent, patch: any) => {
+    try {
+      const cfg = applyTtsConfigPatch(patch || {});
+      return { success: true, config: getMaskedTtsConfig(), provider: cfg.provider };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("progress:get", async (_e, childId: string) => {
     const childDir = getChildDir(childId);
     const result: Record<string, any> = {};
@@ -769,8 +806,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
           const cur: any = session.model;
           const supportsImage = Array.isArray(cur?.input) && cur.input.includes("image");
           if (!supportsImage) {
-            const runtime = await getSharedRuntime();
-            const vl = runtime.getModel(DEFAULT_VISION_MODEL.provider, DEFAULT_VISION_MODEL.modelId);
+            // 用设置页配置的默认视觉模型（缺省 qwen/qwen3-vl-flash，见 getVisionModel）
+            const vl = await getVisionModel();
             if (vl) {
               await session.setModel(vl);
               _e.sender.send("pi:vision_model_switched", { childId, modelId: vl.id });
@@ -1000,6 +1037,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         provider: m.provider,
         id: m.id,
         name: m.name || m.id,
+        // 保留 input（如 ["text","image"]），前端「视觉配置」据此过滤多模态模型
+        input: m.input || [],
       }));
     } catch (err) {
       return { success: false, error: (err as Error).message };

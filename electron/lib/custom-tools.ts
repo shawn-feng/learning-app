@@ -451,6 +451,7 @@ export const kbUpdateTool = defineTool({
     "按结构定位更新 SQLite 知识库的字段值，**无需提供旧值、内容不进上下文**（替代「读全文 + edit 重写」）。\n\n" +
     "**table: \"daily\"**：`date` + `block` + `title`（定位条目）+ `field` + `value`（新值）。\n" +
     "**table: \"course\"**：更新某门课程（courses 表）。`topic`（如 lunyu）+ `item`（**课程名必填**，如 论语先进篇第十七章）+ `field`（状态/掌握状态/掌握度/首次学习/最近复习/复习时间/上次复习/复习次数/教学资料/学习资料/tags）+ `value`。\n" +
+    "**批量更新（推荐）**：同一课程要改多个字段时，用 `fields: [{field, value}, ...]` 一次更新（如状态+掌握度+首次学习+最近复习），比多次调用省 token；`field`+`value` 单字段写法仍兼容。\n" +
     "**进度自动计算**：learned/total/next/updated 由视图实时计算，**不要**手动更新（传这些字段会被拒绝）。复习次数传 `value: \"+1\"` 自动递增。\n" +
     "**字段缺失时自动追加**（如新学一课补「掌握度/首次学习」）。\n" +
     "**只用于数据写入**；materials/ / uploads/ 等内容文件请用 write/edit；主题教学方法与教学文案存家长库，一律用 parent_content 获取。",
@@ -461,15 +462,50 @@ export const kbUpdateTool = defineTool({
     title: Type.Optional(Type.String({ description: "daily：条目标题" })),
     topic: Type.Optional(Type.String({ description: "course：主题名（如 lunyu）" })),
     item: Type.Optional(Type.String({ description: "course：课程名（必填，如 论语先进篇第十七章）" })),
-    field: Type.String({ description: "字段名（course：状态/掌握度/首次学习/最近复习/复习次数/教学资料/学习资料/tags）" }),
-    value: Type.String({ description: "新值（整字段替换）" }),
+    field: Type.Optional(Type.String({ description: "字段名（单字段写法；course：状态/掌握度/首次学习/最近复习/复习次数/教学资料/学习资料/tags）" })),
+    value: Type.Optional(Type.String({ description: "新值（整字段替换；与 field 配套的单字段写法）" })),
+    fields: Type.Optional(
+      Type.Array(
+        Type.Object({
+          field: Type.String({ description: "字段名" }),
+          value: Type.String({ description: "新值" }),
+        }),
+        { description: "批量字段数组（推荐）：一次更新多个字段，如 [{field:'状态',value:'✅'},{field:'掌握度',value:'熟练'}]" }
+      )
+    ),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     // SPLIT M8-B：数据唯一真源在服务端，经 /db/exec RPC 写入
     const child_id = childIdFromCwd(ctx.cwd);
+    const fields = Array.isArray(params.fields) && params.fields.length ? params.fields : null;
+    const fmtField = (f: { field: string; value: string }) => `${f.field}=${f.value}`;
     if (params.table === "daily") {
       if (!params.date || !params.block || !params.title) {
-        throw new Error("kb_update daily 需要 date + block + title + field + value");
+        throw new Error("kb_update daily 需要 date + block + title + field/value 或 fields");
+      }
+      if (fields) {
+        // daily 字段少，批量逐条走单字段 op（服务端无独立批量 op）
+        const out: string[] = [];
+        for (const f of fields) {
+          const r = await dbExec<{ ok: boolean }>("kb.daily_entries.updateField", {
+            child_id,
+            date: params.date,
+            block: params.block,
+            title: params.title,
+            field: f.field,
+            value: f.value,
+          });
+          if (!r.ok) throw new Error(`daily 条目不存在: ${params.date}「${params.block}」${params.title}`);
+          out.push(fmtField(f));
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `已更新 daily ${params.date}「${params.block}」${params.title}：${out.join("、")}`,
+            },
+          ],
+        };
       }
       const r = await dbExec<{ ok: boolean }>("kb.daily_entries.updateField", {
         child_id,
@@ -492,6 +528,24 @@ export const kbUpdateTool = defineTool({
     if (params.table === "course" || params.table === "progress") {
       if (!params.topic) throw new Error("kb_update course 需要 topic（如 lunyu）");
       if (!params.item) throw new Error("kb_update course 需要 item（课程名，如 论语先进篇第十七章）");
+      if (fields) {
+        // 批量：一次 RPC 事务更新多字段
+        const r = await dbExec<{ ok: boolean }>("kb.courses.updateFields", {
+          child_id,
+          topic: params.topic,
+          title: params.item,
+          fields,
+        });
+        if (!r.ok) throw new Error(`进度更新失败：主题「${params.topic}」课程「${params.item}」不存在`);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `已更新 ${params.topic}「${params.item}」：${fields.map(fmtField).join("、")}`,
+            },
+          ],
+        };
+      }
       const r = await dbExec<{ ok: boolean }>("kb.courses.updateField", {
         child_id,
         topic: params.topic,

@@ -4,7 +4,7 @@ import {
   type ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
 import { getAuthPath } from "./config";
-import { getDefaultModelKey, getProgrammingModelKey } from "./app-settings";
+import { getDefaultModelKey, getProgrammingModelKey, getVisionModelKey } from "./app-settings";
 import fs from "fs";
 
 const cacheKey = "__learningAppModelRuntime";
@@ -194,8 +194,9 @@ const QWEN_TOKENPLAN_PROVIDER: ProviderConfig = {
   name: "通义千问 (Qwen) · token-plan 套餐",
   baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
   api: "openai-completions",
-  // 经 token-plan 套餐可调用的 DeepSeek V4 系列（费用低于直连 deepseek 官方 / 按量）。
-  models: QWEN_DEEPSEEK_MODELS,
+  // 经 token-plan 套餐可调用的模型：DeepSeek V4 系列（费用低于直连 deepseek 官方 / 按量）
+  // + Qwen3-VL 视觉系列（视觉模型在套餐通道同样可用，视觉配置可选手按量或套餐，见 VisionSettings）。
+  models: [...QWEN_DEEPSEEK_MODELS, ...QWEN_VL_MODELS],
 };
 
 function registerQwenTokenplanProvider(runtime: ModelRuntime): void {
@@ -297,6 +298,80 @@ function registerMinimaxProvider(runtime: ModelRuntime): void {
   }
 }
 
+// 小米 MiMo（OpenAI 兼容接口）。官方文档：
+//   - OpenAI 兼容 baseUrl（按量付费）：https://api.xiaomimimo.com/v1
+//   - token-plan 套餐端点：https://token-plan-cn.xiaomimimo.com/v1（tp- 开头 key，与按量 sk- 不同，
+//     若用户用套餐，把 baseUrl 换成该端点并在 auth["mimo"] 配套餐 key 即可）
+//   - 鉴权：Authorization: Bearer 与 api-key: 头均支持（文档 curl 示例用 api-key，OpenAI SDK 用 Bearer）
+//   - 在售模型（2026-08 官方模型列表）：mimo-v2.5-pro（文本/深度思考）、mimo-v2.5（全模态理解）；
+//     旧 v2 系列（mimo-v2-pro/v2-omni/v2-flash/v2-tts）已 2026-06-30 下线，不登记。
+// 思考格式：MiMo 与 DeepSeek 同风格（thinking: {type: enabled/disabled}，assistant 消息返回
+// reasoning_content，多轮工具调用需回传历史 reasoning_content）→ 直接复用 SDK 的
+// thinkingFormat:"deepseek" + requiresReasoningContentOnAssistantMessages:true，参数与 QWEN_DEEPSEEK_MODELS
+// 对齐。MiMo 支持 developer role（第三方 pi provider 实测），supportsDeveloperRole 保持默认 true。
+// 视觉：mimo-v2.5 是官方全模态模型（文本+图片，OpenAI 兼容 image_url 格式），登记 image 输入，
+// 使其可被选为「默认视觉模型」（图片上传自动切换，见 getVisionModel / Settings 视觉模型下拉）。
+const MIMO_MODELS: ProviderModelConfig[] = [
+  {
+    id: "mimo-v2.5-pro",
+    name: "小米 MiMo V2.5 Pro (旗舰)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 65536, // 官方最大输出 128K，取安全值
+    compat: { thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+  {
+    id: "mimo-v2.5",
+    name: "小米 MiMo V2.5 (全模态)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000000,
+    maxTokens: 65536,
+    compat: { thinkingFormat: "deepseek", requiresReasoningContentOnAssistantMessages: true },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+];
+
+const MIMO_PROVIDER: ProviderConfig = {
+  name: "小米 MiMo (按量付费)",
+  baseUrl: "https://api.xiaomimimo.com/v1",
+  api: "openai-completions",
+  models: MIMO_MODELS,
+};
+
+function registerMimoProvider(runtime: ModelRuntime): void {
+  try {
+    runtime.registerProvider("mimo", MIMO_PROVIDER);
+  } catch (err) {
+    console.error("[mimo] register provider failed:", (err as Error).message);
+  }
+}
+
+// 小米 MiMo token-plan 套餐通道（与按量付费是不同的 base URL 与 key 段，打到哪个 URL 决定走哪种计费）。
+//   - 按量付费：https://api.xiaomimimo.com/v1（auth["mimo"]，sk- 开头）
+//   - token-plan：https://token-plan-cn.xiaomimimo.com/v1（auth["mimo-tokenplan"]，tp- 开头，套餐专属）
+// 两通道 key 不相同，切勿互相拷贝或同步（与 qwen/qwen-tokenplan 双通道同理）。
+const MIMO_TOKENPLAN_PROVIDER: ProviderConfig = {
+  name: "小米 MiMo · token-plan 套餐",
+  baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+  api: "openai-completions",
+  models: MIMO_MODELS,
+};
+
+function registerMimoTokenplanProvider(runtime: ModelRuntime): void {
+  try {
+    runtime.registerProvider("mimo-tokenplan", MIMO_TOKENPLAN_PROVIDER);
+  } catch (err) {
+    console.error("[mimo-tokenplan] register provider failed:", (err as Error).message);
+  }
+}
+
 export async function getSharedRuntime(): Promise<ModelRuntime> {
   const g = globalThis as any;
   if (!g[cacheKey]) {
@@ -312,6 +387,8 @@ export async function getSharedRuntime(): Promise<ModelRuntime> {
     registerQwenProvider(g[cacheKey]);
     registerQwenTokenplanProvider(g[cacheKey]);
     registerMinimaxProvider(g[cacheKey]);
+    registerMimoProvider(g[cacheKey]);
+    registerMimoTokenplanProvider(g[cacheKey]);
   }
   return g[cacheKey];
 }
@@ -320,7 +397,7 @@ export async function getSharedRuntime(): Promise<ModelRuntime> {
 // （anthropic / google / openrouter / groq 等），避免前端「设为默认模型」下拉泄漏国外模型。
 // 即使未来 SDK 升级又注册了新国外 provider，也只会被挡在白名单之外。
 // 注：openai 用户未点名删除，默认保留；如需一并去掉，从本数组移除 "openai" 即可。
-const ALLOWED_MODEL_PROVIDERS = ["qwen", "qwen-tokenplan", "deepseek", "openai", "minimax"];
+const ALLOWED_MODEL_PROVIDERS = ["qwen", "qwen-tokenplan", "deepseek", "openai", "minimax", "mimo", "mimo-tokenplan"];
 
 export async function getAvailableModels() {
   const runtime = await getSharedRuntime();
@@ -352,6 +429,23 @@ export async function getDefaultModel() {
   }
   // 未设置或指定模型无法解析（如 provider 未注册）→ 回退到 qwen-tokenplan 的 deepseek-v4-flash-0731（套餐端点）。
   return runtime.getModel(DEFAULT_PROVIDER, DEFAULT_MODEL);
+}
+
+// 默认视觉模型（图片上传时 pi:prompt 自动切换用）。读 app-settings 的 visionModel（"provider/modelId"），
+// 用户可在设置页「模型配置」指定任意多模态模型为默认视觉模型；未设置或解析失败回退 qwen/qwen3-vl-flash。
+export async function getVisionModel() {
+  const runtime = await getSharedRuntime();
+  const key = getVisionModelKey();
+  if (key) {
+    const sep = key.indexOf("/");
+    const provider = sep > 0 ? key.slice(0, sep) : "";
+    const modelId = sep > 0 ? key.slice(sep + 1) : "";
+    if (provider && modelId) {
+      const model = runtime.getModel(provider, modelId);
+      if (model) return model;
+    }
+  }
+  return runtime.getModel(DEFAULT_VISION_MODEL.provider, DEFAULT_VISION_MODEL.modelId);
 }
 
 // 编程 agent 模型（ISSUE-020）。未在设置页配置（programmingModel 为空）或模型无法解析时返回 null

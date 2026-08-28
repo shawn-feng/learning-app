@@ -88,6 +88,10 @@ const api = {
   piSetDefaultModel: (key: string) => ipcRenderer.invoke("pi:set_default_model", key),
   piGetProgrammingModel: () => ipcRenderer.invoke("pi:get_programming_model"),
   piSetProgrammingModel: (key: string) => ipcRenderer.invoke("pi:set_programming_model", key),
+  piGetVisionModel: () => ipcRenderer.invoke("pi:get_vision_model"),
+  piSetVisionModel: (key: string) => ipcRenderer.invoke("pi:set_vision_model", key),
+  piGetTtsConfig: () => ipcRenderer.invoke("pi:get_tts_config"),
+  piSetTtsConfig: (patch: any) => ipcRenderer.invoke("pi:set_tts_config", patch),
   onPiDefaultModelChanged: (callback: (key: string) => void) => {
     const wrapper = (_e: any, data: any) => callback(data);
     ipcRenderer.on("pi:default_model_changed", wrapper);
