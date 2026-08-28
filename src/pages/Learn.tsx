@@ -288,6 +288,24 @@ export default function Learn({ child, onExit }: Props) {
     setBusy(false);
   }, []);
 
+  // 停止当前轮的 agent 运行（发送按钮变为停止按钮后点击触发）：
+  // 前端立即收尾工作气泡（避免后续 pi:reply/error 事件追加多余气泡），再通知主进程 abort。
+  const handleStop = useCallback(async () => {
+    const id = workingIdRef.current;
+    workingIdRef.current = null;
+    setBusy(false);
+    if (id) {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, text: "⏹ 已停止", working: false } : m))
+      );
+    }
+    try {
+      await window.api.piAbort(child.childId);
+    } catch {
+      /* abort 失败忽略（prompt 可能已结束） */
+    }
+  }, [child.childId]);
+
   // 定时任务触发的会话重置：清空当前孩子的会话与资料面板
   const handleSessionReset = useCallback((data: { childId: string }) => {
     if (data.childId !== childIdRef.current) return;
@@ -722,7 +740,7 @@ export default function Learn({ child, onExit }: Props) {
           ) : (
             <LearningDashboard childId={child.childId} />
           )}
-          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} aiEmoji={aiEmoji} rate={rate} childId={child.childId} notice={visionNotice || null} />
+          <ChatWindow messages={messages} onSend={handleSend} disabled={busy} running={busy} onStop={handleStop} aiEmoji={aiEmoji} rate={rate} childId={child.childId} notice={visionNotice || null} />
         </div>
       </div>
 

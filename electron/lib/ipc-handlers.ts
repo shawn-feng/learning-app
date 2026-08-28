@@ -36,6 +36,11 @@ import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
+  // agent 中断（停止按钮）支持：记录当前运行中的 prompt 对应的 abort 句柄，
+  // 前端点「停止」时调 session.abort() 打断本轮（Pi SDK AgentSession.abort()）。
+  // stopped 标记用于 prompt 收尾时跳过正常回复/错误回发（避免 abort 后被前端追加多余气泡）。
+  let childPromptAbort: { stopped: boolean; abort: () => Promise<void> } | null = null;
+  let parentPromptAbort: { stopped: boolean; abort: () => Promise<void> } | null = null;
   // SPLIT：服务端连接配置（纯服务端模式必需）
   ipcMain.handle("server:get_config", async () => {
     return { url: getServerUrl() };
@@ -775,8 +780,14 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         }
         console.log(`[pi:prompt] session ready, calling prompt()...`);
         const beforeCount = (session as any).messages?.length ?? 0;
+        childPromptAbort = { stopped: false, abort: () => session.abort() };
         await session.prompt(text, imgCount > 0 ? { images: images! } : undefined);
         console.log(`[pi:prompt] prompt() completed`);
+        // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件（前端已自行收起工作气泡）
+        if (childPromptAbort?.stopped) {
+          _e.sender.send("pi:reply_end", { childId });
+          return { success: true, stopped: true };
+        }
 
       const messages: any[] = session.messages || [];
 
@@ -818,9 +829,16 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
       return { success: true };
     } catch (err) {
+      // abort 中断导致 prompt reject：不当作错误回发（前端已自行收起工作气泡）
+      if (childPromptAbort?.stopped) {
+        _e.sender.send("pi:reply_end", { childId });
+        return { success: true, stopped: true };
+      }
       console.error(`[pi:prompt] error:`, (err as Error).message);
       _e.sender.send("pi:reply_error", { childId, error: friendlyError((err as Error).message) });
       return { success: false, error: (err as Error).message };
+    } finally {
+      childPromptAbort = null;
     }
   });
 
@@ -828,7 +846,13 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     try {
       const session = await getParentSession();
       const beforeCount = (session as any).messages?.length ?? 0;
+      parentPromptAbort = { stopped: false, abort: () => session.abort() };
       await session.prompt(text);
+      // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件
+      if (parentPromptAbort?.stopped) {
+        _e.sender.send("pi:reply_end", { childId: "parent" });
+        return { success: true, stopped: true };
+      }
       // ISSUE-037：session.prompt() 出错时不抛异常，而是把 stopReason="error" + errorMessage
       // 记在最后一条 assistant 消息里。必须像孩子会话（pi:prompt）一样显式检查并回发
       // pi:reply_error / pi:reply，否则前端（SkillEditor 等）只靠 streaming 事件、无任何错误反馈，
@@ -868,10 +892,17 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyText.length });
       return { success: true };
     } catch (err) {
+      // abort 中断导致 prompt reject：不当作错误回发
+      if (parentPromptAbort?.stopped) {
+        _e.sender.send("pi:reply_end", { childId: "parent" });
+        return { success: true, stopped: true };
+      }
       console.error(`[pi:prompt_parent] error:`, (err as Error).message);
       _e.sender.send("pi:reply_error", { childId: "parent", error: friendlyError((err as Error).message) });
       _e.sender.send("pi:reply_end", { childId: "parent" });
       return { success: false, error: (err as Error).message };
+    } finally {
+      parentPromptAbort = null;
     }
   });
 
@@ -951,6 +982,12 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("pi:abort", async (_e: IpcMainInvokeEvent, childId: string) => {
+    // 标记当前运行中的 prompt 已被停止，收尾时跳过正常回复/错误回发（避免追加多余气泡）
+    if (childId === "parent") {
+      if (parentPromptAbort && !parentPromptAbort.stopped) parentPromptAbort.stopped = true;
+    } else {
+      if (childPromptAbort && !childPromptAbort.stopped) childPromptAbort.stopped = true;
+    }
     const session = getActiveSession(childId);
     if (session) await session.abort();
     return { success: true };

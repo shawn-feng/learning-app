@@ -182,10 +182,27 @@ export default function ParentChatPanel() {
     }
   }
 
+  // 停止当前轮的家长 agent 运行（发送按钮变为停止按钮后点击触发）
+  const handleStop = useCallback(async () => {
+    const id = workingIdRef.current;
+    workingIdRef.current = null;
+    setBusy(false);
+    if (id) {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, text: "⏹ 已停止", working: false } : m))
+      );
+    }
+    try {
+      await window.api.piAbort("parent");
+    } catch {
+      /* abort 失败忽略 */
+    }
+  }, []);
+
   return (
     <div className="parent-chat-panel">
       <div className="parent-chat-title">家长助手</div>
-      <ChatWindow messages={messages} onSend={handleSend} disabled={busy} owner="parent" />
+      <ChatWindow messages={messages} onSend={handleSend} disabled={busy} running={busy} onStop={handleStop} owner="parent" />
     </div>
   );
 }

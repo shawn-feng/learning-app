@@ -2069,6 +2069,14 @@ input, textarea {
   cursor: not-allowed;
 }
 
+/* agent 运行中：发送按钮变为红色停止按钮 */
+.chat-input .send-btn-stop {
+  background: #e53e3e;
+}
+.chat-input .send-btn-stop:hover {
+  background: #c53030;
+}
+
 /* 发送前附件预览条（图片缩略 / 文本文件） */
 .attachment-preview {
   display: flex;

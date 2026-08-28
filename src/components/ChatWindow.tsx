@@ -70,6 +70,10 @@ interface Props {
   messages: ChatMessage[];
   onSend: (text: string, opts?: SendOptions) => void;
   disabled?: boolean;
+  /** agent 运行中：发送按钮切换为「停止」按钮（点击调 onStop 打断本轮） */
+  running?: boolean;
+  /** 停止回调：agent 运行中点击停止按钮时触发（前端收尾 + 主进程 abort） */
+  onStop?: () => void;
   aiEmoji?: string;
   rate?: string;
   /** 孩子聊天上下文：上传/打开/读取附件走 data/children/<childId>/uploads/（ISSUE-008） */
@@ -152,7 +156,7 @@ function TraceDetails({ m }: { m: ChatMessage }) {
   );
 }
 
-export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate = "+0%", childId, owner, parentId, notice }: Props) {
+export default function ChatWindow({ messages, onSend, disabled, running = false, onStop, aiEmoji, rate = "+0%", childId, owner, parentId, notice }: Props) {
   // ISSUE-044 修正：家长聊天上下文（owner==="parent"）的上传/打开/读取附件走家长库 uploads，与孩子隔离
   const isParent = owner === "parent";
   const pid = parentId || "default";
@@ -841,8 +845,13 @@ export default function ChatWindow({ messages, onSend, disabled, aiEmoji, rate =
           rows={1}
           style={{ minHeight: 44 }}
         />
-        <button className="send-btn" onClick={handleSend} disabled={disabled} title="发送">
-          <Send size={20} />
+        <button
+          className={`send-btn${running ? " send-btn-stop" : ""}`}
+          onClick={running ? (onStop || handleSend) : handleSend}
+          disabled={!running ? disabled : false}
+          title={running ? "停止" : "发送"}
+        >
+          {running ? <Square size={20} /> : <Send size={20} />}
         </button>
         <input
           ref={fileInputRef}
