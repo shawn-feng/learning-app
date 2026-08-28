@@ -3,3 +3,9 @@
 *.db
 __pycache__/
 *.pyc
+
+# 密钥与本地测试依赖（切勿提交）
+.env
+.env.*
+!.env.example
+.testdeps/

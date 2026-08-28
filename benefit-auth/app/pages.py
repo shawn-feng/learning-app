@@ -147,6 +147,19 @@ a { color:var(--primary); text-decoration:none; }
 .ent { display:flex; align-items:center; justify-content:space-between; border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-bottom:8px; font-size:13px; }
 .logout { display:block; text-align:center; color:#dc2626; font-size:13px; margin-top:24px; }
 .container { max-width:640px; margin:0 auto; padding:40px 20px; }
+/* 平台绑定 */
+.bind-row { display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); }
+.bind-row:last-child { border-bottom:none; }
+.bind-name { font-weight:600; font-size:14px; }
+.bind-scope { font-size:11px; color:var(--muted); margin-left:auto; }
+.bind-chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; background:#dcfce7; color:#15803d; }
+.bind-chip.no { background:#f1f5f9; color:#64748b; }
+/* 视频 */
+.video { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); }
+.video:last-child { border-bottom:none; }
+.video img { width:64px; height:88px; object-fit:cover; border-radius:8px; background:#e2e8f0; flex:none; }
+.video .vtitle { font-size:13.5px; font-weight:600; }
+.video .vmeta { font-size:12px; color:#64748b; margin-top:4px; }
 """
 
 # ==================== 首页 ====================
@@ -367,6 +380,12 @@ _ME_PAGE = """<!DOCTYPE html>
       <div class="meta" id="accountMeta">未绑定平台账号</div></div>
     </div>
 
+    <h2 style="margin:18px 0 10px">🔗 平台账号</h2>
+    <div id="bindList"><div class="task">加载中…</div></div>
+
+    <h2 style="margin:18px 0 10px">🎬 我的抖音视频</h2>
+    <div id="videoList"><div class="task">加载中…</div></div>
+
     <h2 style="margin:18px 0 10px">📋 各应用任务</h2>
     <div id="taskList"><div class="task">加载中…</div></div>
 
@@ -397,6 +416,9 @@ async function load() {
   document.getElementById('accountMeta').textContent =
     acc.length ? '已绑定：' + acc.map(a => a.platform + ' · ' + (a.nickname||'')).join('、') : '未绑定平台账号';
 
+  loadBindings(acc);
+  loadVideos(acc);
+
   const t = await api('/api/me/tasks');
   const tl = document.getElementById('taskList'); tl.innerHTML = '';
   (t.tasks || []).forEach(task => {
@@ -405,7 +427,7 @@ async function load() {
     const div = document.createElement('div'); div.className = 'task';
     div.innerHTML = `
       <div class="row">
-        <div><div class="t-title">${task.title}</div><div class="t-app">来自 ${task.app_name}</div></div>
+        <div><div class="t-title">${task.title}</div><div class="t-app">来自 ${task.app_name} · ${task.platform||''}</div></div>
         <span class="badge ${cls}">${label}</span>
       </div>
       <div class="t-desc">${task.description || ''}</div>
@@ -442,6 +464,85 @@ async function load() {
   if (!(e.entitlements||[]).length) el.innerHTML = '<div class="task" style="color:#94a3b8">暂无权益</div>';
 }
 
+async function loadBindings(acc) {
+  const bl = document.getElementById('bindList'); bl.innerHTML = '';
+  let b;
+  try { b = await api('/api/me/bindings'); } catch(e) { bl.innerHTML = '<div class="task" style="color:#94a3b8">加载失败</div>'; return; }
+  const bound = b.bindings || [];
+  if (!bound.length) {
+    bl.innerHTML = '<div class="bind-row"><span class="bind-name">尚未绑定任何平台</span>'
+      + '<button class="btn-mini primary" onclick="location.href=&#39;/login&#39;">去绑定</button></div>';
+  }
+  bound.forEach(a => {
+    const scopes = (a.scopes||'').split(',').filter(Boolean);
+    const hasVideo = scopes.includes('video.list.bind');
+    const row = document.createElement('div'); row.className = 'bind-row';
+    row.innerHTML = `<span class="bind-name">${a.platform} · ${a.nickname||''}</span>`
+      + `<span class="bind-scope">${scopes.join(', ') || '无'}</span>`;
+    const up = document.createElement('button');
+    up.className = 'btn-mini ghost'; up.textContent = hasVideo ? '刷新授权' : '升级视频权限'; up.style.marginLeft = '8px';
+    up.onclick = () => { location.href = '/api/oauth/' + a.platform + '/authorize?mode=upgrade&scopes=' + encodeURIComponent('user_info,video.list.bind,trial.whitelist') + '&token=' + encodeURIComponent(TOKEN); };
+    row.appendChild(up);
+    const un = document.createElement('button');
+    un.className = 'btn-mini ghost'; un.textContent = '解绑'; un.style.marginLeft='4px';
+    un.onclick = async () => { if (confirm('确认解绑 '+a.platform+'？')) { await api('/api/me/bindings/'+a.platform, {method:'DELETE'}); loadBindings(acc); } };
+    row.appendChild(un);
+    bl.appendChild(row);
+  });
+  const boundSet = new Set(bound.map(a => a.platform));
+  (b.supported_platforms || []).forEach(p => {
+    if (!boundSet.has(p)) {
+      const row = document.createElement('div'); row.className = 'bind-row';
+      row.innerHTML = `<span class="bind-name">${p}</span><span class="bind-chip no">未绑定</span>`;
+      const btn = document.createElement('button'); btn.className = 'btn-mini primary'; btn.textContent = '绑定'; btn.style.marginLeft = 'auto';
+      btn.onclick = () => openBind(p);
+      row.appendChild(btn); bl.appendChild(row);
+    }
+  });
+}
+
+function openBind(platform) {
+  // 弹窗走扫码登录（mode=bind，需已登录；带 token 保证跨子域/无 Cookie 也能识别）
+  window.open('/api/oauth/' + platform + '/authorize?mode=bind&token=' + encodeURIComponent(TOKEN), '_blank', 'width=480,height=560');
+  const iv = setInterval(async () => {
+    try { await api('/api/me/bindings'); clearInterval(iv); loadBindings(); } catch(e) {}
+  }, 3000);
+}
+
+async function loadVideos(acc) {
+  const vl = document.getElementById('videoList'); vl.innerHTML = '';
+  const douyin = (acc||[]).find(a => a.platform === 'douyin');
+  if (!douyin) { vl.innerHTML = '<div class="task" style="color:#94a3b8">请先绑定抖音</div>'; return; }
+  const scopes = (douyin.scopes||'').split(',');
+  if (!scopes.includes('video.list.bind')) {
+    const wrap = document.createElement('div');
+    wrap.className = 'task'; wrap.style.textAlign = 'center'; wrap.style.padding = '18px';
+    wrap.innerHTML = '<div style="font-size:14px;font-weight:600;margin-bottom:6px">还没有视频读取权限</div>'
+      + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">授权后可查看你的抖音视频列表（请用电脑打开授权页并扫码）</div>';
+    const btn = document.createElement('button');
+    btn.className = 'btn-mini primary'; btn.textContent = '授权获取视频权限';
+    btn.onclick = () => { location.href = '/api/oauth/douyin/authorize?mode=upgrade&scopes=' + encodeURIComponent('user_info,video.list.bind,trial.whitelist') + '&token=' + encodeURIComponent(TOKEN); };
+    wrap.appendChild(btn);
+    vl.appendChild(wrap);
+    return;
+  }
+  try {
+    const v = await api('/api/me/douyin/videos');
+    const list = v.videos || [];
+    if (!list.length) { vl.innerHTML = '<div class="task" style="color:#94a3b8">暂无视频</div>'; return; }
+    list.forEach(item => {
+      const div = document.createElement('div'); div.className = 'video';
+      const cover = item.cover_url || (item.video && item.video.cover) || '';
+      const when = item.create_time ? new Date(item.create_time * 1000).toLocaleDateString() : '';
+      div.innerHTML = `<img src="${cover}" alt="cover"><div><div class="vtitle">${(item.title||'未命名视频').slice(0,40)}</div>`
+        + `<div class="vmeta">${when}</div></div>`;
+      vl.appendChild(div);
+    });
+  } catch(e) {
+    vl.innerHTML = '<div class="task" style="color:#b91c1c">' + (e.message || '加载失败') + '</div>';
+  }
+}
+
 function rewardText(rc) {
   const r = rc || {};
   if (r.type === 'vip_days') return 'VIP ' + (r.days||1) + ' 天';
@@ -461,13 +562,72 @@ load();
 """
 
 
+# ==================== 首页登录页（www 入口） ====================
+_HOME_LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 权益认证中台</title>
+<style>%CSS%
+/* 首页登录页扩展样式 */
+.home-wrap { max-width:440px; margin:0 auto; padding:9vh 20px 40px; }
+.home-brand { display:flex; align-items:center; justify-content:center; gap:10px; font-weight:700; font-size:18px; margin-bottom:6px; }
+.home-h { text-align:center; font-size:22px; font-weight:800; margin:4px 0 6px; }
+.home-sub { text-align:center; color:var(--muted); font-size:14px; margin-bottom:24px; }
+.home-qr { text-align:center; min-height:236px; }
+.home-qr img { width:210px; height:210px; border:1px solid var(--line); border-radius:14px; padding:8px; background:#fff; }
+.home-qr .qr-title { font-weight:600; font-size:15px; margin-top:14px; }
+</style>
+</head>
+<body>
+<div class="home-wrap">
+  <div class="home-brand"><div class="brand-badge">益</div>权益认证中台</div>
+  <div class="home-h">登录</div>
+  <div class="home-sub">选择一个平台，扫码即可登录</div>
+
+  <div id="viewPlats" class="plat-grid">
+    <button class="plat-item" data-platform="douyin">
+      <span class="plogo" style="background:#111827">抖</span>
+      <span><span class="pname">抖音</span><br><span class="pstatus">扫码快捷登录</span></span>
+    </button>
+    <button class="plat-item" disabled>
+      <span class="plogo" style="background:#ff6a00">快</span>
+      <span><span class="pname">快手</span><br><span class="pstatus">即将上线</span></span>
+    </button>
+    <button class="plat-item" disabled>
+      <span class="plogo" style="background:#ff2442">红</span>
+      <span><span class="pname">小红书</span><br><span class="pstatus">即将上线</span></span>
+    </button>
+    <button class="plat-item" disabled>
+      <span class="plogo" style="background:#00a1d6">B</span>
+      <span><span class="pname">哔哩哔哩</span><br><span class="pstatus">即将上线</span></span>
+    </button>
+  </div>
+  <p style="font-size:12px;color:#94a3b8;text-align:center;margin-top:18px">首次登录将自动创建账号 · 登录即同意《用户协议》</p>
+</div>
+<script>
+// 标准 OAuth 登录：点击平台后浏览器直接跳转到抖音授权页（302），
+// 在 PC 页面扫码（或 App 内确认），授权后回跳到本站 /me。
+document.querySelectorAll('.plat-item[data-platform]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    location.href = '/api/oauth/douyin/authorize?mode=login';
+  });
+});
+</script>
+</body>
+</html>
+"""
+
+
 def index_page() -> str:
-    return _INDEX_PAGE.replace("%CSS%", _BASE_CSS)
+    return _HOME_LOGIN_PAGE.replace("%CSS%", _BASE_CSS)
 
 
 def login_page() -> str:
-    """登录页：复用首页，前端检测 /login 路径自动展开登录面板"""
-    return _INDEX_PAGE.replace("%CSS%", _BASE_CSS)
+    """登录页：与首页登录页一致（选择平台 → 扫码 → 登录）"""
+    return _HOME_LOGIN_PAGE.replace("%CSS%", _BASE_CSS)
 
 
 def me_page() -> str:

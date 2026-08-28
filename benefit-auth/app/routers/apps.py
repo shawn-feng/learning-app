@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from ..database import get_db, new_id
 from ..deps import get_current_app
 from ..security import create_app_token, gen_app_credentials, hash_secret, verify_secret
+from ..platforms import is_supported
 
 router = APIRouter(prefix="/api/app", tags=["app"])
 
@@ -19,6 +20,7 @@ router = APIRouter(prefix="/api/app", tags=["app"])
 class RegisterAppRequest(BaseModel):
     name: str
     icon_url: str = ""
+    redirect_uris: str = ""            # IdP 授权码流程允许的回调地址（逗号分隔）
 
 
 class AppTokenRequest(BaseModel):
@@ -29,7 +31,8 @@ class AppTokenRequest(BaseModel):
 class CreateTaskRequest(BaseModel):
     title: str
     description: str = ""
-    task_type: str                     # follow_account / publish_video / bind_account / fans_reach / like_comment
+    platform: str = "douyin"           # 任务归属平台
+    task_type: str                     # follow_account / publish_video / bind_account / fans_reach / like_comment / repost
     target_config: dict = {}
     reward_config: dict = {}           # 权益定义，如 {"type":"vip_days","days":7}
     verify_mode: str = "auto"          # auto / manual
@@ -41,6 +44,7 @@ class CreateTaskRequest(BaseModel):
 class UpdateTaskRequest(BaseModel):
     title: str | None = None
     description: str | None = None
+    platform: str | None = None
     target_config: dict | None = None
     reward_config: dict | None = None
     status: str | None = None
@@ -55,8 +59,8 @@ async def register_app(req: RegisterAppRequest, db=Depends(get_db)):
         raise HTTPException(status_code=400, detail="App name is required")
     app_id, app_secret = gen_app_credentials()
     await db.execute(
-        "INSERT INTO apps (id, app_id, app_secret_hash, name, icon_url) VALUES (?,?,?,?,?)",
-        (new_id(), app_id, hash_secret(app_secret), req.name.strip(), req.icon_url),
+        "INSERT INTO apps (id, app_id, app_secret_hash, name, icon_url, redirect_uris) VALUES (?,?,?,?,?,?)",
+        (new_id(), app_id, hash_secret(app_secret), req.name.strip(), req.icon_url, req.redirect_uris),
     )
     await db.commit()
     # 明文 secret 只在此刻返回一次
@@ -77,32 +81,39 @@ async def app_token(req: AppTokenRequest, db=Depends(get_db)):
 
 
 # ---------- 任务管理 ----------
-_TASK_TYPES = {"follow_account", "publish_video", "bind_account", "fans_reach", "like_comment"}
+_TASK_TYPES = {"follow_account", "publish_video", "bind_account", "fans_reach", "like_comment", "repost"}
 _VERIFY_MODES = {"auto", "manual"}
+# 平台无开放查询接口、只能人工审核的任务类型
+_MANUAL_ONLY_TYPES = {"like_comment", "repost"}
 
 
 @router.post("/tasks")
 async def create_task(req: CreateTaskRequest, app_id: str = Depends(get_current_app), db=Depends(get_db)):
+    if not is_supported(req.platform):
+        raise HTTPException(status_code=400, detail=f"unsupported platform: {req.platform}")
     if req.task_type not in _TASK_TYPES:
         raise HTTPException(status_code=400, detail=f"task_type must be one of {sorted(_TASK_TYPES)}")
     if req.verify_mode not in _VERIFY_MODES:
         raise HTTPException(status_code=400, detail="verify_mode must be auto or manual")
-    if req.task_type == "like_comment" and req.verify_mode == "auto":
-        # 抖音开放平台无点赞/评论查询接口，自动验证不可行，强制 manual
-        raise HTTPException(status_code=400, detail="like_comment 任务平台无自动验证接口，verify_mode 必须为 manual")
+    if req.task_type in _MANUAL_ONLY_TYPES and req.verify_mode == "auto":
+        # 抖音开放平台无点赞/评论/转发查询接口，自动验证不可行，强制 manual
+        raise HTTPException(
+            status_code=400,
+            detail=f"{req.task_type} 任务平台无自动验证接口，verify_mode 必须为 manual",
+        )
 
     task_id = new_id()
     await db.execute(
-        """INSERT INTO tasks (id, app_id, title, description, task_type, target_config, reward_config,
+        """INSERT INTO tasks (id, app_id, platform, title, description, task_type, target_config, reward_config,
            verify_mode, max_times_per_user, start_at, end_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (task_id, app_id, req.title.strip(), req.description,
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (task_id, app_id, req.platform, req.title.strip(), req.description,
          req.task_type, json.dumps(req.target_config, ensure_ascii=False),
          json.dumps(req.reward_config, ensure_ascii=False),
          req.verify_mode, max(1, req.max_times_per_user), req.start_at, req.end_at),
     )
     await db.commit()
-    return {"task_id": task_id, "status": "created"}
+    return {"task_id": task_id, "platform": req.platform, "status": "created"}
 
 
 @router.get("/tasks")
@@ -117,7 +128,7 @@ async def list_tasks(app_id: str = Depends(get_current_app), db=Depends(get_db))
         granted = (await db.execute_fetchall(
             "SELECT COUNT(*) c FROM task_instances WHERE task_id = ? AND status='granted'", (t["id"],)))[0]["c"]
         result.append({
-            "id": t["id"], "title": t["title"], "description": t["description"],
+            "id": t["id"], "platform": t["platform"], "title": t["title"], "description": t["description"],
             "task_type": t["task_type"],
             "target_config": json.loads(t["target_config"] or "{}"),
             "reward_config": json.loads(t["reward_config"] or "{}"),
@@ -136,11 +147,13 @@ async def update_task(task_id: str, req: UpdateTaskRequest,
         raise HTTPException(status_code=404, detail="Task not found")
     fields = []
     values = []
-    for key, col in [("title", "title"), ("description", "description"),
+    for key, col in [("title", "title"), ("description", "description"), ("platform", "platform"),
                      ("target_config", "target_config"), ("reward_config", "reward_config"),
                      ("status", "status"), ("start_at", "start_at"), ("end_at", "end_at")]:
         val = getattr(req, key)
         if val is not None:
+            if key == "platform" and not is_supported(val):
+                raise HTTPException(status_code=400, detail=f"unsupported platform: {val}")
             fields.append(f"{col}=?")
             values.append(json.dumps(val, ensure_ascii=False) if col in ("target_config", "reward_config") else val)
     if fields:
@@ -165,6 +178,34 @@ async def get_user_entitlements(user_id: str, app_id: str = Depends(get_current_
         "task_title": e["task_title"], "reward_code": json.loads(e["reward_code"] or "{}"),
         "status": e["status"], "granted_at": e["granted_at"], "used_at": e["used_at"],
     } for e in rows]}
+
+
+@router.get("/users/{user_id}/completions")
+async def get_user_completions(user_id: str, app_id: str = Depends(get_current_app), db=Depends(get_db)):
+    """返回该用户在【本 App】下已完成（granted）的任务清单。
+
+    供第三方 App（如 learning-app）判断用户权限：它拿到“用户完成了哪些任务”
+    后，自行换算成使用时长 / 孩子数量等业务权限，本网站不做业务解释。
+    """
+    rows = await db.execute_fetchall(
+        """SELECT ti.id, ti.task_id, ti.status, ti.granted_at, ti.claimed_at,
+                  t.title, t.description, t.platform, t.task_type, t.reward_config
+           FROM task_instances ti JOIN tasks t ON t.id = ti.task_id
+           WHERE ti.user_id = ? AND t.app_id = ? AND ti.status = 'granted'
+           ORDER BY ti.granted_at DESC""",
+        (user_id, app_id),
+    )
+    return {"user_id": user_id, "completions": [{
+        "task_instance_id": r["id"],
+        "task_id": r["task_id"],
+        "platform": r["platform"],
+        "task_type": r["task_type"],
+        "title": r["title"],
+        "description": r["description"],
+        "reward_config": json.loads(r["reward_config"] or "{}"),
+        "granted_at": r["granted_at"],
+        "claimed_at": r["claimed_at"],
+    } for r in rows]}
 
 
 @router.post("/entitlements/{entitlement_id}/consume")
