@@ -38,3 +38,5 @@ scripts/render-test-app/
 scripts/migrate-old-data.py
 dist4/
 dist-release/
+dist-mac/
+dist-ubuntu/
