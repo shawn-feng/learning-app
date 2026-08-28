@@ -10,7 +10,7 @@ import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from ".
 import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown, fetchProgressRemote } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
@@ -60,6 +60,11 @@ const LEARNING_NAV_INSTRUCTIONS = `
   2. 若 html 文件**已存在**，直接用 display_content 工具通过 \`path\` 引用展示。
 - **outputPath 规则（便于集中管理与查询）**：孩子要求的**工具/游戏/一次性产物**（如番茄钟）→ \`outputs/{名称}.html\`，集中在 \`outputs/\` 便于统一查找与清理、独立于任何学习主题；**学习资料**（与主题 method/materials 配套的教学展示）→ \`materials/{topic}/{课程名}.html\`，落在父库共享目录（单一真源，多孩子共享同一份，不需要在孩子本地另存）。
 - 用 create_html_lesson 生成文件、再由 display_content 引用文件，而不是把一长串 HTML 正文直接塞进 display_content 的 content 参数：独立 HTML 文件能让孩子端直接预览完整页面，也避免超长正文撑爆消息、干扰对话上下文。
+
+### 学习资料页面的感知与操作
+- 学习资料在**沙盒页面**中展示；孩子对资料页的轻量互动（打开/点击/滚动/输入/提交）会以「[页面事件]」形式**自动注入**给你，据此判断孩子的阅读进度、是否卡住、是否需要帮助。
+- 需要查看资料页当前内容或定位元素时，调用 page_inspect（返回文本式 DOM 快照 + 最近互动摘要）；要在页面上操作（点「下一步」、滚动、填写）时调用 page_action（click/scroll/input/read，元素用快照里的「i 索引」定位）。
+- 只使用上述受控操作；**不存在、也不要请求任何在页面上执行任意代码的能力**（桥脚本无 execute_javascript）。
 
 ### 进度查询（省上下文，务必遵守）
 各主题的 **进度摘要（learned/total/next/updated）由系统从课程表自动计算**，已放在系统提示顶部的「孩子的学习进度概览」里，确定「下一课」或查询进度时：
@@ -439,8 +444,8 @@ async function createChildSession(
     // 仅需列在 tools 白名单即启用、无需 customTools 条目——让孩子能列自己 cwd 下的目录
     // （outputs/ 已生成 html、uploads/ 上传资料、materials/ 学习资料）以复用/展示/清理；
     // 越界防护由 learning-guard 统一拦截（ISSUE-049）。
-    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool],
+    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，

@@ -34,8 +34,41 @@ import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerCon
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
+import {
+  queuePageEvent,
+  resolvePageAction,
+  setPageExecTransport,
+  setSessionProvider,
+} from "./page-bridge";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
+  // iframe 学习资料 ↔ agent 双向通讯（page-bridge）：
+  // 下行指令经主窗口 webContents 下发到渲染层；上行事件注入用 getActiveSession 拿会话。
+  setPageExecTransport((childId, requestId, action, params) => {
+    const w = getMainWindow();
+    if (w && !w.isDestroyed()) {
+      w.webContents.send("pi:page:exec", { childId, requestId, action, params });
+    }
+  });
+  setSessionProvider((childId) => getActiveSession(childId));
+
+  ipcMain.handle("pi:page:event", async (_e, payload: { childId: string; event: any }) => {
+    try {
+      queuePageEvent(payload?.childId ?? "", payload?.event ?? {});
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle(
+    "pi:page:exec:result",
+    async (_e, payload: { requestId: string; result: any }) => {
+      resolvePageAction(payload?.requestId ?? "", payload?.result ?? {});
+      return { ok: true };
+    }
+  );
+
   // agent 中断（停止按钮）支持：记录当前运行中的 prompt 对应的 abort 句柄，
   // 前端点「停止」时调 session.abort() 打断本轮（Pi SDK AgentSession.abort()）。
   // stopped 标记用于 prompt 收尾时跳过正常回复/错误回发（避免 abort 后被前端追加多余气泡）。

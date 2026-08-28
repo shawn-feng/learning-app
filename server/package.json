@@ -1,6 +1,6 @@
 {
   "name": "learning-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "学习伙伴服务端：数据唯一真源 + 认证代理 + materials/大文件（SPLIT 架构）",
   "private": true,
   "type": "module",

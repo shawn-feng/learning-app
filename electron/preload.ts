@@ -37,6 +37,14 @@ const api = {
   onPiVisionModelSwitched: (callback: (data: { childId: string; modelId: string }) => void) =>
     registerListener("pi:vision_model_switched", callback),
 
+  // Page bridge（iframe 学习资料感知与操作）：上行事件上报 + 下行指令回执 + 下行指令监听
+  pageEvent: (childId: string, event: any) =>
+    ipcRenderer.invoke("pi:page:event", { childId, event }),
+  pageExecResult: (childId: string, requestId: string, result: any) =>
+    ipcRenderer.invoke("pi:page:exec:result", { childId, requestId, result }),
+  onPageExec: (callback: (data: { childId: string; requestId: string; action: string; params: any }) => void) =>
+    registerListener("pi:page:exec", callback),
+
   // Remove all Pi event listeners
   piRemoveListeners: () => {
     for (const [channel, wrapper] of listenerWrappers) {

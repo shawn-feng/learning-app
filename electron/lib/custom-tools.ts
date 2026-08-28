@@ -24,6 +24,7 @@ import {
   type TopicProgress,
 } from "./kb-sqlite";
 import { dbExec, dbQuery, childIdFromCwd } from "./client-data";
+import { executePageAction, recentInteractions } from "./page-bridge";
 import { generateHtmlLesson } from "./programming-agent";
 
 /** 解析 topics.rules_json（损坏时回退空对象）。 */
@@ -948,6 +949,89 @@ export const logActivityTool = defineTool({
           text: "已记录到 activity-log.md：" + params.entry.trim(),
         },
       ],
+    };
+  },
+});
+
+// ==================== iframe 学习资料感知与操作（page_inspect / page_action） ====================
+// 孩子界面左侧资料面板用沙盒 iframe 渲染 HTML 资料；桥脚本注入后，agent 可经这两个工具
+// 感知孩子在页面上的互动（自动注入 + 按需快照）并执行受控操作（click/scroll/input/read）。
+// 安全：只读快照 + 白名单操作，**不存在任意代码执行能力**（桥脚本无 eval / new Function）。
+
+/** page_action：在 iframe 学习资料页面上执行受控操作 */
+export const pageActionTool = defineTool({
+  name: "page_action",
+  label: "操作学习资料页面",
+  description:
+    "在**学习资料页面**（孩子界面左侧沙盒 iframe 中渲染的 HTML 资料）上执行受控操作。\n\n" +
+    "**action**：\n" +
+    "- `click`：点击元素。用 `index`（来自 page_inspect 快照的 i 字段）精确定位，或 `text` 按可见文本匹配（如「下一步」）；\n" +
+    "- `scroll`：滚动页面。`pct` 为滚动百分比（0-100，如 50 滚到一半），或用 `index` 滚动到某元素；\n" +
+    "- `input`：向输入框填入内容，`index`（输入框在快照中的 i）+ `value`（填入文本）；\n" +
+    "- `read`：读取当前页面文本式 DOM 快照（等价于 page_inspect，可带 maxDepth/maxNodes 限制规模）。\n\n" +
+    "**定位**：元素索引一律取自 `page_inspect` 快照的 `i` 字段。操作会返回执行结果，便于判断是否成功。\n\n" +
+    "**重要**：只能执行上述受控操作；**不存在、也不要要求任何在页面上执行任意代码（execute_javascript 等）的能力**。",
+  parameters: Type.Object({
+    action: Type.Union([
+      Type.Literal("click"),
+      Type.Literal("scroll"),
+      Type.Literal("input"),
+      Type.Literal("read"),
+    ]),
+    index: Type.Optional(Type.Number({ description: "元素索引（page_inspect 快照的 i 字段）" })),
+    text: Type.Optional(Type.String({ description: "click 按可见文本匹配元素" })),
+    pct: Type.Optional(Type.Number({ description: "scroll 百分比 0-100" })),
+    value: Type.Optional(Type.String({ description: "input 填入的内容" })),
+    maxDepth: Type.Optional(Type.Number({ description: "read 快照最大深度（默认 8）" })),
+    maxNodes: Type.Optional(Type.Number({ description: "read 快照最大元素数（默认 500）" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const childId = childIdFromCwd(ctx.cwd);
+    const { action, ...rest } = params;
+    const r = await executePageAction(childId, { action, ...rest } as any);
+    const head = r.ok ? "页面操作完成" : "页面操作失败";
+    const extra = r.ok
+      ? r.data
+        ? "；" + JSON.stringify(r.data).slice(0, 300)
+        : ""
+      : `：${r.error ?? "无响应"}`;
+    return {
+      content: [{ type: "text" as const, text: `${head}（${action}${params.index !== undefined ? `, index=${params.index}` : ""}${params.text ? `, text=${params.text}` : ""}）${extra}` }],
+    };
+  },
+});
+
+/** page_inspect：只读查看学习资料页面（DOM 快照 + 最近互动摘要） */
+export const pageInspectTool = defineTool({
+  name: "page_inspect",
+  label: "查看学习资料页面",
+  description:
+    "查看**学习资料页面**的当前状态：返回文本式 DOM 快照（元素带 `i` 索引，供 page_action 定位）+ 孩子最近的互动摘要（打开/点击/滚动/输入/提交）。\n\n" +
+    "**何时调用**：需要知道孩子在看什么、读到哪、是否卡住，或要在页面上定位元素做操作时。\n\n" +
+    "**参数**：可选 `maxDepth`（默认 8）与 `maxNodes`（默认 500）限制快照规模（页面很大时用更小值省上下文）。",
+  parameters: Type.Object({
+    maxDepth: Type.Optional(Type.Number({ description: "快照最大深度（默认 8）" })),
+    maxNodes: Type.Optional(Type.Number({ description: "快照最大元素数（默认 500）" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const childId = childIdFromCwd(ctx.cwd);
+    const recent = recentInteractions(childId, 10);
+    const snap = await executePageAction(childId, { action: "read", ...(params || {}) } as any);
+    const parts: string[] = [];
+    if (recent) parts.push(`## 最近互动\n${recent}`);
+    if (snap.ok) {
+      const data = (snap.data || {}) as { items?: Array<{ i: number; tag: string; text: string; role?: string; href?: string }>; truncated?: boolean };
+      const items = data.items || [];
+      parts.push(
+        `## 页面文本快照（元素索引 i 供 page_action 定位）\n` +
+          items.map((it) => `- [${it.i}] <${it.tag}>${it.role ? ` role=${it.role}` : ""}${it.href ? ` href=${it.href}` : ""} ${it.text}`).join("\n") +
+          (data.truncated ? "\n（快照已截断，可减小 maxNodes 或加大范围再查）" : "")
+      );
+    } else {
+      parts.push(`快照获取失败：${snap.error ?? "无响应"}`);
+    }
+    return {
+      content: [{ type: "text" as const, text: parts.join("\n\n") }],
     };
   },
 });

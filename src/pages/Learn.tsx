@@ -6,6 +6,7 @@ import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
 import { useChatPanel } from "../hooks/useChatPanel";
+import type { MaterialsPanelHandle, PageAction, PageEvent, PageExecResultUplink } from "../lib/page-bridge";
 
 interface Props {
   child: any;
@@ -99,6 +100,8 @@ export default function Learn({ child, onExit }: Props) {
   const workingIdRef = useRef<string | null>(null);
   // 学习资料保留数量上限（家长可配置），追加材料时按此截断
   const materialsLimitRef = useRef(20);
+  // 资料面板句柄（iframe 互动上报 + 下行指令执行）
+  const materialsPanelRef = useRef<MaterialsPanelHandle | null>(null);
 
   // 左侧展示页切换
   const [view, setView] = useState<PanelViewKey>("materials");
@@ -328,6 +331,28 @@ export default function Learn({ child, onExit }: Props) {
     window.setTimeout(() => setVisionNotice(""), 6000);
   }, []);
 
+  // iframe 互动事件上报（fire-and-forget，失败静默——agent 感知是增强而非必需）
+  const handlePageEvent = useCallback((evt: PageEvent) => {
+    window.api.pageEvent(childIdRef.current, evt).catch(() => {});
+  }, []);
+
+  // 主进程下发的页面指令（agent 调 page_action/page_inspect）→ 面板执行 → 回执
+  const handlePageExec = useCallback(
+    async (data: { childId: string; requestId: string; action: string; params: any }) => {
+      if (data.childId !== childIdRef.current) return;
+      const panel = materialsPanelRef.current;
+      const result: PageExecResultUplink = panel
+        ? await panel.exec(data.action as PageAction, data.params || {})
+        : { ok: false, error: "当前没有打开的学习资料页面" };
+      try {
+        await window.api.pageExecResult(childIdRef.current, data.requestId, result);
+      } catch {
+        /* 回执失败忽略（主进程侧有超时兜底） */
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     window.api.onPiReply(handleReply);
     window.api.onPiReplyEnd(handleReplyEnd);
@@ -337,10 +362,11 @@ export default function Learn({ child, onExit }: Props) {
     window.api.onPiToolEnd(handleToolEnd);
     window.api.onPiSessionReset(handleSessionReset);
     window.api.onPiVisionModelSwitched(handleVisionSwitched);
+    window.api.onPageExec(handlePageExec);
     return () => {
       window.api.piRemoveListeners();
     };
-  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleSessionReset, handleVisionSwitched]);
+  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleSessionReset, handleVisionSwitched, handlePageExec]);
 
   // 向聊天追加一条 AI 消息（命令反馈 / 系统提示用）
   function addAiMessage(text: string) {
@@ -735,10 +761,12 @@ export default function Learn({ child, onExit }: Props) {
         <div className="learn-body">
           {view === "materials" ? (
             <MaterialsPanel
+              ref={materialsPanelRef}
               materials={materials}
               selectedId={selectedMaterialId}
               onOpen={setSelectedMaterialId}
               onBack={() => setSelectedMaterialId(null)}
+              onPageEvent={handlePageEvent}
             />
           ) : (
             <LearningDashboard childId={child.childId} />
