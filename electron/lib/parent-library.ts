@@ -703,10 +703,24 @@ export async function readParentMaterial(
       const finalRel = await followHtmlRedirectRemote(curRel, content);
       if (finalRel !== curRel) content = (await fetchMaterialContent(finalRel)).toString("utf-8");
       curRel = finalRel;
+      const fileDir = path.posix.dirname(curRel);
       // 把 html 内的相对资源引用(../xxx.css、images/..、同目录 js)改写为 asset:// 绝对地址，
       // 由协议 handler 远程代理加载（srcDoc about:blank 来源下跨源可用）。
-      const fileDir = path.posix.dirname(curRel);
       content = rewriteHtmlAssetRefs(content, pid, fileDir);
+      // JS 动态拼接的相对路径（如音标页 `'emma/'+phoneme+'.mp4'`）不在 href/src 属性里，
+      // 静态改写覆盖不到，srcDoc(about:blank) 下相对解析失败 → 注入 <base href> 让所有
+      // 相对 URL（含 JS 运行时拼接）基于本材料目录解析。绝对 URL（asset:///media:///http 等）不受 base 影响。
+      // base 用 media://（mp4 等在 media 白名单；asset 白名单只含 css/js/图片/字体）。
+      // ⚠️ 不要 replace 双斜杠：media:// 的 :// 会被压坏成 media:/。
+      const baseHref =
+        fileDir === "."
+          ? `media://local/parent/${pid}/`
+          : `media://local/parent/${pid}/${fileDir}/`;
+      if (/<head[^>]*>/i.test(content)) {
+        content = content.replace(/<head([^>]*)>/i, (m, attrs: string) => `<head${attrs}><base href="${baseHref}">`);
+      } else {
+        content = `<base href="${baseHref}">` + content;
+      }
     }
     return { found: true, format, content, fileUrl: "" };
   } catch (err) {
