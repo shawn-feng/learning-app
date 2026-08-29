@@ -2,6 +2,10 @@
  * M6 服务端平台可执行打包（@yao-pkg/pkg，vercel/pkg 社区维护 fork）。
  * 先跑 scripts/build.mjs 得到 dist/server.js，再执行本脚本打 Windows exe 与 Linux 可执行。
  * 用法：node scripts/pkg.mjs [win|linux|all]（默认 all）
+ *
+ * ⚠️ --public-packages "*" --public：源码明文打包（不生成 V8 bytecode）。
+ * 否则 pkg 会把 server.cjs 编译成 bytecode 缓存，跨机器运行报
+ * "V8 rejected the bytecode cache"（2026-08-29 部署 192.168.1.201 实测踩坑）。
  */
 import { execSync } from "node:child_process";
 import fs from "node:fs";
@@ -23,6 +27,7 @@ const cmd = [
   `"${serverJs}"`,
   `--target ${targets.join(",")}`,
   `--output "${path.join(root, "dist", "learning-server")}"`,
+  "--public-packages \"*\" --public",
   "--compress GZip",
 ].join(" ");
 
