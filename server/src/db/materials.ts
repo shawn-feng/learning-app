@@ -52,6 +52,49 @@ export function decodeMaterialId(id: string): string {
   return Buffer.from(id, "base64url").toString("utf-8");
 }
 
+/** 递归收集目录下所有文件（相对 posix 路径）。
+ * ⚠️ 不用 fs.readdirSync(recursive)：recursive 模式**不跟随目录符号链接**，会漏掉
+ * 软链目录（如 english → ChildWeb/english-learner，2026-08-29 部署踩坑）。
+ * 这里手写 walk：statSync follow 文件/目录软链接；realpath 去重防环。
+ */
+function walkFilesRecursive(root: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop()!;
+    let real: string;
+    try {
+      real = fs.realpathSync(dir);
+    } catch {
+      continue; // 目录不可达（坏链）跳过
+    }
+    if (seen.has(real)) continue; // 防环（软链接指回祖先）
+    seen.add(real);
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir, { encoding: "utf-8" });
+    } catch {
+      continue; // 单目录不可读不中断整体扫描
+    }
+    for (const name of names) {
+      const abs = path.join(dir, name);
+      let st: fs.Stats;
+      try {
+        st = fs.statSync(abs); // follow 符号链接
+      } catch {
+        continue; // 坏链跳过
+      }
+      if (st.isDirectory()) {
+        stack.push(abs);
+      } else if (st.isFile()) {
+        out.push(path.relative(root, abs).split(path.sep).join("/"));
+      }
+    }
+  }
+  return out;
+}
+
 /** 扫描磁盘材料目录，与索引表同步（新增/更新/删除）；返回该家长材料清单。 */
 export function scanMaterials(
   db: DatabaseSync,
@@ -62,11 +105,9 @@ export function scanMaterials(
   const found: MaterialMeta[] = [];
 
   if (fs.existsSync(root)) {
-    const entries = fs.readdirSync(root, { recursive: true, encoding: "utf-8" }) as string[];
-    for (const rel of entries) {
-      const abs = path.join(root, rel);
-      if (!fs.statSync(abs).isFile()) continue;
-      const posix = rel.split(path.sep).join("/");
+    const rels = walkFilesRecursive(root);
+    for (const posix of rels) {
+      const abs = path.join(root, posix);
       const stat = fs.statSync(abs);
       const updatedAt = stat.mtime.toISOString();
       found.push({
