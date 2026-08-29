@@ -704,23 +704,8 @@ export async function readParentMaterial(
       if (finalRel !== curRel) content = (await fetchMaterialContent(finalRel)).toString("utf-8");
       curRel = finalRel;
       const fileDir = path.posix.dirname(curRel);
-      // 把 html 内的相对资源引用(../xxx.css、images/..、同目录 js)改写为 asset:// 绝对地址，
-      // 由协议 handler 远程代理加载（srcDoc about:blank 来源下跨源可用）。
-      content = rewriteHtmlAssetRefs(content, pid, fileDir);
-      // JS 动态拼接的相对路径（如音标页 `'emma/'+phoneme+'.mp4'`）不在 href/src 属性里，
-      // 静态改写覆盖不到，srcDoc(about:blank) 下相对解析失败 → 注入 <base href> 让所有
-      // 相对 URL（含 JS 运行时拼接）基于本材料目录解析。绝对 URL（asset:///media:///http 等）不受 base 影响。
-      // base 用 media://（mp4 等在 media 白名单；asset 白名单只含 css/js/图片/字体）。
-      // ⚠️ 不要 replace 双斜杠：media:// 的 :// 会被压坏成 media:/。
-      const baseHref =
-        fileDir === "."
-          ? `media://local/parent/${pid}/`
-          : `media://local/parent/${pid}/${fileDir}/`;
-      if (/<head[^>]*>/i.test(content)) {
-        content = content.replace(/<head([^>]*)>/i, (m, attrs: string) => `<head${attrs}><base href="${baseHref}">`);
-      } else {
-        content = `<base href="${baseHref}">` + content;
-      }
+      // 与 display_content（孩子端）共用的渲染处理：相对资源→asset:// + 注入 base
+      content = rewriteMaterialHtmlForRender(content, pid, fileDir);
     }
     return { found: true, format, content, fileUrl: "" };
   } catch (err) {
@@ -729,12 +714,38 @@ export async function readParentMaterial(
 }
 
 /**
+ * 渲染前的 html 处理（家长端 readParentMaterial / 孩子端 display_content 共用）：
+ * 1. 把相对资源引用(../xxx.css、images/..、同目录 js)改写为 asset:// 绝对地址，
+ *    由协议 handler 远程代理加载（srcDoc about:blank 来源下跨源可用）；
+ * 2. 注入 `<base href="media://local/parent/<parentId>/<fileDir>/">`——JS 动态拼接的
+ *    相对路径（如英语音标页 `'emma/'+phoneme+'.mp4'`）不在 href/src 属性里，静态改写
+ *    覆盖不到，srcDoc(about:blank) 下相对解析失败 → base 让所有相对 URL（含 JS 运行时
+ *    拼接）基于本材料目录解析。绝对 URL（asset:///media:///http 等）不受 base 影响。
+ *    base 用 media://（mp4 等在 media 白名单；asset 白名单只含 css/js/图片/字体）。
+ * ⚠️ parentId 仅用于构造协议 URL 路径段（media/asset 协议不校验家长真实性，
+ *    数据经 session token 定位到真实家长）；⚠️ 不要 replace 双斜杠（media:// 会变 media:/）。
+ */
+export function rewriteMaterialHtmlForRender(html: string, parentId: string, fileDir: string): string {
+  let content = rewriteHtmlAssetRefs(html, parentId, fileDir);
+  const baseHref =
+    fileDir === "."
+      ? `media://local/parent/${parentId}/`
+      : `media://local/parent/${parentId}/${fileDir}/`;
+  if (/<head[^>]*>/i.test(content)) {
+    content = content.replace(/<head([^>]*)>/i, (m, attrs: string) => `<head${attrs}><base href="${baseHref}">`);
+  } else {
+    content = `<base href="${baseHref}">` + content;
+  }
+  return content;
+}
+
+/**
  * 远程跟随 html 里的 <meta http-equiv="refresh" content="0; url=..."> 跳转，返回最终材料相对路径。
  * - 仅跟随**相对跳转**且目标必须在 materials 根内（归一化后不得以 ../ 开头，防越权/防跳向 http）；
  * - 最多 8 跳、visited 防环；
  * - 无跳转/跳转目标无效时原样返回 startRel。
  */
-async function followHtmlRedirectRemote(startRel: string, startContent: string): Promise<string> {
+export async function followHtmlRedirectRemote(startRel: string, startContent: string): Promise<string> {
   let curRel = startRel;
   let content = startContent;
   const visited = new Set<string>([startRel]);

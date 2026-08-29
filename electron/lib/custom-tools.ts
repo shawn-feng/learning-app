@@ -3,7 +3,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
 import path from "path";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
-import { appendActivityLog, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse } from "./parent-library";
+import { appendActivityLog, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse, rewriteMaterialHtmlForRender, followHtmlRedirectRemote, DEFAULT_PARENT_ID } from "./parent-library";
 import { getChildrenDir } from "./config";
 import { fetchMaterialContent } from "./media-protocol";
 import { getTokenSummary, readTokenLog } from "./token-stats";
@@ -96,6 +96,20 @@ export const displayContentTool = defineTool({
       } catch (err) {
         throw new Error(`资料拉取失败: ${params.path}（${(err as Error).message}）`);
       }
+      // 与家长端 readParentMaterial 一致的渲染处理：
+      // 1) 跟随 <meta http-equiv=refresh> 占位页（英语 01-11/45-50 等 index.html 是跳转占位页，不跟随会空白）；
+      // 2) 相对资源改写为 asset:// + 注入 <base href=media://...>（srcDoc about:blank 下 CSS/图片/JS 动态相对路径全部失效）。
+      // DEFAULT_PARENT_ID 仅作协议 URL 路径段（协议不校验家长真实性，数据经 session token 定位）。
+      let finalRel = rel;
+      let finalRaw = raw;
+      if (/http-equiv\s*=\s*["']?refresh/i.test(finalRaw)) {
+        const jumped = await followHtmlRedirectRemote(finalRel, finalRaw);
+        if (jumped !== finalRel) {
+          finalRel = jumped;
+          finalRaw = (await fetchMaterialContent(finalRel)).toString("utf-8");
+        }
+      }
+      raw = rewriteMaterialHtmlForRender(finalRaw, DEFAULT_PARENT_ID, path.posix.dirname(finalRel));
       titleBase = rest.replace(/\.[^.]+$/, "").split("/").pop() || rest;
     } else {
       const resolved = path.resolve(ctx.cwd, params.path);
