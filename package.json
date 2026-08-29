@@ -1,6 +1,6 @@
 {
   "name": "learning-app",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "AI-guided learning app for children",
   "homepage": "https://github.com/learning-app/xuexihub",
   "main": "out/main/index.js",
