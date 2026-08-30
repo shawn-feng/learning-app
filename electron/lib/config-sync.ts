@@ -43,7 +43,25 @@ function writeJsonFile(p: string, value: unknown): void {
 }
 
 /**
- * 拉取一次配置：revision 未变 → 不动作；变化 → 全量写回本地文件。
+ * 合并写回（2026-08-30 修复「重启后模型为空」）：
+ * 服务端配置只覆盖本地同名 key，**本地独有字段保留**（模型配置/API key 选择是设备本地为主，
+ * server 旧快照缺字段时不再把本地 defaultModel/programmingModel/visionModel 清空）。
+ */
+function mergeJsonFile(p: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  let local: Record<string, unknown> = {};
+  try {
+    local = JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+  } catch {
+    local = {};
+  }
+  const incoming = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const merged = { ...local, ...incoming };
+  fs.writeFileSync(p, JSON.stringify(merged, null, 2), "utf-8");
+}
+
+/**
+ * 拉取一次配置：revision 未变 → 不动作；变化 → 合并写回本地文件。
  * 网络/未登录失败静默（下次轮询重试），返回 changed 供调用方判断。
  */
 export async function syncOnce(): Promise<{ changed: boolean }> {
@@ -58,7 +76,7 @@ export async function syncOnce(): Promise<{ changed: boolean }> {
     });
     for (const [key, value] of Object.entries(full.config ?? {})) {
       const file = fileForKey(key);
-      if (file) writeJsonFile(file, value);
+      if (file) mergeJsonFile(file, value);
     }
     writeLocalRevision(full.revision);
     return { changed: true };
