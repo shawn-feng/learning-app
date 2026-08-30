@@ -204,7 +204,8 @@ const queryHandlers: Record<string, QueryHandler> = {
   },
   "agents.get": (ctx, args) => {
     const scope = str(args.scope);
-    const ref = str(args.ref);
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
+    const ref = scope === "parent" ? ctx.parentId : str(args.ref);
     if (scope === "child") assertChildOwned(ctx, ref);
     if (scope !== "child" && scope !== "parent") {
       throw new ApiError(400, "scope 仅支持 child / parent");
@@ -214,7 +215,8 @@ const queryHandlers: Record<string, QueryHandler> = {
   },
   "agents.history": (ctx, args) => {
     const scope = str(args.scope);
-    const ref = str(args.ref);
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
+    const ref = scope === "parent" ? ctx.parentId : str(args.ref);
     if (scope === "child") assertChildOwned(ctx, ref);
     if (scope !== "child" && scope !== "parent") {
       throw new ApiError(400, "scope 仅支持 child / parent");
@@ -542,7 +544,8 @@ const execHandlers: Record<string, ExecHandler> = {
   },
   "agents.save": (ctx, args) => {
     const scope = str(args.scope);
-    const ref = str(args.ref);
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
+    const ref = scope === "parent" ? ctx.parentId : str(args.ref);
     if (scope === "child") assertChildOwned(ctx, ref);
     if (scope !== "child" && scope !== "parent") {
       throw new ApiError(400, "scope 仅支持 child / parent");
@@ -552,7 +555,8 @@ const execHandlers: Record<string, ExecHandler> = {
   },
   "agents.restore": (ctx, args) => {
     const scope = str(args.scope);
-    const ref = str(args.ref);
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
+    const ref = scope === "parent" ? ctx.parentId : str(args.ref);
     if (scope === "child") assertChildOwned(ctx, ref);
     if (scope !== "child" && scope !== "parent") {
       throw new ApiError(400, "scope 仅支持 child / parent");

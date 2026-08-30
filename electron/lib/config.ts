@@ -31,8 +31,36 @@ export function getSkillsDir(): string {
   return path.join(getSharedDir(), "skills");
 }
 
+// ==================== 按家长分区（2026-08-30 用户决策） ====================
+// 客户端本地配置（模型 key/模型选择/定时任务等）存到家长目录 parents/<parentId>/，
+// 多个家长登录同一 app 互不干扰。当前家长 id 记在 <data>/.session.json
+// （登录写、登出清；未登录/无缓存 → "default" 兼容旧数据）。
+
+const SESSION_FILE = ".session.json";
+
+export function getCurrentParentId(): string {
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(getDataDir(), SESSION_FILE), "utf-8")) as { parentId?: string };
+    return s?.parentId || "default";
+  } catch {
+    return "default";
+  }
+}
+
+export function setCurrentParentId(parentId: string): void {
+  fs.mkdirSync(getDataDir(), { recursive: true });
+  fs.writeFileSync(path.join(getDataDir(), SESSION_FILE), JSON.stringify({ parentId: parentId || "default" }, null, 2), "utf-8");
+}
+
+/** 当前家长配置目录（自动创建）。 */
+export function getParentConfigDir(parentId: string = getCurrentParentId()): string {
+  const dir = path.join(getDataDir(), "parents", parentId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export function getAuthPath(): string {
-  return path.join(getSharedDir(), "auth.json");
+  return path.join(getParentConfigDir(), "auth.json");
 }
 
 export function getChildrenDir(): string {
@@ -88,11 +116,11 @@ export function getTaskStatePath(): string {
 }
 
 export function getSchedulerConfigPath(): string {
-  return path.join(getDataDir(), "scheduler-config.json");
+  return path.join(getParentConfigDir(), "scheduler-config.json");
 }
 
 export function getAppSettingsPath(): string {
-  return path.join(getDataDir(), "app-settings.json");
+  return path.join(getParentConfigDir(), "app-settings.json");
 }
 
 export function getCloudApiBase(): string {

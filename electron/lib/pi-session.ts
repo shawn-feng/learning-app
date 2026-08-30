@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import path from "path";
 import fs from "fs";
-import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath } from "./config";
+import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath, getCurrentParentId } from "./config";
 import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
@@ -130,9 +130,8 @@ export function getDefaultPrompt(scope: string, ref: string): string {
  */
 function buildParentPrompt(): string {
   // ISSUE-033：用户保存的家长提示词版本优先（整体替换代码默认）。
-  // ref 兼容：历史「教学内容生成」用户版本（ref=content）在 main 无自定义时兜底生效，
-  // 避免合并后用户已编辑过的内容被代码默认静默覆盖（编辑器统一为 main 后会自动展示该内容）。
-  const userVersion = getAgentPrompt("parent", "main") || getAgentPrompt("parent", "content");
+  // 2026-08-30 起家长提示词按家长隔离：ref = 当前家长 id（历史 main/content 已随部署迁移）。
+  const userVersion = getAgentPrompt("parent", getCurrentParentId());
   if (userVersion && userVersion.trim()) return userVersion;
   return `你是「家长工作台助手」，服务家长工作台的全部功能：孩子管理、课程与教学内容管理、配置查看、学习统计。你不分场景——家长在任何页面（孩子管理 / 课程管理 / 教学内容 / 设置）发起的对话都是同一个你。
 
@@ -469,9 +468,8 @@ function getParentSessionsDir(sub: string): string {
 export async function getParentSession(): Promise<AgentSession> {
   if (cachedParentSession) return cachedParentSession;
 
-  // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存
-  await fetchAgentPromptRemote("parent", "main").catch(() => null);
-  await fetchAgentPromptRemote("parent", "content").catch(() => null);
+  // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存（按家长隔离）
+  await fetchAgentPromptRemote("parent", getCurrentParentId()).catch(() => null);
 
   const dataDir = getDataDir();
   const modelRuntime = await getSharedRuntime();
@@ -526,9 +524,8 @@ export async function getParentSession(): Promise<AgentSession> {
 export async function getParentContentSession(): Promise<AgentSession> {
   if (cachedParentContentSession) return cachedParentContentSession;
 
-  // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存
-  await fetchAgentPromptRemote("parent", "main").catch(() => null);
-  await fetchAgentPromptRemote("parent", "content").catch(() => null);
+  // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存（按家长隔离）
+  await fetchAgentPromptRemote("parent", getCurrentParentId()).catch(() => null);
 
   const dataDir = getDataDir();
   const modelRuntime = await getSharedRuntime();

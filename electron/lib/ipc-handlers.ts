@@ -1,7 +1,8 @@
-import { ipcMain, app, BrowserWindow, dialog, shell, screen, type IpcMainInvokeEvent } from "electron";
+import {
+  getCurrentParentId, ipcMain, app, BrowserWindow, dialog, shell, screen, type IpcMainInvokeEvent } from "electron";
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
-import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl } from "./config";
+import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
 import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
@@ -229,6 +230,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   // ---- AGENTS / 系统提示词「用户可编辑版本」通用接口（ISSUE-033）----
   ipcMain.handle("agents:get", async (_e, scope: string, ref: string) => {
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
+    if (scope === "parent") ref = getCurrentParentId();
     // SPLIT M8-B：编辑器实时读服务端（远程取 + 缓存兜底）
     const userVer = await fetchAgentPromptRemote(scope, ref);
     if (userVer !== null) return { content: userVer, customized: true };
@@ -238,6 +241,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("agents:save", async (_e, scope: string, ref: string, content: string) => {
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
+    if (scope === "parent") ref = getCurrentParentId();
     try {
       // SPLIT M8-B：保存走服务端 RPC（prompts 当前版 + prompt_history 历史版），并更新本地缓存
       await saveAgentPrompt(scope, ref, content);
@@ -248,6 +253,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("agents:history", async (_e, scope: string, ref: string) => {
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
+    if (scope === "parent") ref = getCurrentParentId();
     try {
       return { success: true, data: await listAgentPromptHistory(scope, ref) };
     } catch (err) {
@@ -256,6 +263,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("agents:restore", async (_e, scope: string, ref: string, updated: string) => {
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
+    if (scope === "parent") ref = getCurrentParentId();
     try {
       return { success: true, data: await restoreAgentPromptVersion(scope, ref, updated) };
     } catch (err) {

@@ -1,5 +1,6 @@
 import fs from "fs";
-import { getLicensePath, getServerUrl } from "./config";
+import path from "path";
+import { getLicensePath, getServerUrl, getDataDir, getSharedDir, getParentConfigDir, setCurrentParentId } from "./config";
 import { serverFetch, ServerError } from "./server-client";
 
 export interface License {
@@ -84,6 +85,45 @@ export function cacheLicense(license: License): void {
 export function clearCachedLicense(): void {
   const p = getLicensePath();
   if (fs.existsSync(p)) fs.unlinkSync(p);
+  // 登出同时清当前家长会话（本地配置回到 default 隔离区）
+  try {
+    setCurrentParentId("default");
+  } catch {
+    // 忽略
+  }
+}
+
+/** 登录成功后：记录当前家长 id（本地配置按家长分区）+ 迁移旧全局配置到家长目录。 */
+function activateParentSession(parentId: string): void {
+  try {
+    setCurrentParentId(parentId);
+    migrateLegacyConfigToParent(parentId);
+  } catch {
+    // 迁移失败不阻塞登录
+  }
+}
+
+/**
+ * 把旧全局位置的配置（shared/auth.json、根 app-settings.json / scheduler-config.json）
+ * 复制到家长目录（仅当家长目录还没有对应文件；default → 真实家长 首次登录时执行）。
+ */
+function migrateLegacyConfigToParent(parentId: string): void {
+  const parentDir = getParentConfigDir(parentId);
+  const legacy: Array<{ src: string; name: string }> = [
+    { src: path.join(getSharedDir(), "auth.json"), name: "auth.json" },
+    { src: path.join(getDataDir(), "app-settings.json"), name: "app-settings.json" },
+    { src: path.join(getDataDir(), "scheduler-config.json"), name: "scheduler-config.json" },
+  ];
+  for (const { src, name } of legacy) {
+    if (!fs.existsSync(src)) continue;
+    const dst = path.join(parentDir, name);
+    if (fs.existsSync(dst)) continue;
+    try {
+      fs.copyFileSync(src, dst);
+    } catch {
+      // 复制失败跳过（读旧位置逻辑已由新路径接管）
+    }
+  }
 }
 
 export async function loginAndCache(
@@ -99,6 +139,7 @@ export async function loginAndCache(
     cached_at: new Date().toISOString(),
   };
   cacheLicense(license);
+  activateParentSession(parent_id);
   return license;
 }
 
@@ -115,6 +156,7 @@ export async function registerAndCache(
     cached_at: new Date().toISOString(),
   };
   cacheLicense(license);
+  activateParentSession(parent_id);
   return license;
 }
 

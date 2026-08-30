@@ -11,7 +11,7 @@
  */
 import fs from "fs";
 import path from "path";
-import { getDataDir } from "./config";
+import { getDataDir, getCurrentParentId } from "./config";
 import { dbExec, dbQuery } from "./client-data";
 
 export interface PromptVersion {
@@ -117,9 +117,10 @@ export async function restoreAgentPromptVersion(scope: string, ref: string, upda
 
 /** 登录成功后后台预热：家长侧用户版本拉取到本地缓存（child 版本经 save 时写入）。 */
 export async function prefetchAgents(): Promise<void> {
+  // 家长提示词按家长隔离（2026-08-30）：ref = 当前家长 id
+  const parentRef = getCurrentParentId();
   for (const [scope, ref] of [
-    ["parent", "main"],
-    ["parent", "content"],
+    ["parent", parentRef],
   ] as const) {
     try {
       const data = await dbQuery<{ content: string | null }>("agents.get", { scope, ref });
