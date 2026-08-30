@@ -81,6 +81,68 @@ describe("BRIDGE_SCRIPT：桥脚本静态校验（安全 + 结构）", () => {
     expect(depth).toBe(0);
   });
 
+  it("speechSynthesis shim：getVoices 返回模拟 Edge 语音、speak 上抛 tts、tts:done 触发 onend（ISSUE-011）", () => {
+    const sent: any[] = [];
+    const speechSyn: any = {
+      getVoices: vi.fn(() => []),
+      speak: vi.fn(),
+      cancel: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      addEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+      paused: false,
+      pending: false,
+      speaking: false,
+    };
+    const win: any = {
+      __piBridge: undefined,
+      __piTtsBridge: undefined,
+      parent: { postMessage: vi.fn((m: any) => sent.push(m)) },
+      addEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+      speechSynthesis: speechSyn,
+    };
+    const doc: any = {
+      readyState: "complete",
+      title: "t",
+      addEventListener: vi.fn(),
+      scrollingElement: null,
+      documentElement: null,
+      querySelectorAll: () => [],
+      body: null,
+    };
+    vi.stubGlobal("window", win);
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("WeakMap", Map);
+    // 执行桥脚本（静态字符串，测试环境 eval 无安全顾虑）
+    eval(BRIDGE_SCRIPT);
+    // ① getVoices 返回模拟 Edge 在线语音（课程 cvInitVoices 能选中 Xiaoxiao Online）
+    const voices = speechSyn.getVoices();
+    expect(voices.some((v: any) => v.name.includes("Xiaoxiao Online (Natural)"))).toBe(true);
+    expect(voices.some((v: any) => v.voiceURI.startsWith("pi://edge-tts/"))).toBe(true);
+    // ② speak 上抛 tts 事件 + 触发 onstart
+    const u: any = { text: "你好，世界", onstart: vi.fn(), onend: vi.fn() };
+    speechSyn.speak(u);
+    const ttsMsg = sent.find((m: any) => m.kind === "tts");
+    expect(ttsMsg).toBeTruthy();
+    expect(ttsMsg.detail.text).toBe("你好，世界");
+    expect(u.onstart).toHaveBeenCalledTimes(1);
+    // ③ cancel 上抛 tts-cancel（active 被清空）
+    speechSyn.cancel();
+    expect(sent.some((m: any) => m.kind === "tts-cancel")).toBe(true);
+    // ④ 父级回执 page:tts:done → 触发 utterance.onend（朗读按钮复位）。
+    // cancel 已清空 active，需重新 speak 一次再回执。
+    const u2: any = { text: "再读一遍", onstart: vi.fn(), onend: vi.fn() };
+    speechSyn.speak(u2);
+    const msgHandlers = win.addEventListener.mock.calls
+      .filter((c: any) => c[0] === "message")
+      .map((c: any) => c[1]);
+    expect(msgHandlers.length).toBeGreaterThanOrEqual(2);
+    for (const h of msgHandlers) h({ data: { type: "page:tts:done" } });
+    expect(u2.onend).toHaveBeenCalledTimes(1);
+  });
+
   it("无任意代码执行能力（eval / new Function / document.write）", () => {
     expect(BRIDGE_SCRIPT).not.toContain("eval(");
     expect(BRIDGE_SCRIPT).not.toContain("new Function");

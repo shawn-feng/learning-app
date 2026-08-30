@@ -96,6 +96,41 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   const throttlerRef = useRef(new EventThrottler());
   const onPageEventRef = useRef(onPageEvent);
   onPageEventRef.current = onPageEvent;
+  // ISSUE-011：资料朗读走 edge-tts（与聊天同链路）。audioRef=当前播放；seq 防乱序（新朗读取代旧回执）
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsSeqRef = useRef(0);
+
+  /** 资料 html 朗读（speechSynthesis shim 上抛）→ edge-tts 合成播放，结束后回执 iframe 触发按钮复位 */
+  const speakMaterialText = useCallback(async (text: string) => {
+    const seq = ++ttsSeqRef.current;
+    ttsAudioRef.current?.pause();
+    try {
+      const r = await window.api.voiceTts(text, {});
+      if (seq !== ttsSeqRef.current || !r.success || !r.audio) return; // 已被更新朗读取代/失败
+      const blob = new Blob([r.audio], { type: "audio/mpeg" });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      ttsAudioRef.current = audio;
+      const done = () => {
+        if (seq !== ttsSeqRef.current) return;
+        URL.revokeObjectURL(url);
+        // 回执 iframe：桥脚本触发 utterance.onend（朗读按钮复位）
+        iframeRef.current?.contentWindow?.postMessage({ type: "page:tts:done" }, "*");
+      };
+      audio.onended = done;
+      audio.onerror = done;
+      await audio.play();
+    } catch {
+      // 合成/播放失败静默（不影响页面）
+    }
+  }, []);
+
+  /** 停止当前资料朗读（tts-cancel / 卸载时） */
+  const stopMaterialTts = useCallback(() => {
+    ttsSeqRef.current++; // 使进行中的合成回执失效
+    ttsAudioRef.current?.pause();
+    ttsAudioRef.current = null;
+  }, []);
 
   // 使全部未完成指令失效（页面刷新/切换/面板卸载：旧页面不会再回执）
   const rejectPending = useCallback((error: string) => {
@@ -117,6 +152,16 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
 
       if (data.type === "page:event") {
         const evt = data as PageEvent;
+        // ISSUE-011：资料朗读事件走 edge-tts，不进页面操作记录（不 onPageEvent 上抛）
+        if (evt.kind === "tts") {
+          const text = (evt.detail as { text?: string })?.text;
+          if (text) void speakMaterialText(text);
+          return;
+        }
+        if (evt.kind === "tts-cancel") {
+          stopMaterialTts();
+          return;
+        }
         // 节流兜底（桥脚本内已有轻量去重）：click/input/submit 同 key 3s 去重，scroll 800ms
         const now = Date.now();
         let key = evt.kind;
@@ -151,8 +196,9 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
       window.removeEventListener("message", handler);
       rejectPending("页面已关闭");
       readyRef.current = false;
+      stopMaterialTts(); // ISSUE-011：面板卸载停止资料朗读
     };
-  }, [rejectPending]);
+  }, [rejectPending, stopMaterialTts]);
 
   // 下行指令：postMessage 到 iframe，requestId 配对等待回执（10s 超时）
   const exec = useCallback(

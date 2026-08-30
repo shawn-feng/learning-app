@@ -15,7 +15,7 @@
 export const PAGE_MSG_PREFIX = "page:";
 export const PAGE_MSG_TYPES = ["page:event", "page:ready", "page:exec", "page:exec:result"] as const;
 
-export type PageEventKind = "open" | "click" | "scroll" | "input" | "submit" | "pagehide";
+export type PageEventKind = "open" | "click" | "scroll" | "input" | "submit" | "pagehide" | "tts" | "tts-cancel";
 
 /** iframe → 父页面：互动事件上报 */
 export interface PageEvent {
@@ -258,6 +258,50 @@ export const BRIDGE_SCRIPT = `(function () {
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "hidden") reportPageHide();
   });
+
+  // —— ISSUE-011：接管 speechSynthesis → 父级 edge-tts（音色与聊天一致）——
+  // 课程 html（hanzigong/english）朗读按钮用 window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))，
+  // 并靠 getVoices() 选「Microsoft Xiaoxiao Online (Natural)」。Electron/Chromium 无这些在线神经语音
+  // （见 ISSUE-013）→ 原实现 fallback 本地 SAPI 机械音。这里替换 getVoices/speak/cancel：
+  // - getVoices 返回模拟 Edge 在线语音列表 → 课程脚本能选中 Xiaoxiao Online（voiceURI=pi://edge-tts/...）
+  // - speak 把文本上抛父级（kind=tts）→ 渲染层走 window.api.voiceTts（edge-tts，与聊天同链路）
+  // - 播放结束父级回执 page:tts:done → 触发 utterance.onend（按钮复位）
+  (function () {
+    var syn = window.speechSynthesis;
+    if (!syn || window.__piTtsBridge) return;
+    window.__piTtsBridge = true;
+    var VOICES = [
+      { name: "Microsoft Xiaoxiao Online (Natural) - Chinese (Mainland)", lang: "zh-CN", localService: false, voiceURI: "pi://edge-tts/zh-CN-XiaoxiaoNeural" },
+      { name: "Microsoft Yunxi Online (Natural) - Chinese (Mainland)", lang: "zh-CN", localService: false, voiceURI: "pi://edge-tts/zh-CN-YunxiNeural" },
+      { name: "Microsoft Xiaoxiao Online - Chinese (Mainland)", lang: "zh-CN", localService: false, voiceURI: "pi://edge-tts/zh-CN-XiaoxiaoNeural" },
+      { name: "Microsoft Kangkang Desktop - Chinese (Mainland)", lang: "zh-CN", localService: true, voiceURI: "pi://local/kangkang" }
+    ];
+    var active = null;
+    syn.getVoices = function () { return VOICES; };
+    try {
+      var evt0 = new Event("voiceschanged");
+      setTimeout(function () { syn.dispatchEvent(evt0); }, 0);
+    } catch (e) {}
+    syn.speak = function (u) {
+      if (!u || !u.text) return;
+      active = u;
+      send({ type: "page:event", kind: "tts", detail: { text: String(u.text).slice(0, 800) } });
+      try { if (typeof u.onstart === "function") u.onstart(); } catch (e) {}
+    };
+    syn.cancel = function () {
+      active = null;
+      send({ type: "page:event", kind: "tts-cancel", detail: {} });
+    };
+    syn.pause = function () {};
+    syn.resume = function () {};
+    syn.paused = false; syn.pending = false; syn.speaking = false;
+    window.addEventListener("message", function (e) {
+      var d = e.data;
+      if (!d || d.type !== "page:tts:done") return;
+      var u = active; active = null;
+      if (u) { try { if (typeof u.onend === "function") u.onend(); } catch (e2) {} }
+    });
+  })();
 
   // —— 就绪握手 + 打开事件 ——
   function reportOpen() {
