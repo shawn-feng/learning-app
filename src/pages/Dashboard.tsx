@@ -18,6 +18,15 @@ interface Props {
 
 const AVATARS = ["🦊", "🐰", "🐻", "🦁", "🐼", "🐨", "🐯", "🦉"];
 
+/** 进度摘要格式化（ISSUE-001）：返回「已学 x/y 课 · n 主题」或空串。 */
+function progressText(p: any): string {
+  if (!p) return "";
+  const learned = Number(p.learned) || 0;
+  const total = Number(p.total) || 0;
+  const topics = Number(p.topics) || 0;
+  return `已学 ${learned}/${total} 课 · ${topics} 个主题`;
+}
+
 export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) {
   const [children, setChildren] = useState<any[]>([]);
   const [showAddChild, setShowAddChild] = useState(false);
@@ -140,6 +149,11 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                 <div className="meta">
                   {child.age}岁 · {child.grade}
                 </div>
+                {child.progress && (child.progress.total || 0) > 0 && (
+                  <div className="meta" style={{ fontSize: 11, color: "#38a169" }}>
+                    {progressText(child.progress)}
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -188,6 +202,36 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                               兴趣：{child.interests || "无"}
                             </div>
                           </div>
+                        </div>
+                        {/* ISSUE-001：学习进度摘要 + 进度条（服务端聚合） */}
+                        <div style={{ width: "100%", marginTop: 10 }}>
+                          {child.progress ? (
+                            (child.progress.total || 0) > 0 ? (
+                              <>
+                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#666" }}>
+                                  <span>{progressText(child.progress)}</span>
+                                  {child.progress.lastUpdated && (
+                                    <span>最近学习 {String(child.progress.lastUpdated).slice(0, 10)}</span>
+                                  )}
+                                </div>
+                                <div style={{ height: 6, background: "#eee", borderRadius: 3, marginTop: 5, overflow: "hidden" }}>
+                                  <div
+                                    style={{
+                                      height: "100%",
+                                      width: `${Math.min(100, Math.round(((child.progress.learned || 0) / (child.progress.total || 1)) * 100))}%`,
+                                      background: "#667eea",
+                                      borderRadius: 3,
+                                      transition: "width .3s",
+                                    }}
+                                  />
+                                </div>
+                              </>
+                            ) : (
+                              <div style={{ fontSize: 11, color: "#aaa" }}>暂无学习记录</div>
+                            )
+                          ) : (
+                            <div style={{ fontSize: 11, color: "#aaa" }}>学习进度同步中…</div>
+                          )}
                         </div>
                         <div style={{ display: "flex", gap: 8, marginTop: 12, width: "100%", flexWrap: "wrap" }}>
                           <IconButton icon={KeyRound} title="重置密码" style={{ flex: 1, minWidth: 44 }} onClick={() => { setResetChildId(child.childId); setNewPassword(""); setError(""); }} />

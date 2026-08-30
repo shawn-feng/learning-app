@@ -547,6 +547,21 @@ export async function setChildTopicDaily(
   return true;
 }
 
+/**
+ * 移除孩子某主题的分配（ISSUE-004，SPLIT：写服务端 kb.topics.deallocate）。
+ * 只删孩子库 topics 分配行（孩子端不再看到/学习该主题），**保留 courses 与学习进度**
+ * （topic_progress 由 courses 派生；重新分配时 allocateTopicToChild 会保留既有进度）。
+ */
+export async function deallocateChildTopic(
+  childId: string,
+  topicDir: string
+): Promise<{ removed: number }> {
+  return dbExec<{ removed: number }>("kb.topics.deallocate", {
+    child_id: childId,
+    topic_key: topicDir,
+  });
+}
+
 // ==================== 孩子端「从家长库取内容」（ISSUE-029 专用工具后端） ====================
 
 export type ParentContentType = "method" | "teachingCopy" | "htmlPath";

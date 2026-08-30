@@ -4,7 +4,6 @@ import { Plus, Save, Trash2 } from "lucide-react";
 
 interface SchedulerChildConfig {
   recording: { enabled: boolean; times: string[]; onNewSession: boolean };
-  sessionReset: { enabled: boolean; hour: number; minute: number };
   autoNewSession: { enabled: boolean; hour: number; minute: number };
   archiveLimit: number;
 }
@@ -35,7 +34,6 @@ function defaultEventPollConfig(): EventPollConfig {
 function defaultConfig(): SchedulerChildConfig {
   return {
     recording: { enabled: false, times: ["21:00"], onNewSession: false },
-    sessionReset: { enabled: false, hour: 22, minute: 0 },
     autoNewSession: { enabled: false, hour: 21, minute: 0 },
     archiveLimit: 20,
   };
@@ -143,7 +141,7 @@ export default function SchedulerSettings() {
     <div className="settings-section">
       <h3>定时任务</h3>
       <p className="desc">
-        为每个孩子单独设置自动任务（学习记录总结、学习进度追踪、每日会话重置、自动新建会话）。默认全部关闭，开启后才会在后台定时调用模型。会话重置 / 自动新建会话只清空对话与学习资料面板，不会清除学习进度。注意：自动新建会话已包含「跨天自动开新 + 每天定点开新」，与「每日会话重置」功能重叠，二者择一开启即可。
+        为每个孩子单独设置自动任务（学习记录总结、自动新建会话）。默认全部关闭，开启后才会在后台定时调用模型。自动新建会话只清空对话与学习资料面板，不会清除学习进度；它已包含「跨天自动开新 + 每天定点开新」。
       </p>
 
       {!loaded ? (
@@ -452,61 +450,6 @@ export default function SchedulerSettings() {
                         每次新建会话前，自动总结之前的会话
                       </label>
                     </div>
-                  )}
-                </div>
-
-                {/* session-reset */}
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={cfg.sessionReset.enabled}
-                      onChange={(e) =>
-                        updateConfig(child.childId, (p) => ({
-                          ...p,
-                          sessionReset: { ...p.sessionReset, enabled: e.target.checked },
-                        }))
-                      }
-                    />
-                    会话重置（清空对话与学习资料，不清除进度）
-                  </label>
-                  {cfg.sessionReset.enabled && (
-                    <span style={{ fontSize: 13, color: "#666" }}>
-                      每天{" "}
-                      <input
-                        type="number"
-                        min={0}
-                        max={23}
-                        value={cfg.sessionReset.hour}
-                        onChange={(e) =>
-                          updateConfig(child.childId, (p) => ({
-                            ...p,
-                            sessionReset: {
-                              ...p.sessionReset,
-                              hour: Math.max(0, Math.min(23, parseInt(e.target.value) || 0)),
-                            },
-                          }))
-                        }
-                        style={{ width: 44, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
-                      />
-                      :
-                      <input
-                        type="number"
-                        min={0}
-                        max={59}
-                        value={cfg.sessionReset.minute}
-                        onChange={(e) =>
-                          updateConfig(child.childId, (p) => ({
-                            ...p,
-                            sessionReset: {
-                              ...p.sessionReset,
-                              minute: Math.max(0, Math.min(59, parseInt(e.target.value) || 0)),
-                            },
-                          }))
-                        }
-                        style={{ width: 44, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6 }}
-                      />
-                    </span>
                   )}
                 </div>
 

@@ -386,6 +386,22 @@ const execHandlers: Record<string, ExecHandler> = {
       db.close();
     }
   },
+  "kb.topics.deallocate": (ctx, args) => {
+    // ISSUE-004：移除孩子某主题的分配。只删 topics 分配行（孩子 agent 不再看到/学习该主题），
+    // **保留 courses 与 topic_progress 学习记录**（重新分配时进度可续上）。
+    const childId = requireChildId(ctx, args);
+    const topicKey = str(args.topic_key);
+    if (!topicKey) throw new ApiError(400, "缺少 topic_key");
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      const r = db
+        .prepare("DELETE FROM topics WHERE topic_key = ? OR name = ?")
+        .run(topicKey, topicKey);
+      return { removed: Number(r.changes) };
+    } finally {
+      db.close();
+    }
+  },
   "kb.courses.upsert": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);

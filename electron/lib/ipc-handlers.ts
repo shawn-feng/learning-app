@@ -15,6 +15,7 @@ import {
   allocateTopicToChild,
   copyMaterialIntoParent,
   deleteParentCourse,
+  deallocateChildTopic,
   listChildAllocatedTopics,
   listParentMaterials,
   listParentTopicMaterials,
@@ -380,6 +381,15 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("parent:listChildTopics", async (_e, childId: string) => {
     try {
       return { success: true, data: await listChildAllocatedTopics(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ISSUE-004：移除孩子某主题的分配（保留学习记录，仅取消分配）
+  ipcMain.handle("parent:deallocate", async (_e, childId: string, topicDir: string) => {
+    try {
+      return { success: true, data: await deallocateChildTopic(childId, topicDir) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1159,25 +1169,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // ---- ISSUE-041 消息交换（跨机课程分发 + 进度查询）----
-  // 云端只做消息交换：分配包（家长→孩子，投递即删）+ 进度摘要（孩子→家长，只存最新）。
-  // 不再有整库云同步；多 PC 数据迁移走本地 zip 备份/恢复。
-
-  // 家长云端查进度：打「请求刷新」标记 + 返回当前云端进度摘要（孩子端轮询后会上传新摘要）
-  ipcMain.handle("sync:query_progress", async (_e: IpcMainInvokeEvent, childId: string) => {
-    try {
-      // SPLIT：进度真源在服务端 learning-server（旧 ISSUE-041 云端 sync 消息交换已废弃，
-      // 本地 kb.sqlite 不再写入 → 原摘要必然为空）。改为直接读服务端进度并汇总为旧展示结构。
-      await fetchProgressRemote(childId);
-      const s = await getLearningSummary(childId);
-      const topics = (s.topics ?? []).map((t) => ({ name: t.name, done: t.learned, courses: t.total }));
-      return { success: true, data: { note: "进度来自服务端", summary: { topics, daily: [] } } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ---- Backup handlers（ISSUE-041 层 A：本地 zip 备份 / 恢复）----
+  // ---- Backup handlers（ISSUE-003：服务端数据 zip 备份 / 恢复）----
 
   ipcMain.handle("backup:create", async () => {
     try {
@@ -1208,7 +1200,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       if (res.canceled || !res.filePaths[0]) return { success: false, canceled: true };
       const { restoreBackup } = await import("./backup");
       const r = await restoreBackup(res.filePaths[0]);
-      return { success: true, restored: r.restored, skipped: r.skipped };
+      return { success: true, restored: r.restored, skipped: r.skipped, preRestore: r.preRestore };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

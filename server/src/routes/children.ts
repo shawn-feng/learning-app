@@ -11,6 +11,7 @@ import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
+import { openKb } from "../db/kb.js";
 
 interface ChildrenDeps {
   config: ServerConfig;
@@ -53,6 +54,30 @@ function parseProfile(row: { profile_json: string | null }, fallback: { id: stri
   return { ...p, childId: fallback.id, name: fallback.name, createdAt: fallback.created_at };
 }
 
+/** 单个孩子的学习进度摘要（ISSUE-001：家长卡片展示用）。读孩子 kb 的 topic_progress 视图聚合。 */
+function childProgressSummary(dataDir: string, parentId: string, childId: string): Record<string, unknown> {
+  const db = openKb(dataDir, parentId, childId);
+  try {
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS topics,
+                COALESCE(SUM(learned), 0) AS learned,
+                COALESCE(SUM(total), 0) AS total,
+                COALESCE(MAX(updated), '') AS updated
+         FROM topic_progress`
+      )
+      .get() as { topics: number; learned: number; total: number; updated: string };
+    return {
+      topics: Number(row?.topics ?? 0),
+      learned: Number(row?.learned ?? 0),
+      total: Number(row?.total ?? 0),
+      lastUpdated: String(row?.updated ?? ""),
+    };
+  } finally {
+    db.close();
+  }
+}
+
 export function registerChildrenRoutes(app: FastifyInstance, deps: ChildrenDeps): void {
   app.post("/api/v1/children", async (req, reply) => {
     const parentId = authParent(req, deps.config.jwtSecret);
@@ -80,6 +105,8 @@ export function registerChildrenRoutes(app: FastifyInstance, deps: ChildrenDeps)
         name: r.name,
         created_at: r.created_at,
         profile: parseProfile(r, { id: r.id, name: r.name, created_at: r.created_at }),
+        // ISSUE-001：学习进度摘要（聚合自孩子 kb topic_progress，供家长卡片展示）
+        progress: childProgressSummary(deps.config.dataDir, parentId, r.id),
       })),
     };
   });

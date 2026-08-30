@@ -14,7 +14,6 @@ export interface TaskState {
     string,
     {
       recording: { lastRun: string };
-      "session-reset": { lastRun: string };
       "auto-new-session": { lastRun: string };
       // ISSUE-041 层 C：家长→孩子事件轮询
       "event-poll": { lastRun: string };
@@ -28,11 +27,8 @@ export interface TaskState {
 export interface SchedulerChildConfig {
   // 每日学习记录总结（recording）：按具体时间点触发（可多个）；onNewSession = 每次新建会话前自动总结
   recording: { enabled: boolean; times: string[]; onNewSession: boolean };
-  // 会话重置：每天在配置的 hour:minute 清空孩子会话上下文与学习资料（不清除学习进度）
-  sessionReset: { enabled: boolean; hour: number; minute: number };
   // 自动新建会话：开关开启后，每天在配置的 hour:minute 新建空会话；且 app 启动时若最后一条
-  // 消息不是当天也会新建。与 sessionReset 的区别：本开关同时覆盖「跨天自动开新」与「定点开新」，
-  // 由 pi-session 的 shouldAutoNewSession 在开会话时统一裁决，scheduler 仅负责热会话到点重置。
+  // 消息不是当天也会新建。由 pi-session 的 shouldAutoNewSession 在开会话时统一裁决，scheduler 仅负责热会话到点重置。
   autoNewSession: { enabled: boolean; hour: number; minute: number };
   // 历史会话归档保留上限：每次会话重置后只保留最近 N 个旧会话文件，更早的清理，避免无限膨胀。
   // 家长可在「定时任务」设置页配置；设置为 0 表示不保留历史归档（仅当前会话）。
@@ -90,7 +86,6 @@ export const DEFAULT_EVENT_POLL_CONFIG: SchedulerEventPollConfig = {
 
 export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
   recording: { enabled: false, times: ["21:00"], onNewSession: false },
-  sessionReset: { enabled: false, hour: 22, minute: 0 },
   autoNewSession: { enabled: false, hour: 21, minute: 0 },
   archiveLimit: 20,
 };
@@ -125,7 +120,6 @@ function saveTaskState(state: TaskState): void {
 function defaultChildTaskState() {
   return {
     recording: { lastRun: "" },
-    "session-reset": { lastRun: "" },
     "auto-new-session": { lastRun: "" },
     "event-poll": { lastRun: "" },
   };
@@ -142,7 +136,6 @@ export function getChildState(state: TaskState, childId: string) {
     const existing = state.children[childId];
     state.children[childId] = {
       recording: { ...base.recording, ...existing.recording },
-      "session-reset": { ...base["session-reset"], ...existing["session-reset"] },
       "auto-new-session": { ...base["auto-new-session"], ...existing["auto-new-session"] },
       "event-poll": { ...base["event-poll"], ...existing["event-poll"] },
     };
@@ -181,7 +174,6 @@ export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {
         Array.isArray(rec.times) && rec.times.length > 0 ? [...rec.times] : defaultRecordingTimes(),
       onNewSession: rec.onNewSession ?? DEFAULT_CHILD_CONFIG.recording.onNewSession,
     },
-    sessionReset: { ...DEFAULT_CHILD_CONFIG.sessionReset, ...(c.sessionReset || {}) },
     autoNewSession: { ...DEFAULT_CHILD_CONFIG.autoNewSession, ...(c.autoNewSession || {}) },
     archiveLimit: c.archiveLimit ?? DEFAULT_CHILD_CONFIG.archiveLimit,
   };
@@ -201,7 +193,6 @@ export function setChildSchedulerConfig(
           : defaultRecordingTimes(),
       onNewSession: childConfig.recording?.onNewSession ?? DEFAULT_CHILD_CONFIG.recording.onNewSession,
     },
-    sessionReset: { ...DEFAULT_CHILD_CONFIG.sessionReset, ...(childConfig.sessionReset || {}) },
     autoNewSession: { ...DEFAULT_CHILD_CONFIG.autoNewSession, ...(childConfig.autoNewSession || {}) },
     archiveLimit:
       typeof childConfig.archiveLimit === "number"
@@ -367,25 +358,6 @@ export function startScheduler(): void {
         }
       }
 
-      // session-reset：每天在配置的 hour:minute 清空孩子会话（不清除学习进度）
-      if (cc.sessionReset.enabled) {
-        const lastDay = cs["session-reset"].lastRun
-          ? new Date(cs["session-reset"].lastRun).toDateString()
-          : "";
-        const isTime =
-          now.getHours() === cc.sessionReset.hour &&
-          now.getMinutes() === cc.sessionReset.minute;
-        if (isTime && lastDay !== now.toDateString()) {
-          try {
-            await runSessionReset(child.childId);
-            cs["session-reset"].lastRun = new Date().toISOString();
-            saveTaskState(state);
-          } catch (e) {
-            console.error(`Session reset failed for child ${child.childId}:`, e);
-          }
-        }
-      }
-
       // auto-new-session：每天在配置的 hour:minute 新建空会话。
       // 冷路径（会话未加载）由 getChildSession 打开时按「最后消息非今天 / 已过设定节点」自动开新会话；
       // 此处仅对「已加载（热）」会话在到点时立即重置，保证活跃对话也被及时清空。
@@ -480,20 +452,6 @@ export async function runCatchUp(): Promise<void> {
           } catch (e) {
             console.error(`Recording catch-up failed for child ${child.childId}:`, e);
           }
-        }
-      }
-    }
-
-    if (cc.sessionReset.enabled) {
-      const lastReset = cs["session-reset"].lastRun
-        ? new Date(cs["session-reset"].lastRun).toDateString()
-        : "";
-      if (lastReset !== today) {
-        try {
-          await runSessionReset(child.childId);
-          cs["session-reset"].lastRun = new Date().toISOString();
-        } catch (e) {
-          console.error(`Session-reset catch-up failed for child ${child.childId}:`, e);
         }
       }
     }

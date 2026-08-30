@@ -1,148 +1,94 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
 
-// backup.ts 走 getDataDir()（config.ts），用 PI_TEST_DATA_DIR 隔离真实 data/。
-import {
-  createBackup,
-  restoreBackup,
-  zipUnpack,
-  zipPack,
-  isBackupExcluded,
-} from "../electron/lib/backup.ts";
+// ISSUE-003：备份改为「服务端数据 zip」——createBackup 从服务端拉 zip 存本地，
+// restoreBackup 把本地 zip 上传给服务端覆盖（服务端恢复前自动备份）。全部走 server 调用，mock 掉网络层。
+vi.mock("../electron/lib/server-client.ts", () => ({
+  ServerError: class ServerError extends Error {
+    constructor(public status: number, message: string) {
+      super(message);
+    }
+  },
+  serverFetchBinary: vi.fn(),
+  serverUploadFile: vi.fn(),
+  serverBase: () => "http://mock-server",
+}));
+
+vi.mock("../electron/lib/auth-manager.ts", () => ({
+  getCachedLicense: () => ({ token: "mock-token" }),
+}));
+
+import { serverFetchBinary, serverUploadFile } from "../electron/lib/server-client.ts";
+import { createBackup, restoreBackup } from "../electron/lib/backup.ts";
 
 const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "pi-backup-test-"));
-const DATA_DIR = path.join(TEST_DIR, "data");
 const DEST_DIR = path.join(TEST_DIR, "dest");
 
-beforeAll(() => {
-  process.env.PI_TEST_DATA_DIR = DATA_DIR;
-  // 构造一份含敏感数据/正常数据的真实目录结构
-  const childDir = path.join(DATA_DIR, "children", "child-1");
-  fs.mkdirSync(path.join(childDir, "learning", "lunyu", "media"), { recursive: true });
-  fs.mkdirSync(path.join(childDir, ".pi", "agent", "sessions"), { recursive: true });
-  fs.mkdirSync(path.join(childDir, "uploads"), { recursive: true });
-  fs.mkdirSync(path.join(DATA_DIR, "parents", "default", "materials"), { recursive: true });
-  fs.mkdirSync(path.join(DATA_DIR, "shared", "skills"), { recursive: true });
+/** 构造一个与服务端备份同构的 zip（manifest + parent.sqlite + kb/<cid>.sqlite）。 */
+function fakeServerZip(): Buffer {
+  // 手动构造最小 zip 成本高，这里用「伪 zip」：createBackup 不解析 zip 内容，只保存并尝试读 manifest 计数。
+  const manifest = JSON.stringify({
+    tool: "学习伙伴数据备份（服务端用户数据）",
+    fileCount: 3,
+    note: "仅含家长库与孩子学习库；不含账号、模型 API key、登录凭证、材料大文件。",
+  });
+  return Buffer.from(`PK-MOCK-${manifest}`);
+}
 
-  fs.writeFileSync(
-    path.join(childDir, "profile.json"),
-    JSON.stringify({ childId: "child-1", name: "珊珊", passwordHash: "$2a$10$secret-hash" }, null, 2)
-  );
-  fs.writeFileSync(path.join(childDir, "learning", "lunyu", "method.md"), "# 三步吟诵法");
-  fs.writeFileSync(path.join(childDir, "learning", "lunyu", "media", "a.mp3"), Buffer.from([1, 2, 3]));
-  fs.writeFileSync(path.join(childDir, "kb.sqlite"), Buffer.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
-  fs.writeFileSync(path.join(childDir, "uploads", "x.png"), Buffer.from([9, 9, 9]));
-  fs.writeFileSync(path.join(childDir, ".pi", "agent", "sessions", "s.jsonl"), "# 会话历史，不应备份");
-  fs.writeFileSync(path.join(DATA_DIR, "parents", "default", "parent.sqlite"), Buffer.from([5, 5, 5]));
-  fs.writeFileSync(path.join(DATA_DIR, "parents", "default", "materials", "a.html"), "<html>资料</html>");
-  fs.writeFileSync(path.join(DATA_DIR, "agents.sqlite"), Buffer.from([1, 1, 1]));
-  fs.writeFileSync(path.join(DATA_DIR, "scheduler-config.json"), '{"children":{}}');
-  fs.writeFileSync(path.join(DATA_DIR, "app-settings.json"), '{"defaultModel":"qwen/qwen-max"}');
-  fs.writeFileSync(path.join(DATA_DIR, "app-settings.json.bak-20260824"), "old");
-  // 敏感数据（必须被排除）
-  fs.writeFileSync(path.join(DATA_DIR, "shared", "auth.json"), '{"deepseek":{"type":"api_key","key":"sk-secret"}}');
-  fs.writeFileSync(path.join(DATA_DIR, "license.json"), '{"token":"jwt-secret"}');
-  fs.writeFileSync(path.join(DATA_DIR, "task-state.json"), '{"children":{}}');
+beforeAll(() => {
+  // 真实 zip（服务端 produce 的格式）由 server 端测试覆盖；这里验证客户端行为
 });
 
 afterAll(() => {
   fs.rmSync(TEST_DIR, { recursive: true, force: true });
-  delete process.env.PI_TEST_DATA_DIR;
 });
 
-describe("isBackupExcluded（denylist）", () => {
-  it("排除敏感/内部/会话/临时文件，保留使用数据", () => {
-    expect(isBackupExcluded("shared/auth.json")).toBe(true);
-    expect(isBackupExcluded("license.json")).toBe(true);
-    expect(isBackupExcluded("task-state.json")).toBe(true);
-    expect(isBackupExcluded("children/c1/.pi/agent/sessions/a.jsonl")).toBe(true);
-    expect(isBackupExcluded("app-settings.json.bak-20260824")).toBe(true);
-    expect(isBackupExcluded("backup-20260825-123456.zip")).toBe(true);
-    expect(isBackupExcluded("children/c1/profile.json")).toBe(false);
-    expect(isBackupExcluded("parents/default/parent.sqlite")).toBe(false);
-    expect(isBackupExcluded("agents.sqlite")).toBe(false);
-    expect(isBackupExcluded("scheduler-config.json")).toBe(false);
-  });
-});
+describe("createBackup（服务端 → 本地 zip）", () => {
+  it("从服务端拉取 zip 保存到 destDir，返回文件名/计数/字节数", async () => {
+    const zip = fakeServerZip();
+    vi.mocked(serverFetchBinary).mockResolvedValue(zip as never);
 
-describe("createBackup + zipUnpack", () => {
-  it("产出 zip：含使用数据、剥离 passwordHash、不含敏感与会话", async () => {
     const r = await createBackup(DEST_DIR);
+    expect(serverFetchBinary).toHaveBeenCalledWith("/backup", { token: "mock-token" });
     expect(fs.existsSync(r.file)).toBe(true);
     expect(r.file).toMatch(/backup-\d{8}-\d{6}\.zip$/);
-    expect(r.count).toBeGreaterThan(0);
+    expect(r.bytes).toBe(zip.length);
+    // 计数从 manifest 的 fileCount 解析
+    expect(r.count).toBe(3);
+    expect(fs.readFileSync(r.file).equals(zip)).toBe(true);
+  });
 
-    const buf = fs.readFileSync(r.file);
-    const entries = zipUnpack(buf);
-    const byPath = new Map(entries.map((e) => [e.path, e.data]));
-
-    expect(byPath.has("manifest.json")).toBe(true);
-    // 使用数据都在
-    expect(byPath.has("children/child-1/learning/lunyu/method.md")).toBe(true);
-    expect(byPath.has("children/child-1/learning/lunyu/media/a.mp3")).toBe(true);
-    expect(byPath.has("children/child-1/kb.sqlite")).toBe(true);
-    expect(byPath.has("children/child-1/uploads/x.png")).toBe(true);
-    expect(byPath.has("parents/default/parent.sqlite")).toBe(true);
-    expect(byPath.has("parents/default/materials/a.html")).toBe(true);
-    expect(byPath.has("agents.sqlite")).toBe(true);
-    expect(byPath.has("scheduler-config.json")).toBe(true);
-    expect(byPath.has("app-settings.json")).toBe(true);
-    // 敏感/内部/会话/临时必须不在
-    expect(byPath.has("shared/auth.json")).toBe(false);
-    expect(byPath.has("license.json")).toBe(false);
-    expect(byPath.has("task-state.json")).toBe(false);
-    expect(byPath.has("children/child-1/.pi/agent/sessions/s.jsonl")).toBe(false);
-    expect(byPath.has("app-settings.json.bak-20260824")).toBe(false);
-
-    // profile.json 已剥离 passwordHash，且源文件未被改动
-    const profile = JSON.parse(byPath.get("children/child-1/profile.json")!.toString("utf-8"));
-    expect(profile.name).toBe("珊珊");
-    expect("passwordHash" in profile).toBe(false);
-    const srcProfile = JSON.parse(
-      fs.readFileSync(path.join(DATA_DIR, "children", "child-1", "profile.json"), "utf-8")
-    );
-    expect(srcProfile.passwordHash).toBe("$2a$10$secret-hash");
+  it("服务端不可达时抛错（不落盘半成品）", async () => {
+    vi.mocked(serverFetchBinary).mockRejectedValue(new Error("无法连接服务端") as never);
+    await expect(createBackup(DEST_DIR)).rejects.toThrow("无法连接服务端");
   });
 });
 
-describe("restoreBackup", () => {
-  it("keepAuth 默认保护本机 auth/license；其余文件恢复到 data/", async () => {
-    const r = await createBackup(DEST_DIR);
-    // 预置本机敏感数据（恢复后必须保留）
-    fs.writeFileSync(path.join(DATA_DIR, "shared", "auth.json"), '{"local":"key"}');
-    fs.writeFileSync(path.join(DATA_DIR, "license.json"), '{"local":"license"}');
-    // 删除一个使用数据文件，模拟新机缺文件
-    fs.rmSync(path.join(DATA_DIR, "parents", "default", "materials", "a.html"), { force: true });
+describe("restoreBackup（本地 zip → 服务端覆盖）", () => {
+  it("上传 zip，透传 restored/skipped/preRestore", async () => {
+    vi.mocked(serverUploadFile).mockResolvedValue({
+      ok: true,
+      restored: 2,
+      skipped: ["kb/other.sqlite"],
+      preRestore: "pre-restore-20260830-100000.zip",
+    } as never);
 
-    const res = await restoreBackup(r.file);
-    expect(res.restored).toBeGreaterThan(0);
-    // 本机敏感数据未被覆盖
-    expect(fs.readFileSync(path.join(DATA_DIR, "shared", "auth.json"), "utf-8")).toBe('{"local":"key"}');
-    expect(fs.readFileSync(path.join(DATA_DIR, "license.json"), "utf-8")).toBe('{"local":"license"}');
-    // 缺的使用数据被恢复
-    expect(fs.readFileSync(path.join(DATA_DIR, "parents", "default", "materials", "a.html"), "utf-8")).toBe("<html>资料</html>");
+    const zipPath = path.join(TEST_DIR, "upload.zip");
+    fs.writeFileSync(zipPath, fakeServerZip());
+
+    const r = await restoreBackup(zipPath);
+    expect(serverUploadFile).toHaveBeenCalledWith("/backup/restore", zipPath, "mock-token");
+    expect(r.restored).toBe(2);
+    expect(r.skipped).toContain("kb/other.sqlite");
+    expect(r.preRestore).toContain("pre-restore-");
   });
 
-  it("keepAuth 拦截：zip 内含敏感条目时默认跳过，keepAuth:false 则覆盖", async () => {
-    // 构造一个「其他工具导出、包含敏感文件」的 zip
-    const buf = await zipPack([
-      { path: "shared/auth.json", data: Buffer.from('{"evil":"key"}') },
-      { path: "license.json", data: Buffer.from('{"evil":"license"}') },
-      { path: "agents.sqlite", data: Buffer.from([7, 7, 7]) },
-    ]);
-    const zipPath = path.join(TEST_DIR, "with-sensitive.zip");
-    fs.writeFileSync(zipPath, buf);
-
-    const keep = await restoreBackup(zipPath, { keepAuth: true });
-    expect(keep.skipped).toContain("shared/auth.json");
-    expect(keep.skipped).toContain("license.json");
-    expect(fs.readFileSync(path.join(DATA_DIR, "shared", "auth.json"), "utf-8")).toBe('{"local":"key"}');
-    expect(fs.readFileSync(path.join(DATA_DIR, "license.json"), "utf-8")).toBe('{"local":"license"}');
-
-    const force = await restoreBackup(zipPath, { keepAuth: false });
-    expect(force.skipped).not.toContain("shared/auth.json");
-    expect(fs.readFileSync(path.join(DATA_DIR, "shared", "auth.json"), "utf-8")).toBe('{"evil":"key"}');
+  it("服务端返回失败时抛错", async () => {
+    vi.mocked(serverUploadFile).mockResolvedValue({ ok: false, error: "备份文件无效" } as never);
+    const zipPath = path.join(TEST_DIR, "bad.zip");
+    fs.writeFileSync(zipPath, Buffer.from("not-a-zip"));
+    await expect(restoreBackup(zipPath)).rejects.toThrow("备份文件无效");
   });
 });

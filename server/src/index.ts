@@ -10,6 +10,7 @@ import { registerChildrenRoutes } from "./routes/children.js";
 import { registerConfigRoutes } from "./routes/config.js";
 import { registerMaterialsRoutes } from "./routes/materials.js";
 import { registerFilesRoutes } from "./routes/files.js";
+import { registerBackupRoutes } from "./routes/backup.js";
 
 const config = loadConfig();
 const db = openDb(config.dataDir);
@@ -26,6 +27,7 @@ registerChildrenRoutes(app, { config, db });
 registerConfigRoutes(app, { config, db });
 registerMaterialsRoutes(app, { config, db });
 registerFilesRoutes(app, { config, db });
+registerBackupRoutes(app, { config, db });
 
 const start = async (): Promise<void> => {
   try {

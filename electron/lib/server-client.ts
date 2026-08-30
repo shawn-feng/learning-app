@@ -2,6 +2,7 @@
  * 服务端通信层（SPLIT 客户端，DESIGN-SPLIT §3）：统一封装对
  * <serverUrl>/api/v1/* 的请求。纯服务端模式：未配置服务端地址时显式报错。
  */
+import fs from "fs";
 import { getServerUrl } from "./config";
 
 export class ServerError extends Error {
@@ -69,4 +70,78 @@ export async function serverFetch<T = unknown>(
     throw new ServerError(res.status, detail);
   }
   return (await res.json()) as T;
+}
+
+/**
+ * 二进制下载（ISSUE-003：备份 zip）。返回 Buffer（Node 环境 fetch → arrayBuffer）。
+ * 非 2xx 抛 ServerError（语义同 serverFetch）。
+ */
+export async function serverFetchBinary(path: string, opts: ServerFetchOptions = {}): Promise<Buffer> {
+  const base = serverBase();
+  const headers: Record<string, string> = {};
+  if (opts.token) headers["Authorization"] = `Bearer ${opts.token}`;
+
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/v1${path}`, {
+      method: opts.method ?? "GET",
+      headers,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 60000),
+    });
+  } catch {
+    throw new ServerError(0, "无法连接服务端，请检查服务端地址或网络");
+  }
+
+  if (!res.ok) {
+    let detail = `服务端错误 (HTTP ${res.status})`;
+    try {
+      const body: unknown = await res.json();
+      if (body && typeof body === "object") {
+        const b = body as { error?: unknown };
+        if (typeof b.error === "string" && b.error) detail = b.error;
+      }
+    } catch {
+      /* 保留默认 detail */
+    }
+    throw new ServerError(res.status, detail);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** 上传文件（ISSUE-003：恢复备份 zip，multipart）。 */
+export async function serverUploadFile(
+  path: string,
+  filePath: string,
+  token: string,
+  opts: { timeoutMs?: number } = {}
+): Promise<unknown> {
+  const base = serverBase();
+  const form = new FormData();
+  form.append("file", new Blob([await fs.promises.readFile(filePath)]), "backup.zip");
+
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/v1${path}`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 120000),
+    });
+  } catch {
+    throw new ServerError(0, "无法连接服务端，请检查服务端地址或网络");
+  }
+  if (!res.ok) {
+    let detail = `服务端错误 (HTTP ${res.status})`;
+    try {
+      const body: unknown = await res.json();
+      if (body && typeof body === "object") {
+        const b = body as { error?: unknown };
+        if (typeof b.error === "string" && b.error) detail = b.error;
+      }
+    } catch {
+      /* 保留默认 detail */
+    }
+    throw new ServerError(res.status, detail);
+  }
+  return (await res.json()) as unknown;
 }

@@ -19,6 +19,8 @@ export interface ChildProfile {
   aiEmoji: string;
   aiPersonality: string;
   createdAt: string;
+  /** 学习进度摘要（ISSUE-001：来自服务端 /children 聚合；离线/未知为 null） */
+  progress?: { topics: number; learned: number; total: number; lastUpdated: string } | null;
 }
 
 export async function addChild(data: {
@@ -113,7 +115,13 @@ export async function listChildren(): Promise<ChildProfile[]> {
   if (getServerUrl() && token) {
     try {
       const data = await serverFetch<{
-        children?: Array<{ id: string; name: string; created_at?: string; profile?: Record<string, unknown> }>;
+        children?: Array<{
+          id: string;
+          name: string;
+          created_at?: string;
+          profile?: Record<string, unknown>;
+          progress?: { topics?: number; learned?: number; total?: number; lastUpdated?: string } | null;
+        }>;
       }>("/children", { token });
       const remote = data?.children;
       if (Array.isArray(remote)) {
@@ -123,6 +131,15 @@ export async function listChildren(): Promise<ChildProfile[]> {
         for (const c of remote) {
           const lp = byId.get(c.id);
           const sp = (c.profile ?? {}) as Partial<ChildProfile>;
+          // 进度摘要（ISSUE-001）：服务端聚合值原样透传（null 表示未知）
+          const progress = c.progress
+            ? {
+                topics: Number(c.progress.topics ?? 0),
+                learned: Number(c.progress.learned ?? 0),
+                total: Number(c.progress.total ?? 0),
+                lastUpdated: String(c.progress.lastUpdated ?? ""),
+              }
+            : null;
           // 服务端有详情 → 合并（以服务端为准）并落盘；本地有而服务端无 → 上传本地（详情/密码上云）
           if (sp.passwordHash || sp.avatar || sp.age) {
             const merged: ChildProfile = {
@@ -137,6 +154,7 @@ export async function listChildren(): Promise<ChildProfile[]> {
               aiEmoji: String(sp.aiEmoji ?? lp?.aiEmoji ?? "🤖"),
               aiPersonality: String(sp.aiPersonality ?? lp?.aiPersonality ?? "温暖、耐心、靠谱。"),
               createdAt: String(sp.createdAt ?? lp?.createdAt ?? c.created_at ?? new Date().toISOString()),
+              progress,
             };
             try {
               const dir = path.join(getChildrenDir(), c.id);

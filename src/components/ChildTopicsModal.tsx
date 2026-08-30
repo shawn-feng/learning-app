@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import IconButton from "./IconButton";
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 
 interface ChildInfo {
   childId: string;
@@ -109,6 +109,34 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
         await refresh();
       } else {
         setMsg({ ok: false, text: r?.error || "保存失败" });
+      }
+    } catch (e: any) {
+      setMsg({ ok: false, text: String(e?.message || e) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // ISSUE-004：移除孩子的某主题。有学习记录时提示「记录保留」；
+  // 只取消分配（孩子端不再学习该主题），进度留在服务端，重新添加可续上。
+  async function removeTopic(info: ChildTopicInfo) {
+    const c = await window.api.confirmDialog({
+      title: "移除学习主题",
+      message: `确定移除「${info.name}」吗？`,
+      detail: "移除后孩子端不再学习该主题；已有的学习记录会保留（重新添加时可继续）。",
+      confirmLabel: "移除",
+      cancelLabel: "取消",
+    });
+    if (!c?.confirmed) return;
+    setBusy(`remove-${info.topicKey}`);
+    setMsg(null);
+    try {
+      const r = await window.api.parentDeallocate(child.childId, info.topicKey);
+      if (r?.success) {
+        setMsg({ ok: true, text: `已移除「${info.name}」（学习记录已保留）` });
+        await refresh();
+      } else {
+        setMsg({ ok: false, text: r?.error || "移除失败" });
       }
     } catch (e: any) {
       setMsg({ ok: false, text: String(e?.message || e) });
@@ -302,6 +330,14 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
                       >
                         {busy === `daily-${t.topicKey}` ? "保存中…" : "保存"}
                       </button>
+                      <IconButton
+                        icon={Trash2}
+                        title="移除主题（学习记录保留）"
+                        danger
+                        onClick={() => removeTopic(info)}
+                        disabled={busy !== null}
+                        style={{ marginLeft: "auto" }}
+                      />
                     </div>
                   )}
                 </div>

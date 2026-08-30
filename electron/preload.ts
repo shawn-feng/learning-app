@@ -174,6 +174,8 @@ const api = {
     ipcRenderer.invoke("parent:listChildTopics", childId),
   parentSetChildTopicDaily: (childId: string, topicDir: string, daily: string, type: string) =>
     ipcRenderer.invoke("parent:setChildTopicDaily", childId, topicDir, daily, type),
+  parentDeallocate: (childId: string, topicDir: string) =>
+    ipcRenderer.invoke("parent:deallocate", childId, topicDir),
   parentUpsertCourse: (topicDir: string, course: any) =>
     ipcRenderer.invoke("parent:upsertCourse", topicDir, course),
   parentUpsertTopic: (topic: any) => ipcRenderer.invoke("parent:upsertTopic", topic),
@@ -221,10 +223,7 @@ const api = {
   learningWrite: (childId: string, relPath: string, content: string) =>
     ipcRenderer.invoke("learning:write", childId, relPath, content),
 
-  // 跨机消息交换（ISSUE-041）：家长云端查孩子进度（打请求标记 + 读摘要）
-  syncQueryProgress: (childId: string) => ipcRenderer.invoke("sync:query_progress", childId),
-
-  // Backup / restore (ISSUE-041 层 A)：弹系统对话框选目录/文件，主进程执行
+  // Backup / restore (ISSUE-003)：服务端数据 zip 备份到本地 / 上传 zip 覆盖服务端
   createBackup: () => ipcRenderer.invoke("backup:create"),
   restoreBackup: () => ipcRenderer.invoke("backup:restore"),
   backupConfigGet: () => ipcRenderer.invoke("backup:config:get"),
