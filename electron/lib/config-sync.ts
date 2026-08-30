@@ -63,19 +63,20 @@ function mergeJsonFile(p: string, value: unknown): void {
 }
 
 /**
- * 拉取一次配置：revision 未变且本地 auth.json 已存在 → 不动作；否则合并写回本地文件。
- * （auth.json 缺失也强制拉：家长 key 随账号上云后，新设备/新家长目录首次登录要能拿到 key，
- * 不能只依赖 revision 变化——本地 revision 可能已与 server 一致但 auth 文件还没落盘。）
+ * 拉取一次配置：
+ * - force=true（登录首拉，2026-08-30 用户决策：**每次登录都去 server 拉一次**）：忽略 revision 直接全量合并；
+ * - force=false（2 分钟轮询）：revision 未变且本地 auth.json 已存在 → 不动作；auth.json 缺失也强制拉
+ *   （新设备/新家长目录首次登录要能拿到 key，不能只依赖 revision 变化）。
  * 网络/未登录失败静默（下次轮询重试），返回 changed 供调用方判断。
  */
-export async function syncOnce(): Promise<{ changed: boolean }> {
+export async function syncOnce(force = false): Promise<{ changed: boolean }> {
   const token = currentSessionToken();
   if (!token) return { changed: false };
   try {
     const rev = await serverFetch<{ revision: number }>("/config/revision", { token });
     const local = readLocalRevision();
     const authMissing = !fs.existsSync(getAuthPath());
-    if (rev.revision === local && !authMissing) return { changed: false };
+    if (!force && rev.revision === local && !authMissing) return { changed: false };
     const full = await serverFetch<{ revision: number; config: Record<string, unknown> }>("/config", {
       token,
     });
@@ -108,7 +109,8 @@ let pollTimer: NodeJS.Timeout | null = null;
 
 export function startConfigSync(): void {
   if (pollTimer) return;
-  void syncOnce();
+  // 登录首拉：每次登录都强制去 server 拉一次全量（含模型 key，2026-08-30 用户决策）
+  void syncOnce(true);
   pollTimer = setInterval(() => {
     void syncOnce();
   }, CONFIG_POLL_INTERVAL_MS);
