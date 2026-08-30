@@ -105,8 +105,11 @@ export function maskSecret(v: string): string {
 // 返回打码后的配置（供前端展示，绝不返回明文密钥）
 export function getMaskedConfig(): VoiceConfig {
   const cfg = loadVoiceConfig();
+  // 语音自动开启（用户决策）：只要任一语音 provider 已配置（自身 apiKey 或复用 auth.json
+  // 模型 key），enabled 即为 true——无需手动开；显式关闭不生效（由配置检测决定，保持可用）。
+  const hasProvider = VOICE_PROVIDER_ORDER.some((id) => isProviderConfigured(cfg, id));
   const masked: VoiceConfig = {
-    enabled: cfg.enabled,
+    enabled: cfg.enabled || hasProvider,
     provider: cfg.provider,
     providers: {} as VoiceConfig["providers"],
   };
