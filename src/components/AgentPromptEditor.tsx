@@ -20,7 +20,7 @@ const PARENT_REFS = [{ ref: "main", label: "家长工作台助手（统一）" }
  * - 支持「恢复默认」（删除自定义版本，回退到源码提示词）；
  * - 每次保存沉淀历史版本，可一键回退。
  */
-export default function AgentPromptEditor({ scope, refKey, title, onClose }: Props) {
+export function AgentPromptContent({ scope, refKey, title }: Omit<Props, "onClose">) {
   const [ref, setRef] = useState(refKey);
   const [content, setContent] = useState("");
   const [customized, setCustomized] = useState(false);
@@ -93,9 +93,8 @@ export default function AgentPromptEditor({ scope, refKey, title, onClose }: Pro
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
-        <h2 style={{ marginBottom: 4 }}>{title}</h2>
+    <>
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>{title}</div>
         <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
           {customized
             ? "当前为自定义版本（整体替换默认提示词）"
@@ -177,9 +176,6 @@ export default function AgentPromptEditor({ scope, refKey, title, onClose }: Pro
             onClick={() => setShowHistory((v) => !v)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 13, cursor: "pointer" }}
           />
-          <button className="cancel" onClick={onClose} style={{ marginLeft: "auto" }}>
-            关闭
-          </button>
         </div>
 
         {showHistory && (
@@ -204,6 +200,19 @@ export default function AgentPromptEditor({ scope, refKey, title, onClose }: Pro
             )}
           </div>
         )}
+    </>
+  );
+}
+
+/** 弹窗容器（家长/孩子管理历史入口）；详情页用 AgentPromptContent 平铺展示。 */
+export default function AgentPromptEditor({ scope, refKey, title, onClose }: Props) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
+        <AgentPromptContent scope={scope} refKey={refKey} title={title} />
+        <div className="modal-actions">
+          <button className="cancel" onClick={onClose}>关闭</button>
+        </div>
       </div>
     </div>
   );

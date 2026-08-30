@@ -42,7 +42,7 @@ const DAILY_TYPES = ["必学", "选学", "复习"];
  * 从家长主题库给孩子「添加学习主题」（快照拷贝，不覆盖孩子进度）；
  * 添加时可设置、添加后也可随时修改「每天学习量」（daily + type，存孩子库 topics.rules_json）。
  */
-export default function ChildTopicsModal({ child, onClose }: Props) {
+export function ChildTopicsContent({ child }: { child: ChildInfo }) {
   const [topics, setTopics] = useState<ParentTopic[]>([]);
   const [allocated, setAllocated] = useState<Map<string, ChildTopicInfo>>(new Map()); // topicKey → 信息
   const [busy, setBusy] = useState<string | null>(null);
@@ -146,12 +146,11 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
-        <h2 style={{ marginBottom: 4 }}>学习主题 — {child.name}</h2>
-        <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
-          从家长主题库给孩子添加学习主题（添加后孩子即可学习该主题；再次添加不会覆盖孩子进度）
-        </p>
+    <>
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>学习主题 — {child.name}</div>
+      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
+        从家长主题库给孩子添加学习主题（添加后孩子即可学习该主题；再次添加不会覆盖孩子进度）
+      </p>
 
         {msg && (
           <div
@@ -346,6 +345,16 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
           </div>
         )}
 
+    </>
+  );
+}
+
+/** 弹窗容器（孩子管理页历史入口）；详情页用 ChildTopicsContent 平铺展示。 */
+export default function ChildTopicsModal({ child, onClose }: Props) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
+        <ChildTopicsContent child={child} />
         <div className="modal-actions">
           <button className="cancel" onClick={onClose}>关闭</button>
         </div>

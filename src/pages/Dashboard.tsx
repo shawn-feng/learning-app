@@ -1,14 +1,12 @@
 import { useState, useEffect } from "react";
-import { Bot, ArrowLeft, LogOut, UserPlus, KeyRound, ListTree, Pencil, Trash2, MessageSquare, BarChart3 } from "lucide-react";
+import { Bot, ArrowLeft, LogOut, UserPlus, MessageSquare } from "lucide-react";
 import IconButton from "../components/IconButton";
 import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
-import ChildTopicsModal from "../components/ChildTopicsModal";
 import CourseManager from "../components/CourseManager";
 import ParentChatPanel from "../components/ParentChatPanel";
 import Settings from "./Settings";
-import AgentPromptEditor from "../components/AgentPromptEditor";
-import LearningDashboard from "../components/LearningDashboard";
+import ChildDetailPage from "../components/ChildDetailPage";
 import { useChatPanel } from "../hooks/useChatPanel";
 
 interface Props {
@@ -24,12 +22,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [showAddChild, setShowAddChild] = useState(false);
   const [selectedChild, setSelectedChild] = useState<any>(null);
   const [view, setView] = useState<"children" | "courses" | "tokens" | "settings">("children");
-  const [error, setError] = useState("");
-  const [resetChildId, setResetChildId] = useState<string | null>(null);
-  const [newPassword, setNewPassword] = useState("");
-  const [topicsChild, setTopicsChild] = useState<any>(null); // 学习主题弹窗目标孩子
-  const [progressChild, setProgressChild] = useState<any>(null); // 学习进度看板弹窗目标孩子（ISSUE-005）
-  const [agentPrompt, setAgentPrompt] = useState<{ scope: string; ref: string; title: string } | null>(null);
+  // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
+  const [detailChild, setDetailChild] = useState<any>(null);
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
   const parentChat = useChatPanel("parent", 360);
 
@@ -41,30 +35,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   useEffect(() => {
     refresh();
   }, []);
-
-  async function handleDeleteChild(childId: string, childName: string) {
-    // ISSUE-016: 不再用渲染进程 confirm()（Windows 上其原生模态对话框关闭后焦点不归还，
-    // 回主页点输入框无光标），改为主进程 dialog.showMessageBox 确认。
-    const r = await window.api.confirmDialog({
-      title: "删除孩子",
-      message: `确定要删除孩子"${childName}"吗？`,
-      detail: "此操作不可撤销，孩子的所有学习数据都会被删除。",
-      confirmLabel: "删除",
-      cancelLabel: "取消",
-    });
-    if (!r?.confirmed) return;
-    await window.api.childDelete(childId);
-    refresh();
-    if (selectedChild?.childId === childId) setSelectedChild(null);
-  }
-
-  async function handleResetPassword() {
-    if (!resetChildId || !newPassword) return;
-    await window.api.childResetPassword(resetChildId, newPassword);
-    setResetChildId(null);
-    setNewPassword("");
-    setError("");
-  }
 
   return (
     <div className="dashboard">
@@ -89,7 +59,10 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
-            onClick={() => setView("children")}
+            onClick={() => {
+              setView("children");
+              setDetailChild(null);
+            }}
           >
             <div className="child-avatar">👨‍👩‍👧</div>
             <div className="child-info">
@@ -167,18 +140,29 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
         </div>
 
         <div className="dashboard-main">
-          {error && <div style={{ color: "red", marginBottom: 12 }}>{error}</div>}
-
-          {view === "children" && (
+          {view === "children" && !detailChild && (
             <div>
               {children.length === 0 ? (
                 <p style={{ color: "#888" }}>还没有孩子，点击左侧"添加孩子"开始。</p>
               ) : (
                 <div>
-                  <h3 style={{ marginBottom: 16 }}>孩子列表</h3>
+                  <h3 style={{ marginBottom: 16 }}>孩子列表（点击卡片进入详情）</h3>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
                     {children.map((child) => (
-                      <div key={child.childId} className="child-card" style={{ border: "1px solid #eee", flexDirection: "column", alignItems: "flex-start" }}>
+                      // ISSUE-007：卡片整体点击进入详情页（学习进度/学习主题/AI 提示词/账号密码 tabs）
+                      <div
+                        key={child.childId}
+                        className="child-card"
+                        style={{
+                          border: "1px solid #eee",
+                          flexDirection: "column",
+                          alignItems: "flex-start",
+                          cursor: "pointer",
+                          transition: "box-shadow .15s",
+                        }}
+                        onClick={() => setDetailChild(child)}
+                        title="点击查看孩子详情（学习进度 / 学习主题 / AI 提示词 / 账号密码）"
+                      >
                         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
                           <div className="child-avatar">{child.avatar}</div>
                           <div className="child-info">
@@ -191,18 +175,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                             </div>
                           </div>
                         </div>
-                        {/* ISSUE-005：进度不再直铺卡片，改为「学习进度」icon 入口（点击进入与孩子模式一致的进度看板） */}
-                        <div style={{ display: "flex", gap: 8, marginTop: 12, width: "100%", flexWrap: "wrap" }}>
-                          <IconButton
-                            icon={BarChart3}
-                            title="学习进度"
-                            style={{ flex: 1, minWidth: 44 }}
-                            onClick={() => setProgressChild(child)}
-                          />
-                          <IconButton icon={KeyRound} title="重置密码" style={{ flex: 1, minWidth: 44 }} onClick={() => { setResetChildId(child.childId); setNewPassword(""); setError(""); }} />
-                          <IconButton icon={ListTree} title="学习主题" style={{ flex: 1, minWidth: 44 }} onClick={() => setTopicsChild(child)} />
-                          <IconButton icon={Pencil} title="编辑 AI 提示词" style={{ flex: 1, minWidth: 44 }} onClick={() => setAgentPrompt({ scope: "child", ref: child.childId, title: `编辑 AI 提示词 — ${child.aiName}` })} />
-                          <IconButton icon={Trash2} title="删除" danger style={{ flex: 1, minWidth: 44 }} onClick={() => handleDeleteChild(child.childId, child.name)} />
+                        <div style={{ fontSize: 12, color: "#667eea", marginTop: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                          查看详情 ›
                         </div>
                       </div>
                     ))}
@@ -212,11 +186,23 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           )}
 
-          {view === "courses" && <CourseManager />}
+          {/* ISSUE-007：孩子详情页（tabs 组织，替代原弹窗） */}
+          {detailChild && (
+            <ChildDetailPage
+              child={detailChild}
+              onBack={() => setDetailChild(null)}
+              onDeleted={() => {
+                setDetailChild(null);
+                refresh();
+              }}
+            />
+          )}
 
-          {view === "tokens" && <TokenStatsPanel childrenList={children} />}
+          {view === "courses" && !detailChild && <CourseManager />}
 
-          {view === "settings" && <Settings />}
+          {view === "tokens" && !detailChild && <TokenStatsPanel childrenList={children} />}
+
+          {view === "settings" && !detailChild && <Settings />}
         </div>
 
         {/* 右：家长-Agent 常驻聊天（ISSUE-050），可折叠 + 拖拽调宽 */}
@@ -259,65 +245,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             setShowAddChild(false);
             refresh();
           }}
-        />
-      )}
-
-      {topicsChild && (
-        <ChildTopicsModal
-          child={topicsChild}
-          onClose={() => setTopicsChild(null)}
-        />
-      )}
-
-      {progressChild && (
-        <div className="modal-overlay" onClick={() => setProgressChild(null)}>
-          <div
-            className="modal"
-            onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: 760, maxHeight: "86vh", overflowY: "auto" }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <h2 style={{ marginBottom: 0 }}>学习进度 — {progressChild.name}</h2>
-              <button
-                className="cancel"
-                onClick={() => setProgressChild(null)}
-                style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 13, cursor: "pointer" }}
-              >
-                关闭
-              </button>
-            </div>
-            {/* 与孩子模式共用同一进度看板组件（ISSUE-005：两模式界面/操作一致） */}
-            <LearningDashboard childId={progressChild.childId} />
-          </div>
-        </div>
-      )}
-
-      {resetChildId && (
-        <div className="modal-overlay" onClick={() => setResetChildId(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>重置密码</h2>
-            {error && <div style={{ color: "red", marginBottom: 12 }}>{error}</div>}
-            <label>新密码</label>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="输入新密码"
-            />
-            <div className="modal-actions">
-              <button className="cancel" onClick={() => setResetChildId(null)}>取消</button>
-              <button className="confirm" onClick={handleResetPassword}>确认</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {agentPrompt && (
-        <AgentPromptEditor
-          scope={agentPrompt.scope}
-          refKey={agentPrompt.ref}
-          title={agentPrompt.title}
-          onClose={() => setAgentPrompt(null)}
         />
       )}
       </div>
