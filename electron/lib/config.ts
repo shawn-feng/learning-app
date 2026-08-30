@@ -33,29 +33,32 @@ export function getSkillsDir(): string {
 
 // ==================== 按家长分区（2026-08-30 用户决策） ====================
 // 客户端本地配置（模型 key/模型选择/定时任务等）存到家长目录 parents/<parentId>/，
-// 多个家长登录同一 app 互不干扰。当前家长 id 记在 <data>/.session.json
-// （登录写、登出清；未登录/无缓存 → "default" 兼容旧数据）。
+// 多个家长登录同一 app 互不干扰。当前家长 id 记在 <data>/.session.json（登录写、登出清）。
+// **未登录 = 无任何家长数据**（家长库/孩子/kb 都在服务端按 token 鉴权）：getCurrentParentId()
+// 返回 ""，配置读取函数落到 parents/ 根下的空位 → 读默认值（不创建 default 目录，default 已废弃）。
 
 const SESSION_FILE = ".session.json";
 
 export function getCurrentParentId(): string {
   try {
     const s = JSON.parse(fs.readFileSync(path.join(getDataDir(), SESSION_FILE), "utf-8")) as { parentId?: string };
-    return s?.parentId || "default";
+    return s?.parentId || "";
   } catch {
-    return "default";
+    return "";
   }
 }
 
 export function setCurrentParentId(parentId: string): void {
   fs.mkdirSync(getDataDir(), { recursive: true });
-  fs.writeFileSync(path.join(getDataDir(), SESSION_FILE), JSON.stringify({ parentId: parentId || "default" }, null, 2), "utf-8");
+  fs.writeFileSync(path.join(getDataDir(), SESSION_FILE), JSON.stringify({ parentId: parentId || "" }, null, 2), "utf-8");
 }
 
-/** 当前家长配置目录（自动创建）。 */
+/** 当前家长配置目录。仅登录（parentId 非空）时自动创建；未登录返回空位路径（不建目录）。 */
 export function getParentConfigDir(parentId: string = getCurrentParentId()): string {
-  const dir = path.join(getDataDir(), "parents", parentId);
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = path.join(getDataDir(), "parents", parentId || "_guest");
+  if (parentId) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
   return dir;
 }
 
