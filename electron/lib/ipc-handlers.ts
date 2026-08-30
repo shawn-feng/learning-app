@@ -105,7 +105,14 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("auth:check", async () => {
-    return checkAuth();
+    const r = await checkAuth();
+    // 启动恢复登录态（缓存 license）：同样要启动配置同步（登录强拉 + 2min 轮询），
+    // 否则新装的 app 重启后模型 key/配置不会从服务端拉取（2026-08-30 修复）。
+    if (r.authenticated) {
+      void prefetchAgents().catch(() => {});
+      startConfigSync();
+    }
+    return r;
   });
 
   ipcMain.handle("auth:verify", async (_e, email: string, password: string) => {
