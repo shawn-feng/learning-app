@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Bot, ArrowLeft, LogOut, UserPlus, KeyRound, ListTree, Pencil, Trash2, MessageSquare } from "lucide-react";
+import { Bot, ArrowLeft, LogOut, UserPlus, KeyRound, ListTree, Pencil, Trash2, MessageSquare, BarChart3 } from "lucide-react";
 import IconButton from "../components/IconButton";
 import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
@@ -8,6 +8,7 @@ import CourseManager from "../components/CourseManager";
 import ParentChatPanel from "../components/ParentChatPanel";
 import Settings from "./Settings";
 import AgentPromptEditor from "../components/AgentPromptEditor";
+import LearningDashboard from "../components/LearningDashboard";
 import { useChatPanel } from "../hooks/useChatPanel";
 
 interface Props {
@@ -18,15 +19,6 @@ interface Props {
 
 const AVATARS = ["🦊", "🐰", "🐻", "🦁", "🐼", "🐨", "🐯", "🦉"];
 
-/** 进度摘要格式化（ISSUE-001）：返回「已学 x/y 课 · n 主题」或空串。 */
-function progressText(p: any): string {
-  if (!p) return "";
-  const learned = Number(p.learned) || 0;
-  const total = Number(p.total) || 0;
-  const topics = Number(p.topics) || 0;
-  return `已学 ${learned}/${total} 课 · ${topics} 个主题`;
-}
-
 export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) {
   const [children, setChildren] = useState<any[]>([]);
   const [showAddChild, setShowAddChild] = useState(false);
@@ -36,6 +28,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [resetChildId, setResetChildId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [topicsChild, setTopicsChild] = useState<any>(null); // 学习主题弹窗目标孩子
+  const [progressChild, setProgressChild] = useState<any>(null); // 学习进度看板弹窗目标孩子（ISSUE-005）
   const [agentPrompt, setAgentPrompt] = useState<{ scope: string; ref: string; title: string } | null>(null);
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
   const parentChat = useChatPanel("parent", 360);
@@ -149,11 +142,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                 <div className="meta">
                   {child.age}岁 · {child.grade}
                 </div>
-                {child.progress && (child.progress.total || 0) > 0 && (
-                  <div className="meta" style={{ fontSize: 11, color: "#38a169" }}>
-                    {progressText(child.progress)}
-                  </div>
-                )}
               </div>
             </div>
           ))}
@@ -203,37 +191,14 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                             </div>
                           </div>
                         </div>
-                        {/* ISSUE-001：学习进度摘要 + 进度条（服务端聚合） */}
-                        <div style={{ width: "100%", marginTop: 10 }}>
-                          {child.progress ? (
-                            (child.progress.total || 0) > 0 ? (
-                              <>
-                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#666" }}>
-                                  <span>{progressText(child.progress)}</span>
-                                  {child.progress.lastUpdated && (
-                                    <span>最近学习 {String(child.progress.lastUpdated).slice(0, 10)}</span>
-                                  )}
-                                </div>
-                                <div style={{ height: 6, background: "#eee", borderRadius: 3, marginTop: 5, overflow: "hidden" }}>
-                                  <div
-                                    style={{
-                                      height: "100%",
-                                      width: `${Math.min(100, Math.round(((child.progress.learned || 0) / (child.progress.total || 1)) * 100))}%`,
-                                      background: "#667eea",
-                                      borderRadius: 3,
-                                      transition: "width .3s",
-                                    }}
-                                  />
-                                </div>
-                              </>
-                            ) : (
-                              <div style={{ fontSize: 11, color: "#aaa" }}>暂无学习记录</div>
-                            )
-                          ) : (
-                            <div style={{ fontSize: 11, color: "#aaa" }}>学习进度同步中…</div>
-                          )}
-                        </div>
+                        {/* ISSUE-005：进度不再直铺卡片，改为「学习进度」icon 入口（点击进入与孩子模式一致的进度看板） */}
                         <div style={{ display: "flex", gap: 8, marginTop: 12, width: "100%", flexWrap: "wrap" }}>
+                          <IconButton
+                            icon={BarChart3}
+                            title="学习进度"
+                            style={{ flex: 1, minWidth: 44 }}
+                            onClick={() => setProgressChild(child)}
+                          />
                           <IconButton icon={KeyRound} title="重置密码" style={{ flex: 1, minWidth: 44 }} onClick={() => { setResetChildId(child.childId); setNewPassword(""); setError(""); }} />
                           <IconButton icon={ListTree} title="学习主题" style={{ flex: 1, minWidth: 44 }} onClick={() => setTopicsChild(child)} />
                           <IconButton icon={Pencil} title="编辑 AI 提示词" style={{ flex: 1, minWidth: 44 }} onClick={() => setAgentPrompt({ scope: "child", ref: child.childId, title: `编辑 AI 提示词 — ${child.aiName}` })} />
@@ -302,6 +267,29 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           child={topicsChild}
           onClose={() => setTopicsChild(null)}
         />
+      )}
+
+      {progressChild && (
+        <div className="modal-overlay" onClick={() => setProgressChild(null)}>
+          <div
+            className="modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 760, maxHeight: "86vh", overflowY: "auto" }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h2 style={{ marginBottom: 0 }}>学习进度 — {progressChild.name}</h2>
+              <button
+                className="cancel"
+                onClick={() => setProgressChild(null)}
+                style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 13, cursor: "pointer" }}
+              >
+                关闭
+              </button>
+            </div>
+            {/* 与孩子模式共用同一进度看板组件（ISSUE-005：两模式界面/操作一致） */}
+            <LearningDashboard childId={progressChild.childId} />
+          </div>
+        </div>
       )}
 
       {resetChildId && (

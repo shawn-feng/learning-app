@@ -59,6 +59,49 @@ interface ProgressRow {
   updated: string;
 }
 
+/** 单课明细行（kb.courses.list 返回，snake_case 对齐 server courses 表）。 */
+interface CourseRow {
+  topic: string;
+  title: string;
+  sort_order: number;
+  status: string;
+  mastery: string;
+  first_learned: string;
+  last_review: string;
+  review_count: number;
+  material: string;
+  send_material: string;
+  tags: string;
+  lesson_method: string;
+  html_path: string;
+  teaching_copy: string;
+}
+
+/** 每课进度条目（进度看板「主题 → 每课」列表项，与 LearningDashboard CourseItem 一致）。 */
+export interface CourseItem {
+  topic: string;
+  title: string;
+  sortOrder: number;
+  status: string;
+  mastery: string;
+  firstLearned: string;
+  lastReview: string;
+  reviewCount: number;
+  material: string;
+  sendMaterial: string;
+  tags: string;
+}
+
+/** 单主题进度明细（learning:topic 返回，含每课 items；进度看板三级下钻数据源）。 */
+export interface TopicDetail {
+  topic: string;
+  learned: number;
+  total: number;
+  next: string;
+  updated: string;
+  items: CourseItem[];
+}
+
 function progressCachePath(childId: string): string {
   return path.join(getDataDir(), "cache", `progress-${childId}.json`);
 }
@@ -161,11 +204,38 @@ export async function getCourseDailySummary(
 
 /**
  * 单个主题的进度明细（供进度看板「主题 → 每课 → 当课汇总」钻取使用）。
- * 数据来自服务端 topic_progress 视图（与 getLearningSummary 同一真源）。
+ * - 聚合行来自服务端 topic_progress 视图（kb.progress.list，与 getLearningSummary 同一真源）；
+ * - 每课 items 来自服务端 courses 表（kb.courses.list，按 topic 过滤）——ISSUE-006：
+ *   原实现只返回视图行（无 items），LearningDashboard 期望 TopicDetail.items，导致
+ *   孩子模式点主题后 `d.items` undefined、课程明细不显示。
  */
-export async function getTopicProgress(childId: string, topic: string): Promise<ProgressRow | null> {
-  const list = await dbQuery<ProgressRow[]>("kb.progress.list", { child_id: childId });
-  return (list ?? []).find((x) => x.topic === topic) || null;
+export async function getTopicProgress(childId: string, topic: string): Promise<TopicDetail | null> {
+  const [progress, courses] = await Promise.all([
+    dbQuery<ProgressRow[]>("kb.progress.list", { child_id: childId }),
+    dbQuery<CourseRow[]>("kb.courses.list", { child_id: childId, topic }),
+  ]);
+  const p = (progress ?? []).find((x) => x.topic === topic);
+  if (!p) return null;
+  return {
+    topic: p.topic,
+    learned: Number(p.learned) || 0,
+    total: Number(p.total) || 0,
+    next: p.next ?? "",
+    updated: p.updated ?? "",
+    items: (courses ?? []).map((c) => ({
+      topic: c.topic,
+      title: c.title,
+      sortOrder: c.sort_order,
+      status: c.status,
+      mastery: c.mastery,
+      firstLearned: c.first_learned,
+      lastReview: c.last_review,
+      reviewCount: c.review_count,
+      material: c.material,
+      sendMaterial: c.send_material,
+      tags: c.tags,
+    })),
+  };
 }
 
 /**
