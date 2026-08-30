@@ -10,6 +10,9 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    // 测试文件共享 PI_TEST_DATA_DIR（系统 tmp）：必须串行执行，
+    // 否则多个文件的 beforeAll 清理会互相删掉对方正在使用的数据。
+    fileParallelism: false,
     env: {
       PI_TEST_DATA_DIR: testDataDir,
     },

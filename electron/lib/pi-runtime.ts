@@ -6,6 +6,7 @@ import {
 import { getAuthPath } from "./config";
 import { getDefaultModelKey, getProgrammingModelKey, getVisionModelKey } from "./app-settings";
 import fs from "fs";
+import path from "path";
 
 const cacheKey = "__learningAppModelRuntime";
 
@@ -376,7 +377,10 @@ export async function getSharedRuntime(): Promise<ModelRuntime> {
   const g = globalThis as any;
   if (!g[cacheKey]) {
     const authPath = getAuthPath();
-    // Ensure auth.json exists with valid structure
+    // Ensure auth.json exists with valid structure.
+    // ⚠️ 按家长分区后 authPath = parents/<parentId>/auth.json，未登录(_guest)或新家长目录
+    // 可能不存在 → 写前先建父目录，否则 ENOENT（测试/极简环境实测踩坑）。
+    fs.mkdirSync(path.dirname(authPath), { recursive: true });
     if (!fs.existsSync(authPath) || fs.statSync(authPath).size < 4) {
       fs.writeFileSync(authPath, "{}", "utf-8");
     }

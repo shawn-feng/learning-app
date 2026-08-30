@@ -97,10 +97,9 @@ export async function initChildDirectory(
 
 export function initSharedSkills(): void {
   const skillsDir = getSkillsDir();
-  // 打包后 resources 位于 process.resourcesPath；开发态位于项目根目录
-  const templatesBase = app.isPackaged
-    ? process.resourcesPath
-    : process.cwd();
+  // 打包后 resources 位于 process.resourcesPath；开发态位于项目根目录。
+  // ⚠️ 用 `?.` 防非 Electron 环境（vitest node 环境未 mock electron 时 app 为 undefined）崩溃。
+  const templatesBase = app?.isPackaged ? process.resourcesPath : process.cwd();
   const templatesDir = path.join(templatesBase, "templates", "skills");
 
   if (!fs.existsSync(templatesDir)) return;

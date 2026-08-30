@@ -7,6 +7,20 @@ import path from "node:path";
 // 注意：沙箱环境限制 fs.rmSync 操作，删除类测试已标记为已知限制
 // ============================================================
 
+// 每次运行前清空测试数据目录（PI_TEST_DATA_DIR，位于系统 tmp）：
+// 避免历史运行残留（多次 addChild 的孩子目录、旧架构测试写入的夹具目录
+// 如 ans-before-xxx / test-child-033 等）污染「孩子列表」等本地扫描断言。
+beforeAll(() => {
+  const dir = process.env.PI_TEST_DATA_DIR;
+  if (dir && fs.existsSync(dir)) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // 清理失败不阻塞（至多个别断言受影响）
+    }
+  }
+});
+
 describe("需求 §二 认证体系", () => {
   it("孩子密码使用 bcrypt 哈希存储", async () => {
     const { default: bcrypt } = await import("bcryptjs");
@@ -90,9 +104,10 @@ describe("需求 §四 AI 伙伴身份", () => {
     childAuth = await import("../electron/lib/child-auth");
   });
 
-  it("profile 包含 AI 名称和性格字段", () => {
+  it("profile 包含 AI 名称和性格字段", async () => {
     // 使用刚刚添加的孩子验证
-    const child = childAuth.getProfile(childAuth.listChildren().find(
+    const children = await childAuth.listChildren();
+    const child = childAuth.getProfile(children.find(
       (c) => c.name === "功能测试娃"
     )?.childId || "");
     if (child) {
@@ -101,8 +116,9 @@ describe("需求 §四 AI 伙伴身份", () => {
     }
   });
 
-  it("孩子信息包含年龄、年级、兴趣等基本情况", () => {
-    const child = childAuth.getProfile(childAuth.listChildren().find(
+  it("孩子信息包含年龄、年级、兴趣等基本情况", async () => {
+    const children = await childAuth.listChildren();
+    const child = childAuth.getProfile(children.find(
       (c) => c.aiName === "小智"
     )?.childId || "");
     if (child) {
@@ -136,7 +152,7 @@ describe("需求 §十二 数据架构", () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
 
-    const children = childAuth.listChildren();
+    const children = await childAuth.listChildren();
     const child = children.find((c) => c.name === "功能测试娃");
     expect(child).toBeTruthy();
 
@@ -156,7 +172,7 @@ describe("需求 §十二 数据架构", () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
 
-    const children = childAuth.listChildren();
+    const children = await childAuth.listChildren();
     const child = children.find((c) => c.name === "功能测试娃");
     const childDir = config.getChildDir(child!.childId);
     const settingsPath = path.join(childDir, ".pi", "agent", "settings.json");
@@ -198,7 +214,7 @@ describe("需求 §学习框架 — SQLite 真源（ISSUE-032）", () => {
     const config = await import("../electron/lib/config");
     const { openKbDb } = await import("../electron/lib/kb-sqlite");
 
-    const children = childAuth.listChildren();
+    const children = await childAuth.listChildren();
     const first = children[0];
     const childDir = config.getChildDir(first.childId);
     expect(fs.existsSync(path.join(childDir, "kb.sqlite"))).toBe(true);
@@ -218,7 +234,7 @@ describe("需求 §学习框架 — SQLite 真源（ISSUE-032）", () => {
     const config = await import("../electron/lib/config");
     const { openKbDb } = await import("../electron/lib/kb-sqlite");
 
-    const children = childAuth.listChildren();
+    const children = await childAuth.listChildren();
     const first = children[0];
     const childDir = config.getChildDir(first.childId);
     const db = openKbDb(childDir);
@@ -230,26 +246,37 @@ describe("需求 §学习框架 — SQLite 真源（ISSUE-032）", () => {
     }
   });
 
-  it("tags/taxonomy.md 标签词表已创建", async () => {
+  it("标签词表为 SQLite 真源（tags/taxonomy.md 已废弃，ISSUE-032）", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
+    const { openKbDb } = await import("../electron/lib/kb-sqlite");
 
-    const children = childAuth.listChildren();
+    const children = await childAuth.listChildren();
     const first = children[0];
+    // 不再建 tags/taxonomy.md 物理文件
     const taxPath = path.join(config.getChildDir(first.childId), "tags", "taxonomy.md");
-    expect(fs.existsSync(taxPath)).toBe(true);
-    expect(fs.readFileSync(taxPath, "utf-8")).toContain("标签词表");
+    expect(fs.existsSync(taxPath)).toBe(false);
+    // 真源在 kb.sqlite 的 tags 表（默认播种 ≥20 条，与 kb.sqlite 测试一致）
+    const db = openKbDb(config.getChildDir(first.childId));
+    try {
+      const cnt = (db.prepare("SELECT COUNT(*) AS c FROM tags").get() as { c: number }).c;
+      expect(cnt).toBeGreaterThanOrEqual(20);
+    } finally {
+      db.close();
+    }
   });
 
-  it("daily 目录已创建", async () => {
+  it("不再创建 daily 等文件时代目录（SQLite 唯一真源）", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
 
-    const children = childAuth.listChildren();
+    const children = await childAuth.listChildren();
     const first = children[0];
-    const dailyDir = path.join(config.getChildDir(first.childId), "daily");
-    expect(fs.existsSync(dailyDir)).toBe(true);
-    expect(fs.statSync(dailyDir).isDirectory()).toBe(true);
+    const childDir = config.getChildDir(first.childId);
+    // ISSUE-032：SQLite 唯一真源，daily/learning/life/inquiries/tasks/outputs 等目录全部废弃
+    for (const oldDir of ["daily", "learning", "life", "inquiries", "tasks", "outputs", "tags"]) {
+      expect(fs.existsSync(path.join(childDir, oldDir))).toBe(false);
+    }
   });
 });
 

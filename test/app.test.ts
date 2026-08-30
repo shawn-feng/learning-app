@@ -14,6 +14,53 @@ vi.mock("electron", () => {
   };
 });
 
+// SPLIT 后家长注册/授权走云端（benefit-auth），测试环境无真实服务：
+// mock serverFetch，验证「注册 → 缓存 license → checkAuth 读缓存」本地逻辑。
+vi.mock("../electron/lib/server-client", () => {
+  class ServerError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
+  return {
+    ServerError,
+    serverFetch: vi.fn(async (path: string) => {
+      if (path === "/auth/register") {
+        return {
+          session_token: "test-session-token",
+          license: {
+            parent_id: "parent-test-1",
+            plan: "family",
+            max_children: 10,
+            features: "",
+            starts_at: "2026-01-01T00:00:00Z",
+            expires_at: "2099-01-01T00:00:00Z",
+            status: "active",
+            is_expired: false,
+          },
+        };
+      }
+      if (path === "/auth/license") {
+        return {
+          license: {
+            parent_id: "parent-test-1",
+            plan: "family",
+            max_children: 10,
+            features: "",
+            starts_at: "2026-01-01T00:00:00Z",
+            expires_at: "2099-01-01T00:00:00Z",
+            status: "active",
+            is_expired: false,
+          },
+        };
+      }
+      throw new Error("unexpected serverFetch: " + path);
+    }),
+  };
+});
+
 import path from "node:path";
 import fs from "node:fs";
 import * as config from "../electron/lib/config";
@@ -26,7 +73,15 @@ describe("Electron app modules", () => {
   let createdChildId: string;
 
   beforeAll(() => {
-    // data cleanup skipped: sandbox restricts rmSync on project dirs
+    // 清空测试数据目录（PI_TEST_DATA_DIR 在系统 tmp，避免历史残留污染孩子列表扫描）
+    const dir = process.env.PI_TEST_DATA_DIR;
+    if (dir && fs.existsSync(dir)) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // 清理失败不阻塞
+      }
+    }
     process.env.CLOUD_API_URL = "http://localhost:8005";
   });
 
