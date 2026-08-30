@@ -1540,6 +1540,8 @@ input, textarea {
   display: flex;
   flex-direction: column;
   background: #fafbfe;
+  position: relative; /* 拖拽提示层（chat-drag-overlay absolute）的定位基准 */
+  position: relative; /* 拖拽提示层（chat-drag-overlay absolute）的定位基准 */
   /* ISSUE-037 续：flex item 默认 min-height:auto 会被内容撑高（消息多时把父容器拉长、
      整页出现滚动条）；置 0 后聊天区高度严格受父容器约束，消息只在 .chat-messages 内部滚动。 */
   min-height: 0;
@@ -2860,4 +2862,43 @@ input, textarea {
 
 .material-collapse-btn {
   color: #667eea;
+}
+
+/* ============================================================
+   拖拽上传：拖文件进聊天窗口高亮提示，松开批量上传
+   ============================================================ */
+.chat-window.drag-active {
+  outline: 2px dashed #667eea;
+  outline-offset: -2px;
+}
+
+.chat-drag-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(102, 126, 234, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* 提示层不拦截拖拽/点击事件 */
+}
+
+.chat-drag-hint {
+  background: #667eea;
+  color: #fff;
+  padding: 18px 28px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  box-shadow: 0 6px 24px rgba(102, 126, 234, 0.4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-drag-hint span {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.85;
 }

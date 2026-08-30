@@ -345,25 +345,8 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     fileInputRef.current?.click();
   }
 
-  async function transcribeAudioFile(file: File) {
-    setFileError("");
-    try {
-      const buf = await file.arrayBuffer();
-      // 顺带落盘原始录音（失败不阻断转写）
-      void persistUpload(file);
-      const r: any = await window.api.voiceTranscribe(buf);
-      if (r.success) {
-        setInput((prev) => (prev ? prev + r.text : r.text));
-      } else {
-        setFileError(r.error || "音频识别失败");
-      }
-    } catch (e: any) {
-      setFileError("音频识别失败");
-    }
-  }
-
-  async function handleFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files || []);
+  // 统一处理多个文件（上传按钮多选 / 拖拽 drop 共用）：图片→预览、音频→转写、txt/md→读取
+  async function processFiles(files: File[]) {
     setFileError("");
     for (const f of files) {
       if (f.type.startsWith("image/")) {
@@ -389,9 +372,56 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         setFileError(`暂不支持的文件类型：${f.name}`);
       }
     }
+  }
+
+  async function transcribeAudioFile(file: File) {
+    setFileError("");
+    try {
+      const buf = await file.arrayBuffer();
+      // 顺带落盘原始录音（失败不阻断转写）
+      void persistUpload(file);
+      const r: any = await window.api.voiceTranscribe(buf);
+      if (r.success) {
+        setInput((prev) => (prev ? prev + r.text : r.text));
+      } else {
+        setFileError(r.error || "音频识别失败");
+      }
+    } catch (e: any) {
+      setFileError("音频识别失败");
+    }
+  }
+
+  async function handleFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    await processFiles(Array.from(e.target.files || []));
     // ⚠️ 必须在全部文件读取完成后再清空：提前置空 value 会使 File 对象脱离底层句柄，
     // 在 Chromium/Electron 下 FileReader 读取它报 NotFoundError（「找不到文件」）。
     e.target.value = "";
+  }
+
+  // —— 拖拽上传（拖拽多个文件到聊天窗口，松开批量上传；与按钮多选同一处理逻辑）——
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
+
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    dragDepthRef.current++;
+    setDragActive(true);
+  }
+  function handleDragOver(e: React.DragEvent) {
+    // 必须 preventDefault，否则 drop 事件不会触发
+    e.preventDefault();
+  }
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  }
+  async function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length > 0) await processFiles(files);
   }
 
   // base64（webm/opus）→ 播放。返回停止函数；endCallback 用于重置播放状态。
@@ -563,7 +593,22 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     : "输入你的想法...（以 / 开头可触发命令，如 /help）";
 
   return (
-    <div className="chat-window">
+    <div
+      className={`chat-window${dragActive ? " drag-active" : ""}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* 拖拽上传提示层（拖入文件时高亮，支持多文件） */}
+      {dragActive && (
+        <div className="chat-drag-overlay">
+          <div className="chat-drag-hint">
+            📎 松开以上传文件
+            <span>支持多个文件（图片 / 音频 / txt / md）</span>
+          </div>
+        </div>
+      )}
       <div className="chat-toolbar">
         <IconButton
           icon={History}
@@ -818,7 +863,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
           className="upload-button"
           onClick={handleFileButton}
           disabled={disabled}
-          title="上传文件（图片→识别 / 音频→转写 / txt·md→读取）"
+          title="上传文件（可多选 / 拖拽到窗口：图片→识别 / 音频→转写 / txt·md→读取）"
         >
           <Paperclip size={18} />
         </button>
