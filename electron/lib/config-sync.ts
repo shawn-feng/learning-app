@@ -8,7 +8,7 @@
  */
 import fs from "fs";
 import path from "path";
-import { getAppSettingsPath, getDataDir, getSchedulerConfigPath } from "./config";
+import { getAppSettingsPath, getAuthPath, getDataDir, getSchedulerConfigPath } from "./config";
 import { serverFetch, ServerError } from "./server-client";
 import { currentSessionToken } from "./client-data";
 
@@ -34,6 +34,8 @@ function writeLocalRevision(revision: number): void {
 function fileForKey(key: string): string {
   if (key === "app_settings") return getAppSettingsPath();
   if (key === "scheduler_config") return getSchedulerConfigPath();
+  // 模型 API keys（auth.json）也随家长账号同步（2026-08-30 用户决策：key 上云多设备共享）
+  if (key === "auth") return getAuthPath();
   return "";
 }
 

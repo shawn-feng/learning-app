@@ -483,6 +483,15 @@ export async function setProviderApiKey(providerId: string, apiKey: string) {
 
   fs.writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8");
 
+  // SPLIT（2026-08-30 用户决策）：模型 key 随家长账号上云，多客户端/孩子登录 2 分钟轮询同步。
+  // 保存后全量推送服务端（config key "auth"，按家长隔离）；离线/未登录跳过。
+  try {
+    const { pushConfig } = await import("./config-sync");
+    await pushConfig("auth", auth);
+  } catch {
+    // 未登录/服务端不可用：仅本地保存
+  }
+
   // Invalidate cached runtime so next call picks up new credentials
   const g = globalThis as any;
   if (g[cacheKey]) {

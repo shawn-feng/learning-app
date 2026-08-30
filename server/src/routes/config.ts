@@ -26,6 +26,10 @@ function authParent(req: { headers: Record<string, string | string[] | undefined
 }
 
 export function registerConfigRoutes(app: FastifyInstance, deps: ConfigDeps): void {
+  // settings 键按家长隔离：`{parent_id}:{key}`（2026-08-30 起，模型配置与 key 都跟家长账号，
+  // 不做全家长共用）。revision 全局自增（家长 A 改配置 → B 也拉一次全量，仅自己的键，无害）。
+  const keyFor = (parentId: string, key: string) => `${parentId}:${key}`;
+
   // 轮询入口：只回 revision，客户端与本地缓存比对
   app.get("/api/v1/config/revision", async (req, reply) => {
     try {
@@ -37,32 +41,35 @@ export function registerConfigRoutes(app: FastifyInstance, deps: ConfigDeps): vo
     return { revision: getConfigRevision(deps.db) };
   });
 
-  // 全量配置：{ revision, config: { key: value, ... } }
+  // 全量配置（仅当前家长的键）：{ revision, config: { key: value, ... } }
   app.get("/api/v1/config", async (req, reply) => {
+    let parentId: string;
     try {
-      authParent(req, deps.config.jwtSecret);
+      parentId = authParent(req, deps.config.jwtSecret);
     } catch (err) {
       if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
       throw err;
     }
+    const prefix = `${parentId}:`;
     const rows = deps.db
-      .prepare("SELECT key, value_json FROM settings ORDER BY key")
-      .all() as Array<{ key: string; value_json: string }>;
+      .prepare("SELECT key, value_json FROM settings WHERE key LIKE ? ORDER BY key")
+      .all(`${prefix}%`) as Array<{ key: string; value_json: string }>;
     const config: Record<string, unknown> = {};
     for (const r of rows) {
       try {
-        config[r.key] = JSON.parse(r.value_json);
+        config[r.key.slice(prefix.length)] = JSON.parse(r.value_json);
       } catch {
-        config[r.key] = r.value_json;
+        config[r.key.slice(prefix.length)] = r.value_json;
       }
     }
     return { revision: getConfigRevision(deps.db), config };
   });
 
-  // 写配置（单键）：value 为任意 JSON，写入后 revision +1（跨设备 2min 内生效）
+  // 写配置（单键，按家长隔离）：value 为任意 JSON，写入后 revision +1（跨设备 2min 内生效）
   app.post("/api/v1/config/set", async (req, reply) => {
+    let parentId: string;
     try {
-      authParent(req, deps.config.jwtSecret);
+      parentId = authParent(req, deps.config.jwtSecret);
     } catch (err) {
       if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
       throw err;
@@ -74,7 +81,7 @@ export function registerConfigRoutes(app: FastifyInstance, deps: ConfigDeps): vo
         "INSERT INTO settings (key, value_json, updated) VALUES (?, ?, ?) " +
           "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated = excluded.updated"
       )
-      .run(key.trim(), JSON.stringify(value ?? null), new Date().toISOString());
+      .run(keyFor(parentId, key.trim()), JSON.stringify(value ?? null), new Date().toISOString());
     const revision = bumpConfigRevision(deps.db);
     return { ok: true, revision };
   });
