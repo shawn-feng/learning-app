@@ -104,9 +104,14 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   const speakMaterialText = useCallback(async (text: string) => {
     const seq = ++ttsSeqRef.current;
     ttsAudioRef.current?.pause();
+    console.log("[pi-tts] 收到朗读请求 text=", text.slice(0, 40));
     try {
       const r = await window.api.voiceTts(text, {});
-      if (seq !== ttsSeqRef.current || !r.success || !r.audio) return; // 已被更新朗读取代/失败
+      if (seq !== ttsSeqRef.current || !r.success || !r.audio) {
+        console.log("[pi-tts] 跳过：seq 过期或合成失败", { seq, cur: ttsSeqRef.current, success: r?.success });
+        return;
+      }
+      console.log("[pi-tts] 合成成功 bytes=", r.audio.length);
       const blob = new Blob([r.audio], { type: "audio/mpeg" });
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
@@ -116,12 +121,14 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         URL.revokeObjectURL(url);
         // 回执 iframe：桥脚本触发 utterance.onend（朗读按钮复位）
         iframeRef.current?.contentWindow?.postMessage({ type: "page:tts:done" }, "*");
+        console.log("[pi-tts] 播放结束，已回执 iframe");
       };
       audio.onended = done;
       audio.onerror = done;
       await audio.play();
-    } catch {
-      // 合成/播放失败静默（不影响页面）
+      console.log("[pi-tts] audio.play() 已调用");
+    } catch (e: any) {
+      console.log("[pi-tts] 播放异常:", e?.message || e);
     }
   }, []);
 
@@ -155,6 +162,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         // ISSUE-011：资料朗读事件走 edge-tts，不进页面操作记录（不 onPageEvent 上抛）
         if (evt.kind === "tts") {
           const text = (evt.detail as { text?: string })?.text;
+          console.log("[pi-tts] 收到 iframe tts 事件 text=", text?.slice(0, 40));
           if (text) void speakMaterialText(text);
           return;
         }

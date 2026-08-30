@@ -280,26 +280,33 @@ export const BRIDGE_SCRIPT = `(function () {
       var evt0 = new Event("voiceschanged");
       setTimeout(function () { syn.dispatchEvent(evt0); }, 0);
     } catch (e) {}
+    // ⚠️ speaking/paused/pending 是 WebIDL **只读属性**：strict mode 下赋值
+    // 直接抛 TypeError → shim 中断（实测）。用 defineProperty 重定义 getter（原属性
+    // configurable 时可行），让课程脚本的「正在朗读 / 再点停止」判断读到真实状态。
+    function setStateProp(name, getter) {
+      try {
+        Object.defineProperty(syn, name, { configurable: true, enumerable: true, get: getter });
+      } catch (e) { /* 属性不可重定义时静默（仅影响停止语义，不影响播放） */ }
+    }
+    setStateProp("speaking", function () { return active !== null; });
+    setStateProp("paused", function () { return false; });
+    setStateProp("pending", function () { return active !== null; });
     syn.speak = function (u) {
       if (!u || !u.text) return;
       active = u;
-      syn.speaking = true;
       send({ type: "page:event", kind: "tts", detail: { text: String(u.text).slice(0, 800) } });
       try { if (typeof u.onstart === "function") u.onstart(); } catch (e) {}
     };
     syn.cancel = function () {
       active = null;
-      syn.speaking = false;
       send({ type: "page:event", kind: "tts-cancel", detail: {} });
     };
     syn.pause = function () {};
     syn.resume = function () {};
-    syn.paused = false; syn.pending = false; syn.speaking = false;
     window.addEventListener("message", function (e) {
       var d = e.data;
       if (!d || d.type !== "page:tts:done") return;
       var u = active; active = null;
-      syn.speaking = false;
       if (u) { try { if (typeof u.onend === "function") u.onend(); } catch (e2) {} }
     });
   })();

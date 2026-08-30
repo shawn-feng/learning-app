@@ -91,10 +91,12 @@ describe("BRIDGE_SCRIPT：桥脚本静态校验（安全 + 结构）", () => {
       resume: vi.fn(),
       addEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-      paused: false,
-      pending: false,
-      speaking: false,
     };
+    // 模拟真实 Chromium：speaking/paused/pending 是 WebIDL 只读属性（getter-only，
+    // strict mode 赋值抛 TypeError）——shim 必须用 defineProperty 重定义而非赋值。
+    Object.defineProperty(speechSyn, "speaking", { configurable: true, enumerable: true, get: () => false });
+    Object.defineProperty(speechSyn, "paused", { configurable: true, enumerable: true, get: () => false });
+    Object.defineProperty(speechSyn, "pending", { configurable: true, enumerable: true, get: () => false });
     const win: any = {
       __piBridge: undefined,
       __piTtsBridge: undefined,
