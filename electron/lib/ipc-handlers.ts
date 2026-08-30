@@ -21,7 +21,6 @@ import {
   setChildTopicDaily,
   listParentTopics,
   listParentTopicCourses,
-  migrateChildrenToParent,
   moveParentCourse,
   readParentMaterial,
   upsertParentCourse,
@@ -383,13 +382,6 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   );
 
   // 一次性存量迁移（html 上移父库 + method 改全文）。破坏性操作，调用方需先备份。
-  ipcMain.handle("parent:migrate", async () => {
-    try {
-      return { success: true, data: migrateChildrenToParent() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // 家长库课程管理（课程管理页）
   ipcMain.handle("parent:upsertCourse", async (_e, topicDir: string, course: any) => {

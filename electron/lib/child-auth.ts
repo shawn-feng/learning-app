@@ -50,14 +50,14 @@ export async function addChild(data: {
   };
 
   await initChildDirectory(childId, profile);
-  // SPLIT：孩子账户同步到服务端（多设备共享、避免重复创建）。
+  // SPLIT：孩子账户 + profile（含密码哈希）同步到服务端（多设备共享、避免重复创建）。
   // 服务端不可用/未登录时不阻塞本地创建（离线可用；在线后该设备登录即可从服务端看到列表）。
   const token = currentSessionToken();
   if (getServerUrl() && token) {
     try {
       await serverFetch<{ child: { id: string } }>("/children", {
         method: "POST",
-        body: { id: childId, name: data.name },
+        body: { id: childId, name: data.name, profile: childProfilePayload(profile) },
         token,
       });
     } catch {
@@ -65,6 +65,21 @@ export async function addChild(data: {
     }
   }
   return profile;
+}
+
+/** ChildProfile → 上传服务端的 profile 载荷（全字段，含 passwordHash）。 */
+function childProfilePayload(p: ChildProfile): Record<string, unknown> {
+  return {
+    avatar: p.avatar,
+    age: p.age,
+    grade: p.grade,
+    interests: p.interests,
+    aiName: p.aiName,
+    aiEmoji: p.aiEmoji,
+    aiPersonality: p.aiPersonality,
+    passwordHash: p.passwordHash,
+    createdAt: p.createdAt,
+  };
 }
 
 /** 本地 children 目录扫描（离线/未登录回退）。 */
@@ -87,20 +102,19 @@ function readLocalProfiles(): ChildProfile[] {
 }
 
 /**
- * 孩子列表（SPLIT：孩子账户唯一真源在服务端，多设备共享避免重复创建）。
- * - 已配置服务端且家长已登录（有 session token）：从 GET /api/v1/children 拉取；
- *   本地已有 profile 的孩子补充完整详情；服务端有、本地没有的孩子（他设备创建）
- *   自动落盘默认 profile（占位详情），保证各设备看到同一份孩子列表。
+ * 孩子列表（SPLIT：孩子账户 + profile 详情/密码唯一真源在服务端，多设备共享）。
+ * - 已配置服务端且家长已登录：从 GET /api/v1/children 拉取（含 profile 详情）；
+ *   本地已有完整 profile 的孩子直接用；服务端有、本地无 → 用服务端详情落盘本地缓存；
+ *   **本地有详情而服务端无（旧设备孩子未上云）→ 自动 PATCH 上传**（详情+密码哈希一次上云）。
  * - 未登录 / 服务端不可用：回退本地扫描（离线可用）。
  */
 export async function listChildren(): Promise<ChildProfile[]> {
   const token = currentSessionToken();
   if (getServerUrl() && token) {
     try {
-      const data = await serverFetch<{ children?: Array<{ id: string; name: string; created_at?: string }> }>(
-        "/children",
-        { token }
-      );
+      const data = await serverFetch<{
+        children?: Array<{ id: string; name: string; created_at?: string; profile?: Record<string, unknown> }>;
+      }>("/children", { token });
       const remote = data?.children;
       if (Array.isArray(remote)) {
         const local = readLocalProfiles();
@@ -108,11 +122,47 @@ export async function listChildren(): Promise<ChildProfile[]> {
         const out: ChildProfile[] = [];
         for (const c of remote) {
           const lp = byId.get(c.id);
+          const sp = (c.profile ?? {}) as Partial<ChildProfile>;
+          // 服务端有详情 → 合并（以服务端为准）并落盘；本地有而服务端无 → 上传本地（详情/密码上云）
+          if (sp.passwordHash || sp.avatar || sp.age) {
+            const merged: ChildProfile = {
+              childId: c.id,
+              name: c.name,
+              avatar: String(sp.avatar ?? lp?.avatar ?? "🧸"),
+              passwordHash: String(sp.passwordHash ?? lp?.passwordHash ?? ""),
+              age: Number(sp.age ?? lp?.age ?? 0),
+              grade: String(sp.grade ?? lp?.grade ?? ""),
+              interests: String(sp.interests ?? lp?.interests ?? ""),
+              aiName: String(sp.aiName ?? lp?.aiName ?? "学习伙伴"),
+              aiEmoji: String(sp.aiEmoji ?? lp?.aiEmoji ?? "🤖"),
+              aiPersonality: String(sp.aiPersonality ?? lp?.aiPersonality ?? "温暖、耐心、靠谱。"),
+              createdAt: String(sp.createdAt ?? lp?.createdAt ?? c.created_at ?? new Date().toISOString()),
+            };
+            try {
+              const dir = path.join(getChildrenDir(), c.id);
+              fs.mkdirSync(dir, { recursive: true });
+              fs.writeFileSync(path.join(dir, "profile.json"), JSON.stringify(merged, null, 2), "utf-8");
+            } catch {
+              // 落盘失败不阻塞列表
+            }
+            out.push(merged);
+            continue;
+          }
           if (lp) {
+            // 本地有完整详情、服务端无 → 自动上传（老设备孩子上云）
+            try {
+              await serverFetch(`/children/${c.id}`, {
+                method: "PATCH",
+                body: { profile: childProfilePayload(lp) },
+                token,
+              });
+            } catch {
+              // 上传失败不阻塞列表
+            }
             out.push(lp);
             continue;
           }
-          // 服务端有、本地无 → 落盘默认 profile（详情可在本设备补录；后续版本支持详情上云）
+          // 两边都无详情 → 占位
           const placeholder: ChildProfile = {
             childId: c.id,
             name: c.name,
@@ -154,9 +204,35 @@ export async function authChild(
   childId: string,
   password: string
 ): Promise<boolean> {
+  // SPLIT：密码校验以服务端为准（多设备共享同一密码）；服务端不可用/未登录回退本地哈希校验（离线）。
+  const token = currentSessionToken();
+  if (getServerUrl() && token) {
+    try {
+      const r = await serverFetch<{ ok: boolean }>("/children/auth", {
+        method: "POST",
+        body: { id: childId, password },
+        token,
+      });
+      return !!r?.ok;
+    } catch {
+      // 服务端校验失败 → 回退本地
+    }
+  }
   const profile = getProfile(childId);
-  if (!profile) return false;
+  if (!profile || !profile.passwordHash) return false;
   return bcrypt.compare(password, profile.passwordHash);
+}
+
+/** 把 profile（含新密码哈希/详情）同步到服务端 PATCH /children/:id。 */
+async function syncProfileToServer(childId: string, profile: ChildProfile): Promise<void> {
+  const token = currentSessionToken();
+  if (getServerUrl() && token) {
+    try {
+      await serverFetch(`/children/${childId}`, { method: "PATCH", body: { profile: childProfilePayload(profile) }, token });
+    } catch {
+      // 同步失败仅跳过（本地已更新）
+    }
+  }
 }
 
 export async function resetChildPassword(
@@ -171,6 +247,7 @@ export async function resetChildPassword(
     JSON.stringify(profile, null, 2),
     "utf-8"
   );
+  await syncProfileToServer(childId, profile);
 }
 
 // 孩子自行修改密码：先验证旧密码，通过后再更新
@@ -201,6 +278,8 @@ export function updateChildProfile(
     JSON.stringify(profile, null, 2),
     "utf-8"
   );
+  // 详情同步服务端（多设备共享）
+  void syncProfileToServer(childId, profile);
 
   // ISSUE-033：AGENTS 纯 SQLite（data/agents.sqlite）——改 profile 无需刷新任何文件，
   // 孩子开会话时 buildChildPrompt 经 resolveChildAgents 实时取「SQLite 用户版本 / 代码默认」。

@@ -174,7 +174,6 @@ const api = {
     ipcRenderer.invoke("parent:listChildTopics", childId),
   parentSetChildTopicDaily: (childId: string, topicDir: string, daily: string, type: string) =>
     ipcRenderer.invoke("parent:setChildTopicDaily", childId, topicDir, daily, type),
-  parentMigrate: () => ipcRenderer.invoke("parent:migrate"),
   parentUpsertCourse: (topicDir: string, course: any) =>
     ipcRenderer.invoke("parent:upsertCourse", topicDir, course),
   parentUpsertTopic: (topic: any) => ipcRenderer.invoke("parent:upsertTopic", topic),

@@ -57,8 +57,14 @@ export function openDb(dataDir: string): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_id);
   `);
-  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '5')").run();
+  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '6')").run();
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('config_revision', '0')").run();
+  // 旧库迁移：children 表加 profile_json（孩子详情 + 密码哈希上云，2026-08-30）
+  try {
+    db.exec("ALTER TABLE children ADD COLUMN profile_json TEXT");
+  } catch {
+    // 已存在则忽略
+  }
   return db;
 }
 

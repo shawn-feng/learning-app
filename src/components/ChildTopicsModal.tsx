@@ -22,13 +22,6 @@ interface AllocateResult {
   existing: number;
 }
 
-interface MigrateResult {
-  topics: number;
-  htmlMoved: number;
-  htmlSkippedShared: number;
-  coursesUpdated: number;
-  materialsDirsRemoved: number;
-}
 
 interface ChildTopicInfo {
   name: string;
@@ -122,10 +115,6 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
     } finally {
       setBusy(null);
     }
-  }
-
-  async function runMigrate() {
-    setMsg({ ok: false, text: "存量迁移（孩子→家长库）已下线：SPLIT 后家长库与孩子数据均在服务端，无需本地迁移。" });
   }
 
   return (
