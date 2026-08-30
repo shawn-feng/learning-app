@@ -270,14 +270,12 @@ export const BRIDGE_SCRIPT = `(function () {
     var syn = window.speechSynthesis;
     if (!syn || window.__piTtsBridge) return;
     window.__piTtsBridge = true;
-    var VOICES = [
-      { name: "Microsoft Xiaoxiao Online (Natural) - Chinese (Mainland)", lang: "zh-CN", localService: false, voiceURI: "pi://edge-tts/zh-CN-XiaoxiaoNeural" },
-      { name: "Microsoft Yunxi Online (Natural) - Chinese (Mainland)", lang: "zh-CN", localService: false, voiceURI: "pi://edge-tts/zh-CN-YunxiNeural" },
-      { name: "Microsoft Xiaoxiao Online - Chinese (Mainland)", lang: "zh-CN", localService: false, voiceURI: "pi://edge-tts/zh-CN-XiaoxiaoNeural" },
-      { name: "Microsoft Kangkang Desktop - Chinese (Mainland)", lang: "zh-CN", localService: true, voiceURI: "pi://local/kangkang" }
-    ];
     var active = null;
-    syn.getVoices = function () { return VOICES; };
+    // ⚠️ getVoices 必须返回**空数组**：课程脚本（hanzigong/english）会选中 getVoices()[i]
+    // 并赋给 utter.voice，而模拟的 plain object 不是 SpeechSynthesisVoice 实例——
+    // WebIDL 赋值抛 TypeError → speak() 中断 → 无播放（实测用户反馈）。返回空数组后
+    // 课程脚本的 voice 选择判空跳过，speak 正常执行；音色完全由 edge-tts 决定，与聊天一致。
+    syn.getVoices = function () { return []; };
     try {
       var evt0 = new Event("voiceschanged");
       setTimeout(function () { syn.dispatchEvent(evt0); }, 0);
@@ -285,11 +283,13 @@ export const BRIDGE_SCRIPT = `(function () {
     syn.speak = function (u) {
       if (!u || !u.text) return;
       active = u;
+      syn.speaking = true;
       send({ type: "page:event", kind: "tts", detail: { text: String(u.text).slice(0, 800) } });
       try { if (typeof u.onstart === "function") u.onstart(); } catch (e) {}
     };
     syn.cancel = function () {
       active = null;
+      syn.speaking = false;
       send({ type: "page:event", kind: "tts-cancel", detail: {} });
     };
     syn.pause = function () {};
@@ -299,6 +299,7 @@ export const BRIDGE_SCRIPT = `(function () {
       var d = e.data;
       if (!d || d.type !== "page:tts:done") return;
       var u = active; active = null;
+      syn.speaking = false;
       if (u) { try { if (typeof u.onend === "function") u.onend(); } catch (e2) {} }
     });
   })();

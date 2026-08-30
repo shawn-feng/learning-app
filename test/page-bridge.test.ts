@@ -81,7 +81,7 @@ describe("BRIDGE_SCRIPT：桥脚本静态校验（安全 + 结构）", () => {
     expect(depth).toBe(0);
   });
 
-  it("speechSynthesis shim：getVoices 返回模拟 Edge 语音、speak 上抛 tts、tts:done 触发 onend（ISSUE-011）", () => {
+  it("speechSynthesis shim：getVoices 空数组（防 voice 赋值 TypeError）、speak 上抛 tts、tts:done 触发 onend（ISSUE-011/013）", () => {
     const sent: any[] = [];
     const speechSyn: any = {
       getVoices: vi.fn(() => []),
@@ -117,21 +117,24 @@ describe("BRIDGE_SCRIPT：桥脚本静态校验（安全 + 结构）", () => {
     vi.stubGlobal("WeakMap", Map);
     // 执行桥脚本（静态字符串，测试环境 eval 无安全顾虑）
     eval(BRIDGE_SCRIPT);
-    // ① getVoices 返回模拟 Edge 在线语音（课程 cvInitVoices 能选中 Xiaoxiao Online）
+    // ① getVoices 必须返回空数组：模拟 plain object 赋给 utter.voice 会抛
+    // TypeError（WebIDL SpeechSynthesisVoice），课程脚本 speak 中断、无播放（ISSUE-013 实测）
     const voices = speechSyn.getVoices();
-    expect(voices.some((v: any) => v.name.includes("Xiaoxiao Online (Natural)"))).toBe(true);
-    expect(voices.some((v: any) => v.voiceURI.startsWith("pi://edge-tts/"))).toBe(true);
-    // ② speak 上抛 tts 事件 + 触发 onstart
+    expect(Array.isArray(voices)).toBe(true);
+    expect(voices.length).toBe(0);
+    // ② speak 上抛 tts 事件 + 触发 onstart + speaking=true（支持课程脚本「再点停止」判断）
     const u: any = { text: "你好，世界", onstart: vi.fn(), onend: vi.fn() };
     speechSyn.speak(u);
+    expect(speechSyn.speaking).toBe(true);
     const ttsMsg = sent.find((m: any) => m.kind === "tts");
     expect(ttsMsg).toBeTruthy();
     expect(ttsMsg.detail.text).toBe("你好，世界");
     expect(u.onstart).toHaveBeenCalledTimes(1);
-    // ③ cancel 上抛 tts-cancel（active 被清空）
+    // ③ cancel 上抛 tts-cancel + speaking=false（active 被清空）
     speechSyn.cancel();
+    expect(speechSyn.speaking).toBe(false);
     expect(sent.some((m: any) => m.kind === "tts-cancel")).toBe(true);
-    // ④ 父级回执 page:tts:done → 触发 utterance.onend（朗读按钮复位）。
+    // ④ 父级回执 page:tts:done → 触发 utterance.onend + speaking=false（朗读按钮复位）。
     // cancel 已清空 active，需重新 speak 一次再回执。
     const u2: any = { text: "再读一遍", onstart: vi.fn(), onend: vi.fn() };
     speechSyn.speak(u2);
@@ -140,6 +143,7 @@ describe("BRIDGE_SCRIPT：桥脚本静态校验（安全 + 结构）", () => {
       .map((c: any) => c[1]);
     expect(msgHandlers.length).toBeGreaterThanOrEqual(2);
     for (const h of msgHandlers) h({ data: { type: "page:tts:done" } });
+    expect(speechSyn.speaking).toBe(false);
     expect(u2.onend).toHaveBeenCalledTimes(1);
   });
 
