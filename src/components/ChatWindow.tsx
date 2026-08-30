@@ -473,7 +473,12 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   }
 
   async function handlePressStart() {
-    if (!voiceEnabled || disabled || transcribing) return;
+    if (disabled || transcribing) return;
+    // ISSUE-010：未开启语音时点按给引导提示（按钮始终显示，不再静默消失）
+    if (!voiceEnabled) {
+      setVoiceError("语音输入未开启：请家长在设置 → 语音输入 中开启后再使用");
+      return;
+    }
     setVoiceError("");
     try {
       await start();
@@ -647,7 +652,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
                 </div>
               ) : m.role === "ai" ? (
                 <>
-                  <div className="bubble bubble-md">
+                  <div className={`bubble bubble-md${isParent ? "" : " bubble-md-child"}`}>
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
@@ -817,20 +822,19 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         >
           <Paperclip size={18} />
         </button>
-        {voiceEnabled && (
-          <button
-            className={`mic-button ${recording ? "recording" : ""}`}
-            onMouseDown={handlePressStart}
-            onMouseUp={handlePressEnd}
-            onMouseLeave={handlePressEnd}
-            onTouchStart={handlePressStart}
-            onTouchEnd={handlePressEnd}
-            disabled={disabled || transcribing}
-            title="按住说话"
-          >
-            <Mic size={20} />
-          </button>
-        )}
+        {/* ISSUE-010：Mic 按钮始终显示（voice-config 丢失/未开启时不消失）；未开启时点击给引导提示 */}
+        <button
+          className={`mic-button ${recording ? "recording" : ""}`}
+          onMouseDown={handlePressStart}
+          onMouseUp={handlePressEnd}
+          onMouseLeave={handlePressEnd}
+          onTouchStart={handlePressStart}
+          onTouchEnd={handlePressEnd}
+          disabled={disabled || transcribing}
+          title={voiceEnabled ? "按住说话" : "语音输入未开启（点击无反应，请家长在设置中开启）"}
+        >
+          <Mic size={20} />
+        </button>
         <textarea
           ref={textareaRef}
           value={input}

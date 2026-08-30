@@ -2,7 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from "react";
 import IconButton from "./IconButton";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, PanelRightClose } from "lucide-react";
 import {
   EventThrottler,
   genRequestId,
@@ -32,6 +32,8 @@ interface Props {
   onBack: () => void;
   /** iframe 内互动事件上报（节流后），Learn 层转发给主进程注入 agent */
   onPageEvent?: (evt: PageEvent) => void;
+  /** ISSUE-008：折叠资料区（收起后聊天区占更多空间） */
+  onCollapse?: () => void;
 }
 
 const EXEC_TIMEOUT_MS = 10000;
@@ -84,7 +86,7 @@ function HtmlFrame({
  * - 详情：点开后展示该份资料，可「返回列表」
  */
 const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function MaterialsPanel(
-  { materials, selectedId, onOpen, onBack, onPageEvent },
+  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse },
   ref
 ) {
   const selected = materials.find((m) => m.id === selectedId);
@@ -183,7 +185,12 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     if (!cleanHtml) {
       return (
         <div className="content-panel">
-          <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+            {onCollapse && (
+              <IconButton icon={PanelRightClose} title="收起学习资料" onClick={onCollapse} className="material-collapse-btn" />
+            )}
+          </div>
           {selected.title && <h2 className="material-title">{selected.title}</h2>}
           <div className="placeholder">
             📄
@@ -195,7 +202,12 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     }
     return (
       <div className="content-panel">
-        <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+          {onCollapse && (
+            <IconButton icon={PanelRightClose} title="收起学习资料" onClick={onCollapse} className="material-collapse-btn" />
+          )}
+        </div>
         {selected.title && <h2 className="material-title">{selected.title}</h2>}
         {selected.format === "html" ? (
           <HtmlFrame
@@ -219,6 +231,15 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
       <div className="material-list-header">
         <span className="material-list-title">学习资料</span>
         <span className="material-list-count">{materials.length} 份</span>
+        {onCollapse && (
+          <IconButton
+            icon={PanelRightClose}
+            title="收起学习资料"
+            onClick={onCollapse}
+            className="material-collapse-btn"
+            style={{ marginLeft: "auto" }}
+          />
+        )}
       </div>
       {materials.length === 0 ? (
         <div className="placeholder">

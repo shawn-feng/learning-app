@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelLeftClose, PanelLeftOpen, Bot, Gauge, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Bot, Gauge, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
@@ -110,6 +110,8 @@ export default function Learn({ child, onExit }: Props) {
 
   // Sidebar collapse
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // ISSUE-008：学习资料区可折叠（收起后聊天区占更多空间）；display_content 时自动展开
+  const [materialsCollapsed, setMaterialsCollapsed] = useState(false);
   // 右侧聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化，与家长端互不干扰）
   const chat = useChatPanel("child", 440);
 
@@ -206,6 +208,8 @@ export default function Learn({ child, onExit }: Props) {
   // 自动选中末尾（最新）一条；去重时 updater 返回原引用、effect 不触发，用户返回列表也不被打断。
   useEffect(() => {
     if (materials.length === 0) return;
+    // ISSUE-008：AI 展示新材料（display_content）时自动展开资料区（即便当前折叠）
+    setMaterialsCollapsed(false);
     setSelectedMaterialId(materials[materials.length - 1].id);
   }, [materials]);
 
@@ -760,14 +764,26 @@ export default function Learn({ child, onExit }: Props) {
 
         <div className="learn-body">
           {view === "materials" ? (
-            <MaterialsPanel
-              ref={materialsPanelRef}
-              materials={materials}
-              selectedId={selectedMaterialId}
-              onOpen={setSelectedMaterialId}
-              onBack={() => setSelectedMaterialId(null)}
-              onPageEvent={handlePageEvent}
-            />
+            // ISSUE-008：资料区可折叠；折叠时显示窄条展开按钮，聊天区占满
+            materialsCollapsed ? (
+              <div
+                className="material-collapsed-bar"
+                title="展开学习资料"
+                onClick={() => setMaterialsCollapsed(false)}
+              >
+                <PanelRightOpen size={18} />
+              </div>
+            ) : (
+              <MaterialsPanel
+                ref={materialsPanelRef}
+                materials={materials}
+                selectedId={selectedMaterialId}
+                onOpen={setSelectedMaterialId}
+                onBack={() => setSelectedMaterialId(null)}
+                onPageEvent={handlePageEvent}
+                onCollapse={() => setMaterialsCollapsed(true)}
+              />
+            )
           ) : (
             <LearningDashboard childId={child.childId} />
           )}

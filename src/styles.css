@@ -2784,3 +2784,80 @@ input, textarea {
   background: #e81123;
   color: #fff;
 }
+
+/* ============================================================
+   ISSUE-009：孩子聊天 markdown 放大 + 紧凑行距
+   仅孩子聊天生效（ChatWindow owner!=="parent" 时加 bubble-md-child），
+   家长端聊天与资料面板（.markdown-body）不受影响。
+   字体放大一倍（15px→30px）；段落不留空行（p/ul/ol margin 收窄）。
+   ============================================================ */
+.bubble-md-child {
+  font-size: 30px;
+  line-height: 1.5;
+}
+
+.bubble-md-child p {
+  margin: 0 0 4px;
+}
+
+.bubble-md-child ul,
+.bubble-md-child ol {
+  margin: 2px 0 4px;
+  padding-left: 30px;
+}
+
+.bubble-md-child li {
+  margin: 0;
+}
+
+.bubble-md-child li > ul,
+.bubble-md-child li > ol {
+  margin: 0;
+}
+
+.bubble-md-child h1,
+.bubble-md-child h2,
+.bubble-md-child h3,
+.bubble-md-child h4,
+.bubble-md-child h5,
+.bubble-md-child h6 {
+  margin: 10px 0 4px;
+  line-height: 1.3;
+}
+
+.bubble-md-child h1 { font-size: 36px; }
+.bubble-md-child h2 { font-size: 34px; }
+.bubble-md-child h3 { font-size: 32px; }
+.bubble-md-child h4,
+.bubble-md-child h5,
+.bubble-md-child h6 { font-size: 30px; }
+
+.bubble-md-child pre {
+  font-size: 22px; /* 代码块稍小，避免超长行换行过密 */
+}
+
+/* ============================================================
+   ISSUE-008：学习资料区折叠窄条（孩子界面 Learn.tsx）
+   折叠后显示窄条（展开按钮），聊天区占满剩余空间。
+   ============================================================ */
+.material-collapsed-bar {
+  width: 40px;
+  min-width: 40px;
+  background: #f7f8fc;
+  border-right: 1px solid #eee;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14px;
+  cursor: pointer;
+  color: #667eea;
+  transition: background 0.15s;
+}
+
+.material-collapsed-bar:hover {
+  background: #eef0ff;
+}
+
+.material-collapse-btn {
+  color: #667eea;
+}
