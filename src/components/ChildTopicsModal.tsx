@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import IconButton from "./IconButton";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus } from "lucide-react";
 
 interface ChildInfo {
   childId: string;
@@ -125,26 +125,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
   }
 
   async function runMigrate() {
-    if (!window.confirm("⚠️ 存量迁移会把孩子目录下的 html/媒体资料移到家长库共享目录并删除孩子侧副本。确定继续？")) return;
-    setBusy("migrate");
-    setMsg(null);
-    try {
-      const r = await window.api.parentMigrate();
-      if (r?.success) {
-        const d: MigrateResult = r.data;
-        setMsg({
-          ok: true,
-          text: `迁移完成：method ${d.topics} 主题、html 移动 ${d.htmlMoved}（共享跳过 ${d.htmlSkippedShared}）、课程 ${d.coursesUpdated}、删除空目录 ${d.materialsDirsRemoved}`,
-        });
-        await refresh();
-      } else {
-        setMsg({ ok: false, text: r?.error || "迁移失败" });
-      }
-    } catch (e: any) {
-      setMsg({ ok: false, text: String(e?.message || e) });
-    } finally {
-      setBusy(null);
-    }
+    setMsg({ ok: false, text: "存量迁移（孩子→家长库）已下线：SPLIT 后家长库与孩子数据均在服务端，无需本地迁移。" });
   }
 
   return (
@@ -154,16 +135,6 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
         <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
           从家长主题库给孩子添加学习主题（添加后孩子即可学习该主题；再次添加不会覆盖孩子进度）
         </p>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <IconButton
-            icon={RefreshCw}
-            title="迁移存量资料到家长库"
-            onClick={runMigrate}
-            disabled={busy !== null}
-            style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer" }}
-          />
-        </div>
 
         {msg && (
           <div
@@ -181,7 +152,7 @@ export default function ChildTopicsModal({ child, onClose }: Props) {
         )}
 
         {topics.length === 0 ? (
-          <p style={{ color: "#888", fontSize: 13 }}>家长库暂无主题。点击上方「迁移存量资料」把现有孩子的主题/资料导入家长库。</p>
+          <p style={{ color: "#888", fontSize: 13 }}>家长库暂无主题，请在家长端课程管理中添加主题后再给孩子分配。</p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" }}>
             {topics.map((t) => {

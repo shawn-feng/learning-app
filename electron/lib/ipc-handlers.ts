@@ -9,7 +9,7 @@ import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRunt
 import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
-import { getLearningSummary, getTopicProgress, getCourseDailySummary } from "./learning-summary";
+import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
 import {
   allocateTopicToChild,
   copyMaterialIntoParent,
@@ -266,6 +266,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("learning:summary", async (_e, childId: string) => {
     try {
+      // SPLIT：进度真源在服务端，先远程预取（新设备/未开过会话也能拿到），再读本地缓存汇总
+      await fetchProgressRemote(childId);
       return { success: true, data: await getLearningSummary(childId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1156,9 +1158,12 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 家长云端查进度：打「请求刷新」标记 + 返回当前云端进度摘要（孩子端轮询后会上传新摘要）
   ipcMain.handle("sync:query_progress", async (_e: IpcMainInvokeEvent, childId: string) => {
     try {
-      const { fetchProgressSummary } = await import("./delivery");
-      const data = await fetchProgressSummary(childId, true);
-      return { success: true, data };
+      // SPLIT：进度真源在服务端 learning-server（旧 ISSUE-041 云端 sync 消息交换已废弃，
+      // 本地 kb.sqlite 不再写入 → 原摘要必然为空）。改为直接读服务端进度并汇总为旧展示结构。
+      await fetchProgressRemote(childId);
+      const s = await getLearningSummary(childId);
+      const topics = (s.topics ?? []).map((t) => ({ name: t.name, done: t.learned, courses: t.total }));
+      return { success: true, data: { note: "进度来自服务端", summary: { topics, daily: [] } } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
