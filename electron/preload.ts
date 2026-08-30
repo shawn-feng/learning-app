@@ -40,6 +40,8 @@ const api = {
   // Page bridge（iframe 学习资料感知与操作）：上行事件上报 + 下行指令回执 + 下行指令监听
   pageEvent: (childId: string, event: any) =>
     ipcRenderer.invoke("pi:page:event", { childId, event }),
+  // ISSUE-015：取走待随下一轮消息附带的页面操作（发送后即清空）
+  pageTakePending: (childId: string) => ipcRenderer.invoke("pi:page:pending", childId),
   pageExecResult: (childId: string, requestId: string, result: any) =>
     ipcRenderer.invoke("pi:page:exec:result", { childId, requestId, result }),
   onPageExec: (callback: (data: { childId: string; requestId: string; action: string; params: any }) => void) =>

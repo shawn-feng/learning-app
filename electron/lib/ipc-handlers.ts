@@ -39,7 +39,7 @@ import {
   queuePageEvent,
   resolvePageAction,
   setPageExecTransport,
-  setSessionProvider,
+  takePendingPageEvents,
 } from "./page-bridge";
 
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
@@ -51,7 +51,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       w.webContents.send("pi:page:exec", { childId, requestId, action, params });
     }
   });
-  setSessionProvider((childId) => getActiveSession(childId));
+  // ISSUE-015：孩子发消息时取走待附带的页面操作（不自动注入 agent）
+  ipcMain.handle("pi:page:pending", (_e, childId: string) => {
+    return { text: takePendingPageEvents(childId ?? "") };
+  });
 
   ipcMain.handle("pi:page:event", async (_e, payload: { childId: string; event: any }) => {
     try {

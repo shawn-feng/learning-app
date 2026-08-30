@@ -510,6 +510,15 @@ export default function Learn({ child, onExit }: Props) {
         );
       }
       parts.push(text);
+      // ISSUE-015：孩子在页面上的操作不再自动注入 agent，随本轮消息附带一段说明（发送后清空）
+      try {
+        const pending = await window.api.pageTakePending(child.childId);
+        if (pending?.text) {
+          parts.push(`\n[页面操作] 这部分是孩子在页面上的操作：${pending.text}`);
+        }
+      } catch {
+        // 取页面操作失败不影响发送
+      }
       // save_upload 返回 children/<childId>/uploads/xx（相对 data/），AI 的 cwd 是 childDir，
       // 转为相对 childDir 的 uploads/xx 路径（未落盘时为「未保存」）。
       // 注意：这里只放附件标记，不放任何给 AI 的指令文字——指令文字会随消息存进会话历史、

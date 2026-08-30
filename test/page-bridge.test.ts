@@ -11,7 +11,7 @@ import {
   PageEventBuffer,
   queuePageEvent,
   recentInteractions,
-  setSessionProvider,
+  takePendingPageEvents,
 } from "../electron/lib/page-bridge";
 
 afterEach(() => {
@@ -170,47 +170,34 @@ describe("formatPageEvent：事件 → 自然语言", () => {
   });
 });
 
-describe("queuePageEvent：批处理注入 + steer/followUp 选择", () => {
-  it("600ms 窗口内多条事件合并为一次注入", () => {
-    vi.useFakeTimers();
-    const injected: string[] = [];
-    setSessionProvider(() => ({
-      isStreaming: true,
-      steer: vi.fn(async (t: string) => injected.push(t)),
-      followUp: vi.fn(async (t: string) => injected.push("F:" + t)),
-    }));
+describe("queuePageEvent：ISSUE-015 不自动注入，pending 随下一轮消息附带", () => {
+  it("事件入环形缓冲（page_inspect 可读）且累积到 pending", () => {
     queuePageEvent("c1", { kind: "open", title: "第三课", detail: {} });
     queuePageEvent("c1", { kind: "click", detail: { text: "下一步", index: 5 } });
     queuePageEvent("c1", { kind: "scroll", detail: { pct: 50 } });
-    expect(injected).toHaveLength(0);
-    vi.advanceTimersByTime(700);
-    expect(injected).toHaveLength(1);
-    expect(injected[0]).toContain("[页面事件]");
-    expect(injected[0]).toContain("打开了资料「第三课」");
-    expect(injected[0]).toContain("点击了元素「下一步」(索引 5)");
-    expect(injected[0]).toContain("滚动至 50%");
+    // 环形缓冲：page_inspect / recentInteractions 仍能读最近互动
+    expect(recentInteractions("c1", 5)).toContain("打开了资料「第三课」");
+    expect(recentInteractions("c1", 5)).toContain("点击了元素「下一步」(索引 5)");
+    // pending：取走得到合并文本
+    const pending = takePendingPageEvents("c1");
+    expect(pending).toContain("打开了资料「第三课」");
+    expect(pending).toContain("点击了元素「下一步」(索引 5)");
+    expect(pending).toContain("滚动至 50%");
+    // 取走后清空：再次取为空串
+    expect(takePendingPageEvents("c1")).toBe("");
   });
 
-  it("会话运行中走 steer，空闲走 followUp", () => {
-    vi.useFakeTimers();
-    const calls: string[] = [];
-    setSessionProvider(() => ({
-      isStreaming: false,
-      steer: vi.fn(async (t: string) => calls.push("S:" + t)),
-      followUp: vi.fn(async (t: string) => calls.push("F:" + t)),
-    }));
-    queuePageEvent("c2", { kind: "click", detail: { text: "开始" } });
-    vi.advanceTimersByTime(700);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain("F:");
+  it("无 pending 时取走返回空串；不同孩子互不影响", () => {
+    expect(takePendingPageEvents("c-none")).toBe("");
+    queuePageEvent("c-a", { kind: "click", detail: { text: "A" } });
+    expect(takePendingPageEvents("c-b")).toBe("");
+    expect(takePendingPageEvents("c-a")).toContain("A");
   });
 
-  it("会话未加载：事件入缓冲但不注入，page_inspect 可读", () => {
-    vi.useFakeTimers();
-    setSessionProvider(() => null);
+  it("事件入缓冲但不注入 agent（无 followUp/steer 调用路径），page_inspect 仍可读", () => {
     queuePageEvent("c3", { kind: "click", detail: { text: "卡片" } });
-    vi.advanceTimersByTime(700);
     expect(recentInteractions("c3", 5)).toContain("点击了元素「卡片」");
+    expect(takePendingPageEvents("c3")).toContain("点击了元素「卡片」");
   });
 });
 

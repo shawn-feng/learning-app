@@ -42,18 +42,12 @@ type TransportFn = (
   action: string,
   params: Record<string, unknown>
 ) => void | Promise<void>;
-type SessionProviderFn = (childId: string) => any | null;
-
 let pageExecTransport: TransportFn = () => {
   console.warn("[page-bridge] transport 未注入，下行指令被丢弃");
 };
-let sessionProvider: SessionProviderFn = () => null;
 
 export function setPageExecTransport(fn: TransportFn): void {
   pageExecTransport = fn;
-}
-export function setSessionProvider(fn: SessionProviderFn): void {
-  sessionProvider = fn;
 }
 
 // —— 事件文本格式化（纯函数，便于单测）——
@@ -115,8 +109,8 @@ export class PageEventBuffer {
 }
 
 const buffers = new Map<string, PageEventBuffer>();
-const batchTexts = new Map<string, string[]>();
-const BATCH_WINDOW_MS = 600;
+/** ISSUE-015：待随孩子下一轮消息附带的页面操作（按 childId；取走即清空） */
+const pendingByChild = new Map<string, string[]>();
 const RECENT_LIMIT = 50;
 
 function bufferFor(childId: string): PageEventBuffer {
@@ -128,60 +122,33 @@ function bufferFor(childId: string): PageEventBuffer {
   return b;
 }
 
-function buildInjectionText(texts: string[]): string {
-  return `[页面事件] ${texts.join("；")}。（如需查看当前页面或进行操作，可用 page_inspect / page_action 工具。）`;
-}
-
-async function injectToSession(childId: string, text: string): Promise<void> {
-  let session: any = null;
-  try {
-    session = sessionProvider(childId);
-  } catch (err) {
-    console.error(`[page-bridge] sessionProvider 异常:`, (err as Error).message);
-    return;
-  }
-  if (!session) {
-    // 会话未加载：事件只入缓冲，留待 page_inspect 读取
-    console.log(`[page-bridge] child=${childId} 会话未加载，事件仅入缓冲`);
-    return;
-  }
-  const streaming = (session as any).isStreaming === true;
-  console.log(`[page-bridge] inject child=${childId} isStreaming=${streaming} text="${text.slice(0, 60)}..."`);
-  try {
-    // 运行中 steer（排队等下一次 LLM 调用，不打断当前轮）；空闲 followUp（结束后立即投递）
-    if (streaming) {
-      if (typeof session.steer === "function") await session.steer(text);
-      else console.warn("[page-bridge] session.steer 不可用");
-    } else {
-      if (typeof session.followUp === "function") await session.followUp(text);
-      else if (typeof session.steer === "function") await session.steer(text);
-      else console.warn("[page-bridge] session.followUp/steer 均不可用");
-    }
-  } catch (err) {
-    console.error(`[page-bridge] 事件注入失败:`, (err as Error).message);
-  }
-}
-
 /**
  * 上行事件入口（渲染层 pi:page:event → 主进程）。
- * 事件入环形缓冲，600ms 批处理窗口内合并成一段文本注入 agent（避免逐条刷屏/打断）。
+ * ISSUE-015：事件只入环形缓冲（供 page_inspect / recentInteractions 读）并累积到
+ * pending 列表，**不再自动注入 agent**——随孩子下一轮消息（takePendingPageEvents）附带。
  */
 export function queuePageEvent(childId: string, evt: PageBridgeEvent): void {
   const buf = bufferFor(childId);
   const text = eventText(evt);
   buf.push(text);
 
-  const existing = batchTexts.get(childId);
-  if (existing) {
-    existing.push(text); // 批处理窗口已开启，累积
-    return;
+  let pending = pendingByChild.get(childId);
+  if (!pending) {
+    pending = [];
+    pendingByChild.set(childId, pending);
   }
-  const texts: string[] = [text];
-  batchTexts.set(childId, texts);
-  setTimeout(() => {
-    batchTexts.delete(childId);
-    if (texts.length > 0) void injectToSession(childId, buildInjectionText(texts));
-  }, BATCH_WINDOW_MS);
+  pending.push(text);
+}
+
+/**
+ * 取走并清空某孩子待附带的页面操作（孩子发消息时调用，附到下一轮消息开头；
+ * 无 pending 返回空串）。环形缓冲不受影响（page_inspect 仍能看最近互动）。
+ */
+export function takePendingPageEvents(childId: string): string {
+  const pending = pendingByChild.get(childId);
+  if (!pending || pending.length === 0) return "";
+  pendingByChild.delete(childId);
+  return pending.join("；");
 }
 
 // —— 下行操作：requestId 配对等待回执（10s 超时）——
@@ -198,7 +165,11 @@ export function executePageAction(childId: string, params: PageExecParams): Prom
     pendingExecs.set(requestId, { resolve, timer });
 
     const { action, ...rest } = params;
-    pageExecTransport(childId, requestId, action, rest).catch(() => {
+    // ⚠️ transport 可能返回 undefined（未注入默认 / 主窗口 null 时注入实现不返回值）：
+    // 直接 .catch 会 TypeError（ISSUE-014 实测报错原文 "Cannot read properties of undefined"）。
+    // Promise.resolve 包装兜底——undefined 视为「已下发」，等 10s 超时兜底「页面无响应」
+    // （窗口不存在本就无响应，语义正确）。
+    Promise.resolve(pageExecTransport(childId, requestId, action, rest)).catch(() => {
       clearTimeout(timer);
       pendingExecs.delete(requestId);
       resolve({ ok: false, error: "指令下发失败" });
