@@ -2,8 +2,10 @@ import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { getChildDir, getChildrenDir } from "./config";
+import { getChildDir, getChildrenDir, getServerUrl } from "./config";
 import { initChildDirectory } from "./user-init";
+import { serverFetch } from "./server-client";
+import { currentSessionToken } from "./client-data";
 
 export interface ChildProfile {
   childId: string;
@@ -48,10 +50,25 @@ export async function addChild(data: {
   };
 
   await initChildDirectory(childId, profile);
+  // SPLIT：孩子账户同步到服务端（多设备共享、避免重复创建）。
+  // 服务端不可用/未登录时不阻塞本地创建（离线可用；在线后该设备登录即可从服务端看到列表）。
+  const token = currentSessionToken();
+  if (getServerUrl() && token) {
+    try {
+      await serverFetch<{ child: { id: string } }>("/children", {
+        method: "POST",
+        body: { id: childId, name: data.name },
+        token,
+      });
+    } catch {
+      // 同步失败仅跳过（本地已创建）
+    }
+  }
   return profile;
 }
 
-export function listChildren(): ChildProfile[] {
+/** 本地 children 目录扫描（离线/未登录回退）。 */
+function readLocalProfiles(): ChildProfile[] {
   const childrenDir = getChildrenDir();
   if (!fs.existsSync(childrenDir)) return [];
 
@@ -67,6 +84,64 @@ export function listChildren(): ChildProfile[] {
     }
   }
   return profiles;
+}
+
+/**
+ * 孩子列表（SPLIT：孩子账户唯一真源在服务端，多设备共享避免重复创建）。
+ * - 已配置服务端且家长已登录（有 session token）：从 GET /api/v1/children 拉取；
+ *   本地已有 profile 的孩子补充完整详情；服务端有、本地没有的孩子（他设备创建）
+ *   自动落盘默认 profile（占位详情），保证各设备看到同一份孩子列表。
+ * - 未登录 / 服务端不可用：回退本地扫描（离线可用）。
+ */
+export async function listChildren(): Promise<ChildProfile[]> {
+  const token = currentSessionToken();
+  if (getServerUrl() && token) {
+    try {
+      const data = await serverFetch<{ children?: Array<{ id: string; name: string; created_at?: string }> }>(
+        "/children",
+        { token }
+      );
+      const remote = data?.children;
+      if (Array.isArray(remote)) {
+        const local = readLocalProfiles();
+        const byId = new Map(local.map((p) => [p.childId, p]));
+        const out: ChildProfile[] = [];
+        for (const c of remote) {
+          const lp = byId.get(c.id);
+          if (lp) {
+            out.push(lp);
+            continue;
+          }
+          // 服务端有、本地无 → 落盘默认 profile（详情可在本设备补录；后续版本支持详情上云）
+          const placeholder: ChildProfile = {
+            childId: c.id,
+            name: c.name,
+            avatar: "🧸",
+            passwordHash: "",
+            age: 0,
+            grade: "",
+            interests: "",
+            aiName: "学习伙伴",
+            aiEmoji: "🤖",
+            aiPersonality: "温暖、耐心、靠谱。",
+            createdAt: c.created_at ?? new Date().toISOString(),
+          };
+          try {
+            const dir = path.join(getChildrenDir(), c.id);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, "profile.json"), JSON.stringify(placeholder, null, 2), "utf-8");
+          } catch {
+            // 落盘失败不阻塞列表（仅内存返回）
+          }
+          out.push(placeholder);
+        }
+        return out;
+      }
+    } catch {
+      // 服务端不可用/会话失效 → 回退本地扫描
+    }
+  }
+  return readLocalProfiles();
 }
 
 export function getProfile(childId: string): ChildProfile | null {
@@ -133,9 +208,18 @@ export function updateChildProfile(
   return profile;
 }
 
-export function deleteChild(childId: string): void {
+export async function deleteChild(childId: string): Promise<void> {
   const childDir = getChildDir(childId);
   if (fs.existsSync(childDir)) {
     fs.rmSync(childDir, { recursive: true, force: true });
+  }
+  // SPLIT：同步删除服务端孩子账户（失败不阻塞本地删除）
+  const token = currentSessionToken();
+  if (getServerUrl() && token) {
+    try {
+      await serverFetch<{ ok: boolean }>(`/children/${childId}`, { method: "DELETE", token });
+    } catch {
+      // 同步失败仅跳过
+    }
   }
 }

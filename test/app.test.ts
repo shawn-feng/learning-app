@@ -98,7 +98,7 @@ describe("Electron app modules", () => {
     expect(ok).toBe(true);
     expect(bad).toBe(false);
 
-    const list = childAuth.listChildren();
+    const list = await childAuth.listChildren();
     expect(list.some((c) => c.childId === createdChildId)).toBe(true);
 
     // Create pi session for this child

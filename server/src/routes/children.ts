@@ -29,9 +29,11 @@ function authParent(req: { headers: Record<string, string | string[] | undefined
 export function registerChildrenRoutes(app: FastifyInstance, deps: ChildrenDeps): void {
   app.post("/api/v1/children", async (req, reply) => {
     const parentId = authParent(req, deps.config.jwtSecret);
-    const { name } = (req.body ?? {}) as { name?: string };
+    // id 可选：客户端可传本地生成的 childId（多设备共享同一 id，避免两端对不上）；
+    // 不传/非法时服务端生成。
+    const { name, id: reqId } = (req.body ?? {}) as { name?: string; id?: string };
     if (!name?.trim()) return reply.code(400).send({ error: "name 必填" });
-    const id = crypto.randomUUID();
+    const id = reqId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reqId) ? reqId : crypto.randomUUID();
     const now = new Date().toISOString();
     deps.db
       .prepare("INSERT INTO children (id, parent_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")

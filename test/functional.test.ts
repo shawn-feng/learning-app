@@ -71,7 +71,7 @@ describe("需求 §三 家长管理孩子", () => {
   });
 
   it("孩子列表包含所有已添加孩子的完整字段", async () => {
-    const list = childAuth.listChildren();
+    const list = await childAuth.listChildren();
     expect(list.length).toBeGreaterThanOrEqual(1);
     for (const c of list) {
       expect(c.childId).toBeTruthy();

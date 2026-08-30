@@ -337,7 +337,7 @@ async function runBackupIfDue(state: TaskState, now: Date): Promise<void> {
 export function startScheduler(): void {
   cron.schedule("* * * * *", async () => {
     const state = loadTaskState();
-    const children = listChildren();
+    const children = await listChildren();
     const now = new Date();
 
     // 设备级：本地定时备份（ISSUE-041 层 A）
@@ -438,7 +438,7 @@ export function startScheduler(): void {
 // 启动时补跑：仅对已开启对应任务且到期的孩子执行（默认关闭，因此默认不补跑）。
 export async function runCatchUp(): Promise<void> {
   const state = loadTaskState();
-  const children = listChildren();
+  const children = await listChildren();
   const now = new Date();
   const today = now.toDateString();
 

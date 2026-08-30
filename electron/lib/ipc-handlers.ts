@@ -128,7 +128,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         if (cloud !== null) {
           maxChildren = cloud.max_children;
         }
-        const children = listChildren();
+        const children = await listChildren();
         if (children.length >= maxChildren) {
           return { success: false, error: "已达孩子数量上限" };
         }
@@ -141,7 +141,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("child:list", async () => {
-    return listChildren();
+    return await listChildren();
   });
 
   ipcMain.handle("child:select", async (_e, childId: string) => {
@@ -156,7 +156,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("child:delete", async (_e, childId: string) => {
-    deleteChild(childId);
+    await deleteChild(childId);
     return { success: true };
   });
 
@@ -538,7 +538,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("scheduler:config:get", async () => {
     try {
-      const children = listChildren();
+      const children = await listChildren();
       const configs: Record<string, unknown> = {};
       for (const child of children) {
         configs[child.childId] = getChildSchedulerConfig(child.childId);
