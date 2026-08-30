@@ -789,11 +789,15 @@ export default function Learn({ child, onExit }: Props) {
           )}
           <div
             className="learn-chat"
-            style={{
-              width: chat.collapsed ? 44 : chat.width,
-              minWidth: chat.collapsed ? 44 : undefined,
-              flex: chat.collapsed ? "0 0 auto" : "0 0 auto",
-            }}
+            style={
+              // ISSUE-008：资料区折叠时聊天区占满剩余空间（flex:1）；展开时保持可拖拽宽度。
+              // 聊天面板自身折叠（chat.collapsed）优先：任何情况下都显示 44px 窄条。
+              chat.collapsed
+                ? { width: 44, minWidth: 44, flex: "0 0 auto" }
+                : view === "materials" && materialsCollapsed
+                  ? { flex: "1 1 auto", width: "auto", minWidth: 0 }
+                  : { width: chat.width, minWidth: undefined, flex: "0 0 auto" }
+            }
           >
             {chat.collapsed ? (
               <div
