@@ -63,7 +63,9 @@ function mergeJsonFile(p: string, value: unknown): void {
 }
 
 /**
- * 拉取一次配置：revision 未变 → 不动作；变化 → 合并写回本地文件。
+ * 拉取一次配置：revision 未变且本地 auth.json 已存在 → 不动作；否则合并写回本地文件。
+ * （auth.json 缺失也强制拉：家长 key 随账号上云后，新设备/新家长目录首次登录要能拿到 key，
+ * 不能只依赖 revision 变化——本地 revision 可能已与 server 一致但 auth 文件还没落盘。）
  * 网络/未登录失败静默（下次轮询重试），返回 changed 供调用方判断。
  */
 export async function syncOnce(): Promise<{ changed: boolean }> {
@@ -72,7 +74,8 @@ export async function syncOnce(): Promise<{ changed: boolean }> {
   try {
     const rev = await serverFetch<{ revision: number }>("/config/revision", { token });
     const local = readLocalRevision();
-    if (rev.revision === local) return { changed: false };
+    const authMissing = !fs.existsSync(getAuthPath());
+    if (rev.revision === local && !authMissing) return { changed: false };
     const full = await serverFetch<{ revision: number; config: Record<string, unknown> }>("/config", {
       token,
     });
