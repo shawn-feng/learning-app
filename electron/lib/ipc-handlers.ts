@@ -899,26 +899,32 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         return { success: false, error: friendly };
       }
 
-      // Extract last assistant text and send as direct reply
-      let replyText = "";
-      for (let i = messages.length - 1; i >= 0; i--) {
+      // ISSUE-016：一次 prompt 内 agent 可能产生**多条 assistant 消息**（工具调用轮中间的
+      // 文本 + 最终回复）。原实现只提取最后一条 → 中间文本实时丢失（jsonl 已写入，历史
+      // 恢复才显示两条）。改为按消息逐条回发：第一条替换前端工作气泡、后续追加新气泡，
+      // 与历史恢复的呈现一致（同一轮回复的多段内容各自成气泡）。
+      const replyTexts: string[] = [];
+      for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
         const m = messages[i];
         if (m.role === "assistant") {
+          let t = "";
           for (const c of (m.content || [])) {
-            if (c.type === "text") replyText = c.text + replyText;
+            if (c.type === "text") t += c.text;
           }
-          if (replyText) break;
+          if (t.trim()) replyTexts.push(t);
         }
       }
-      if (replyText) {
-        _e.sender.send("pi:reply", { childId, text: replyText });
+      if (replyTexts.length > 0) {
+        for (const t of replyTexts) {
+          _e.sender.send("pi:reply", { childId, text: t });
+        }
       } else {
         // 没有可展示的文本回复（异常兜底，正常应有 text）
         _e.sender.send("pi:reply_error", { childId, error: "没有收到回复，请重试" });
       }
       _e.sender.send("pi:reply_end", { childId });
       // ISSUE-010：正常轮记账（真实 input/output + 已有/新增估算）
-      logRound({ session, beforeCount, channel: "child", childId, ok: true, replyLength: replyText.length });
+      logRound({ session, beforeCount, channel: "child", childId, ok: true, replyLength: replyTexts.join("").length });
 
       return { success: true };
     } catch (err) {
@@ -962,27 +968,30 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         return { success: false, error: friendly };
       }
 
-      // 提取最后一条 assistant 文本，作为最终回复回发（与流式 delta 同源，前端替换式展示，不重复）
-      let replyText = "";
+      // ISSUE-016：与孩子分支一致——本轮新增的每条 assistant 消息逐条回发（多条成多个气泡）
+      const replyTexts: string[] = [];
       const messages: any[] = (session as any).messages || [];
-      for (let i = messages.length - 1; i >= 0; i--) {
+      for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
         const m = messages[i];
         if (m.role === "assistant") {
+          let t = "";
           for (const c of m.content || []) {
-            if (c.type === "text") replyText = c.text + replyText;
+            if (c.type === "text") t += c.text;
           }
-          if (replyText) break;
+          if (t.trim()) replyTexts.push(t);
         }
       }
-      if (replyText) {
-        _e.sender.send("pi:reply", { childId: "parent", text: replyText });
+      if (replyTexts.length > 0) {
+        for (const t of replyTexts) {
+          _e.sender.send("pi:reply", { childId: "parent", text: t });
+        }
       } else {
         // 没有可展示的文本回复（异常兜底，正常应有 text）
         _e.sender.send("pi:reply_error", { childId: "parent", error: "没有收到回复，请重试" });
       }
       _e.sender.send("pi:reply_end", { childId: "parent" });
       // ISSUE-010：正常轮记账
-      logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyText.length });
+      logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyTexts.join("").length });
       return { success: true };
     } catch (err) {
       // abort 中断导致 prompt reject：不当作错误回发
@@ -1029,24 +1038,28 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         return { success: false, error: friendly };
       }
 
-      let replyText = "";
+      // ISSUE-016：与孩子分支一致——本轮新增的每条 assistant 消息逐条回发（多条成多个气泡）
+      const replyTexts: string[] = [];
       const messages: any[] = (session as any).messages || [];
-      for (let i = messages.length - 1; i >= 0; i--) {
+      for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
         const m = messages[i];
         if (m.role === "assistant") {
+          let t = "";
           for (const c of m.content || []) {
-            if (c.type === "text") replyText = c.text + replyText;
+            if (c.type === "text") t += c.text;
           }
-          if (replyText) break;
+          if (t.trim()) replyTexts.push(t);
         }
       }
-      if (replyText) {
-        _e.sender.send("pi:reply", { childId: "parent-content", text: replyText });
+      if (replyTexts.length > 0) {
+        for (const t of replyTexts) {
+          _e.sender.send("pi:reply", { childId: "parent-content", text: t });
+        }
       } else {
         _e.sender.send("pi:reply_error", { childId: "parent-content", error: "没有收到回复，请重试" });
       }
       _e.sender.send("pi:reply_end", { childId: "parent-content" });
-      logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyText.length });
+      logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyTexts.join("").length });
       return { success: true };
     } catch (err) {
       console.error(`[pi:prompt_parent_content] error:`, (err as Error).message);
