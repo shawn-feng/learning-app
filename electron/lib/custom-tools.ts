@@ -82,6 +82,9 @@ export const displayContentTool = defineTool({
     //   `outputs/<name>.html`（孩子本地，工具/游戏类产物）
     let raw: string;
     let titleBase: string;
+    // ISSUE-021：家长共享资料的课程真实名称（按 topic + html_path 匹配 courses 查出；
+    // agent 显式 title 优先，查不到时回退文件名）
+    let courseTitle: string | undefined;
     // 匹配父库共享目录。matM = 旧格式带 materials/ 前缀（优先）；matN = 新格式无前缀（排除 outputs/ 本地产物）
     const matM = /^materials\/([^/]+)\/(.+\.(?:html|htm))$/i.exec(params.path);
     const matN = matM ? null : /^(?!outputs\/)([^/]+)\/(.+\.(?:html|htm))$/i.exec(params.path);
@@ -114,6 +117,30 @@ export const displayContentTool = defineTool({
       }
       raw = rewriteMaterialHtmlForRender(finalRaw, DEFAULT_PARENT_ID, path.posix.dirname(finalRel));
       titleBase = rest.replace(/\.[^.]+$/, "").split("/").pop() || rest;
+      // ISSUE-021：课名下传——按归一化后的 `topic/xxx.html` 匹配 courses.html_path，
+      // 取课程真实名称（如「论语学而篇第一章」）作默认标题；优先孩子库快照，未命中再查家长库。
+      // 匹配失败静默（不影响展示，列表仍显示文件名）。
+      try {
+        const childId = childIdFromCwd(ctx.cwd);
+        const normPath = (p: string) =>
+          p.replace(/\\/g, "/").replace(/^materials\//, "").replace(/^\.?\//, "").replace(/\/+/g, "/").trim();
+        const want = normPath(rel);
+        const kbCourses = await dbQuery<Array<Record<string, unknown>>>("kb.courses.list", {
+          child_id: childId,
+          topic,
+        }).catch(() => []);
+        const hit = kbCourses.find((c) => normPath(String(c.html_path ?? "")) === want);
+        if (hit && hit.title) courseTitle = String(hit.title);
+        if (!courseTitle) {
+          const pcCourses = await dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", {
+            topic,
+          }).catch(() => []);
+          const pcHit = pcCourses.find((c) => normPath(String(c.html_path ?? "")) === want);
+          if (pcHit && pcHit.title) courseTitle = String(pcHit.title);
+        }
+      } catch {
+        /* 课名查询失败不阻断展示 */
+      }
     } else {
       const resolved = path.resolve(ctx.cwd, params.path);
       // 路径守卫：只允许访问当前学习目录（cwd）内的文件
@@ -130,7 +157,7 @@ export const displayContentTool = defineTool({
       raw = fs.readFileSync(resolved, "utf-8");
       titleBase = path.basename(resolved).replace(/\.[^.]+$/, "");
     }
-    const title = params.title || titleBase;
+    const title = params.title || courseTitle || titleBase;
 
     return {
       content: [

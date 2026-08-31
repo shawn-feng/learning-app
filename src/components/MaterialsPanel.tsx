@@ -59,6 +59,13 @@ interface LookupState {
 /** 同一交互序列（mouseup 选中 → 随后 click）内 click 不应关闭浮层的时间窗 */
 const LOOKUP_CLICK_GRACE_MS = 400;
 
+/** 简单字符串 hash（用于 iframe key：内容变化即重建，含同长度不同内容的重发场景） */
+function hashStr(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return String(h);
+}
+
 /**
  * HTML 内容通过沙盒 iframe 渲染。
  * sandbox="allow-scripts" 让 JS 可以运行（番茄钟、点击交互等），
@@ -80,10 +87,10 @@ function HtmlFrame({
 }) {
   // key 强制 iframe 重建：React/Chromium 在 srcDoc 字符串变化时更新属性但不保证重载（已知
   // Electron 沙箱 iframe 偶发"内容不渲染/白屏"，必现于 display_content 去重后再展示同一份资料
-  // 的场景）。用 html 长度做轻量 key，内容真有变化才重建（避免每次 set render 都销毁重建）。
+  // 的场景）。key = 长度 + 内容 hash（ISSUE-021：同 path 重发但内容长度相同时也能识别变化）。
   return (
     <iframe
-      key={html.length}
+      key={`${html.length}:${hashStr(html)}`}
       ref={iframeRef}
       className="html-frame"
       sandbox="allow-scripts allow-modals allow-forms"

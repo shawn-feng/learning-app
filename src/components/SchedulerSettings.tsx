@@ -6,6 +6,9 @@ interface SchedulerChildConfig {
   recording: { enabled: boolean; times: string[]; onNewSession: boolean };
   autoNewSession: { enabled: boolean; hour: number; minute: number };
   archiveLimit: number;
+  // ISSUE-019：课程时间段（上课/下课提醒）+ 提醒方式
+  classTimes: { start: string; end: string; label?: string }[];
+  classAlertMode: "both" | "chime" | "voice";
 }
 
 interface ChildItem {
@@ -36,6 +39,8 @@ function defaultConfig(): SchedulerChildConfig {
     recording: { enabled: false, times: ["21:00"], onNewSession: false },
     autoNewSession: { enabled: false, hour: 21, minute: 0 },
     archiveLimit: 20,
+    classTimes: [],
+    classAlertMode: "both",
   };
 }
 
@@ -550,6 +555,131 @@ export default function SchedulerSettings() {
                       个（每次会话重置后只保留最近 N 个旧会话文件；设为 0 则不保留历史归档）
                     </span>
                   </span>
+                </div>
+
+                {/* ISSUE-019：课程时间段（上课/下课提醒，孩子端顶部横幅 + 铃声/语音） */}
+                <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>
+                    ⏰ 课程时间段（上课 / 下课提醒）
+                  </div>
+                  <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
+                    到上课 / 下课时间，孩子界面顶部三分之一区域会弹出醒目提示，并伴随铃声 / 语音播报。可设置多段（如 08:00-09:30 语文、10:00-11:00 数学）。
+                  </div>
+                  {(cfg.classTimes || []).map((ct, idx) => (
+                    <div
+                      key={idx}
+                      style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, marginLeft: 26, flexWrap: "wrap" }}
+                    >                      <input
+                        type="time"
+                        value={ct.start}
+                        onChange={(e) =>
+                          updateConfig(child.childId, (p) => ({
+                            ...p,
+                            classTimes: (p.classTimes || []).map((v, i) =>
+                              i === idx ? { ...v, start: e.target.value } : v
+                            ),
+                          }))
+                        }
+                        style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                      />
+                      <span style={{ fontSize: 13, color: "#888" }}>至</span>
+                      <input
+                        type="time"
+                        value={ct.end}
+                        onChange={(e) =>
+                          updateConfig(child.childId, (p) => ({
+                            ...p,
+                            classTimes: (p.classTimes || []).map((v, i) =>
+                              i === idx ? { ...v, end: e.target.value } : v
+                            ),
+                          }))
+                        }
+                        style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                      />
+                      <input
+                        type="text"
+                        placeholder="课程名（可选）"
+                        value={ct.label || ""}
+                        onChange={(e) =>
+                          updateConfig(child.childId, (p) => ({
+                            ...p,
+                            classTimes: (p.classTimes || []).map((v, i) =>
+                              i === idx ? { ...v, label: e.target.value } : v
+                            ),
+                          }))
+                        }
+                        style={{ width: 110, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                      />
+                      <IconButton
+                        icon={Trash2}
+                        title="删除该时间段"
+                        danger
+                        onClick={() =>
+                          updateConfig(child.childId, (p) => ({
+                            ...p,
+                            classTimes: (p.classTimes || []).filter((_, i) => i !== idx),
+                          }))
+                        }
+                        style={{
+                          padding: "4px 10px",
+                          border: "1px solid #ddd",
+                          borderRadius: 6,
+                          background: "white",
+                          fontSize: 13,
+                          cursor: "pointer",
+                        }}
+                      />
+                    </div>
+                  ))}
+                  {(cfg.classTimes || []).length === 0 && (
+                    <div style={{ marginLeft: 26, marginBottom: 8, fontSize: 12, color: "#aaa" }}>
+                      尚未设置课程时间段，点下方按钮添加
+                    </div>
+                  )}
+                  <div style={{ marginLeft: 26, marginBottom: 8 }}>
+                    <IconButton
+                      icon={Plus}
+                      title="添加时间段"
+                      onClick={() =>
+                        updateConfig(child.childId, (p) => ({
+                          ...p,
+                          classTimes: [...(p.classTimes || []), { start: "08:00", end: "09:00", label: "" }],
+                        }))
+                      }
+                      style={{
+                        padding: "4px 10px",
+                        border: "1px solid #ddd",
+                        borderRadius: 6,
+                        background: "white",
+                        fontSize: 13,
+                        cursor: "pointer",
+                      }}
+                    />
+                  </div>
+                  {(cfg.classTimes || []).length > 0 && (
+                    <div style={{ marginLeft: 26, fontSize: 13, color: "#666", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                      <span>提醒方式：</span>
+                      {(
+                        [
+                          { value: "both", label: "铃声 + 语音播报" },
+                          { value: "chime", label: "仅铃声" },
+                          { value: "voice", label: "仅语音播报" },
+                        ] as const
+                      ).map((opt) => (
+                        <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                          <input
+                            type="radio"
+                            name={`class-alert-${child.childId}`}
+                            checked={cfg.classAlertMode === opt.value}
+                            onChange={() =>
+                              updateConfig(child.childId, (p) => ({ ...p, classAlertMode: opt.value }))
+                            }
+                          />
+                          {opt.label}
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {status[child.childId] && (

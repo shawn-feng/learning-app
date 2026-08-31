@@ -17,6 +17,8 @@ export interface TaskState {
       "auto-new-session": { lastRun: string };
       // ISSUE-041 层 C：家长→孩子事件轮询
       "event-poll": { lastRun: string };
+      // ISSUE-019：课程时间段提醒（上课/下课；lastKey 防同日同时间点重复触发）
+      "class-reminder": { lastKey: string };
     }
   >;
   // 顶层任务：本地定时备份（ISSUE-041 层 A）
@@ -33,6 +35,21 @@ export interface SchedulerChildConfig {
   // 历史会话归档保留上限：每次会话重置后只保留最近 N 个旧会话文件，更早的清理，避免无限膨胀。
   // 家长可在「定时任务」设置页配置；设置为 0 表示不保留历史归档（仅当前会话）。
   archiveLimit: number;
+  // ISSUE-019：课程时间段（可多段，每段 上课时间 start + 下课时间 end + 可选课程名 label）。
+  // 到上课/下课时间点，孩子端 app 顶部 1/3 区域弹出提示 + 铃声/语音播报。
+  classTimes: ClassTime[];
+  // ISSUE-019：课程提醒方式：both=铃声+语音播报 / chime=仅铃声 / voice=仅语音播报
+  classAlertMode: "both" | "chime" | "voice";
+}
+
+/** ISSUE-019：一段课程时间段（HH:mm，本地时区）。 */
+export interface ClassTime {
+  /** 上课时间 HH:mm */
+  start: string;
+  /** 下课时间 HH:mm */
+  end: string;
+  /** 课程名/标签（可选，如「语文课」；提醒时展示） */
+  label?: string;
 }
 
 interface SchedulerConfig {
@@ -88,6 +105,8 @@ export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
   recording: { enabled: false, times: ["21:00"], onNewSession: false },
   autoNewSession: { enabled: false, hour: 21, minute: 0 },
   archiveLimit: 20,
+  classTimes: [],
+  classAlertMode: "both",
 };
 
 // 旧配置（intervalHours 间隔模式）已废弃：读配置时把缺省 times 补成默认时间点。
@@ -122,6 +141,7 @@ function defaultChildTaskState() {
     recording: { lastRun: "" },
     "auto-new-session": { lastRun: "" },
     "event-poll": { lastRun: "" },
+    "class-reminder": { lastKey: "" },
   };
 }
 
@@ -138,6 +158,7 @@ export function getChildState(state: TaskState, childId: string) {
       recording: { ...base.recording, ...existing.recording },
       "auto-new-session": { ...base["auto-new-session"], ...existing["auto-new-session"] },
       "event-poll": { ...base["event-poll"], ...existing["event-poll"] },
+      "class-reminder": { ...base["class-reminder"], ...existing["class-reminder"] },
     };
   }
   return state.children[childId];
@@ -180,6 +201,19 @@ export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {
     },
     autoNewSession: { ...DEFAULT_CHILD_CONFIG.autoNewSession, ...(c.autoNewSession || {}) },
     archiveLimit: c.archiveLimit ?? DEFAULT_CHILD_CONFIG.archiveLimit,
+    classTimes: Array.isArray(c.classTimes)
+      ? c.classTimes
+          .map((t) => ({
+            start: String(t?.start ?? ""),
+            end: String(t?.end ?? ""),
+            label: t?.label ? String(t.label) : undefined,
+          }))
+          .filter((t) => t.start && t.end)
+      : [],
+    classAlertMode:
+      c.classAlertMode === "chime" || c.classAlertMode === "voice"
+        ? c.classAlertMode
+        : DEFAULT_CHILD_CONFIG.classAlertMode,
   };
 }
 
@@ -202,6 +236,19 @@ export function setChildSchedulerConfig(
       typeof childConfig.archiveLimit === "number"
         ? childConfig.archiveLimit
         : DEFAULT_CHILD_CONFIG.archiveLimit,
+    classTimes: Array.isArray(childConfig.classTimes)
+      ? childConfig.classTimes
+          .map((t) => ({
+            start: String(t?.start ?? ""),
+            end: String(t?.end ?? ""),
+            label: t?.label ? String(t.label) : undefined,
+          }))
+          .filter((t) => t.start && t.end)
+      : [],
+    classAlertMode:
+      childConfig.classAlertMode === "chime" || childConfig.classAlertMode === "voice"
+        ? childConfig.classAlertMode
+        : DEFAULT_CHILD_CONFIG.classAlertMode,
   };
   saveSchedulerConfig(config);
   return config.children[childId];
@@ -308,6 +355,21 @@ function broadcastSessionReset(childId: string): void {
   }
 }
 
+// ISSUE-019：课程时间段提醒（上课/下课）广播——孩子端 Learn 页收到后显示顶部横幅 + 铃声/语音。
+// mode 透传家长配置的提醒方式（both=铃声+语音 / chime=仅铃声 / voice=仅语音），由渲染端决定播报内容。
+function broadcastClassReminder(
+  childId: string,
+  type: "start" | "end",
+  label?: string,
+  mode: "both" | "chime" | "voice" = "both"
+): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) {
+      w.webContents.send("class:reminder", { childId, type, label: label || "", mode });
+    }
+  }
+}
+
 // 本地定时备份：设备级，按 backup.hour:minute 每天跑一次（需已选定 destDir）。
 // 动态 import backup.ts，避免 electron-vite 把 zip 逻辑打进无关 chunk 时互相耦合。
 async function runBackupIfDue(state: TaskState, now: Date): Promise<void> {
@@ -380,6 +442,28 @@ export function startScheduler(): void {
           } catch (e) {
             console.error(`Auto-new-session failed for child ${child.childId}:`, e);
           }
+        }
+      }
+
+      // ISSUE-019：课程时间段提醒（上课/下课）——到点广播给孩子端（前端显示顶部 1/3 横幅
+      // + 铃声/语音播报）。start/end 各自每天只触发一次（lastKey 防重；key 含日期，跨天自动失效）。
+      if (cc.classTimes && cc.classTimes.length > 0) {
+        const nowMin = hhmm(now);
+        for (const ct of cc.classTimes) {
+          if (!ct.start || !ct.end) continue;
+          const fire = (type: "start" | "end") => {
+            const key = `${now.toDateString()}:${type}:${type === "start" ? ct.start : ct.end}:${ct.label || ""}`;
+            if (cs["class-reminder"].lastKey === key) return;
+            cs["class-reminder"].lastKey = key;
+            try {
+              broadcastClassReminder(child.childId, type, ct.label, cc.classAlertMode);
+              saveTaskState(state);
+            } catch (e) {
+              console.error(`Class reminder failed for child ${child.childId}:`, e);
+            }
+          };
+          if (nowMin === ct.start) fire("start");
+          if (nowMin === ct.end) fire("end");
         }
       }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Bot, Gauge, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
@@ -22,6 +22,15 @@ const RATE_OPTIONS = [
   { label: "正常", value: "+0%", display: "1.0x" },
   { label: "快", value: "+30%", display: "1.3x" },
 ];
+
+// ISSUE-023：孩子聊天字号档位（默认 30px = ISSUE-009 放大一倍档；16~64px 均可，离散档位低龄友好）
+const FONT_OPTIONS = [
+  { label: "小", px: 22, display: "22" },
+  { label: "中", px: 30, display: "30" },
+  { label: "大", px: 38, display: "38" },
+  { label: "特大", px: 46, display: "46" },
+];
+const DEFAULT_FONT_PX = 30;
 
 // 左侧展示页配置（可扩展：新增展示页只需在此追加一项 + 对应渲染组件）
 type PanelViewKey = "materials" | "progress";
@@ -88,12 +97,165 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+// ISSUE-019：课程提醒铃声——Web Audio 合成「叮—咚」双音（无需捆绑音频资源文件，打包无忧）
+function playChime() {
+  try {
+    const Ctor: typeof AudioContext =
+      window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!Ctor) return;
+    const ctx = new Ctor();
+    const now = ctx.currentTime;
+    const notes = [
+      { f: 880, t: 0, d: 0.35 }, // A5 叮
+      { f: 1174.66, t: 0.28, d: 0.5 }, // D6 咚
+    ];
+    for (const n of notes) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = n.f;
+      gain.gain.setValueAtTime(0.0001, now + n.t);
+      gain.gain.exponentialRampToValueAtTime(0.6, now + n.t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + n.t + n.d);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + n.t);
+      osc.stop(now + n.t + n.d + 0.05);
+    }
+    window.setTimeout(() => {
+      ctx.close().catch(() => {});
+    }, 1500);
+  } catch {
+    /* 无音频设备 / 被策略拒绝时静默（横幅仍会显示） */
+  }
+}
+
+// ISSUE-019：课程提醒语音播报——与资料/聊天同一条 edge-tts 链路（音色一致）。
+// 横幅常驻期间会循环播报（15s 间隔），用锁防上一轮未播完时下一轮重复合成/重叠。
+let reminderSpeaking = false;
+async function speakReminder(text: string): Promise<void> {
+  if (reminderSpeaking) return;
+  reminderSpeaking = true;
+  const release = () => {
+    reminderSpeaking = false;
+  };
+  try {
+    const r = await window.api.voiceTts(text, {});
+    if (!r.success || !r.audio) {
+      release();
+      return;
+    }
+    const blob = new Blob([r.audio], { type: "audio/mpeg" });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      release();
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      release();
+    };
+    await audio.play();
+  } catch {
+    release();
+  }
+}
+
+/** ISSUE-019：按提醒方式播报一次（铃声 + 语音），横幅首次与循环共用 */
+function playReminderAlert(mode: "both" | "chime" | "voice", type: "start" | "end", label: string): void {
+  if (mode === "both" || mode === "chime") playChime();
+  if (mode === "both" || mode === "voice") {
+    const text =
+      type === "start"
+        ? label
+          ? `${label}上课时间到啦，请开始学习吧！`
+          : "上课时间到啦，请开始学习吧！"
+        : label
+          ? `${label}下课啦，休息一下吧！`
+          : "下课啦，休息一下吧！";
+    void speakReminder(text);
+  }
+}
+
+/** ISSUE-019：孩子左侧边栏「今日课程」——实时时钟 + 当天课程时间段（上课-下课）。
+ *  独立组件：每秒时钟只重渲染自身，避免整个 Learn 每帧 diff；
+ *  配置经 scheduler:config:get 取当前孩子的 classTimes（家长在定时任务里配置）。 */
+function SidebarClassSchedule({
+  childId,
+  collapsed,
+  onExpand,
+}: {
+  childId: string;
+  collapsed: boolean;
+  onExpand: () => void;
+}) {
+  const [classTimes, setClassTimes] = useState<{ start: string; end: string; label?: string }[]>([]);
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    let alive = true;
+    window.api
+      .schedulerConfigGet()
+      .then((res: any) => {
+        if (!alive || !res?.success) return;
+        const cfg = res.configs?.[childId];
+        setClassTimes(Array.isArray(cfg?.classTimes) ? cfg.classTimes : []);
+      })
+      .catch(() => {
+        /* 取配置失败保持空 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [childId]);
+
+  // 当前时间：每秒刷新（独立组件内，不会拖累父组件）
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  if (collapsed) {
+    return (
+      <button className="sidebar-icon-btn" title="今日课程安排" onClick={onExpand}>
+        <CalendarClock size={20} />
+      </button>
+    );
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const clock = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  return (
+    <>
+      <div className="sidebar-section-label">今日课程</div>
+      <div className="sidebar-clock">{clock}</div>
+      {classTimes.length === 0 ? (
+        <div className="sidebar-class-empty">今天没有课程安排</div>
+      ) : (
+        classTimes.map((ct, i) => (
+          <div className="sidebar-class-row" key={i}>
+            <span className="sidebar-class-time">
+              {ct.start} - {ct.end}
+            </span>
+            {ct.label && <span className="sidebar-class-label">{ct.label}</span>}
+          </div>
+        ))
+      )}
+    </>
+  );
+}
+
 export default function Learn({ child, onExit }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const childIdRef = useRef(child.childId);
+  // ISSUE-019：课程时间段提醒横幅（上课/下课；顶部 1/3 区域，常驻到点击关闭；含提醒方式）
+  const [classReminder, setClassReminder] = useState<{
+    type: "start" | "end";
+    label: string;
+    mode: "both" | "chime" | "voice";
+  } | null>(null);
   // 输入区上方一次性提示（视觉模型切换等）
   const [visionNotice, setVisionNotice] = useState("");
   // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡）
@@ -105,18 +267,44 @@ export default function Learn({ child, onExit }: Props) {
 
   // 左侧展示页切换
   const [view, setView] = useState<PanelViewKey>("materials");
+  // ISSUE-020：浮层关闭用 ~180ms 延时（鼠标从按钮穿越缝隙到浮层有容错时间），按钮也可点击切换
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const viewSwitcherRef = useRef<HTMLDivElement | null>(null);
+  const viewMenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentView = PANEL_VIEWS.find((v) => v.key === view) || PANEL_VIEWS[0];
 
   // Sidebar collapse
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  // ISSUE-008：学习资料区可折叠（收起后聊天区占更多空间）；display_content 时自动展开
-  const [materialsCollapsed, setMaterialsCollapsed] = useState(false);
+  // ISSUE-008/016：中间展示区可折叠（收起后聊天区占更多空间），学习资料/学习进度等所有展示页通用；
+  // display_content 时自动展开（见下方 materials 监听 effect）
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
   // 右侧聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化，与家长端互不干扰）
   const chat = useChatPanel("child", 440);
 
   // TTS 语速（默认正常 1.0x）
   const [rate, setRate] = useState("+0%");
+
+  // ISSUE-023：孩子聊天字号（默认 30px；按 childId 持久化，跨刷新保留）
+  const [fontSize, setFontSize] = useState(DEFAULT_FONT_PX);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`chat:${child.childId}:fontSize`);
+      if (saved) {
+        const n = Number(saved);
+        if (Number.isFinite(n) && n >= 16 && n <= 64) setFontSize(n);
+      }
+    } catch {
+      /* localStorage 不可用则保持默认 */
+    }
+  }, [child.childId]);
+  const handleFontSize = (px: number) => {
+    setFontSize(px);
+    try {
+      localStorage.setItem(`chat:${child.childId}:fontSize`, String(px));
+    } catch {
+      /* 持久化失败不影响本次生效 */
+    }
+  };
 
   // AI Agent settings
   const [showAiSettings, setShowAiSettings] = useState(false);
@@ -137,6 +325,24 @@ export default function Learn({ child, onExit }: Props) {
     setAiEmoji(child.aiEmoji || "🤖");
     setAiPersonality(child.aiPersonality);
   }, [child.aiName, child.aiEmoji, child.aiPersonality]);
+
+  // ISSUE-020：点击浮层外部关闭「切换展示页」菜单（真下拉语义，低龄孩子更易选中）
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (viewSwitcherRef.current && !viewSwitcherRef.current.contains(e.target as Node)) {
+        setViewMenuOpen(false);
+      }
+    };
+    document.addEventListener("click", onDocClick);
+    return () => document.removeEventListener("click", onDocClick);
+  }, []);
+
+  // ISSUE-020：卸载时清理浮层关闭延时定时器
+  useEffect(() => {
+    return () => {
+      if (viewMenuTimerRef.current) clearTimeout(viewMenuTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     childIdRef.current = child.childId;
@@ -208,8 +414,8 @@ export default function Learn({ child, onExit }: Props) {
   // 自动选中末尾（最新）一条；去重时 updater 返回原引用、effect 不触发，用户返回列表也不被打断。
   useEffect(() => {
     if (materials.length === 0) return;
-    // ISSUE-008：AI 展示新材料（display_content）时自动展开资料区（即便当前折叠）
-    setMaterialsCollapsed(false);
+    // ISSUE-008/016：AI 展示新材料（display_content）时自动展开展示区（即便当前折叠）
+    setPanelCollapsed(false);
     setSelectedMaterialId(materials[materials.length - 1].id);
   }, [materials]);
 
@@ -221,10 +427,20 @@ export default function Learn({ child, onExit }: Props) {
       if (panel) {
         const filePath = panel.filePath;
         setMaterials((prev) => {
-          // 去重：同一份资料（同一 filePath）已在面板里，则不再重复添加，
-          // 避免「每步都重发学习资料」导致面板堆积重复。
+          const lim = materialsLimitRef.current;
+          // ISSUE-021：同 path 重发 → 就地替换内容/标题/时间并**移到列表末尾（最新位置）**，
+          // 返回新数组引用 → 下方 materials 监听 effect 触发 → 自动重新选中该项。
+          // ⚠️ 绝不能用「完全重复就不显示」：即使内容 100% 相同，最近一次 display_content
+          // 的那份也必须重新选中并显示在最新位置（用户 2026-08-31 明确约束）。
+          // 去重仅用于避免同一轮内多份同 path 堆积成 N 条。
           if (filePath && prev.some((m) => m.filePath === filePath)) {
-            return prev;
+            const updated = prev.map((m) =>
+              m.filePath === filePath
+                ? { ...m, content: panel.content, title: panel.title || m.title, time: nowLabel() }
+                : m
+            );
+            const moved = updated.filter((m) => m.filePath !== filePath).concat(updated.filter((m) => m.filePath === filePath));
+            return lim > 0 ? moved.slice(-lim) : moved;
           }
           const id = nextId();
           const next = [
@@ -238,7 +454,6 @@ export default function Learn({ child, onExit }: Props) {
               filePath,
             },
           ];
-          const lim = materialsLimitRef.current;
           return lim > 0 ? next.slice(-lim) : next;
         });
         // 自动打开由上方 materials 监听 effect 统一处理（新条目追加后自动选中）
@@ -328,6 +543,29 @@ export default function Learn({ child, onExit }: Props) {
     setBusy(false);
   }, []);
 
+  // ISSUE-019：课程时间段提醒（家长在定时任务里按孩子配置；到点主进程广播）
+  const handleClassReminder = useCallback(
+    (data: { childId: string; type: "start" | "end"; label: string; mode?: "both" | "chime" | "voice" }) => {
+      if (data.childId !== childIdRef.current) return;
+      const mode = data.mode || "both";
+      setClassReminder({ type: data.type, label: data.label, mode });
+      // 首次立即播报（铃声/语音）；横幅常驻期间由下方 effect 每 15s 循环重复
+      playReminderAlert(mode, data.type, data.label);
+    },
+    []
+  );
+
+  // ⚠️ 提醒横幅【不自动消失】——一直显示到孩子点击才关闭（用户 2026-08-31 要求；
+  // 横幅内已注明「点击关闭提示」，点击任意处 setClassReminder(null)）
+  // 横幅常驻期间，铃声/语音每 15 秒循环重复播报，直到点击关闭（effect cleanup 停止）
+  useEffect(() => {
+    if (!classReminder) return;
+    const timer = window.setInterval(() => {
+      playReminderAlert(classReminder.mode, classReminder.type, classReminder.label);
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [classReminder]);
+
   // 图片上传时主进程自动切到视觉模型 → 输入区上方提示一次（6 秒后自动消失）
   const handleVisionSwitched = useCallback((data: { childId: string; modelId: string }) => {
     if (data.childId !== childIdRef.current) return;
@@ -366,11 +604,12 @@ export default function Learn({ child, onExit }: Props) {
     window.api.onPiToolEnd(handleToolEnd);
     window.api.onPiSessionReset(handleSessionReset);
     window.api.onPiVisionModelSwitched(handleVisionSwitched);
+    window.api.onClassReminder(handleClassReminder);
     window.api.onPageExec(handlePageExec);
     return () => {
       window.api.piRemoveListeners();
     };
-  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleSessionReset, handleVisionSwitched, handlePageExec]);
+  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec]);
 
   // 向聊天追加一条 AI 消息（命令反馈 / 系统提示用）
   function addAiMessage(text: string) {
@@ -655,13 +894,26 @@ export default function Learn({ child, onExit }: Props) {
           </div>
 
           <div
+            ref={viewSwitcherRef}
             className="view-switcher"
-            onMouseEnter={() => setViewMenuOpen(true)}
-            onMouseLeave={() => setViewMenuOpen(false)}
+            onMouseEnter={() => {
+              // 进入即取消待执行的关闭延时，避免鼠标穿越缝隙时误关
+              if (viewMenuTimerRef.current) {
+                clearTimeout(viewMenuTimerRef.current);
+                viewMenuTimerRef.current = null;
+              }
+              setViewMenuOpen(true);
+            }}
+            onMouseLeave={() => {
+              // ISSUE-020：不直接关闭，延时 ~180ms——鼠标在按钮→浮层间的微小缝隙/慢移时给容错
+              if (viewMenuTimerRef.current) clearTimeout(viewMenuTimerRef.current);
+              viewMenuTimerRef.current = setTimeout(() => setViewMenuOpen(false), 180);
+            }}
           >
             <button
               className={`sidebar-btn view-switcher-btn ${viewMenuOpen ? "open" : ""}`}
               title="切换展示页"
+              onClick={() => setViewMenuOpen((v) => !v)}
             >
               <currentView.icon size={18} className="sidebar-btn-icon" />
               {!sidebarCollapsed && <span className="view-switcher-caret">▾</span>}
@@ -738,6 +990,44 @@ export default function Learn({ child, onExit }: Props) {
             )}
           </div>
 
+          {/* ISSUE-023：聊天字号调节（与「朗读语速」并列；仅孩子聊天 .bubble-md-child 生效，家长端不受影响） */}
+          <div className="sidebar-font">
+            {sidebarCollapsed ? (
+              <button
+                className="sidebar-icon-btn"
+                title={`聊天字号 ${fontSize}px`}
+                onClick={() => setSidebarCollapsed(false)}
+              >
+                <Type size={20} />
+              </button>
+            ) : (
+              <>
+                <div className="sidebar-section-label">聊天字号</div>
+                <div className="rate-grid">
+                  {FONT_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.px}
+                      className={`rate-btn ${fontSize === opt.px ? "active" : ""}`}
+                      onClick={() => handleFontSize(opt.px)}
+                      title={`${opt.label} ${opt.display}px`}
+                    >
+                      {opt.display}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* ISSUE-019：今日课程——实时时钟 + 当天课程时间段（家长在定时任务里配置） */}
+          <div className="sidebar-class-times">
+            <SidebarClassSchedule
+              childId={child.childId}
+              collapsed={sidebarCollapsed}
+              onExpand={() => setSidebarCollapsed(false)}
+            />
+          </div>
+
           <div className="sidebar-menu">
             <button
               className="sidebar-btn"
@@ -772,40 +1062,52 @@ export default function Learn({ child, onExit }: Props) {
         </div>
 
         <div className="learn-body">
-          {view === "materials" ? (
-            // ISSUE-008：资料区可折叠；折叠时显示窄条展开按钮，聊天区占满
-            materialsCollapsed ? (
-              <div
-                className="material-collapsed-bar"
-                title="展开学习资料"
-                onClick={() => setMaterialsCollapsed(false)}
-              >
-                <PanelRightOpen size={18} />
-              </div>
-            ) : (
-              <MaterialsPanel
-                ref={materialsPanelRef}
-                materials={materials}
-                selectedId={selectedMaterialId}
-                onOpen={setSelectedMaterialId}
-                onBack={() => setSelectedMaterialId(null)}
-                onPageEvent={handlePageEvent}
-                onCollapse={() => setMaterialsCollapsed(true)}
-              />
-            )
+          {panelCollapsed ? (
+            // ISSUE-008/016：展示区折叠（任意展示页通用）；折叠时显示窄条展开按钮，聊天区占满
+            <div
+              className="material-collapsed-bar"
+              title="展开展示区"
+              onClick={() => setPanelCollapsed(false)}
+            >
+              <PanelRightOpen size={18} />
+            </div>
+          ) : view === "materials" ? (
+            <MaterialsPanel
+              ref={materialsPanelRef}
+              materials={materials}
+              selectedId={selectedMaterialId}
+              onOpen={setSelectedMaterialId}
+              onBack={() => setSelectedMaterialId(null)}
+              onPageEvent={handlePageEvent}
+              onCollapse={() => setPanelCollapsed(true)}
+            />
           ) : (
-            <LearningDashboard childId={child.childId} />
+            // ISSUE-016：学习进度等其它展示页同样可折叠（悬浮折叠按钮，不侵入组件内部布局）
+            <div className="panel-collapse-host">
+              <button
+                className="panel-collapse-fab"
+                title="收起展示区"
+                onClick={() => setPanelCollapsed(true)}
+              >
+                <PanelRightClose size={16} />
+              </button>
+              <LearningDashboard childId={child.childId} />
+            </div>
           )}
           <div
             className="learn-chat"
             style={
-              // ISSUE-008：资料区折叠时聊天区占满剩余空间（flex:1）；展开时保持可拖拽宽度。
+              // ISSUE-008/016：展示区折叠时聊天区占满剩余空间（flex:1）；展开时保持可拖拽宽度。
               // 聊天面板自身折叠（chat.collapsed）优先：任何情况下都显示 44px 窄条。
-              chat.collapsed
+              // ISSUE-023：孩子聊天字号经 CSS 变量下传（仅本容器内 .bubble-md-child 生效）
+              (chat.collapsed
                 ? { width: 44, minWidth: 44, flex: "0 0 auto" }
-                : view === "materials" && materialsCollapsed
-                  ? { flex: "1 1 auto", width: "auto", minWidth: 0 }
-                  : { width: chat.width, minWidth: undefined, flex: "0 0 auto" }
+                : {
+                    flex: panelCollapsed ? "1 1 auto" : "0 0 auto",
+                    width: panelCollapsed ? "auto" : chat.width,
+                    minWidth: panelCollapsed ? 0 : undefined,
+                    "--child-chat-font": `${fontSize}px`,
+                  }) as React.CSSProperties
             }
           >
             {chat.collapsed ? (
@@ -818,7 +1120,7 @@ export default function Learn({ child, onExit }: Props) {
               </div>
             ) : (
               <>
-                <div className="chat-resize-handle" onMouseDown={chat.startDrag} title="拖动调整聊天宽度" />
+                <div className="chat-resize-handle" onPointerDown={chat.startDrag} title="拖动调整聊天宽度" />
                 <button
                   className="chat-collapse-btn"
                   title="折叠聊天"
@@ -842,6 +1144,24 @@ export default function Learn({ child, onExit }: Props) {
           </div>
         </div>
       </div>
+
+      {/* ISSUE-019：上课/下课提醒横幅——顶部 1/3 区域，固定定位覆盖所有子视图；
+          一直显示直到孩子点击关闭（用户 2026-08-31 要求，不自动消失） */}
+      {classReminder && (
+        <div className="class-reminder-banner" onClick={() => setClassReminder(null)}>
+          <div className="class-reminder-inner">
+            <div className="class-reminder-icon">{classReminder.type === "start" ? "⏰" : "🎉"}</div>
+            <div className="class-reminder-title">
+              {classReminder.type === "start" ? "上课时间到！" : "下课啦！"}
+            </div>
+            {classReminder.label && <div className="class-reminder-label">{classReminder.label}</div>}
+            <div className="class-reminder-sub">
+              {classReminder.type === "start" ? "请开始学习吧 📚" : "休息一下，放松放松 ☕"}
+            </div>
+            <div className="class-reminder-dismiss">👆 点击关闭提示</div>
+          </div>
+        </div>
+      )}
 
       {showAiSettings && (
         <div className="modal-overlay" onClick={() => setShowAiSettings(false)}>

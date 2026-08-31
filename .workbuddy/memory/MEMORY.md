@@ -31,6 +31,10 @@
 ## React 状态坑
 - ⚠️ 绝不依赖 `setState(updater)` 闭包给外部变量赋值再同步读取(updater 异步)；派生行为一律用 `useEffect` 监听(ISSUE-014)。
 
+## 产品约束（用户明确，别违背）
+- **学习资料重发必须重新显示（ISSUE-021，2026-08-31）**：禁止「完全重复就不显示」。即使重发内容与上一课 100% 相同（path 同、hash 同），左侧资料列表也必须自动把最近一次 display_content 的那份重新选中并显示在最新位置。去重仅用于避免同一轮内多份同 path 堆积成 N 条。
+- **ISSUE-018 每课压缩会话暂缓**（2026-08-31 用户标注）：后续再讨论，本期不动。
+
 ## 前后端分离 / pi-web
 - 决策：保留 Electron 一体应用，另起独立 `pi-web/`(Web前端+Node后端，端口8787)做替代，不动现有 pi。
 - 硬约束：Pi SDK/edge-tts/ffmpeg/tencentcloud-asr 均 Node-only，AI+语音留服务端，浏览器走 HTTP/SSE。

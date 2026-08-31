@@ -223,7 +223,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           ) : (
             <>
-              <div className="chat-resize-handle" onMouseDown={parentChat.startDrag} title="拖动调整聊天宽度" />
+              <div className="chat-resize-handle" onPointerDown={parentChat.startDrag} title="拖动调整聊天宽度" />
               <button
                 className="chat-collapse-btn"
                 title="折叠聊天"

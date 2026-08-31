@@ -773,6 +773,53 @@ input, textarea {
   margin-bottom: 12px;
 }
 
+/* ISSUE-023：聊天字号设置区块（与朗读语速同款外观） */
+.sidebar-font {
+  padding: 12px 0;
+  border-bottom: 1px solid #eee;
+  margin-bottom: 12px;
+}
+
+/* ISSUE-019：今日课程区块（实时时钟 + 当天课程时间段） */
+.sidebar-class-times {
+  padding: 12px 0;
+  border-bottom: 1px solid #eee;
+  margin-bottom: 12px;
+}
+
+.sidebar-clock {
+  font-size: 22px;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+}
+
+.sidebar-class-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 2px 0;
+}
+
+.sidebar-class-time {
+  color: #666;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-class-label {
+  color: #667eea;
+  font-weight: 600;
+}
+
+.sidebar-class-empty {
+  font-size: 12px;
+  color: #aaa;
+}
+
 .rate-grid {
   display: flex;
   flex-wrap: wrap;
@@ -829,7 +876,9 @@ input, textarea {
 }
 
 .learn-sidebar.collapsed .sidebar-model,
-.learn-sidebar.collapsed .sidebar-rate {
+.learn-sidebar.collapsed .sidebar-rate,
+.learn-sidebar.collapsed .sidebar-font,
+.learn-sidebar.collapsed .sidebar-class-times {
   display: flex;
   justify-content: center;
   width: 100%;
@@ -860,7 +909,9 @@ input, textarea {
 
 .view-switcher-popover {
   position: absolute;
-  left: calc(100% + 6px);
+  /* ISSUE-020：left 由 calc(100% + 6px) 改为 100%，消除触发器与浮层间的 6px 真空气隙
+     （鼠标穿越该空白会触发 mouseleave 关菜单）。间隙改由 ::before 透明桥接覆盖。 */
+  left: 100%;
   top: 0;
   width: 216px;
   background: white;
@@ -869,6 +920,18 @@ input, textarea {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   padding: 6px;
   z-index: 60;
+}
+
+/* ISSUE-020：透明桥接——覆盖触发器右缘到浮层之间（含上下各 6px）的区域，
+   使 hover 热区连续无断点，鼠标从按钮移到浮层不触发 mouseleave */
+.view-switcher-popover::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: -6px;
+  width: 8px;
+  height: calc(100% + 12px);
+  background: transparent;
 }
 
 .view-switcher-title {
@@ -1584,6 +1647,8 @@ input, textarea {
   bottom: 0;
   width: 12px;
   cursor: col-resize;
+  /* ISSUE-024：Pointer Events 拖拽——禁止触摸手势干扰 pointer capture（触屏也能拖） */
+  touch-action: none;
   z-index: 20;
   transition: background 0.15s ease;
 }
@@ -2788,13 +2853,17 @@ input, textarea {
 }
 
 /* ============================================================
-   ISSUE-009：孩子聊天 markdown 放大 + 紧凑行距
+   ISSUE-009/023：孩子聊天 markdown 放大 + 紧凑行距
    仅孩子聊天生效（ChatWindow owner!=="parent" 时加 bubble-md-child），
    家长端聊天与资料面板（.markdown-body）不受影响。
-   字体放大一倍（15px→30px）；段落不留空行（p/ul/ol margin 收窄）。
+   字体默认 30px（ISSUE-009 由 15px 放大一倍）；ISSUE-023 起经 CSS 变量
+   --child-chat-font 可调（Learn.tsx 聊天容器下发），h1-h6/pre 用相对单位等比缩放。
+   段落不留空行（p/ul/ol margin 收窄）。
+   ⚠️ 特异性必须 ≥ .message .bubble（0,0,2,0）——否则基础 font-size:15px 压过
+   本规则，正文永远 15px（ISSUE-023 实测：标题因同特异性后置生效、正文不变）。
    ============================================================ */
-.bubble-md-child {
-  font-size: 30px;
+.message .bubble.bubble-md-child {
+  font-size: var(--child-chat-font, 30px);
   line-height: 1.5;
 }
 
@@ -2827,15 +2896,17 @@ input, textarea {
   line-height: 1.3;
 }
 
-.bubble-md-child h1 { font-size: 36px; }
-.bubble-md-child h2 { font-size: 34px; }
-.bubble-md-child h3 { font-size: 32px; }
+/* ISSUE-023：标题/代码块改为相对单位，随 --child-chat-font 等比缩放（原 30px 基准下
+   h1 36 / h2 34 / h3 32 / h4-6 30 / pre 22 等比例换算） */
+.bubble-md-child h1 { font-size: 1.2em; }
+.bubble-md-child h2 { font-size: 1.13em; }
+.bubble-md-child h3 { font-size: 1.07em; }
 .bubble-md-child h4,
 .bubble-md-child h5,
-.bubble-md-child h6 { font-size: 30px; }
+.bubble-md-child h6 { font-size: 1em; }
 
 .bubble-md-child pre {
-  font-size: 22px; /* 代码块稍小，避免超长行换行过密 */
+  font-size: 0.73em; /* 代码块稍小，避免超长行换行过密 */
 }
 
 /* ============================================================
@@ -2862,6 +2933,124 @@ input, textarea {
 
 .material-collapse-btn {
   color: #667eea;
+}
+
+/* ============================================================
+   ISSUE-016：非资料展示页（学习进度等）的折叠包裹层 + 悬浮折叠按钮
+   ============================================================ */
+.panel-collapse-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-collapse-fab {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: #f7f8fc;
+  color: #667eea;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transition: background 0.15s;
+}
+
+.panel-collapse-fab:hover {
+  background: #eef0ff;
+}
+
+/* ============================================================
+   ISSUE-019：课程时间段提醒横幅（孩子端，上课/下课）
+   固定定位覆盖页面顶部 1/3，醒目渐变 + 大图标，点击任意处关闭
+   ============================================================ */
+.class-reminder-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 33vh;
+  min-height: 180px;
+  z-index: 1000;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  animation: class-reminder-pop 0.35s ease-out;
+  box-shadow: 0 6px 24px rgba(102, 126, 234, 0.35);
+}
+
+@keyframes class-reminder-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.class-reminder-inner {
+  text-align: center;
+  color: #fff;
+  padding: 0 24px;
+}
+
+.class-reminder-icon {
+  font-size: 56px;
+  line-height: 1.1;
+  margin-bottom: 6px;
+}
+
+.class-reminder-title {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.class-reminder-label {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 600;
+  opacity: 0.95;
+}
+
+.class-reminder-sub {
+  margin-top: 10px;
+  font-size: 18px;
+  opacity: 0.9;
+}
+
+/* ISSUE-019：横幅常驻（不自动消失）时的关闭提示文字 */
+.class-reminder-dismiss {
+  margin-top: 16px;
+  font-size: 15px;
+  opacity: 0.75;
+  animation: class-reminder-blink 1.6s ease-in-out infinite;
+}
+
+@keyframes class-reminder-blink {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 /* ============================================================

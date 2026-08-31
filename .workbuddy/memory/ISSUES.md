@@ -241,7 +241,7 @@
   ② 中间区统一包裹：无论 `MaterialsPanel` 还是 `LearningDashboard`，外层容器支持折叠 → 折叠时显示窄条展开按钮、聊天区 `flex:1` 占满；
   ③ 各展示页（如 `LearningDashboard`）需暴露 `onCollapse`（类似 MaterialsPanel 的 `onCollapse`）或在 Learn 层统一加折叠控制；
   ④ 注意 `LearningDashboard` 自身内部可能有独立布局/滚动，折叠其**外层容器**即可，无需改动其内部。
-- **优先级**：待定（本会话仅记录，未实施）
+- **优先级**：已完成（2026-08-31 实施：折叠能力泛化为 `panelCollapsed`（不再绑定 view/materials）；任意展示页折叠后显示窄条展开按钮、聊天区 flex:1 占满；`LearningDashboard` 等非资料视图外层包 `panel-collapse-host` + 右上角悬浮折叠按钮（panel-collapse-fab），不侵入组件内部布局；display_content 自动展开逻辑同步改 `setPanelCollapsed(false)`）
 - **记录时间**：2026-08-30
 
 ## [ISSUE-017] 孩子界面：学习资料点击/选中不认识的字词，显示读音+释义（不修改资料 html）
@@ -305,7 +305,10 @@
   ③ **铃声 + 语音**：主进程/渲染端收到 `class:reminder` 后——a) 播放捆绑铃声 mp3（`<audio>` 或主进程读资源 buffer 播放）；b) **可选语音播报**：调 `voice:tts`（或渲染端 `voiceTts`）合成提示语并播放，音色与资料/聊天一致；两种可并存，也允许家长设置「仅铃声 / 仅语音 / 两者」。
   ④ **顶部 1/3 横幅（app 级 overlay）**：建议在 `Learn.tsx` 顶层（甚至 `App`/`Home` 层，确保任意子页可见）加一个固定定位的横幅组件，收到 `class:reminder` 时显示 33vh 高、醒目配色、上课/下课图标与文案，数秒后淡出或手动关闭；**注意多孩子场景**：横幅 childId 需与当前登录孩子匹配才显示（或家长端不显示、仅孩子端）。
   ⑤ **边界**：app 未打开/孩子未登录时不弹（静默）；跨天/配置变更后 tick 自动生效；铃声文件需随安装包分发（打包进 `extraResources`/asar 外）。
-- **优先级**：待定（本会话仅记录，未实施）
+- **优先级**：已完成（2026-08-31 实施：`scheduler.ts` ChildSchedulerConfig 增 `classTimes[]`（start/end/label，可多段）+ `classAlertMode`（both/chime/voice）；`SchedulerSettings.tsx` 每孩子卡片加「课程时间段」section（起止 time + 课程名 + 增删 + 提醒方式 radio）；per-minute tick 检测起止跳变（`cs["class-reminder"].lastKey` 含日期防同日同点重触发）→ `webContents.send("class:reminder")` 广播（透传 mode）；`preload.ts` 加 `onClassReminder`；`Learn.tsx` 顶部 33vh 固定横幅（渐变+大图标，8s 自动消失/点击关闭，childId 匹配当前孩子才显示）+ 铃声（Web Audio 合成叮咚，零资源文件依赖）+ 语音播报（`voiceTts` edge-tts 与聊天同音色，按 mode 播报）；scheduler-task-state 测试更新 4 键。全量 288 例 0 失败、tsc 0 业务错误、build 通过）
+- **⚠️ 查看入口（2026-08-31 用户实测「没看到」）**：区块在**家长端「设置 → 定时任务」→ 每个孩子卡片内**（⏰ 课程时间段，含空态提示「尚未设置课程时间段，点下方按钮添加」）。**主进程改动（scheduler.ts/preload.ts）必须完全退出 app 重启才生效**（dev 模式主进程不热更新）；渲染产物已确认包含新 UI 字符串。已补 archive-limit.test.ts 两例 classTimes 读写/兜底测试。
+- **⚠️ 横幅交互调整（2026-08-31 用户要求）**：提醒横幅**不自动消失**——一直显示到孩子**点击**才关闭（删 8s 自动消失 effect）；横幅底部加「👆 点击关闭提示」闪烁文字（class-reminder-dismiss，blink 动画）。
+- **⚠️ 二轮调整（2026-08-31 用户要求）**：① **铃声/语音也循环重复播报**——横幅常驻期间每 15s 重播一次直到点击关闭（`playReminderAlert` 统一首次+循环；`speakReminder` 加 `reminderSpeaking` 锁防上一轮未播完时重叠；interval effect cleanup 关闭即停）；② **孩子左侧边栏新增「今日课程」区块**（`SidebarClassSchedule` 独立组件：实时时钟 HH:mm:ss 每秒刷新只重渲染自身 + 当天课程时间段列表，经 `schedulerConfigGet` 取当前孩子 classTimes；折叠态显示 CalendarClock 图标按钮）。
 - **记录时间**：2026-08-31
 
 ## [ISSUE-020] 孩子端左侧「切换展示页」浮层：鼠标移到选项框就消失、难选中
@@ -322,7 +325,7 @@
   ② **关闭延时（兜底）**：`onMouseLeave` 不直接置 false，而设 ~150-200ms 定时器 `setTimeout(() => setViewMenuOpen(false), 180)`，期间 `onMouseEnter` 取消定时器；给孩子越过缝隙的容错时间（即使仍有小缝也不关）。
   ③ **点击切换（更适合低龄）**：给 `view-switcher-btn` 加 `onClick={() => setViewMenuOpen(v => !v)}` 变真下拉，hover 仅作辅助；选中项或点外部（`click-outside`）才关闭——不依赖 hover 几何，选中最可靠。
   ④ 组合 ①②③ 最稳；另确认 `PANEL_VIEWS` 顺序含「学习进度 / 学习资料」且 `setView(v.key)` 切换无误（现有 `:677-680` 已正确）。
-- **优先级**：待定（本会话仅记录，未实施）
+- **优先级**：已完成（2026-08-31 实施：组合 ①②③——popover 改 `left:100%` + `::before` 透明桥接覆盖缝隙（8px 宽、上下各延展 6px）；`onMouseLeave` 改 ~180ms 延时关闭（`onMouseEnter` 取消定时器）；按钮加 `onClick` 切换真下拉 + 文档级 click-outside 关闭（viewSwitcherRef 判断）；卸载清理定时器）
 - **记录时间**：2026-08-31
 
 ## [ISSUE-021] 孩子端学习资料列表：课名显示"未命名" + 重发资料不刷新/卡在别的课程
@@ -341,7 +344,7 @@
   ② **重发刷新（关键约束）**：**禁止用"完全重复就不显示"的逻辑**。即使重发的内容与上一课 100% 相同（path 相同、内容 hash 也相同），左侧也必须自动把"最近一次 display_content 的那份"重新选中并显示在最前/最新位置，方便用户查看——即去掉 `Learn.tsx:226` 的"同 filePath 即 `return prev` 整体丢弃"，改为：命中同 path 时就地替换内容 + **无条件重新 `setSelectedMaterialId(该项)` 并滚动定位到该项**；新增资料照常追加末条并选中。去重只用于避免"同一轮消息内连续推送多份同 path 资料时堆积成 N 条"，不用于"跨轮重发时吞掉显示"。
   ③ **优先：升级 ubuntu 客户端核对（环境差异，最高优先级）**：Windows 不复现 → 先确认 192.168.1.201 ubuntu 客户端构建是否含 `titleBase` 回退 + ISSUE-014 自动选中 + ① 的 `courses.title` 下传；若滞后则**升级该 ubuntu 客户端并复测**，很可能症状直接消失、无需改代码。仅在升级后仍于当前构建复现，才推进 ① ② 代码修复。
   ④ **回归**：display_content 新教材自动弹开（ISSUE-014）、去重不堆积（`:224` 注释）、列表 title 渲染（`:420`）仍正确。
-- **优先级**：待定（本会话仅记录，未实施）
+- **优先级**：已完成（2026-08-31 实施：① `custom-tools.ts` display_content 解析 `{topic}/{file}.html` 后按归一化 `html_path` 匹配查 courses 取 `title` 作默认（agent 显式 title 优先；先孩子库 `kb.courses.list` 再家长库 `parent_lib.courses.list`，匹配失败静默回退文件名）；② `Learn.tsx` handleToolEnd 去掉「同 filePath 即 return prev 丢弃」——同 path 重发改为**就地替换 content/title/time + 移到列表末尾（最新位置）+ 返回新数组引用触发自动选中**（满足「重发必须重新显示」约束，去重仅防同轮堆积）；③ `MaterialsPanel.tsx` HtmlFrame key 由 `html.length` 改为 `长度:内容hash`，同长度不同内容的重发也能重建 iframe 展示最新内容；④ ubuntu 环境差异核对结论：Windows 不复现→大概率滞后构建，需在 ubuntu 客户端升级到本构建后复测确认）
 - **记录时间**：2026-08-31
 
 ## [ISSUE-022] 测试债务：9 个测试文件未随 SPLIT 迁移更新，全量 vitest 稳定失败 39 例
@@ -387,5 +390,24 @@
   ③ **状态与持久化**：`Learn.tsx` 加 `const [fontSize, setFontSize] = useState(...)`，`useEffect` 从 `localStorage.getItem(\`chat:${childId}:fontSize\`)` 初始化、变更时写回；默认 30px 与现状一致。
   ④ **作用域隔离**：仅对 `owner!=="parent"`（孩子聊天 `.bubble-md-child`）生效；家长端 `.markdown-body` 与资料面板不受影响（遵循 ISSUE-009 意图）。
   ⑤ **回归**：ISSUE-009 放大/紧凑行距、ISSUE-017 资料查词浮层、`.bubble-md-child` 渲染（ChatWindow）不受影响；字号滑块拖动实时生效、跨刷新保留。
-- **优先级**：待定（本会话仅记录，未实施）
+- **优先级**：已完成（2026-08-31 实施：`.bubble-md-child` 改 `font-size: var(--child-chat-font, 30px)`，h1–h6/pre 改相对单位（1.2em/1.13em/1.07em/1em/0.73em）随基准等比缩放；`Learn.tsx` 边栏「朗读语速」后新增「聊天字号」区块（4 档按钮 22/30/38/46，折叠态 `Type` 图标，复用 rate-grid 样式）；`fontSize` state + localStorage 按 `chat:<childId>:fontSize` 持久化（默认 30px）；CSS 变量在 `.learn-chat` 容器下发，仅孩子聊天生效、家长端 `.markdown-body` 不受影响）
+- **⚠️ 二轮修复（2026-08-31 用户实测）**：点击字号按钮气泡字体不变——根因=CSS 特异性：基础 `.message .bubble { font-size: 15px }`（0,0,2,0）压过 `.bubble-md-child`（0,0,1,0），正文一直 15px（ISSUE-009 时标题因同特异性后置规则生效、正文未放大，未被察觉）。修复=主规则提为 `.message .bubble.bubble-md-child { font-size: var(--child-chat-font,30px) }`（0,0,3,0）；标题/代码块同特异性后置已覆盖无需改。**教训：新增覆盖规则前先查基础规则特异性（.message .bubble / .markdown-body 等）**。
+- **记录时间**：2026-08-31
+
+## [ISSUE-024] 聊天框调宽手柄：当前是"点一下进入拖拽模式、再点一下退出"，应改成"按住拖拽、松手即停"
+
+- **类型**：Bug / 交互（聊天面板拖拽手柄）
+- **描述**：右侧聊天框左侧边缘有调宽手柄。当前行为是**点击一下就进入"拖拽模式"（之后移动鼠标即改变宽度），再点击一下才退出**；期望行为是**按住鼠标左键拖动才调宽、松开鼠标立即停止**（标准拖拽，松手即停）。
+- **现状 / 根因（已查证代码）**：
+  - **手柄绑定的拖拽逻辑**：`useChatPanel.ts` 的 `startDrag`（`src/hooks/useChatPanel.ts:49-70`）在 `onMouseDown` 时给 `window` 加 `mousemove`+`mouseup` 监听器，拖拽中 `setWidth` 实时改宽；`onUp` 负责移除监听器并还原 `cursor`/`userSelect`。**逻辑本身是"按住拖拽"模型**，不是 click-toggle——但有个致命缺陷：**`mouseup` 只监听在 `window` 上**。
+  - **根因 = 拖到 iframe 上松手，`mouseup` 被 iframe 吞掉（经典"拖过 iframe"陷阱）**：孩子端 `Learn.tsx` 中间展示区是 `MaterialsPanel` 渲染的 **`<iframe srcDoc=...>`**（`MaterialsPanel.tsx:92/97`）——它是一个**独立 document**。手柄位于聊天面板左缘、紧邻中间区；用户往左拖（变宽）时鼠标移入中间区、若**在 iframe 上方松开**，`mouseup` 事件发生在 iframe 子文档里，**不会冒泡到父窗口 `window`** → 父窗口的 `onUp` 永不触发 → `mousemove` 监听器一直挂着 → 聊天框持续跟随鼠标移动，直到用户在父文档上再点一次（第二次 mousedown+mouseup 才让 `onUp` 跑）→ 表现为**"点一下进入拖拽、再点一下退出"**。
+  - **为什么只在特定场景复现**：家长端 `Dashboard` 中间不是 iframe（`Dashboard.tsx:226` 同用手柄），松手在父文档上 `mouseup` 正常触发 → 表现为正常按住拖拽；**孩子端 `Learn` 中间是 iframe**，拖宽时极易在 iframe 上松手 → 必现"卡住/点二下"的 bug。这与用户"右侧聊天框宽度调整"的体感一致（孩子端右聊）。
+  - **附带副作用**：`onUp` 不执行还会让 `document.body.style.cursor="col-resize"` / `userSelect="none"` 一直残留，光标与选中状态也被卡住。
+- **改造方向**：
+  ① **首选：Pointer Events + setPointerCapture**（最小且彻底）：手柄改用 `onPointerDown`/`onPointerMove`/`onPointerUp`，在 `onPointerDown` 调 `e.currentTarget.setPointerCapture(e.pointerId)`；之后 `pointermove`/`pointerup` 直接绑在**手柄元素自身**（捕获后即使指针移到 iframe 上方，事件也路由回手柄）。`onPointerUp` 里 `releasePointerCapture` + 移除监听 + 还原 cursor/userSelect。**彻底解决 iframe 吞事件**，无需改布局。
+  ② **备选：拖拽时盖透明遮罩**：`onMouseDown` 时在 body 加 `position:fixed; inset:0; z-index` 的全屏透明层（盖在 iframe 之上），让 `mouseup` 落在父文档、再移除遮罩——可行但多一次 DOM 操作。
+  ③ **备选：拖拽中禁 iframe 指针事件**：`onMouseDown` 给 body 加 class 使 `.materials-iframe { pointer-events:none }`，松手移除——同样让 mouse 穿透到父文档。
+  ④ **保持现有持久化/范围**：`useChatPanel.ts` 是家长/孩子共用 hook（`Dashboard`/`Learn` 都走它），改造在 hook 内一次完成、两端同时修复；`width` 持久化（localStorage `chat:${key}:width`）与折叠逻辑不变。
+  ⑤ **回归**：`chat.width` 拖拽实时生效 + 刷新保留（useChatPanel）、`chat.collapsed` 折叠（Learn.tsx:1003 / Dashboard）、ISSUE-023 字号变量、聊天区占满（ISSUE-008/016 的 `panelCollapsed` flex 逻辑）不受影响；重点测**孩子端往左拖到资料 iframe 上方松手**应能干净停住。
+- **优先级**：已完成（2026-08-31 实施：方案① Pointer Events + setPointerCapture——`useChatPanel.ts` `startDrag` 参数改 `React.PointerEvent`，`onPointerDown` 时 `setPointerCapture(e.pointerId)`，`pointermove/pointerup/pointercancel` 绑到手柄元素自身（捕获后即使指针移入 iframe，事件仍路由回手柄，松手即停、彻底解决 iframe 吞 mouseup）；`releasePointerCapture` + 还原 cursor/userSelect；捕获失败 fallback window 级监听；`Learn.tsx`/`Dashboard.tsx` 手柄 `onMouseDown`→`onPointerDown`；`.chat-resize-handle` 加 `touch-action:none`（触屏可拖）。tsc 0 业务错误、build 通过）
 - **记录时间**：2026-08-31

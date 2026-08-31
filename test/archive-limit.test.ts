@@ -109,6 +109,40 @@ describe("归档保留上限（archive limit）", () => {
     expect(got2.autoNewSession.hour).toBe(21); // 缺省补全（默认 21:00）
   });
 
+  it("ISSUE-019：classTimes / classAlertMode 读写（默认空数组 + both；label 空串归一为 undefined）", () => {
+    const kid = "class-kid-1";
+    scheduler.setChildSchedulerConfig(kid, {
+      recording: { enabled: false, times: ["21:00"], onNewSession: false },
+      autoNewSession: { enabled: false, hour: 22, minute: 0 },
+      archiveLimit: 20,
+      classTimes: [
+        { start: "08:00", end: "09:30", label: "语文" },
+        { start: "10:00", end: "11:00", label: "" },
+      ],
+      classAlertMode: "chime",
+    });
+    const got = scheduler.getChildSchedulerConfig(kid);
+    expect(got.classTimes).toHaveLength(2);
+    expect(got.classTimes[0]).toEqual({ start: "08:00", end: "09:30", label: "语文" });
+    expect(got.classTimes[1]).toEqual({ start: "10:00", end: "11:00", label: undefined });
+    expect(got.classAlertMode).toBe("chime");
+  });
+
+  it("ISSUE-019：classTimes 缺省/非法值兜底（默认空数组 + both；过滤空起止时间段）", () => {
+    const kid = "class-kid-2";
+    scheduler.setChildSchedulerConfig(kid, {
+      classTimes: [
+        { start: "", end: "09:00" },
+        { start: "13:00", end: "14:00" },
+      ],
+    } as any);
+    const got = scheduler.getChildSchedulerConfig(kid);
+    expect(got.classTimes).toHaveLength(1);
+    expect(got.classTimes[0].start).toBe("13:00");
+    expect(got.classTimes[0].end).toBe("14:00");
+    expect(got.classAlertMode).toBe("both"); // 非法 mode 兜底默认
+  });
+
   it("resetChildSession（冷路径）按 archiveLimit 清理归档（官方流程：不新建活跃文件）", async () => {
     const childId = `cold-${Date.now()}`;
     const childDir = config.getChildDir(childId);

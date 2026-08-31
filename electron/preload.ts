@@ -33,6 +33,9 @@ const api = {
     registerListener("pi:reply_error", callback),
   onPiSessionReset: (callback: (data: { childId: string }) => void) =>
     registerListener("pi:session_reset", callback),
+  // ISSUE-019：课程时间段提醒（上课/下课，家长在定时任务里按孩子配置）
+  onClassReminder: (callback: (data: { childId: string; type: "start" | "end"; label: string }) => void) =>
+    registerListener("class:reminder", callback),
   // 图片上传时主进程自动切换到视觉模型的通知（前端据此提示）
   onPiVisionModelSwitched: (callback: (data: { childId: string; modelId: string }) => void) =>
     registerListener("pi:vision_model_switched", callback),
