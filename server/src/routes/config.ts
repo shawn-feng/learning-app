@@ -8,6 +8,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { bumpConfigRevision, getConfigRevision } from "../db.js";
+import { getServerSecret, encryptJson, decryptJson } from "../crypto.js";
 
 interface ConfigDeps {
   config: ServerConfig;
@@ -28,7 +29,12 @@ function authParent(req: { headers: Record<string, string | string[] | undefined
 export function registerConfigRoutes(app: FastifyInstance, deps: ConfigDeps): void {
   // settings 键按家长隔离：`{parent_id}:{key}`（2026-08-30 起，模型配置与 key 都跟家长账号，
   // 不做全家长共用）。revision 全局自增（家长 A 改配置 → B 也拉一次全量，仅自己的键，无害）。
+  // ⚠️ 方案B 任务5：key="auth"（模型 API 密钥）落盘前 AES-256-GCM 加密（getServerSecret），
+  // 读取时解密——服务端不再明文存密钥；客户端仍可经 GET /config 解密拿回（多设备 key 同步环
+  // 依赖此行为，故不做过滤）。
   const keyFor = (parentId: string, key: string) => `${parentId}:${key}`;
+  const secret = getServerSecret(deps.config.dataDir);
+  const isAuthKey = (key: string) => key === "auth";
 
   // 轮询入口：只回 revision，客户端与本地缓存比对
   app.get("/api/v1/config/revision", async (req, reply) => {
@@ -57,7 +63,14 @@ export function registerConfigRoutes(app: FastifyInstance, deps: ConfigDeps): vo
     const config: Record<string, unknown> = {};
     for (const r of rows) {
       try {
-        config[r.key.slice(prefix.length)] = JSON.parse(r.value_json);
+        const plainKey = r.key.slice(prefix.length);
+        if (isAuthKey(plainKey)) {
+          // auth 封套 → 解密回原始对象（多设备 key 同步环依赖）
+          const dec = decryptJson(secret, r.value_json);
+          config[plainKey] = dec ?? r.value_json;
+        } else {
+          config[plainKey] = JSON.parse(r.value_json);
+        }
       } catch {
         config[r.key.slice(prefix.length)] = r.value_json;
       }
@@ -76,12 +89,13 @@ export function registerConfigRoutes(app: FastifyInstance, deps: ConfigDeps): vo
     }
     const { key, value } = (req.body ?? {}) as { key?: string; value?: unknown };
     if (!key?.trim()) return reply.code(400).send({ error: "key 必填" });
+    const stored = isAuthKey(key.trim()) ? encryptJson(secret, value) : JSON.stringify(value ?? null);
     deps.db
       .prepare(
         "INSERT INTO settings (key, value_json, updated) VALUES (?, ?, ?) " +
           "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated = excluded.updated"
       )
-      .run(keyFor(parentId, key.trim()), JSON.stringify(value ?? null), new Date().toISOString());
+      .run(keyFor(parentId, key.trim()), stored, new Date().toISOString());
     const revision = bumpConfigRevision(deps.db);
     return { ok: true, revision };
   });

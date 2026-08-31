@@ -94,6 +94,10 @@ const api = {
   piListSessions: (childId: string) => ipcRenderer.invoke("pi:listSessions", childId),
   piGetSessionMessages: (childId: string, file: string) =>
     ipcRenderer.invoke("pi:getSessionMessages", childId, file),
+  // 方案B 阶段①：家长「对话回顾」（读服务端同步上云的会话）
+  sessionReviewDates: (childId: string) => ipcRenderer.invoke("sessions:reviewDates", childId),
+  sessionReviewMessages: (childId: string, date: string) =>
+    ipcRenderer.invoke("sessions:reviewMessages", childId, date),
   piGetModels: () => ipcRenderer.invoke("pi:get_models"),
   piSwitchModel: (childId: string, provider: string, modelId: string) =>
     ipcRenderer.invoke("pi:switch_model", childId, provider, modelId),

@@ -106,7 +106,9 @@ const COURSE_FIELD_MAP: Record<string, string> = {
 
 type QueryHandler = (ctx: RpcContext, args: Record<string, unknown>) => unknown;
 
-const queryHandlers: Record<string, QueryHandler> = {
+// 导出供服务端无头 worker 直接调用（方案B 阶段②：worker 工具不重复实现 SQL 语义，
+// 复用同一 handler，child 归属校验同样生效）。
+export const queryHandlers: Record<string, QueryHandler> = {
   "kb.daily_entries.queryByDate": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
@@ -308,7 +310,8 @@ const queryHandlers: Record<string, QueryHandler> = {
 
 type ExecHandler = (ctx: RpcContext, args: Record<string, unknown>) => unknown;
 
-const execHandlers: Record<string, ExecHandler> = {
+// 导出供服务端无头 worker 直接调用（方案B 阶段②），语义与 /db/exec 完全一致。
+export const execHandlers: Record<string, ExecHandler> = {
   "kb.daily_entries.insert": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
@@ -826,4 +829,30 @@ export function registerDbRoutes(app: FastifyInstance, deps: DbRoutesDeps): void
       throw err;
     }
   });
+}
+
+/** 服务端无头 worker 直调入口（语义与 /db/query 一致；parentId 由任务上下文提供）。 */
+export function runKbQuery<T = unknown>(
+  dataDir: string,
+  mainDb: DatabaseSync,
+  parentId: string,
+  op: string,
+  args: Record<string, unknown>
+): T {
+  const handler = queryHandlers[op];
+  if (!handler) throw new ApiError(400, `未知查询操作: ${op}`);
+  return handler({ dataDir, mainDb, parentId }, args ?? {}) as T;
+}
+
+/** 服务端无头 worker 直调入口（语义与 /db/exec 一致）。 */
+export function runKbExec<T = unknown>(
+  dataDir: string,
+  mainDb: DatabaseSync,
+  parentId: string,
+  op: string,
+  args: Record<string, unknown>
+): T {
+  const handler = execHandlers[op];
+  if (!handler) throw new ApiError(400, `未知执行操作: ${op}`);
+  return handler({ dataDir, mainDb, parentId }, args ?? {}) as T;
 }

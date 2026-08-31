@@ -10,6 +10,8 @@ import { resetChildSession } from "./pi-session";
 import { handleCloudInbox } from "./delivery";
 // ISSUE-025：孩子 Todolist 定时生成 / 统计
 import { runTodoGen, runTodoStat } from "./todo-scheduler";
+// 方案B：服务端无头 worker 接管 recording/todo 后，本地关闭对应调度避免双跑
+import { hasServerFeature, refreshServerFeatures } from "./server-features";
 
 export interface TaskState {
   children: Record<
@@ -434,7 +436,8 @@ export function startScheduler(): void {
 
       // 每日学习记录总结（recording）：按配置的具体时间点（可多个）触发，每个时间点每天只跑一次；
       // 当天无会话时 summarizeDailyConversation 内部跳过（不消耗 token）。
-      if (cc.recording.enabled) {
+      // 方案B：服务端无头 worker 已接管（hasServerFeature("worker")）→ 本地跳过，避免双跑。
+      if (cc.recording.enabled && !hasServerFeature("worker")) {
         const nowMin = hhmm(now);
         if (cc.recording.times.includes(nowMin)) {
           const last = cs.recording.lastRun ? new Date(cs.recording.lastRun) : null;
@@ -497,7 +500,8 @@ export function startScheduler(): void {
 
       // ISSUE-025：孩子 Todolist 生成 / 统计。各自按配置时间点每天只跑一次
       // （lastRun 记录执行时刻，与本地日期+hhmm 比对去重；跨天自动失效）。
-      if (cc.todo.enabled) {
+      // 方案B：服务端无头 worker 已接管 → 本地跳过，避免双跑。
+      if (cc.todo.enabled && !hasServerFeature("worker")) {
         const nowMin = hhmm(now);
         for (const [kind, point, fn] of [
           ["gen", cc.todo.genTime, () => runTodoGen(child.childId)],
@@ -548,6 +552,8 @@ export function startScheduler(): void {
 
 // 启动时补跑：仅对已开启对应任务且到期的孩子执行（默认关闭，因此默认不补跑）。
 export async function runCatchUp(): Promise<void> {
+  // 方案B：先探服务端能力（worker 接管后本地 recording/todo 不补跑，避免双跑）
+  await refreshServerFeatures();
   const state = loadTaskState();
   const children = await listChildren();
   const now = new Date();
@@ -576,7 +582,7 @@ export async function runCatchUp(): Promise<void> {
     const cc = getChildSchedulerConfig(child.childId);
     const cs = getChildState(state, child.childId);
 
-    if (cc.recording.enabled) {
+    if (cc.recording.enabled && !hasServerFeature("worker")) {
       // catch-up：今天已过的配置时间点若还没跑过，补跑最近一个（启动/休眠恢复场景）
       const passed = cc.recording.times.filter((t) => t <= hhmm(now));
       if (passed.length > 0) {
@@ -598,7 +604,7 @@ export async function runCatchUp(): Promise<void> {
     // ISSUE-025：todo 生成/统计 catch-up（启动/休眠恢复：已过配置时间点且当天没跑过 → 补跑）。
     // 注意顺序：先补 stat 再补 gen 没有意义，应按时间先后（gen 通常早于 stat）；这里按配置值
     // 比较 hhmm 决定补哪个。两个都过了则先 gen 后 stat。
-    if (cc.todo.enabled) {
+    if (cc.todo.enabled && !hasServerFeature("worker")) {
       const nowMin = hhmm(now);
       const lastTodo = cs.todo.lastRun ? new Date(cs.todo.lastRun) : null;
       const ranToday = (point: string) =>

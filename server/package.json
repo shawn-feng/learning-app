@@ -1,6 +1,6 @@
 {
   "name": "learning-server",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "学习伙伴服务端：数据唯一真源 + 认证代理 + materials/大文件（SPLIT 架构）",
   "private": true,
   "type": "module",
@@ -12,10 +12,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.1",
     "@fastify/multipart": "^10.1.1",
     "bcryptjs": "^3.0.3",
     "fastify": "^5.2.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "typebox": "^1.3.12"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.7",

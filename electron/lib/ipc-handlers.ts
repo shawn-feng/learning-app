@@ -11,8 +11,10 @@ import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
-import { dbQuery } from "./client-data";
+import { dbQuery, currentSessionToken } from "./client-data";
+import { serverFetch } from "./server-client";
 import { formatLocalDate } from "./daily-summary";
+import { syncChildSessions } from "./session-sync";
 import {
   allocateTopicToChild,
   copyMaterialIntoParent,
@@ -904,6 +906,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         childPromptAbort = { stopped: false, abort: () => session.abort() };
         await session.prompt(text, imgCount > 0 ? { images: images! } : undefined);
         console.log(`[pi:prompt] prompt() completed`);
+        // 方案B 阶段①：每轮对话后即时增量同步会话 jsonl 上云（失败由 5min 定时/退出兜底重试）
+        void syncChildSessions(childId).catch(() => {});
         // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件（前端已自行收起工作气泡）
         if (childPromptAbort?.stopped) {
           _e.sender.send("pi:reply_end", { childId });
@@ -1208,6 +1212,42 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     try {
       const messages = await readChildSessionMessages(childId, file);
       return { success: true, messages };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- 方案B 阶段①：家长「对话回顾」（读服务端同步上云的会话，完整逐字稿）----
+
+  // 有会话消息的日期列表（服务端 session_messages 聚合）
+  ipcMain.handle("sessions:reviewDates", async (_e: IpcMainInvokeEvent, childId: string) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ dates?: Array<{ date: string; count: number }> }>(
+        `/sessions/${encodeURIComponent(childId)}/dates`,
+        { token }
+      );
+      return { success: true, dates: data?.dates ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 某天完整逐字稿（剔除 thinking，assistant 附工具调用）
+  ipcMain.handle("sessions:reviewMessages", async (_e: IpcMainInvokeEvent, childId: string, date: string) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{
+        messages?: Array<{
+          ts: number;
+          role: string;
+          text: string;
+          toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+        }>;
+      }>(`/sessions/${encodeURIComponent(childId)}?date=${encodeURIComponent(date)}`, { token });
+      return { success: true, messages: data?.messages ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

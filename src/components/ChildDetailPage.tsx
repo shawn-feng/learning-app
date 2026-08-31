@@ -4,6 +4,7 @@ import IconButton from "./IconButton";
 import LearningDashboard from "./LearningDashboard";
 import { ChildTopicsContent } from "./ChildTopicsModal";
 import { AgentPromptContent } from "./AgentPromptEditor";
+import SessionReview from "./SessionReview";
 
 interface Props {
   child: any;
@@ -17,6 +18,7 @@ const TABS = [
   { key: "topics", label: "📚 学习主题" },
   { key: "prompt", label: "🤖 AI 提示词" },
   { key: "account", label: "🔑 账号密码" },
+  { key: "review", label: "💬 对话回顾" },
 ] as const;
 
 /**
@@ -120,6 +122,16 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
             refKey={child.childId}
             title={`编辑 AI 提示词 — ${child.aiName || child.name}`}
           />
+        </div>
+      )}
+
+      {tab === "review" && (
+        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>孩子与 AI 的对话回顾</div>
+          <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
+            读取同步到服务端的完整对话记录（客户端每轮自动同步；需客户端在线并已登录）。
+          </p>
+          <SessionReview childId={child.childId} />
         </div>
       )}
 

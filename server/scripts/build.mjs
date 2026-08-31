@@ -25,6 +25,20 @@ await build({
   logLevel: "info",
 });
 
+// ⚠️ pi-coding-agent 内部用 import.meta.url 定位资源；esbuild 转 CJS 后变成
+// `var import_meta = {}; fileURLToPath(import_meta.url)` → url 为 undefined，
+// 启动即崩（2026-08-31 冒烟实测）。构建后正则把所有 `import_metaN.url` 替换为
+// CJS 下的 __filename 等价物（数量不定，用正则一网打尽）。
+{
+  const out = fs.readFileSync(outfile, "utf-8");
+  const patched = out.replace(
+    /\bimport_meta\d*\.url\b/g,
+    "require('url').pathToFileURL(__filename).href"
+  );
+  fs.writeFileSync(outfile, patched);
+  console.log(`✓ import_meta.url 垫片已打补丁（${(out.match(/\bimport_meta\d*\.url\b/g) || []).length} 处）`);
+}
+
 // 版本标记（供 pkg/运行识别）
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
 console.log(`\n✓ 构建完成: ${outfile} (learning-server v${pkg.version})`);

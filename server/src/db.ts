@@ -57,8 +57,39 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_id);
+    -- 会话 jsonl 增量同步（方案B 阶段①）：行级索引供家长回顾；child_id 全局唯一，
+    -- 归属校验在路由层（children.parent_id）强制，故不重复存 parent_id。
+    CREATE TABLE IF NOT EXISTS session_messages (
+      child_id TEXT NOT NULL,
+      file TEXT NOT NULL,
+      line_index INTEGER NOT NULL,
+      ts INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      role TEXT NOT NULL,
+      text TEXT NOT NULL DEFAULT '',
+      tool_calls TEXT NOT NULL DEFAULT '[]',
+      PRIMARY KEY (child_id, file, line_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_messages_date ON session_messages(child_id, date, ts);
+    -- 每个会话文件的同步游标（幂等 append 的权威记录，客户端权威冲突 → REPLACE by line_index）
+    CREATE TABLE IF NOT EXISTS session_files (
+      child_id TEXT NOT NULL,
+      file TEXT NOT NULL,
+      synced_bytes INTEGER NOT NULL DEFAULT 0,
+      line_count INTEGER NOT NULL DEFAULT 0,
+      updated TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (child_id, file)
+    );
+    -- 服务端无头 worker 的定时任务去重游标（每 child 每 task 一天一次）
+    CREATE TABLE IF NOT EXISTS worker_state (
+      child_id TEXT NOT NULL,
+      task TEXT NOT NULL,
+      last_run TEXT NOT NULL DEFAULT '',
+      last_key TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (child_id, task)
+    );
   `);
-  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '6')").run();
+  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '7')").run();
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('config_revision', '0')").run();
   // 旧库迁移：children 表加 profile_json（孩子详情 + 密码哈希上云，2026-08-30）
   try {
