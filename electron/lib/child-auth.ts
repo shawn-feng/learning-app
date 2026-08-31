@@ -167,15 +167,24 @@ export async function listChildren(): Promise<ChildProfile[]> {
             continue;
           }
           if (lp) {
-            // 本地有完整详情、服务端无 → 自动上传（老设备孩子上云）
-            try {
-              await serverFetch(`/children/${c.id}`, {
-                method: "PATCH",
-                body: { profile: childProfilePayload(lp) },
-                token,
-              });
-            } catch {
-              // 上传失败不阻塞列表
+            // 本地有完整详情、服务端无详情。
+            // ⚠️ 2026-08-31 事故教训（珊珊/闻闻密码哈希被覆盖导致登录失败）：自动上传会把本地
+            // passwordHash 覆盖到服务端，若本地哈希已非当前密码则登录全废。双保险：
+            // ① 客户端：本地已设置密码（passwordHash 非空）时【绝不自动上传】——只有从未设过
+            //    密码的孩子才自动上传详情；本地有密码的孩子照常可用（authChild 服务端失败后回退
+            //    本地 bcrypt），家长在详情页显式保存/重置密码时经 syncProfileToServer（forcePassword）
+            //    正式上云。
+            // ② 服务端：PATCH 无 forcePassword 标志时忽略 passwordHash 字段（防任何路径覆盖）。
+            if (!lp.passwordHash) {
+              try {
+                await serverFetch(`/children/${c.id}`, {
+                  method: "PATCH",
+                  body: { profile: childProfilePayload(lp) },
+                  token,
+                });
+              } catch {
+                // 上传失败不阻塞列表
+              }
             }
             out.push(lp);
             continue;
@@ -241,12 +250,18 @@ export async function authChild(
   return bcrypt.compare(password, profile.passwordHash);
 }
 
-/** 把 profile（含新密码哈希/详情）同步到服务端 PATCH /children/:id。 */
+/** 把 profile（含新密码哈希/详情）同步到服务端 PATCH /children/:id。
+ *  仅由显式用户操作调用（重置密码/改详情），带 forcePassword 标志允许覆盖密码哈希
+ *  （服务端对无标志的 PATCH 忽略 passwordHash，见 server children.ts 事故防护）。 */
 async function syncProfileToServer(childId: string, profile: ChildProfile): Promise<void> {
   const token = currentSessionToken();
   if (getServerUrl() && token) {
     try {
-      await serverFetch(`/children/${childId}`, { method: "PATCH", body: { profile: childProfilePayload(profile) }, token });
+      await serverFetch(`/children/${childId}`, {
+        method: "PATCH",
+        body: { profile: childProfilePayload(profile), forcePassword: true },
+        token,
+      });
     } catch {
       // 同步失败仅跳过（本地已更新）
     }

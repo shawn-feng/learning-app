@@ -26,6 +26,7 @@
 - 主进程/渲染改动后 `rm -rf out && npm run build`(electron-vite)；`rm -rf out` 可能被 safe-delete 拦，拦完已删直接再 build。
 - `tsc --noEmit` 长期有 5 条环境相关全局告警(TS2318/TS2552，@types/node26 不兼容)，**会掩盖真实业务错误**——验证时先过滤这 5 条再看有无其它错误；改组件核对 Props 是否都解构(ISSUE-008 白屏即此漏过)。
 - ⚠️ vitest(threads 池)用例残留 `setInterval` 致 worker 静默 exit 1；验证事件循环让出改 `vi.spyOn(global,"setImmediate")`+finally mockRestore。
+- ⚠️⚠️ **vitest 4.1.x Windows 盘符大小写 bug(#10692)**：cwd 为小写盘符(`c:\...`)时，所有测试文件在第一个 describe() 抛 `Cannot read properties of undefined (reading 'config')`、0 test——vitest CLI 经小写路径加载而 Vite 规范化 id 为大写，Node 模块注册表出现双份 runtime，runner 未注入。**跑 vitest 前先 `cd "C:/Users/79734/Documents/pi"`(大写盘符)**；Git Bash 会保留小写盘符触发，PowerShell 自动大写不触发。症状易被误判为环境损坏(清 .vite/换 pool/换 node 均无效)。
 
 ## React 状态坑
 - ⚠️ 绝不依赖 `setState(updater)` 闭包给外部变量赋值再同步读取(updater 异步)；派生行为一律用 `useEffect` 监听(ISSUE-014)。

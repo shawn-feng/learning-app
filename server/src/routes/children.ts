@@ -148,7 +148,19 @@ export function registerChildrenRoutes(app: FastifyInstance, deps: ChildrenDeps)
           merged = {};
         }
       }
-      Object.assign(merged, profile);
+      const { forcePassword } = (req.body ?? {}) as { forcePassword?: boolean };
+      const incoming: ChildProfilePayload = { ...profile };
+      // ⚠️ 2026-08-31 事故防护：无 forcePassword（自动上传/异常路径）时忽略 passwordHash，
+      // 防止用本地旧/空哈希覆盖服务端真实密码；显式密码操作（客户端 syncProfileToServer）带
+      // forcePassword 放行。另 passwordHash 非法（空串/非 bcrypt 形状）时同样拒绝写入。
+      if (incoming.passwordHash !== undefined) {
+        const h = incoming.passwordHash;
+        const looksValid = typeof h === "string" && /^\$2[aby]\$\d{2}\$/.test(h) && h.length >= 50;
+        if (!forcePassword || !looksValid) {
+          delete incoming.passwordHash;
+        }
+      }
+      Object.assign(merged, incoming);
       deps.db.prepare("UPDATE children SET profile_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(merged), new Date().toISOString(), id);
     }
     return { ok: true };

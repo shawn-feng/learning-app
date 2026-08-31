@@ -286,7 +286,7 @@
      - 备选：新增 agent 工具 `compact_session`（让 agent 判断一课学完后自调）；或 UI（孩子/家长端）加「本课完成·压缩会话」按钮。
   ④ **防误压**：仅在「课程切换 / 明确一课完成」时触发，不每轮压；压缩前可顺带把本课要点写 daily（与现有 summarize 互补）。
   ⑤ **兼容性**：压缩后系统提示/AGENTS/进度概览仍由 SDK 首轮自动附加（`pi-session.ts:404` systemPromptOverride + progressContext），不受影响。
-- **优先级**：待定（本会话仅记录，未实施）
+- **优先级**：⏸ 暂缓 / 暂不处理（用户 2026-08-31 标注：后续再讨论，本期不动）
 - **记录时间**：2026-08-31
 
 ## [ISSUE-019] 家长端按孩子设置课程时间段，上课/下课在 app 顶部 1/3 区域提醒（铃声 + 语音播报）
@@ -334,11 +334,12 @@
   - **title 生成逻辑**：`custom-tools.ts:113/130` `titleBase = rest.replace(/\.[^.]+$/,"").split("/").pop()`（=资料文件名去扩展名），`title = params.title || titleBase`。即：仅当 agent 显式传 `title` 或文件名本身含可读课名时列表才显课名；否则是裸文件名，无意义/为空即"未命名资料"。
   - **课名未下传（核心 A）**：课程真实名称在 `courses.title`（`parent-library.ts:139` 等，`(topic,title)` 唯一），但 `display_content` 只接收 `path`（`<topic>/<file>.html`），**从不查 `courses` 取课名**下传给列表——系统知道课名却不传。若学习 agent 调 `display_content` 不带 `title`、且 html 文件名非课名（每课一子目录 / 按 id 命名），列表即全"未命名"。
   - **重发卡别的课程（核心 B）**：`Learn.tsx:226` 去重 `if (filePath && prev.some(m => m.filePath === filePath)) return prev`——同一课重发（path 相同）被整体丢弃，`materials` 引用不变 → `useEffect([materials])`（`:209`）不触发 → `setSelectedMaterialId(materials[materials.length-1].id)`（`:213`）不执行 → 选中项停在之前别的课程资料上；即便家长改了内容重发（同 path）旧内容也不更新。仅 path 不同（新课）才追加并自动选中——故"卡别的课程"正是**同 path 重发被去重**所致。
-  - **版本核对点**：192.168.1.201 该 ubuntu 客户端若跑的是较早构建（缺 `titleBase` 回退、或 `Learn.tsx:209` 自动选中 effect 尚未合入），也会稳定复现"未命名 + 不自动跳最新"，需升级该客户端核对。
+  - **⚠️ 环境差异（2026-08-31 用户补充）**：**该问题仅在 ubuntu（192.168.1.201）孩子端出现，Windows 本机 app 客户端不复现**。两条症状（"未命名" + 重发不跳最新）在 Windows 正常 → 强烈指向 **ubuntu 客户端跑的是滞后构建**：当前代码里 `titleBase` 文件名回退（`custom-tools.ts:130`）、`Learn.tsx:209` 自动选中 effect（ISSUE-014）、以及下文 ① 的 `courses.title` 下传修复若存在则 Windows 已含、ubuntu 未含。即：**根因大概率不是"代码永远错"，而是"ubuntu 构建没拿到这些已存在的修复"**。
+  - **结论性排查顺序（必须先做）**：① 先核对 ubuntu 客户端版本/构建日期，确认是否含 `titleBase` 回退 + ISSUE-014 自动选中；② 若滞后 → **升级 ubuntu 客户端到当前构建并复测**，很可能直接消失，无需改代码；③ 若升级后仍在当前构建上复现 → 才是真代码 bug，按 ①② 改造方向修。
 - **改造方向**：
   ① **课名下传**：`display_content` 解析 `path` → 按 `topic` + `html_path` 匹配查 `courses` 取 `courses.title` 作默认 `title`（agent 显式 `title` 仍优先）；或在 agent 系统提示/教学方法里要求展示课程必须带 `title=课名`。列表恒显课名。
   ② **重发刷新（关键约束）**：**禁止用"完全重复就不显示"的逻辑**。即使重发的内容与上一课 100% 相同（path 相同、内容 hash 也相同），左侧也必须自动把"最近一次 display_content 的那份"重新选中并显示在最前/最新位置，方便用户查看——即去掉 `Learn.tsx:226` 的"同 filePath 即 `return prev` 整体丢弃"，改为：命中同 path 时就地替换内容 + **无条件重新 `setSelectedMaterialId(该项)` 并滚动定位到该项**；新增资料照常追加末条并选中。去重只用于避免"同一轮消息内连续推送多份同 path 资料时堆积成 N 条"，不用于"跨轮重发时吞掉显示"。
-  ③ **客户端版本**：确认 192.168.1.201 ubuntu 客户端构建是否含 `titleBase` 回退与 ISSUE-014 自动选中修复；若旧则升级。
+  ③ **优先：升级 ubuntu 客户端核对（环境差异，最高优先级）**：Windows 不复现 → 先确认 192.168.1.201 ubuntu 客户端构建是否含 `titleBase` 回退 + ISSUE-014 自动选中 + ① 的 `courses.title` 下传；若滞后则**升级该 ubuntu 客户端并复测**，很可能症状直接消失、无需改代码。仅在升级后仍于当前构建复现，才推进 ① ② 代码修复。
   ④ **回归**：display_content 新教材自动弹开（ISSUE-014）、去重不堆积（`:224` 注释）、列表 title 渲染（`:420`）仍正确。
 - **优先级**：待定（本会话仅记录，未实施）
 - **记录时间**：2026-08-31
@@ -370,4 +371,21 @@
   - `kb-sqlite.test.ts`：「真实数据冒烟」改走服务端 dbQuery RPC。
   - `agents-sqlite.test.ts`：mock config + writeTestLicense + registerTestChild（随机 UUID）；saveAgentPrompt 补 await。
   - 注：`event-poll-config.test.ts` 无需改（scheduler.ts mkdir 修复覆盖）。
+- **记录时间**：2026-08-31
+
+## [ISSUE-023] 孩子聊天框字号设为可调节设置项，入口放孩子左侧边栏
+
+- **类型**：Feature / 设置项（孩子端聊天字号调节）
+- **描述**：把聊天框里的字体大小变成可调设置项，调节入口放在孩子界面的左侧边栏（与现有「朗读语速」并列），方便家长/孩子随时放大或缩小聊天文字。
+- **现状 / 根因（已查证代码）**：
+  - **孩子聊天字号当前硬编码**：`.bubble-md-child { font-size: 30px }`（`styles.css:2797`，ISSUE-009 将 15px 放大一倍为 30px）；其内 h1–h6 为绝对 px（h1 36 / h2 34 / h3 32 / h4–h6 30，`styles.css:2830-2835`），`pre` 代码块 22px（`:2838`）。所有值写死，家长端 `.markdown-body`（`:2401` 15px）不受影响——字号调节**仅孩子聊天的 `.bubble-md-child` 作用域**。
+  - **边栏已有同类设置范式**：左侧边栏 `sidebar-rate` 区块（`Learn.tsx:713-739`）即「朗读语速」设置——展开态显示 `sidebar-section-label`+ `rate-grid` 按钮组、折叠态显示图标按钮（`Gauge`），状态 `rate` 为 `Learn.tsx:119` 的 `useState("+0%")`，经 `ChatWindow` 的 `rate` prop（`:836`）下传。字号设置**完全可套用同一骨架**（新增 `fontSize` state + 同类 UI 区块）。
+  - **持久化先例**：`useChatPanel.ts`（`:7/12/19/34/42`）用 `localStorage` 按 `chat:${key}:collapsed/width` 持久化聊天面板状态，刷新后保留；而当前 `rate` 仅 `useState`、**未持久化**（刷新即回默认）。字号设置建议**复用 localStorage 范式按 childId 持久化**，避免每次进 app 重调。
+- **改造方向**：
+  ① **CSS 变量化**：给 `.bubble-md-child` 改 `font-size: var(--child-chat-font, 30px)`，并将 h1–h6/pre 改为相对单位（如 `1.2em`/`0.9em`）或同样引用变量派生，使一处字号即整体等比缩放；`Learn.tsx` 聊天容器设 `style={{ "--child-chat-font": fontSizePx }}`（经 `ChatWindow` 透传或外层包裹）。
+  ② **边栏入口**：在 `sidebar-rate` 之后新增「聊天字号」区块（`Learn.tsx:739` 后），复用 `sidebar-section-label` + 控件：低龄友好建议**离散档位按钮**（小 22px / 中 30px(默认) / 大 38px / 特大 46px，沿用 `rate-grid` 样式），或 `<input type="range" min=16 max=48>` 滑块；折叠态给图标按钮（`Type`/`TextSize`）。
+  ③ **状态与持久化**：`Learn.tsx` 加 `const [fontSize, setFontSize] = useState(...)`，`useEffect` 从 `localStorage.getItem(\`chat:${childId}:fontSize\`)` 初始化、变更时写回；默认 30px 与现状一致。
+  ④ **作用域隔离**：仅对 `owner!=="parent"`（孩子聊天 `.bubble-md-child`）生效；家长端 `.markdown-body` 与资料面板不受影响（遵循 ISSUE-009 意图）。
+  ⑤ **回归**：ISSUE-009 放大/紧凑行距、ISSUE-017 资料查词浮层、`.bubble-md-child` 渲染（ChatWindow）不受影响；字号滑块拖动实时生效、跨刷新保留。
+- **优先级**：待定（本会话仅记录，未实施）
 - **记录时间**：2026-08-31
