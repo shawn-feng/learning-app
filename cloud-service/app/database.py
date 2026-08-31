@@ -28,7 +28,7 @@ async def init_db():
                 id TEXT PRIMARY KEY,
                 parent_id TEXT NOT NULL REFERENCES parents(id),
                 plan TEXT NOT NULL DEFAULT 'basic',
-                max_children INTEGER NOT NULL DEFAULT 2,
+                max_children INTEGER NOT NULL DEFAULT 4,
                 features TEXT,
                 starts_at DATETIME NOT NULL,
                 expires_at DATETIME NOT NULL,

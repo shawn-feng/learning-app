@@ -37,12 +37,13 @@ export function openDb(dataDir: string): DatabaseSync {
       updated TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS materials (
-      id TEXT PRIMARY KEY,
       parent_id TEXT NOT NULL,
+      id TEXT NOT NULL,
       path TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'other',
       size INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (parent_id, id)
     );
     CREATE INDEX IF NOT EXISTS idx_materials_parent ON materials(parent_id);
     CREATE TABLE IF NOT EXISTS files (
@@ -64,6 +65,34 @@ export function openDb(dataDir: string): DatabaseSync {
     db.exec("ALTER TABLE children ADD COLUMN profile_json TEXT");
   } catch {
     // 已存在则忽略
+  }
+  // 旧库迁移：materials 主键从单列 id（base64url(路径)）升级为复合主键 (parent_id, id)。
+  // 旧设计跨家长同路径冲突：ON CONFLICT 只更新 size/updated_at 不更新 parent_id，
+  // 导致后上传家长按 parent_id 查询不到自己的材料（list 空、content 404，2026-08-30 修复）。
+  try {
+    const oldSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='materials'").get() as
+      | { sql?: string }
+      | undefined)?.sql ?? "";
+    if (oldSql.includes("id TEXT PRIMARY KEY")) {
+      db.exec(`
+        ALTER TABLE materials RENAME TO materials_old;
+        CREATE TABLE materials (
+          parent_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          path TEXT NOT NULL,
+          type TEXT NOT NULL DEFAULT 'other',
+          size INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (parent_id, id)
+        );
+        INSERT INTO materials (parent_id, id, path, type, size, updated_at)
+          SELECT parent_id, id, path, type, size, updated_at FROM materials_old;
+        DROP TABLE materials_old;
+        CREATE INDEX IF NOT EXISTS idx_materials_parent ON materials(parent_id);
+      `);
+    }
+  } catch {
+    // 新库无旧表则忽略
   }
   return db;
 }

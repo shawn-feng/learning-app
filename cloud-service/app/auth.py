@@ -69,7 +69,7 @@ async def register(req: RegisterRequest, db=Depends(get_db)):
     now = datetime.now(timezone.utc)
     await db.execute(
         """INSERT INTO subscriptions (id, parent_id, plan, max_children, features, starts_at, expires_at, status)
-           VALUES (?, ?, 'basic', 2, '["learning"]', ?, ?, 'active')""",
+           VALUES (?, ?, 'basic', 4, '["learning"]', ?, ?, 'active')""",
         (str(uuid.uuid4()), parent_id, now.isoformat(), (now + timedelta(days=30)).isoformat()),
     )
     await db.commit()

@@ -47,6 +47,13 @@ tar -xzf /tmp/app.tar.gz -C /opt/learning-cloud   # 覆盖 app/
 systemctl restart learning-cloud
 ```
 
+### 云助手部署实操要点（2026-08-31 实测踩坑）
+
+1. **SendFile 落盘文件名 = `--Name` 参数值**，不是源文件名。`--Name deploy-auth-py` 会写到 `<TargetDir>/deploy-auth-py`。覆盖部署时源路径要用 `--Name` 的值（如 `/tmp/deploy/deploy-auth-py`）。
+2. **RunCommand 必须加 `--ContentEncoding Base64`**：`--CommandContent` 传 base64 时若不指定编码，服务器会把 base64 字符串当脚本执行，报 `File name too long`。
+3. SendFile 参数是 **`--InstanceId.n`**（RepeatList），不是 `--InstanceId`（会报 MissingParameter）。
+4. 查询 SendFile 结果用 `DescribeSendFileResults --InvokeId`；RunCommand 结果用 `DescribeInvocationResults --InvokeId`，Output 字段是 base64 需解码。
+
 ## 客户端配置
 
 `electron/lib/config.ts` 的 `getCloudApiBase()`：

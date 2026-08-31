@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -8,11 +8,40 @@ import path from "path";
 // process.cwd()/data（vitest 在仓库根目录运行，正好命中真实 data/children）。
 vi.mock("electron", () => ({ app: undefined }));
 
-import { getLearningSummary, progressSummaryToMarkdown, getTopicProgress, getCourseDailySummary } from "../electron/lib/learning-summary";
-import { migrateAllToSqlite } from "../electron/lib/kb-sqlite";
+// SPLIT：学习进度唯一真源在服务端 kb。测试用本地测试服务端 + 有效 token，
+// 数据指向临时目录（license.json 由 helper 签发，孩子 1f050a7f 属于测试家长 86a84278）。
+const mockTmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "learning-summary-"));
+vi.mock("../electron/lib/config", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../electron/lib/config")>();
+  return {
+    ...mod,
+    getDataDir: () => mockTmpRoot,
+    getLicensePath: () => path.join(mockTmpRoot, "license.json"),
+    getChildrenDir: () => path.join(mockTmpRoot, "children"),
+    getChildDir: (id: string) => path.join(mockTmpRoot, "children", id),
+    getSharedDir: () => path.join(mockTmpRoot, "shared"),
+    getSkillsDir: () => path.join(mockTmpRoot, "shared", "skills"),
+  };
+});
 
-// 真实存在的孩子（含 lunyu 主题，514 课）。ISSUE-006 的痛点就是 lunyu 正文几百行被整篇读入只为取 next。
+import { getLearningSummary, progressSummaryToMarkdown, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "../electron/lib/learning-summary";
+import { migrateAllToSqlite } from "../electron/lib/kb-sqlite";
+import { writeTestLicense, TEST_PARENT_ID } from "./helpers/server-token";
+
+// 测试家长名下的真实孩子（含 lunyu 主题，514 课）。ISSUE-006 的痛点就是 lunyu 正文几百行被整篇读入只为取 next。
 const CHILD = "1f050a7f-df8a-45b0-925a-1ffe2aa35674";
+
+beforeAll(async () => {
+  fs.mkdirSync(mockTmpRoot, { recursive: true });
+  // 该孩子属于测试家长 86a84278：签它的 token 才能读其服务端 kb
+  writeTestLicense(mockTmpRoot, TEST_PARENT_ID);
+  // 会话创建前远程预取进度 → 本地缓存（getLearningSummary 同步读缓存）
+  await fetchProgressRemote(CHILD);
+});
+
+afterAll(() => {
+  fs.rmSync(mockTmpRoot, { recursive: true, force: true });
+});
 
 describe("ISSUE-006 进度摘要（SQLite 真源，ISSUE-023 P2 后）", () => {
   it("getLearningSummary 从 kb.sqlite 拿到下一课（真实数据）", () => {
@@ -90,11 +119,11 @@ rules:
 });
 
 describe("ISSUE-027 进度看板钻取（主题 → 每课 → 当课汇总）", () => {
-  it("getTopicProgress 返回该主题的逐课明细（真实数据）", () => {
+  it("getTopicProgress 返回该主题的逐课明细（真实数据）", async () => {
     const s = getLearningSummary(CHILD);
     const lunyu = s.topics.find((t) => t.name === "论语")!;
     const topicDir = lunyu.topicKey; // "lunyu"（已归一化为纯拼音主题键）
-    const detail = getTopicProgress(CHILD, topicDir);
+    const detail = await getTopicProgress(CHILD, topicDir);
     expect(detail, "应取到 lunyu 主题明细").toBeTruthy();
     expect(detail!.topic).toBe(topicDir);
     expect(detail!.items.length).toBe(lunyu.total); // 明细课程数 = 视图统计 total
@@ -104,12 +133,12 @@ describe("ISSUE-027 进度看板钻取（主题 → 每课 → 当课汇总）",
     expect(["⬜", "✅"]).toContain(first.status);
   });
 
-  it("未知主题返回 null（不报错）", () => {
-    expect(getTopicProgress(CHILD, "no-such-topic")).toBeNull();
+  it("未知主题返回 null（不报错）", async () => {
+    expect(await getTopicProgress(CHILD, "no-such-topic")).toBeNull();
   });
 
-  it("getCourseDailySummary 返回该课的学习总结（来自 daily_entries，真实数据：论语学而篇第一章）", () => {
-    const list = getCourseDailySummary(CHILD, "论语", "论语学而篇第一章");
+  it("getCourseDailySummary 返回该课的学习总结（来自 daily_entries，真实数据：论语学而篇第一章）", async () => {
+    const list = await getCourseDailySummary(CHILD, "论语", "论语学而篇第一章");
     expect(Array.isArray(list), "应返回数组").toBe(true);
     expect(list.length, "该课应有学习总结记录（含重新系统学习等）").toBeGreaterThan(0);
     // 每条都应含日期 + 原文，且原文为 markdown 学习总结
@@ -122,8 +151,8 @@ describe("ISSUE-027 进度看板钻取（主题 → 每课 → 当课汇总）",
     }
   });
 
-  it("getCourseDailySummary 对无总结的课程返回空数组（不报错）", () => {
-    const list = getCourseDailySummary(CHILD, "论语", "并不存在的一课");
+  it("getCourseDailySummary 对无总结的课程返回空数组（不报错）", async () => {
+    const list = await getCourseDailySummary(CHILD, "论语", "并不存在的一课");
     expect(list).toEqual([]);
   });
 });

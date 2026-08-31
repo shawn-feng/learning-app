@@ -157,7 +157,7 @@ export function registerMaterialsRoutes(app: FastifyInstance, deps: MaterialsDep
       if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
       throw err;
     }
-    deps.db.prepare("DELETE FROM materials WHERE id = ?").run(id);
+    deps.db.prepare("DELETE FROM materials WHERE id = ? AND parent_id = ?").run(id, parentId);
     // 磁盘文件删除失败不阻断（索引已删；孤儿文件由后续清理兜底）
     try {
       if (fs.existsSync(abs)) fs.unlinkSync(abs);

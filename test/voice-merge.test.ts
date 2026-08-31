@@ -3,9 +3,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFile } from "child_process";
-import ffmpegStatic from "ffmpeg-static";
 
-import { extractWavPcm, concatWav, mergeWebmSegments, webmToWav16k } from "../electron/lib/voice/audio";
+import { probeFfmpeg, extractWavPcm, concatWav, mergeWebmSegments, webmToWav16k } from "../electron/lib/voice/audio";
 
 // ISSUE-021：多段 webm 语音（多次按住说话）合并为单个 16k/单声道/16bit WAV。
 // 合并核心 = 逐段转 WAV → 抽 PCM → 拼接 → 重写 44 字节标准头，无需 ffmpeg concat。
@@ -30,11 +29,12 @@ function makeWav(pcm: Buffer): Buffer {
 }
 
 const tmpCleanup: string[] = [];
-function genWebm(durationSec: number): Promise<Buffer> {
+async function genWebm(durationSec: number): Promise<Buffer> {
+  const ffmpeg = await probeFfmpeg();
   const out = path.join(os.tmpdir(), `gen-${Date.now()}-${Math.random().toString(36).slice(2)}.webm`);
   return new Promise((resolve, reject) => {
     execFile(
-      ffmpegStatic!,
+      ffmpeg,
       ["-y", "-f", "lavfi", "-i", `sine=frequency=440:duration=${durationSec}`, "-c:a", "libopus", out],
       { timeout: 20000 },
       (err) => {

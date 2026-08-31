@@ -1,8 +1,9 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import IconButton from "./IconButton";
-import { ArrowLeft, PanelRightClose } from "lucide-react";
+import { ArrowLeft, PanelRightClose, Volume2, X } from "lucide-react";
+import { lookupText, type LookupEntry } from "../lib/dictionary";
 import {
   EventThrottler,
   genRequestId,
@@ -45,6 +46,19 @@ interface PendingExec {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** ISSUE-017：查词浮层状态（视口坐标 + 选中文本 + 查询结果） */
+interface LookupState {
+  /** 浮层锚点（视口坐标，已叠加 iframe 偏移） */
+  x: number;
+  y: number;
+  /** 选中的原始文本 */
+  text: string;
+  entries: LookupEntry[];
+}
+
+/** 同一交互序列（mouseup 选中 → 随后 click）内 click 不应关闭浮层的时间窗 */
+const LOOKUP_CLICK_GRACE_MS = 400;
+
 /**
  * HTML 内容通过沙盒 iframe 渲染。
  * sandbox="allow-scripts" 让 JS 可以运行（番茄钟、点击交互等），
@@ -81,6 +95,57 @@ function HtmlFrame({
 }
 
 /**
+ * ISSUE-017：查词浮层（拼音 + 释义 + 朗读）。
+ * fixed 定位在选中坐标旁；点击浮层内部不关闭（stopPropagation），外部/Esc 关闭由父级处理。
+ */
+function WordLookupOverlay({
+  state,
+  onSpeak,
+  onClose,
+}: {
+  state: LookupState;
+  onSpeak: (text: string) => void;
+  onClose: () => void;
+}) {
+  // 粗略 clamp 到视口内（浮层宽约 240px、高约 180px），避免溢出
+  const MARGIN = 8;
+  const x = Math.min(Math.max(MARGIN, state.x), window.innerWidth - 240 - MARGIN);
+  const y = Math.min(Math.max(MARGIN, state.y), window.innerHeight - 180 - MARGIN);
+  return (
+    <div
+      className="word-lookup-overlay"
+      style={{ left: x, top: y }}
+      onClick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="字词释义"
+    >
+      <div className="word-lookup-head">
+        <span className="word-lookup-selected">{state.text}</span>
+        <IconButton icon={X} title="关闭" size={16} onClick={onClose} className="word-lookup-close" />
+      </div>
+      <div className="word-lookup-items">
+        {state.entries.map((en, i) => (
+          <div className="word-lookup-item" key={`${en.text}-${i}`}>
+            <span className="word-lookup-item-word">{en.text}</span>
+            <span className="word-lookup-item-py">{en.pinyin || "·"}</span>
+            <span className="word-lookup-item-meaning">{en.meaning || "（暂无释义）"}</span>
+            {en.text && (
+              <IconButton
+                icon={Volume2}
+                title={`朗读「${en.text}」`}
+                size={16}
+                onClick={() => onSpeak(en.text)}
+                className="word-lookup-item-speak"
+              />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
  * 学习资料面板：列表 + 详情两态。
  * - 列表：每一行是一次学习资料（当前会话里 AI 展示过的全部资料）
  * - 详情：点开后展示该份资料，可「返回列表」
@@ -99,6 +164,16 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   // ISSUE-011：资料朗读走 edge-tts（与聊天同链路）。audioRef=当前播放；seq 防乱序（新朗读取代旧回执）
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const ttsSeqRef = useRef(0);
+  // ISSUE-017：查词浮层状态 + 最近 lookup 时间戳（click 关闭浮层时避开同交互序列）。
+  // ⚠️ handler 在 useEffect 注册一次，闭包内 state 恒为初值 → 必须用 ref 同步读取（ISSUE-014 教训）
+  const [lookup, setLookup] = useState<LookupState | null>(null);
+  const lookupRef = useRef<LookupState | null>(null);
+  const lastLookupAtRef = useRef(0);
+  const showLookup = useCallback((s: LookupState | null) => {
+    lookupRef.current = s;
+    setLookup(s);
+  }, []);
+  const closeLookup = useCallback(() => showLookup(null), [showLookup]);
 
   /** 资料 html 朗读（speechSynthesis shim 上抛）→ edge-tts 合成播放，结束后回执 iframe 触发按钮复位 */
   const speakMaterialText = useCallback(async (text: string) => {
@@ -170,6 +245,24 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
           stopMaterialTts();
           return;
         }
+        // ISSUE-017：选中/双击字词 → 本地字典查询 → 浮层展示（不进页面操作记录）
+        if (evt.kind === "lookup") {
+          const text = (evt.detail as { text?: string })?.text ?? "";
+          const ex = (evt.detail as { x?: number })?.x ?? 0;
+          const ey = (evt.detail as { y?: number })?.y ?? 0;
+          const entries = lookupText(text);
+          if (!entries.length) return; // 无中文/查不到 → 不弹浮层
+          lastLookupAtRef.current = Date.now();
+          const rect = iframeRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          showLookup({ x: rect.left + ex, y: rect.top + ey, text, entries });
+          return;
+        }
+        // ISSUE-017：点击 iframe 别处（非本次选中交互）或滚动页面 → 关闭查词浮层
+        if (lookupRef.current && (evt.kind === "click" || evt.kind === "scroll")) {
+          const isSameGesture = evt.kind === "click" && Date.now() - lastLookupAtRef.current < LOOKUP_CLICK_GRACE_MS;
+          if (!isSameGesture) showLookup(null);
+        }
         // 节流兜底（桥脚本内已有轻量去重）：click/input/submit 同 key 3s 去重，scroll 800ms
         const now = Date.now();
         let key = evt.kind;
@@ -205,8 +298,18 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
       rejectPending("页面已关闭");
       readyRef.current = false;
       stopMaterialTts(); // ISSUE-011：面板卸载停止资料朗读
+      showLookup(null); // ISSUE-017：卸载关闭查词浮层
     };
-  }, [rejectPending, stopMaterialTts]);
+  }, [rejectPending, stopMaterialTts, showLookup]);
+
+  // ISSUE-017：Esc 关闭查词浮层
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") showLookup(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showLookup]);
 
   // 下行指令：postMessage 到 iframe，requestId 配对等待回执（10s 超时）
   const exec = useCallback(
@@ -255,7 +358,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
       );
     }
     return (
-      <div className="content-panel">
+      <div className="content-panel" onClick={closeLookup}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
           {onCollapse && (
@@ -268,12 +371,19 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
             html={injectBridge(cleanHtml)}
             title={selected.title}
             iframeRef={iframeRef}
-            onLoad={() => rejectPending("页面已刷新")}
+            onLoad={() => {
+              rejectPending("页面已刷新");
+              showLookup(null); // ISSUE-017：资料刷新后旧浮层坐标失效
+            }}
           />
         ) : (
           <div className="markdown-body">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanHtml}</ReactMarkdown>
           </div>
+        )}
+        {/* ISSUE-017：查词浮层（fixed 定位，点击外部空白/Esc/滚动关闭） */}
+        {lookup && (
+          <WordLookupOverlay state={lookup} onSpeak={speakMaterialText} onClose={closeLookup} />
         )}
       </div>
     );

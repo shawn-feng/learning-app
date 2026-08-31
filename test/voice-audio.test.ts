@@ -3,21 +3,23 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFile } from "child_process";
-import ffmpegStatic from "ffmpeg-static";
 
-import { webmToWav16k } from "../electron/lib/voice/audio";
+import { probeFfmpeg, webmToWav16k } from "../electron/lib/voice/audio";
 
 // ISSUE-014：MediaRecorder 极短录音/无数据时输出「只有 EBML 头」的半成品 webm，
 // ffmpeg 对 0 字节 ~1KB 级输入一律报 "Invalid data found when processing input"。
 // 修复：输入 < 2000 字节直接快速失败（前端阈值同步收紧）；ffmpeg 失败保留原始文件 + 报大小。
+// 注：ffmpeg 用 probeFfmpeg() 探测（FFMPEG_BIN > ffmpeg-static > 系统 PATH），
+// 避免依赖 ffmpeg-static 的二进制在本机损坏时测试全挂（实测 Windows 下 5.3.0 段错误）。
 
 const tmpCleanup: string[] = [];
 
-function genWebm(durationSec: number): Buffer {
+async function genWebm(durationSec: number): Promise<Buffer> {
+  const ffmpeg = await probeFfmpeg();
   const out = path.join(os.tmpdir(), `gen-${Date.now()}-${Math.random().toString(36).slice(2)}.webm`);
   return new Promise((resolve, reject) => {
     execFile(
-      ffmpegStatic!,
+      ffmpeg,
       ["-y", "-f", "lavfi", "-i", `sine=frequency=440:duration=${durationSec}`, "-c:a", "libopus", out],
       { timeout: 20000 },
       (err) => {

@@ -118,13 +118,13 @@ export function scanMaterials(
         updated_at: updatedAt,
       });
       db.prepare(
-        `INSERT INTO materials (id, parent_id, path, type, size, updated_at)
+        `INSERT INTO materials (parent_id, id, path, type, size, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+         ON CONFLICT(parent_id, id) DO UPDATE SET
            type = excluded.type,
            size = excluded.size,
            updated_at = excluded.updated_at`
-      ).run(encodeMaterialId(posix), parentId, posix, inferType(posix), stat.size, updatedAt);
+      ).run(parentId, encodeMaterialId(posix), posix, inferType(posix), stat.size, updatedAt);
     }
   }
 
@@ -152,13 +152,13 @@ export function upsertMaterialFile(
   const stat = fs.statSync(abs);
   const updatedAt = stat.mtime.toISOString();
   db.prepare(
-    `INSERT INTO materials (id, parent_id, path, type, size, updated_at)
+    `INSERT INTO materials (parent_id, id, path, type, size, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET
+     ON CONFLICT(parent_id, id) DO UPDATE SET
        type = excluded.type,
        size = excluded.size,
        updated_at = excluded.updated_at`
-  ).run(encodeMaterialId(relPosix), parentId, relPosix, inferType(relPosix), stat.size, updatedAt);
+  ).run(parentId, encodeMaterialId(relPosix), relPosix, inferType(relPosix), stat.size, updatedAt);
   return {
     id: encodeMaterialId(relPosix),
     path: relPosix,

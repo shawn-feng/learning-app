@@ -164,9 +164,101 @@ describe("BRIDGE_SCRIPT：桥脚本静态校验（安全 + 结构）", () => {
     expect(BRIDGE_SCRIPT).toContain('action === "read"');
   });
 
-  it("体积可控（< 12KB，超限提示优化）", () => {
+  it("体积可控（< 13KB，超限提示优化）", () => {
     const kb = BRIDGE_SCRIPT.length / 1024;
-    expect(kb).toBeLessThan(12);
+    expect(kb).toBeLessThan(13);
+  });
+});
+
+describe("BRIDGE_SCRIPT：lookup 查词事件（ISSUE-017）", () => {
+  function setupBridge(selectionText: string, collapsed = false) {
+    const sent: any[] = [];
+    const win: any = {
+      __piBridge: undefined,
+      parent: { postMessage: vi.fn((m: any) => sent.push(m)) },
+      addEventListener: vi.fn(),
+      getSelection: vi.fn(() => ({
+        isCollapsed: collapsed,
+        toString: () => selectionText,
+      })),
+    };
+    const doc: any = {
+      readyState: "complete",
+      title: "t",
+      addEventListener: vi.fn(),
+      scrollingElement: null,
+      documentElement: null,
+      querySelectorAll: () => [],
+      body: null,
+    };
+    vi.stubGlobal("window", win);
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("WeakMap", Map);
+    eval(BRIDGE_SCRIPT);
+    const handlers: Record<string, any[]> = {};
+    for (const c of doc.addEventListener.mock.calls) (handlers[c[0]] ||= []).push(c[1]);
+    const fire = (name: string, targetTag = "P", x = 100, y = 200) => {
+      for (const h of handlers[name] || []) h({ target: { nodeType: 1, tagName: targetTag }, clientX: x, clientY: y });
+    };
+    return { sent, win, doc, fire };
+  }
+
+  it("mouseup 选中中文 → 上抛 lookup（文本 + 坐标）", () => {
+    const { sent, fire } = setupBridge("月亮");
+    fire("mouseup");
+    const lookup = sent.find((m: any) => m.kind === "lookup");
+    expect(lookup).toBeTruthy();
+    expect(lookup.detail.text).toBe("月亮");
+    expect(lookup.detail.x).toBe(100);
+    expect(lookup.detail.y).toBe(200);
+  });
+
+  it("dblclick 也触发 lookup（双击选词兜底）", () => {
+    const { sent, fire } = setupBridge("苹果");
+    fire("dblclick");
+    expect(sent.some((m: any) => m.kind === "lookup" && m.detail.text === "苹果")).toBe(true);
+  });
+
+  it("无选中（isCollapsed）→ 不上抛", () => {
+    const { sent, fire } = setupBridge("", true);
+    fire("mouseup");
+    expect(sent.some((m: any) => m.kind === "lookup")).toBe(false);
+  });
+
+  it("纯英文/数字选中 → 不上抛（字典只有中文）", () => {
+    const { sent, fire } = setupBridge("hello world");
+    fire("mouseup");
+    fire("dblclick");
+    expect(sent.some((m: any) => m.kind === "lookup")).toBe(false);
+  });
+
+  it("表单内选中（INPUT/TEXTAREA）→ 不上抛（编辑操作）", () => {
+    const { sent, fire } = setupBridge("苹果");
+    fire("mouseup", "INPUT");
+    fire("mouseup", "TEXTAREA");
+    expect(sent.some((m: any) => m.kind === "lookup")).toBe(false);
+  });
+
+  it("超长选中（>8 字）→ 不上抛（整段复制）", () => {
+    const { sent, fire } = setupBridge("一二三四五六七八九十");
+    fire("mouseup");
+    expect(sent.some((m: any) => m.kind === "lookup")).toBe(false);
+  });
+
+  it("同文本近坐标 2s 内节流：mouseup + dblclick 只报一次", () => {
+    const { sent, fire } = setupBridge("月亮");
+    fire("mouseup");
+    fire("dblclick");
+    expect(sent.filter((m: any) => m.kind === "lookup").length).toBe(1);
+  });
+
+  it("lookup 事件携带 seq/ts 且不包含危险字段（无 eval 等）", () => {
+    const { sent, fire } = setupBridge("月亮");
+    fire("mouseup");
+    const lookup = sent.find((m: any) => m.kind === "lookup");
+    expect(typeof lookup.seq).toBe("number");
+    expect(typeof lookup.ts).toBe("number");
+    expect(lookup.type).toBe("page:event");
   });
 });
 

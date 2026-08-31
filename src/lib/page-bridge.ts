@@ -15,7 +15,7 @@
 export const PAGE_MSG_PREFIX = "page:";
 export const PAGE_MSG_TYPES = ["page:event", "page:ready", "page:exec", "page:exec:result"] as const;
 
-export type PageEventKind = "open" | "click" | "scroll" | "input" | "submit" | "pagehide" | "tts" | "tts-cancel";
+export type PageEventKind = "open" | "click" | "scroll" | "input" | "submit" | "pagehide" | "tts" | "tts-cancel" | "lookup";
 
 /** iframe → 父页面：互动事件上报 */
 export interface PageEvent {
@@ -35,6 +35,9 @@ export interface PageEvent {
     name?: string;
     value?: string;
     action?: string;
+    /** lookup：选中文本相对 iframe 视口左上角的坐标（父页面叠加 iframe 自身偏移定位浮层） */
+    x?: number;
+    y?: number;
   };
 }
 
@@ -214,6 +217,35 @@ export const BRIDGE_SCRIPT = `(function () {
     var href = el.getAttribute && el.getAttribute("href");
     if (href && href.indexOf("#") !== 0) d.href = href;
     send({ type: "page:event", kind: "click", detail: d });
+  }, true);
+
+  // —— ISSUE-017：选中/双击中文 → 上抛 lookup（父页面浮层显示拼音+释义）——
+  // 只处理非表单元素中的中文选中（1-8 字）；捕获阶段、不 preventDefault/stopPropagation，
+  // 不干扰课程脚本自身选中逻辑；坐标相对 iframe 视口，父页面叠加 iframe 偏移定位浮层。
+  // mouseup（拖选/单击选中）与 dblclick（双击选词）双通道 + throttled 去重防双报。
+  var CN_RE = /[\\u4e00-\\u9fa5]/;
+  function reportLookup(x, y) {
+    var sel = window.getSelection && window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    var text = (sel.toString() || "").replace(/\\s+/g, " ").trim();
+    if (!text || !CN_RE.test(text)) return; // 无中文（纯英文/数字/符号）不查
+    if (text.length > 8) return;            // 整段复制不查
+    var key = "lk:" + text + ":" + Math.round(x / 24) + ":" + Math.round(y / 24);
+    if (!throttled(key, 2000)) return;
+    send({ type: "page:event", kind: "lookup", detail: { text: text, x: x, y: y } });
+  }
+  function isFormTarget(t) {
+    if (!t || t.nodeType !== 1) return false;
+    var tag = t.tagName ? t.tagName.toLowerCase() : "";
+    return tag === "input" || tag === "textarea" || tag === "select";
+  }
+  document.addEventListener("mouseup", function (e) {
+    if (isFormTarget(e.target)) return; // 表单内选中是编辑操作，不查词
+    reportLookup(e.clientX, e.clientY);
+  }, true);
+  document.addEventListener("dblclick", function (e) {
+    if (isFormTarget(e.target)) return;
+    reportLookup(e.clientX, e.clientY);
   }, true);
 
   document.addEventListener("scroll", function () {

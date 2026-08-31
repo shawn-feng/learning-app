@@ -7,20 +7,31 @@ import path from "path";
 vi.mock("electron", () => ({ app: undefined }));
 
 const mockTmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "parent-stats-"));
-vi.mock("../electron/lib/config", () => ({
-  getDataDir: () => mockTmpRoot,
-  getChildrenDir: () => path.join(mockTmpRoot, "children"),
-  getChildDir: (id: string) => path.join(mockTmpRoot, "children", id),
-  getSharedDir: () => path.join(mockTmpRoot, "shared"),
-  getSkillsDir: () => path.join(mockTmpRoot, "shared", "skills"),
-}));
+// importOriginal 保留全部真实导出，只覆盖数据根（SPLIT 后 config 新增 getServerUrl/getLicensePath 等，
+// 手写导出会缺项报 No "xxx" export is defined；parent_stats 工具链经 parent-library 间接依赖 config）。
+vi.mock("../electron/lib/config", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../electron/lib/config")>();
+  return {
+    ...mod,
+    getDataDir: () => mockTmpRoot,
+    // 真实 getLicensePath 内部引用真实 getDataDir（PI_TEST_DATA_DIR），必须显式覆盖
+    getLicensePath: () => path.join(mockTmpRoot, "license.json"),
+    getChildrenDir: () => path.join(mockTmpRoot, "children"),
+    getChildDir: (id: string) => path.join(mockTmpRoot, "children", id),
+    getSharedDir: () => path.join(mockTmpRoot, "shared"),
+    getSkillsDir: () => path.join(mockTmpRoot, "shared", "skills"),
+  };
+});
 
 import { parentStatsTool, logActivityTool, moveFileTool, copyFileTool, displayContentTool } from "../electron/lib/custom-tools";
-import { upsertParentTopic, allocateTopicToChild, getActivityLogPath, appendActivityLog } from "../electron/lib/parent-library";
+import { upsertParentTopic, allocateTopicToChild, getActivityLogPath, appendActivityLog, copyMaterialIntoParent } from "../electron/lib/parent-library";
 import { insertCourse, insertDailyEntry, openKbDb } from "../electron/lib/kb-sqlite";
 import { appendTokenLog } from "../electron/lib/token-stats";
+import { writeTestLicense, registerTestChild } from "./helpers/server-token";
+import { dbExec, dbQuery } from "../electron/lib/client-data";
 
-const CHILD = "stats-child-001";
+// children.id 是服务端全局主键：每用例随机 childId，避免跨用例冲突（同 parent-library.test）
+let CHILD = "";
 
 async function run(params: any): Promise<string> {
   const r = await parentStatsTool.execute("call-1", params, {} as any, undefined, { cwd: mockTmpRoot } as any);
@@ -28,10 +39,14 @@ async function run(params: any): Promise<string> {
   return text;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   fs.rmSync(mockTmpRoot, { recursive: true, force: true });
   fs.mkdirSync(mockTmpRoot, { recursive: true });
   fs.mkdirSync(path.join(mockTmpRoot, "children"), { recursive: true });
+  // SPLIT：progress/daily 走服务端 kb RPC → 需有效 token + 服务端已注册的孩子
+  writeTestLicense(mockTmpRoot, crypto.randomUUID());
+  CHILD = crypto.randomUUID();
+  await registerTestChild(mockTmpRoot, CHILD);
 });
 
 afterAll(() => {
@@ -75,20 +90,34 @@ describe("parent_stats 只读统计工具（统一家长提示词配套）", () 
 
   it("progress：无 kb.sqlite 返回提示，不抛错", async () => {
     const text = await run({ type: "progress", childId: CHILD });
-    expect(text).toContain("暂无学习数据");
+    expect(text).toContain("尚未分配任何学习主题");
   });
 
   it("progress：有分配主题时输出进度 markdown（只读不改数据）", async () => {
-    upsertParentTopic(
+    await upsertParentTopic(
       "default",
       { name: "论语", topicKey: "lunyu", method: "# 方法" },
       [{ title: "论语学而篇第一章", lessonMethod: "朗读" }]
     );
-    const childDir = path.join(mockTmpRoot, "children", CHILD);
-    fs.mkdirSync(childDir, { recursive: true });
-    // 先建孩子进度（已学 ✅），再分配快照——快照不覆盖孩子进度
-    insertCourse(childDir, { topic: "lunyu", title: "论语学而篇第一章", status: "✅", mastery: "良好" });
-    allocateTopicToChild("default", CHILD, "lunyu");
+    // SPLIT：孩子 kb 在服务端，用 kb.courses.upsert 预置已学进度，再分配快照——快照不覆盖孩子进度
+    await dbExec("kb.courses.upsert", {
+      child_id: CHILD,
+      topic: "lunyu",
+      title: "论语学而篇第一章",
+      sort_order: 0,
+      status: "✅",
+      mastery: "良好",
+      first_learned: "",
+      last_review: "",
+      review_count: 0,
+      material: "",
+      send_material: "",
+      tags: "",
+      lesson_method: "",
+      html_path: "",
+      teaching_copy: "",
+    });
+    await allocateTopicToChild("default", CHILD, "lunyu");
 
     const text = await run({ type: "progress", childId: CHILD });
     expect(text).toContain("学习进度");
@@ -96,21 +125,16 @@ describe("parent_stats 只读统计工具（统一家长提示词配套）", () 
     expect(text).toContain("✅");
 
     // 只读验证：查询后课程进度未被改动
-    const db = openKbDb(childDir);
-    try {
-      const row = db.prepare("SELECT status, mastery FROM courses WHERE topic = 'lunyu'").get() as any;
-      expect(row.status).toBe("✅");
-      expect(row.mastery).toBe("良好");
-    } finally {
-      db.close();
-    }
+    const rows = await dbQuery<any[]>("kb.courses.list", { child_id: CHILD, topic: "lunyu" });
+    const c = rows.find((r) => r.title === "论语学而篇第一章")!;
+    expect(c.status).toBe("✅");
+    expect(c.mastery).toBe("良好");
   });
 
   it("daily：有记录时输出每日学习记录；缺省日期不抛错", async () => {
-    const childDir = path.join(mockTmpRoot, "children", CHILD);
-    fs.mkdirSync(childDir, { recursive: true });
-    insertDailyEntry(childDir, { date: "2026-08-24", block: "学习", title: "论语第一章", content: "- 标签：学习\n读完第一章" });
-    insertDailyEntry(childDir, { date: "2026-08-24", block: "生活", title: "帮妈妈洗碗", content: "- 标签：劳动\n主动帮忙" });
+    // SPLIT：每日记录在服务端 kb（kb.daily_entries.insert，INSERT OR REPLACE 按 date/block/title）
+    await dbExec("kb.daily_entries.insert", { child_id: CHILD, date: "2026-08-24", block: "学习", title: "论语第一章", raw: "读完第一章", tags: "学习" });
+    await dbExec("kb.daily_entries.insert", { child_id: CHILD, date: "2026-08-24", block: "生活", title: "帮妈妈洗碗", raw: "主动帮忙", tags: "劳动" });
 
     const text = await run({ type: "daily", childId: CHILD, date: "2026-08-24" });
     expect(text).toContain("每日学习记录");
@@ -210,11 +234,17 @@ describe("move_file / copy_file 文件整理工具", () => {
 describe("display_content 路径解析（两层平铺 + 每课子目录/index.html）", () => {
   const ctx = { cwd: path.join(mockTmpRoot, "children", CHILD) } as any;
 
-  beforeEach(() => {
-    fs.mkdirSync(path.join(mockTmpRoot, "parents", "default", "materials", "qianziwen", "千字文-02-云腾致雨-鳞潜羽翔"), { recursive: true });
-    fs.mkdirSync(path.join(mockTmpRoot, "parents", "default", "materials", "lunyu"), { recursive: true });
-    fs.writeFileSync(path.join(mockTmpRoot, "parents", "default", "materials", "qianziwen", "千字文-02-云腾致雨-鳞潜羽翔", "index.html"), "<html>02段</html>", "utf-8");
-    fs.writeFileSync(path.join(mockTmpRoot, "parents", "default", "materials", "lunyu", "论语学而篇第一章.html"), "<html>第一章</html>", "utf-8");
+  beforeEach(async () => {
+    // SPLIT：资料唯一真源在服务端 → 先把测试 html 上传到服务端材料库，display_content 远程拉取
+    const qzwDir = path.join(mockTmpRoot, "src", "qianziwen", "千字文-02-云腾致雨-鳞潜羽翔");
+    fs.mkdirSync(qzwDir, { recursive: true });
+    fs.writeFileSync(path.join(qzwDir, "index.html"), "<html>02段</html>", "utf-8");
+    const lunyuDir = path.join(mockTmpRoot, "src", "lunyu");
+    fs.mkdirSync(lunyuDir, { recursive: true });
+    fs.writeFileSync(path.join(lunyuDir, "论语学而篇第一章.html"), "<html>第一章</html>", "utf-8");
+    // 上传：千字文每课一子目录（subDir=课目录）+ 论语两层平铺
+    await copyMaterialIntoParent("default", "qianziwen", path.join(qzwDir, "index.html"), "千字文-02-云腾致雨-鳞潜羽翔");
+    await copyMaterialIntoParent("default", "lunyu", path.join(lunyuDir, "论语学而篇第一章.html"));
   });
 
   it("每课子目录/index.html 三层结构可正常展示（ISSUE-037 事故修复）", async () => {
@@ -239,6 +269,6 @@ describe("display_content 路径解析（两层平铺 + 每课子目录/index.ht
   it("文件不存在时报错（原事故报错信息）", async () => {
     await expect(
       displayContentTool.execute("d4", { path: "materials/qianziwen/千字文-99-不存在/index.html" }, {} as any, undefined, ctx)
-    ).rejects.toThrow(/资料文件不存在/);
+    ).rejects.toThrow(/资料拉取失败/);
   });
 });

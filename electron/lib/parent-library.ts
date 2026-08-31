@@ -607,7 +607,11 @@ export async function getParentContentForChild(
   // 远程试拉校验文件真实存在（方案 A 无本地缓存，本地校验恒失败——2026-08-28 修复）
   if (row.html_path) {
     try {
-      await fetchMaterialContent(row.html_path);
+      // ⚠️ 兼容两种存储格式：新写入（上传自动关联，<topic>/<file>）与旧数据/手动填写
+      // （materials/<topic>/<file>）。服务端材料 id = base64url(相对 materials 根的路径)，
+      // 必须剥掉 materials/ 前缀，否则 404 → htmlPath 恒 not found（2026-08-30 测试暴露）。
+      const rel = row.html_path.replace(/^materials\//, "");
+      await fetchMaterialContent(rel);
       return { found: true, content: row.html_path };
     } catch {
       return { found: false, content: "" };

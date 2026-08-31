@@ -10,11 +10,10 @@
  */
 import fs from "fs";
 import path from "path";
-import { getDataDir, getChildDir } from "./config";
+import { getDataDir } from "./config";
 import { apiCall } from "./sync-manager";
 import { allocateTopicToChild, DEFAULT_PARENT_ID } from "./parent-library";
 import { dbExec, dbQuery } from "./client-data";
-import { openKbDb } from "./kb-sqlite";
 
 // ================= 分配包（数据，不含文件） =================
 
@@ -125,36 +124,47 @@ export async function ackDeliveries(childId: string, ids: string[]): Promise<voi
 
 // ================= 进度摘要（只传 JSON，不传 kb.sqlite） =================
 
-/** 孩子端：本地汇总 kb.sqlite → 摘要 JSON（主题/课程完成数 + 最近 daily）。 */
-export function buildProgressSummary(childId: string): any {
-  const childDir = getChildDir(childId);
-  if (!fs.existsSync(path.join(childDir, "kb.sqlite"))) return null;
-  const db = openKbDb(childDir);
-  try {
-    const topics = db
-      .prepare("SELECT name, topic_key, progress FROM topics ORDER BY topic_key")
-      .all() as unknown as Array<{ name: string; topic_key: string; progress: string }>;
-    const list = topics.map((t) => {
-      const key = t.topic_key;
-      const total = (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ?").get(key) as any)?.c ?? 0;
-      const done =
-        (db.prepare("SELECT COUNT(*) AS c FROM courses WHERE topic = ? AND status = '✅'").get(key) as any)?.c ??
-        0;
-      // 注：云端摘要 JSON 字段名沿用 `file`（与 cloud-service API 契约兼容），值取 topic_key（纯拼音主题键）
-      return { name: t.name, file: t.topic_key, progress: t.progress, courses: total, done };
-    });
-    let daily: Array<{ date: string; summary: string }> = [];
-    try {
-      daily = db
-        .prepare("SELECT date, summary FROM daily ORDER BY date DESC LIMIT 5")
-        .all() as unknown as Array<{ date: string; summary: string }>;
-    } catch {
-      daily = []; // daily 表未建（无记录）时忽略
-    }
-    return { generatedAt: new Date().toISOString(), topics: list, daily };
-  } finally {
-    db.close();
+/** 孩子端：服务端汇总孩子 kb → 摘要 JSON（主题/课程完成数 + 最近 daily）。 */
+export async function buildProgressSummary(childId: string): Promise<any> {
+  // SPLIT：孩子 kb 在服务端唯一真源，汇总走 kb RPC（不再读本地 kb.sqlite，2026-08-30 修复）
+  const [topics, courses] = await Promise.all([
+    dbQuery<Array<{ name: string; topic_key: string; progress: string }>>("kb.topics.list", { child_id: childId }).catch(() => []),
+    dbQuery<Array<Record<string, unknown>>>("kb.courses.list", { child_id: childId }).catch(() => []),
+  ]);
+  if (!topics?.length && !courses?.length) return null; // 孩子未学习过
+  const byTopic = new Map<string, Array<Record<string, unknown>>>();
+  for (const c of courses ?? []) {
+    const t = String(c.topic);
+    if (!byTopic.has(t)) byTopic.set(t, []);
+    byTopic.get(t)!.push(c);
   }
+  const list = (topics ?? []).map((t) => {
+    const cs = byTopic.get(t.topic_key) ?? [];
+    return {
+      name: t.name,
+      // 注：云端摘要 JSON 字段名沿用 `file`（与 cloud-service API 契约兼容），值取 topic_key（纯拼音主题键）
+      file: t.topic_key,
+      progress: t.progress || "",
+      courses: cs.length,
+      done: cs.filter((c) => String(c.status) === "✅").length,
+    };
+  });
+  let daily: Array<{ date: string; summary: string }> = [];
+  try {
+    const rows = await dbQuery<Array<{ date: string; raw: string }>>("kb.daily_entries.query", { child_id: childId }).catch(() => []);
+    const byDate = new Map<string, string[]>();
+    for (const r of rows ?? []) {
+      if (!byDate.has(r.date)) byDate.set(r.date, []);
+      byDate.get(r.date)!.push(r.raw);
+    }
+    daily = [...byDate.entries()]
+      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+      .slice(0, 5)
+      .map(([date, raws]) => ({ date, summary: raws.join("\n") }));
+  } catch {
+    daily = []; // daily 表未建（无记录）时忽略
+  }
+  return { generatedAt: new Date().toISOString(), topics: list, daily };
 }
 
 /** 孩子端：上传进度摘要（覆盖云端旧摘要，只存一份）。 */
@@ -195,8 +205,8 @@ export async function pushProgressIfRequested(childId: string): Promise<boolean>
     if (!data.requested_at) return false;
     const state = readProgressState();
     if (String(data.requested_at) <= (state[childId] || "")) return false;
-    const summary = buildProgressSummary(childId);
-    if (!summary) return false; // 本地无 kb.sqlite（孩子未学习过）
+    const summary = await buildProgressSummary(childId);
+    if (!summary) return false; // 孩子未学习过
     await uploadProgressSummary(childId, summary);
     state[childId] = String(data.requested_at);
     saveProgressState(state);
