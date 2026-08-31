@@ -243,3 +243,131 @@
   ④ 注意 `LearningDashboard` 自身内部可能有独立布局/滚动，折叠其**外层容器**即可，无需改动其内部。
 - **优先级**：待定（本会话仅记录，未实施）
 - **记录时间**：2026-08-30
+
+## [ISSUE-017] 孩子界面：学习资料点击/选中不认识的字词，显示读音+释义（不修改资料 html）
+
+- **类型**：需求 / 功能（学习辅助）
+- **描述**：孩子年龄小，学习资料（iframe 内的课程 html）里有不认识的字词。希望孩子**点击或选中**某个字词，就能**显示该字词的读音和意思**（拼音/释义），降低阅读门槛。要求：**不修改任何学习资料 html 文件本身**就能实现（资料 html 由课程生成器产出、存量多，不应逐个改）。
+- **可行性（已查证，可行）**：资料 html 经 `injectBridge(html)` 注入 `BRIDGE_SCRIPT` 桥脚本（`src/lib/page-bridge.ts:388`、脚本体 :95）运行在 iframe 内，经 `window.parent.postMessage` 与父页面（`MaterialsPanel.tsx:104` send / :152 handler）双向通讯——ISSUE-011 的 speechSynthesis 接管正是同机制、已验证。**iframe 为 opaque origin（sandbox 不带 allow-same-origin，`MaterialsPanel.tsx:75`）→ 父页面不能直接读 iframe DOM，但桥脚本能读自己 DOM 并上抛**，故「捕获选中文本」在 iframe 内脚本做即可，不改资料 html。
+- **现状 / 排查入口**：
+  - 上行通道：`BRIDGE_SCRIPT` 的 `send(msg)`（`page-bridge.ts:101-105`）→ `window.parent.postMessage({type:"page:event", kind, detail}, "*")`；父 handler 在 `MaterialsPanel.tsx:152-209`（按 `data.type`/`kind` 分发，现有 `tts`/`tts-cancel`/`click`/`scroll` 等）。
+  - 事件监听约定：全部捕获阶段、绝不 preventDefault/stopPropagation，不干扰课程脚本（`page-bridge.ts:204-205`）——新增 lookup 监听须遵守。
+  - 读音复用：资料朗读已走 `speakMaterialText(text)` → `window.api.voiceTts`（edge-tts，与聊天同音色，ISSUE-011）——lookup 的「读音」可直接复用。
+  - 释义数据源：**当前代码无中文字典**。需新增（见改造方向④）。
+- **改造方向**：
+  ① **捕获交互（桥脚本内）**：在 `BRIDGE_SCRIPT` 增加监听——孩子「选中文字后松开（mouseup + getSelection）」或「双击单字（dblclick）」→ 取选中/命中文本，避免与课程已有单击发音冲突（用选区/双击触发，不拦单击）。可附点击坐标 clientX/clientY 供浮层定位。
+  ② **上抛父页面**：新增 `kind: "lookup"`（detail 含 text + 坐标），send 上行；`MaterialsPanel` handler 增加 `lookup` 分支（不进 `onPageEvent` 页面操作记录、不自动投 agent，遵循 ISSUE-015）。
+  ③ **父页面浮层**：`MaterialsPanel` 上方覆盖一小卡片（拼音 + 释义 + 🔊 朗读按钮），按需定位到字词附近（用②的坐标）；点空白关闭。
+  ④ **释义数据源**：起步用**本地内置汉字/词语字典（json，离线、隐私友好）**；进阶可选在线词典 API（需联网、国内可达性评估）；可在主进程/electron 侧或 server 侧内置字典，经 IPC/接口返回释义。建议先做本地字典（覆盖常用字 + 课程高频词）。
+  ⑤ **分词/优先级**：选中文本优先整词查（词典精确匹配词条）；否则按单字拆分逐字展示（适合「点单字查字」场景）；也支持直接双击单字查该字。
+- **优先级**：已完成 ✅（2026-08-31 实施）
+- **实施记录（2026-08-31）**：
+  - ① 桥脚本（`page-bridge.ts` BRIDGE_SCRIPT）：新增 `mouseup`（拖选）+ `dblclick`（双击选词）监听（捕获阶段、不 preventDefault），`getSelection` 取文本——过滤：无选中/纯英文数字/表单内（input/textarea/select）/超 8 字均不上抛；坐标随事件上抛（`detail.x/y`，相对 iframe 视口）；同文本近坐标 2s 节流防 mouseup+dblclick 双报。`PageEventKind` 加 `"lookup"`，`detail` 加 `x/y`。
+  - ② 父页面（`MaterialsPanel.tsx`）：handler 加 `lookup` 分支——`lookupText()` 本地查词 → `WordLookupOverlay` 浮层（fixed 定位：iframe rect + clientX/Y，clamp 视口内）。**不进 `onPageEvent`**（遵循 ISSUE-015）。关闭：点浮层外空白（content-panel onClick）、Esc、iframe 内后续 click（非同交互序列 400ms 宽限）/scroll、资料刷新/卸载。⚠️ handler 闭包内 state 恒初值 → `lookupRef` + `showLookup` 同步（ISSUE-014 教训）。浮层条目：大字 + 拼音（多音空格分隔）+ 释义 + 🔊 朗读（复用 `speakMaterialText` → edge-tts）。
+  - ③ 本地字典：`scripts/dict-build/`（chinese-xinhua word.json 16142 条 + pinyin-pro 多音补全）→ `src/lib/dict/chars.json`（14809 字，425 核心字儿童化释义覆盖）+ `words.json`（713 儿童高频词）；`overrides.mjs` 为儿童化覆盖表（**构建时合并，覆盖表拼音列含常用多音如「行 xíng háng」**）。构建：`node scripts/dict-build/build-chars.mjs`。
+  - ④ 查询模块 `src/lib/dictionary.ts`：`lookupText()` 整词优先 → 贪心最长词拆分（首字分桶、词长降序、≤4 字）→ 逐字兜底；非中文跳过。数据经 `resolveJsonModule` 内联进渲染 bundle（+~0.7MB）。
+  - ⑤ 测试：`test/dictionary.test.ts`（8 例）+ `test/page-bridge.test.ts` 新增 8 例 lookup 桥测试 → 42 例全绿；`tsc --noEmit` 无业务错误；`npm run build` 成功。桥体积 12.04KB（阈值 12→13KB）。
+  - **遗留**：全量 vitest 16 文件失败系「无法连接服务端（127.0.0.1:8788，SPLIT 服务端未启动）」环境依赖，与本次改动无交集（page-bridge/dictionary 相关 42 例已独立验证全绿）。
+
+## [ISSUE-018] 孩子界面：每学完一课压缩当前会话历史，节省 token
+
+- **类型**：需求 / 性能（token 优化）
+- **描述**：孩子每课学习都是新内容，与前面课程关系不大。希望**每学完一课后，把当前会话里前面课程的对话压缩/摘要掉**，只保留最近本课上下文与学习进度，从而节省 token（长课/多轮尤其明显）。
+- **现状 / 排查入口（已查证）**：
+  - **已有被动 compaction（非「每课」主动压）**：`electron/lib/user-init.ts:54` `buildChildSettings()` 返回 settings，`compaction: { enabled: true, reserveTokens: 8192, keepRecentTokens: 10000 }`——SDK 在上下文接近模型上限（contextWindow - reserveTokens）时自动把旧消息摘要化、保留最近 10k token。**这是「满了才压」的被动机制，不是「每课结束主动压」，长课中途不省 token。**
+  - **按天总结（非压缩当前会话）**：`electron/lib/daily-summary.ts` `summarizeDailyConversation`（按天把对话摘要写入 daily 文件）+ `summarizeConversationTool`（`summarize_conversation` 工具，供 agent 主动调）；`pi-session.ts:357` `maybeSummarizeBeforeNewSession` 在**开新会话前**对「今天之前最后有会话的一天」做按天汇总写入 daily（fire-and-forget）。这些是「持久化到 daily 供新会话首轮注入」，不压缩/缩减**当前会话**历史本身。
+  - **自动 newSession 归档**：`pi-session.ts:425` `shouldAutoNewSession` 跨天/过时间节点时 `mgr.newSession()`（旧会话文件归档为历史、开空会话）——与「压缩当前会话」不同（归档=另开新会话，旧历史脱离当前上下文但不摘要替换；触发条件是时间而非「课」）。
+  - **session API 面**：当前用到 `session.setThinkingLevel` / `dispose` / `sessionManager.newSession`（`pi-session.ts:455/568/615/429`），**未见手动 `compact()` 调用**；compaction 由 settings 被动驱动，疑似无公开手动触发接口（待确认）。
+- **改造方向**：
+  ① **确认 SDK 是否暴露手动 compact**：查 `node_modules/@earendil-works/pi-coding-agent` 的 AgentSession 类型/方法（如 `session.compact()`）；若有直接调用；若无，自实现如下②。
+  ② **自实现「压缩当前会话」**：取当前会话 jsonl 历史 → 调 LLM 摘要（复用 `summarizeDailyConversation` 的摘要 prompt/逻辑）→ 将旧消息替换为一条/几条摘要消息，**保留最近本课对话 + 学习进度摘要**（progressContext 类），丢弃前面课程逐轮细节。与 SDK 自动 compaction 互补（主动压=提前省 token，被动压=满了兜底）。
+  ③ **「一课完成」触发信号（关键，需确定）**：
+     - 推荐：**display_content 切换到不同课程资料时**（`Learn.tsx` 的 display_content 链路 :202-215 materials 变化 effect）——孩子打开新课资料意味上一课告一段落，触发对上一课对话压缩；
+     - 备选：新增 agent 工具 `compact_session`（让 agent 判断一课学完后自调）；或 UI（孩子/家长端）加「本课完成·压缩会话」按钮。
+  ④ **防误压**：仅在「课程切换 / 明确一课完成」时触发，不每轮压；压缩前可顺带把本课要点写 daily（与现有 summarize 互补）。
+  ⑤ **兼容性**：压缩后系统提示/AGENTS/进度概览仍由 SDK 首轮自动附加（`pi-session.ts:404` systemPromptOverride + progressContext），不受影响。
+- **优先级**：待定（本会话仅记录，未实施）
+- **记录时间**：2026-08-31
+
+## [ISSUE-019] 家长端按孩子设置课程时间段，上课/下课在 app 顶部 1/3 区域提醒（铃声 + 语音播报）
+
+- **类型**：需求 / 新功能（家长端配置 + 孩子端提醒）
+- **描述**：在**家长界面为每个孩子单独设置课程时间段**（上课时间、下课时间，可多段/课表式）。到了上课/下课时间点，在孩子 app 界面**上方三分之一区域**弹出醒目提示（上课/下课），并**伴随铃声或语音播报**（如「上课时间到了，请开始学习」/「下课啦，休息一下」）。
+- **现状 / 排查入口（已查证）**：
+  - **按孩子配时间的现成骨架**：`electron/lib/scheduler.ts` 的 `DEFAULT_CHILD_CONFIG` 已有 `recording: { enabled, times[], onNewSession }`，配置经 `scheduler:config:get/set`（`preload.ts:200`）按 childId 存取，UI 在 `src/components/SchedulerSettings.tsx`（逐孩子卡片、时间用 `<input type="time">`、可增删多时间点）——**课程时间段配置 UI 与存储可完全照搬这套「按 childId + 多时间点」结构**，无需新造数据层。
+  - **每分钟触发定时器已存在**：`scheduler.ts` 内已有 per-minute tick（`cc.recording.times.includes(nowMin)`，`scheduler.ts:345/442`），在 tick 里比对当前时间与各孩子配置即可触发——课程提醒可**复用同一计时循环**，新增 `classTimes` 比对 + 起止跳变检测（同一分钟只触发一次，用 lastFired 防重）。
+  - **语音播报链路已通**：`electron/lib/ipc-handlers.ts:1425` `ipcMain.handle("voice:tts", … synthesize(text, opts))` 返回 mp3 base64（edge-tts 默认，经 `tts-config.ts` 可切 qwen/mimo）；渲染端 `MaterialsPanel.tsx:104 speakMaterialText` 已演示「调 `voiceTts` → `new Audio(mp3)` 播放」。故**语音播报直接复用 `voice:tts` 即可，与资料/聊天同音色**。
+  - **铃声素材当前缺失**：全局搜 `mp3/wav/bell/ding` 无现成铃声资源；`media-protocol.ts`/`config.ts` 支持 mp3/wav 但无内置铃声文件。**需捆绑一个短促铃声 mp3/wav 到 app 资源目录**（如 `resources/bell.mp3`），提醒时播放。
+  - **顶部提示现有机制偏弱**：仅有聊天区小条 `chat-notice`（`styles.css:2316` + `ChatWindow.tsx:805`，只在聊天顶部一小条）；需求是「**页面上面三分之一**」的全屏固定横幅——需新增 **app 级 overlay**（`position: fixed; top:0; height:33vh; z-index 高`），覆盖 Learn 各子视图，不依赖当前在哪一页。
+- **改造方向**：
+  ① **数据模型**：`scheduler.ts` `ChildSchedulerConfig` 增 `classTimes: { start: string; end: string; label?: string }[]`（每孩子多段）；`SchedulerSettings.tsx` 增「课程时间段」section（`<input type="time">` 起始/结束 + 增删，复用现有卡片/Plus/Trash2 模式）；存储走现有 `scheduler:config:set` 按 childId。
+  ② **触发（复用计时）**：在现有 per-minute tick 中，对每个孩子遍历 `classTimes`，检测「当前分钟 ∈ [start, start) 跳变」=上课、「∈ [end, end) 跳变」=下课，用 `lastReminder` 标记防同分钟重触发；到点后 `webContents.send("class:reminder", { childId, type: "start"|"end", label })`（需在主进程持 webContents，沿用 recording 已有的定时任务执行上下文）。
+  ③ **铃声 + 语音**：主进程/渲染端收到 `class:reminder` 后——a) 播放捆绑铃声 mp3（`<audio>` 或主进程读资源 buffer 播放）；b) **可选语音播报**：调 `voice:tts`（或渲染端 `voiceTts`）合成提示语并播放，音色与资料/聊天一致；两种可并存，也允许家长设置「仅铃声 / 仅语音 / 两者」。
+  ④ **顶部 1/3 横幅（app 级 overlay）**：建议在 `Learn.tsx` 顶层（甚至 `App`/`Home` 层，确保任意子页可见）加一个固定定位的横幅组件，收到 `class:reminder` 时显示 33vh 高、醒目配色、上课/下课图标与文案，数秒后淡出或手动关闭；**注意多孩子场景**：横幅 childId 需与当前登录孩子匹配才显示（或家长端不显示、仅孩子端）。
+  ⑤ **边界**：app 未打开/孩子未登录时不弹（静默）；跨天/配置变更后 tick 自动生效；铃声文件需随安装包分发（打包进 `extraResources`/asar 外）。
+- **优先级**：待定（本会话仅记录，未实施）
+- **记录时间**：2026-08-31
+
+## [ISSUE-020] 孩子端左侧「切换展示页」浮层：鼠标移到选项框就消失、难选中
+
+- **类型**：Bug / 交互（孩子端左侧边栏）
+- **描述**：孩子界面左侧边栏的「切换展示页」（学习进度 / 学习资料等）弹出框，鼠标从触发按钮移向浮层选项时，浮层就消失，很难选中目标项；移动越慢越容易出现。
+- **现状 / 根因（已查证代码）**：
+  - 浮层是纯 hover 驱动：`.view-switcher`（`Learn.tsx:657-661`）挂 `onMouseEnter={() => setViewMenuOpen(true)}` / `onMouseLeave={() => setViewMenuOpen(false)}`，按钮**无 onClick 切换**，只有悬停才显示（`Learn.tsx:662-690`：`<button className="view-switcher-btn">` 仅 title，无 onClick；popover `viewMenuOpen && <div className="view-switcher-popover">` 为其 DOM 子元素）。
+  - **致命间隙**：`styles.css:861-863` `.view-switcher-popover { position:absolute; left: calc(100% + 6px); top:0 }`——popover 左缘相对触发器右缘外移了 **6px**，二者之间存在一条**不属于任何元素**的空白缝隙。
+  - 原生 `mouseleave`（React `onMouseLeave` 语义：移到子元素不触发，但离开元素边界到空白会触发）在鼠标穿过这 6px 空白时于 `.view-switcher` 上触发 → `setViewMenuOpen(false)` → popover 卸载 → 浮层消失。慢移时鼠标精确穿越缝隙，必然触发（"慢一点就消失"）；快移有时因轨迹略斜而侥幸不触发。
+  - 注：popover 虽是 `.view-switcher` 的 DOM 子节点，但视觉偏移在容器外，且中间有 6px 真空气隙，故 hover 链断裂。
+- **改造方向（按稳健性递进）**：
+  ① **消除间隙（首选，低成本）**：popover 改 `left: 100%`（去掉 `+6px`），并用透明桥接伪元素覆盖缝隙——`.view-switcher-popover::before { content:""; position:absolute; left:-8px; top:0; width:8px; height:100% }`，使触发热区连续无断点。
+  ② **关闭延时（兜底）**：`onMouseLeave` 不直接置 false，而设 ~150-200ms 定时器 `setTimeout(() => setViewMenuOpen(false), 180)`，期间 `onMouseEnter` 取消定时器；给孩子越过缝隙的容错时间（即使仍有小缝也不关）。
+  ③ **点击切换（更适合低龄）**：给 `view-switcher-btn` 加 `onClick={() => setViewMenuOpen(v => !v)}` 变真下拉，hover 仅作辅助；选中项或点外部（`click-outside`）才关闭——不依赖 hover 几何，选中最可靠。
+  ④ 组合 ①②③ 最稳；另确认 `PANEL_VIEWS` 顺序含「学习进度 / 学习资料」且 `setView(v.key)` 切换无误（现有 `:677-680` 已正确）。
+- **优先级**：待定（本会话仅记录，未实施）
+- **记录时间**：2026-08-31
+
+## [ISSUE-021] 孩子端学习资料列表：课名显示"未命名" + 重发资料不刷新/卡在别的课程
+
+- **类型**：Bug / 数据展示 + 交互（孩子端左侧学习资料列表）
+- **描述**：在 192.168.1.201（ubuntu）运行的孩子端 app、闻闻的会话里：① `display_content` 时左侧「学习资料」列表没有课程名，全是"未命名资料"；② 家长重新发送某课学习资料时，左侧不会自动显示最新重发的那份，仍停在别的课程的资料上。
+- **现状 / 根因（已查证代码）**：
+  - **列表 title 来源**：`MaterialsPanel.tsx:420` 渲染 `m.title || "未命名资料"`；`m.title` 来自 `display_content` 工具结果 `details.panelContent.title`（`custom-tools.ts:139`）。
+  - **title 生成逻辑**：`custom-tools.ts:113/130` `titleBase = rest.replace(/\.[^.]+$/,"").split("/").pop()`（=资料文件名去扩展名），`title = params.title || titleBase`。即：仅当 agent 显式传 `title` 或文件名本身含可读课名时列表才显课名；否则是裸文件名，无意义/为空即"未命名资料"。
+  - **课名未下传（核心 A）**：课程真实名称在 `courses.title`（`parent-library.ts:139` 等，`(topic,title)` 唯一），但 `display_content` 只接收 `path`（`<topic>/<file>.html`），**从不查 `courses` 取课名**下传给列表——系统知道课名却不传。若学习 agent 调 `display_content` 不带 `title`、且 html 文件名非课名（每课一子目录 / 按 id 命名），列表即全"未命名"。
+  - **重发卡别的课程（核心 B）**：`Learn.tsx:226` 去重 `if (filePath && prev.some(m => m.filePath === filePath)) return prev`——同一课重发（path 相同）被整体丢弃，`materials` 引用不变 → `useEffect([materials])`（`:209`）不触发 → `setSelectedMaterialId(materials[materials.length-1].id)`（`:213`）不执行 → 选中项停在之前别的课程资料上；即便家长改了内容重发（同 path）旧内容也不更新。仅 path 不同（新课）才追加并自动选中——故"卡别的课程"正是**同 path 重发被去重**所致。
+  - **版本核对点**：192.168.1.201 该 ubuntu 客户端若跑的是较早构建（缺 `titleBase` 回退、或 `Learn.tsx:209` 自动选中 effect 尚未合入），也会稳定复现"未命名 + 不自动跳最新"，需升级该客户端核对。
+- **改造方向**：
+  ① **课名下传**：`display_content` 解析 `path` → 按 `topic` + `html_path` 匹配查 `courses` 取 `courses.title` 作默认 `title`（agent 显式 `title` 仍优先）；或在 agent 系统提示/教学方法里要求展示课程必须带 `title=课名`。列表恒显课名。
+  ② **重发刷新（关键约束）**：**禁止用"完全重复就不显示"的逻辑**。即使重发的内容与上一课 100% 相同（path 相同、内容 hash 也相同），左侧也必须自动把"最近一次 display_content 的那份"重新选中并显示在最前/最新位置，方便用户查看——即去掉 `Learn.tsx:226` 的"同 filePath 即 `return prev` 整体丢弃"，改为：命中同 path 时就地替换内容 + **无条件重新 `setSelectedMaterialId(该项)` 并滚动定位到该项**；新增资料照常追加末条并选中。去重只用于避免"同一轮消息内连续推送多份同 path 资料时堆积成 N 条"，不用于"跨轮重发时吞掉显示"。
+  ③ **客户端版本**：确认 192.168.1.201 ubuntu 客户端构建是否含 `titleBase` 回退与 ISSUE-014 自动选中修复；若旧则升级。
+  ④ **回归**：display_content 新教材自动弹开（ISSUE-014）、去重不堆积（`:224` 注释）、列表 title 渲染（`:420`）仍正确。
+- **优先级**：待定（本会话仅记录，未实施）
+- **记录时间**：2026-08-31
+
+## [ISSUE-022] 测试债务：9 个测试文件未随 SPLIT 迁移更新，全量 vitest 稳定失败 39 例
+
+- **类型**：测试 / 架构迁移遗留
+- **描述**：SPLIT 拆分后（2026-08-27 起），一批测试仍按旧架构（本地 kb.sqlite / 全局 scheduler 配置 / 本地 agent SQLite / 同步 async 化前）编写，导致全量 `vitest run`（需 127.0.0.1:8788 服务端运行）稳定失败 9 个文件 39 例（289 例中 250 过）。
+- **失败清单与根因（2026-08-31 全量实测）**：
+  1. `test/kb-tools.test.ts`（17 败）：kb_insert/kb_query/kb_update 走 `serverFetch` → 401「缺少 session token」（无登录 token）；需 `vi.mock server-client` 或预置 token。
+  2. `test/kb-sqlite.test.ts`（6 败）：真实数据冒烟读本地 `data/children/1f050a7f/kb.sqlite`——SPLIT 后本地 kb 不再写，返回 0；应改读服务端 RPC 或删除该段。
+  3. `test/auto-new-session.test.ts`（6 败）：scheduler-config 按家长分区后路径 `parents/_guest/scheduler-config.json` 父目录未建 → ENOENT；写配置前需 mkdir（getParentConfigDir 已自动建，测试直接写文件需补）。
+  4. `test/sync.test.ts`（3 败）：`listChildren()` 未 await（async 化迁移遗漏）→ `children[0].childId` TypeError。
+  5. `test/daily-summary.test.ts`（2 败）：buildProvidedContext 读本地 kb.sqlite（同 kb-sqlite 根因）。
+  6. `test/scheduler-task-state.test.ts`（2 败）+ `test/event-poll-config.test.ts`（1 败）+ `test/archive-limit.test.ts`（1 败）：scheduler 配置 shape/家长分区路径迁移陈旧。
+  7. `test/agents-sqlite.test.ts`（1 败）：saveAgentPrompt 已上云走 serverFetch 401（ISSUE-033 测试未 mock）。
+- **入口**：各测试文件如上；统一思路=按 SPLIT 后真源（服务端 RPC / 家长分区配置路径）重写断言，需服务端 mock 或测试 token 的走 `vi.mock("server-client")`（参考 backup.test.ts 的 mock 模式）。
+- **优先级**：低（均非业务回归，属技术债；修复前跑测试请先确认失败清单无新增项）
+- **✅ 已修复（2026-08-31）**：9 个文件全部按 SPLIT 语义重写，全量 `vitest run` 31 文件 / 288 例 0 失败；两端 `tsc --noEmit` 0 错；`npm run build` 通过。修复明细：
+  - `sync.test.ts`：三处 `childAuth.listChildren()` 补 `await`（async 化遗漏）。
+  - `scheduler.ts saveSchedulerConfig`（真实缺陷）：写前 `fs.mkdirSync(path.dirname(p), {recursive:true})`——未登录 `_guest` 目录不建导致 ENOENT。
+  - `pi-runtime.ts setProviderApiKey`（真实缺陷，同款）：写 `parents/_guest/auth.json` 前 mkdir（qwen-deepseek-models.test.ts 暴露）。
+  - `custom-tools.ts kb_query progress`（真实缺陷）：服务端 `kb.courses.list` 返回 snake_case（`review_count` 等）未映射为 CourseItem camelCase → 复习次数/首次学习等字段丢失；补显式字段映射（learning-summary.ts 早已正确，仅 custom-tools 遗漏）。
+  - `scheduler-task-state.test.ts`：断言改 3 键（session-reset 已删）。
+  - `archive-limit.test.ts`：去掉废弃 `sessionReset` 字段/断言。
+  - `auto-new-session.test.ts`：helper 写前 mkdir。
+  - `daily-summary.test.ts`：`buildProvidedContext` 补 `await`；「种子库」用例改真实孩子（mock config + writeTestLicense + 服务端断言）。
+  - `kb-tools.test.ts`：mock config + writeTestLicense；写测试每次 `crypto.randomUUID()` 注册全新测试 child（`registerTestChild`）隔离。
+  - `kb-sqlite.test.ts`：「真实数据冒烟」改走服务端 dbQuery RPC。
+  - `agents-sqlite.test.ts`：mock config + writeTestLicense + registerTestChild（随机 UUID）；saveAgentPrompt 补 await。
+  - 注：`event-poll-config.test.ts` 无需改（scheduler.ts mkdir 修复覆盖）。
+- **记录时间**：2026-08-31

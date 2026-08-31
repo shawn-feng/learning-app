@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { getSharedRuntime, getAvailableModels } from "../electron/lib/pi-runtime";
+import { getSharedRuntime, getAvailableModels, setProviderApiKey } from "../electron/lib/pi-runtime";
 
 // 验证 ISSUE-007 实施：经 DashScope 同端点挂入 qwen provider 的 DeepSeek V4 模型。
 // 核心要求（避免「思考混进正文」bug）：
@@ -19,6 +19,11 @@ describe("ISSUE-007 qwen provider 挂载 DeepSeek 模型", () => {
   let runtime: Awaited<ReturnType<typeof getSharedRuntime>>;
 
   beforeAll(async () => {
+    // 测试环境无真实 key：写入占位 key，使 SDK getAvailable() 认为 qwen/deepseek 已配置 auth。
+    // 否则 auth.json 为空 → getAvailable() 只枚举「已配 auth 的 provider」→ 返回 []（根因）。
+    // setProviderApiKey 写 auth.json 后销毁 runtime 缓存，下一次 getSharedRuntime 重建即读到 key。
+    await setProviderApiKey("qwen", "sk-test-placeholder");
+    await setProviderApiKey("deepseek", "sk-test-placeholder");
     runtime = await getSharedRuntime();
   });
 

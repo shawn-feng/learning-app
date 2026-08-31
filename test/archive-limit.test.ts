@@ -96,7 +96,7 @@ describe("归档保留上限（archive limit）", () => {
     const kid = "cfg-kid-1";
     scheduler.setChildSchedulerConfig(kid, {
       recording: { enabled: false, times: ["21:00"], onNewSession: false },
-      sessionReset: { enabled: false, hour: 22, minute: 0 },
+      autoNewSession: { enabled: false, hour: 22, minute: 0 },
       archiveLimit: 7,
     });
     expect(scheduler.getChildSchedulerConfig(kid).archiveLimit).toBe(7);
@@ -106,7 +106,7 @@ describe("归档保留上限（archive limit）", () => {
     const got2 = scheduler.getChildSchedulerConfig("cfg-kid-2");
     expect(got2.archiveLimit).toBe(3);
     expect(got2.recording.enabled).toBe(false); // 缺省补全
-    expect(got2.sessionReset.hour).toBe(22); // 缺省补全
+    expect(got2.autoNewSession.hour).toBe(21); // 缺省补全（默认 21:00）
   });
 
   it("resetChildSession（冷路径）按 archiveLimit 清理归档（官方流程：不新建活跃文件）", async () => {

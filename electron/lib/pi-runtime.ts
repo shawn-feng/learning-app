@@ -485,6 +485,9 @@ export async function setProviderApiKey(providerId: string, apiKey: string) {
 
   auth[providerId] = { type: "api_key", key: apiKey };
 
+  // 防御：未登录时 getParentConfigDir 返回 parents/_guest 且不建目录（设计如此），
+  // 但写 auth.json 必须能落盘——先建父目录再写，避免 ENOENT。
+  fs.mkdirSync(path.dirname(authPath), { recursive: true });
   fs.writeFileSync(authPath, JSON.stringify(auth, null, 2), "utf-8");
 
   // SPLIT（2026-08-30 用户决策）：模型 key 随家长账号上云，多客户端/孩子登录 2 分钟轮询同步。

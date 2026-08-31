@@ -36,7 +36,7 @@ describe("Phase 9: 同步管理器", () => {
     const config = await import("../electron/lib/config");
 
     // ensure we have at least one child
-    let children = childAuth.listChildren();
+    let children = await childAuth.listChildren();
     if (children.length === 0) {
       await childAuth.addChild({
         name: "sync-test",
@@ -49,7 +49,7 @@ describe("Phase 9: 同步管理器", () => {
         aiEmoji: "🦊",
         aiPersonality: "亲切",
       });
-      children = childAuth.listChildren();
+      children = await childAuth.listChildren();
     }
 
     const child = children[0];
@@ -71,7 +71,7 @@ describe("Phase 9: 同步管理器", () => {
   it("scanChildFiles 返回的文件信息包含必需字段", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
-    const children = childAuth.listChildren();
+    const children = await childAuth.listChildren();
     const childDir = config.getChildDir(children[0].childId);
     const files = scanChildFiles(childDir);
 
@@ -86,7 +86,7 @@ describe("Phase 9: 同步管理器", () => {
   it("文件内容变更会导致 hash 不同", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
-    const children = childAuth.listChildren();
+    const children = await childAuth.listChildren();
     const childDir = config.getChildDir(children[0].childId);
 
     const before = scanChildFiles(childDir);

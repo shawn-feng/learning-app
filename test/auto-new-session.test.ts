@@ -23,6 +23,8 @@ function setAutoNewSessionConfig(childId: string, cfg: { enabled: boolean; hour:
   }
   raw.children = raw.children || {};
   raw.children[childId] = { autoNewSession: cfg };
+  // 未登录时 parents/_guest 目录不建（getParentConfigDir 设计如此），写前先建父目录
+  fs.mkdirSync(path.dirname(SCHEDULER_PATH), { recursive: true });
   fs.writeFileSync(SCHEDULER_PATH, JSON.stringify(raw));
 }
 

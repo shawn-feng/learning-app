@@ -1,7 +1,27 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+
+// 纯 node 环境没有 electron；client-data → config 顶部 import electron app。
+// 打桩成 undefined，与 learning-summary.test.ts 一致。
+vi.mock("electron", () => ({ app: undefined }));
+
+// SPLIT：孩子 kb 唯一真源在服务端。「真实数据冒烟」走 dbQuery RPC（本地 kb.sqlite 已退役空壳）。
+// mock config 让数据目录落到临时目录，并写 license.json（helper 签发有效 token）。
+const mockTmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kb-sqlite-test-"));
+vi.mock("../electron/lib/config", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../electron/lib/config")>();
+  return {
+    ...mod,
+    getDataDir: () => mockTmpRoot,
+    getLicensePath: () => path.join(mockTmpRoot, "license.json"),
+    getChildrenDir: () => path.join(mockTmpRoot, "children"),
+    getChildDir: (id: string) => path.join(mockTmpRoot, "children", id),
+    getSharedDir: () => path.join(mockTmpRoot, "shared"),
+    getSkillsDir: () => path.join(mockTmpRoot, "shared", "skills"),
+  };
+});
 
 // kb-sqlite 使用 node:sqlite（Node 内置），不依赖 electron；无需打桩。
 import {
@@ -25,8 +45,18 @@ import {
   updateProgress,
   COURSE_FIELD_MAP,
 } from "../electron/lib/kb-sqlite.ts";
+import { dbQuery } from "../electron/lib/client-data";
+import { writeTestLicense, TEST_PARENT_ID } from "./helpers/server-token";
+
+beforeAll(() => {
+  // 该孩子属于测试家长 86a84278：签它的 token 才能读其服务端 kb
+  fs.mkdirSync(mockTmpRoot, { recursive: true });
+  writeTestLicense(mockTmpRoot, TEST_PARENT_ID);
+});
 
 const REAL_CHILD = path.resolve(__dirname, "../data/children/1f050a7f-df8a-45b0-925a-1ffe2aa35674");
+// 真实孩子 id（服务端 kb 查询用）
+const REAL_CHILD_ID = "1f050a7f-df8a-45b0-925a-1ffe2aa35674";
 
 describe("parseTaxonomy（tags/taxonomy.md 标签定义解析，纯函数）", () => {
   it("按维度分组解析 标签：释义", () => {
@@ -302,46 +332,65 @@ describe("写入（kb_insert / kb_update 后端函数）", () => {
   });
 });
 
-describe("真实数据冒烟（主孩子 1f050a7f，只读不写）", () => {
-  it("queryTags 能查真实标签定义", () => {
-    const defs = queryTags(REAL_CHILD);
+describe("真实数据冒烟（主孩子 1f050a7f，服务端只读不写）", () => {
+  it("kb.tags.list 能查真实标签定义", async () => {
+    const defs = await dbQuery<Array<{ tag: string; dimension: string; criteria: string }>>(
+      "kb.tags.list",
+      { child_id: REAL_CHILD_ID }
+    );
     expect(defs.length).toBeGreaterThanOrEqual(10);
     expect(defs.some((d) => d.tag === "诚实" && d.criteria)).toBe(true);
   });
 
-  it("queryDaily 能查真实 daily（2026-08-11 生活，tags 已回填）", () => {
-    const entries = queryDaily(REAL_CHILD, { date: "2026-08-11", block: "生活" });
+  it("kb.daily_entries.query 能查真实 daily（2026-08-11 生活，tags 已回填）", async () => {
+    const entries = await dbQuery<Array<{ date: string; block: string; title: string; raw: string; tags: string }>>(
+      "kb.daily_entries.query",
+      { child_id: REAL_CHILD_ID, date: "2026-08-11", block: "生活" }
+    );
     expect(entries.length).toBeGreaterThanOrEqual(1);
     expect(entries.some((e) => e.title.includes("番茄钟"))).toBe(true);
   });
 
-  it("queryTopicProgress 能查真实进度（lunyu，视图计算）", () => {
-    const p = queryTopicProgress(REAL_CHILD, "lunyu");
-    expect(p.length).toBe(1);
-    expect(p[0].items.length).toBeGreaterThan(100);
-    expect(p[0].total).toBe(p[0].items.length);
+  it("kb.progress.list + kb.courses.list 能查真实进度（lunyu，视图计算）", async () => {
+    const progress = await dbQuery<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>(
+      "kb.progress.list",
+      { child_id: REAL_CHILD_ID }
+    );
+    const lunyu = progress.find((p) => p.topic === "lunyu");
+    expect(lunyu, "应解析到 lunyu 主题聚合行").toBeDefined();
+    const courses = await dbQuery<Array<{ title: string }>>("kb.courses.list", {
+      child_id: REAL_CHILD_ID,
+      topic: "lunyu",
+    });
+    expect(courses.length).toBeGreaterThan(100);
+    expect(lunyu!.total).toBe(courses.length);
   });
 
-  it("queryTopicsMeta：lunyu 的 rules 已并入 topics 表", () => {
-    const t = queryTopicsMeta(REAL_CHILD);
-    const lunyu = t.find((x) => x.name === "论语");
-    expect(lunyu?.rules.daily).toBe("3");
+  it("kb.topics.list：lunyu 的 rules 已并入 topics 表", async () => {
+    const topics = await dbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>(
+      "kb.topics.list",
+      { child_id: REAL_CHILD_ID }
+    );
+    const lunyu = topics.find((t) => t.name === "论语" || t.topic_key === "lunyu");
+    // 真实数据 rules.daily 为「新学3课，复习3课」文案（不是纯数字）
+    expect(String(JSON.parse(lunyu?.rules_json ?? "{}").daily ?? "")).toContain("3");
   });
 
-  it("kb.sqlite 已在真实孩子目录落盘", () => {
-    expect(fs.existsSync(path.join(REAL_CHILD, "kb.sqlite"))).toBe(true);
+  it("主题键对齐：中文名「汉字宫」能查到 hanzigong 进度（不再反复查不到）", async () => {
+    const progress = await dbQuery<Array<{ topic: string; total: number }>>("kb.progress.list", {
+      child_id: REAL_CHILD_ID,
+    });
+    const hg = progress.find((p) => p.topic === "hanzigong");
+    expect(hg, "应存在 hanzigong 主题聚合行").toBeDefined();
+    expect(hg!.total).toBeGreaterThan(0);
   });
 
-  it("主题键对齐：中文名「汉字宫」能查到 hanzigong 进度（不再反复查不到）", () => {
-    const p = queryTopicProgress(REAL_CHILD, "汉字宫");
-    expect(p.length).toBe(1);
-    expect(p[0].topic).toBe("hanzigong");
-    expect(p[0].total).toBeGreaterThan(0);
-  });
-
-  it("主题键对齐：拼音键直通（hanzigong/lunyu）", () => {
-    expect(queryTopicProgress(REAL_CHILD, "hanzigong")[0].topic).toBe("hanzigong");
-    expect(queryTopicProgress(REAL_CHILD, "lunyu")[0].topic).toBe("lunyu");
+  it("主题键对齐：拼音键直通（hanzigong/lunyu）", async () => {
+    const progress = await dbQuery<Array<{ topic: string }>>("kb.progress.list", {
+      child_id: REAL_CHILD_ID,
+    });
+    expect(progress.some((p) => p.topic === "hanzigong")).toBe(true);
+    expect(progress.some((p) => p.topic === "lunyu")).toBe(true);
   });
 });
 

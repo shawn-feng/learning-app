@@ -88,7 +88,10 @@ export const displayContentTool = defineTool({
     if (matM || matN) {
       const topic = matM ? matM[1] : (matN as RegExpExecArray)[1];
       const rest = matM ? matM[2] : (matN as RegExpExecArray)[2];
-      // 归一化防穿越后按远程路径拉取
+      // 越界守卫：先检查原始 rest 是否含 ..（filter 会静默吃掉 ..，必须先判后滤，
+      // 否则 materials/../../x 会被滤成 materials/x 拉到错误文件，2026-08-30 修复）
+      if (rest.includes("..") || rest.includes("\\")) throw new Error("资料路径超出共享资料目录范围");
+      // 归一化后按远程路径拉取
       const rel = `${topic}/${rest.split("/").filter((s) => s && s !== "." && s !== "..").join("/")}`;
       if (rel.includes("..") || rel.includes("\\")) throw new Error("资料路径超出共享资料目录范围");
       try {
@@ -298,7 +301,25 @@ export const kbQueryTool = defineTool({
             Array<{ topic: string; learned: number; total: number; next: string; updated: string }>
           >("kb.progress.list", { child_id })
         ).find((p) => p.topic === topicKey);
-        let courses = await dbQuery<CourseItem[]>("kb.courses.list", { child_id, topic: topicKey });
+        // 服务端 courses.list 返回 snake_case 行 → 映射为 CourseItem（camelCase），
+        // 否则 reviewCount/firstLearned/lastReview 等字段丢失（progressToMarkdown 渲染不全）。
+        const rows = await dbQuery<Array<Record<string, unknown>>>("kb.courses.list", { child_id, topic: topicKey });
+        let courses: CourseItem[] = rows.map((r) => ({
+          topic: String(r.topic ?? ""),
+          title: String(r.title ?? ""),
+          sortOrder: Number(r.sort_order ?? 0),
+          status: String(r.status ?? ""),
+          mastery: String(r.mastery ?? ""),
+          firstLearned: String(r.first_learned ?? ""),
+          lastReview: String(r.last_review ?? ""),
+          reviewCount: Number(r.review_count ?? 0),
+          material: String(r.material ?? ""),
+          sendMaterial: String(r.send_material ?? ""),
+          tags: String(r.tags ?? ""),
+          lessonMethod: String(r.lesson_method ?? ""),
+          htmlPath: String(r.html_path ?? ""),
+          teachingCopy: String(r.teaching_copy ?? ""),
+        }));
         if (params.tag) courses = courses.filter((c) => c.tags.includes(params.tag!));
         if (courses.length === 0 && !agg) {
           return { content: [{ type: "text" as const, text: `主题「${params.topic}」暂无进度记录。` }] };
@@ -900,14 +921,45 @@ export const parentStatsTool = defineTool({
     }
     if (params.type === "progress") {
       if (!params.childId) throw new Error("parent_stats 的 progress 需要 childId 参数");
-      const list = await dbQuery<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>(
-        "kb.progress.list",
-        { child_id: params.childId }
-      ).catch(() => []);
-      if (!list.length) {
+      // SPLIT：服务端 kb.progress.list 只回聚合行（learned/total/next/updated），
+      // 明细需按主题再查 kb.courses.list 组装成 progressToMarkdown 期望的 items（2026-08-30 修复）
+      const agg = await dbQuery<
+        Array<{ topic: string; learned: number; total: number; next: string; updated: string }>
+      >("kb.progress.list", { child_id: params.childId }).catch(() => []);
+      if (!agg.length) {
         return {
           content: [{ type: "text" as const, text: `孩子 ${params.childId} 尚未分配任何学习主题` }],
         };
+      }
+      const list = [];
+      for (const r of agg) {
+        const courses = await dbQuery<Array<Record<string, unknown>>>("kb.courses.list", {
+          child_id: params.childId,
+          topic: r.topic,
+        }).catch(() => []);
+        list.push({
+          topic: r.topic,
+          learned: Number(r.learned) || 0,
+          total: Number(r.total) || 0,
+          next: r.next ?? "",
+          updated: r.updated ?? "",
+          items: (courses ?? []).map((c) => ({
+            topic: String(c.topic),
+            title: String(c.title),
+            sortOrder: Number(c.sort_order) || 0,
+            status: String(c.status ?? "⬜"),
+            mastery: String(c.mastery ?? ""),
+            firstLearned: String(c.first_learned ?? ""),
+            lastReview: String(c.last_review ?? ""),
+            reviewCount: Number(c.review_count) || 0,
+            material: String(c.material ?? ""),
+            sendMaterial: String(c.send_material ?? ""),
+            tags: String(c.tags ?? ""),
+            lessonMethod: String(c.lesson_method ?? ""),
+            htmlPath: String(c.html_path ?? ""),
+            teachingCopy: String(c.teaching_copy ?? ""),
+          })),
+        });
       }
       return {
         content: [{ type: "text" as const, text: `## 孩子 ${params.childId} 学习进度\n\n` + progressToMarkdown(list) }],

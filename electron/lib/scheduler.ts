@@ -156,7 +156,11 @@ function loadSchedulerConfig(): SchedulerConfig {
 }
 
 function saveSchedulerConfig(config: SchedulerConfig): void {
-  fs.writeFileSync(getSchedulerConfigPath(), JSON.stringify(config, null, 2), "utf-8");
+  const p = getSchedulerConfigPath();
+  // 防御：未登录时 getParentConfigDir 返回 parents/_guest 且不建目录（设计如此），
+  // 但保存必须能落盘——先建父目录再写，避免 ENOENT。
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(config, null, 2), "utf-8");
   // SPLIT M8-C：配置唯一真源在服务端，保存后同步（跨设备 ≤2min 生效）
   void pushConfig("scheduler_config", config).catch(() => {});
 }

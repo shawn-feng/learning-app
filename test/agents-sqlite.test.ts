@@ -1,14 +1,35 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 
 vi.mock("electron", () => ({ app: undefined }));
+
+// SPLIT：agents 提示词唯一真源在服务端 agents 库（agents.save/get RPC）。
+// mock config 让数据目录落到临时目录，并写 license.json（helper 签发有效 token）走真实本地服务端。
+const mockTmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agents-sqlite-test-"));
+vi.mock("../electron/lib/config", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../electron/lib/config")>();
+  return {
+    ...mod,
+    getDataDir: () => mockTmpRoot,
+    getLicensePath: () => path.join(mockTmpRoot, "license.json"),
+    getChildrenDir: () => path.join(mockTmpRoot, "children"),
+    getChildDir: (id: string) => path.join(mockTmpRoot, "children", id),
+    getSharedDir: () => path.join(mockTmpRoot, "shared"),
+    getSkillsDir: () => path.join(mockTmpRoot, "shared", "skills"),
+  };
+});
 
 import { resolveChildAgents, getDefaultPrompt } from "../electron/lib/pi-session";
 import { getChildDir, getDataDir } from "../electron/lib/config";
 import { saveAgentPrompt, getAgentPrompt } from "../electron/lib/agent-prompts";
+import { writeTestLicense, registerTestChild, TEST_PARENT_ID } from "./helpers/server-token";
 
-const CHILD_ID = "test-child-033";
+// 每次运行注册全新随机 UUID 测试孩子（服务端 agents.save 对 child scope 有 assertChildOwned 校验，
+// 必须真实归属于测试家长才能写入）。
+const CHILD_ID = crypto.randomUUID();
 const PROFILE = {
   childId: CHILD_ID,
   aiName: "小伴",
@@ -28,17 +49,21 @@ describe("ISSUE-033：AGENTS 纯 SQLite 存储，无任何物理 AGENTS 文件",
   const childDir = getChildDir(CHILD_ID);
   const parentAgentsDir = path.join(getDataDir(), "parents", "default", "agents");
 
-  beforeAll(() => {
+  beforeAll(async () => {
+    // 服务端注册该测试孩子（assertChildOwned 要求 child 归属 TEST_PARENT）
+    fs.mkdirSync(mockTmpRoot, { recursive: true });
+    writeTestLicense(mockTmpRoot, TEST_PARENT_ID);
+    await registerTestChild(mockTmpRoot, CHILD_ID, "agents-sqlite-test");
     // 清理可能残留的用户版本，保证用例独立（空内容=恢复默认）
-    saveAgentPrompt("child", CHILD_ID, "");
-    // getDefaultPrompt("child") 依赖磁盘 profile.json——写入测试 profile（测试环境走 PI_TEST_DATA_DIR 临时目录）
+    await saveAgentPrompt("child", CHILD_ID, "");
+    // getDefaultPrompt("child") 依赖磁盘 profile.json——写入测试 profile（测试环境走 mock dataDir）
     fs.mkdirSync(childDir, { recursive: true });
     fs.writeFileSync(path.join(childDir, "profile.json"), JSON.stringify(PROFILE), "utf-8");
     // 清理旧测试可能残留的家长目录 agents/（保证「不创建物理文件」断言独立）
     fs.rmSync(parentAgentsDir, { recursive: true, force: true });
   });
-  afterAll(() => {
-    saveAgentPrompt("child", CHILD_ID, "");
+  afterAll(async () => {
+    await saveAgentPrompt("child", CHILD_ID, "");
   });
 
   it("resolveChildAgents / getDefaultPrompt 不创建任何 AGENTS 物理文件", () => {
@@ -60,14 +85,14 @@ describe("ISSUE-033：AGENTS 纯 SQLite 存储，无任何物理 AGENTS 文件",
     expect(agents).toContain("parent_content");
   });
 
-  it("resolveChildAgents 有用户版本时返回用户版本（整体替换，代码默认不叠加）", () => {
+  it("resolveChildAgents 有用户版本时返回用户版本（整体替换，代码默认不叠加）", async () => {
     const custom = "你是自定义规范：只陪聊不教学。";
-    saveAgentPrompt("child", CHILD_ID, custom);
+    await saveAgentPrompt("child", CHILD_ID, custom);
     try {
       const agents = resolveChildAgents(CHILD_ID, PROFILE);
       expect(agents).toBe(custom);
     } finally {
-      saveAgentPrompt("child", CHILD_ID, "");
+      await saveAgentPrompt("child", CHILD_ID, "");
     }
   });
 

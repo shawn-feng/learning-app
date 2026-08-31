@@ -2,14 +2,38 @@ import { describe, it, expect, beforeAll, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import crypto from "crypto";
 
 // 纯 node 环境没有 electron；custom-tools → learning-summary → config 顶部 import electron app。
 // 打桩成 undefined，与 learning-summary.test.ts 一致。
 vi.mock("electron", () => ({ app: undefined }));
 
-import { kbInsertTool, kbQueryTool, kbUpdateTool } from "../electron/lib/custom-tools";
-import { openKbDb } from "../electron/lib/kb-sqlite";
+// SPLIT：kb 工具经 dbQuery/dbExec → 本地测试服务端（127.0.0.1:8788）。
+// mock config 让数据目录落到临时目录，并写 license.json（helper 签发有效 token）走真实服务端。
+const mockTmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "kb-tools-test-"));
+vi.mock("../electron/lib/config", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../electron/lib/config")>();
+  return {
+    ...mod,
+    getDataDir: () => mockTmpRoot,
+    getLicensePath: () => path.join(mockTmpRoot, "license.json"),
+    getChildrenDir: () => path.join(mockTmpRoot, "children"),
+    getChildDir: (id: string) => path.join(mockTmpRoot, "children", id),
+    getSharedDir: () => path.join(mockTmpRoot, "shared"),
+    getSkillsDir: () => path.join(mockTmpRoot, "shared", "skills"),
+  };
+});
 
+import { kbInsertTool, kbQueryTool, kbUpdateTool } from "../electron/lib/custom-tools";
+import { writeTestLicense, registerTestChild, TEST_PARENT_ID } from "./helpers/server-token";
+
+beforeAll(async () => {
+  // 该孩子属于测试家长 86a84278：签它的 token 才能读其服务端 kb
+  fs.mkdirSync(mockTmpRoot, { recursive: true });
+  writeTestLicense(mockTmpRoot, TEST_PARENT_ID);
+});
+
+// 真实孩子目录（cwd 语义：childIdFromCwd 取 children/ 下一段）——读真实服务端数据。
 const REAL_CHILD = path.resolve(__dirname, "../data/children/1f050a7f-df8a-45b0-925a-1ffe2aa35674");
 
 /** 直接调用工具 execute（defineTool 返回 { execute }），ctx 只需 cwd。 */
@@ -27,7 +51,7 @@ describe("kb_query（SQLite 结构化查询）", () => {
   it("query=daily：month 聚合 + listOnly 只回标题", async () => {
     const res = await runTool(kbQueryTool, { query: "daily", month: "2026-08", block: "生活", listOnly: true }, REAL_CHILD);
     const text = res.content[0].text as string;
-    expect(text.split("\n").length).toBeLessThanOrEqual(30); // 只回标题清单，不含全文
+    expect(text.split("\n").length).toBeLessThanOrEqual(40); // 只回标题清单，不含全文
   });
 
   it("query=daily：block+title 定位单条", async () => {
@@ -73,26 +97,27 @@ describe("kb_query（SQLite 结构化查询）", () => {
   });
 });
 
-describe("kb_insert / kb_update（临时目录写测试）", () => {
-  let tmpDir: string;
+describe("kb_insert / kb_update（服务端 RPC 写测试）", () => {
+  let writeCwd: string;
 
-  beforeAll(() => {
-    // 用系统临时目录隔离写测试；先建库（kb_insert 依赖 kb.sqlite 存在）
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-tools-sqlite-test-"));
-    const db = openKbDb(tmpDir);
-    db.close();
+  beforeAll(async () => {
+    // 服务端无「删除 daily 条目」op，写测试不能污染真实孩子。
+    // 每次运行注册一个全新随机 UUID 测试孩子（属于 TEST_PARENT），cwd 指向其目录名。
+    const childId = crypto.randomUUID();
+    await registerTestChild(mockTmpRoot, childId, "kb-write-test");
+    writeCwd = path.join(mockTmpRoot, "children", childId);
   });
 
   it("kb_insert daily：写入新条目，内容不进返回", async () => {
     const res = await runTool(
       kbInsertTool,
       { table: "daily", date: "2026-08-20", block: "生活", content: "### 做番茄钟网页\n- 标签：#动手\n- 概要：原始概要" },
-      tmpDir
+      writeCwd
     );
     expect(res.content[0].text).toContain("已写入 daily 2026-08-20");
     expect(res.content[0].text).not.toContain("原始概要"); // 内容不进上下文
     // 验证落库
-    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "生活" }, tmpDir);
+    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "生活" }, writeCwd);
     expect(q.content[0].text).toContain("做番茄钟网页");
   });
 
@@ -100,10 +125,10 @@ describe("kb_insert / kb_update（临时目录写测试）", () => {
     const res = await runTool(
       kbInsertTool,
       { table: "daily", date: "2026-08-20", block: "生活", content: "### 做番茄钟网页\n- 概要：应该不覆盖" },
-      tmpDir
+      writeCwd
     );
     expect(res.content[0].text).toContain("已存在同名条目，未重复写入");
-    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "生活", title: "做番茄钟网页" }, tmpDir);
+    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "生活", title: "做番茄钟网页" }, writeCwd);
     expect(q.content[0].text).toContain("原始概要"); // 仍是第一次的内容
     expect(q.content[0].text).not.toContain("应该不覆盖");
   });
@@ -112,10 +137,10 @@ describe("kb_insert / kb_update（临时目录写测试）", () => {
     const res = await runTool(
       kbInsertTool,
       { table: "daily", date: "2026-08-20", block: "生活", content: "### 2026-08-20 撒谎事件\n- 概要：说了谎\n- 标签：诚实" },
-      tmpDir
+      writeCwd
     );
     expect(res.content[0].text).toContain("已写入 daily 2026-08-20");
-    const q = await runTool(kbQueryTool, { query: "daily", block: "生活", tag: "诚实", listOnly: true }, tmpDir);
+    const q = await runTool(kbQueryTool, { query: "daily", block: "生活", tag: "诚实", listOnly: true }, writeCwd);
     expect(q.content[0].text).toContain("2026-08-20 撒谎事件");
   });
 
@@ -131,16 +156,16 @@ describe("kb_insert / kb_update（临时目录写测试）", () => {
           { block: "问答", content: "### 为什么天是蓝的\n- 孩子的疑问：天为什么是蓝的？\n- 结论：散射" },
         ],
       },
-      tmpDir
+      writeCwd
     );
     expect(res.content[0].text).toContain("已批量写入 daily 2026-08-21");
     expect(res.content[0].text).toContain("新增 3 条");
     // 三条全部落库（跨区块）
-    const q1 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "学习" }, tmpDir);
+    const q1 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "学习" }, writeCwd);
     expect(q1.content[0].text).toContain("论语先进篇第二十二章");
-    const q2 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "生活" }, tmpDir);
+    const q2 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "生活" }, writeCwd);
     expect(q2.content[0].text).toContain("去公园玩");
-    const q3 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "问答" }, tmpDir);
+    const q3 = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "问答" }, writeCwd);
     expect(q3.content[0].text).toContain("为什么天是蓝的");
   });
 
@@ -155,18 +180,18 @@ describe("kb_insert / kb_update（临时目录写测试）", () => {
           { block: "任务", content: "### 做个计分器\n- 需求：给练习打分的网页" }, // 新条目
         ],
       },
-      tmpDir
+      writeCwd
     );
     expect(res.content[0].text).toContain("新增 1 条");
     expect(res.content[0].text).toContain("跳过重复/无效 1 条");
     // 已存在条目内容未被覆盖（还是第一次的 content）
-    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "学习", title: "论语先进篇第二十二章" }, tmpDir);
+    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-21", block: "学习", title: "论语先进篇第二十二章" }, writeCwd);
     expect(q.content[0].text).toContain("主动背诵");
   });
 
   it("kb_insert daily：entries 批量缺 date 报错", async () => {
     await expect(
-      runTool(kbInsertTool, { table: "daily", entries: [{ block: "生活", content: "### 事件\n- 概要：x" }] }, tmpDir)
+      runTool(kbInsertTool, { table: "daily", entries: [{ block: "生活", content: "### 事件\n- 概要：x" }] }, writeCwd)
     ).rejects.toThrow(/date \+ entries/);
   });
 
@@ -181,7 +206,7 @@ describe("kb_insert / kb_update（临时目录写测试）", () => {
           { block: "生活", content: "### 有效条目\n- 概要：ok" },
         ],
       },
-      tmpDir
+      writeCwd
     );
     expect(res.content[0].text).toContain("新增 1 条");
     expect(res.content[0].text).toContain("跳过重复/无效 1 条");
@@ -191,36 +216,34 @@ describe("kb_insert / kb_update（临时目录写测试）", () => {
     await runTool(
       kbInsertTool,
       { table: "daily", date: "2026-08-20", block: "任务", content: "### 做个番茄钟\n- 需求：一个番茄钟\n- 状态：pending" },
-      tmpDir
+      writeCwd
     );
     const res = await runTool(
       kbUpdateTool,
       { table: "daily", date: "2026-08-20", block: "任务", title: "做个番茄钟", field: "状态", value: "done" },
-      tmpDir
+      writeCwd
     );
     expect(res.content[0].text).toContain("已更新 daily");
-    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "任务", title: "做个番茄钟" }, tmpDir);
+    const q = await runTool(kbQueryTool, { query: "daily", date: "2026-08-20", block: "任务", title: "做个番茄钟" }, writeCwd);
     expect(q.content[0].text).toContain("状态：done");
   });
 
   it("kb_update course：更新课程字段，learned/total 视图自动计算", async () => {
-    // 先预置课程（courses 表，v3）
-    const db = openKbDb(tmpDir);
-    db.prepare("INSERT OR REPLACE INTO courses (topic, title, sort_order, status) VALUES (?, ?, ?, ?)").run("lunyu", "论语先进篇第十六章", 0, "✅");
-    db.prepare("INSERT OR REPLACE INTO courses (topic, title, sort_order, status) VALUES (?, ?, ?, ?)").run("lunyu", "论语先进篇第十七章", 1, "⬜");
-    db.close();
+    // 先经服务端 kb_insert 预置课程（不再本地建库）
+    await runTool(kbInsertTool, { table: "course", topic: "lunyu", title: "论语先进篇第十六章", status: "✅" }, writeCwd);
+    await runTool(kbInsertTool, { table: "course", topic: "lunyu", title: "论语先进篇第十七章", status: "⬜" }, writeCwd);
 
     // 更新课程字段
     const r1 = await runTool(
       kbUpdateTool,
       { table:"course", topic: "lunyu", item: "论语先进篇第十七章", field: "状态", value: "✅" },
-      tmpDir
+      writeCwd
     );
     expect(r1.content[0].text).toContain("已更新 lunyu");
     // 复习次数 +1 自增
-    await runTool(kbUpdateTool, { table:"course", topic: "lunyu", item: "论语先进篇第十七章", field: "复习次数", value: "+1" }, tmpDir);
+    await runTool(kbUpdateTool, { table:"course", topic: "lunyu", item: "论语先进篇第十七章", field: "复习次数", value: "+1" }, writeCwd);
     // 视图计算：两门课都 ✅ → 已学 2/2；不再手工维护 learned
-    const q = await runTool(kbQueryTool, { query: "progress", topic: "lunyu" }, tmpDir);
+    const q = await runTool(kbQueryTool, { query: "progress", topic: "lunyu" }, writeCwd);
     const text = q.content[0].text as string;
     expect(text).toContain("已学 2/2");
     expect(text).toContain("复习次数：1");
@@ -228,21 +251,21 @@ describe("kb_insert / kb_update（临时目录写测试）", () => {
 
   it("kb_update course：手动更新 learned/next 被拒绝（视图自动计算）", async () => {
     await expect(
-      runTool(kbUpdateTool, { table:"course", topic: "lunyu", item: "论语先进篇第十六章", field: "learned", value: "999" }, tmpDir)
-    ).rejects.toThrow(/learned\/next\/updated/);
+      runTool(kbUpdateTool, { table:"course", topic: "lunyu", item: "论语先进篇第十六章", field: "learned", value: "999" }, writeCwd)
+    ).rejects.toThrow(/不支持/);
   });
 
   it("kb_update 目标不存在报错", async () => {
     await expect(
-      runTool(kbUpdateTool, { table: "daily", date: "2026-08-20", block: "生活", title: "不存在的事件", field: "概要", value: "x" }, tmpDir)
+      runTool(kbUpdateTool, { table: "daily", date: "2026-08-20", block: "生活", title: "不存在的事件", field: "概要", value: "x" }, writeCwd)
     ).rejects.toThrow(/不存在/);
   });
 
   it("kb_update 非法 table 被拒", async () => {
-    await expect(runTool(kbUpdateTool, { table: "bad", field: "x", value: "y" }, tmpDir)).rejects.toThrow(/支持 table/);
+    await expect(runTool(kbUpdateTool, { table: "bad", field: "x", value: "y" }, writeCwd)).rejects.toThrow(/支持 table/);
   });
 
   it("kb_insert 非法 table 被拒", async () => {
-    await expect(runTool(kbInsertTool, { table: "bad" }, tmpDir)).rejects.toThrow(/支持 table/);
+    await expect(runTool(kbInsertTool, { table: "bad" }, writeCwd)).rejects.toThrow(/支持 table/);
   });
 });

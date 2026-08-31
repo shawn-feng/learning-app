@@ -1,7 +1,28 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+
+// 纯 node 环境没有 electron；custom-tools → config 顶部 `import { app } from "electron"`
+// 会在模块加载时触发 electron 解析。打桩成 { app: undefined }，与 learning-summary.test.ts 一致。
+vi.mock("electron", () => ({ app: undefined }));
+
+// SPLIT：buildProvidedContext 走服务端 kb RPC（dbQuery）。mock config 让数据目录
+// 落到临时目录，并写 license.json（helper 签发有效 token）走真实本地服务端验证全链路。
+const mockTmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daily-summary-"));
+vi.mock("../electron/lib/config", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../electron/lib/config")>();
+  return {
+    ...mod,
+    getDataDir: () => mockTmpRoot,
+    getLicensePath: () => path.join(mockTmpRoot, "license.json"),
+    getChildrenDir: () => path.join(mockTmpRoot, "children"),
+    getChildDir: (id: string) => path.join(mockTmpRoot, "children", id),
+    getSharedDir: () => path.join(mockTmpRoot, "shared"),
+    getSkillsDir: () => path.join(mockTmpRoot, "shared", "skills"),
+  };
+});
+
 import {
   readDailyConversation,
   findLastConversationDate,
@@ -10,16 +31,22 @@ import {
   formatDailyExistingList,
   buildProvidedContext,
 } from "../electron/lib/daily-summary.ts";
-import { openKbDb } from "../electron/lib/kb-sqlite";
+import { writeTestLicense, TEST_PARENT_ID } from "./helpers/server-token";
 
 // daily-summary 核心逻辑：jsonl 按天过滤（排除 think/toolCall/toolResult）、最近会话日期查找、
 // 无会话时跳过（不建 ephemeral session、不调 AI）。
-// 用临时目录隔离，不碰真实孩子库。
+// 会话读写用临时目录隔离；buildProvidedContext 走服务端 kb（测试家长名下的真实孩子）。
+
+// 测试家长名下的真实孩子（lunyu 512 课、93 标签，服务端数据）。
+const CHILD = "1f050a7f-df8a-45b0-925a-1ffe2aa35674";
 
 let tmpDir: string;
 
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "daily-summary-test-"));
+  // 该孩子属于测试家长 86a84278：签它的 token 才能读其服务端 kb
+  fs.mkdirSync(mockTmpRoot, { recursive: true });
+  writeTestLicense(mockTmpRoot, TEST_PARENT_ID);
 });
 
 afterAll(() => {
@@ -27,6 +54,11 @@ afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   } catch {
     // 沙箱 safe-delete 可能拦截 rmSync（已知环境问题），残留临时目录不影响结果
+  }
+  try {
+    fs.rmSync(mockTmpRoot, { recursive: true, force: true });
+  } catch {
+    // ignore
   }
 });
 
@@ -138,11 +170,12 @@ describe("formatDailyExistingList（同天多次汇总的去重清单）", () =>
 });
 
 describe("buildProvidedContext（首轮注入：主题进度 + 标签定义表 + 已有条目）", () => {
-  it("空库返回标题 + 暂无主题/无标签定义 + 保留已有条目清单", () => {
+  it("无数据孩子返回标题 + 暂无主题/无标签定义 + 保留已有条目清单", async () => {
+    // SPLIT：buildProvidedContext 走服务端 kb RPC，child_id = 目录名；
+    // 随机临时目录在服务端查不到任何数据 → 空态文案
     const empty = fs.mkdtempSync(path.join(os.tmpdir(), "daily-summary-ctx-"));
     try {
-      openKbDb(empty).close(); // 建库（建表 + 视图）
-      const ctx = buildProvidedContext(empty, "【学习】\n- 论语先进篇第九章");
+      const ctx = await buildProvidedContext(empty, "【学习】\n- 论语先进篇第九章");
       expect(ctx).toContain("已提供的上下文");
       expect(ctx).toContain("（暂无学习主题）");
       expect(ctx).toContain("无标签定义");
@@ -152,25 +185,16 @@ describe("buildProvidedContext（首轮注入：主题进度 + 标签定义表 +
     }
   });
 
-  it("种子库返回主题进度摘要 + 标签定义表，且不含逐课清单", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "daily-summary-ctx2-"));
-    try {
-      const db = openKbDb(tmp);
-      db.prepare("INSERT INTO topics (name, topic_key, method, progress, rules_json) VALUES (?, ?, ?, ?, ?)").run("论语", "lunyu", "", "", "{}");
-      db.prepare("INSERT INTO courses (topic, title, sort_order, status, mastery) VALUES (?, ?, ?, ?, ?)").run("lunyu", "论语先进篇第十六章", 0, "✅", "熟练");
-      db.prepare("INSERT INTO courses (topic, title, sort_order, status, mastery) VALUES (?, ?, ?, ?, ?)").run("lunyu", "论语先进篇第十七章", 1, "⬜", "");
-      db.prepare("INSERT INTO tags (tag, dimension, criteria) VALUES (?, ?, ?)").run("诚实", "品格", "说真话、不撒谎");
-      db.close();
-
-      const ctx = buildProvidedContext(tmp, "");
-      expect(ctx).toContain("已提供的上下文");
-      expect(ctx).toContain("论语（lunyu）：已学 1/2");
-      expect(ctx).toContain("下一课「论语先进篇第十七章」");
-      expect(ctx).toContain("诚实：说真话、不撒谎");
-      // 绝不注入逐课清单（论语几百课全量塞上下文是灾难）
-      expect(ctx).not.toContain("### 论语先进篇第十六章");
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
+  it("真实孩子（服务端 kb）返回主题进度摘要 + 标签定义表，且不含逐课清单", async () => {
+    // 用真实孩子目录名做 child_id → 服务端 kb 返回其真实进度聚合行（lunyu 512 课）与标签表
+    const childDir = path.join(mockTmpRoot, "children", CHILD);
+    const ctx = await buildProvidedContext(childDir, "");
+    expect(ctx).toContain("已提供的上下文");
+    expect(ctx).toContain("论语（lunyu）");
+    expect(ctx).toContain("已学");
+    expect(ctx).toContain("下一课「");
+    expect(ctx).toContain("诚实");
+    // 绝不注入逐课清单（论语几百课全量塞上下文是灾难）
+    expect(ctx).not.toContain("### 论语");
   });
 });
