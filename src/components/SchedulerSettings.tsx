@@ -9,6 +9,8 @@ interface SchedulerChildConfig {
   // ISSUE-019：课程时间段（上课/下课提醒）+ 提醒方式
   classTimes: { start: string; end: string; label?: string }[];
   classAlertMode: "both" | "chime" | "voice";
+  // ISSUE-025：孩子 Todolist（今日计划）——生成时间 / 统计时间
+  todo: { enabled: boolean; genTime: string; statTime: string };
 }
 
 interface ChildItem {
@@ -41,6 +43,7 @@ function defaultConfig(): SchedulerChildConfig {
     archiveLimit: 20,
     classTimes: [],
     classAlertMode: "both",
+    todo: { enabled: false, genTime: "08:00", statTime: "21:00" },
   };
 }
 
@@ -678,6 +681,88 @@ export default function SchedulerSettings() {
                           {opt.label}
                         </label>
                       ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ISSUE-025：孩子 Todolist（今日计划）——每天定时生成 + 定时统计完成度 */}
+                <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>
+                    📋 今日计划（Todolist）
+                  </div>
+                  <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
+                    每天定时为孩子生成/刷新「今日计划」：家长规定项（来自各主题学习规则，带 [家长] 标记、
+                    孩子不可删改只能打勾）+ 孩子自规划项 + 昨日未完成项。到统计时间点由 AI 依据当天对话与
+                    学习进度核对完成度并打勾（无需孩子手动操作），孩子端可查看今日计划与「我的执行力」趋势。
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={!!(cfg.todo || defaultConfig().todo).enabled}
+                      onChange={(e) =>
+                        updateConfig(child.childId, (p) => ({
+                          ...p,
+                          todo: {
+                            ...(p.todo || defaultConfig().todo),
+                            enabled: e.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    启用今日计划定时生成 / 统计
+                  </label>
+                  {!!(cfg.todo || defaultConfig().todo).enabled && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        marginLeft: 26,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, color: "#666" }}>每天生成时间：</span>
+                        <input
+                          type="time"
+                          value={(cfg.todo || defaultConfig().todo).genTime}
+                          onChange={(e) =>
+                            updateConfig(child.childId, (p) => ({
+                              ...p,
+                              todo: { ...(p.todo || defaultConfig().todo), genTime: e.target.value },
+                            }))
+                          }
+                          style={{
+                            padding: "4px 6px",
+                            border: "1px solid #ddd",
+                            borderRadius: 6,
+                            fontSize: 13,
+                          }}
+                        />
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, color: "#666" }}>每天统计时间：</span>
+                        <input
+                          type="time"
+                          value={(cfg.todo || defaultConfig().todo).statTime}
+                          onChange={(e) =>
+                            updateConfig(child.childId, (p) => ({
+                              ...p,
+                              todo: { ...(p.todo || defaultConfig().todo), statTime: e.target.value },
+                            }))
+                          }
+                          style={{
+                            padding: "4px 6px",
+                            border: "1px solid #ddd",
+                            borderRadius: 6,
+                            fontSize: 13,
+                          }}
+                        />
+                      </div>
+                      <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.6 }}>
+                        提示：生成时间建议设在学习开始前（如 08:00），统计时间建议设在晚间（如 21:00）。
+                        到点应用会自动调用模型生成/核对（需应用保持运行，跨天未跑会在下次启动时补跑）。
+                      </div>
                     </div>
                   )}
                 </div>

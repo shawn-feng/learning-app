@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
+import TodoModal from "../components/TodoModal";
 import { useChatPanel } from "../hooks/useChatPanel";
 import type { MaterialsPanelHandle, PageAction, PageEvent, PageExecResultUplink } from "../lib/page-bridge";
 
@@ -319,6 +320,8 @@ export default function Learn({ child, onExit }: Props) {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [changePwdMsg, setChangePwdMsg] = useState("");
+  // ISSUE-025：今日计划（Todolist）弹框
+  const [showTodo, setShowTodo] = useState(false);
 
   useEffect(() => {
     setAiName(child.aiName);
@@ -1031,6 +1034,13 @@ export default function Learn({ child, onExit }: Props) {
           <div className="sidebar-menu">
             <button
               className="sidebar-btn"
+              title="今日计划（Todolist）"
+              onClick={() => setShowTodo(true)}
+            >
+              <ClipboardList size={18} className="sidebar-btn-icon" />
+            </button>
+            <button
+              className="sidebar-btn"
               title="AI 伙伴设置"
               onClick={() => {
                 setAiSettingsMsg("");
@@ -1162,6 +1172,8 @@ export default function Learn({ child, onExit }: Props) {
           </div>
         </div>
       )}
+
+      {showTodo && <TodoModal childId={child.childId} onClose={() => setShowTodo(false)} />}
 
       {showAiSettings && (
         <div className="modal-overlay" onClick={() => setShowAiSettings(false)}>

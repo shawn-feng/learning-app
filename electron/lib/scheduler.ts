@@ -8,6 +8,8 @@ import { listChildren } from "./child-auth";
 import { summarizeDailyConversation, formatLocalDate } from "./daily-summary";
 import { resetChildSession } from "./pi-session";
 import { handleCloudInbox } from "./delivery";
+// ISSUE-025：孩子 Todolist 定时生成 / 统计
+import { runTodoGen, runTodoStat } from "./todo-scheduler";
 
 export interface TaskState {
   children: Record<
@@ -19,6 +21,8 @@ export interface TaskState {
       "event-poll": { lastRun: string };
       // ISSUE-019：课程时间段提醒（上课/下课；lastKey 防同日同时间点重复触发）
       "class-reminder": { lastKey: string };
+      // ISSUE-025：孩子 Todolist 生成/统计（lastRun 记录最近一次执行时间，按本地日期去重）
+      todo: { lastRun: string };
     }
   >;
   // 顶层任务：本地定时备份（ISSUE-041 层 A）
@@ -40,6 +44,9 @@ export interface SchedulerChildConfig {
   classTimes: ClassTime[];
   // ISSUE-019：课程提醒方式：both=铃声+语音播报 / chime=仅铃声 / voice=仅语音播报
   classAlertMode: "both" | "chime" | "voice";
+  // ISSUE-025：孩子 Todolist（今日计划）。genTime=每天生成时间，statTime=每天统计完成度时间。
+  // 默认关闭（家长在「定时任务」设置里开启）；两个时间点各自每天只跑一次。
+  todo: { enabled: boolean; genTime: string; statTime: string };
 }
 
 /** ISSUE-019：一段课程时间段（HH:mm，本地时区）。 */
@@ -107,6 +114,7 @@ export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
   archiveLimit: 20,
   classTimes: [],
   classAlertMode: "both",
+  todo: { enabled: false, genTime: "08:00", statTime: "21:00" },
 };
 
 // 旧配置（intervalHours 间隔模式）已废弃：读配置时把缺省 times 补成默认时间点。
@@ -142,6 +150,7 @@ function defaultChildTaskState() {
     "auto-new-session": { lastRun: "" },
     "event-poll": { lastRun: "" },
     "class-reminder": { lastKey: "" },
+    todo: { lastRun: "" },
   };
 }
 
@@ -159,6 +168,7 @@ export function getChildState(state: TaskState, childId: string) {
       "auto-new-session": { ...base["auto-new-session"], ...existing["auto-new-session"] },
       "event-poll": { ...base["event-poll"], ...existing["event-poll"] },
       "class-reminder": { ...base["class-reminder"], ...existing["class-reminder"] },
+      todo: { ...base.todo, ...existing.todo },
     };
   }
   return state.children[childId];
@@ -214,6 +224,15 @@ export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {
       c.classAlertMode === "chime" || c.classAlertMode === "voice"
         ? c.classAlertMode
         : DEFAULT_CHILD_CONFIG.classAlertMode,
+    todo: {
+      enabled: c.todo?.enabled ?? DEFAULT_CHILD_CONFIG.todo.enabled,
+      genTime: /^\d{2}:\d{2}$/.test(c.todo?.genTime ?? "")
+        ? c.todo!.genTime
+        : DEFAULT_CHILD_CONFIG.todo.genTime,
+      statTime: /^\d{2}:\d{2}$/.test(c.todo?.statTime ?? "")
+        ? c.todo!.statTime
+        : DEFAULT_CHILD_CONFIG.todo.statTime,
+    },
   };
 }
 
@@ -249,6 +268,15 @@ export function setChildSchedulerConfig(
       childConfig.classAlertMode === "chime" || childConfig.classAlertMode === "voice"
         ? childConfig.classAlertMode
         : DEFAULT_CHILD_CONFIG.classAlertMode,
+    todo: {
+      enabled: childConfig.todo?.enabled ?? DEFAULT_CHILD_CONFIG.todo.enabled,
+      genTime: /^\d{2}:\d{2}$/.test(childConfig.todo?.genTime ?? "")
+        ? childConfig.todo!.genTime
+        : DEFAULT_CHILD_CONFIG.todo.genTime,
+      statTime: /^\d{2}:\d{2}$/.test(childConfig.todo?.statTime ?? "")
+        ? childConfig.todo!.statTime
+        : DEFAULT_CHILD_CONFIG.todo.statTime,
+    },
   };
   saveSchedulerConfig(config);
   return config.children[childId];
@@ -467,6 +495,29 @@ export function startScheduler(): void {
         }
       }
 
+      // ISSUE-025：孩子 Todolist 生成 / 统计。各自按配置时间点每天只跑一次
+      // （lastRun 记录执行时刻，与本地日期+hhmm 比对去重；跨天自动失效）。
+      if (cc.todo.enabled) {
+        const nowMin = hhmm(now);
+        for (const [kind, point, fn] of [
+          ["gen", cc.todo.genTime, () => runTodoGen(child.childId)],
+          ["stat", cc.todo.statTime, () => runTodoStat(child.childId)],
+        ] as const) {
+          if (nowMin !== point) continue;
+          const last = cs.todo.lastRun ? new Date(cs.todo.lastRun) : null;
+          const alreadyRan =
+            last && formatLocalDate(last) === formatLocalDate(now) && hhmm(last) === nowMin;
+          if (alreadyRan) continue;
+          try {
+            await fn();
+            cs.todo.lastRun = new Date().toISOString();
+            saveTaskState(state);
+          } catch (e) {
+            console.error(`Todo ${kind} failed for child ${child.childId}:`, e);
+          }
+        }
+      }
+
       // ISSUE-041 消息交换轮询（设备级配置，默认 2 分钟一次，可关闭）。
       // 云端只做消息交换：拉分配包 → 本地落库合并 → ack；顺带响应家长「请求刷新进度」标记。
       // 云不可达时静默跳过，等下一轮。除定时轮询外，孩子端开会话时也会即时轮询（ipc pi:start_child）。
@@ -540,6 +591,34 @@ export async function runCatchUp(): Promise<void> {
           } catch (e) {
             console.error(`Recording catch-up failed for child ${child.childId}:`, e);
           }
+        }
+      }
+    }
+
+    // ISSUE-025：todo 生成/统计 catch-up（启动/休眠恢复：已过配置时间点且当天没跑过 → 补跑）。
+    // 注意顺序：先补 stat 再补 gen 没有意义，应按时间先后（gen 通常早于 stat）；这里按配置值
+    // 比较 hhmm 决定补哪个。两个都过了则先 gen 后 stat。
+    if (cc.todo.enabled) {
+      const nowMin = hhmm(now);
+      const lastTodo = cs.todo.lastRun ? new Date(cs.todo.lastRun) : null;
+      const ranToday = (point: string) =>
+        !!lastTodo && formatLocalDate(lastTodo) === formatLocalDate(now) && hhmm(lastTodo) === point;
+      const genDue = cc.todo.genTime <= nowMin && !ranToday(cc.todo.genTime);
+      const statDue = cc.todo.statTime <= nowMin && !ranToday(cc.todo.statTime);
+      if (genDue) {
+        try {
+          await runTodoGen(child.childId);
+          cs.todo.lastRun = new Date().toISOString();
+        } catch (e) {
+          console.error(`Todo gen catch-up failed for child ${child.childId}:`, e);
+        }
+      }
+      if (statDue && !ranToday(cc.todo.statTime)) {
+        try {
+          await runTodoStat(child.childId);
+          cs.todo.lastRun = new Date().toISOString();
+        } catch (e) {
+          console.error(`Todo stat catch-up failed for child ${child.childId}:`, e);
         }
       }
     }

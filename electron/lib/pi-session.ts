@@ -10,7 +10,7 @@ import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath, getCurre
 import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown, fetchProgressRemote } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
@@ -44,6 +44,11 @@ const LEARNING_NAV_INSTRUCTIONS = `
 ### 记录
 学习总结、生活事件等记录由**系统定时任务**统一完成（按配置的时间点从孩子当天的对话中提取，写入 daily）。**当孩子/家长希望回顾或总结某天的学习内容、生活事件时，调用 \`summarize_conversation\` 工具**（按天汇总，date 可省略，自动选最近有会话的一天；该天无会话会返回跳过说明）。各主题 method.md 的「记录」段指引照常执行。
 **孩子数据已全部存入 SQLite（kb.sqlite），数据读写一律用 kb_query / kb_insert / kb_update 结构化工具，禁止用 read/write/edit 碰数据文件**——daily/、life/、inquiries/、tasks/、tags/、learning 进度 的 markdown 只是历史归档，不要读写。**标签只能从标签定义表选**（先 kb_query 查词表与判断标准，不能自创），打在 daily 生活事件（content 里写 \`- 标签：\` 行，自动解析）与课程上。只有 materials/ / uploads/ 等内容文件才用 write/edit / read；主题教学方法与课程教学文案存家长库，一律用 parent_content 获取。
+
+### 今日计划（Todolist，ISSUE-025）
+- 孩子的 Todolist（今日计划）用 \`todo_list\` 工具读写（markdown：\`- [ ]\` 未完成 / \`- [x]\` 已完成）。系统每天在设定时间点自动生成与核对完成度，你只需在孩子需要时协助。
+- **\`[家长]\` 标记的项来自家长的学习规则（如「[家长] 论语：今天学 3 课」），绝不能删除或修改文字**，只能把 \`[ ]\` 改成 \`[x]\` 标记完成；其余项（孩子自规划）孩子要求时可增删改。
+- 孩子提出「我今天想…」之类的计划时：先用 \`todo_list\`（action=read）拿到当天内容，把自规划项加进去，再 \`todo_list\`（action=update）整体写回——**先读再改，不要凭空重写**，避免丢掉已有项（尤其 [家长] 项）。
 
 ### 孩子上传的附件（uploads/）
 - 孩子上传的图片会随消息直接发送给你（你可见），无需读取文件；
@@ -443,8 +448,8 @@ async function createChildSession(
     // 仅需列在 tools 白名单即启用、无需 customTools 条目——让孩子能列自己 cwd 下的目录
     // （outputs/ 已生成 html、uploads/ 上传资料、materials/ 学习资料）以复用/展示/清理；
     // 越界防护由 learning-guard 统一拦截（ISSUE-049）。
-    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool],
+    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "todo_list"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, todoListTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，

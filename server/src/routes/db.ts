@@ -202,6 +202,37 @@ const queryHandlers: Record<string, QueryHandler> = {
       db.close();
     }
   },
+  // ISSUE-025：取某天 todolist markdown（无则返回 null）。date 缺省 = 今天（本地日期由客户端计算传入）。
+  "kb.todo.get": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const date = str(args.date);
+    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      const row = db
+        .prepare("SELECT date, items_md, updated FROM child_todos WHERE date = ?")
+        .get(date) as { date: string; items_md: string; updated: string } | undefined;
+      return row ? { date: row.date, itemsMd: row.items_md, updated: row.updated } : null;
+    } finally {
+      db.close();
+    }
+  },
+  // ISSUE-025：取近 N 天完成统计（倒序，最新在前；range 默认 30）。供「我的执行力」趋势。
+  "kb.todo.stats.list": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const range = Math.min(365, Math.max(1, num(args.range, 30)));
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      return db
+        .prepare(
+          `SELECT date, total, done, parent_total, parent_done, self_total, self_done, rate, streak, updated
+           FROM child_todo_stats ORDER BY date DESC LIMIT ?`
+        )
+        .all(range);
+    } finally {
+      db.close();
+    }
+  },
   "agents.get": (ctx, args) => {
     const scope = str(args.scope);
     // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
@@ -319,6 +350,56 @@ const execHandlers: Record<string, ExecHandler> = {
         throw err;
       }
       return { inserted, skipped: entries.length - inserted };
+    } finally {
+      db.close();
+    }
+  },
+  // ISSUE-025：整体写入某天的 todolist markdown（upsert）。agent 的 todo_list 工具与定时
+  // 生成/统计都走这里；[家长] 项不可改约束在 agent 提示词层执行（服务端不解析内容）。
+  "kb.todo.put": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const date = str(args.date);
+    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      db.prepare(
+        `INSERT INTO child_todos (date, items_md, updated) VALUES (?, ?, ?)
+         ON CONFLICT(date) DO UPDATE SET items_md = excluded.items_md, updated = excluded.updated`
+      ).run(date, str(args.items_md), str(args.updated, new Date().toISOString()));
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  },
+  // ISSUE-025：写某天完成统计（upsert）。由主进程在统计点 agent 打完勾后解析 markdown 落库。
+  "kb.todo.stats.upsert": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const date = str(args.date);
+    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      db.prepare(
+        `INSERT INTO child_todo_stats (
+           date, total, done, parent_total, parent_done, self_total, self_done, rate, streak, updated
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(date) DO UPDATE SET
+           total = excluded.total, done = excluded.done,
+           parent_total = excluded.parent_total, parent_done = excluded.parent_done,
+           self_total = excluded.self_total, self_done = excluded.self_done,
+           rate = excluded.rate, streak = excluded.streak, updated = excluded.updated`
+      ).run(
+        date,
+        num(args.total),
+        num(args.done),
+        num(args.parent_total),
+        num(args.parent_done),
+        num(args.self_total),
+        num(args.self_done),
+        num(args.rate, 0),
+        num(args.streak, 0),
+        str(args.updated, new Date().toISOString())
+      );
+      return { ok: true };
     } finally {
       db.close();
     }

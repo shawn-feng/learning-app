@@ -237,6 +237,11 @@ const api = {
   eventPollConfigGet: () => ipcRenderer.invoke("eventpoll:config:get"),
   eventPollConfigSet: (cfg: any) => ipcRenderer.invoke("eventpoll:config:set", cfg),
 
+  // ISSUE-025：孩子 Todolist（今日计划）——孩子端「今日计划」弹框与「我的执行力」趋势数据源
+  todoGet: (childId: string, date?: string) => ipcRenderer.invoke("todo:get", childId, date),
+  todoStatsList: (childId: string, range?: number) =>
+    ipcRenderer.invoke("todo:stats:list", childId, range),
+
   // Voice (STT + TTS)
   voiceConfigGet: () => ipcRenderer.invoke("voice:config:get"),
   voiceConfigSet: (patch: any) => ipcRenderer.invoke("voice:config:set", patch),

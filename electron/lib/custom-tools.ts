@@ -1128,3 +1128,102 @@ export const pageInspectTool = defineTool({
     };
   },
 });
+
+// ==================== ISSUE-025：Todolist（今日计划） ====================
+
+/** 本地时区 YYYY-MM-DD（不用 toISOString：UTC 会跨到错误的「今天」）。 */
+export function todoLocalDate(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 解析 todolist markdown 的任务统计（确定性计算，供统计点落库 / 工具返回）。
+ * 约定：`- [ ]` / `- [x]` 的 checkbox 行算任务；行内带「[家长]」标记的算家长规定项，
+ * 其余为孩子自规划项（「[自己]」标记可有可无，无标记也算自规划项）。
+ */
+export function countTodoTasks(md: string): {
+  total: number;
+  done: number;
+  parentTotal: number;
+  parentDone: number;
+  selfTotal: number;
+  selfDone: number;
+} {
+  let total = 0;
+  let done = 0;
+  let parentTotal = 0;
+  let parentDone = 0;
+  let selfTotal = 0;
+  let selfDone = 0;
+  for (const line of md.split("\n")) {
+    const m = /^\s*[-*]\s*\[( |x|X)\]\s*(.*)$/.exec(line);
+    if (!m) continue;
+    total++;
+    const isDone = m[1].toLowerCase() === "x";
+    if (isDone) done++;
+    const isParent = /\[家长\]/.test(m[2]);
+    if (isParent) {
+      parentTotal++;
+      if (isDone) parentDone++;
+    } else {
+      selfTotal++;
+      if (isDone) selfDone++;
+    }
+  }
+  return { total, done, parentTotal, parentDone, selfTotal, selfDone };
+}
+
+/**
+ * todo_list：读写孩子 Todolist（今日计划）markdown。
+ * - read：返回指定日期（缺省=今天）的完整 todolist markdown；
+ * - update：整体写入指定日期的 todolist markdown（覆盖式；写入前请先 read 拿到当前内容再改，
+ *   避免丢掉已有项——尤其[家长]项）。
+ * 数据存服务端（child_todos 表），多设备共享。**[家长]项（来自学习规则）不可删除/改文字，
+ * 只能把 `[ ]` 改成 `[x]` 标记完成**——此约束由孩子 agent 提示词强制，本工具不解析内容。
+ */
+export const todoListTool = defineTool({
+  name: "todo_list",
+  label: "读写今日计划（Todolist）",
+  description:
+    "读写孩子当天的 Todolist（今日计划，markdown 格式，`- [ ]` 未完成 / `- [x]` 已完成）。\n\n" +
+    "**read**：`action: \"read\"`，返回指定日期（`date` 缺省=今天）的完整 todolist 文本。\n" +
+    "**update**：`action: \"update\"` + `markdown`（完整内容），整体覆盖写入。⚠️ 先 read 再改，不要凭空重写，否则会丢掉已有项。\n\n" +
+    "**规则**：`[家长]` 标记的项来自家长的学习规则，**绝不能删除或修改文字**，只能把 `[ ]` 改成 `[x]` 标记完成；其余项（孩子自规划）可增删改。",
+  parameters: Type.Object({
+    action: Type.String({ description: "read=读取；update=写入" }),
+    date: Type.Optional(Type.String({ description: "日期 YYYY-MM-DD（缺省=今天，本地时区）" })),
+    markdown: Type.Optional(Type.String({ description: "update 时必填：完整的 todolist markdown" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const child_id = childIdFromCwd(ctx.cwd);
+    if (!child_id) throw new Error("无法从会话目录解析 childId");
+    const date = params.date || todoLocalDate();
+    if (params.action === "read") {
+      const todo = await dbQuery<{ date: string; itemsMd: string; updated: string } | null>("kb.todo.get", {
+        child_id,
+        date,
+      });
+      const text = todo?.itemsMd?.trim()
+        ? todo.itemsMd
+        : `${date} 还没有 todolist。`;
+      return { content: [{ type: "text" as const, text }] };
+    }
+    if (params.action === "update") {
+      if (!params.markdown) throw new Error("todo_list update 需要 markdown 参数（完整 todolist 内容）");
+      await dbExec("kb.todo.put", { child_id, date, items_md: params.markdown });
+      const c = countTodoTasks(params.markdown);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `已保存 ${date} 的 todolist：共 ${c.total} 项（已完成 ${c.done}，家长规定 ${c.parentTotal} 项，自规划 ${c.selfTotal} 项）。`,
+          },
+        ],
+      };
+    }
+    throw new Error("todo_list 的 action 仅支持 read / update");
+  },
+});

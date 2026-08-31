@@ -11,6 +11,8 @@ import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
+import { dbQuery } from "./client-data";
+import { formatLocalDate } from "./daily-summary";
 import {
   allocateTopicToChild,
   copyMaterialIntoParent,
@@ -734,6 +736,32 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
 
     return result;
+  });
+
+  // ISSUE-025：孩子 Todolist（今日计划）读取——孩子端「今日计划」弹框与「我的执行力」趋势数据源。
+  // 数据真源在服务端 child_todos / child_todo_stats 表（SPLIT，kb.todo.* handler），这里只读返回。
+  ipcMain.handle("todo:get", async (_e, childId: string, date?: string) => {
+    try {
+      const d = typeof date === "string" && date ? date : formatLocalDate(new Date());
+      const todo = await dbQuery<{ itemsMd: string; updated: string } | null>("kb.todo.get", {
+        child_id: childId,
+        date: d,
+      }).catch(() => null);
+      return { success: true, date: d, itemsMd: todo?.itemsMd ?? "", updated: todo?.updated ?? "" };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("todo:stats:list", async (_e, childId: string, range?: number) => {
+    try {
+      const rows = await dbQuery<unknown[]>("kb.todo.stats.list", {
+        child_id: childId,
+        range: typeof range === "number" ? Math.min(365, Math.max(1, Math.floor(range))) : 30,
+      }).catch(() => []);
+      return { success: true, rows };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   ipcMain.handle("skills:list", async () => {

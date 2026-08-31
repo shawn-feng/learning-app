@@ -51,6 +51,27 @@ CREATE TABLE IF NOT EXISTS tags (
   criteria TEXT NOT NULL DEFAULT ''
 );
 
+-- ISSUE-025：孩子 Todolist（今天 / 历史某天的计划 markdown，child_id 即 kb 文件，date 唯一）
+CREATE TABLE IF NOT EXISTS child_todos (
+  date TEXT PRIMARY KEY,
+  items_md TEXT NOT NULL DEFAULT '',
+  updated TEXT NOT NULL DEFAULT ''
+);
+
+-- ISSUE-025：每日完成统计（统计点 agent 打完勾后主进程解析落库，供「我的执行力」趋势）
+CREATE TABLE IF NOT EXISTS child_todo_stats (
+  date TEXT PRIMARY KEY,
+  total INTEGER NOT NULL DEFAULT 0,
+  done INTEGER NOT NULL DEFAULT 0,
+  parent_total INTEGER NOT NULL DEFAULT 0,
+  parent_done INTEGER NOT NULL DEFAULT 0,
+  self_total INTEGER NOT NULL DEFAULT 0,
+  self_done INTEGER NOT NULL DEFAULT 0,
+  rate REAL NOT NULL DEFAULT 0,
+  streak INTEGER NOT NULL DEFAULT 0,
+  updated TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT

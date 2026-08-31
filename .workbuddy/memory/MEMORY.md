@@ -46,3 +46,18 @@
 - **会话 jsonl 留客户端本地、不上服务端**（换设备即新会话）；学习记录永远在服务端（家长端可见性唯一通道，预留"定时推送会话"扩展）。
 - 认证复用 benefit-auth（客户端→服务端→auth.aixuexihao.top）；孩子由家长创建、跟随授权、不单独认证；materials 版本=最新时间戳比对（无版本切换）；大文件存服务端磁盘；不做存量迁移。
 - **独立于 cloud-service/www 与 pi-web，三条线互不隶属**——pi-web 方向不受本次影响，本拆分不走 pi-web 路线。
+- **⚠️ 服务端部署边界（2026-08-31 用户明确）**：`learning-server`(SPLIT 服务端，端口8788) **只部署在家庭局域网 201（192.168.1.201 /opt/learning-server/），不部署到公网 ECS（47.96.154.226）**。公网 ECS 只跑 `learning-cloud`(静态下载 + `/api/version` 登记)，不跑 learning-server。发布时勿把服务端二进制推到 ECS。
+
+## 服务端构建命令（重要，2026-08-31 踩坑）
+- ⚠️ **正确命令**：`node scripts/build.mjs && node scripts/pkg.mjs linux`（build.mjs 用 esbuild 直编 `src/index.ts`→`dist/server.cjs`，pkg.mjs 再打包）。
+- ❌ **错误命令**：`npm run build`（`=tsc`，只编译到 `dist/*.js`，**不产生 server.cjs**）。若先跑 `npm run build` 再 `pkg.mjs`，pkg 会把**陈旧的旧 server.cjs** 直接打包，且 pkg.mjs 按 package.json 打印 `vX.Y.Z` 伪装成功——版本常量与代码修改全没进去。
+- 校验：部署后 `curl /api/v1/version` 必须返回目标版本；grep `dist/server.cjs` 确认 `SERVER_VERSION="x.y.z"`（pkg 二进制压缩后 grep 看不到，以解包 bundle 为准）。
+- **⚠️ 201 客户端安装方式**：201(`192.168.1.201`, 用户 shanshan) 客户端 = deb 包 `learning-app`，装在 `/opt/学习伙伴/xuexihub`（electron，可执行名 `xuexihub`，user-data-dir=`~/.config/learning-app`）。升级：**先 `pkill -TERM -f '/opt/学习伙伴/xuexihub'` 停旧进程，再 `sudo dpkg -i learning-app_x.y.z_amd64.deb`** 覆盖。dpkg 保留 deb 内部构建 mtime（非安装时间）。验证：`dpkg -l learning-app` 看包版本；`grep -ao '"version": "x.y.z"' /opt/学习伙伴/resources/app.asar` 看真实 app 版本（asar 不压缩，可直接 grep）。GUI 应用**无法在 SSH 会话启动**（无 DISPLAY），装完需用户在桌面重开才生效新版本。
+
+## 客户端自动更新机制（ISSUE-040，2026-08-31 排查结论）
+- **Windows 能差量**：NSIS 安装包 + 发布 `*.exe.blockmap` → electron-updater 按块下载变化部分。
+- **macOS 实际没走自动更新，是降级手动下载（天生全量）**，两原因：
+  1. **feed 上根本没有 `latest-mac.yml`**（实测 `https://www.aixuexihao.top/download/latest-mac.yml` → 404）。根因：`.github/workflows/build-mac.yml` 只 `upload-artifact`（传 GitHub Actions 产物），**无发布步骤把 dmg + latest-mac.yml 传到阿里云 OSS `/download/`**（Windows 有 `scripts/publish-update.py` 做这事）。→ `autoUpdater.checkForUpdates()` 拉不到 yml 报错 → `fallbackToManualDownload()`。
+  2. 降级分支 `shell.openExternal(download_url)` 是**浏览器全量下载**，无差量概念；且 `/api/version` 的 `download_url` 被 `publish-update.py --register` 硬编码为 **Windows exe**（`学习伙伴 Setup x.y.z.exe`），mac/linux 点「前往下载」拿到的是 Windows 安装包（platform-agnostic bug）。
+- **即便把 mac 正确发布到 feed，当前 `build.mac.target` 只有 `dmg` 没有 `zip`，mac 差量仍不行**（electron-updater 的 mac 差量依赖 `mac` **zip** 产物 + `.blockmap`，dmg 不能块级差量）。要让 mac 差量：① build-mac.yml 增加发布到 OSS feed 的步骤；② mac 目标加 `zip`（生成 blockmap）；③ download_url 按平台返回。
+- 客户端 feed 地址：`getUpdateFeedUrl()` = `https://www.aixuexihao.top/download/`（全平台一致，`updater.ts` 用 generic provider）。
