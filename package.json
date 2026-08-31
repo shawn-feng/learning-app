@@ -85,14 +85,7 @@
         "NSSpeechRecognitionUsageDescription": "需要语音识别以将语音转换为文字"
       },
       "target": [
-        {
-          "target": "dmg",
-          "arch": "x64"
-        },
-        {
-          "target": "dmg",
-          "arch": "arm64"
-        }
+        "dmg"
       ]
     },
     "publish": {
