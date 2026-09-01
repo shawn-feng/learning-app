@@ -13,6 +13,7 @@ cloud-service/server*.log
 *.db
 .pi/
 aliyun-aksk.txt
+tencent-aksk.txt
 .npm-cache/
 electron.vite.config.*.mjs
 学习技能和资料/
@@ -43,6 +44,8 @@ dist-ubuntu/
 
 # 第三方平台密钥（切勿提交）
 douyin-client.txt
+# SSH 或连接元数据（含主机指纹，不入库）
+.known_hosts
 dist-release-0*/
 dist-ubuntu-0*/
 dist-mac-0*/
