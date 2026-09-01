@@ -148,6 +148,10 @@ export async function webmToWav16k(input: Buffer): Promise<Buffer> {
       try {
         fs.unlinkSync(tmpOut);
       } catch {}
+      // 成功路径一并删除输入 webm（错误路径有意保留 tmpIn 便于复现排查，见上）
+      try {
+        fs.unlinkSync(tmpIn);
+      } catch {}
     }
   });
 }
