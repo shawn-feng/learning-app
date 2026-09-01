@@ -1,9 +1,10 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
 import { History, Brain, Volume2, Square, Play, X, Paperclip, Mic, Send } from "lucide-react";
 import IconButton from "./IconButton";
+import { useWordLookup, WordLookupOverlay } from "./WordLookupOverlay";
 
 export interface ToolCallState {
   id: string;
@@ -179,6 +180,33 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { recording, start, stop } = useAudioRecorder();
+
+  // ISSUE-031：聊天框查词浮层——朗读任意文本（整段或单读音拼音串）走 edge-tts，与聊天朗读同链路
+  const speakText = useCallback(
+    async (text: string) => {
+      if (!text) return;
+      audioRef.current?.pause(); // 新朗读打断旧播放
+      try {
+        const r = await window.api.voiceTts(text, { rate });
+        if (r.success && r.audio) {
+          const blob = new Blob([r.audio], { type: "audio/mpeg" });
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          audioRef.current = audio;
+          const done = () => URL.revokeObjectURL(url);
+          audio.onended = done;
+          audio.onerror = done;
+          await audio.play();
+        }
+      } catch {
+        /* 朗读失败静默 */
+      }
+    },
+    [rate]
+  );
+
+  // ISSUE-031：在聊天消息区捕获中文选区 → 查词浮层
+  const wordLookup = useWordLookup(messagesRef, speakText);
 
   // 待发送附件：图片（dataURL 预览）+ 文本文件（文件名+全文）
   const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([]);
@@ -911,6 +939,16 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
           onChange={handleFilesSelected}
         />
       </div>
+
+      {/* ISSUE-031：聊天框选中中文 → 查词浮层（拼音放大 + 多音字分行朗读 + 整段朗读） */}
+      {wordLookup.state && (
+        <WordLookupOverlay
+          ref={wordLookup.overlayRef}
+          state={wordLookup.state}
+          onSpeak={wordLookup.onSpeak}
+          onClose={wordLookup.close}
+        />
+      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@
 //   接收：{code, message, result:"{...}", final:0|1}；result 为 JSON 字符串，
 //         final=1 表示评测完成（SuggestedScore/PronAccuracy/PronFluency/PronCompletion/Words/PhoneInfo）。
 import crypto from "crypto";
+import { extractWavPcm } from "../../voice/audio";
 import type { AssessmentResult } from "../types";
 
 const HOST = "soe.cloud.tencent.com/soe/api";
@@ -29,7 +30,7 @@ export function buildSoeUrl(
   const voiceId = crypto.randomUUID();
 
   // 儿童场景：score_coeff=1.0（最低苛刻度，对应最小年龄段）；句子模式 eval_mode=1；
-  // rec_mode=1 录音评测；voice_format=1 wav；16k_en 英文标准引擎。
+  // rec_mode=1 录音评测；voice_format=0 pcm（16bit PCM 长度必为偶数，规避 4107 对齐报错）；16k_en 英文标准引擎。
   const params: Record<string, string | number> = {
     eval_mode: 1,
     expired,
@@ -42,7 +43,7 @@ export function buildSoeUrl(
     server_engine_type: "16k_en",
     text_mode: 0,
     timestamp,
-    voice_format: 1,
+    voice_format: 0,
     voice_id: voiceId,
   };
 
@@ -73,10 +74,22 @@ export async function assess(
   }
   const { url } = buildSoeUrl({ appId, secretId, secretKey }, opts.refText);
 
-  const { default: WS } = await import("ws");
+  // 转纯 PCM（16k/单声道/16bit）发送：voice_format=0 时引擎按 16bit 样本对齐解析，
+  // PCM 长度必为偶数，规避 4107「音频数据指针或长度必须为偶数」（wav 头解析不可靠）。
+  let pcm: Buffer;
+  try {
+    pcm = extractWavPcm(wav);
+  } catch (e) {
+    throw new Error(`智聆音频格式异常：${(e as Error).message}（需要 16kHz/单声道/16bit WAV）`);
+  }
+
+  // 使用 Node 22+/Electron 内置全局 WebSocket（undici），不依赖 ws 包——
+  // ws 的可选依赖 bufferutil/utf-8-validate 在 electron-vite 打包时解析失败
+  // （Could not resolve "bufferutil" imported by "ws"）。
   return new Promise<AssessmentResult>((resolve, reject) => {
     let done = false;
-    let ws: InstanceType<typeof WS>;
+    let ws: WebSocket;
+    let connError = "";
     const finish = (err?: Error, result?: AssessmentResult) => {
       if (done) return;
       done = true;
@@ -91,27 +104,19 @@ export async function assess(
     };
     const timer = setTimeout(() => finish(new Error("智聆评测超时（30s）")), TIMEOUT_MS);
 
-    ws = new WS(url);
-    ws.on("open", () => {
-      // wav 分片发送（保持 1:1 实时率，防止引擎报"发送过快"错误）
-      const CHUNK = 1280; // 16k * 2B * 40ms
-      let offset = 0;
-      const sendNext = () => {
-        if (done) return;
-        if (offset < wav.length) {
-          const end = Math.min(offset + CHUNK, wav.length);
-          ws.send(wav.subarray(offset, end));
-          offset = end;
-          setTimeout(sendNext, 40);
-        } else {
-          ws.send(JSON.stringify({ type: "end" }));
-        }
-      };
-      sendNext();
+    ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    ws.addEventListener("open", () => {
+      // ⚠️ rec_mode=1（录音评测）模式下**只能发送一个数据包**（错误 4015）：
+      // 整个音频一次性发出，不可分片。分片发送只适用于 rec_mode=0（流式实时模式，需保持 1:1 实时率）。
+      ws.send(pcm);
+      ws.send(JSON.stringify({ type: "end" }));
     });
 
-    ws.on("message", (data: Buffer) => {
-      const text = typeof data === "string" ? data : data.toString("utf-8");
+    ws.addEventListener("message", (ev) => {
+      const data = ev.data;
+      const text =
+        typeof data === "string" ? data : Buffer.from(data as ArrayBuffer).toString("utf-8");
       let msg: any;
       try {
         msg = JSON.parse(text);
@@ -125,7 +130,9 @@ export async function assess(
       if (msg.final === 1) {
         if (msg.result) {
           try {
-            finish(undefined, parseSoeResult(JSON.parse(msg.result)));
+            // result 可能是 JSON 字符串（流式中间结果），也可能是已解析的对象（录音模式最终结果）
+            const r = typeof msg.result === "string" ? JSON.parse(msg.result) : msg.result;
+            finish(undefined, parseSoeResult(r));
           } catch (e) {
             finish(new Error(`解析智聆结果失败: ${(e as Error).message}`));
           }
@@ -135,9 +142,11 @@ export async function assess(
       }
     });
 
-    ws.on("error", (err: Error) => finish(new Error(`智聆连接失败: ${err.message}`)));
-    ws.on("close", () => {
-      if (!done) finish(new Error("智聆连接被服务端关闭"));
+    ws.addEventListener("error", () => {
+      connError = "连接失败（请检查网络 / SecretId / SecretKey）";
+    });
+    ws.addEventListener("close", () => {
+      if (!done) finish(new Error(connError || "智聆连接被服务端关闭"));
     });
   });
 }

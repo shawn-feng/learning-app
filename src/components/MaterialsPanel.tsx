@@ -1,9 +1,11 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import IconButton from "./IconButton";
-import { ArrowLeft, PanelRightClose, Volume2, X } from "lucide-react";
+import { ArrowLeft, PanelRightClose } from "lucide-react";
 import { lookupText, type LookupEntry } from "../lib/dictionary";
+import { WordLookupOverlay, type LookupState } from "./WordLookupOverlay";
 import {
   EventThrottler,
   genRequestId,
@@ -35,6 +37,8 @@ interface Props {
   onPageEvent?: (evt: PageEvent) => void;
   /** ISSUE-008：折叠资料区（收起后聊天区占更多空间） */
   onCollapse?: () => void;
+  /** ISSUE-030：资料字号（px）；驱动列表/正文/markdown 的 --material-font 与 HTML iframe 注入 */
+  matFontSize?: number;
 }
 
 const EXEC_TIMEOUT_MS = 10000;
@@ -44,16 +48,6 @@ const SCROLL_WINDOW_MS = 800;
 interface PendingExec {
   resolve: (r: PageExecResultUplink) => void;
   timer: ReturnType<typeof setTimeout>;
-}
-
-/** ISSUE-017：查词浮层状态（视口坐标 + 选中文本 + 查询结果） */
-interface LookupState {
-  /** 浮层锚点（视口坐标，已叠加 iframe 偏移） */
-  x: number;
-  y: number;
-  /** 选中的原始文本 */
-  text: string;
-  entries: LookupEntry[];
 }
 
 /** 同一交互序列（mouseup 选中 → 随后 click）内 click 不应关闭浮层的时间窗 */
@@ -102,63 +96,12 @@ function HtmlFrame({
 }
 
 /**
- * ISSUE-017：查词浮层（拼音 + 释义 + 朗读）。
- * fixed 定位在选中坐标旁；点击浮层内部不关闭（stopPropagation），外部/Esc 关闭由父级处理。
- */
-function WordLookupOverlay({
-  state,
-  onSpeak,
-  onClose,
-}: {
-  state: LookupState;
-  onSpeak: (text: string) => void;
-  onClose: () => void;
-}) {
-  // 粗略 clamp 到视口内（浮层宽约 240px、高约 180px），避免溢出
-  const MARGIN = 8;
-  const x = Math.min(Math.max(MARGIN, state.x), window.innerWidth - 240 - MARGIN);
-  const y = Math.min(Math.max(MARGIN, state.y), window.innerHeight - 180 - MARGIN);
-  return (
-    <div
-      className="word-lookup-overlay"
-      style={{ left: x, top: y }}
-      onClick={(e) => e.stopPropagation()}
-      role="dialog"
-      aria-label="字词释义"
-    >
-      <div className="word-lookup-head">
-        <span className="word-lookup-selected">{state.text}</span>
-        <IconButton icon={X} title="关闭" size={16} onClick={onClose} className="word-lookup-close" />
-      </div>
-      <div className="word-lookup-items">
-        {state.entries.map((en, i) => (
-          <div className="word-lookup-item" key={`${en.text}-${i}`}>
-            <span className="word-lookup-item-word">{en.text}</span>
-            <span className="word-lookup-item-py">{en.pinyin || "·"}</span>
-            <span className="word-lookup-item-meaning">{en.meaning || "（暂无释义）"}</span>
-            {en.text && (
-              <IconButton
-                icon={Volume2}
-                title={`朗读「${en.text}」`}
-                size={16}
-                onClick={() => onSpeak(en.text)}
-                className="word-lookup-item-speak"
-              />
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/**
  * 学习资料面板：列表 + 详情两态。
  * - 列表：每一行是一次学习资料（当前会话里 AI 展示过的全部资料）
  * - 详情：点开后展示该份资料，可「返回列表」
  */
 const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function MaterialsPanel(
-  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse },
+  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse, matFontSize = 16 },
   ref
 ) {
   const selected = materials.find((m) => m.id === selectedId);
@@ -181,6 +124,9 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     setLookup(s);
   }, []);
   const closeLookup = useCallback(() => showLookup(null), [showLookup]);
+
+  // ISSUE-030：资料字号经 CSS 变量下传到列表/正文（作用域限定在孩子端 .content-panel，不波及家长端/聊天）
+  const materialFontStyle = { "--material-font": `${matFontSize}px` } as CSSProperties;
 
   /** 资料 html 朗读（speechSynthesis shim 上抛）→ edge-tts 合成播放，结束后回执 iframe 触发按钮复位 */
   const speakMaterialText = useCallback(async (text: string) => {
@@ -341,6 +287,15 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
 
   useImperativeHandle(ref, () => ({ exec }), [exec]);
 
+  // ISSUE-030：资料字号变化 → 运行期下发 iframe（内容未变则 iframe 不重建，靠消息即时生效；
+  // 首次挂载的初始化字号由 injectBridge 注入 window.__PI_MAT_FONT，这里只处理后续变更）。
+  useEffect(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (win && readyRef.current) {
+      win.postMessage({ type: "page:mat-font", px: matFontSize }, "*");
+    }
+  }, [matFontSize]);
+
   // 详情视图
   if (selected) {
     // 兜底：内容为空时显示提示，避免空 srcDoc iframe 白屏（display_content 文件读取竞态、
@@ -348,7 +303,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     const cleanHtml = (selected.content ?? "").replace(/\r/g, "").trim();
     if (!cleanHtml) {
       return (
-        <div className="content-panel">
+        <div className="content-panel" style={materialFontStyle}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
             {onCollapse && (
@@ -365,7 +320,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
       );
     }
     return (
-      <div className="content-panel" onClick={closeLookup}>
+      <div className="content-panel" style={materialFontStyle} onClick={closeLookup}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
           {onCollapse && (
@@ -375,7 +330,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         {selected.title && <h2 className="material-title">{selected.title}</h2>}
         {selected.format === "html" ? (
           <HtmlFrame
-            html={injectBridge(cleanHtml)}
+            html={injectBridge(cleanHtml, matFontSize)}
             title={selected.title}
             iframeRef={iframeRef}
             onLoad={() => {
@@ -398,7 +353,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
 
   // 列表视图
   return (
-    <div className="content-panel">
+    <div className="content-panel" style={materialFontStyle}>
       <div className="material-list-header">
         <span className="material-list-title">学习资料</span>
         <span className="material-list-count">{materials.length} 份</span>

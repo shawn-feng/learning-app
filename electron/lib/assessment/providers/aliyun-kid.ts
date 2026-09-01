@@ -65,11 +65,12 @@ export async function assess(
   const userId = (creds.userId || "").trim() || "pi-child";
   const warrantId = await authorize(creds);
 
-  const { default: WS } = await import("ws");
+  // 使用 Node 22+/Electron 内置全局 WebSocket（undici），不依赖 ws 包（同 tencent-soe.ts）。
   return new Promise<AssessmentResult>((resolve, reject) => {
     let done = false;
-    let ws: InstanceType<typeof WS>;
+    let ws: WebSocket;
     let started = false; // 是否已发 start（connect 回显后再发）
+    let connError = "";
     const timer = setTimeout(() => finish(new Error("阿里评测超时（30s）")), TIMEOUT_MS);
 
     function finish(err?: Error, result?: AssessmentResult) {
@@ -147,11 +148,14 @@ export async function assess(
       sendNext();
     };
 
-    ws = new WS(WS_URL);
-    ws.on("open", () => sendConnect());
+    ws = new WebSocket(WS_URL);
+    ws.binaryType = "arraybuffer";
+    ws.addEventListener("open", () => sendConnect());
 
-    ws.on("message", (data: Buffer) => {
-      const text = typeof data === "string" ? data : data.toString("utf-8");
+    ws.addEventListener("message", (ev) => {
+      const data = ev.data;
+      const text =
+        typeof data === "string" ? data : Buffer.from(data as ArrayBuffer).toString("utf-8");
       let msg: any;
       try {
         msg = JSON.parse(text);
@@ -178,9 +182,11 @@ export async function assess(
       }
     });
 
-    ws.on("error", (err: Error) => finish(new Error(`阿里评测连接失败: ${err.message}`)));
-    ws.on("close", () => {
-      if (!done) finish(new Error("阿里评测连接被服务端关闭"));
+    ws.addEventListener("error", () => {
+      connError = "连接失败（请检查网络 / AppKey / AppSecret）";
+    });
+    ws.addEventListener("close", () => {
+      if (!done) finish(new Error(connError || "阿里评测连接被服务端关闭"));
     });
   });
 }

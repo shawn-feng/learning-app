@@ -26,12 +26,18 @@ export interface GeneratedQuestion {
 
 const GENERATION_SYSTEM_PROMPT = `你是儿童学习考核的出题老师。你只做一件事：根据家长写的考核方法说明与每课考核要点，为孩子出「主观题」（口述题，孩子用语音回答）。你只输出 JSON，不输出任何其它文字。`;
 
+// ==================== 选课（v3 §14.9：服务端下发选课 prompt，家长可编辑） ====================
+
+const SELECTION_SYSTEM_PROMPT = `你是儿童学习考核的选课老师。你只做一件事：严格按照家长写的选课规则，从课程清单中选出本次考核要考的课程。你只输出 JSON，不输出任何其它文字。`;
+
 /**
- * 为一门科目生成本场考核的主观题（独立内存 session）。
- * @param topicConfig 服务端下发的科目考核配置（assess_method + 学过的课程 + 各课考核要点）
+ * 选课（独立内存 session）——按服务端下发的完整选课 prompt（家长可编辑模板 + 注入周期范围/统计/候选清单）
+ * 从候选课程中挑选本次考核要考的课程。选课是纯规则任务：LLM 只做「挑选」，不做任何其它判断。
+ * @param selectionPrompt 服务端构建的完整选课 prompt（§14.9）
  * @param childId 孩子 id（session 工作目录按孩子隔离）
+ * @returns 选中的课程名列表（LLM 输出，过滤空值；课程名与服务端候选清单一致）
  */
-export async function generateExamQuestions(topicConfig: ExamTopicConfig, childId: string): Promise<GeneratedQuestion[]> {
+export async function selectCoursesForSchedule(selectionPrompt: string, childId: string): Promise<string[]> {
   const runtime = await getSharedRuntime();
   const model = await getDefaultModel();
   const childDir = getChildDir(childId || "default");
@@ -41,29 +47,110 @@ export async function generateExamQuestions(topicConfig: ExamTopicConfig, childI
     agentDir: path.join(childDir, ".pi", "agent"),
     noContextFiles: true,
     noSkills: true,
+    systemPromptOverride: () => SELECTION_SYSTEM_PROMPT,
+  });
+  await loader.reload();
+
+  const prompt =
+    selectionPrompt +
+    `\n\n请仔细阅读上面的选课规则与课程清单，输出选中课程的 JSON（不要 markdown 代码块围栏）：\n` +
+    `{"courses":["课程名1","课程名2",...]}`;
+
+  const { session } = await createAgentSession({
+    cwd: childDir,
+    agentDir: path.join(childDir, ".pi", "agent"),
+    modelRuntime: runtime,
+    model,
+    sessionManager: SessionManager.inMemory(),
+    resourceLoader: loader,
+    tools: [],
+    customTools: [],
+  });
+  try {
+    await session.prompt(prompt);
+    const text = lastAssistantText(session);
+    const parsed = extractJson(text);
+    const list = Array.isArray(parsed?.courses) ? parsed.courses : [];
+    // LLM 可能把清单行的「序号. [主题] 」前缀也复制进课程名（实测 mimo 会带 "[论语] "），统一清理
+    const clean = (t: any) => String(t ?? "").replace(/^(?:\d+\.\s*)?\[[^\]]*\]\s*/, "").trim();
+    const titles = list.map(clean).filter(Boolean);
+    if (!titles.length) throw new Error("选课未返回课程：\n" + text.slice(0, 800));
+    return titles;
+  } finally {
+    session.dispose();
+  }
+}
+
+/**
+ * 为一门科目生成本场考核的主观题（独立内存 session，**逐课并发出题**）。
+ * 课程由服务端下发的「选课结果」给定（v3 §14.9：LLM 按家长可编辑的选课 prompt 挑选，非代码裁剪）；
+ * 本地不再按最近复习时间硬裁，而是对**每门选中课程单独一次 LLM 调用**完整出题——
+ * 一课一次完整考核（覆盖该课全部知识点、题量由课决定），避免多课 rubric 全量拼一个 prompt 撑爆上下文。
+ * @param topicConfig 服务端下发的科目考核配置（课程 = 选课结果，每课带 assess_rubric）
+ * @param childId 孩子 id（session 工作目录按孩子隔离）
+ */
+export async function generateExamQuestions(topicConfig: ExamTopicConfig, childId: string): Promise<GeneratedQuestion[]> {
+  const runtime = await getSharedRuntime();
+  const model = await getDefaultModel();
+  const childDir = getChildDir(childId || "default");
+  const courses = topicConfig.courses || [];
+  if (!courses.length) return [];
+
+  const CONCURRENCY = 3; // 并发出题上限（避免同时太多 LLM 调用）
+  const results: (GeneratedQuestion[] | null)[] = new Array(courses.length).fill(null);
+  let failed = 0;
+  let idx = 0;
+  const worker = async () => {
+    while (idx < courses.length) {
+      const i = idx++;
+      try {
+        results[i] = await generateForCourse(courses[i], topicConfig.name, childDir, runtime, model);
+      } catch (e) {
+        failed++;
+        console.error(`[exam] 出题失败：${courses[i].title}`, e);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, courses.length) }, worker));
+  const questions = results.flat().filter((q): q is GeneratedQuestion => !!q);
+  if (!questions.length) {
+    throw new Error(failed ? `出题失败：${failed} 门课程均未生成题目` : "出卷未返回题目");
+  }
+  if (failed) console.warn(`[exam] ${failed}/${courses.length} 门课程出题失败已跳过`);
+  return questions;
+}
+
+const GENERATION_PER_COURSE_RULES =
+  `题目要覆盖该课「考核内容」里的全部知识点（原文背诵/字词/句意/道理应用/典故等都要考到），可一课多题（每课 2~4 题，题量由该课考核内容决定，不设全局题量上限）。` +
+  `题目**优先直接采用该课「考核内容」里已有的现成题目**（含选择题和问答题），不要另出新题；` +
+  `选择题改造成口述题：保留题干、**去掉 A/B/C/D 选项**（孩子口述作答，例如「北辰的正确读音是什么？请说出口头答案」）；` +
+  `问答题直接采用题干。每题满分 pointMax 给 10（选择题原本 2 分的也按 10 分制口述题处理）。贴近 6~12 岁孩子，语气亲切。`;
+
+/** 为单门课程完整出题（一次独立内存 session；course 字段固定为该课标题，保证与候选清单一致）。 */
+async function generateForCourse(
+  course: ExamCourseConfig,
+  topicName: string,
+  childDir: string,
+  runtime: unknown,
+  model: unknown
+): Promise<GeneratedQuestion[]> {
+  const loader = new DefaultResourceLoader({
+    cwd: childDir,
+    agentDir: path.join(childDir, ".pi", "agent"),
+    noContextFiles: true,
+    noSkills: true,
     systemPromptOverride: () => GENERATION_SYSTEM_PROMPT,
   });
   await loader.reload();
 
-  const courseLines = topicConfig.courses
-    .map(
-      (c, i) =>
-        `${i + 1}. 课程「${c.title}」（最近复习 ${c.lastReview || "无"}，引导掌握度 ${c.mastery || "未知"}）\n` +
-        `   考核要点：${c.assessRubric || "（未写考核要点，按题意出基础理解题）"}`
-    )
-    .join("\n\n");
-
   const prompt =
-    `科目：${topicConfig.name}（${topicConfig.topicKey}）\n` +
-    `考核方法说明（家长写，含周期/考核对象/题量/评分口径）：\n${topicConfig.assessMethod || "（未写，默认每次考最近学习的 3 门课程，每课 1 题）"}\n\n` +
-    `本周期可考核的课程（都是孩子学/复习过的）：\n${courseLines}\n\n` +
-    `请按考核方法说明确定本场要考的课程与题量（题量不宜超过 8 题；没有说明时取最近学的 3 课各 1 题），` +
-    `为每道题出 1 个主观口述题：题目要能考到该课考核要点里的理解/应用（不是背诵），贴近 6~12 岁孩子，语气亲切。` +
-    `每题满分 pointMax 给 10。\n\n` +
+    `考核科目：${topicName}\n` +
+    `课程「${course.title}」的考核内容（知识点 + 现成题目 + 评分标准）：\n${course.assessRubric || "（未写考核内容，按题意出基础理解题）"}\n\n` +
+    `请为这一门课程完整出题：${GENERATION_PER_COURSE_RULES}\n\n` +
     `只输出 JSON（不要 markdown 代码块围栏），格式：\n` +
-    `{"questions":[{"qid":"q1","course":"课程名(必须与上面列表完全一致)","stem":"题干","pointMax":10}]}`;
+    `{"questions":[{"qid":"q1","course":"${course.title}","stem":"题干","pointMax":10}]}`;
 
-  const session = await createAgentSession({
+  const { session } = await createAgentSession({
     cwd: childDir,
     agentDir: path.join(childDir, ".pi", "agent"),
     modelRuntime: runtime,
@@ -78,15 +165,15 @@ export async function generateExamQuestions(topicConfig: ExamTopicConfig, childI
     const text = lastAssistantText(session);
     const parsed = extractJson(text);
     const list = Array.isArray(parsed?.questions) ? parsed.questions : [];
-    if (!list.length) throw new Error("出卷未返回题目：" + text.slice(0, 200));
+    if (!list.length) throw new Error("该课未返回题目：" + text.slice(0, 200));
     return list
       .map((q: any, i: number) => ({
         qid: String(q?.qid || `q${i + 1}`),
-        course: String(q?.course || ""),
+        course: course.title, // 固定为该课标题（LLM 可能改 course 名，统一回写）
         stem: String(q?.stem || ""),
         pointMax: Number(q?.pointMax) || 10,
       }))
-      .filter((q: GeneratedQuestion) => q.course && q.stem);
+      .filter((q: GeneratedQuestion) => q.stem);
   } finally {
     session.dispose();
   }
@@ -158,7 +245,7 @@ export async function scoreExamAttempt(
 
   const prompt = `${scoringPrompt}\n\n—— 本场考核题目与孩子回答 ——\n${answersLines}\n\n请按评分标准输出 JSON。`;
 
-  const session = await createAgentSession({
+  const { session } = await createAgentSession({
     cwd: childDir,
     agentDir: path.join(childDir, ".pi", "agent"),
     modelRuntime: runtime,

@@ -26,6 +26,8 @@ import {
 import { dbExec, dbQuery, childIdFromCwd } from "./client-data";
 import { executePageAction, recentInteractions } from "./page-bridge";
 import { generateHtmlLesson } from "./programming-agent";
+import { createExamSchedule } from "./exam";
+import { listChildren } from "./child-auth";
 
 /** 解析 topics.rules_json（损坏时回退空对象）。 */
 function safeParseRules(json: string): Record<string, string> {
@@ -738,6 +740,61 @@ export const parentUpsertCourseTool = defineTool({
         {
           type: "text" as const,
           text: `已保存家长库课程：${params.topic}「${params.title}」`,
+        },
+      ],
+    };
+  },
+});
+
+/**
+ * 自定义考核排期（EXAM-REQUIREMENTS §14.2）：家长对话「什么时间考什么内容」→ 生成一次性考核排期。
+ * ⚠️ 信息不全（缺孩子/缺时间/缺内容范围）时**必须 throw 提示向家长确认齐全**，不要猜着创建。
+ */
+export const examScheduleCreateTool = defineTool({
+  name: "exam_schedule_create",
+  label: "创建自定义考核排期",
+  description:
+    "为某个孩子创建一次**自定义考核排期**（家长通过对话预约：什么时间考什么内容，到点后孩子可在考核页点击开始）。\n\n" +
+    "**参数**：`childName`（孩子姓名，必填）、`scheduledAt`（考核时间，ISO 格式如 2026-09-05T20:00:00，必填——把家长的「周五晚上」等说法换算成具体时间）、`topics`（可选，考核的主题目录名数组，如 [\"lunyu\"]）、`courses`（可选，限定课程名数组，如 [\"论语为政篇第一章\"]，不填则考该主题全部已学课）、`note`（可选，给孩子的说明，如「复习为政篇前两章」）。\n\n" +
+    "**信息不全时（缺少 childName / scheduledAt / 考核内容范围之一）必须向家长确认清楚再创建**，不要自行猜测时间或范围。",
+  parameters: Type.Object({
+    childName: Type.String({ description: "孩子姓名（必填）" }),
+    scheduledAt: Type.String({ description: "考核时间 ISO 格式（必填），如 2026-09-05T20:00:00" }),
+    topics: Type.Optional(Type.Array(Type.String({ description: "主题目录名，如 lunyu" }))),
+    courses: Type.Optional(Type.Array(Type.String({ description: "课程名，如 论语为政篇第一章" }))),
+    note: Type.Optional(Type.String({ description: "考核内容说明（给孩子的提示）" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const childName = (params.childName || "").trim();
+    const scheduledAt = (params.scheduledAt || "").trim();
+    if (!childName || !scheduledAt) {
+      throw new Error("exam_schedule_create 需要 childName + scheduledAt（请向家长确认考核时间与考核对象）");
+    }
+    const hasScope = (params.topics?.length ?? 0) > 0 || (params.courses?.length ?? 0) > 0 || !!params.note;
+    if (!hasScope) {
+      throw new Error("请确认这次要考的内容：主题（topics）或课程（courses）至少填一个，或写一句说明（note）");
+    }
+    if (Number.isNaN(new Date(scheduledAt).getTime())) {
+      throw new Error(`考核时间无法解析：${scheduledAt}，请用明确的时间（如 本周五 20:00）`);
+    }
+    // 按姓名匹配孩子
+    const children = await listChildren().catch(() => []);
+    const child = children.find((c: any) => c.name === childName || c.childName === childName);
+    if (!child) {
+      const names = children.map((c: any) => c.name || c.childName).join("、");
+      throw new Error(`找不到孩子「${childName}」${names ? `（现有孩子：${names}）` : ""}`);
+    }
+    const childId = child.childId || child.id;
+    const r = await createExamSchedule(
+      childId,
+      scheduledAt,
+      { topics: params.topics ?? [], courses: params.courses ?? [], note: params.note ?? "" }
+    );
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `已为孩子「${childName}」创建自定义考核排期（${scheduledAt}），${params.note ? `内容：${params.note}；` : ""}孩子到点后可在考核页点击开始。`,
         },
       ],
     };

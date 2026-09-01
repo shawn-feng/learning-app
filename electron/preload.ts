@@ -284,8 +284,19 @@ const api = {
   viewZoomReset: () => ipcRenderer.invoke("view:zoom-reset"),
 
   // 学习考核（EXAM-REQUIREMENTS.md）
-  examConfig: (childId: string) => ipcRenderer.invoke("exam:config", childId),
+  examConfig: (childId: string, scheduleId?: string, courses?: string) =>
+    ipcRenderer.invoke("exam:config", childId, scheduleId, courses),
+  examSelectCourses: (childId: string, selectionPrompt: string) =>
+    ipcRenderer.invoke("exam:selectCourses", childId, selectionPrompt),
   examPending: (childId: string) => ipcRenderer.invoke("exam:pending", childId),
+  examSchedules: (childId: string) => ipcRenderer.invoke("exam:schedules", childId),
+  examScheduleCreate: (childId: string, scheduledAt: string, scope: any) =>
+    ipcRenderer.invoke("exam:scheduleCreate", childId, scheduledAt, scope),
+  examScheduleStart: (id: string) => ipcRenderer.invoke("exam:scheduleStart", id),
+  examScheduleComplete: (id: string, attemptId: string) => ipcRenderer.invoke("exam:scheduleComplete", id, attemptId),
+  examScheduleCancel: (id: string) => ipcRenderer.invoke("exam:scheduleCancel", id),
+  examFixedConfig: () => ipcRenderer.invoke("exam:fixedConfig"),
+  examFixedConfigSave: (patch: any) => ipcRenderer.invoke("exam:fixedConfigSave", patch),
   examSubmit: (payload: any, voices: Array<{ qid: string; buffer: ArrayBuffer; name: string }>) =>
     ipcRenderer.invoke("exam:submit", payload, voices),
   examAttempts: (childId: string) => ipcRenderer.invoke("exam:attempts", childId),

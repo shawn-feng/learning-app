@@ -108,12 +108,37 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_exam_attempts_child ON exam_attempts(child_id, submitted_at);
+    -- 学习考核 v2（EXAM-REQUIREMENTS §14）：考核排期（固定频率生成 + 家长自定义），
+    -- kind=fixed(固定频率) | custom(家长对话生成)；scope JSON：custom= {topics[],courses[],note}，fixed= {}；
+    -- status=pending(待考核) | started(进行中) | done(已完成) | expired(过期未考)；attempt_id 关联 exam_attempts。
+    CREATE TABLE IF NOT EXISTS exam_schedules (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      child_id TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'fixed',
+      freq TEXT NOT NULL DEFAULT '',
+      scheduled_at TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempt_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_exam_schedules_child ON exam_schedules(child_id, scheduled_at);
   `);
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '7')").run();
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('config_revision', '0')").run();
   // 旧库迁移：children 表加 profile_json（孩子详情 + 密码哈希上云，2026-08-30）
   try {
     db.exec("ALTER TABLE children ADD COLUMN profile_json TEXT");
+  } catch {
+    // 已存在则忽略
+  }
+  // 旧库迁移：exam_attempts 加 schedule_id（考核 v2 排期关联回填，2026-09-01）
+  try {
+    const examCols = (db.prepare("PRAGMA table_info(exam_attempts)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!examCols.includes("schedule_id")) {
+      db.exec("ALTER TABLE exam_attempts ADD COLUMN schedule_id TEXT NOT NULL DEFAULT ''");
+    }
   } catch {
     // 已存在则忽略
   }

@@ -10,7 +10,7 @@ import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath, getCurre
 import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown, fetchProgressRemote } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
@@ -513,8 +513,8 @@ export async function getParentSession(): Promise<AgentSession> {
     //（孩子管理=只读 profile + parent_stats 统计；课程管理=parent_course_*；配置=read 文本；
     //  ls 列目录——家长直接把文件放进 materials/ 目录后，agent 需要能查看目录里有什么；
     //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录）。
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool],
   });
 
   cachedParentSession = session;
@@ -559,8 +559,8 @@ export async function getParentContentSession(): Promise<AgentSession> {
     model,
     sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool],
   });
 
   cachedParentContentSession = session;

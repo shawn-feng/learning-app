@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, TextSelect, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
@@ -33,6 +33,16 @@ const FONT_OPTIONS = [
   { label: "特大", px: 46, display: "46" },
 ];
 const DEFAULT_FONT_PX = 30;
+
+// ISSUE-030：孩子「资料字号」档位（默认 16px = 列表现状基准；复用 FONT_OPTIONS 范式，
+// 去掉 46 避免资料列表过度膨胀，档位统一作用于列表/正文/markdown/HTML 资料，按 childId 持久化）
+const MAT_FONT_OPTIONS = [
+  { label: "小", px: 16, display: "16" },
+  { label: "中", px: 22, display: "22" },
+  { label: "大", px: 30, display: "30" },
+  { label: "特大", px: 38, display: "38" },
+];
+const DEFAULT_MAT_FONT_PX = 16;
 
 // 左侧展示页配置（可扩展：新增展示页只需在此追加一项 + 对应渲染组件）
 type PanelViewKey = "materials" | "progress";
@@ -292,6 +302,29 @@ export default function Learn({ child, onExit }: Props) {
       /* 持久化失败不影响本次生效 */
     }
   };
+
+  // ISSUE-030：孩子「资料字号」（默认 16px = 列表现状基准；按 childId 持久化，跨刷新保留）
+  const [matFontSize, setMatFontSize] = useState(DEFAULT_MAT_FONT_PX);
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`chat:${child.childId}:matFontSize`);
+      if (saved) {
+        const n = Number(saved);
+        if (Number.isFinite(n) && n >= 12 && n <= 64) setMatFontSize(n);
+      }
+    } catch {
+      /* localStorage 不可用则保持默认 */
+    }
+  }, [child.childId]);
+  const handleMatFontSize = (px: number) => {
+    setMatFontSize(px);
+    try {
+      localStorage.setItem(`chat:${child.childId}:matFontSize`, String(px));
+    } catch {
+      /* 持久化失败不影响本次生效 */
+    }
+  };
+  const [showMatFont, setShowMatFont] = useState(false); // 资料字号弹框
 
   // AI Agent settings
   const [showAiSettings, setShowAiSettings] = useState(false);
@@ -903,6 +936,14 @@ export default function Learn({ child, onExit }: Props) {
 
             <button
               className="sidebar-icon-btn"
+              title={`资料字号 ${matFontSize}px`}
+              onClick={() => setShowMatFont(true)}
+            >
+              <TextSelect size={20} />
+            </button>
+
+            <button
+              className="sidebar-icon-btn"
               title="今日课程安排"
               onClick={() => setShowClass(true)}
             >
@@ -1001,6 +1042,7 @@ export default function Learn({ child, onExit }: Props) {
               onBack={() => setSelectedMaterialId(null)}
               onPageEvent={handlePageEvent}
               onCollapse={() => setPanelCollapsed(true)}
+              matFontSize={matFontSize}
             />
           ) : (
             // ISSUE-016：学习进度等其它展示页同样可折叠（悬浮折叠按钮，不侵入组件内部布局）
@@ -1181,6 +1223,30 @@ export default function Learn({ child, onExit }: Props) {
         </div>
       )}
 
+      {/* ISSUE-030：资料字号弹框（与聊天字号并列，复用 rate-grid 范式；按 childId 持久化，作用域仅孩子端学习资料） */}
+      {showMatFont && (
+        <div className="modal-overlay" onClick={() => setShowMatFont(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>资料字号</h2>
+            <div className="rate-grid">
+              {MAT_FONT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.px}
+                  className={`rate-btn ${matFontSize === opt.px ? "active" : ""}`}
+                  onClick={() => handleMatFontSize(opt.px)}
+                  title={`${opt.label} ${opt.display}px`}
+                >
+                  {opt.display}px
+                </button>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button className="cancel" onClick={() => setShowMatFont(false)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ISSUE-026：今日课程弹框（实时时钟 + 当天课程时间段） */}
       {showClass && (
         <div className="modal-overlay" onClick={() => setShowClass(false)}>
@@ -1296,7 +1362,19 @@ export default function Learn({ child, onExit }: Props) {
           </div>
         </div>
       )}
-      {examOpen && <ExamView childId={child.childId} onExit={() => setExamOpen(false)} />}
+      {examOpen && (
+        <ExamView
+          childId={child.childId}
+          onExit={() => {
+            setExamOpen(false);
+            // 考核完成/退出后刷新待考核角标（排期状态可能已变化）
+            window.api
+              .examPending(child.childId)
+              .then((r: any) => setExamPendingCount(r?.success ? Number(r.data?.count) || 0 : 0))
+              .catch(() => undefined);
+          }}
+        />
+      )}
     </div>
   );
 }

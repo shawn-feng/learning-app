@@ -129,6 +129,8 @@ describe("tencent-soe: 握手签名与结果解析", () => {
     // ref_text 参数值必须存在
     expect(url).toContain("ref_text=hello");
     expect(url).toContain("score_coeff=1");
+    // 纯 PCM 发送（voice_format=0，16bit PCM 长度必为偶数，规避 4107）
+    expect(url).toContain("voice_format=0");
   });
 
   it("parseSoeResult 映射总分/准确度/词/音素", async () => {

@@ -107,6 +107,24 @@ export const BRIDGE_SCRIPT = `(function () {
     window.parent.postMessage(msg, "*");
   }
 
+  // —— ISSUE-030：资料字号（父页面经 postMessage 下发 / injectBridge 注入初始值）——
+  // 不改资料 html：仅运行期注入 <style> 强制统一字号（对低龄友好），不影响课程文件本体。
+  // 用 font-size（非 zoom）避免破坏查词浮层坐标计算（zoom 会使 getBoundingClientRect 与
+  // clientX/Y 尺度不一致）；对 opaque origin 的 iframe 这是唯一可穿透的字号通道。
+  function applyMatFont(px) {
+    if (!px || px < 8) return;
+    var styleId = "__pi_mat_font_style";
+    var s = document.getElementById(styleId);
+    if (!s) {
+      s = document.createElement("style");
+      s.id = styleId;
+      (document.head || document.documentElement).appendChild(s);
+    }
+    s.textContent = "html, body, body * { font-size: " + px + "px !important; line-height: 1.6 !important; }";
+  }
+  // 初始字号（injectBridge 在桥脚本前注入 window.__PI_MAT_FONT）
+  applyMatFont(window.__PI_MAT_FONT);
+
   // —— 元素索引：WeakMap 惰性分配，同一元素恒同索引（快照 i / 事件 index / 下行定位同源）——
   var indexMap = typeof WeakMap === "function" ? new WeakMap() : null;
   var idxCounter = 0;
@@ -341,6 +359,12 @@ export const BRIDGE_SCRIPT = `(function () {
       var u = active; active = null;
       if (u) { try { if (typeof u.onend === "function") u.onend(); } catch (e2) {} }
     });
+    // ISSUE-030：父页面实时下发资料字号（font size 变化时无需重载 iframe）
+    window.addEventListener("message", function (e) {
+      var d = e.data;
+      if (!d || d.type !== "page:mat-font") return;
+      applyMatFont(d.px);
+    });
   })();
 
   // —— 就绪握手 + 打开事件 ——
@@ -416,9 +440,13 @@ export const BRIDGE_SCRIPT = `(function () {
 /**
  * 把桥脚本注入课程 html，保证 <!DOCTYPE> 仍是文档首字符（避免 quirks mode 破坏课程 CSS）。
  * 注入优先级：<head> 后 → <!doctype> 后 → <html> 后 → 纯 fragment 前置。
+ * matFontPx（ISSUE-030）：在桥脚本前置一段 init，把初始资料字号写入 window.__PI_MAT_FONT，
+ * 桥脚本加载即套用；运行期变化由父页面 postMessage(page:mat-font) 下发，无需重载 iframe。
+ * 仅影响运行期渲染，课程 html 文件本体始终不被修改。
  */
-export function injectBridge(html: string): string {
-  const script = `<script>${BRIDGE_SCRIPT}</script>`;
+export function injectBridge(html: string, matFontPx?: number): string {
+  const fontInit = typeof matFontPx === "number" && matFontPx >= 8 ? `<script>window.__PI_MAT_FONT=${matFontPx};</script>` : "";
+  const script = `${fontInit}<script>${BRIDGE_SCRIPT}</script>`;
 
   const head = /<head[^>]*>/i.exec(html);
   if (head) {

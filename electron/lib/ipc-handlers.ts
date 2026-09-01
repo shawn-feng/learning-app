@@ -44,8 +44,8 @@ import {
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
-import { getExamConfig, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending } from "./exam";
-import { generateExamQuestions, scoreExamAttempt } from "./exam-engine";
+import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig } from "./exam";
+import { generateExamQuestions, scoreExamAttempt, selectCoursesForSchedule } from "./exam-engine";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -1602,18 +1602,82 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("view:zoom-reset", () => getMainWindow()?.webContents.setZoomLevel(0));
 
   // ==================== 学习考核（EXAM-REQUIREMENTS.md） ====================
-  // 取孩子考核配置（周期内知识点 + assess_method/assess_rubric + 判分 prompt，服务端单一真源）
-  ipcMain.handle("exam:config", async (_e, childId: string) => {
+  // 取孩子考核配置（v3 两段式：无 courses → 选课段 selectionPrompt+candidates；带 courses → 出卷段 rubric+scoringPrompt；
+  // 自定义排期 scope 直接返回课程；无 scheduleId 时兼容旧行为）
+  ipcMain.handle("exam:config", async (_e, childId: string, scheduleId?: string, courses?: string) => {
     try {
-      return { success: true, data: await getExamConfig(childId) };
+      if (scheduleId && courses) {
+        return { success: true, data: await getExamCoursesForSchedule(childId, scheduleId, String(courses).split(",")) };
+      }
+      return { success: true, data: await getExamConfig(childId, scheduleId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
-  // 待考核提醒（周期到点标红，不强制打断；孩子端边栏角标用）
+  // 选课（v3 §14.9）：客户端独立内存 session 按服务端下发的选课 prompt（家长可编辑）从候选课程中挑课
+  ipcMain.handle("exam:selectCourses", async (_e, childId: string, selectionPrompt: string) => {
+    try {
+      const titles = await selectCoursesForSchedule(selectionPrompt, childId);
+      return { success: true, data: titles };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 待考核提醒（v2：排期到期未完成数；孩子端边栏角标用）
   ipcMain.handle("exam:pending", async (_e, childId: string) => {
     try {
       return { success: true, data: await getExamPending(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 考核排期 v2：列表（服务端懒生成固定排期）/ 自定义创建 / 开始 / 完成
+  ipcMain.handle("exam:schedules", async (_e, childId: string) => {
+    try {
+      return { success: true, data: await getExamSchedules(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("exam:scheduleCreate", async (_e, childId: string, scheduledAt: string, scope: any) => {
+    try {
+      return { success: true, data: await createExamSchedule(childId, scheduledAt, scope) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("exam:scheduleStart", async (_e, id: string) => {
+    try {
+      return { success: true, data: await startExamSchedule(id) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("exam:scheduleComplete", async (_e, id: string, attemptId: string) => {
+    try {
+      return { success: true, data: await completeExamSchedule(id, attemptId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("exam:scheduleCancel", async (_e, id: string) => {
+    try {
+      return { success: true, data: await cancelExamSchedule(id) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 固定考核配置（家长端「设置 → 学习考核」）
+  ipcMain.handle("exam:fixedConfig", async () => {
+    try {
+      return { success: true, data: await getFixedExamConfig() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("exam:fixedConfigSave", async (_e, patch: any) => {
+    try {
+      return { success: true, data: await saveFixedExamConfig(patch) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

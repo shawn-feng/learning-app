@@ -29,7 +29,7 @@ interface CourseRow {
   assessRubric?: string;
 }
 
-type Tab = "method" | "course" | "info" | "assess";
+type Tab = "method" | "course" | "info" | "assess" | "assessMethod";
 
 interface Props {
   topic: ParentTopic;
@@ -325,6 +325,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
               ["info", "基本信息"],
               ["__mat__", "学习资料管理"],
               ["method", "教学方法"],
+              ["assessMethod", "考核方法"],
               ["assess", "考核要点"],
               ["course", "课程详情"],
             ] as Array<[string, string]>
@@ -463,7 +464,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
             </div>
           )}
 
-          {tab === "assess" && (
+          {tab === "assessMethod" && (
             <div>
               {/* 每科目考核方法说明（topics.assess_method） */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -496,7 +497,11 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   )}
                 </div>
               )}
+            </div>
+          )}
 
+          {tab === "assess" && (
+            <div>
               {/* 每课考核要点（courses.assess_rubric） */}
               {!selected ? (
                 <p style={{ color: "#888", fontSize: 13 }}>请先在左侧选择一门课程，填写它的考核要点（期望孩子答到的要点，考核出题与判分都用它作锚）。</p>

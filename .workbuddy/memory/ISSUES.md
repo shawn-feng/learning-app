@@ -478,3 +478,150 @@
   ⑤ **回归**：ISSUE-025 的 TodoModal（`:1038` 已在 menu）、AI 设置 / 修改密码弹框不受影响；ISSUE-016 折叠、ISSUE-019 横幅、ISSUE-023 字号变量（弹框内字号调节仍生效）、ISSUE-024 拖拽、iframe 资料区均不受影响；重点测「点模型/语速/字号/课程/展示页 icon 均弹出对应框、且模型选择不丢」。
 - **优先级**：已完成（2026-09-01 实施：`Learn.tsx` 边栏常驻折叠——删 `sidebarCollapsed` state 与 `sidebar-toggle` 展开按钮，`learn-sidebar` 恒 `collapsed`（64px 图标栏）；模型/朗读语速/聊天字号/今日课程/切换展示页 5 类交互全部改为 icon 按钮 + 弹框（新增 `showModel/showRate/showFont/showClass/showView` state，`sidebar-actions` 图标栏容器）；`SidebarClassSchedule` 去掉 collapsed/onExpand 改全量渲染；view-switcher popover 逻辑整体移除（viewMenuOpen/ref/timer/click-outside 全删，ISSUE-020 的缝隙问题不再存在）；**模型弹框常驻挂载**（overlay `display` 控制显隐，`ModelSelector` 不卸载，避免重挂拉模型切回默认）；弹框复用现有 modal/rate-grid/view-option 样式 + 新增 `.sidebar-actions`/`.view-options-modal`。tsc 0 业务错误、build 通过）
 - **记录时间**：2026-08-31
+
+## [ISSUE-027] 学习考核（全主观题语音作答 + 客户端出卷/判分 + 服务端存储 + v3 选课 LLM）——需求文档 `EXAM-REQUIREMENTS.md`，2026-09-01 实施完成
+- **🎯 v2 演进（同日完成，EXAM-REQUIREMENTS §14 取代初版「按主题 assess_method 周期」）**：固定考核（每天/每周/每月/半年/年末多档并存，同日多档去重只考周期最长档）+ 自定义考核（家长对话 `exam_schedule_create` 生成排期，信息不全先确认）。核心 = `exam_schedules` 排期表（kind/scheduled_at/scope/status/attempt_id）；固定排期懒生成（60 天窗口）；选课算法 4 因子（复习到期/薄弱/久未考/新学）取前 N 门课、**每课完整出题**（去 8 题上限）；孩子端考核时间点列表（pending/started 可重试）替代选科目；家长端设置「学习考核」tab + 记录页排期查看/取消；`exam_attempts.schedule_id` 回填。验证：冒烟 18/18、每课完整出题 3 课 9 题、排期去重正确。
+- **🎯 v3 演进（同日，EXAM-REQUIREMENTS §14.9 取代 v2 代码打分选课）**：**选课不用代码、给每个周期设置一个可编辑 prompt**（家长设置页「各周期选课规则」5 档 textarea + 恢复默认）。默认：每天/每周=周期内**所有**课程；每月=每主题**本月 50% + 本月前 25%**（数量=本月课数×25%）。**config 两段式**：`?schedule=X` → selectionPrompt（注入统计+候选清单）+ candidates（无 rubric）；`?schedule=X&courses=a,b` → 选中课程带 rubric + scoringPrompt。**周期归属标记（可靠性关键）**：服务端代码精确打标「★ 本周期/★ 本月/◐ 本月前」，LLM 按标记挑选不自己算日期（293 门长清单实测否则输出空）。候选口径含 status=✅ 已学无日期课（记「✅」归更早学习）。客户端 `selectCoursesForSchedule` 内存 session 选课（清理 LLM 复制的前缀 "[论语] "）+ 出卷改**逐课并发出题**（并发 3）。空窗口=空考核不自动放宽。验证：冒烟 20/20、真实 LLM 293 门候选→精确选窗口内 1 门→rubric 6078 字→逐课 3 题覆盖。
+
+- **类型**：需求 / 新功能（已完整落地，本条目为后续查找的索引）
+- **描述**：孩子按家长设置的周期参加「学习考核」：系统自动挑该周期内学/复习过的知识点出**全主观口述题**，孩子**语音作答**（每题一段、可重录/转写回显/文字兜底/记录用时），提交后**离线判分**，产出评估报告（整体掌握度 + 逐题反馈 + 每课加强计划）。需求细节见根目录 `EXAM-REQUIREMENTS.md`（设计稿 `assets/exam-template.html`）。
+- **架构（关键约定，勿偏离）**：
+  - **存储全在服务端**（内容 `assess_method`/`assess_rubric` + 记录 `exam_attempts` + 语音大文件走 files 通道落服务端磁盘）；**计算在客户端**（出卷+判分用本地 LLM 独立内存 session，符合本 app「AI 在客户端跑」现状——Electron 持有 LLM key 本地推理）。
+  - **判分 prompt 由服务端下发**（`server/src/routes/exam.ts` 的 `SCORING_PROMPT`）= 判分口径单一真源，保证可比不漂移；判分 session 仅内存进行、**只把最终结果写 server DB**。
+  - 考试视图 = HTML 模板（`src/lib/exam-template.ts` 的 `buildExamHtml`），宿主 `<iframe sandbox="allow-scripts allow-modals allow-forms" allow="microphone" srcDoc=...>` 渲染；锁定（禁导航/资料/AI 提示）由 `ExamView.tsx` 全屏覆盖保证；**严格一次性**（提交前不落盘，关闭即作废）。
+- **数据模型**：
+  - 家长库 `parent.sqlite` v4 迁移：`topics.assess_method`（每科目考核方法说明：周期/对象/题量）、`courses.assess_rubric`（每课考核要点）。
+  - 孩子库 `kb.sqlite` v7 迁移：`courses.exam_mastery`（考核掌握度，与引导 mastery 双轨）。
+  - 服务端 `exam_attempts` 表：`per_question` / `course_mastery` / `reinforce_plan` 为 JSON 列。
+- **关键文件（后续查找入口）**：
+  - 客户端对接+待考核：`electron/lib/exam.ts`（getExamConfig / uploadExamVoice / submitExamAttempt / listExamAttempts / getExamCourseRecords / getExamAudioDataUrl / **getExamPending** / **parsePeriodDays**）
+  - 出卷/判分引擎：`electron/lib/exam-engine.ts`（`generateExamQuestions(topicConfig, childId)` / `scoreExamAttempt(scoringPrompt, answers, childId)`，SessionManager.inMemory + noContextFiles/noSkills）
+  - IPC/preload：`electron/lib/ipc-handlers.ts`（`exam:config/pending/submit/attempts/courseRecords/audio/generate/score`）、`electron/preload.ts`（exam* 系列）
+  - 服务端：`server/src/routes/exam.ts`（config 下发/attempts 提交/列表/course-records 每课聚合 + exam_mastery 回写）、`server/src/db.ts`（exam_attempts 建表）、`server/src/index.ts`（registerExamRoutes）
+  - 孩子端：`src/components/ExamView.tsx`（pick→exam→scoring→report）、`src/lib/exam-template.ts`（buildExamHtml 应用内模板）、`src/pages/Learn.tsx`（考核按钮 + **待考核红角标**）
+  - 家长端：`src/components/TopicDetail.tsx`（「考核要点」tab：方法说明 + 每课 rubric 编辑器）、`src/components/ExamRecords.tsx`（每课程考核记录表 + ▶ 听原音，挂 `ChildDetailPage.tsx` 的「🎯 考核记录」tab）
+  - agent 工具：`electron/lib/custom-tools.ts` `parent_content` 支持 `type="assessRubric"` 取课程考核要点
+  - 测试/冒烟：`test/exam.test.ts`（parsePeriodDays 5 例 + extractJson 3 例）、`server/scripts/verify-exam-smoke.mjs`（config 下发/提交/列表/每课聚合/403，**10/10 通过**）
+- **验证**：主 tsc 0 业务错误（仅 5 条已知环境告警）、server tsc 0 错、vitest 33 文件/302 例全绿、electron-vite build 通过、服务端冒烟 10/10。
+- **⚠️ 已知注意点**：
+  - **判分必须带 rubric**：`ExamAnswerIn.rubric` 由 ExamView 从 `examTopic.courses` 按 course 匹配 `assessRubric` 传入，否则 LLM 看不到家长写的要点（2026-09-01 修复，勿再漏）。
+  - 出卷/判分 session 目录按 childId 隔离（`getChildDir(childId||"default")`，2026-09-01 修复多孩子硬编码）。
+  - 判分 prompt 涉及"按今天推算日期"必须注入具体日期（服务端 `buildScoringPrompt()` 替换 `{{TODAY}}`，2026-09-01 修复——否则 LLM 产出 2025-03-24 错误年份）。
+  - 出卷已微调为**优先采用 rubric「考核内容」里的现成题目**（选择题去掉选项改口述，见 `exam-engine.ts` 出卷 prompt；配合 lunyu_exam 合并 md 导入的 rubric 使用）。
+  - **createAgentSession 必须解构 `{ session }`**（exam-engine 曾直接当返回值用 → `dispose is not a function` 崩，2026-09-01 修复；daily-summary 同款写法）。
+  - 服务端冒烟跑法（8899 + `SERVER_DATA_DIR` 指定临时数据目录 + run_in_background 起进程 + 每次清库重跑），详见 `2026-09-01.md` 日志。
+  - 待考核提醒 = `exam:pending` IPC + Learn.tsx 考核按钮红角标（科目数），失败静默不打断学习。
+- **2026-09-01 真实数据实测**（lunyu_exam 489 章）：`scripts/merge-lunyu-exam.mjs`（md+json 容错合并，461 章完整+28 降级）→ `scripts/import-lunyu-exam.mjs`（家长库 assess_rubric 489/489 + assess_method + 闻闻已学标记）→ 本机 8788 升级 v0.3.0（exam 路由+迁移）→ 出卷（LLM 按 rubric 出生活场景口述题）/判分（答对 4 分 vs 答错 0 分，评语带 rubric 锚定）/提交写库/course-records 聚合/exam_mastery='薄弱' 回写**全通**。
+- **优先级**：已完成（2026-09-01 实施 + 全链路验证 + lunyu_exam 真实数据实测；设计文档 `EXAM-REQUIREMENTS.md` 与模板设计稿 `assets/exam-template.html` 于 2026-08-31 产出）
+- **记录时间**：2026-09-01
+
+## [ISSUE-028] 服务端增加 agent 功能：会话同步上云 + 无头 worker + 家长对话回顾（方案B）
+
+- **类型**：架构 / 需求（2026-08-31 讨论定方向，2026-09-01 归档记录）
+- **描述**：
+  - 背景需求两个：① 定时任务需要 agent 自主运行，但客户端设备可能关机/休眠 → 漏跑（recording/todo 原在主进程 node-cron，runCatchUp 不回溯历史）；② 家长需要查看孩子与 agent 的完整对话过程（原会话 jsonl 只落客户端本地，家长端无通道）。
+  - 结论：完整交互 agent **留在客户端**；只把三件搬上 learning-server（:8788）：**会话 jsonl 增量同步上云** + **服务端无头 worker**（ephemeral agent 跑 recording/todo 及未来自主任务）+ **家长完整逐字稿回顾**。已确认 pi-web（兄弟目录中间产物）为淘汰方案、不作为可复用资产；learning-server 原零 agent 代码。
+- **现状 / 排查入口**：
+  - 会话同步（阶段①）：
+    - 客户端 `electron/lib/session-sync.ts`（新增）：游标 `data/children/<id>/.pi/sync-state.json`（files:[name]:{syncedBytes,lineCount}），Buffer 字节偏移切片增量，**服务端 ack 才推进游标**（离线/失败天然安全，无需持久队列）；触发 = 每轮对话后（`ipc-handlers.ts` pi:prompt 挂钩）+ 5min 定时 + before-quit flush。
+    - 服务端 `server/src/routes/sessions.ts` + `server/src/db/sessions.ts`（新增）：`POST /api/v1/sessions/:childId/sync`（幂等 append，session_files 表存同步游标，session_messages 按 (child_id,file,line_index) INSERT OR REPLACE，**客户端权威**）；`GET /api/v1/sessions/:childId/dates`；`GET /api/v1/sessions/:childId?date=YYYY-MM-DD`（完整逐字稿，剔除 thinking，assistant 附工具调用）。表：`session_messages / session_files / worker_state`（`server/src/db.ts` schema v7）。
+    - 家长端：`src/components/SessionReview.tsx`（新增，「💬 对话回顾」tab 挂 `ChildDetailPage.tsx`）+ IPC `sessions:reviewDates/reviewMessages`（`ipc-handlers.ts`）+ `electron/preload.ts`。
+  - 无头 worker（阶段②/④）：
+    - `server/src/worker/`（新增）：`providers.ts`（平移客户端 provider 配置）、`runtime.ts`（ModelRuntime.create 按家长临时 auth 文件注入，模型优先 app_settings.defaultModel，兜底 qwen-tokenplan/deepseek-v4-flash-0731）、`kb-tools.ts`（kb 三件套/todo_list/get_date 直调 `routes/db.ts` 导出的 queryHandlers/execHandlers，**不重复实现 SQL**）、`tasks.ts`（**WorkerTask 注册机制**：type/points(cfg)/catchUp/run；recording+todo 首批，未来「孩子不在场自主任务」registerTask 即可）、`scheduler.ts`（cron 每分钟 + worker_state 去重 + **启动补跑 runWorkerCatchUp**，catchUp: latest=recording 只补最近过期点 / all=todo 按序补 gen+stat）、`recording-prompt.ts`（与客户端同源副本）。
+    - 数据源全服务端：当天对话读镜像 `data/sessions/`（`db/sessions.ts` readServerDailyConversation），kb 直读写服务端 DB，**不依赖客户端存活**。
+  - apiKey 安全（任务5）：`server/src/crypto.ts`（新增，AES-256-GCM，密钥 SERVER_SECRET env 或首启生成 `dataDir/.secret`）；`routes/config.ts` settings 键 `auth` 加密落盘 + `GET /config` 解密回环（客户端 config-sync 会拉 auth 合并回本地，**不能过滤该键**——与计划偏差点）。
+  - 双跑切换：`server/src/routes/version.ts`（0.2.0，`features: ["session_sync","worker"]`）；客户端 `electron/lib/server-features.ts`（新增，探测缓存）→ `electron/lib/scheduler.ts` 在 `hasServerFeature("worker")` 时跳过本地 recording/todo（含 runCatchUp），旧服务端无标志则保持本地调度不破坏现状。
+  - 构建坑：`server/scripts/build.mjs` 增加 import_meta.url 垫片（esbuild CJS 打包 pi-coding-agent 后 `import_metaN.url` 为 undefined 启动即崩；构建后正则替换为 `require('url').pathToFileURL(__filename).href`，18 处）。另服务端 SDK 已固定精确版本 "0.84.1" 并适配严格类型（registry 重发布导致与客户端嵌套副本类型不同：reasoning 必填/samplingParams 移除/AgentToolResult.details 必填）。
+- **关键文件清单（后续查找入口）**：
+  - 客户端：`electron/lib/session-sync.ts`、`electron/lib/server-features.ts`、`src/components/SessionReview.tsx`（新增）；`ipc-handlers.ts`（sync 钩子 + sessions:review*）、`scheduler.ts`（worker 接管跳过）、`main.ts`（定时/探测启动）、`preload.ts`（sessionReview*）
+  - 服务端：`server/src/routes/sessions.ts`、`server/src/db/sessions.ts`、`server/src/crypto.ts`、`server/src/worker/*`（providers/runtime/kb-tools/tasks/scheduler/recording-prompt）（新增）；`routes/db.ts`（导出 handlers）、`routes/config.ts`（auth 加密）、`routes/version.ts`（0.2.0+features）、`db.ts`（3 表）、`index.ts`（注册+启动 worker）、`scripts/build.mjs`（import_meta 垫片）
+  - 验证脚本：`server/scripts/smoke-sessions.mjs`、`server/scripts/worker-catchup-check.mts`、`server/scripts/worker-tasks-check.mts`
+- **验证**：server tsc 0 错；esbuild 单文件 15.7MB；冒烟全过（sync+幂等+回顾+加密回环+features）；补跑专项全过（latest/all/二次去重）；客户端 tsc 仅 5 条已知环境告警 + electron-vite build 通过；Linux pkg 产物 `server/dist/learning-server`（v0.2.0）打包成功。已提交 git `de2ef67`（28 文件 +4546 行）。
+- **⚠️ 已知注意点 / 后续**：
+  - **部署顺序**：先发客户端新版（含 server-features）再升服务端 0.2.0，否则老客户端本地 recording/todo 与服务端 worker 双跑（daily 重复/双倍 token）。
+  - 真实 recording 冒烟需真实 apiKey（冒烟刻意未烧 token）。
+  - 传输层仍 LAN HTTP 明文（完整保护需 HTTPS/RSA）；apiKey 目前仅静态加密。
+  - 家长会话/父库未纳入同步；worker 只补「当天启动补跑」，服务端整日宕机错过时间点不回溯历史（影响极小）。
+- **优先级**：已完成（2026-08-31 实施 + 全链路验证 + 提交 de2ef67；2026-09-01 归档记录）
+- **记录时间**：2026-09-01
+
+## [ISSUE-029] 英语学习模块（英语角）：专用英语 agent + 词汇感知/主题限定 + 每条语音发音评测 + 会话进 daily
+
+- **类型**：需求 / 新功能（2026-08-31 讨论定需求，2026-09-01 起分阶段实施；本条目为模块总索引）
+- **描述**：孩子学英语时切换到**专用英语 agent**（英文对话伙伴）：① 专用 system prompt——了解孩子已掌握词汇、沟通尽量用孩子懂的词、家长可设「当前主题/场景」限定对话范围防跑题；② 孩子用语音时**每条语音都做发音评测**、指出发音问题（前端评测卡 + agent 英文点评）；③ 英语会话内容**记录进 daily**、会话上云家长可回顾。
+- **已确认分叉（用户 2026-08-31 拍板）**：
+  1. 切换方式 = **显式入口**（孩子点「英语角」进入/退出，不做自动切换）
+  2. 词汇基线 = **课程提取 + 家长补充**（从英语课程内容提取词表，家长可增减）
+  3. 评测范围 = **自由对话全评**（英语角每条语音都评，ASR 文本回填 refText 自评分）
+  4. 会话归属 = **上云可回顾**（session-sync 改递归，家长端可回顾英语对话）
+- **需求/调研文档（后续查找入口）**：
+  - 需求确认版：根目录 `ENGLISH-AGENT-REQUIREMENTS.md`（总体模型/会话形态/prompt 设计/词汇/评测/daily/上云/任务拆分/待定项）
+  - 评测服务调研：`RESEARCH-pronunciation-assessment-2026-08-31.md`（腾讯智聆/阿里儿童/讯飞/Azure/开源对比）
+- **✅ 已完成（2026-09-01 上午，任务 1：评测服务接入）**：
+  - `electron/lib/assessment/`（仿 voice 模块）：`types.ts`（AssessmentResult 统一结构 score/accuracy/fluency/completeness/words[phones]）、`assessment-config.ts`（enabled/provider/providers，`shared/assessment-config.json`，打码/补丁复用 `voice-config.maskSecret`）、`providers/tencent-soe.ts`、`providers/aliyun-kid.ts`、`index.ts`（assessAudio 入口）
+  - 智聆（**完整实现**）：`wss://soe.cloud.tencent.com/soe/api/<AppID>?参数&signature`；签名=除 signature 外参数**字典序**拼 `host/api/<appid>?k=v&...` 原文，SecretKey **HmacSha1→base64**；score_coeff=1.0（儿童最低苛刻度）/eval_mode=1（句子）/rec_mode=1/voice_format=1（wav）/16k_en；发送 wav 分片 1280B/40ms（1:1 实时率防报错）+ `{"type":"end"}` 结束帧；结果 `{code,result:"{...}",final:1}`（SuggestedScore/PronAccuracy/PronFluency/PronCompletion/Words[PhoneInfo]）
+  - 阿里儿童 `en.word_kid.score`（**实验性，协议逆向还原**）：鉴权 `POST https://api.cloud.ssapi.cn:8080/auth/authorize`（request_sign=MD5("app_secret=&appid=&timestamp=&user_client_ip=&user_id=" 字典序拼接)）→ warrant_id → `wss://api.cloud.ssapi.cn` 发 connect（param.app{timestamp,applicationId,sig=MD5(appSecret+timestamp)}+param.sdk）/start（param.request{coreType,refText,rank}+param.audio{sampleRate:16000,channel:1,sampleBytes:2,audioType:"wav"}+param.app{userId}）/分片音频/`{"cmd":"stop"}`；返回 `{request_id,eof,params,refText,result{overall,details[{char,score,phone[{char,score,start,end}]}]}}`。⚠️ 技术方=声希科技，wss path 与包细节待真实密钥实测微调（aliyun-kid.ts 头部注释）
+  - 链路：IPC `assessment:config:get/set` + `assessment:test`（录音评测固定 "hello"）、`electron/preload.ts`（assessmentConfigGet/Set/Test）、家长端「设置 → 发音评测」新 tab（`src/components/AssessmentSettings.tsx`，仿 VoiceSettings：启用开关 + 两服务卡片 + 字段 + 保存/默认/测试）
+  - 测试：`test/assessment.test.ts` 9 例（配置打码/补丁跳过含 `*` 值/智聆签名自洽+字典序/双解析映射）；验证：tsc 0 业务错、vitest 全量 34 文件/311 例全绿、build 通过
+- **⏳ 待办（任务 2-7，按 `ENGLISH-AGENT-REQUIREMENTS.md` §10 顺序）**：
+  1. 英语会话骨架：`pi-session.ts` 新增 `getChildEnglishSession(childId)`（独立单例 + `sessions/english/` 独立子目录，照搬 parent-content 先例）+ `buildEnglishPrompt`（英文身份 + 词汇注入 + 主题限定）+ AGENTS 用户版按 `ref=<childId>-english` 存 agents.sqlite（家长可编辑）；工具精简（get_date/kb_query）
+  2. 前端「英语角」入口（Learn.tsx 边栏）+ chat 路由切换（进入用英语 session、退出回主会话）+ IPC/preload 路由参数
+  3. 英语角语音链路：录音 → ASR 与 `assessAudio` **并行**，ASR 文本回填 refText 自评分；评测卡 UI（总分+音素）+ 结果以 user 附注注入 agent 做英文点评
+  4. 词表：课程词表提取 + 家长端编辑 UI + prompt 注入（第一版可先家长手填主题词表）
+  5. `session-sync.ts` 扫描改**递归**（当前 `fs.readdirSync` 只扫根目录，英语会话子目录上云需改）
+  6. daily 增强（可选）：RECORDING_PROMPT 加「英语口语练习」类别（当天评测均分/高频音素问题）
+- **⚠️ 已知注意点**：
+  - `readDailyConversation`（daily-summary.ts:47）**递归**扫 jsonl → 英语会话放 `sessions/english/` 子目录后**自动进 daily，零改动**；但 `session-sync.ts:63` 非递归 → 上云需改。
+  - 英语 agent 不用 LEARNING_NAV_INSTRUCTIONS，`buildEnglishPrompt` 独立；主会话导航工具（display_content/page_action/todo_list）不挂英语会话。
+  - 发音评测服务 key 在家长端配置（智聆 AppID/SecretId/SecretKey；阿里 AppKey/AppSecret）；阿里端**未实测**，首次需真实密钥验证。
+- **优先级**：实施中（任务 1 已完成，任务 2-7 待实施；需求文档已闭环）
+- **记录时间**：2026-09-01
+
+## [ISSUE-030] 学习资料显示字号可调（孩子左侧边栏加「资料字号」按钮）
+
+- **类型**：UX / 设置项（复用 ISSUE-023 聊天字号范式；仅孩子端 `Learn.tsx` + `MaterialsPanel.tsx` + `styles.css`）
+- **描述**：在孩子的左侧边栏（图标栏）增加一个「资料字号」按钮，点击弹框提供字号档位（小/中/大/特大），用于调整**左侧展示的学习资料**的字体大小；按孩子持久化，跨刷新保留。与已实施的「聊天字号」(ISSUE-023) 并列，是同一范式在孩子端第二处字号入口。
+- **现状 / 根因（已查证代码）**：
+  - **现有字号设置只有聊天**：`Learn.tsx:28-35` `FONT_OPTIONS`/`DEFAULT_FONT_PX`、`:263` `showFont`、`:275` `fontSize`、`:278/:290` 按 `childId` 存 localStorage、`:896-902` 侧栏 `Type` 图标按钮、`:1160-1182` 弹框；经 CSS 变量 `--child-chat-font` 下传到 `.learn-chat`（`:1030`），仅作用于 `.bubble-md-child`。**学习资料目前无任何字号设置入口**。
+  - **学习资料有三处字号表面，需分别处理**：
+    1. **资料列表**（`MaterialsPanel.tsx:401-430` `.material-list`）：`.material-list-title` 16px(`styles.css:1052`)、`.material-list-count` 12px(`:1058`)、`.material-row-title` 16px(`:1105`)、`.material-row-time` 12px(`:1114`)——纯 CSS，改选择器即可。
+    2. **markdown 资料正文**（`MaterialsPanel.tsx:387` `<div className="markdown-body">`）：全局 `.markdown-body` 字号——需作用域限定到资料容器（如 `.material-content .markdown-body`）再套 CSS 变量，避免影响家长端/聊天 markdown。
+    3. **HTML 资料正文**（`MaterialsPanel.tsx:95` `<iframe srcDoc className="html-frame">`）：opaque origin，父页面 CSS **无法穿透**——必须经现有 `injectBridge`/`BRIDGE_SCRIPT` postMessage 通道（ISSUE-017 选词浮层同路）向 iframe 内注入 `font-size` 样式（与「不改资料 html」的约束一致）。
+- **改造方向**：
+  ① **侧栏加按钮**：紧邻聊天字号（`:903` 后）插入「资料字号」`sidebar-icon-btn`（如 `Type` 或 `TextSize` 图标）+ `showMatFont` state + 弹框（复制聊天字号弹框 `:1160`，复用 `FONT_OPTIONS`/`handleFontSize` 逻辑）。
+  ② **状态 + 持久化**：新增 `matFontSize` state + 按 `childId` 存 localStorage（key 如 `chat:${childId}:matFontSize`，复用 `:278/:290` 模式），默认 16px（列表现状基准）。
+  ③ **CSS 变量下传（列表 + markdown）**：在 `view==="materials"` 分支（`:995-1004`）给 `<MaterialsPanel>` 外层或组件内根节点设 `--material-font`；`.material-list-title/.material-row-title/.material-row-time/.material-list-count` 及资料 `.markdown-body`（作用域限定）改用 `var(--material-font, 16px)`。
+  ④ **HTML 资料注入（iframe）**：经 bridge 把目标 font-size 下发给 iframe 内注入脚本（在 `BRIDGE_SCRIPT` 增 `kind:"fontSize"` 分支 + `MaterialsPanel` 收消息后 `postMessage` 下发）；脚本 `document.body.style.fontSize` 或注入 `<style>` 覆盖——复用 ISSUE-017 注入通道，资料 html 仍不改动。
+  ⑤ **作用域隔离**：仅孩子端学习资料生效，家长端/聊天字号不受影响；低龄档位沿用 `FONT_OPTIONS`(22/30/38/46)。
+- **⚠️ 回归**：ISSUE-023 聊天字号变量、ISSUE-026 边栏折叠/弹框、ISSUE-008/016 展示区折叠、iframe 选词(ISSUE-017)/拖拽(ISSUE-024)均不受影响；重点测「markdown 资料 + HTML 资料字号均随设置变化、刷新后保留、且不波及聊天字号」。
+- **实施记录（2026-09-01）**：已落地，三处字号表面统一由 `--material-font` CSS 变量（Learn 层按 childId 存 localStorage `chat:${childId}:matFontSize`，默认 16px）驱动：
+  ① 侧栏 `TextSelect` 图标按钮 + `showMatFont` 弹框（复用 `MAT_FONT_OPTIONS`/`rate-grid`，档位 16/22/30/38）；
+  ② 列表（`.material-list-title/.material-list-count/.material-row-title/.material-row-time/.material-title`）改 `var(--material-font, <原px>)`；
+  ③ 正文 markdown 作用域限定 `.content-panel .markdown-body, .content-panel .markdown-body *` 强制统一字号（不波及家长端/聊天 markdown）；
+  ④ HTML 资料经 `page-bridge` 桥：初始字号由 `injectBridge(html, matFontPx)` 前置 `window.__PI_MAT_FONT` 注入、iframe 加载即套用；运行期变化由 MaterialsPanel 在 matFontSize 变更时 `postMessage({type:"page:mat-font",px})` 下发，桥脚本注入 `<style>`（`html,body,body * { font-size: Npx !important }`）——**不改资料 html 本体**；用 font-size（非 zoom）以免破坏查词浮层坐标。
+- **优先级**：已实施（待回归验证）
+- **记录时间**：2026-09-01
+
+## [ISSUE-031] 查词浮层优化（拼音放大 + 多音字分行各有朗读 + 不显示意思）
+
+- **类型**：UX / 交互优化（ISSUE-017 查词功能的增强；仅 `MaterialsPanel.tsx` + `styles.css`；字典 `dictionary.ts` 无需改）
+- **描述**：优化孩子端学习资料「选中/双击中文 → 查词浮层」(ISSUE-017) 的展示：① **拼音字号放大**到与字同大（当前 14px、字 22px，太小看不清）；② **多音字的多个读音分行显示**，每个读音各有独立的 🔊 音频播放；③ **去掉释义**，浮层只显示读音（字 + 拼音）。
+- **现状 / 根因（已查证代码）**：
+  - 渲染在 `MaterialsPanel.tsx` `WordLookupOverlay`（`:111-159`）：每个 `LookupEntry` 渲染一个 `.word-lookup-item`（`:138-149`），内含 字(`.word-lookup-item-word`)、拼音(`.word-lookup-item-py`)、释义(`.word-lookup-item-meaning`)、一个朗读按钮（`onSpeak(en.text)`，`:142-149`）；`onSpeak` = `speakMaterialText`（`:408`）。
+  - 字典 `LookupEntry.pinyin` = **空格分隔的多音**（dictionary.ts:19-20，如「行」→ "háng xíng"）；目前整串当一个 span 显示、只配一个朗读按钮（朗读的是 `en.text` 整字，TTS 会取默认音，无法区分多音）——不满足「每个读音各有朗读」。
+  - 字号：`.word-lookup-item-word` 22px（styles.css:3178）、`.word-lookup-item-py` 14px（:3187）、`.word-lookup-item-meaning` 13px（:3193）——拼音显著小于字。
+- **改造方向**：
+  ① **拼音放大**：`.word-lookup-item-py` `font-size` 提至与字一致（22px，或直接 `var(--material-font, 22px)` 与 ISSUE-030 资料字号联动）；`.word-lookup-item-word` 维持 22px（或同变量）。
+  ② **多音字分行 + 每音独立朗读**：渲染时把 `en.pinyin.split(/\s+/)` 拆成读音数组；每个读音单独一行（新样式如 `.word-lookup-reading`：拼音文本 + 独立 🔊 按钮）；按钮 `onSpeak` 传入**该读音的拼音串**（如 "háng"）以播对应音——⚠️ **音频源决策待确认**：TTS 直接读拼音字母串 vs 读该字在某词中的实际读音；建议先用拼音串 TTS，后续可加「载字的最小词」优化自然度；整字朗读按钮可保留也可去掉，以「每音一播」为准。
+  ③ **去掉释义**：删除 `.word-lookup-item-meaning` 渲染（`MaterialsPanel.tsx:141`）及对应 CSS（styles.css:3193-3197）；浮层只留「字 + 分行拼音 + 每音朗读」。
+  ④ **布局**：`.word-lookup-item` 改为「字在左/上，右侧或下方列出各读音行（每行拼音 + 🔊）」；保持 `align-items: baseline`、换行友好（`.word-lookup-item` 已是 flex + flex-wrap）。
+- **⚠️ 回归**：ISSUE-017 的选中/双击捕获（page-bridge.ts:240-266）、lookup 上抛、click 关闭 grace（MaterialsPanel:263-277）、iframe 注入通道不受影响；仅浮层内部展示与朗读粒度变化；重点测「单音字正常、多音字分行各有 🔊、拼音清晰可读、无释义」。
+- **优先级**：已实施（2026-09-01）
+- **实施记录（2026-09-01）**：
+  - `MaterialsPanel.tsx` `WordLookupOverlay`：删除 `.word-lookup-item-meaning` 渲染与释义；`en.pinyin.split(/\s+/).filter(Boolean)` 拆读音数组；每个读音一行（`.word-lookup-reading`：拼音 + 独立 🔊），`onSpeak(py)` 传该读音拼音串；无拼音时显示 `·` 占位；高度按条目/读音数动态估算避免溢出。
+  - `styles.css`：`.word-lookup-item-word`/`.word-lookup-item-py` 字号改为 `var(--material-font, 22px)`（与 ISSUE-030 资料字号联动）；新增 `.word-lookup-readings`(纵向列)/`.word-lookup-reading`(拼音+按钮行)/`.word-lookup-py-none`；删除 `.word-lookup-item-meaning` 规则；朗读按钮改为 `flex:0 0 auto` 不再 `margin-left:auto`。
+  - **音频源决策**：按 issue 建议先用「拼音串 TTS」（如 "háng"），后续可加「载字的最小词」优化自然度；整字朗读按钮已移除，以「每音一播」为准。
+  - **二次优化（2026-09-01 22:5x）**：浮层头部新增「朗读选中文本」按钮（`word-lookup-play-all`，`onSpeak(state.text)`），播放**整段选中文本**（非单字/单音）；与每音朗读按钮区分（整段按钮在头部、逐音按钮在每行）。`MaterialsPanel.tsx` 头部加 `.word-lookup-head-actions`(flex 容器)+按钮；`styles.css` 加 `.word-lookup-head-actions`/`.word-lookup-play-all`。
+  - **扩展到聊天框（2026-09-01 23:0x）**：把查词浮层抽成共享组件 `src/components/WordLookupOverlay.tsx`（导出 `LookupState` / `WordLookupOverlay`(forwardRef) / `useWordLookup` 选区捕获 hook）；`MaterialsPanel.tsx` 删本地副本改引用共享；`ChatWindow.tsx` 接入——`messagesRef` 容器内捕获中文选区 → `lookupText` → 浮层；新增 `speakText`(任意文本 edge-tts) 作 onSpeak；浮层渲染于 ChatWindow 根。灰盒：仅中文触发、点击外部/Esc 关闭、整段朗读可用。
+  - 验证：`tsc --noEmit` 对 `MaterialsPanel.tsx`/`ChatWindow.tsx`/`WordLookupOverlay.tsx` 无业务错误（已过滤 @types/node26 环境告警）。
+- **记录时间**：2026-09-01

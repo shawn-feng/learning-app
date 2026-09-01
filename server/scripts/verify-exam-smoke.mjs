@@ -88,7 +88,58 @@ const recOk = r.status === 200 && rec.length === 2 && rec.find((x) => x.course =
   && rec.find((x) => x.course === "学而篇第二章")?.focus?.includes("未说出快乐/尊重的感受");
 check("exam/course-records 每课聚合（难点/重点/计划复习）", recOk, JSON.stringify(r.json).slice(0, 300));
 
-// 7) 归属校验：他人 token 应 403
+// 7) 考核 v2 排期（§14）：固定配置 → 懒生成 → 多档去重 → 自定义 → config 按排期 → 提交关联
+r = await api("POST", "/api/v1/exam/fixed-config", { frequencies: ["weekly"], courseCount: 3, time: "20:00" });
+check("fixed-config 保存", r.status === 200 && r.json?.ok === true && r.json?.config?.frequencies?.includes("weekly"), JSON.stringify(r.json));
+r = await api("GET", "/api/v1/exam/schedules/smoke-child-1");
+const schedOk = r.status === 200 && (r.json?.generated ?? 0) >= 1
+  && (r.json?.schedules || []).some((s) => s.kind === "fixed" && s.freq === "weekly");
+check("排期懒生成（固定每周）", schedOk, JSON.stringify(r.json)?.slice(0, 200));
+
+// v3 §14.9：固定排期 config 两段式（第一段 = 选课 prompt + 候选清单；第二段 = 选中课程 rubric）
+const fixedSch = (r.json?.schedules || []).find((s) => s.kind === "fixed" && s.status === "pending");
+r = await api("GET", `/api/v1/exam/config/smoke-child-1?schedule=${fixedSch?.id}`);
+const cfgSelOk = r.status === 200 && r.json?.schedule?.kind === "fixed"
+  && !!r.json?.selectionPrompt && r.json.selectionPrompt.includes("课程清单")
+  && Array.isArray(r.json?.candidates) && r.json.candidates.length >= 2
+  && r.json.candidates.some((c) => c.title === "学而篇第一章");
+check("config 第一段（选课 prompt + 候选清单）", cfgSelOk, JSON.stringify(r.json)?.slice(0, 250));
+r = await api("GET", `/api/v1/exam/config/smoke-child-1?schedule=${fixedSch?.id}&courses=${encodeURIComponent("学而篇第一章,学而篇第二章")}`);
+const cfgSel2Ok = r.status === 200 && Array.isArray(r.json?.courses) && r.json.courses.length === 2
+  && r.json.courses[0].assessRubric.includes("学而时习之") && !!r.json.scoringPrompt;
+check("config 第二段（选中课程 rubric + 判分 prompt）", cfgSel2Ok, JSON.stringify(r.json)?.slice(0, 250));
+
+r = await api("POST", "/api/v1/exam/fixed-config", { frequencies: ["daily", "weekly"], courseCount: 3, selectionPrompts: { monthly: "自定义每月选课规则：每主题选 3 门" } });
+check("fixed-config 多档保存 + selectionPrompts", r.status === 200 && r.json?.ok === true && r.json?.config?.selectionPrompts?.monthly?.includes("自定义每月"), JSON.stringify(r.json)?.slice(0, 300));
+r = await api("GET", "/api/v1/exam/schedules/smoke-child-1");
+const days = (r.json?.schedules || []).map((s) => s.scheduledAt.slice(0, 10));
+const dupDays = days.filter((d, i) => days.indexOf(d) !== i);
+const hasWeekly = (r.json?.schedules || []).some((s) => s.freq === "weekly");
+check("多档去重（同日只保留一档，无重复日期）", dupDays.length === 0 && hasWeekly, `重复=${dupDays.length} weekly=${hasWeekly}`);
+
+r = await api("POST", "/api/v1/exam/schedules", {
+  childId: "smoke-child-1", scheduledAt: "2026-09-05T20:00:00",
+  scope: { topics: ["lunyu"], courses: ["学而篇第一章"], note: "考学而篇第一章" },
+});
+const customId = r.json?.id;
+check("自定义排期创建", r.status === 200 && r.json?.ok === true && !!customId, JSON.stringify(r.json));
+r = await api("GET", `/api/v1/exam/config/smoke-child-1?schedule=${customId}`);
+const cfgSchOk = r.status === 200 && r.json?.schedule?.kind === "custom"
+  && Array.isArray(r.json?.courses) && r.json.courses.length >= 1
+  && r.json.courses[0].title === "学而篇第一章" && !!r.json.courses[0].assessRubric && !!r.json.scoringPrompt;
+check("config 按自定义排期选课（scope 指定课程 + rubric）", cfgSchOk, JSON.stringify(r.json)?.slice(0, 250));
+
+r = await api("POST", "/api/v1/exam/attempts", {
+  childId: "smoke-child-1", topic: "lunyu", title: "排期考核提交", score: 90,
+  perQuestion: [{ qid: "q1", course: "学而篇第一章", question: "q", asrText: "a", pointGot: 9, pointMax: 10, correct: true, aiComment: "ok" }],
+  courseMastery: {}, reinforcePlan: {}, wrongQuestions: [], scheduleId: customId,
+});
+check("提交关联排期", r.status === 200 && r.json?.ok === true, JSON.stringify(r.json));
+r = await api("GET", "/api/v1/exam/schedules/smoke-child-1");
+const doneSch = (r.json?.schedules || []).find((s) => s.id === customId);
+check("排期标记完成（done + attempt_id）", doneSch?.status === "done" && !!doneSch?.attemptId, JSON.stringify(doneSch));
+
+// 8) 归属校验：他人 token 应 403
 const otherToken = jwt.sign({ parent_id: "other-parent", email: "x@y.z", plan: "trial" }, cfg.jwtSecret, { expiresIn: "7d" });
 const res = await fetch(`${BASE}/api/v1/exam/config/smoke-child-1`, { headers: { Authorization: `Bearer ${otherToken}` } });
 check("跨家长访问被拒(403)", res.status === 403, `status=${res.status}`);

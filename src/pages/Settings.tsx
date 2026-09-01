@@ -3,6 +3,7 @@ import { RefreshCw, CheckCircle } from "lucide-react";
 import IconButton from "../components/IconButton";
 import VoiceSettings from "../components/VoiceSettings";
 import AssessmentSettings from "../components/AssessmentSettings";
+import ExamSettings from "../components/ExamSettings";
 import VisionSettings from "../components/VisionSettings";
 import SchedulerSettings from "../components/SchedulerSettings";
 import BackupSettings from "../components/BackupSettings";
@@ -136,6 +137,7 @@ export default function Settings() {
             ["vision", "视觉配置"],
             ["voice", "语音配置"],
             ["evaluation", "发音评测"],
+            ["exam", "学习考核"],
             ["scheduler", "定时任务"],
             ["backup", "数据备份"],
             ["general", "通用设置"],
@@ -303,6 +305,7 @@ export default function Settings() {
       {tab === "voice" && <VoiceSettings />}
 
       {tab === "evaluation" && <AssessmentSettings />}
+      {tab === "exam" && <ExamSettings />}
 
       {tab === "scheduler" && <SchedulerSettings />}
 

@@ -42,9 +42,21 @@ interface Attempt {
   reinforcePlan: Record<string, { planReviewAt: string; focus: string[]; aiSuggestion?: string }>;
 }
 
+interface ScheduleItem {
+  id: string;
+  kind: "fixed" | "custom";
+  freq: string;
+  scheduledAt: string;
+  status: "pending" | "started" | "done" | "expired";
+  title: string;
+  scope: Record<string, unknown>;
+  pending: boolean;
+}
+
 export default function ExamRecords({ childId }: { childId: string }) {
   const [records, setRecords] = useState<CourseRecord[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
   const [msg, setMsg] = useState("");
   const [audioSrc, setAudioSrc] = useState<Record<string, string>>({});
   const [playing, setPlaying] = useState<string | null>(null);
@@ -53,17 +65,15 @@ export default function ExamRecords({ childId }: { childId: string }) {
     let alive = true;
     (async () => {
       try {
-        const [r, a] = await Promise.all([
+        const [r, a, s] = await Promise.all([
           (window.api.examCourseRecords(childId) as Promise<any>).catch(() => ({ success: false })),
           (window.api.examAttempts(childId) as Promise<any>).catch(() => ({ success: false })),
+          (window.api.examSchedules(childId) as Promise<any>).catch(() => ({ success: false })),
         ]);
         if (!alive) return;
         if (r?.success) setRecords(r.data || []);
         if (a?.success) setAttempts(a.data || []);
-        if ((!r?.success || !a?.success)) {
-          const e = r?.error || a?.error;
-          if (e) setMsg(`加载失败：${e}`);
-        }
+        if (s?.success) setSchedules(s.data?.schedules || []);
         if (!r?.success && !a?.success) setMsg("暂无考核记录（孩子还没参加过考核）");
       } catch (e: any) {
         if (alive) setMsg(String(e?.message || e));
@@ -71,6 +81,22 @@ export default function ExamRecords({ childId }: { childId: string }) {
     })();
     return () => { alive = false; };
   }, [childId]);
+
+  async function cancelSchedule(id: string) {
+    const ok = window.confirm("取消这次考核安排？");
+    if (!ok) return;
+    try {
+      const r: any = await window.api.examScheduleCancel(id);
+      if (r?.success) {
+        const s: any = await window.api.examSchedules(childId);
+        setSchedules(s?.success ? (s.data?.schedules || []) : schedules);
+      } else {
+        setMsg(`取消失败：${r?.error || ""}`);
+      }
+    } catch (e: any) {
+      setMsg(`取消失败：${String(e?.message || e)}`);
+    }
+  }
 
   async function playAudio(fileId: string, qid: string) {
     if (playing === qid) { setPlaying(null); return; }
@@ -97,6 +123,34 @@ export default function ExamRecords({ childId }: { childId: string }) {
         每课程掌握情况来自历次考核逐题聚合；语音为原始录音（ASR 可能出错，可听原音核对判分）。数据在服务端，跨设备可见。
       </p>
       {msg && <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>{msg}</div>}
+
+      {/* 考核排期（固定频率 + 家长自定义；家长可取消待考核） */}
+      {schedules.length > 0 && (
+        <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 12, padding: "14px 16px", marginBottom: 14 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📅 考核安排</div>
+          {schedules.slice(0, 8).map((sch) => (
+            <div key={sch.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0", borderBottom: "1px solid #f4f4f4" }}>
+              <div style={{ flex: 1, fontSize: 13 }}>
+                <span style={{ fontWeight: 600 }}>{sch.title}</span>
+                {sch.kind === "custom" && (
+                  <span style={{ marginLeft: 6, fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "0 6px" }}>自定义</span>
+                )}
+                <span style={{ color: "#888", marginLeft: 8 }}>{sch.scheduledAt ? new Date(sch.scheduledAt).toLocaleString("zh-CN", { hour12: false }).slice(0, 16) : ""}</span>
+                {sch.status === "done" && <span style={{ color: "#27ae60", marginLeft: 8 }}>✓ 已完成</span>}
+                {sch.pending && <span style={{ color: "#b9770a", marginLeft: 8 }}>待考核（可开始）</span>}
+              </div>
+              {sch.status === "pending" && (
+                <button
+                  onClick={() => cancelSchedule(sch.id)}
+                  style={{ border: "1px solid #e0c4c4", background: "#fff", color: "#b33", borderRadius: 6, padding: "3px 10px", fontSize: 12, cursor: "pointer" }}
+                >
+                  取消
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* 每课程考核记录表 */}
       <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16, marginBottom: 16, overflowX: "auto" }}>

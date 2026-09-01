@@ -1049,13 +1049,13 @@ input, textarea {
 }
 
 .material-list-title {
-  font-size: 16px;
+  font-size: var(--material-font, 16px);
   font-weight: 600;
   color: #667eea;
 }
 
 .material-list-count {
-  font-size: 12px;
+  font-size: var(--material-font, 12px);
   color: #999;
 }
 
@@ -1102,7 +1102,7 @@ input, textarea {
 }
 
 .material-row-title {
-  font-size: 14px;
+  font-size: var(--material-font, 14px);
   color: #333;
   font-weight: 500;
   overflow: hidden;
@@ -1111,7 +1111,7 @@ input, textarea {
 }
 
 .material-row-time {
-  font-size: 12px;
+  font-size: var(--material-font, 12px);
   color: #aaa;
 }
 
@@ -1144,7 +1144,7 @@ input, textarea {
 .material-title {
   color: #667eea;
   margin: 0 0 12px;
-  font-size: 18px;
+  font-size: var(--material-font, 18px);
 }
 
 /* 学习进度看板 */
@@ -2488,6 +2488,15 @@ input, textarea {
   font-size: 15px;
 }
 
+/* ISSUE-030：孩子端学习资料 markdown 正文字号跟随「资料字号」设置。
+   作用域限定在 .content-panel（仅孩子端 MaterialsPanel），不影响家长端/聊天 markdown。
+   用 * 强制统一字号，与 HTML 资料 iframe 内的处理保持一致（低龄友好、层次简化为单一大字）。 */
+.content-panel .markdown-body,
+.content-panel .markdown-body * {
+  font-size: var(--material-font, 15px) !important;
+  line-height: 1.6 !important;
+}
+
 .markdown-body h1 {
   font-size: 22px;
   margin: 16px 0 8px;
@@ -3148,6 +3157,17 @@ input, textarea {
   white-space: nowrap;
 }
 
+.word-lookup-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.word-lookup-play-all {
+  color: #667eea;
+}
+
 .word-lookup-head .icon-btn {
   padding: 4px;
   border-radius: 8px;
@@ -3167,7 +3187,7 @@ input, textarea {
 }
 
 .word-lookup-item-word {
-  font-size: 22px;
+  font-size: var(--material-font, 22px);
   font-weight: 700;
   color: #667eea;
   min-width: 26px;
@@ -3175,20 +3195,34 @@ input, textarea {
   line-height: 1.2;
 }
 
+/* ISSUE-031：多音字多个读音分行，每行一个拼音 + 独立朗读按钮 */
+.word-lookup-readings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.word-lookup-reading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .word-lookup-item-py {
   color: #e0619a;
-  font-size: 14px;
+  font-size: var(--material-font, 22px);
   font-weight: 500;
 }
 
-.word-lookup-item-meaning {
-  color: #555;
-  font-size: 13px;
-  flex: 1 1 100%;
+/* 无拼音（冷僻字）兜底占位 */
+.word-lookup-py-none {
+  color: #bbb;
 }
 
 .word-lookup-item .word-lookup-item-speak {
   padding: 4px;
   border-radius: 8px;
-  margin-left: auto;
+  flex: 0 0 auto;
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { GraduationCap, BookText, FolderOpen, Plus } from "lucide-react";
+import { GraduationCap, BookText, FolderOpen, Plus, ClipboardCheck } from "lucide-react";
 import IconButton from "./IconButton";
 import TopicDetail from "./TopicDetail";
 import MaterialManagerModal from "./MaterialManagerModal";
@@ -9,13 +9,15 @@ interface ParentTopic {
   name: string;
   topicKey: string;
   method: string;
+  /** 每科目考核方法说明（学习考核 assess_method，家长库 topics.assess_method） */
+  assessMethod?: string;
   learned: number;
   total: number;
   htmlCount: number;
   rules: Record<string, string>;
 }
 
-type Tab = "method" | "course" | "info";
+type Tab = "method" | "course" | "info" | "assess" | "assessMethod";
 
 /**
  * 家长中心「课程管理」页（ISSUE-029）：
@@ -131,10 +133,12 @@ export default function CourseManager() {
               </div>
               <div style={{ fontSize: 12, color: "#888", margin: "6px 0 12px" }}>
                 {t.total} 门课程 · html 资料 {t.htmlCount} 份 · 方法{t.method ? "已填写" : "未填写"}
+                · 考核{t.assessMethod ? "已填写" : "未填写"}
                 {t.rules?.daily ? ` · 每日 ${t.rules.daily} 课` : ""}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <CardBtn icon={GraduationCap} title="教学方法" onClick={() => setDetail({ topic: t, tab: "method" })} />
+                <CardBtn icon={ClipboardCheck} title="考核方法" onClick={() => setDetail({ topic: t, tab: "assessMethod" })} />
                 <CardBtn icon={BookText} title="课程详情" primary onClick={() => setDetail({ topic: t, tab: "course" })} />
                 <CardBtn icon={FolderOpen} title="学习资料管理" onClick={() => setMatTopic(t)} />
               </div>
