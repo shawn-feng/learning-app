@@ -84,12 +84,21 @@ export default function ExamView({ childId, onExit }: Props) {
   // 准备阶段提示文案（选课/出题/判分共用「批改中」遮罩）
   const [prepText, setPrepText] = useState("");
 
-  // 初始化：取考核排期列表（服务端懒生成固定排期）
+  // 初始化：取考核排期列表（服务端懒生成固定排期）→ 只保留「今天」的考核
   const loadSchedules = useCallback(async () => {
     try {
       const r: any = await window.api.examSchedules(childId);
       if (!r?.success) throw new Error(r?.error || "获取考核排期失败");
-      setSchedules(r.data?.schedules || []);
+      const all = r.data?.schedules || [];
+      // 排期 scheduledAt 为 UTC ISO；按本地时区取「今天」的年月日做过滤
+      const now = new Date();
+      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const todays = all.filter((s: any) => {
+        const d = new Date(s.scheduledAt);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        return key === todayKey;
+      });
+      setSchedules(todays);
     } catch (e: any) {
       setError(String(e?.message || e));
       setStage("error");
@@ -304,6 +313,27 @@ export default function ExamView({ childId, onExit }: Props) {
           gap: 12,
         }}
       >
+        {/* 常驻返回：pick/error/report 都可退出；exam（锁定）与 scoring（处理中）不显示 */}
+        {stage !== "exam" && stage !== "scoring" && (
+          <button
+            onClick={onExit}
+            style={{
+              background: "#f0f2f5",
+              border: "none",
+              borderRadius: 8,
+              padding: "6px 14px",
+              fontSize: 13,
+              fontWeight: 600,
+              color: "#333",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            ← 返回
+          </button>
+        )}
         <span style={{ fontWeight: 700, fontSize: 16 }}>🎯 学习考核</span>
         {currentSchedule && stage !== "pick" && (
           <span
@@ -332,7 +362,9 @@ export default function ExamView({ childId, onExit }: Props) {
               到了考核时间就可以开始。点「开始这次考核」进入锁定考核，中途不能退出。
             </p>
             {schedules.length === 0 && (
-              <p style={{ color: "#888", fontSize: 13 }}>暂无考核安排（家长设置固定考核频率后会按周期自动生成）。</p>
+              <p style={{ color: "#888", fontSize: 13 }}>
+                今天没有考核安排。固定考核会在设定的考核时间自动出现在这里；如果想让爸爸妈妈临时安排一次，可以请他们在家长助手里说「周五晚上考论语的乡党篇」。
+              </p>
             )}
             {schedules.map((sch) => {
               // pending（已到点）或 started（上次开始后中断/出卷失败）都可重新开始

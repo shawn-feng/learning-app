@@ -262,11 +262,12 @@ export function ensureFixedSchedules(db: DatabaseSync, parentId: string, childId
     anchor = d.getTime();
   }
   const now = Date.now();
-  // 各档候选：锚点之后、不超过 anchor+horizon 的所有时间点
+  // 各档候选：锚点（含当天）之后、不超过 anchor+horizon 的所有时间点——
+  // 从 anchor 本身起步，保证「今天配置时刻」的考核会生成（此前 anchor+step 起步导致当天排期缺失）
   const byDay = new Map<number, { time: number; freq: string; rank: number }>();
   for (const freq of cfg.frequencies) {
     const step = freqToMs(freq);
-    let t = anchor + step;
+    let t = anchor;
     while (t <= anchor + HORIZON_MS) {
       const day = dayStart(t);
       const cur = byDay.get(day);
