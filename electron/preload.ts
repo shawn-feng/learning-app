@@ -255,6 +255,12 @@ const api = {
     ipcRenderer.invoke("voice:merge", childId, segments),
   voiceTts: (text: string, opts?: any) => ipcRenderer.invoke("voice:tts", text, opts),
 
+  // 发音评测（智聆 / 阿里儿童，英语角用）
+  assessmentConfigGet: () => ipcRenderer.invoke("assessment:config:get"),
+  assessmentConfigSet: (patch: any) => ipcRenderer.invoke("assessment:config:set", patch),
+  assessmentTest: (audio: ArrayBuffer, provider?: string, refText?: string) =>
+    ipcRenderer.invoke("assessment:test", audio, provider, refText),
+
   // Window controls (custom title bar)
   windowMinimize: () => ipcRenderer.invoke("window:minimize"),
   windowMaximizeToggle: () => ipcRenderer.invoke("window:maximize-toggle"),
@@ -276,6 +282,18 @@ const api = {
   viewZoomIn: () => ipcRenderer.invoke("view:zoom-in"),
   viewZoomOut: () => ipcRenderer.invoke("view:zoom-out"),
   viewZoomReset: () => ipcRenderer.invoke("view:zoom-reset"),
+
+  // 学习考核（EXAM-REQUIREMENTS.md）
+  examConfig: (childId: string) => ipcRenderer.invoke("exam:config", childId),
+  examPending: (childId: string) => ipcRenderer.invoke("exam:pending", childId),
+  examSubmit: (payload: any, voices: Array<{ qid: string; buffer: ArrayBuffer; name: string }>) =>
+    ipcRenderer.invoke("exam:submit", payload, voices),
+  examAttempts: (childId: string) => ipcRenderer.invoke("exam:attempts", childId),
+  examCourseRecords: (childId: string) => ipcRenderer.invoke("exam:courseRecords", childId),
+  examAudio: (fileId: string) => ipcRenderer.invoke("exam:audio", fileId),
+  examGenerate: (childId: string, topicConfig: any) => ipcRenderer.invoke("exam:generate", childId, topicConfig),
+  examScore: (childId: string, scoringPrompt: string, answers: any[]) =>
+    ipcRenderer.invoke("exam:score", childId, scoringPrompt, answers),
 
   // App updates (ISSUE-040)
   getAppVersion: () => ipcRenderer.invoke("app:get_version"),

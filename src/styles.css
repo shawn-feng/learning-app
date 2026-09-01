@@ -669,6 +669,26 @@ input, textarea {
   align-items: center;
 }
 
+/* ISSUE-026：孩子端边栏常驻折叠（图标栏）——功能 icon 按钮竖排容器 */
+.sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 0 12px;
+  border-bottom: 1px solid #eee;
+  margin-bottom: 12px;
+}
+
+/* ISSUE-026：切换展示页弹框内的选项列表 */
+.view-options-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 8px;
+}
+
 .sidebar-toggle {
   align-self: flex-end;
   width: 28px;

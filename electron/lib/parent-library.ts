@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS topics (
   name TEXT PRIMARY KEY,
   topic_key TEXT NOT NULL,
   method TEXT NOT NULL DEFAULT '',
+  assess_method TEXT NOT NULL DEFAULT '',
   progress TEXT NOT NULL DEFAULT '',
   rules_json TEXT NOT NULL DEFAULT '{}'
 );
@@ -149,6 +150,7 @@ CREATE TABLE IF NOT EXISTS courses (
   lesson_method TEXT NOT NULL DEFAULT '',
   html_path TEXT NOT NULL DEFAULT '',
   teaching_copy TEXT NOT NULL DEFAULT '',
+  assess_rubric TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (topic, title)
 );
 CREATE INDEX IF NOT EXISTS idx_parent_courses_topic ON courses(topic, sort_order);
@@ -192,6 +194,7 @@ export function openParentDb(parentId: string = DEFAULT_PARENT_ID): DatabaseSync
   db.exec(PARENT_SCHEMA_TABLES);
   ensureParentV2(db);
   ensureParentV3(db);
+  ensureParentV4(db);
   ensureParentTags(db);
   // 视图已存在则跳过重建（避免每次打开都写锁；视图定义变更时才需要显式重建）
   const hasView = db
@@ -221,6 +224,19 @@ function ensureParentV3(db: DatabaseSync): void {
   const rows = db.prepare("SELECT name, topic_key FROM topics").all() as unknown as Array<{ name: string; topic_key: string }>;
   const upd = db.prepare("UPDATE topics SET topic_key = ? WHERE name = ?");
   for (const r of rows) upd.run(normalizeTopicKey(r.topic_key), r.name);
+}
+
+/** 父库 v3 → v4 就地迁移（学习考核）：topics.assess_method（每科目考核方法说明）、
+ * courses.assess_rubric（每课考核要点）。幂等：按列存在性判断。 */
+function ensureParentV4(db: DatabaseSync): void {
+  const tCols = (db.prepare("PRAGMA table_info(topics)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!tCols.includes("assess_method")) {
+    db.exec("ALTER TABLE topics ADD COLUMN assess_method TEXT NOT NULL DEFAULT ''");
+  }
+  const cCols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cCols.includes("assess_rubric")) {
+    db.exec("ALTER TABLE courses ADD COLUMN assess_rubric TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 // 受控标签词表（初版 20 个，四维）。家长给孩子课程打标签只能从本表选（ISSUE-045：选项从数据库获取）。
@@ -289,6 +305,7 @@ export interface ParentTopic {
   name: string; // 主题中文名（如 论语）
   topicKey: string; // 拼音主题键（如 lunyu）
   method: string; // method.md 全文
+  assessMethod: string; // 每科目考核方法说明（学习考核：周期/对象规则/题量）
   rules: Record<string, string>;
   learned: number;
   total: number;
@@ -298,7 +315,7 @@ export interface ParentTopic {
 export async function listParentTopics(parentId: string = DEFAULT_PARENT_ID): Promise<ParentTopic[]> {
   // SPLIT：主题/进度来自服务端 parent_lib（按 session parent_id 路由）；材料文件计数读本地缓存目录
   const [topics, progress] = await Promise.all([
-    dbQuery<Array<{ name: string; topic_key: string; method: string; rules_json: string }>>(
+    dbQuery<Array<{ name: string; topic_key: string; method: string; assess_method: string; rules_json: string }>>(
       "parent_lib.topics.list",
       {}
     ).catch(() => []),
@@ -326,6 +343,7 @@ export async function listParentTopics(parentId: string = DEFAULT_PARENT_ID): Pr
       name: r.name,
       topicKey: r.topic_key,
       method: r.method,
+      assessMethod: r.assess_method ?? "",
       rules,
       learned: Number(a?.learned) || 0,
       total: Number(a?.total) || 0,
@@ -358,6 +376,7 @@ function rowToParentCourse(r: Record<string, unknown>): CourseItem {
     lessonMethod: String(r.lesson_method ?? ""),
     htmlPath: String(r.html_path ?? ""),
     teachingCopy: String(r.teaching_copy ?? ""),
+    assessRubric: String(r.assess_rubric ?? ""),
   };
 }
 
@@ -373,7 +392,7 @@ export function resolveParentMaterial(parentId: string, htmlPath: string): strin
  */
 export async function upsertParentTopic(
   parentId: string,
-  topic: { name: string; topicKey: string; method: string; progress?: string; rules?: Record<string, string> },
+  topic: { name: string; topicKey: string; method: string; assessMethod?: string; progress?: string; rules?: Record<string, string> },
   courses: Array<{
     title: string;
     sortOrder?: number;
@@ -383,6 +402,7 @@ export async function upsertParentTopic(
     lessonMethod?: string;
     htmlPath?: string;
     teachingCopy?: string;
+    assessRubric?: string;
   }>
 ): Promise<{ topics: number; courses: number }> {
   // SPLIT：写服务端 parent_lib.topics.upsert + 批量 courses.upsert
@@ -390,6 +410,7 @@ export async function upsertParentTopic(
     name: topic.name,
     topic_key: normalizeTopicKey(topic.topicKey),
     method: topic.method,
+    assess_method: topic.assessMethod ?? "",
     progress: topic.progress || "",
     rules_json: JSON.stringify(topic.rules || {}),
   });
@@ -409,6 +430,7 @@ export async function upsertParentTopic(
       lesson_method: c.lessonMethod ?? "",
       html_path: c.htmlPath ?? "",
       teaching_copy: c.teachingCopy ?? "",
+      assess_rubric: c.assessRubric ?? "",
     });
   }
   const rows = await dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", {
@@ -564,7 +586,7 @@ export async function deallocateChildTopic(
 
 // ==================== 孩子端「从家长库取内容」（ISSUE-029 专用工具后端） ====================
 
-export type ParentContentType = "method" | "teachingCopy" | "htmlPath";
+export type ParentContentType = "method" | "teachingCopy" | "htmlPath" | "assessRubric";
 
 /**
  * 孩子端专用工具后端：从家长库取主题教学方法 / 课程教学文案 / 课程 html 资料路径。
@@ -591,9 +613,9 @@ export async function getParentContentForChild(
     if (row?.method) return { found: true, content: row.method };
     return { found: false, content: "" };
   }
-  // teachingCopy / htmlPath 都按课程查
+  // teachingCopy / htmlPath / assessRubric 都按课程查
   if (!courseTitle) return { found: false, content: "" };
-  const courses = await dbQuery<Array<{ title: string; teaching_copy: string; html_path: string }>>(
+  const courses = await dbQuery<Array<{ title: string; teaching_copy: string; html_path: string; assess_rubric: string }>>(
     "parent_lib.courses.list",
     { topic: topicDir }
   ).catch(() => []);
@@ -601,6 +623,10 @@ export async function getParentContentForChild(
   if (!row) return { found: false, content: "" };
   if (type === "teachingCopy") {
     if (row.teaching_copy) return { found: true, content: row.teaching_copy };
+    return { found: false, content: "" };
+  }
+  if (type === "assessRubric") {
+    if (row.assess_rubric) return { found: true, content: row.assess_rubric };
     return { found: false, content: "" };
   }
   // htmlPath：返回家长库相对路径（新格式 `<topic>/<file>`，无 materials/ 前缀），
@@ -640,6 +666,7 @@ export async function upsertParentCourse(
     lessonMethod?: string;
     htmlPath?: string;
     teachingCopy?: string;
+    assessRubric?: string;
   }
 ): Promise<boolean> {
   // SPLIT：写服务端 parent_lib.courses.upsert。服务端为全字段覆盖，先读旧值合并（保持本地
@@ -668,6 +695,7 @@ export async function upsertParentCourse(
     lesson_method: c.lessonMethod ?? String(existing?.lesson_method ?? ""),
     html_path: c.htmlPath ?? String(existing?.html_path ?? ""),
     teaching_copy: c.teachingCopy ?? String(existing?.teaching_copy ?? ""),
+    assess_rubric: c.assessRubric ?? String(existing?.assess_rubric ?? ""),
   };
   await dbExec("parent_lib.courses.upsert", merged);
   return true;

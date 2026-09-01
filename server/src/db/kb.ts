@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS courses (
   sort_order INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT '⬜',
   mastery TEXT NOT NULL DEFAULT '',
+  exam_mastery TEXT NOT NULL DEFAULT '',
   first_learned TEXT NOT NULL DEFAULT '',
   last_review TEXT NOT NULL DEFAULT '',
   review_count INTEGER NOT NULL DEFAULT 0,
@@ -104,6 +105,15 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   const db = new DatabaseSync(path.join(dir, `${childId}.sqlite`));
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(KB_SCHEMA_TABLES);
+  ensureKbExamColumn(db);
   db.exec(KB_SCHEMA_VIEWS);
   return db;
+}
+
+/** 孩子库考核列就地迁移（幂等）：courses.exam_mastery（考核掌握度，与引导 mastery 双轨）。 */
+function ensureKbExamColumn(db: DatabaseSync): void {
+  const cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cols.includes("exam_mastery")) {
+    db.exec("ALTER TABLE courses ADD COLUMN exam_mastery TEXT NOT NULL DEFAULT ''");
+  }
 }

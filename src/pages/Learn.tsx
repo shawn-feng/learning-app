@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelLeftClose, PanelLeftOpen, PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
 import TodoModal from "../components/TodoModal";
+import ExamView from "../components/ExamView";
 import { useChatPanel } from "../hooks/useChatPanel";
 import type { MaterialsPanelHandle, PageAction, PageEvent, PageExecResultUplink } from "../lib/page-bridge";
 
@@ -178,18 +179,10 @@ function playReminderAlert(mode: "both" | "chime" | "voice", type: "start" | "en
   }
 }
 
-/** ISSUE-019：孩子左侧边栏「今日课程」——实时时钟 + 当天课程时间段（上课-下课）。
- *  独立组件：每秒时钟只重渲染自身，避免整个 Learn 每帧 diff；
+/** ISSUE-019/026：今日课程——实时时钟 + 当天课程时间段（上课-下课）。
+ *  ISSUE-026 起弹框内全量展示（不再有折叠分支）；独立组件每秒时钟只重渲染自身；
  *  配置经 scheduler:config:get 取当前孩子的 classTimes（家长在定时任务里配置）。 */
-function SidebarClassSchedule({
-  childId,
-  collapsed,
-  onExpand,
-}: {
-  childId: string;
-  collapsed: boolean;
-  onExpand: () => void;
-}) {
+function SidebarClassSchedule({ childId }: { childId: string }) {
   const [classTimes, setClassTimes] = useState<{ start: string; end: string; label?: string }[]>([]);
   const [now, setNow] = useState(() => new Date());
 
@@ -216,13 +209,6 @@ function SidebarClassSchedule({
     return () => window.clearInterval(t);
   }, []);
 
-  if (collapsed) {
-    return (
-      <button className="sidebar-icon-btn" title="今日课程安排" onClick={onExpand}>
-        <CalendarClock size={20} />
-      </button>
-    );
-  }
   const pad = (n: number) => String(n).padStart(2, "0");
   const clock = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
   return (
@@ -268,14 +254,14 @@ export default function Learn({ child, onExit }: Props) {
 
   // 左侧展示页切换
   const [view, setView] = useState<PanelViewKey>("materials");
-  // ISSUE-020：浮层关闭用 ~180ms 延时（鼠标从按钮穿越缝隙到浮层有容错时间），按钮也可点击切换
-  const [viewMenuOpen, setViewMenuOpen] = useState(false);
-  const viewSwitcherRef = useRef<HTMLDivElement | null>(null);
-  const viewMenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentView = PANEL_VIEWS.find((v) => v.key === view) || PANEL_VIEWS[0];
 
-  // Sidebar collapse
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // ISSUE-026：孩子端左侧边栏常驻折叠（图标栏），所有功能交互统一走弹框
+  const [showView, setShowView] = useState(false); // 切换展示页
+  const [showModel, setShowModel] = useState(false); // 模型
+  const [showRate, setShowRate] = useState(false); // 朗读语速
+  const [showFont, setShowFont] = useState(false); // 聊天字号
+  const [showClass, setShowClass] = useState(false); // 今日课程
   // ISSUE-008/016：中间展示区可折叠（收起后聊天区占更多空间），学习资料/学习进度等所有展示页通用；
   // display_content 时自动展开（见下方 materials 监听 effect）
   const [panelCollapsed, setPanelCollapsed] = useState(false);
@@ -322,6 +308,10 @@ export default function Learn({ child, onExit }: Props) {
   const [changePwdMsg, setChangePwdMsg] = useState("");
   // ISSUE-025：今日计划（Todolist）弹框
   const [showTodo, setShowTodo] = useState(false);
+  // 学习考核（EXAM-REQUIREMENTS.md）：锁定考试视图开关（true 时全屏覆盖，考试中不可退出）
+  const [examOpen, setExamOpen] = useState(false);
+  // 待考核科目数（周期到点标红提醒，不强制打断；0 = 无）
+  const [examPendingCount, setExamPendingCount] = useState(0);
 
   useEffect(() => {
     setAiName(child.aiName);
@@ -329,23 +319,21 @@ export default function Learn({ child, onExit }: Props) {
     setAiPersonality(child.aiPersonality);
   }, [child.aiName, child.aiEmoji, child.aiPersonality]);
 
-  // ISSUE-020：点击浮层外部关闭「切换展示页」菜单（真下拉语义，低龄孩子更易选中）
+  // 学习考核：周期到点「待考核」角标（服务端按 assess_method 周期算；失败静默，不影响学习）
   useEffect(() => {
-    const onDocClick = (e: MouseEvent) => {
-      if (viewSwitcherRef.current && !viewSwitcherRef.current.contains(e.target as Node)) {
-        setViewMenuOpen(false);
+    let alive = true;
+    (async () => {
+      try {
+        const r: any = await window.api.examPending(child.childId);
+        if (alive) setExamPendingCount(r?.success ? Number(r.data?.count) || 0 : 0);
+      } catch {
+        if (alive) setExamPendingCount(0);
       }
-    };
-    document.addEventListener("click", onDocClick);
-    return () => document.removeEventListener("click", onDocClick);
-  }, []);
-
-  // ISSUE-020：卸载时清理浮层关闭延时定时器
-  useEffect(() => {
+    })();
     return () => {
-      if (viewMenuTimerRef.current) clearTimeout(viewMenuTimerRef.current);
+      alive = false;
     };
-  }, []);
+  }, [child.childId]);
 
   useEffect(() => {
     childIdRef.current = child.childId;
@@ -874,164 +862,87 @@ export default function Learn({ child, onExit }: Props) {
   return (
     <div className="learn-page">
       <div className="learn-main">
-        <div className={`learn-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
-          <button
-            className="sidebar-toggle"
-            onClick={() => setSidebarCollapsed((v) => !v)}
-            title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
-          >
-            {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-          </button>
-
+        {/* ISSUE-026：孩子端左侧边栏常驻折叠（图标栏），功能交互统一弹框 */}
+        <div className="learn-sidebar collapsed">
           <div className="sidebar-profile">
             <div className="sidebar-avatar" title={child.name}>{child.avatar}</div>
-            {!sidebarCollapsed && (
-              <>
-                <div className="sidebar-name">{child.name}</div>
-                <div className="sidebar-ai">
-                  {aiEmoji} {aiName}
-                </div>
-                <div className="sidebar-sub">我的学习伙伴</div>
-              </>
-            )}
           </div>
 
-          <div
-            ref={viewSwitcherRef}
-            className="view-switcher"
-            onMouseEnter={() => {
-              // 进入即取消待执行的关闭延时，避免鼠标穿越缝隙时误关
-              if (viewMenuTimerRef.current) {
-                clearTimeout(viewMenuTimerRef.current);
-                viewMenuTimerRef.current = null;
-              }
-              setViewMenuOpen(true);
-            }}
-            onMouseLeave={() => {
-              // ISSUE-020：不直接关闭，延时 ~180ms——鼠标在按钮→浮层间的微小缝隙/慢移时给容错
-              if (viewMenuTimerRef.current) clearTimeout(viewMenuTimerRef.current);
-              viewMenuTimerRef.current = setTimeout(() => setViewMenuOpen(false), 180);
-            }}
-          >
+          <div className="sidebar-actions">
             <button
-              className={`sidebar-btn view-switcher-btn ${viewMenuOpen ? "open" : ""}`}
+              className="sidebar-icon-btn"
               title="切换展示页"
-              onClick={() => setViewMenuOpen((v) => !v)}
+              onClick={() => setShowView(true)}
             >
-              <currentView.icon size={18} className="sidebar-btn-icon" />
-              {!sidebarCollapsed && <span className="view-switcher-caret">▾</span>}
+              <currentView.icon size={18} />
             </button>
 
-            {viewMenuOpen && (
-              <div className="view-switcher-popover">
-                <div className="view-switcher-title">切换展示页</div>
-                {PANEL_VIEWS.map((v) => (
-                  <button
-                    key={v.key}
-                    className={`view-option ${view === v.key ? "active" : ""}`}
-                    onClick={() => {
-                      setView(v.key);
-                      setViewMenuOpen(false);
-                    }}
-                  >
-                    <span className="view-option-icon"><v.icon size={18} /></span>
-                    <span className="view-option-body">
-                      <span className="view-option-label">{v.label}</span>
-                      <span className="view-option-desc">{v.desc}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="sidebar-model">
-            {sidebarCollapsed && (
-              <button
-                className="sidebar-icon-btn"
-                title="模型"
-                onClick={() => setSidebarCollapsed(false)}
-              >
-                <Bot size={20} />
-              </button>
-            )}
-            {/* 保持 ModelSelector 常驻挂载，折叠时仅用 CSS 隐藏，避免卸载后重新挂载时重置为默认模型 */}
-            <div
-              className="sidebar-model-body"
-              style={{ display: sidebarCollapsed ? "none" : "block", width: "100%" }}
+            <button
+              className="sidebar-icon-btn"
+              title="模型"
+              onClick={() => setShowModel(true)}
             >
-              <div className="sidebar-section-label">模型</div>
-              <ModelSelector childId={child.childId} />
-            </div>
-          </div>
+              <Bot size={20} />
+            </button>
 
-          <div className="sidebar-rate">
-            {sidebarCollapsed ? (
-              <button
-                className="sidebar-icon-btn"
-                title={`朗读语速 ${RATE_OPTIONS.find((o) => o.value === rate)?.display || "1.0x"}`}
-                onClick={() => setSidebarCollapsed(false)}
-              >
-                <Gauge size={20} />
-              </button>
-            ) : (
-              <>
-                <div className="sidebar-section-label">朗读语速</div>
-                <div className="rate-grid">
-                  {RATE_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      className={`rate-btn ${rate === opt.value ? "active" : ""}`}
-                      onClick={() => setRate(opt.value)}
-                      title={`${opt.label} ${opt.display}`}
-                    >
-                      {opt.display}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
+            <button
+              className="sidebar-icon-btn"
+              title={`朗读语速 ${RATE_OPTIONS.find((o) => o.value === rate)?.display || "1.0x"}`}
+              onClick={() => setShowRate(true)}
+            >
+              <Gauge size={20} />
+            </button>
 
-          {/* ISSUE-023：聊天字号调节（与「朗读语速」并列；仅孩子聊天 .bubble-md-child 生效，家长端不受影响） */}
-          <div className="sidebar-font">
-            {sidebarCollapsed ? (
-              <button
-                className="sidebar-icon-btn"
-                title={`聊天字号 ${fontSize}px`}
-                onClick={() => setSidebarCollapsed(false)}
-              >
-                <Type size={20} />
-              </button>
-            ) : (
-              <>
-                <div className="sidebar-section-label">聊天字号</div>
-                <div className="rate-grid">
-                  {FONT_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.px}
-                      className={`rate-btn ${fontSize === opt.px ? "active" : ""}`}
-                      onClick={() => handleFontSize(opt.px)}
-                      title={`${opt.label} ${opt.display}px`}
-                    >
-                      {opt.display}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
+            <button
+              className="sidebar-icon-btn"
+              title={`聊天字号 ${fontSize}px`}
+              onClick={() => setShowFont(true)}
+            >
+              <Type size={20} />
+            </button>
 
-          {/* ISSUE-019：今日课程——实时时钟 + 当天课程时间段（家长在定时任务里配置） */}
-          <div className="sidebar-class-times">
-            <SidebarClassSchedule
-              childId={child.childId}
-              collapsed={sidebarCollapsed}
-              onExpand={() => setSidebarCollapsed(false)}
-            />
+            <button
+              className="sidebar-icon-btn"
+              title="今日课程安排"
+              onClick={() => setShowClass(true)}
+            >
+              <CalendarClock size={20} />
+            </button>
           </div>
 
           <div className="sidebar-menu">
+            <button
+              className="sidebar-btn"
+              title={examPendingCount > 0 ? `学习考核（${examPendingCount} 科待考核）` : "学习考核"}
+              onClick={() => {
+                setExamPendingCount(0);
+                setExamOpen(true);
+              }}
+              style={{ position: "relative" }}
+            >
+              <ClipboardCheck size={18} className="sidebar-btn-icon" />
+              {examPendingCount > 0 && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    right: 0,
+                    background: "#e74c3c",
+                    color: "#fff",
+                    borderRadius: 999,
+                    fontSize: 10,
+                    lineHeight: "16px",
+                    minWidth: 16,
+                    height: 16,
+                    textAlign: "center",
+                    padding: "0 4px",
+                    fontWeight: 700,
+                  }}
+                >
+                  {examPendingCount}
+                </span>
+              )}
+            </button>
             <button
               className="sidebar-btn"
               title="今日计划（Todolist）"
@@ -1175,6 +1086,114 @@ export default function Learn({ child, onExit }: Props) {
 
       {showTodo && <TodoModal childId={child.childId} onClose={() => setShowTodo(false)} />}
 
+      {/* ISSUE-026：切换展示页弹框（替代原 popover；点选项切换 view 后关闭） */}
+      {showView && (
+        <div className="modal-overlay" onClick={() => setShowView(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>切换展示页</h2>
+            <div className="view-options-modal">
+              {PANEL_VIEWS.map((v) => (
+                <button
+                  key={v.key}
+                  className={`view-option ${view === v.key ? "active" : ""}`}
+                  onClick={() => {
+                    setView(v.key);
+                    setShowView(false);
+                  }}
+                >
+                  <span className="view-option-icon"><v.icon size={18} /></span>
+                  <span className="view-option-body">
+                    <span className="view-option-label">{v.label}</span>
+                    <span className="view-option-desc">{v.desc}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button className="cancel" onClick={() => setShowView(false)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ISSUE-026：模型弹框——⚠️ ModelSelector 必须常驻挂载（卸载重挂会重新拉模型并切回默认），
+          因此本弹框恒在 DOM（display 控制显隐），组件不卸载 */}
+      <div
+        className="modal-overlay"
+        style={{ display: showModel ? "flex" : "none" }}
+        onClick={() => setShowModel(false)}
+      >
+        <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <h2>选择模型</h2>
+          <div className="sidebar-section-label">模型</div>
+          <ModelSelector childId={child.childId} />
+          <div className="modal-actions">
+            <button className="cancel" onClick={() => setShowModel(false)}>关闭</button>
+          </div>
+        </div>
+      </div>
+
+      {/* ISSUE-026：朗读语速弹框 */}
+      {showRate && (
+        <div className="modal-overlay" onClick={() => setShowRate(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>朗读语速</h2>
+            <div className="rate-grid">
+              {RATE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  className={`rate-btn ${rate === opt.value ? "active" : ""}`}
+                  onClick={() => setRate(opt.value)}
+                  title={`${opt.label} ${opt.display}`}
+                >
+                  {opt.display}
+                </button>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button className="cancel" onClick={() => setShowRate(false)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ISSUE-026：聊天字号弹框 */}
+      {showFont && (
+        <div className="modal-overlay" onClick={() => setShowFont(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>聊天字号</h2>
+            <div className="rate-grid">
+              {FONT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.px}
+                  className={`rate-btn ${fontSize === opt.px ? "active" : ""}`}
+                  onClick={() => handleFontSize(opt.px)}
+                  title={`${opt.label} ${opt.display}px`}
+                >
+                  {opt.display}px
+                </button>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button className="cancel" onClick={() => setShowFont(false)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ISSUE-026：今日课程弹框（实时时钟 + 当天课程时间段） */}
+      {showClass && (
+        <div className="modal-overlay" onClick={() => setShowClass(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2>今日课程</h2>
+            <SidebarClassSchedule childId={child.childId} />
+            <div className="modal-actions">
+              <button className="cancel" onClick={() => setShowClass(false)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showAiSettings && (
         <div className="modal-overlay" onClick={() => setShowAiSettings(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -1277,6 +1296,7 @@ export default function Learn({ child, onExit }: Props) {
           </div>
         </div>
       )}
+      {examOpen && <ExamView childId={child.childId} onExit={() => setExamOpen(false)} />}
     </div>
   );
 }

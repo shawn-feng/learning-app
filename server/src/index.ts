@@ -12,6 +12,7 @@ import { registerMaterialsRoutes } from "./routes/materials.js";
 import { registerFilesRoutes } from "./routes/files.js";
 import { registerBackupRoutes } from "./routes/backup.js";
 import { registerSessionsRoutes } from "./routes/sessions.js";
+import { registerExamRoutes } from "./routes/exam.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
 
 const config = loadConfig();
@@ -31,6 +32,7 @@ registerMaterialsRoutes(app, { config, db });
 registerFilesRoutes(app, { config, db });
 registerBackupRoutes(app, { config, db });
 registerSessionsRoutes(app, { config, db });
+registerExamRoutes(app, { config, db });
 startWorkerScheduler({ dataDir: config.dataDir, db });
 
 const start = async (): Promise<void> => {

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS topics (
   name TEXT PRIMARY KEY,
   topic_key TEXT NOT NULL,
   method TEXT NOT NULL DEFAULT '',
+  assess_method TEXT NOT NULL DEFAULT '',
   progress TEXT NOT NULL DEFAULT '',
   rules_json TEXT NOT NULL DEFAULT '{}'
 );
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS courses (
   lesson_method TEXT NOT NULL DEFAULT '',
   html_path TEXT NOT NULL DEFAULT '',
   teaching_copy TEXT NOT NULL DEFAULT '',
+  assess_rubric TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (topic, title)
 );
 CREATE INDEX IF NOT EXISTS idx_parent_courses_topic ON courses(topic, sort_order);
@@ -72,6 +74,19 @@ export function openParentLib(dataDir: string, parentId: string): DatabaseSync {
   const db = new DatabaseSync(path.join(dir, "parent.sqlite"));
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(PARENT_SCHEMA_TABLES);
+  ensureParentColumns(db);
   db.exec(PARENT_SCHEMA_VIEWS);
   return db;
+}
+
+/** 家长库考核列就地迁移（幂等）：topics.assess_method（考核方法说明）、courses.assess_rubric（每课考核要点）。 */
+function ensureParentColumns(db: DatabaseSync): void {
+  const tCols = (db.prepare("PRAGMA table_info(topics)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!tCols.includes("assess_method")) {
+    db.exec("ALTER TABLE topics ADD COLUMN assess_method TEXT NOT NULL DEFAULT ''");
+  }
+  const cCols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cCols.includes("assess_rubric")) {
+    db.exec("ALTER TABLE courses ADD COLUMN assess_rubric TEXT NOT NULL DEFAULT ''");
+  }
 }

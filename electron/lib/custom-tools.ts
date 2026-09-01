@@ -785,22 +785,23 @@ export const parentContentTool = defineTool({
   name: "parent_content",
   label: "查询主题教学方法 / 课程教学文案 / html 资料路径（家长库）",
   description:
-    "从**家长库**取当前主题的教学方法（method 全文）、某课程的教学文案（teaching_copy 全文）或某课程的 **html 学习资料路径**。\n\n" +
-    "孩子数据库不存 method 与教学文案（分配主题时只拷入课程骨架/进度/资料指针），所以**教学需要方法、文案或 html 资料路径时，必须先调用本工具**，不要尝试去读孩子库或猜测。\n\n" +
+    "从**家长库**取当前主题的教学方法（method 全文）、某课程的教学文案（teaching_copy 全文）、某课程的 **html 学习资料路径**、或某课程的**考核要点**（assess_rubric 全文）。\n\n" +
+    "孩子数据库不存 method 与教学文案（分配主题时只拷入课程骨架/进度/资料指针），所以**教学需要方法、文案或 html 资料路径、考核需要要点时，必须先调用本工具**，不要尝试去读孩子库或猜测。\n\n" +
     "**参数**：\n" +
     "- `type` = `method`：取主题教学方法，`topic` 传主题目录名（如 lunyu）；\n" +
     "- `type` = `teachingCopy`：取课程教学文案，`topic` + `course` 课程名（如 论语学而篇第一章）；\n" +
+    "- `type` = `assessRubric`：取课程**考核要点**（家长写的期望答到要点，出题/判分锚定用），`topic` + `course`；\n" +
     "- `type` = `htmlPath`：取课程 html 学习资料的**相对资料根路径**（如 `lunyu/论语学而篇第一章.html`，无 materials/ 前缀），`topic` + `course`；拿到路径后直接用 display_content 展示（path 传该路径即可）。\n\n" +
-    "**返回**：method/teachingCopy 返回 markdown 全文；htmlPath 返回路径字符串。未分配该主题或家长库无内容时返回错误。",
+    "**返回**：method/teachingCopy/assessRubric 返回 markdown 全文；htmlPath 返回路径字符串。未分配该主题或家长库无内容时返回错误。",
   parameters: Type.Object({
-    type: Type.String({ description: "method（主题教学方法全文）| teachingCopy（课程教学文案全文）| htmlPath（课程 html 资料路径）" }),
+    type: Type.String({ description: "method（主题教学方法全文）| teachingCopy（课程教学文案全文）| assessRubric（课程考核要点全文）| htmlPath（课程 html 资料路径）" }),
     topic: Type.String({ description: "主题目录名（如 lunyu）" }),
-    course: Type.Optional(Type.String({ description: "teachingCopy / htmlPath 时必填：课程名（如 论语学而篇第一章）" })),
+    course: Type.Optional(Type.String({ description: "teachingCopy / assessRubric / htmlPath 时必填：课程名（如 论语学而篇第一章）" })),
   }),
   execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
     const childId = path.basename(ctx.cwd);
-    if (!["method", "teachingCopy", "htmlPath"].includes(params.type)) {
-      throw new Error("parent_content 的 type 仅支持 method | teachingCopy | htmlPath");
+    if (!["method", "teachingCopy", "assessRubric", "htmlPath"].includes(params.type)) {
+      throw new Error("parent_content 的 type 仅支持 method | teachingCopy | assessRubric | htmlPath");
     }
     const r = await getParentContentForChild(childId, params.topic, params.type, params.course);
     if (!r.found) {
@@ -809,7 +810,9 @@ export const parentContentTool = defineTool({
           ? `主题「${params.topic}」的教学方法`
           : params.type === "teachingCopy"
             ? `课程「${params.course}」的教学文案`
-            : `课程「${params.course}」的 html 资料`;
+            : params.type === "assessRubric"
+              ? `课程「${params.course}」的考核要点`
+              : `课程「${params.course}」的 html 资料`;
       throw new Error(`家长库中未找到${what}（或该主题未分配给孩子）`);
     }
     return {

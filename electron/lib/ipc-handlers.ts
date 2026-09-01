@@ -10,6 +10,12 @@ import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRunt
 import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
+import {
+  assessAudio,
+  getMaskedAssessmentConfig,
+  applyAssessmentConfigPatch,
+  type AssessmentProviderId,
+} from "./assessment";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
 import { dbQuery, currentSessionToken } from "./client-data";
 import { serverFetch } from "./server-client";
@@ -38,6 +44,8 @@ import {
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
+import { getExamConfig, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending } from "./exam";
+import { generateExamQuestions, scoreExamAttempt } from "./exam-engine";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -1499,6 +1507,36 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // 发音评测（智聆 / 阿里儿童）— 家长设置页配置 + 测试
+  ipcMain.handle("assessment:config:get", async () => {
+    return { success: true, config: getMaskedAssessmentConfig() };
+  });
+
+  ipcMain.handle("assessment:config:set", async (_e, patch: any) => {
+    try {
+      applyAssessmentConfigPatch(patch);
+      return { success: true, config: getMaskedAssessmentConfig() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle(
+    "assessment:test",
+    async (_e, audio: ArrayBuffer, provider?: string, refText?: string) => {
+      try {
+        const buf = Buffer.from(audio);
+        const result = await assessAudio(buf, {
+          provider: (provider as AssessmentProviderId) || undefined,
+          refText: refText || "hello",
+        });
+        return { success: true, result };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
   // ===== 窗口控制（自定义标题栏）=====
   ipcMain.handle("window:minimize", () => {
     getMainWindow()?.minimize();
@@ -1562,6 +1600,82 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     if (wc) wc.setZoomLevel(wc.getZoomLevel() - 0.5);
   });
   ipcMain.handle("view:zoom-reset", () => getMainWindow()?.webContents.setZoomLevel(0));
+
+  // ==================== 学习考核（EXAM-REQUIREMENTS.md） ====================
+  // 取孩子考核配置（周期内知识点 + assess_method/assess_rubric + 判分 prompt，服务端单一真源）
+  ipcMain.handle("exam:config", async (_e, childId: string) => {
+    try {
+      return { success: true, data: await getExamConfig(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 待考核提醒（周期到点标红，不强制打断；孩子端边栏角标用）
+  ipcMain.handle("exam:pending", async (_e, childId: string) => {
+    try {
+      return { success: true, data: await getExamPending(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 提交一次考核结果（含各题语音 buffer 上传；payload 见 ExamAttemptPayload）
+  ipcMain.handle(
+    "exam:submit",
+    async (_e, payload: any, voices: Array<{ qid: string; buffer: ArrayBuffer; name: string }>) => {
+      try {
+        const childId = String(payload?.childId ?? "");
+        for (const v of voices ?? []) {
+          const fileId = await uploadExamVoice(childId, v.name, v.buffer);
+          const q = (payload.perQuestion ?? []).find((x: any) => x.qid === v.qid);
+          if (q) q.audioFileId = fileId;
+        }
+        const r = await submitExamAttempt(payload);
+        return { success: true, data: r };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+  // 家长查询考核记录列表 / 每课程考核记录表 / 语音原音（data URL）
+  ipcMain.handle("exam:attempts", async (_e, childId: string) => {
+    try {
+      return { success: true, data: await listExamAttempts(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("exam:courseRecords", async (_e, childId: string) => {
+    try {
+      return { success: true, data: await getExamCourseRecords(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("exam:audio", async (_e, fileId: string) => {
+    try {
+      return { success: true, data: await getExamAudioDataUrl(fileId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 出卷：客户端独立内存 session 按考核方法说明 + 各课考核要点生成全主观题
+  ipcMain.handle("exam:generate", async (_e, childId: string, topicConfig: any) => {
+    try {
+      const questions = await generateExamQuestions(topicConfig, childId);
+      return { success: true, data: questions };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 判分：客户端独立内存 session，prompt 取自服务端（单一真源），仅返回结构化结果
+  ipcMain.handle("exam:score", async (_e, childId: string, scoringPrompt: string, answers: any[]) => {
+    try {
+      const result = await scoreExamAttempt(scoringPrompt, answers, childId);
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
 }
 
 // 防止同一个 session 被重复订阅（attachSessionEvents 可能被多次调用）

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { RefreshCw, CheckCircle } from "lucide-react";
 import IconButton from "../components/IconButton";
 import VoiceSettings from "../components/VoiceSettings";
+import AssessmentSettings from "../components/AssessmentSettings";
 import VisionSettings from "../components/VisionSettings";
 import SchedulerSettings from "../components/SchedulerSettings";
 import BackupSettings from "../components/BackupSettings";
@@ -29,7 +30,7 @@ const PROVIDERS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "voice" | "vision" | "scheduler" | "general" | "backup">("models");
+  const [tab, setTab] = useState<"models" | "voice" | "evaluation" | "vision" | "scheduler" | "general" | "backup">("models");
   const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
@@ -134,6 +135,7 @@ export default function Settings() {
             ["models", "模型配置"],
             ["vision", "视觉配置"],
             ["voice", "语音配置"],
+            ["evaluation", "发音评测"],
             ["scheduler", "定时任务"],
             ["backup", "数据备份"],
             ["general", "通用设置"],
@@ -299,6 +301,8 @@ export default function Settings() {
       {tab === "vision" && <VisionSettings />}
 
       {tab === "voice" && <VoiceSettings />}
+
+      {tab === "evaluation" && <AssessmentSettings />}
 
       {tab === "scheduler" && <SchedulerSettings />}
 

@@ -100,6 +100,9 @@ const COURSE_FIELD_MAP: Record<string, string> = {
   学习资料地址: "html_path",
   教学文案: "teaching_copy",
   teaching_copy: "teaching_copy",
+  考核掌握度: "exam_mastery",
+  考核掌握: "exam_mastery",
+  考核掌握情况: "exam_mastery",
 };
 
 // ==================== query handlers ====================
@@ -176,7 +179,7 @@ export const queryHandlers: Record<string, QueryHandler> = {
     try {
       const topic = str(args.topic, "");
       const sql =
-        "SELECT topic, title, sort_order, status, mastery, first_learned, last_review, " +
+        "SELECT topic, title, sort_order, status, mastery, exam_mastery, first_learned, last_review, " +
         "review_count, material, send_material, tags, lesson_method, html_path, teaching_copy " +
         "FROM courses " +
         (topic ? "WHERE topic = ? " : "") +
@@ -260,7 +263,7 @@ export const queryHandlers: Record<string, QueryHandler> = {
     const db = openParentLib(ctx.dataDir, ctx.parentId);
     try {
       return db
-        .prepare("SELECT name, topic_key, method, progress, rules_json FROM topics ORDER BY topic_key")
+        .prepare("SELECT name, topic_key, method, assess_method, progress, rules_json FROM topics ORDER BY topic_key")
         .all();
     } finally {
       db.close();
@@ -272,7 +275,7 @@ export const queryHandlers: Record<string, QueryHandler> = {
       const topic = str(args.topic, "");
       const sql =
         "SELECT topic, title, sort_order, status, mastery, first_learned, last_review, " +
-        "review_count, material, send_material, tags, lesson_method, html_path, teaching_copy " +
+        "review_count, material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric " +
         "FROM courses " +
         (topic ? "WHERE topic = ? " : "") +
         "ORDER BY topic, sort_order, title";
@@ -492,13 +495,14 @@ export const execHandlers: Record<string, ExecHandler> = {
     try {
       db.prepare(
         `INSERT INTO courses (
-           topic, title, sort_order, status, mastery, first_learned, last_review,
+           topic, title, sort_order, status, mastery, exam_mastery, first_learned, last_review,
            review_count, material, send_material, tags, lesson_method, html_path, teaching_copy
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(topic, title) DO UPDATE SET
            sort_order = excluded.sort_order,
            status = excluded.status,
            mastery = excluded.mastery,
+           exam_mastery = excluded.exam_mastery,
            first_learned = excluded.first_learned,
            last_review = excluded.last_review,
            review_count = excluded.review_count,
@@ -514,6 +518,7 @@ export const execHandlers: Record<string, ExecHandler> = {
         num(args.sort_order),
         str(args.status),
         str(args.mastery),
+        str(args.exam_mastery),
         str(args.first_learned),
         str(args.last_review),
         num(args.review_count),
@@ -543,8 +548,8 @@ export const execHandlers: Record<string, ExecHandler> = {
       const r = db
         .prepare(
           `INSERT OR IGNORE INTO courses (
-             topic, title, sort_order, status, mastery, material, send_material, tags, lesson_method, html_path, teaching_copy
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             topic, title, sort_order, status, mastery, exam_mastery, material, send_material, tags, lesson_method, html_path, teaching_copy
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           topic,
@@ -552,6 +557,7 @@ export const execHandlers: Record<string, ExecHandler> = {
           max.m + 1,
           str(args.status),
           str(args.mastery),
+          str(args.exam_mastery),
           str(args.material),
           str(args.send_material),
           str(args.tags),
@@ -668,17 +674,19 @@ export const execHandlers: Record<string, ExecHandler> = {
     const db = openParentLib(ctx.dataDir, ctx.parentId);
     try {
       db.prepare(
-        `INSERT INTO topics (name, topic_key, method, progress, rules_json)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO topics (name, topic_key, method, assess_method, progress, rules_json)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            topic_key = excluded.topic_key,
            method = excluded.method,
+           assess_method = excluded.assess_method,
            progress = excluded.progress,
            rules_json = excluded.rules_json`
       ).run(
         str(args.name),
         str(args.topic_key),
         str(args.method),
+        str(args.assess_method),
         str(args.progress),
         str(args.rules_json, "{}")
       );
@@ -693,8 +701,8 @@ export const execHandlers: Record<string, ExecHandler> = {
       db.prepare(
         `INSERT INTO courses (
            topic, title, sort_order, status, mastery, first_learned, last_review,
-           review_count, material, send_material, tags, lesson_method, html_path, teaching_copy
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           review_count, material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(topic, title) DO UPDATE SET
            sort_order = excluded.sort_order,
            status = excluded.status,
@@ -707,7 +715,8 @@ export const execHandlers: Record<string, ExecHandler> = {
            tags = excluded.tags,
            lesson_method = excluded.lesson_method,
            html_path = excluded.html_path,
-           teaching_copy = excluded.teaching_copy`
+           teaching_copy = excluded.teaching_copy,
+           assess_rubric = excluded.assess_rubric`
       ).run(
         str(args.topic),
         str(args.title),
@@ -722,7 +731,8 @@ export const execHandlers: Record<string, ExecHandler> = {
         str(args.tags),
         str(args.lesson_method),
         str(args.html_path),
-        str(args.teaching_copy)
+        str(args.teaching_copy),
+        str(args.assess_rubric)
       );
       return { ok: true };
     } finally {

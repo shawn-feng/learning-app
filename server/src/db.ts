@@ -88,6 +88,26 @@ export function openDb(dataDir: string): DatabaseSync {
       last_key TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (child_id, task)
     );
+    -- 学习考核（EXAM-REQUIREMENTS.md）：每次考核一条记录（孩子端判分后客户端上报，服务端只存结果）。
+    -- per_question 逐题明细(JSON)：qid/course/question/audioPath/asrText/startedAt/answeredAt/durationMs/pointGot/pointMax/correct/aiComment
+    -- course_mastery(JSON)：{"<course>": {correct,total,rate}}；reinforce_plan(JSON)：{"<course>": {planReviewAt, focus[], aiSuggestion?}}
+    CREATE TABLE IF NOT EXISTS exam_attempts (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      child_id TEXT NOT NULL,
+      topic TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      started_at TEXT NOT NULL DEFAULT '',
+      submitted_at TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'grading',
+      score REAL NOT NULL DEFAULT 0,
+      per_question TEXT NOT NULL DEFAULT '[]',
+      course_mastery TEXT NOT NULL DEFAULT '{}',
+      reinforce_plan TEXT NOT NULL DEFAULT '{}',
+      wrong_questions TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_exam_attempts_child ON exam_attempts(child_id, submitted_at);
   `);
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '7')").run();
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('config_revision', '0')").run();

@@ -61,3 +61,10 @@
   2. 降级分支 `shell.openExternal(download_url)` 是**浏览器全量下载**，无差量概念；且 `/api/version` 的 `download_url` 被 `publish-update.py --register` 硬编码为 **Windows exe**（`学习伙伴 Setup x.y.z.exe`），mac/linux 点「前往下载」拿到的是 Windows 安装包（platform-agnostic bug）。
 - **即便把 mac 正确发布到 feed，当前 `build.mac.target` 只有 `dmg` 没有 `zip`，mac 差量仍不行**（electron-updater 的 mac 差量依赖 `mac` **zip** 产物 + `.blockmap`，dmg 不能块级差量）。要让 mac 差量：① build-mac.yml 增加发布到 OSS feed 的步骤；② mac 目标加 `zip`（生成 blockmap）；③ download_url 按平台返回。
 - 客户端 feed 地址：`getUpdateFeedUrl()` = `https://www.aixuexihao.top/download/`（全平台一致，`updater.ts` 用 generic provider）。
+
+## 学习考核（2026-09-01 实施完成，EXAM-REQUIREMENTS.md）
+- **架构**：存储(内容+记录+语音)全在服务端；计算(出卷+判分)在客户端本地 LLM 独立内存 session；判分 prompt 由服务端下发(单一真源保可比)；仅最终结果写 server DB。考试视图=HTML 模板(iframe srcDoc + allow=microphone，sandbox 禁资料/导航/AI 提示，严格一次性)。
+- **关键文件**：`electron/lib/exam.ts`(服务端对接+getExamPending/parsePeriodDays)、`exam-engine.ts`(出卷 generateExamQuestions + 判分 scoreExamAttempt，内存 session)、`server/src/routes/exam.ts`(config 下发/attempts 提交/列表/course-records 聚合+exam_mastery 回写)、`src/components/ExamView.tsx`(孩子端 pick→exam→scoring→report)、`ExamRecords.tsx`(家长端记录表+听原音)、`src/lib/exam-template.ts`(buildExamHtml 应用内模板)、`server/scripts/verify-exam-smoke.mjs`(冒烟)。
+- **数据**：parent.sqlite v4 迁移(topics.assess_method/courses.assess_rubric)；kb.sqlite v7(exam_mastery 双轨)；server `exam_attempts` 表(per_question/course_mastery/reinforce_plan JSON 列)。
+- **待考核提醒**：`exam:pending` IPC + Learn.tsx 考核按钮红角标(科目数)。
+- 判分必须带 rubric：`ExamAnswerIn.rubric` 由 ExamView 从 `examTopic.courses` 按 course 匹配 assessRubric 传入，判分 prompt 才有锚（2026-09-01 修复，勿再漏）。出卷/判分 session 目录按 childId 隔离（`generateExamQuestions`/`scoreExamAttempt` 第二参数）。

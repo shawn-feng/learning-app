@@ -10,6 +10,7 @@ interface ParentTopic {
   name: string;
   topicKey: string;
   method: string;
+  assessMethod?: string;
   learned: number;
   total: number;
   htmlCount: number;
@@ -25,9 +26,10 @@ interface CourseRow {
   tags: string;
   htmlPath: string;
   teachingCopy: string;
+  assessRubric?: string;
 }
 
-type Tab = "method" | "course" | "info";
+type Tab = "method" | "course" | "info" | "assess";
 
 interface Props {
   topic: ParentTopic;
@@ -63,6 +65,16 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
   const [methodText, setMethodText] = useState(topic.method); // 编辑器草稿
   const [editingMethod, setEditingMethod] = useState(false);
   const [savingMethod, setSavingMethod] = useState(false);
+
+  // 考核方法说明编辑器（topics.assess_method）
+  const [savedAssessMethod, setSavedAssessMethod] = useState(topic.assessMethod || "");
+  const [assessMethodText, setAssessMethodText] = useState(topic.assessMethod || "");
+  const [editingAssessMethod, setEditingAssessMethod] = useState(false);
+  const [savingAssessMethod, setSavingAssessMethod] = useState(false);
+
+  // 每课考核要点编辑器（courses.assess_rubric）
+  const [editingRubric, setEditingRubric] = useState(false);
+  const [rubricText, setRubricText] = useState("");
 
   const topicDir = topic.topicKey;
 
@@ -105,7 +117,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
       setNewTitle("");
       const list = await window.api.parentListCourses(topicDir);
       setCourses(list?.success ? list.data : []);
-      setSelected({ title, sortOrder: 0, lessonMethod: "", material: "", sendMaterial: "", tags: "", htmlPath: "" });
+      setSelected({ title, sortOrder: 0, lessonMethod: "", material: "", sendMaterial: "", tags: "", htmlPath: "", teachingCopy: "", assessRubric: "" });
     } else {
       setMsg({ ok: false, text: r?.error || "添加失败" });
     }
@@ -225,6 +237,50 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
     }
   }
 
+  // 考核方法说明：保存到 topics.assess_method（每科目一份：周期 + 考核对象规则 + 题量 + 评分口径）
+  async function saveAssessMethod() {
+    setSavingAssessMethod(true);
+    setMsg(null);
+    try {
+      const r = await window.api.parentUpsertTopic({
+        name: topic.name,
+        topicKey: topicDir,
+        method: savedMethod,
+        assessMethod: assessMethodText,
+      });
+      if (r?.success) {
+        setSavedAssessMethod(assessMethodText);
+        setEditingAssessMethod(false);
+        setMsg({ ok: true, text: "✓ 考核方法说明已保存" });
+      } else {
+        setMsg({ ok: false, text: `✗ 保存失败：${r?.error || "未知错误"}` });
+      }
+    } catch (e: any) {
+      setMsg({ ok: false, text: `✗ 保存失败：${String(e?.message || e)}` });
+    } finally {
+      setSavingAssessMethod(false);
+    }
+  }
+
+  // 每课考核要点：保存到 courses.assess_rubric（期望孩子答到的要点，出题/判分锚定）
+  async function saveRubric() {
+    if (!selected) return;
+    if (!rubricText.trim()) {
+      setMsg({ ok: false, text: "考核要点为空，未保存（可重新填写后保存）" });
+      return;
+    }
+    const r: any = await window.api.parentUpsertCourse(topicDir, { title: selected.title, assessRubric: rubricText });
+    if (r?.success) {
+      const updated = { ...selected, assessRubric: rubricText };
+      setSelected(updated);
+      setCourses((prev) => prev.map((c) => (c.title === updated.title ? updated : c)));
+      setMsg({ ok: true, text: "✓ 考核要点已保存" });
+      setEditingRubric(false);
+    } else {
+      setMsg({ ok: false, text: r?.error || "保存失败" });
+    }
+  }
+
   async function uploadMaterials() {
     const r = await window.api.parentUploadMaterial(topicDir);
     if (!r?.success) {
@@ -269,6 +325,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
               ["info", "基本信息"],
               ["__mat__", "学习资料管理"],
               ["method", "教学方法"],
+              ["assess", "考核要点"],
               ["course", "课程详情"],
             ] as Array<[string, string]>
           ).map(([k, label]) =>
@@ -401,6 +458,76 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
               ) : (
                 <div className="markdown-body" style={{ border: "1px solid #f0f0f0", borderRadius: 8, padding: "10px 14px", minHeight: 200 }}>
                   {savedMethod ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{savedMethod}</ReactMarkdown> : <span style={{ color: "#aaa" }}>（暂无教学方法，点「编辑」填写）</span>}
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === "assess" && (
+            <div>
+              {/* 每科目考核方法说明（topics.assess_method） */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>📋 考核方法说明（本科目）</div>
+                {!editingAssessMethod ? (
+                  <IconButton icon={Pencil} title="编辑" onClick={() => setEditingAssessMethod(true)} />
+                ) : (
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => { setAssessMethodText(savedAssessMethod); setEditingAssessMethod(false); }} style={smallBtn}>取消</button>
+                    <button onClick={saveAssessMethod} disabled={savingAssessMethod} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>
+                      {savingAssessMethod ? "保存中…" : "保存"}
+                    </button>
+                  </div>
+                )}
+              </div>
+              {editingAssessMethod ? (
+                <textarea
+                  value={assessMethodText}
+                  onChange={(e) => setAssessMethodText(e.target.value)}
+                  style={{ width: "100%", minHeight: "26vh", padding: 10, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }}
+                />
+              ) : (
+                <div className="markdown-body" style={{ border: "1px solid #f0f0f0", borderRadius: 8, padding: "10px 14px", minHeight: 110, marginBottom: 18 }}>
+                  {savedAssessMethod ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{savedAssessMethod}</ReactMarkdown>
+                  ) : (
+                    <span style={{ color: "#aaa" }}>
+                      （暂无考核方法说明——建议写：考核周期（每天/每周/每月）、考核对象规则（取该周期内学/复习过的知识点）、题量/抽题方式、评分口径。点「编辑」填写，也可让 AI 协助起草。）
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* 每课考核要点（courses.assess_rubric） */}
+              {!selected ? (
+                <p style={{ color: "#888", fontSize: 13 }}>请先在左侧选择一门课程，填写它的考核要点（期望孩子答到的要点，考核出题与判分都用它作锚）。</p>
+              ) : (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>📄 {selected.title} · 考核要点</div>
+                    {editingRubric ? (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => { setRubricText(selected.assessRubric || ""); setEditingRubric(false); }} style={smallBtn}>取消</button>
+                        <button onClick={saveRubric} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>保存</button>
+                      </div>
+                    ) : (
+                      <IconButton icon={Pencil} title="编辑" onClick={() => { setRubricText(selected.assessRubric || ""); setEditingRubric(true); }} />
+                    )}
+                  </div>
+                  {editingRubric ? (
+                    <textarea
+                      value={rubricText}
+                      onChange={(e) => setRubricText(e.target.value)}
+                      rows={8}
+                      placeholder={"期望孩子答到的要点（出题/判分锚定），如：\n- 能说出「学而时习之」的意思\n- 能结合自己的生活举例\n- 答到 1~2 个关键点即可算掌握"}
+                      style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, boxSizing: "border-box", resize: "vertical" }}
+                    />
+                  ) : selected.assessRubric ? (
+                    <div className="markdown-body">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{selected.assessRubric}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <span style={{ color: "#aaa" }}>（暂无考核要点；写清楚期望答到的要点后，考核出题与判分才能对准它）</span>
+                  )}
                 </div>
               )}
             </div>

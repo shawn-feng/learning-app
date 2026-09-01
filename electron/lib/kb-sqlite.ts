@@ -65,6 +65,8 @@ export interface CourseItem {
   lessonMethod: string; // 每课教学方法全文（ISSUE-029，从父库快照拷贝）
   htmlPath: string; // 学习资料 html 地址（ISSUE-029，指向父库共享目录）
   teachingCopy: string; // 教学文案全文（ISSUE-029，由 materials/*.md 等文件入库，数据库唯一真源）
+  examMastery: string; // 考核掌握度（学习考核功能，与 mastery 引导掌握度双轨）
+  assessRubric: string; // 每课考核要点（学习考核，家长写，仅家长库真源，孩子经 parent_content 取）
 }
 
 export interface TopicProgress {
@@ -97,6 +99,7 @@ CREATE TABLE IF NOT EXISTS courses (
   sort_order INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT '⬜',
   mastery TEXT NOT NULL DEFAULT '',
+  exam_mastery TEXT NOT NULL DEFAULT '',
   first_learned TEXT NOT NULL DEFAULT '',
   last_review TEXT NOT NULL DEFAULT '',
   review_count INTEGER NOT NULL DEFAULT 0,
@@ -174,6 +177,17 @@ function ensureV6(db: DatabaseSync): void {
   db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "6");
 }
 
+/**
+ * v6 → v7 就地迁移（学习考核）：courses 表加 `exam_mastery`（考核掌握度，与引导 mastery 双轨）。
+ * 幂等：通过列存在性判断，只在缺少该列时执行一次。
+ */
+function ensureV7(db: DatabaseSync): void {
+  const cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (cols.includes("exam_mastery")) return;
+  db.exec("ALTER TABLE courses ADD COLUMN exam_mastery TEXT NOT NULL DEFAULT ''");
+  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "7");
+}
+
 export function openKbDb(childDir: string): DatabaseSync {
   const db = new DatabaseSync(path.join(childDir, "kb.sqlite"));
   // 并发写（如测试多文件并行、主进程与其它进程同库）时等待锁而不是立即报错
@@ -183,6 +197,7 @@ export function openKbDb(childDir: string): DatabaseSync {
   ensureV4(db, childDir);
   ensureV5(db);
   ensureV6(db);
+  ensureV7(db);
   // 视图每次重建（廉价、幂等）：视图定义变更时无需迁移即可生效
   db.exec("DROP VIEW IF EXISTS topic_progress");
   db.exec(SCHEMA_VIEWS);
@@ -732,6 +747,7 @@ function rowToCourse(r: Record<string, unknown>): CourseItem {
     sortOrder: Number(r.sort_order) || 0,
     status: String(r.status ?? "⬜"),
     mastery: String(r.mastery ?? ""),
+    examMastery: String(r.exam_mastery ?? ""),
     firstLearned: String(r.first_learned ?? ""),
     lastReview: String(r.last_review ?? ""),
     reviewCount: Number(r.review_count) || 0,
@@ -741,6 +757,8 @@ function rowToCourse(r: Record<string, unknown>): CourseItem {
     lessonMethod: String(r.lesson_method ?? ""),
     htmlPath: String(r.html_path ?? ""),
     teachingCopy: String(r.teaching_copy ?? ""),
+    examMastery: String(r.exam_mastery ?? ""),
+    assessRubric: String(r.assess_rubric ?? ""),
   };
 }
 
@@ -960,6 +978,9 @@ export const COURSE_FIELD_MAP: Record<string, string> = {
   学习资料地址: "html_path",
   教学文案: "teaching_copy",
   teaching_copy: "teaching_copy",
+  考核掌握度: "exam_mastery",
+  考核掌握: "exam_mastery",
+  考核掌握情况: "exam_mastery",
 };
 
 /** 更新课程进度字段（kb_update）。item 必填（课程名）；value="+1" 时复习次数自增。 */
@@ -1002,6 +1023,7 @@ export function insertCourse(
     title: string;
     status?: string;
     mastery?: string;
+    examMastery?: string;
     material?: string;
     sendMaterial?: string;
     tags?: string;
@@ -1017,13 +1039,14 @@ export function insertCourse(
     if (exists) return false;
     const max = db.prepare("SELECT MAX(sort_order) AS m FROM courses WHERE topic = ?").get(c.topic) as { m: number | null };
     db.prepare(
-      "INSERT INTO courses (topic, title, sort_order, status, mastery, material, send_material, tags, lesson_method, html_path, teaching_copy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO courses (topic, title, sort_order, status, mastery, exam_mastery, material, send_material, tags, lesson_method, html_path, teaching_copy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(
       c.topic,
       c.title,
       (max.m ?? -1) + 1,
       c.status || "⬜",
       c.mastery || "",
+      c.examMastery || "",
       c.material || "",
       c.sendMaterial || "",
       c.tags ? normalizeTags(c.tags) : "",

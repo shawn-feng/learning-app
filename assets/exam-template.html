@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>学习考核</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --ink:#1f2733; --muted:#6b7686;
+    --brand:#3b6ef5; --brand-d:#2c54c4; --rec:#e74c3c; --ok:#27ae60;
+    --line:#e6eaf0; --soft:#eef2f8; --warn:#b9770a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:30px; line-height:1.5; -webkit-text-size-adjust:100%;
+    display:flex; flex-direction:column; height:100vh; overflow:hidden;
+  }
+  /* 锁定头部：标题 + 进度 + 总计时 */
+  .exam-top{
+    flex:0 0 auto; background:var(--card); border-bottom:1px solid var(--line);
+    padding:16px 22px; display:flex; align-items:center; gap:16px;
+  }
+  .exam-top .title{font-weight:700; font-size:30px}
+  .exam-top .subject{
+    font-size:22px; color:#fff; background:var(--brand); border-radius:999px;
+    padding:4px 14px;
+  }
+  .exam-top .spacer{flex:1}
+  .exam-top .elapsed{font-size:22px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .exam-top .lock{font-size:22px; color:var(--warn)}
+
+  /* 进度点 */
+  .progress{flex:0 0 auto; display:flex; gap:8px; padding:12px 22px; background:var(--soft)}
+  .progress .dot{
+    width:14px; height:14px; border-radius:50%; background:#cfd8e6; transition:.2s;
+  }
+  .progress .dot.done{background:var(--ok)}
+  .progress .dot.cur{background:var(--brand); transform:scale(1.35)}
+
+  /* 题目区（逐题展示） */
+  .stage{flex:1 1 auto; overflow:auto; padding:22px}
+  .q-card{
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    padding:26px; max-width:880px; margin:0 auto; box-shadow:0 2px 10px rgba(20,40,80,.05);
+  }
+  .q-course{
+    display:inline-block; font-size:20px; color:var(--brand-d);
+    background:var(--soft); border-radius:8px; padding:4px 12px; margin-bottom:14px;
+  }
+  .q-stem{font-size:32px; font-weight:600; margin-bottom:20px}
+  .q-hint{font-size:20px; color:var(--muted); margin:-10px 0 18px}
+
+  /* 语音作答区 */
+  .answer{border-top:1px dashed var(--line); padding-top:18px; margin-top:6px}
+  .mic-row{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+  .mic-btn{
+    border:none; border-radius:14px; padding:14px 22px; font-size:24px; font-weight:600;
+    background:var(--brand); color:#fff; cursor:pointer; display:flex; align-items:center; gap:10px;
+  }
+  .mic-btn.rec{background:var(--rec); animation:pulse 1.1s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(231,76,60,.5)}70%{box-shadow:0 0 0 14px rgba(231,76,60,0)}100%{box-shadow:0 0 0 0 rgba(231,76,60,0)}}
+  .rec-time{font-size:22px; color:var(--rec); font-variant-numeric:tabular-nums; min-width:64px}
+  .rerec{font-size:20px; color:var(--brand-d); background:none; border:1px solid var(--line); border-radius:10px; padding:8px 14px; cursor:pointer}
+  .play{width:100%; margin-top:12px}
+  .asr-label{font-size:20px; color:var(--muted); margin:14px 0 6px}
+  .asr{
+    width:100%; min-height:96px; font-size:24px; font-family:inherit; color:var(--ink);
+    border:1px solid var(--line); border-radius:12px; padding:12px 14px; resize:vertical;
+    background:#fffdf7;
+  }
+  .asr:focus{outline:2px solid var(--brand)}
+  .q-timer{font-size:18px; color:var(--muted); margin-top:12px; text-align:right}
+
+  /* 底部导航 + 提交 */
+  .exam-foot{
+    flex:0 0 auto; background:var(--card); border-top:1px solid var(--line);
+    padding:14px 22px; display:flex; align-items:center; gap:14px;
+  }
+  .nav{font-size:24px; border:1px solid var(--line); background:#fff; border-radius:12px; padding:12px 22px; cursor:pointer}
+  .nav:disabled{opacity:.4; cursor:not-allowed}
+  .foot-spacer{flex:1}
+  .submit{
+    font-size:26px; font-weight:700; border:none; border-radius:14px; padding:14px 34px;
+    background:var(--ok); color:#fff; cursor:pointer;
+  }
+  .submit:disabled{opacity:.45; cursor:not-allowed}
+  .done-tag{font-size:20px; color:var(--ok)}
+</style>
+</head>
+<body>
+  <div class="exam-top">
+    <span class="title" id="examTitle">学习考核</span>
+    <span class="subject" id="examSubject">科目</span>
+    <span class="spacer"></span>
+    <span class="lock">🔒 考核中（不可退出）</span>
+    <span class="elapsed" id="elapsed">00:00</span>
+  </div>
+
+  <div class="progress" id="progress"></div>
+
+  <div class="stage">
+    <div class="q-card" id="qCard">
+      <span class="q-course" id="qCourse"></span>
+      <div class="q-stem" id="qStem"></div>
+      <div class="q-hint">🎤 点击麦克风，用你的话回答这道题（这一段语音只回答本题）</div>
+      <div class="answer">
+        <div class="mic-row">
+          <button class="mic-btn" id="micBtn">🎤 开始回答</button>
+          <span class="rec-time" id="recTime"></span>
+          <button class="rerec" id="rerecBtn" style="display:none">↺ 重录</button>
+        </div>
+        <audio class="play" id="play" controls style="display:none"></audio>
+        <div class="asr-label">语音转写（可修改 / 也可直接输入文字兜底）：</div>
+        <textarea class="asr" id="asr" placeholder="说完后这里会显示转写文字；若语音识别不准，你可以直接修改或输入。"></textarea>
+        <div class="q-timer" id="qTimer">本题用时：—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="exam-foot">
+    <button class="nav" id="prevBtn">← 上一题</button>
+    <button class="nav" id="nextBtn">下一题 →</button>
+    <span class="foot-spacer"></span>
+    <span class="done-tag" id="doneTag"></span>
+    <button class="submit" id="submitBtn">提交考核</button>
+  </div>
+
+<script>
+/* =========================================================================
+   学习考核 · 网页模板（设计稿）
+   -------------------------------------------------------------------------
+   渲染方式：复用课程资料通道 —— 宿主用 <iframe srcDoc="本模板HTML"> 渲染，
+            并需加 allow="microphone"（录音权限）。sandbox 同资料：
+            allow-scripts allow-same-origin。
+   题目注入：开始考核时，服务端/宿主把本场题目写入 window.EXAM_DATA（或回填
+            HTML 占位符），再调用 renderExam()。下方 questions 为示例数据。
+   作答回传：每题作答（录音 blob / 转写文本 / 用时）暂存 answers[qid]；
+            点「提交」时通过 parent.postMessage({type:'exam:submit',payload})
+            回传宿主（真实实现由宿主上传服务端判分）。
+   ========================================================================= */
+window.EXAM_DATA = {
+  title: "每日考核 · 2026-08-31",
+  subject: "论语",
+  questions: [
+    { id:"q1", course:"学而篇第一章", pointMax:10,
+      stem:"请用自己的话讲一讲「学而时习之，不亦说乎」是什么意思？你平时是怎么做的？" },
+    { id:"q2", course:"学而篇第二章", pointMax:10,
+      stem:"「有朋自远方来，不亦乐乎」说的是什么感受？举一个你身边的例子说说。" },
+    { id:"q3", course:"为政篇第七章", pointMax:10,
+      stem:"「温故而知新，可以为师矣」为什么要「温故」？你觉得复习旧知识有什么用？" }
+  ]
+};
+
+(function(){
+  var D = window.EXAM_DATA || {questions:[]};
+  var idx = 0;
+  var examStart = Date.now();
+  // answers[qid] = { audioBlob, audioUrl, asr, startedAt, answeredAt, durationMs }
+  var answers = {};
+  var media = null, chunks = [], recTimer = null, recStart = 0;
+
+  var $ = function(id){ return document.getElementById(id); };
+
+  // 顶部信息
+  $("examTitle").textContent = D.title || "学习考核";
+  $("examSubject").textContent = D.subject || "科目";
+
+  // 总计时
+  setInterval(function(){
+    var s = Math.floor((Date.now()-examStart)/1000);
+    var mm = String(Math.floor(s/60)).padStart(2,"0");
+    var ss = String(s%60).padStart(2,"0");
+    $("elapsed").textContent = mm+":"+ss;
+  }, 1000);
+
+  // 进度点
+  function renderProgress(){
+    var p = $("progress"); p.innerHTML = "";
+    D.questions.forEach(function(q,i){
+      var d = document.createElement("div");
+      d.className = "dot" + (i===idx?" cur":"") + (answers[q.id]&&answers[q.id].answeredAt?" done":"");
+      p.appendChild(d);
+    });
+  }
+
+  function fmtDur(ms){
+    if(ms==null) return "—";
+    var s = Math.round(ms/1000);
+    return Math.floor(s/60)+"分"+(s%60)+"秒";
+  }
+
+  function renderQuestion(){
+    var q = D.questions[idx];
+    $("qCourse").textContent = q.course || "";
+    $("qStem").textContent = q.stem || "";
+    // 重置作答 UI，回填已有答案
+    var a = answers[q.id] || {};
+    if(!a.startedAt) a.startedAt = Date.now();
+    answers[q.id] = a;
+
+    stopRec(true);
+    $("asr").value = a.asr || "";
+    if(a.audioUrl){
+      $("play").src = a.audioUrl; $("play").style.display="block";
+      $("rerecBtn").style.display="inline-block";
+    } else {
+      $("play").src=""; $("play").style.display="none";
+      $("rerecBtn").style.display="none";
+    }
+    $("qTimer").textContent = "本题用时：" + (a.answeredAt ? fmtDur(a.answeredAt-a.startedAt) : "—");
+
+    $("prevBtn").disabled = idx===0;
+    $("nextBtn").disabled = idx===D.questions.length-1;
+    renderProgress();
+    updateDone();
+  }
+
+  function commitAnswer(){
+    var q = D.questions[idx];
+    var a = answers[q.id] || {};
+    a.asr = $("asr").value;
+    if(!a.answeredAt) a.answeredAt = Date.now();
+    if(a.startedAt) a.durationMs = a.answeredAt - a.startedAt;
+    answers[q.id] = a;
+    $("qTimer").textContent = "本题用时：" + fmtDur(a.durationMs);
+    renderProgress(); updateDone();
+  }
+
+  function updateDone(){
+    var all = D.questions.every(function(q){ return answers[q.id] && answers[q.id].answeredAt; });
+    $("submitBtn").disabled = !all;
+    $("doneTag").textContent = all ? "全部答完，可提交 ✓" : "";
+  }
+
+  // —— 录音（设计稿：可真实录音预览；真实 ASR 在提交后由服务端做）——
+  function stopRec(silent){
+    if(media && media.state==="recording"){ media.stop(); }
+    if(recTimer){ clearInterval(recTimer); recTimer=null; }
+    if(!silent){ $("micBtn").classList.remove("rec"); $("micBtn").textContent="🎤 开始回答"; $("recTime").textContent=""; }
+  }
+
+  $("micBtn").addEventListener("click", function(){
+    if(media && media.state==="recording"){ media.stop(); return; }
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      alert("当前环境不支持录音（需 https 或 localhost，且宿主 iframe 加 allow=\"microphone\"）"); return;
+    }
+    navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+      media = new MediaRecorder(stream);
+      chunks = [];
+      media.ondataavailable = function(e){ if(e.data.size) chunks.push(e.data); };
+      media.onstop = function(){
+        stream.getTracks().forEach(function(t){ t.stop(); });
+        var blob = new Blob(chunks, {type: media.mimeType || "audio/webm"});
+        var q = D.questions[idx];
+        var a = answers[q.id] || {};
+        if(a.audioUrl) URL.revokeObjectURL(a.audioUrl);
+        a.audioBlob = blob; a.audioUrl = URL.createObjectURL(blob);
+        answers[q.id] = a;
+        $("play").src = a.audioUrl; $("play").style.display="block";
+        $("rerecBtn").style.display="inline-block";
+        // 语音转写：把本题录音交给宿主（voice:transcribe），识别结果回显；宿主无响应则文字兜底
+        var prevAsr = a.asr || "";
+        $("asr").value = "识别中…";
+        if(window.parent && window.parent!==window){
+          window.parent.postMessage({ type:"exam:asr", qid:q.id, blob:blob }, "*");
+        }
+        // 3 秒内宿主没回识别结果，则保留文字兜底（孩子可自己输入）
+        setTimeout(function(){
+          var cur = answers[q.id] || {};
+          if(!cur.asrEdited){ $("asr").value = prevAsr; }
+        }, 3000);
+        commitAnswer();
+      };
+      media.start();
+      recStart = Date.now();
+      $("micBtn").classList.add("rec"); $("micBtn").textContent="⏹ 停止";
+      recTimer = setInterval(function(){
+        var s = Math.floor((Date.now()-recStart)/1000);
+        $("recTime").textContent = String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
+      }, 500);
+    }).catch(function(err){
+      alert("无法录音：" + err.message);
+    });
+  });
+
+  $("rerecBtn").addEventListener("click", function(){
+    var q = D.questions[idx];
+    var a = answers[q.id] || {};
+    if(a.audioUrl){ URL.revokeObjectURL(a.audioUrl); }
+    answers[q.id] = { startedAt:a.startedAt };
+    $("play").src=""; $("play").style.display="none";
+    $("rerecBtn").style.display="none";
+    $("asr").value="";
+    renderProgress(); updateDone();
+  });
+
+  $("asr").addEventListener("input", function(){
+    var q = D.questions[idx];
+    var a = answers[q.id] || {};
+    a.asrEdited = true;
+    answers[q.id] = a;
+    commitAnswer();
+  });
+
+  $("prevBtn").addEventListener("click", function(){ if(idx>0){ commitAnswer(); idx--; renderQuestion(); } });
+  $("nextBtn").addEventListener("click", function(){ if(idx<D.questions.length-1){ commitAnswer(); idx++; renderQuestion(); } });
+
+  $("submitBtn").addEventListener("click", function(){
+    commitAnswer();
+    var payload = {
+      title: D.title, subject: D.subject,
+      submittedAt: new Date().toISOString(),
+      perQuestion: D.questions.map(function(q){
+        var a = answers[q.id] || {};
+        return { qid:q.id, course:q.course, stem:q.stem, pointMax:q.pointMax || 10,
+                 audioBlob:a.audioBlob||null, asr:a.asr||"",
+                 startedAt:a.startedAt||null, answeredAt:a.answeredAt||null, durationMs:a.durationMs||null };
+      })
+    };
+    // 宿主监听后：逐题转写/判分/上传语音并上报服务端
+    if(window.parent && window.parent!==window){
+      window.parent.postMessage({ type:"exam:submit", payload:payload }, "*");
+    }
+    $("submitBtn").textContent = "已提交 ✓";
+    $("submitBtn").disabled = true;
+  });
+
+  // 宿主回传 ASR 识别结果（exam:asr → exam:asr:done）
+  window.addEventListener("message", function(ev){
+    var d = ev.data;
+    if(d && d.type === "exam:asr:done"){
+      var q = D.questions.find(function(x){ return x.id === d.qid; });
+      if(!q) return;
+      var a = answers[q.id] || {};
+      if(!a.asrEdited){
+        a.asr = String(d.text || "");
+        answers[q.id] = a;
+        if(idx === D.questions.indexOf(q)){ $("asr").value = a.asr; }
+        commitAnswer();
+      } else {
+        // 手动改过就不再覆盖，但保留识别结果供参考
+        a.asr = String(d.text || "");
+        answers[q.id] = a;
+      }
+    }
+  });
+
+  renderQuestion();
+})();
+</script>
+</body>
+</html>
