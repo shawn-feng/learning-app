@@ -281,3 +281,16 @@ status(待考核|进行中|已完成|过期), attempt_id(关联 exam_attempts), 
 - 自定义排期（scope 指定范围）**不经过选课 LLM**，直接按家长指定课程返回。
 - **实现**：服务端 `DEFAULT_SELECTION_PROMPTS`（5 档默认模板）+ `buildSelectionPrompt()`（注入数据+清单+标记）+ `listLearnedCourseMeta()` + `fetchCoursesWithRubric()`；客户端 `selectCoursesForSchedule()`（内存 session 选课）+ 出卷改**逐课并发出题**（并发 3，每课一次调用完整出题，防多课 rubric 撑爆上下文）；`exam-engine.ts` 对 LLM 返回课程名做前缀清理（mimo 会带「[论语] 」前缀）。
 - 冒烟更新：config 两段式断言（第一段 selectionPrompt+candidates / 第二段 rubric+scoringPrompt）、fixed-config 存取 selectionPrompts；真实 LLM 验证通过（293 门候选 → 精确选窗口内 1 门 → rubric 6078 字 → 逐课出题 3 题覆盖）。
+
+### 14.10 标签管理（每天/每周）+ 自定义多排期（2026-09-02，取代 §14.1 的五档固定频率）
+
+> 用户拍板：固定考核**只保留 每天 / 每周**两档，用标签管理——每档含「是否启用 + 选课 prompt + 考核时间」（每周可设**周几几点**）；**去掉月度/半年/年度固定档**（由自定义考核灵活安排）；**自定义考核可创建多个**，每个有自己的「考核 prompt + 日期时间点」。
+
+- **固定配置结构**（`exam_fixed:<parentId>`）：`frequencies`（仅 daily/weekly 由 UI 管理）+ `time`（每日时刻）+ `weekly{weekday(1=周一…7=周日), time}` + `selectionPrompts`。
+- **排期生成**（`ensureFixedSchedules` 重构）：daily 按 `time` 每天生成（当天未过则当天）；weekly 按 `weekday+time` 定位当天/下个同星期几，每 7 天步进；monthly/halfyear/yearly 保留旧 anchor 步进**仅兼容旧数据**（UI 不再生成）；同日多档去重取周期最长档不变。
+- **自定义考核 = 排期 + 自己的 prompt**：创建时 `scope.prompt`（选课规则）+ `scope.note`（内容说明）+ `scheduled_at`（日期时间点）。config 时：
+  - scope 带 prompt → **走选课两段式**：第一段 selectionPrompt（家长 prompt + 候选清单，freq="custom" 不打 ★/◐ 周期标记、统计全部候选）+ candidates（scope.topics/courses 限定或全部）；第二段 `&courses=` 返回 rubric + 判分 prompt。
+  - scope 无 prompt（旧数据）→ 直接返回范围课程，跳过选课 LLM。
+  - ⚠️ 第二段（courses 参数）必须在 scope 分支内**优先处理**（曾因 scope 分支先返回导致自定义第二段拿不到 rubric）。
+- **家长端**：`ExamAdminPanel` 标签「每天 / 每周」（启用开关 + prompt + 时间，每周加周几下拉）+ 自定义考核多列表（时间/状态/内容/prompt 摘要/取消）+ 创建表单（孩子 + datetime-local + prompt 必填 + 内容说明）。
+- 验证：daily/weekly 排期按配置生成、自定义两段式、冒烟 24/24。

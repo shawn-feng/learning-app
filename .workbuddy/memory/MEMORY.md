@@ -41,5 +41,5 @@
 ## 学习考核（EXAM-REQUIREMENTS.md，细节索引=ISSUES.md ISSUE-027）
 - **架构**：存储全服务端；出卷+判分客户端内存 session；判分 prompt 服务端下发(单一真源)；考试视图=iframe srcDoc+allow=microphone 锁定。
 - **v2 排期**：`exam_schedules` 表（固定多档+自定义）；同日多档去重取周期最长档；懒生成含当天（anchor 起步，勿用 anchor+step——会漏当天考核）。
-- **v3 选课 LLM**：config 两段式（?schedule=→selectionPrompt+candidates 无 rubric；&courses=a,b→rubric+scoringPrompt）；服务端打「★ 本周期/★ 本月/◐ 本月前」标记，LLM 按标记选课不自己算日期；5 档默认 prompt 家长可编辑（settings `exam_fixed:<pid>.selectionPrompts`）；选课结果清理「[主题] 」前缀。
+- **v3/v3.1 选课 LLM + 标签管理**：固定考核只留 **每天/每周**（每周可设周几几点 `weekly{weekday,time}`，ensureFixedSchedules 按 weekday 定位）；config 两段式（?schedule=→selectionPrompt+candidates 无 rubric；&courses=a,b→rubric+scoringPrompt）；服务端打「★ 本周期/★ 本月/◐ 本月前」标记，LLM 按标记选课不自己算日期（freq="custom" 不打标记）；**自定义考核每个有自己的 scope.prompt+日期时间**（带 prompt 走选课两段式）；**config 第二段 courses 参数须在 scope 分支内优先处理**（否则自定义拿不到 rubric）；选课结果清理「[主题] 」前缀。家长端入口=家长中心左侧边栏 ExamAdminPanel。
 - **判分必带 rubric**（ExamAnswerIn.rubric 由 ExamView 传入）；出卷/判分 session 按 childId 隔离。
