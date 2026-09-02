@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
 import { Bot, ArrowLeft, LogOut, UserPlus, MessageSquare } from "lucide-react";
 import IconButton from "../components/IconButton";
+import { LoadingBlock } from "../components/Loading";
 import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
 import CourseManager from "../components/CourseManager";
 import ParentChatPanel from "../components/ParentChatPanel";
 import ExamAdminPanel from "../components/ExamAdminPanel";
+import SchedulerTasksPanel from "../components/SchedulerTasksPanel";
 import Settings from "./Settings";
 import ChildDetailPage from "../components/ChildDetailPage";
 import { useChatPanel } from "../hooks/useChatPanel";
@@ -20,17 +22,23 @@ const AVATARS = ["🦊", "🐰", "🐻", "🦁", "🐼", "🐨", "🐯", "🦉"]
 
 export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) {
   const [children, setChildren] = useState<any[]>([]);
+  const [childrenLoading, setChildrenLoading] = useState(true);
   const [showAddChild, setShowAddChild] = useState(false);
   const [selectedChild, setSelectedChild] = useState<any>(null);
-  const [view, setView] = useState<"children" | "courses" | "exam" | "tokens" | "settings">("children");
+  const [view, setView] = useState<"children" | "courses" | "exam" | "scheduler" | "tokens" | "settings">("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
   const parentChat = useChatPanel("parent", 360);
 
   async function refresh() {
-    const list = await window.api.childList();
-    setChildren(list);
+    setChildrenLoading(true);
+    try {
+      const list = await window.api.childList();
+      setChildren(list);
+    } finally {
+      setChildrenLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -96,6 +104,19 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
+            onClick={() => {
+              setView("scheduler");
+              setDetailChild(null);
+            }}
+          >
+            <div className="child-avatar">⏰</div>
+            <div className="child-info">
+              <div className="name">定时任务</div>
+            </div>
+          </div>
+          <div
+            className="child-card"
+            style={{ border: "none" }}
             onClick={() => setView("tokens")}
           >
             <div className="child-avatar">📈</div>
@@ -132,6 +153,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
               </div>
             </div>
           ))}
+          {/* ISSUE-032：加载期间占位，避免「孩子列表」区空白被误判为数据丢失 */}
+          {childrenLoading && <LoadingBlock text="正在加载孩子列表…" />}
           <button
             onClick={() => setShowAddChild(true)}
             style={{
@@ -156,7 +179,9 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
         <div className="dashboard-main">
           {view === "children" && !detailChild && (
             <div>
-              {children.length === 0 ? (
+              {childrenLoading ? (
+                <LoadingBlock text="正在加载孩子列表…" />
+              ) : children.length === 0 ? (
                 <p style={{ color: "#888" }}>还没有孩子，点击左侧"添加孩子"开始。</p>
               ) : (
                 <div>
@@ -215,6 +240,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           {view === "courses" && !detailChild && <CourseManager />}
 
           {view === "exam" && !detailChild && <ExamAdminPanel children={children} />}
+
+          {view === "scheduler" && !detailChild && <SchedulerTasksPanel children={children} />}
 
           {view === "tokens" && !detailChild && <TokenStatsPanel childrenList={children} />}
 

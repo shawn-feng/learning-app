@@ -34,7 +34,7 @@ export default function App() {
   let content: React.ReactNode;
   switch (view) {
     case "loading":
-      content = <div className="login-page">加载中...</div>;
+      content = <div className="login-page">正在验证身份…</div>;
       break;
     case "parent-login":
       content = (

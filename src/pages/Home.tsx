@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Settings } from "lucide-react";
+import { LoadingBlock } from "../components/Loading";
 
 interface Props {
   email: string;
@@ -11,6 +12,7 @@ interface Props {
 // 移除退出按钮避免低龄用户误操作退出家长账号。主页不再接收 onLogout prop。
 export default function Home({ email, onEnterParent, onEnterChild }: Props) {
   const [children, setChildren] = useState<any[]>([]);
+  const [childrenLoading, setChildrenLoading] = useState(true);
   const [selectedChild, setSelectedChild] = useState<any>(null);
 
   // 家长密码验证
@@ -31,7 +33,11 @@ export default function Home({ email, onEnterParent, onEnterChild }: Props) {
   const [serverMsg, setServerMsg] = useState("");
 
   useEffect(() => {
-    window.api.childList().then((list: any[]) => setChildren(list));
+    setChildrenLoading(true);
+    window.api
+      .childList()
+      .then((list: any[]) => setChildren(list))
+      .finally(() => setChildrenLoading(false));
     window.api.serverGetConfig().then((cfg: { url?: string }) => {
       setServerUrl(cfg?.url ?? "");
     });
@@ -111,6 +117,18 @@ export default function Home({ email, onEnterParent, onEnterChild }: Props) {
             <div style={{ fontSize: 12, color: "#888" }}>{child.aiName}</div>
           </div>
         ))}
+
+        {/* ISSUE-032：加载期间显示占位，绝不让空数组被误判为「没有孩子」 */}
+        {childrenLoading && (
+          <div className="avatars-loading">
+            <LoadingBlock text="正在加载孩子列表…" />
+          </div>
+        )}
+        {!childrenLoading && children.length === 0 && (
+          <div style={{ width: "100%", textAlign: "center", color: "#888", fontSize: 14, padding: "18px 0" }}>
+            还没有添加孩子，请联系家长添加。
+          </div>
+        )}
       </div>
 
       {/* 孩子密码输入 */}

@@ -1786,8 +1786,10 @@ input, textarea {
 }
 
 /* ===== AI 气泡内的 Markdown 渲染 ===== */
-.bubble-md {
-  white-space: normal; /* 覆盖 .bubble 的 pre-wrap，让 markdown 段落语义生效 */
+/* 必须 .bubble.bubble-md 双类（特异性 0,2,0）才能压过 .message .bubble 的 pre-wrap（同为 0,2,0，本规则靠后出现胜出）。
+   否则 markdown 文本里所有 \n 会被当真实换行，每个 \n\n 变成一整行空白——这是聊天气泡"大量空格"的真正根因（ISSUE-034 二次修复）。 */
+.bubble.bubble-md {
+  white-space: normal;
 }
 
 .bubble-md > :first-child {
@@ -1798,8 +1800,14 @@ input, textarea {
   margin-bottom: 0;
 }
 
+/* ISSUE-034：消除 LLM 连续空行渲染出的空 <p> / <p><br></p> 所占的空白（家长+孩子气泡通用） */
+.bubble-md p:empty,
+.bubble-md p:has(> br:only-child) {
+  display: none;
+}
+
 .bubble-md p {
-  margin: 0 0 8px;
+  margin: 0 0 4px;
 }
 
 .bubble-md h1,
@@ -1808,7 +1816,7 @@ input, textarea {
 .bubble-md h4,
 .bubble-md h5,
 .bubble-md h6 {
-  margin: 14px 0 8px;
+  margin: 8px 0 4px;
   line-height: 1.35;
   font-weight: 700;
   color: #2b2f4a;
@@ -1823,7 +1831,7 @@ input, textarea {
 
 .bubble-md ul,
 .bubble-md ol {
-  margin: 4px 0 8px;
+  margin: 2px 0 4px;
   padding-left: 22px;
 }
 
@@ -1833,7 +1841,7 @@ input, textarea {
 
 .bubble-md li > ul,
 .bubble-md li > ol {
-  margin: 2px 0;
+  margin: 0;
 }
 
 .bubble-md strong {
@@ -1914,10 +1922,11 @@ input, textarea {
   background: #fafbfe;
 }
 
+/* 分隔线（---）默认 UA margin 为 0.5em，孩子端 30px 大字下会撑出 ~30px 空白；这里收成紧凑分隔线（ISSUE-034 二次修复） */
 .bubble-md hr {
   border: none;
   border-top: 1px solid #eceef6;
-  margin: 12px 0;
+  margin: 8px 0;
 }
 
 .bubble-md img {
@@ -1962,6 +1971,54 @@ input, textarea {
 
 @keyframes working-spin {
   to { transform: rotate(360deg); }
+}
+
+/* ===== ISSUE-032 统一加载态 ===== */
+.loading-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #667eea;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 12px;
+}
+
+.loading-block .loading-text {
+  line-height: 1.2;
+}
+
+/* 整页门控型：覆盖整页，直到数据加载完成 */
+.page-loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #fff;
+  z-index: 50;
+}
+
+.page-loading-text {
+  color: #667eea;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.working-spinner-lg {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+}
+
+/* 主页头像区加载占位：占满一行居中，避免被误判成空主页 */
+.avatars-loading {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 18px 0;
 }
 
 .think-item {
