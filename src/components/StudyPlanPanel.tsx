@@ -30,8 +30,6 @@ interface Props {
   children: any[];
   /** 「在对话里修改」回调（家长中心场景=展开右侧聊天；缺省隐藏按钮外的提示） */
   onAskInChat?: () => void;
-  /** 未来排期表天数（不含今天；默认 13 → 共今天+两周） */
-  lookaheadDays?: number;
 }
 
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -58,7 +56,7 @@ function shiftDate(dateStr: string, days: number): string {
   return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
 }
 
-export default function StudyPlanPanel({ children, onAskInChat, lookaheadDays = 13 }: Props) {
+export default function StudyPlanPanel({ children, onAskInChat }: Props) {
   const [activeChildId, setActiveChildId] = useState<string>("");
   const [rows, setRows] = useState<PlanRow[]>([]);
   const [todayItems, setTodayItems] = useState<TodayItem[]>([]);
@@ -85,9 +83,8 @@ export default function StudyPlanPanel({ children, onAskInChat, lookaheadDays = 
     try {
       const today = localToday();
       const from = shiftDate(today, 1); // 今天单独卡片展示，表从明天起
-      const to = shiftDate(today, lookaheadDays);
       const [listR, todayR] = await Promise.all([
-        window.api.studyPlanList(activeChildId, { from, to }),
+        window.api.studyPlanList(activeChildId, { from }),
         window.api.studyPlanToday(activeChildId, today),
       ]);
       if (listR?.success) setRows(listR.rows || []);
@@ -99,7 +96,7 @@ export default function StudyPlanPanel({ children, onAskInChat, lookaheadDays = 
     } finally {
       setLoading(false);
     }
-  }, [activeChildId, lookaheadDays]);
+  }, [activeChildId]);
 
   useEffect(() => {
     load();
@@ -231,7 +228,7 @@ export default function StudyPlanPanel({ children, onAskInChat, lookaheadDays = 
       {/* 未来排期表 */}
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>接下来的安排</div>
       {!loading && !error && byDate.length === 0 && (
-        <p style={{ color: "#999", fontSize: 12 }}>未来 {lookaheadDays} 天没有排课。需要安排吗？在右侧家长 AI 对话里说「帮孩子做学习计划」。</p>
+        <p style={{ color: "#999", fontSize: 12 }}>未来没有排课。需要安排吗？在右侧家长 AI 对话里说「帮孩子做学习计划」。</p>
       )}
       {byDate.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
