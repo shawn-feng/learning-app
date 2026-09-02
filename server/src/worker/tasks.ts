@@ -345,23 +345,32 @@ function stripParentText(line: string): string {
 }
 
 /**
- * 按课程标题匹配完成态：✅=完成 / ⬜=未完成 / undefined=无对应课程（不判断，保持原样）。
- * 学习计划项的文本即课程名，与 courses.title 1:1（标题兜底匹配，与面板 loadCourseDoneMap 同口径）。
+ * 按课程「当天活动」匹配完成态（2026-09-03 起，与面板 loadCourseDoneMap 同口径）：
+ * 学习计划里某课可能是「复习」（该课 status 早已 ✅）——只看 status 无法判断今天是否
+ * 真的学/复习了。须看课程的 首次学习(first_learned) / 最近复习(last_review) 是否等于
+ * 目标日期（stat 时点=今天）：当天有学习或复习记录才算完成。
+ * 计划项文本即课程名，与 courses.title 1:1（标题兜底匹配）。
  */
 function courseDoneFor(
-  courses: Array<{ topic: string; title: string; status: string }>,
+  today: string,
+  courses: Array<{
+    topic: string; title: string; status: string; first_learned: string; last_review: string;
+  }>,
   parentLine: string
 ): boolean | undefined {
   const t = stripParentText(parentLine);
   if (!t) return undefined;
   const c = courses.find((x) => x.title.trim() === t);
-  return c ? c.status === "✅" : undefined;
+  if (!c) return undefined;
+  const learned = (c.first_learned || "").trim();
+  const reviewed = (c.last_review || "").trim();
+  return (learned === today || reviewed === today) ? true : false;
 }
 
 /**
  * 纯代码统计（不再调 LLM）。
- * 完成情况真源 = courses.status（由 recording 的 LLM 判定后写入 ✅）。
- * - [家长] 项：对照课程状态确定性打勾；
+ * 完成情况真源 = courses 的当天活动（first_learned / last_review == 今天；由 recording 的 LLM 判定后写入）。
+ * - [家长] 项：对照课程「当天是否学习/复习」确定性打勾（复习课仅当天复习过才算完成，勿看 status）；
  * - 非[家长]项（孩子自定任务）：保持原样，由孩子「汇总」（聊天调工具 / 定时汇总任务）判定完成。
  * @returns true = 跳过（当天无 todolist），false = 已执行统计
  */
@@ -374,7 +383,9 @@ export async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
     console.log(`[worker:todo-stat] child ${ctx.childId}: ${today} 无 todolist，跳过`);
     return true;
   }
-  const courses = runKbQuery<Array<{ topic: string; title: string; status: string }>>(
+  const courses = runKbQuery<
+    Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>
+  >(
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.courses.list", { child_id: ctx.childId }
   ) ?? [];
   const newMd = todayTodo.itemsMd
@@ -382,7 +393,7 @@ export async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
     .map((raw) => {
       const m = /^\s*[-*]\s*\[( |x|X)\]\s*(\[家长\].*)$/.exec(raw);
       if (!m) return raw;
-      const done = courseDoneFor(courses, m[2]);
+      const done = courseDoneFor(today, courses, m[2]);
       if (done === undefined) return raw; // 无对应课程 → 保持原样
       return `- [${done ? "x" : " "}] ${m[2]}`;
     })

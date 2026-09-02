@@ -873,8 +873,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   // ISSUE-033：学习计划只读展示（家长面板；数据真源=服务端 study_plans，编辑走家长对话）
-  // 完成态取孩子 courses 表的课程状态（status ✅/⬜），按 (topic,title) 匹配计划项文本——
-  // 比解析 todo 勾选框更权威（课程状态是"这门课学没学"的真源，todo 的 - [x] 反而是照它判的）。
+  // 完成态 = 课程「当天活动」判定（2026-09-03）：计划里某课可能是复习（status 早已 ✅），
+  // 只看 status 无法判断当天是否真的学/复习了 → 取 courses.first_learned / last_review
+  // 是否等于目标日期（today=请求的 date；list 每行用 r.date）。
   // list：排期行列表（服务端 date 倒序最多 500；from/to 在此做日期段过滤，与服务端同步）
   ipcMain.handle("studyPlan:list", async (_e, childId: string, opts?: { from?: string; to?: string }) => {
     try {
@@ -888,7 +889,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const doneOf = await loadCourseDoneMap(childId);
       const enriched = rows.map((r: any) => ({
         ...r,
-        content: (r.content ?? []).map((it: any) => ({ ...it, done: doneOf(it.topicKey, it.text) })),
+        content: (r.content ?? []).map((it: any) => ({ ...it, done: doneOf(r.date, it.topicKey, it.text) })),
       }));
       return { success: true, rows: enriched };
     } catch (err) {
@@ -906,40 +907,45 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         ),
         loadCourseDoneMap(childId),
       ]);
-      const items = (res.items ?? []).map((it: any) => ({ ...it, done: doneOf(it.topicKey, it.text) }));
+      const items = (res.items ?? []).map((it: any) => ({ ...it, done: doneOf(d, it.topicKey, it.text) }));
       return { success: true, date: res.date ?? d, items };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  /** 构建计划项→课程完成态查询：取孩子全部 courses，按 (topic,title) 精确匹配，返回 true=✅ / false=⬜ / undefined=无对应课程。 */
+  /**
+   * 构建计划项→课程「当天活动」判定（2026-09-03，与服务端 stat 的 courseDoneFor 同口径）：
+   * 学习计划里某课可能是「复习」（该课 status 早已 ✅）——只看 status 无法判断目标日期当天
+   * 是否真的学/复习了。判定 = 课程的 首次学习(first_learned) 或 最近复习(last_review) 等于
+   * 目标日期 → true；课程存在但当天无记录 → false；无对应课程 → undefined。
+   * 匹配键：(topic,title) 精确（topicKey+text），title 兜底（text 即课程名，剥 carry 语义在服务端已做）。
+   */
   async function loadCourseDoneMap(
     childId: string
-  ): Promise<(topicKey: string | undefined, text: string) => boolean | undefined> {
+  ): Promise<(date: string, topicKey: string | undefined, text: string) => boolean | undefined> {
     try {
-      const courses = await dbQuery<Array<{ topic: string; title: string; status: string }>>(
-        "kb.courses.list",
-        { child_id: childId }
-      ).catch(() => [] as Array<{ topic: string; title: string; status: string }>);
-      const byTopicTitle = new Map<string, string>();
-      const byTitle = new Map<string, string>();
+      const courses = await dbQuery<
+        Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>
+      >("kb.courses.list", { child_id: childId }).catch(
+        () => [] as Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>
+      );
+      const byTopicTitle = new Map<string, { first_learned: string; last_review: string }>();
+      const byTitle = new Map<string, { first_learned: string; last_review: string }>();
       for (const c of courses ?? []) {
         const title = (c.title || "").trim();
         if (!title) continue;
-        byTopicTitle.set(`${c.topic}\u0000${title}`, c.status);
-        if (!byTitle.has(title)) byTitle.set(title, c.status);
+        const rec = { first_learned: (c.first_learned || "").trim(), last_review: (c.last_review || "").trim() };
+        byTopicTitle.set(`${c.topic}\u0000${title}`, rec);
+        if (!byTitle.has(title)) byTitle.set(title, rec);
       }
-      return (topicKey, text) => {
+      return (date, topicKey, text) => {
         const t = (text || "").trim();
         if (!t) return undefined;
-        if (topicKey) {
-          const s = byTopicTitle.get(`${topicKey}\u0000${t}`);
-          if (s !== undefined) return s === "✅";
-        }
-        const s2 = byTitle.get(t);
-        if (s2 !== undefined) return s2 === "✅";
-        return undefined;
+        let rec = topicKey ? byTopicTitle.get(`${topicKey}\u0000${t}`) : undefined;
+        if (!rec) rec = byTitle.get(t);
+        if (!rec) return undefined;
+        return rec.first_learned === date || rec.last_review === date;
       };
     } catch {
       return () => undefined;

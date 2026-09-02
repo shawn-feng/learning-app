@@ -200,7 +200,7 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
           {todayItems.length > 0 && (
             <span style={{ fontWeight: 400, color: "#888", marginLeft: 6 }}>
               {todayItems.length} 项{carryCount > 0 ? ` · ${carryCount} 项是补昨天的 📌` : ""}
-              {doneDetermined > 0 ? ` · 已完成 ${doneTrue} 项` : ""}
+              {doneDetermined > 0 ? ` · 今天已学 ${doneTrue} 项` : ""}
             </span>
           )}
         </div>
@@ -218,9 +218,18 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
                   return true;
                 })
                 .map((it, i) => {
-                  const prefix = it.done === true ? "✅ " : it.done === false ? "⬜ " : it.carry ? "📌 " : "";
-                  const color = it.done === true ? "#2f9e44" : it.done === false ? "#888" : it.carry ? "#b7791f" : "#333";
-                  const note = it.done === true ? "（已学完）" : it.carry ? "（昨天没学完，今天补上）" : "";
+                  // 完成 = 当天是否真的学/复习（复习课 status 早已 ✅，须看课程当天的学习/复习记录）
+                  const done = it.done;
+                  const prefix = done === true ? "✅ " : done === false ? "⬜ " : it.carry ? "📌 " : "";
+                  const color = done === true ? "#2f9e44" : done === false ? "#888" : it.carry ? "#b7791f" : "#333";
+                  const note =
+                    done === true
+                      ? it.carry
+                        ? "（补昨天的，今天已学）"
+                        : "（今天已学）"
+                      : it.carry
+                        ? "（昨天没学完，今天补上）"
+                        : "";
                   return (
                     <li key={`${it.planId}-${i}`} style={{ color }}>
                       {prefix}
@@ -249,7 +258,6 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
                 r.content.map((it: any) => ({
                   text: (it.text || "").trim(),
                   carry: r.origin === "carry",
-                  done: it.done as boolean | undefined,
                 }))
               )
               .filter((x) => {
@@ -261,10 +269,10 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
               <div key={date} style={{ border: "1px solid #f0f0f0", borderRadius: 10, padding: "8px 12px", background: "#fff" }}>
                 <div style={{ fontSize: 12, color: "#667eea", fontWeight: 600, marginBottom: 4 }}>{fmtDay(date)}</div>
                 {items.map((it, i) => {
-                  // 未来排期：仅高亮「已学完」（提前学完仍排在那天），避免 ⬜ 噪声；carry 仍标 📌
-                  const prefix = it.done === true ? "✅ " : it.carry ? "📌 " : "• ";
-                  const color = it.done === true ? "#2f9e44" : it.carry ? "#b7791f" : "#333";
-                  const note = it.done === true ? "（已学完）" : it.carry ? "（顺延来的补学）" : "";
+                  // 未来排期尚未执行：完成须按「当天活动」判定（未来无记录），不显示 ✅/⬜，只标 📌 顺延
+                  const prefix = it.carry ? "📌 " : "• ";
+                  const color = it.carry ? "#b7791f" : "#333";
+                  const note = it.carry ? "（顺延来的补学）" : "";
                   return (
                     <div key={`${date}-${i}`} style={{ fontSize: 13, color, padding: "1px 0" }}>
                       {prefix}
