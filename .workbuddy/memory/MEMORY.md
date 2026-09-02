@@ -15,6 +15,7 @@
 - **`createAgentSession` 返回值必须解构 `{ session }`**（否则 `dispose is not a function` 崩）。
 - Pi SDK jsonl：`content:[{type:text|thinking|toolCall}]`；提取只取 role∈{user,assistant} 且 type=text。
 - 主进程 WebSocket 勿用 `ws` 包（esbuild 打包报 bufferutil）→ 用内置全局 WebSocket。
+- **⚠️ prompt 模板字符串内禁字面反引号（两端打包都会崩）**：反引号模板字符串定义的长 prompt（`recording-prompt.ts` 的 `RECORDING_PROMPT`）内部不得出现未转义反引号（行内代码、代码块围栏）。esbuild(server.cjs) 与 electron-vite(rollup) 打包都会让模板字符串提前闭合 → 启动即崩 `TypeError: [] is not a function`（server 9/3 0点、electron 9/3 7点各踩一次）。写法：行内代码去反引号、代码块围栏用 `~~~`；server 与 electron 两份 recording-prompt.ts 必须同源同步。
 
 ## 构建与验证
 - 沙箱禁 `git stash`（戳坏 .git/refs）；用 `git diff`/`git show HEAD:<file>`。
