@@ -53,7 +53,7 @@ export async function selectCoursesForSchedule(selectionPrompt: string, childId:
 
   const prompt =
     selectionPrompt +
-    `\n\n请仔细阅读上面的选课规则与课程清单，输出选中课程的 JSON（不要 markdown 代码块围栏）：\n` +
+    `\n\n请按上面的选课规则，从【课程清单】中选出本次考核要考的课程。只输出 JSON（不要 markdown 代码块围栏），课程名必须与清单完全一致：\n` +
     `{"courses":["课程名1","课程名2",...]}`;
 
   const { session } = await createAgentSession({
