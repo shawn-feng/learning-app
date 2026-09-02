@@ -282,23 +282,6 @@ function planItemsToParentLines(items: PlanTodayItemLite[]): string[] {
   return lines;
 }
 
-/**
- * 从 markdown 提取昨日未完成项（供「酌情并入今天」）。
- * 只取孩子自规划项：`[家长]` 项未完成由学习计划 carry（服务端每日顺延）确定性处理，
- * 若这里再并入会造成同文本重复出现两条。
- */
-function extractUnfinished(md: string): string[] {
-  const out: string[] = [];
-  for (const line of md.split("\n")) {
-    const m = /^\s*[-*]\s*\[( )\]\s*(.*)$/.exec(line);
-    if (!m) continue;
-    if (/\[家长\]/.test(m[2])) continue;
-    const content = m[2].trim();
-    if (content) out.push(`- [ ] ${content}`);
-  }
-  return out;
-}
-
 export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
   const today = formatLocalDate(ctx.now);
   // gen 只在当天尚无 todolist 时生成（调度器游标已保证一天一次；这里双保险，不覆盖既有内容）
@@ -309,28 +292,23 @@ export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
     console.log(`[worker:todo-gen] child ${ctx.childId}: ${today} 已有 todolist，跳过`);
     return;
   }
+  // 2026-09-03：gen 只生成学习计划当日项（家长规定项）——不自动并入昨日未完成的自规划项、
+  // 不补充任何额外任务（todolist 内容 = 学习计划，孩子自定任务由孩子自己在聊天里安排）。
   const planItems = loadTodayPlanItemsServer(ctx, today);
-  const yesterdayTodo = runKbQuery<{ itemsMd: string } | null>(
-    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: prevDate(today) }
-  );
   const parentLines = planItemsToParentLines(planItems);
-  const yesterdayUnfinished = extractUnfinished(yesterdayTodo?.itemsMd ?? "");
   const sections: string[] = [];
   sections.push(
     parentLines.length > 0
       ? "【家长规定项】\n" + parentLines.join("\n")
       : "【家长规定项】今天的学习计划没有安排内容（空天 = 不要求学）。"
   );
-  if (yesterdayUnfinished.length > 0) {
-    sections.push("【昨日未完成项（酌情并入今天）】\n" + yesterdayUnfinished.join("\n"));
-  }
   runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.put", {
     child_id: ctx.childId,
     date: today,
     items_md: sections.join("\n\n"),
   });
   console.log(
-    `[worker:todo-gen] child ${ctx.childId}: ${today} 已生成（家长项 ${parentLines.length} / 昨日未完 ${yesterdayUnfinished.length}）`
+    `[worker:todo-gen] child ${ctx.childId}: ${today} 已生成（家长项 ${parentLines.length}）`
   );
 }
 

@@ -1,12 +1,12 @@
 /**
- * 学习计划「未完成顺延」每日检测（ISSUE-033 P0b，2026-09-02）。
- * 用户拍板的执行语义：服务端每日定时检测「昨天排的内容学没学完」→ 没学完的自动顺延叠加到今天。
+ * 学习计划「未完成顺延」每日检测（ISSUE-033 P0b，2026-09-02；判定口径 2026-09-03 修正）。
  *
- * 判定口径（保守版）：以孩子 kb `child_todo_stats` 昨天的 `parent_total / parent_done` 为准——
- *   有完成统计且 parent_done < parent_total → 昨天未学完 → 顺延；
- *   昨天没有 stats（todo 未生成/未统计）→ 不臆断「没学」，不顺延（避免无限堆积）。
- * 顺延动作：把昨天所有 date 行（origin=conversation|carry）items 中、今天尚未排过的 text，
- *   写为今天 origin='carry' 的新行（text 相同的不重复叠加；today 聚合自然合并两类行）。
+ * 判定口径（v2）：以昨天 todolist（child_todos）里**未勾的 `[家长]` 行**为准——
+ *   昨天的 `[家长]` checkbox 由 stat（纯代码，按课程当天活动）确定性打勾，是「昨天没学完」
+ *   的直接真源；顺延 = 昨天计划 items 中「昨天未完成 且 今天尚未排」的 text。
+ *   ⚠️ v1 曾依赖 child_todo_stats（昨天 stat 跑不出 stats 就不顺延）→ 9/2 实测 stat 缺失时
+ *   该顺延没顺延，家长界面/todo 缺失；v2 直接读 todo checkbox，无需 stats 也能正确顺延。
+ * 顺延动作：把上述 text 写为今天 origin='carry' 的新行（text 相同的不重复叠加）。
  * 幂等：worker_state(child_id, 'study_plan_carry').last_key = 昨天日期 → 每天每孩子只处理一次
  *   （每分钟 tick 与启动补跑都会触发，先到先得）。
  */
@@ -93,6 +93,30 @@ export async function runStudyPlanCarryTick(deps: CarryDeps): Promise<void> {
   }
 }
 
+/** 读昨天 todolist 里未勾的 `[家长]` 行文本（剥前缀与顺延注释；空 = 无 todo / 全勾完 → 不顺延）。 */
+function yesterdayUndoneParentTexts(deps: CarryDeps, childId: string, date: string): string[] {
+  const db = openKb(deps.dataDir, currentParentOf(deps, childId), childId);
+  try {
+    const row = db
+      .prepare("SELECT items_md FROM child_todos WHERE date = ?")
+      .get(date) as { items_md: string } | undefined;
+    if (!row?.items_md) return [];
+    const out: string[] = [];
+    for (const line of row.items_md.split("\n")) {
+      const m = /^\s*[-*]\s*\[( )\]\s*\[家长\]\s*(.*)$/.exec(line);
+      if (!m) continue;
+      const text = (m[2] || "")
+        .replace(/（昨天没学完，今天补上）\s*$/, "")
+        .replace(/（顺延来的补学）\s*$/, "")
+        .trim();
+      if (text) out.push(text);
+    }
+    return out;
+  } finally {
+    db.close();
+  }
+}
+
 async function carryOnceForChild(
   deps: CarryDeps,
   childId: string,
@@ -107,10 +131,10 @@ async function carryOnceForChild(
     .all(childId, yesterday) as unknown as PlanRow[];
   if (!rows.length) return 0;
 
-  const stats = readStats(deps, childId, yesterday);
-  if (!stats || stats.parent_total <= 0 || stats.parent_done >= stats.parent_total) {
-    return 0; // 无完成数据或已达标 → 不顺延
-  }
+  // 昨天没学完的 = 昨天 todolist 中未勾的 [家长] 行（stat 已按当天活动确定性打勾；无 todo/全勾完 → 不顺延）
+  const undoneTexts = yesterdayUndoneParentTexts(deps, childId, yesterday);
+  if (!undoneTexts.length) return 0;
+  const undoneSet = new Set(undoneTexts);
 
   // 今天已排的 text（conversation / carry 均算，避免同文本重复叠加）
   const todayRows = deps.db
@@ -120,12 +144,14 @@ async function carryOnceForChild(
     .all(childId, today) as unknown as PlanRow[];
   const todayTexts = collectTexts(todayRows);
 
+  // 顺延 = 昨天计划 items 中「昨天未完成 且 今天尚未排」的 text
   const carryItems: PlanItem[] = [];
   const seen = new Set<string>();
   for (const r of rows) {
     for (const it of parseContent(r.content)) {
-      if (!it.text || todayTexts.has(it.text) || seen.has(it.text)) continue;
-      seen.add(it.text);
+      const t = (it.text || "").trim();
+      if (!t || !undoneSet.has(t) || todayTexts.has(t) || seen.has(t)) continue;
+      seen.add(t);
       carryItems.push({ text: it.text, topicKey: it.topicKey });
     }
   }
@@ -139,22 +165,6 @@ async function carryOnceForChild(
     )
     .run(id, parentId, childId, today, JSON.stringify(carryItems), now.toISOString(), now.toISOString());
   return carryItems.length;
-}
-
-function readStats(
-  deps: CarryDeps,
-  childId: string,
-  date: string
-): { parent_total: number; parent_done: number } | null {
-  const db = openKb(deps.dataDir, currentParentOf(deps, childId), childId);
-  try {
-    const row = db
-      .prepare("SELECT parent_total, parent_done FROM child_todo_stats WHERE date = ?")
-      .get(date) as { parent_total: number; parent_done: number } | undefined;
-    return row ?? null;
-  } finally {
-    db.close();
-  }
 }
 
 /** 从主库反查孩子归属家长（openKb 需要 parentId 目录）。 */
