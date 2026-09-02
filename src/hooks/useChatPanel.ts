@@ -6,7 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * - 调宽：通过 startDrag（绑在面板左边缘的手柄上）拖拽改变宽度，范围 [minW, maxW]；
  * - 状态持久化到 localStorage（key 区分家长/孩子），刷新后保留。
  */
-export function useChatPanel(key: string, defaultWidth = 380, minW = 280, maxW = 680) {
+// ISSUE-035：取消 maxW 上限，面板可随意调宽；持久化（localStorage）现成，只需移除 clamp。
+export function useChatPanel(key: string, defaultWidth = 380, minW = 280) {
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(`chat:${key}:collapsed`) === "1";
@@ -17,7 +18,7 @@ export function useChatPanel(key: string, defaultWidth = 380, minW = 280, maxW =
   const [width, setWidth] = useState(() => {
     try {
       const raw = parseInt(localStorage.getItem(`chat:${key}:width`) || "", 10);
-      if (Number.isFinite(raw)) return Math.min(maxW, Math.max(minW, raw));
+      if (Number.isFinite(raw)) return Math.max(minW, raw);
     } catch {
       /* 忽略 */
     }
@@ -66,7 +67,7 @@ export function useChatPanel(key: string, defaultWidth = 380, minW = 280, maxW =
       const startW = widthRef.current;
       const onMove = (ev: PointerEvent) => {
         const next = startW - (ev.clientX - startX);
-        setWidth(Math.min(maxW, Math.max(minW, Math.round(next))));
+        setWidth(Math.max(minW, Math.round(next)));
       };
       const onUp = () => {
         if (captured) {
@@ -98,7 +99,7 @@ export function useChatPanel(key: string, defaultWidth = 380, minW = 280, maxW =
         window.addEventListener("pointercancel", onUp);
       }
     },
-    [minW, maxW]
+    [minW]
   );
 
   return { collapsed, setCollapsed, width, startDrag };

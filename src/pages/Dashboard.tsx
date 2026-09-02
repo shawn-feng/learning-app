@@ -25,7 +25,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [children, setChildren] = useState<any[]>([]);
   const [childrenLoading, setChildrenLoading] = useState(true);
   const [showAddChild, setShowAddChild] = useState(false);
-  const [selectedChild, setSelectedChild] = useState<any>(null);
   const [view, setView] = useState<"children" | "courses" | "plan" | "exam" | "scheduler" | "tokens" | "settings">("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
@@ -149,45 +148,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           </div>
 
-          <div className="section-title" style={{ marginTop: 24 }}>
-            孩子列表
-          </div>
-          {children.map((child) => (
-            <div
-              key={child.childId}
-              className={`child-card ${selectedChild?.childId === child.childId ? "selected" : ""}`}
-              onClick={() => setSelectedChild(child)}
-            >
-              <div className="child-avatar">{child.avatar}</div>
-              <div className="child-info">
-                <div className="name">{child.name}</div>
-                <div className="meta">
-                  {child.age}岁 · {child.grade}
-                </div>
-              </div>
-            </div>
-          ))}
-          {/* ISSUE-032：加载期间占位，避免「孩子列表」区空白被误判为数据丢失 */}
-          {childrenLoading && <LoadingBlock text="正在加载孩子列表…" />}
-          <button
-            onClick={() => setShowAddChild(true)}
-            style={{
-              width: "100%",
-              padding: 10,
-              background: "#667eea",
-              color: "white",
-              border: "none",
-              borderRadius: 8,
-              marginTop: 8,
-              fontSize: 14,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-            }}
-          >
-            <UserPlus size={18} /> 添加孩子
-          </button>
         </div>
 
         <div className="dashboard-main">
@@ -196,10 +156,48 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
               {childrenLoading ? (
                 <LoadingBlock text="正在加载孩子列表…" />
               ) : children.length === 0 ? (
-                <p style={{ color: "#888" }}>还没有孩子，点击左侧"添加孩子"开始。</p>
+                <>
+                  <p style={{ color: "#888" }}>还没有孩子，点击下方"添加孩子"开始。</p>
+                  <button
+                    onClick={() => setShowAddChild(true)}
+                    style={{
+                      padding: "10px 20px",
+                      background: "#667eea",
+                      color: "white",
+                      border: "none",
+                      borderRadius: 8,
+                      fontSize: 14,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <UserPlus size={18} /> 添加孩子
+                  </button>
+                </>
               ) : (
                 <div>
-                  <h3 style={{ marginBottom: 16 }}>孩子列表（点击卡片进入详情）</h3>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                    <h3 style={{ margin: 0 }}>孩子列表（点击卡片进入详情）</h3>
+                    <button
+                      onClick={() => setShowAddChild(true)}
+                      style={{
+                        padding: "8px 16px",
+                        background: "#667eea",
+                        color: "white",
+                        border: "none",
+                        borderRadius: 8,
+                        fontSize: 13,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <UserPlus size={16} /> 添加孩子
+                    </button>
+                  </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
                     {children.map((child) => (
                       // ISSUE-007：卡片整体点击进入详情页（学习进度/学习主题/AI 提示词/账号密码 tabs）

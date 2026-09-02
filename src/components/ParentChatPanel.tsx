@@ -1,6 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "./ChatWindow";
 
+// ISSUE-039：历史消息 ID 生成器（与 Learn.tsx nextId 同构）
+let msgCounter = 0;
+function nextId() {
+  return `parent-msg-${Date.now()}-${msgCounter++}`;
+}
+
+/**
+ * 剥离会话历史中的 [内部指令] 标记（语音误差前缀等）。
+ * 家长聊天无附件（图片/音频/文件），只需去除方括号内容即可。
+ */
+function stripInstructions(text: string): string {
+  return (text || "").replace(/\[[^\]]*\]/g, "").trim();
+}
+
 /**
  * 家长中心右侧常驻聊天面板（ISSUE-050）：
  * 对接通用家长会话（pi:start_parent / pi:prompt_parent，childId="parent"），
@@ -32,6 +46,21 @@ export default function ParentChatPanel() {
             ...prev,
             { id: `ai-${Date.now()}`, role: "ai", text: `⚠️ AI 会话初始化失败：${r?.error || "未知错误"}`, time: nowTime() },
           ]);
+          return;
+        }
+        // ISSUE-039：退出再进入 / 切 view 再回聊天时恢复历史消息
+        if (Array.isArray(r.history) && r.history.length > 0) {
+          setMessages(
+            r.history.map((m: any) => ({
+              id: nextId(),
+              role: m.role === "user" ? "user" : "ai",
+              text: stripInstructions(typeof m.text === "string" ? m.text : ""),
+              time: m.time || nowTime(),
+              // 恢复 AI 消息的思考过程与工具调用记录（点 🧠 可看）
+              thinking: m.role === "ai" ? m.thinking : undefined,
+              tools: m.role === "ai" ? m.tools : undefined,
+            }))
+          );
         }
       })
       .catch((e: any) => {
@@ -137,18 +166,51 @@ export default function ParentChatPanel() {
     });
   }, [patchWorking]);
 
-  async function handleSend(text: string) {
+  async function handleSend(text: string, opts?: import("./ChatWindow").SendOptions) {
+    // ISSUE-037：附件走可逆标记塞进 text（与 Learn.tsx:764-798 同范式）
+    const images = opts?.images || [];
+    const textFiles = opts?.textFiles || [];
+    const files = opts?.files || [];
+    const parts: string[] = [];
+    if (text) parts.push(text);
+    // 家长上传路径（persistUpload 已返回相对 data/ 的 parents/<pid>/uploads/xxx）
+    // toRel 转为 agent cwd（data/）下的相对路径
+    const toRel = (p?: string) => (p ? p.replace(/^parents\/[^/]+\//, "") : "未保存");
+    for (const img of images) {
+      parts.push(`【附件图片：${img.name}|${toRel(img.path)}】`);
+    }
+    for (const f of textFiles) {
+      parts.push(`【附件文件：${f.name}|${toRel(f.path)}】`);
+    }
+    for (const f of files) {
+      parts.push(`【附件文件：${f.name}|${toRel(f.path)}】`);
+    }
+    const promptText = parts.join("\n");
+    // dataURL → SDK ImageContent（剥离前缀，内联 base64 发送）
+    const sdkImages = images.map((img) => {
+      const comma = img.dataUrl.indexOf(",");
+      return { type: "image" as const, mimeType: img.mime, data: comma >= 0 ? img.dataUrl.slice(comma + 1) : img.dataUrl };
+    });
+
     // 发送：创建用户气泡 + AI working 气泡（思考/工具/正式回复都进这一条）
     const workingId = `ai-${Date.now()}`;
     workingIdRef.current = workingId;
     setMessages((prev) => [
       ...prev,
-      { id: `u-${Date.now()}`, role: "user", text, time: nowTime() },
+      {
+        id: `u-${Date.now()}`, role: "user", text, time: nowTime(),
+        attachments: images.length ? images : undefined,
+        textFiles: textFiles.length ? textFiles : undefined,
+        files: files.length ? files : undefined,
+      },
       { id: workingId, role: "ai", text: "", thinking: "", tools: [], working: true, time: nowTime() },
     ]);
     setBusy(true);
     try {
-      const r: any = await window.api.piPromptParent(text);
+      // ISSUE-037：带 images 参数发送（对齐 pi:prompt）
+      const r: any = sdkImages.length
+        ? await window.api.piPromptParent(promptText, sdkImages)
+        : await window.api.piPromptParent(promptText);
       // ISSUE-037：主进程把错误包在返回值里（{success:false}）而不是抛异常——必须显式检查
       if (!r?.success) {
         const id = workingIdRef.current;

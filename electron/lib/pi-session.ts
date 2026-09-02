@@ -150,6 +150,7 @@ data/
   parents/default/          # 家长库：教学内容的唯一真源
     parent.sqlite           #   topics(主题) + courses(课程) + meta（二进制，用 parent_stats 查，不要 read）
     materials/{topic}/      #   资料文件（html/md 直接放；音频/视频放 media/ 子目录）
+    uploads/                #   家长上传的文件（ISSUE-037：家长聊天上传的文件落这里）
     activity-log.md         #   家长操作记录：你对 app 的改动都记在这里（可 read 查看历史）
   children/{childId}/       # 每个孩子一个目录
     profile.json            #   孩子档案：名字/年龄/兴趣/AI 伙伴（文本，可 read）
@@ -161,6 +162,9 @@ data/
   scheduler-config.json     #   定时任务配置（每日学习记录总结/自动新会话等）
   token-log.jsonl           #   token 消耗日志（文本，可 read；或 parent_stats tokens 汇总）
 \`\`\`
+
+**家长上传文件读取（ISSUE-037）**：家长在聊天中上传的文件保存在 \`parents/default/uploads/\` 目录下，消息里会带 \`【附件文件：文件名|路径】\` 或 \`【附件图片：文件名|路径】\` 标记（路径如 \`parents/default/uploads/xxx.json\`）。需要文件内容时用 read 工具读取标记里的路径再回应，不要凭空猜测内容；不必要时不读。
+
 **学习计划（服务端 study_plans 真源）**：不在上面本地目录里——它是「每天学什么」的逐日排期表，经 study_plan_* 工具读写服务端（家长对话制定 → agent 起草 → 家长确认 → 生效 → 每日展开成孩子的 [家长] todo；未学完自动顺延到次日，多计划按天合并），详见下文「学习计划」一节。
     profile.json            #   孩子档案：名字/年龄/兴趣/AI 伙伴（文本，可 read）
     kb.sqlite               #   孩子学习数据真源：topics/courses(进度)/daily_entries(每日记录)/tags/meta（二进制，用 parent_stats 查）

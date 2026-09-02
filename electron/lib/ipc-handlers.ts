@@ -1004,7 +1004,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     try {
       const session = await getParentSession();
       attachSessionEvents(session, "parent", getMainWindow);
-      return { success: true };
+      // ISSUE-039：返回会话历史，前端进入时回填聊天记录
+      const history = getSessionHistory(session);
+      return { success: true, history };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1109,12 +1111,14 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  ipcMain.handle("pi:prompt_parent", async (_e: IpcMainInvokeEvent, text: string) => {
+  // ISSUE-037：家长发送支持 images（对齐 pi:prompt）
+  ipcMain.handle("pi:prompt_parent", async (_e: IpcMainInvokeEvent, text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) => {
     try {
       const session = await getParentSession();
       const beforeCount = (session as any).messages?.length ?? 0;
       parentPromptAbort = { stopped: false, abort: () => session.abort() };
-      await session.prompt(text);
+      const imgCount = images?.length || 0;
+      await session.prompt(text, imgCount > 0 ? { images: images! } : undefined);
       // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件
       if (parentPromptAbort?.stopped) {
         _e.sender.send("pi:reply_end", { childId: "parent" });

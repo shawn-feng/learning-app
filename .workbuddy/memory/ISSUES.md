@@ -691,7 +691,7 @@
 - **优先级**：✅ **实施完成（2026-09-02）**：P0 数据层 + P0b 每日顺延 + P2 家长工具/提示词 + P3 展开替换/旧 daily 收敛 + P4 只读 UI + P5 回归全绿。遗留：git 提交未做、201/公网部署未做、家长 prompt 用户版本不自动吃到新段（已存用户版本的安装需手动清理）。
 - **记录时间**：2026-09-02
 
-## [ISSUE-029] 定时任务新模型：任务管理页（先创建任务 → 分配给孩子）+ 执行结果查询
+## [ISSUE-038] 定时任务新模型：任务管理页（先创建任务 → 分配给孩子）+ 执行结果查询
 
 - **类型**：需求 / 架构（2026-09-02 实施）
 - **描述**：家长把定时任务从「设置」挪到家长中心左侧边栏独立页「⏰ 定时任务」，改为**先创建任务、再把任务分配给孩子**的两级模型，并用卡片展示；同时新增**定时任务执行结果查询**（每次执行 ok/skip/error + 信息）。目的：定时任务成为可复用模板（同一任务可分配给多个孩子），且家长能查看执行情况（服务端 worker 执行，设备关机/休眠不漏跑）。
@@ -706,6 +706,7 @@
   - 任务类型目前 4 种：recording / todo_gen / todo_stat / auto_new_session（auto_new_session 为客户端行为，由 effective-config 驱动；worker 只执行 recording/todo）。
   - 老客户端（无任务模型）仍用旧 scheduler_config → 新服务端不强制迁移；新客户端打开定时任务页即自动把 effective-config 合入 scheduler_config（含未分配孩子自动关闭对应功能）。
   - 任务删除保留历史 task_runs（task_id 置空）。
+- **后续修复（2026-09-02 排查，编号原为 029 与英语模块冲突改 038）**：worker 触发源改为直读 scheduler_tasks+分配（不再依赖客户端推送 scheduler_config 时机，见 worker/scheduler.ts collectChildConfigs/resolveChildConfig）；runTaskAtPoint 按 point 拆 todo_gen/todo_stat 任务匹配（task_runs 正确挂 task_id/名称）；新增 scripts/seed-parent-config.mts（开发机把本地 auth/app_settings 播种服务端）。现象：任务到点未执行且无记录，根因=客户端配置推送滞后 + 服务端无该家长 apiKey（No API key）。
 - **优先级**：已完成（2026-09-02 实施 + 冒烟全过）
 - **记录时间**：2026-09-02
 
@@ -761,5 +762,94 @@
   1. **去掉最大宽度 clamp**：`useChatPanel` 的 `maxW` 参数改为「不限制」（如传 `Infinity` 或移除 `Math.min(maxW, …)` 两处 clamp，仅保留 `minW` 下限防止面板被拉没，建议 minW 也适当放宽到 ~220 或保留 280）。推荐最干净做法：删 `maxW` 参数 + 两处 clamp，只保留 `Math.max(minW, …)`。
   2. **持久化确认**：现有 localStorage 写入/读取已满足「重启保留」；因 ① 去掉上限，读取侧（`:20`）的 `Math.min(maxW, …)` 一并移除，使极宽值也能原样存回读取。
   3. **回归**：拖到接近满屏/超出视口都应正常（面板宽度 = 内联 style，超大时布局靠 flex 约束，父容器通常已有 `overflow`/收缩处理）；折叠态、ISSUE-024 的 Pointer-events 拖拽、左右两端（Learn/Dashboard）均不受影响。
+- **优先级**：已实施（2026-09-02）
+- **实施记录（2026-09-02）**：
+  - `useChatPanel.ts`：移除 `maxW` 参数 + 两处 `Math.min(maxW, ...)` clamp，仅保留 `Math.max(minW, ...)` 下限；`useCallback` 依赖数组同步移除 `maxW`。localStorage 持久化现成（写入/读取均未动），去 clamp 后极宽值也能原样存回。
+  - 验证：`tsc --noEmit` 0 业务错误；两个调用方（Learn/Dashboard）均未传 maxW，无需改。
+- **记录时间**：2026-09-02
+
+## [ISSUE-036] 聊天框上传应支持任意文件类型（JSON 等现被拦截）
+
+- **类型**：UX / 文件上传（聊天框附件；涉及 `src/components/ChatWindow.tsx` 的 `accept` 属性、`processFiles` 路由、待发送附件状态）
+- **描述**：聊天框上传文件时，**应能上传任何类型的文件**。目前上传 `.json` 文件时被阻止了——既选不进来，拖进去也提示「暂不支持的文件类型」。
+- **现状 / 根因（已查证代码，双层拦截）**：
+  - **① 选择框层就挡住**：`<input type="file" accept="image/*,audio/*,text/plain,.txt,.md">`（`ChatWindow.tsx:935-937`）——`accept` 只放行图片/音频/txt/md，**JSON 在系统文件对话框里直接灰掉选不了**。
+  - **② 处理路由层也拒**：`processFiles`（`ChatWindow.tsx:377-403`）按 mime 分支——`image/*`→预览、`audio/*`→转写、`text/plain`/`.txt/.md`→读取，落到 `else` 分支（`:399-401`）直接 `setFileError("暂不支持的文件类型：${f.name}")`。JSON 的 mime 是 `application/json` 或空，**必走 else 被拒**（即便从拖拽绕过 accept 也无效）。
+  - **发送侧无通用文件通道**：当前待发送附件只有 `pendingImages`/`pendingTextFiles`/`pendingAudios` 三类（`ChatWindow.tsx:212-213`），发送逻辑（`:315-324`）只认 `opts.images`/`opts.textFiles`；**没有「通用文件附件」状态**，接收侧虽有 `bubble-file`（`:770-800）渲染落盘文件，但发送侧没有对应挂起态。
+- **改造方向**：
+  1. **放开选择**：`accept` 改为 `.*` 或干脆移除（拖拽本就不过滤，对称一致）；tooltip 文案同步更新（加「任意文件」）。
+  2. **`processFiles` 兜底分支改为「通用文件」**：`else` 不再报错，改 `persistUpload(f)` 落盘 + 推入新增的 `pendingFiles`（通用附件：`{ name, path, mime }`），渲染成 `📎 文件名` 小 chip（仿 `:875` 的 `attachment-file`，带移除按钮）；发送时 `opts.files = pendingFiles` 一并带出，agent 经 cwd（`uploads/`）读取内容（JSON 等文本类文件也可在此分支里顺手 `readFileAsText` 把内容塞进 `textFiles` 方便 agent 直接读到，与 .txt/.md 同待遇）。
+  3. **新增 `pendingFiles` 状态 + 发送/清空**：`useState<FileAttachment[]>` + 发送后置空（仿 `setPendingTextFiles([])` `:324`）+ `void` 无关类型不阻断。
+  4. **大小/类型安全阀（可选）**：超大文件（如 >50MB）给友好提示而非静默；二进制（如 .exe/.zip）仅落盘+引用，不尝试读取内容。
+  5. **回归**：图片/音频/txt/md 现有行为不变；JSON/任意文本/二进制拖拽均能进、能发送、孩子(上传目录 `children/<id>/uploads/`)与家长(上传目录 `parents/<pid>/uploads/`，ISSUE-044)隔离路径仍正确。
+- **优先级**：已实施（2026-09-02）
+- **实施记录（2026-09-02）**：
+  - `ChatWindow.tsx`：新增 `FileAttachment` 接口；`SendOptions`/`ChatMessage` 加 `files?`；新增 `pendingFiles` 状态；`processFiles` else 分支改为先 `readFileAsText`（json/csv 等文本类→textFiles 含内容），失败则仅 `persistUpload` + `pendingFiles`（二进制→引用）；`accept` 改为 `*/*`；tooltip 文案更新；发送时 `opts.files = pendingFiles`、发送后清空；新增 `📎 文件名` chip 渲染。
+  - 验证：`tsc --noEmit` 0 业务错误；图片/音频/txt/md 现有行为不变。
+- **记录时间**：2026-09-02
+
+## [ISSUE-037] 家长聊天框支持上传文件，落到家长 uploads 目录且家长 agent 能读取
+
+- **类型**：功能缺口 / 文件上传（家长聊天附件；涉及 `src/components/ParentChatPanel.tsx`、`ChatWindow.tsx`、`electron/preload.ts`、`electron/lib/ipc-handlers.ts`、`pi-session.ts`）
+- **描述**：家长中心的聊天框也要能**上传文件**，且文件必须落到**家长的 uploads 目录**（`data/parents/<pid>/uploads/`），家长 agent 需要能**读到这些上传的文件**（比如上传一个 json/文档让 agent 处理）。ISSUE-044 已把「上传落盘到家长库」打通，但**「家长 agent 实际读到」这条链路没接上**——家长端上传后 agent 收不到任何文件信息。
+- **现状 / 根因（已查证代码，对比孩子端范式）**：
+  - **孩子端范式（可照搬）**：`Learn.tsx:704-798` `handleSend(opts)` 把附件拼成**可逆标记**塞进 `text`——`【附件文件：名|相对路径】`/`【附件图片：名|路径】`/`【附件音频：名|路径】`；图片另走 `window.api.piPrompt(childId, text, images)` 的 `images` 参数（base64）。agent 凭标记 `read uploads/xxx`（约定见 `pi-session.ts:55`「孩子上传的文本文件已保存在 uploads/…用 read 工具读取标记里的路径」）。
+  - **家长端断点①（发送不转发附件）**：`ParentChatPanel.handleSend(text: string)`（`:140-183`）只接 `text`、调用 `window.api.piPromptParent(text)`——**`ChatWindow` 构造的 `opts`（images/textFiles/audios）被整个丢弃**（ChatWindow.tsx:320 把 `opts` 传给 `onSend`，家长端签名只收 `text`）。
+  - **家长端断点②（IPC 无附件通道）**：`preload.ts:84` `piPromptParent: (text) => invoke("pi:prompt_parent", text)` 与 `ipc-handlers.ts:1112` `pi:prompt_parent`（`async (_e, text)` → `session.prompt(text)`，`:1112-1130`）**都只认 `text`**——不像孩子端 `pi:prompt(childId, text, images)`（preload.ts:64-65 / ipc-handlers.ts:1019-1043）带 `images` 参数。**连图片都传不过去，更别说文本/通用文件**。
+  - **家长端断点③（消息无标记 + 提示词无约定）**：因①②，家长上传的文件**从未以 `【附件…】` 标记进入消息文本**，家长 agent 既看不到文件名/路径、也无指令引导去读。而 `buildParentPrompt` / `LEARNING_NAV_INSTRUCTIONS`（`pi-session.ts`）里**没有类似 `:55` 的「上传文件读取」约定**。
+  - **好消息——落盘与读取能力已具备**：① 上传落盘 `data/parents/<pid>/uploads/`（ISSUE-044，`ipc-handlers.ts:1502-1529`，返回相对路径 `parents/<pid>/uploads/xxx.json`）；② 家长 agent `cwd: dataDir`（`pi-session.ts:505`）、有 `read`/`ls` 工具（`:539`）——该上传路径**相对 cwd 即可 `read parents/<pid>/uploads/xxx.json`**。**只差「把标记带进消息 + 提示词约定」这两步**。
+- **改造方向（对齐孩子端已验证范式）**：
+  1. **`ParentChatPanel.handleSend(text, opts)`**：签名加 `opts`，接收 `ChatWindow` 的 `images/textFiles/audios`（仿 `Learn.tsx:704`）。
+  2. **`preload.ts` + `ipc-handlers.ts` 扩 `piPromptParent`**：加 `images`/`textFiles`/`audios` 参数（对齐 `pi:prompt`）；`pi:prompt_parent` 内 `session.prompt(text, { images })`（有图才带），文本/音频走标记文本。
+  3. **拼标记进 `text`**：在 `ParentChatPanel.handleSend`（或 ChatWindow 抽公共函数）里，仿 `Learn.tsx:764-798` 把 `opts` 转成 `【附件文件：名|parents/<pid>/uploads/xxx】`/`【附件图片：…】`/`【附件音频：…】`  append 到 text（注意 `toRel`：家长上传路径 `saveParentUpload` 已返回相对 `dataDir` 的字符串，直接拼即可；可加 `parents/<pid>/uploads/` 前缀校验防止越界）。
+  4. **提示词约定**：`buildParentPrompt` 加一段「家长上传的文件保存在 `parents/<pid>/uploads/`，消息里带 `【附件文件：名|路径】` 标记；需要内容时用 read 工具读取标记路径再回应」（镜像 `pi-session.ts:55` 孩子端约定）。
+  5. **与 ISSUE-036 协同**：ISSUE-036 解决「任意类型可上传 + `pendingFiles` 通用挂起态 + `opts.files` 发送」。本 issue 的家长端发送需一并消费 `opts.files`（通用文件）走标记文本（路径 `parents/<pid>/uploads/…`），避免家长端只能传图/文本。
+  6. **回归**：家长上传 json/文档/图片 → 家长 agent 能 `read` 到内容并据此回应；孩子端上传行为完全不受影响（两套 `prompt` IPC 独立）；`parents/<pid>/uploads/` 与 `children/<id>/uploads/` 隔离仍正确。
+- **优先级**：已实施（2026-09-02）
+- **实施记录（2026-09-02）**：
+  - `ParentChatPanel.tsx`：`handleSend(text, opts?)` 签名扩展；附件走可逆标记 `【附件文件/图片：名|路径】` 塞进 promptText（对齐 Learn.tsx:764-798）；user 气泡存储 attachments/textFiles/files；images 走 `piPromptParent(text, sdkImages)` 带 images 参数。
+  - `preload.ts`：`piPromptParent(text, images?)` 加可选 images 参数。
+  - `ipc-handlers.ts`：`pi:prompt_parent` 加 images 参数，`session.prompt(text, {images})` 对齐 child 端。
+  - `pi-session.ts` `buildParentPrompt`：数据目录加 `parents/default/uploads/`；新增「家长上传文件读取」约定段（标记格式 + read 工具指令，镜像 child 端 :55）。
+  - 验证：`tsc --noEmit` 0 业务错误；与 ISSUE-036 协同（opts.files 通用文件一并消费）。
+- **记录时间**：2026-09-02
+
+## [ISSUE-039] 家长 agent 会话历史退出再进不显示（落盘有、进入不加载）
+
+- **类型**：功能缺口 / 会话历史加载（家长聊天；涉及 `electron/lib/ipc-handlers.ts`、`src/components/ParentChatPanel.tsx`，对比孩子端 `src/pages/Learn.tsx`）
+- **描述**：家长 agent 会话 jsonl 确实落盘了（退出时数据已写磁盘），但**退出 app 再进入（或家长中心切到别的 view 再回到聊天）时，聊天框是空的、历史消息全没了**。孩子端同样落盘却能在进入时恢复历史，家长端缺这一步。
+- **现状 / 根因（已查证代码，与孩子端逐项对照）**：
+  - **落盘真实存在**：`getParentSession`（pi-session.ts:494-545）用 `SessionManager.continueRecent(dataDir, getParentSessionsDir("parent"))`（:520-522），session 的 jsonl 写入 `data/.pi/agent/sessions/parent/`——用户判断正确，**文件确实落盘了**。
+  - **断点①（IPC 不返回历史）**：`pi:start_parent`（ipc-handlers.ts:1003-1011）只 `return { success: true }`，**没有 history 字段**；而孩子端 `pi:start_child`（:982-997）明确 `const history = getSessionHistory(session)`（:986）并 `return { success:true, history, materials, materialsLimit }`（:997）。家长端缺这一行。
+  - **断点②（前端不加载历史）**：`ParentChatPanel.tsx:25-43` 的初始化 `useEffect` 只 `piStartParent().then` 检查 `r?.success`、失败才塞一条错误提示，**完全没读 `r.history` 回填 `messages`**；`messages` 初始 `useState([])`（:13），仅发送/流式时往里 push。孩子端 `Learn.tsx:373-394` 进入时 `if (Array.isArray(r.history) && r.history.length>0) setMessages(r.history.map(...))` 回填（含 `restoreAttachments`、role 映射、`thinking`/`tools` 还原，:377-392）——家长端照搬这段即可。
+  - **结论**：落盘链路完好，缺的是「进入时把 jsonl 历史读回 UI」，与文件是否损坏无关。
+- **改造方向（对齐孩子端已验证范式，改动量极小）**：
+  1. **`ipc-handlers.ts` `pi:start_parent`**：插入 `const history = getSessionHistory(session);`（与 :986 完全一致），并把 `return { success: true }` 改为 `return { success: true, history };`（家长通用会话无 materials，先不加 materials 回填）。
+  2. **`ParentChatPanel.tsx:25-43`**：在 `piStartParent().then` 成功分支内，`if (Array.isArray(r.history) && r.history.length>0) setMessages(r.history.map((m:any)=>({ id: nextId(), role: m.role==="user"?"user":"ai", text: restoreAttachments(...).text, attachments: m.role==="user"?restored.attachments:undefined, textFiles:..., audioPath:..., time: m.time||nowLabel(), thinking: m.role==="ai"?m.thinking:undefined, tools: m.role==="ai"?m.tools:undefined })))`——**整体照搬 Learn.tsx:377-392**（ParentChatPanel 当前从 ChatWindow 导入 `nowTime`，但孩子端用 `nowLabel`；统一用 `nowTime()` 即可，或引入 `nextId`/`restoreAttachments` 同款工具）。
+  3. **`getSessionHistory` 返回结构**：孩子端已验证为 `{role, text, time?, thinking?, tools?}` 数组，家长端复用同一映射函数无需重写。
+  4. **边界**：家长端无学习资料列表，不强行加 materials；parent-content 会话（TopicDetail 用）若也要恢复历史，同理在该组件入口加回填（本次先修通用家长会话）。
+  5. **回归**：退出 app 再进入 / 家长中心切 view 再回聊天 → 历史消息完整恢复（含 AI 思考/工具调用，点 🧠 可看）；新发消息正常追加；孩子端历史恢复不受影响（两套 IPC 独立）。
+- **优先级**：已实施（2026-09-02）
+- **实施记录（2026-09-02）**：
+  - `ipc-handlers.ts` `pi:start_parent`（:1003-1011）：插入 `const history = getSessionHistory(session)` 并在返回值增加 `history` 字段（与 `pi:start_child` 对齐）。家长会话无 materials，未加。
+  - `ParentChatPanel.tsx`：新增 `nextId()`（ID 前缀 `parent-msg-`）+ `stripInstructions(text)`（剥离 `[内部指令]` 方括号内容）；`piStartParent()` 成功分支增加 `if (Array.isArray(r.history) && r.history.length>0) setMessages(...)` 回填历史——role 映射、thinking/tools 恢复、time 兜底均对齐 Learn.tsx:377-392 范式；无附件（parent-chat 不传图片/文件），未加 attachments/textFiles/audioPath。
+  - 验证：`tsc --noEmit` 对两个改动文件 0 业务错误。待 dev 回归：退出 app 再进入 / 家长中心切 view 再回聊天，历史消息完整恢复（含思考/工具点 🧠 可看）。孩子端不受影响（两套 IPC 独立）。
+- **记录时间**：2026-09-02
+
+## [ISSUE-041] 家长页面左侧边栏去掉「孩子列表」，添加孩子入口收进「孩子管理」
+
+- **类型**：UI 简化 / 布局调整（家长中心 `src/pages/Dashboard.tsx`，仅记录不执行）
+- **描述**：家长中心左侧 `dashboard-sidebar` 现在底部单独有一块「孩子列表」（`children.map` 渲染每个孩子卡片 + 一个「添加孩子」按钮）。用户希望**左侧边栏不再展示孩子列表**，把「添加孩子」的入口收进「孩子管理」（侧边栏已有的「孩子管理」菜单项，对应 `view==="children"`）。
+- **现状 / 根因（已查证代码）**：
+  - **侧边栏孩子列表区**：`Dashboard.tsx:152-169` 是「孩子列表」section 标题 + `children.map` 渲染每张孩子卡片（`onClick={()=>setSelectedChild(child)}`，:159，点击设为当前选中孩子）；`:170-171` 是 ISSUE-032 的加载占位；`:172-190` 是「添加孩子」按钮（`onClick={()=>setShowAddChild(true)}`，触发 `AddChildModal`）。
+  - **「孩子管理」菜单项已存在**：`Dashboard.tsx:69-81` 侧边栏「菜单」区第一个卡片 `name="孩子管理"`，`onClick` 设 `setView("children")`；主区 `view==="children"` 分支 `:194-240` 已渲染完整孩子网格（头像/AI伙伴/兴趣 + 「查看详情 ›」点进 `ChildDetailPage`），**但该视图内目前没有「添加孩子」按钮**——添加入口只在侧边栏。
+  - **`AddChildModal` 已接好**：`showAddChild` 状态 `:27`，挂载于 `:305-314`，`onAdded` 回调里 `setShowAddChild(false)+refresh()`，与侧边栏按钮共用同一套。
+  - **选中孩子机制**：`selectedChild` 目前仅由侧边栏卡片 `:159` 设置；但主区各功能面板（学习计划/考核/定时任务/Token，`:257-268`）都是**各自接收 `children` 数组、在面板内部选孩子**，不依赖侧边栏的 `selectedChild`。故移除侧边栏列表后，这些面板不受影响；仅「侧边栏高亮当前孩子」这一视觉反馈消失（可接受）。
+- **改造方向（删除 + 平移，改动量小）**：
+  1. **删除侧边栏孩子列表区**：移除 `Dashboard.tsx:152-190`（「孩子列表」标题、`children.map` 卡片、ISSUE-032 占位、「添加孩子」按钮整段）。
+  2. **「添加孩子」入口平移到「孩子管理」视图**：在 `view==="children"` 主区（`:194-240` 的网格上方或下方）加一个「+ 添加孩子」按钮，复用 `showAddChild`/`AddChildModal`（与现侧边栏按钮完全一致）；原 `:199` 的空态提示文案「点击左侧"添加孩子"开始」同步改为「点击下方"添加孩子"开始」或「在「孩子管理」中添加」。
+  3. **无新增逻辑**：`childList()` 拉取（`:38`）、`refresh()`、`AddChildModal` 全部复用，不新增接口/状态。
+  4. **边界 / 设计点**：① 侧边栏去掉孩子列表后，家长「选定当前操作孩子」的入口变为「孩子管理 → 点卡片进详情」或各功能面板内部选择器——确认这满足用户预期（用户未要求保留侧边栏选中态，视为有意简化）；② 若某些未来视图需复用 `selectedChild`，需改从「孩子管理」详情或对应面板取值，本次不在范围内。
+  5. **回归**：侧边栏只剩「菜单」区（孩子管理/课程管理/学习计划/学习考核/定时任务/Token 消耗/设置），更清爽；「孩子管理」视图可正常查看孩子网格、进详情、点「添加孩子」新增；学习计划/考核/定时任务面板照常可操作（内部选孩子不受影响）；ISSUE-032 加载占位仍在「孩子管理」视图与主页保留（仅侧边栏那段删除）。
 - **优先级**：待定（本会话仅记录，未实施）
 - **记录时间**：2026-09-02

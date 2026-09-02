@@ -81,7 +81,9 @@ const api = {
   // 读取家长 uploads 目录内文件内容（base64），用于家长聊天历史消息播放语音录音
   readParentUpload: (parentId: string, relPath: string) =>
     ipcRenderer.invoke("file:read_upload_parent", parentId, relPath),
-  piPromptParent: (text: string) => ipcRenderer.invoke("pi:prompt_parent", text),
+  // ISSUE-037：家长发送支持 images（对齐 piPrompt）
+  piPromptParent: (text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) =>
+    ipcRenderer.invoke("pi:prompt_parent", text, images || []),
   piStartParentContent: () => ipcRenderer.invoke("pi:start_parent_content"),
   piPromptParentContent: (text: string) => ipcRenderer.invoke("pi:prompt_parent_content", text),
   piAbort: (childId: string) => ipcRenderer.invoke("pi:abort", childId),

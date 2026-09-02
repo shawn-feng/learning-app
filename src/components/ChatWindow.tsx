@@ -32,6 +32,8 @@ export interface ChatMessage {
   attachments?: ImageAttachment[];
   // 用户上传的文本类文件（txt/md），气泡内显示文件名、可点击用本地程序打开
   textFiles?: TextFileAttachment[];
+  // ISSUE-036：通用文件附件（任意类型，仅路径引用）
+  files?: FileAttachment[];
 }
 
 /** 用户上传的图片附件：dataURL 用于本会话预览与发送；path 为落盘后的相对路径（data/ 下） */
@@ -49,6 +51,13 @@ export interface TextFileAttachment {
   path?: string;
 }
 
+// ISSUE-036：通用文件附件（任意类型，仅落盘 + 路径引用，不读内容）
+export interface FileAttachment {
+  name: string;
+  path?: string;
+  mime: string;
+}
+
 /** handleSend 的扩展选项：图片 / 文本文件随文本一起发出 */
 export interface SendOptions {
   // 单段语音（base64 webm）。ISSUE-021 后已改用 audios 多段数组，
@@ -58,6 +67,8 @@ export interface SendOptions {
   audios?: string[];
   images?: ImageAttachment[];
   textFiles?: TextFileAttachment[];
+  // ISSUE-036：通用文件附件（任意类型）
+  files?: FileAttachment[];
 }
 
 // 消息时间戳（HH:mm）——各消息构造点统一调用，避免散落
@@ -208,9 +219,10 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   // ISSUE-031：在聊天消息区捕获中文选区 → 查词浮层
   const wordLookup = useWordLookup(messagesRef, speakText);
 
-  // 待发送附件：图片（dataURL 预览）+ 文本文件（文件名+全文）
+  // 待发送附件：图片（dataURL 预览）+ 文本文件（文件名+全文）+ 通用文件（仅路径引用）
   const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([]);
   const [pendingTextFiles, setPendingTextFiles] = useState<TextFileAttachment[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]); // ISSUE-036
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = useState("");
 
@@ -311,17 +323,19 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
 
   function handleSend() {
     const text = input.trim();
-    // 允许「只发图片/文本文件、不带文字」也发送
-    if ((!text && pendingImages.length === 0 && pendingTextFiles.length === 0 && pendingAudios.length === 0) || disabled) return;
+    // 允许「只发附件、不带文字」也发送
+    if ((!text && pendingImages.length === 0 && pendingTextFiles.length === 0 && pendingAudios.length === 0 && pendingFiles.length === 0) || disabled) return;
     const opts: SendOptions = {};
     if (pendingAudios.length) opts.audios = pendingAudios;
     if (pendingImages.length) opts.images = pendingImages;
     if (pendingTextFiles.length) opts.textFiles = pendingTextFiles;
+    if (pendingFiles.length) opts.files = pendingFiles; // ISSUE-036
     onSend(text, opts);
     setInput("");
     setPendingAudios([]);
     setPendingImages([]);
     setPendingTextFiles([]);
+    setPendingFiles([]); // ISSUE-036
   }
 
   // ---- 文件上传（ISSUE-008）----
@@ -397,7 +411,16 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
           setFileError(`读取文件失败：${f.name}${err?.name ? `（${err.name}）` : ""}`);
         }
       } else {
-        setFileError(`暂不支持的文件类型：${f.name}`);
+        // ISSUE-036：任意文件类型兜底——先尝试读取文本内容（json/csv/xml 等），失败则仅落盘引用
+        try {
+          const content = await readFileAsText(f);
+          const saved = await persistUpload(f).catch(() => undefined);
+          setPendingTextFiles((p) => [...p, { name: f.name, content, path: saved }]);
+        } catch {
+          // 二进制文件读不了文本，仅落盘 + 引用
+          const saved = await persistUpload(f).catch(() => undefined);
+          setPendingFiles((p) => [...p, { name: f.name, path: saved, mime: f.type || "application/octet-stream" }]);
+        }
       }
     }
   }
@@ -886,12 +909,30 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         </div>
       )}
 
+      {/* ISSUE-036：通用文件附件（任意类型） */}
+      {pendingFiles.length > 0 && (
+        <div className="attachment-preview">
+          {pendingFiles.map((f, i) => (
+            <div key={i} className="attachment-file">
+              <span title={`${f.name} (${f.mime})`}>📎 {f.name}</span>
+              <button
+                className="attachment-remove"
+                onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))}
+                title="移除"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="chat-input">
         <button
           className="upload-button"
           onClick={handleFileButton}
           disabled={disabled}
-          title="上传文件（可多选 / 拖拽到窗口：图片→识别 / 音频→转写 / txt·md→读取）"
+          title="上传文件（可多选 / 拖拽到窗口：任意类型，图片→识别 / 音频→转写 / 文本→读取）"
         >
           <Paperclip size={18} />
         </button>
@@ -934,7 +975,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/*,audio/*,text/plain,.txt,.md"
+          accept="*/*"
           style={{ display: "none" }}
           onChange={handleFilesSelected}
         />
