@@ -656,25 +656,39 @@
   - 验证：`tsc --noEmit` 对 Home/Dashboard/App/Loading 无业务错误（已过滤 @types/node26 环境告警）。
 - **记录时间**：2026-09-02
 
-## [ISSUE-033] 灵活学习计划（家长对话制定 + 服务端监督执行 + 未完成叠加 + 上学/假期区分）
+## [ISSUE-033] 灵活学习计划：对话驱动的逐日排期表（study_plans 替换 rules_json.daily）
 
-- **类型**：功能设计 / 新功能（替代现有「每主题每天学几课」死板模型；涉及服务端新增 study_plan 存储与执行 tick + 家长 agent 新工具 + 与 ISSUE-025 todolist / study-tracker 联动）
-- **描述**：新增「学习计划」功能。场景：① **家长与孩子 agent 对话**完成计划制定（自然语言、足够灵活）；② 计划**存服务端**，由**服务端监督执行**；③ **未完成的计划项自动叠加（roll over）到下一周期/下一份计划**继续执行；④ **取代现有死板模型**——现有是「每个主题每天学几课」（`kb.topics.rules_json.daily` + `type`必学/选学，见 `parent-library.ts:541 setChildTopicDaily`、`ipc-handlers.ts:413`），太僵硬。新模型要支持：**单个课程安排学多少天**、**某一天可以学多个课程**、**无固定每日配额**；⑤ **区分「上学」与「假期」两套学习计划**（两套可切换/叠加）；⑥ 家长设置通过对话完成、由服务端执行。
+- **类型**：功能设计 / 新功能（替代「每主题每天学几课」死板模型；服务端新增 `study_plans` 存储 + 家长 agent 新工具 + 与 ISSUE-025 todolist 联动 + 家长端两处只读展示）
+- **描述**：学习计划 = 一张「**每天具体学什么**」的排期表。家长在家长聊天用自然语言给意图（"做 9 月计划""论语排完""数学每天 1 课"…），agent 把它分解成**逐日具体安排**（有疑问先问家长确认、不擅自猜），家长对话确认后生效并存服务端。**没学完的自动累加到下一天**；**多计划同一天按天合并**。**直接替换**旧 `rules_json.daily`，不共存。
+- **⚠️ 编号历史**：ISSUE-033 曾用于「AGENTS 纯 SQLite / 提示词上云」（2026-08-30 实施完毕，定义在 `ISSUES-archive-2026-08-30.md`）；本次是**编号复用的新需求**（学习计划），与旧内容无关。
 - **现状 / 根因（已查证代码）**：
-  - **现有计划模型 = 死板的「每主题每天 X 课」**：`setChildTopicDaily`(`parent-library.ts:541`) 把 `rules_json.daily`(如"3") / `type`(必学|选学) 写进孩子库 `kb.topics`；`todo-scheduler.ts:102-115` 据此把家长规定项渲染成「今天学 X 课」/「必学：XX」的 todo；`learning-summary.ts:155/262` 与 `study-tracker` 做每日达标评估。**它没有「课程级天粒度」「某天多课」「跨周期叠加」「上学/假期」任何概念**——正是用户嫌死板的根源。
-  - **家长 agent 已有写入孩子 kb 的能力**：`custom-tools.ts` 的 `kb_query/kb_insert/kb_update`（带 `child_id` 参数，数据在 SPLIT 服务端 `kb.sqlite`）——家长 agent 可经对话改孩子知识库；**但缺少「学习计划」这一高层实体**，只有 topics.rules_json 这个粗糙载体。
-  - **服务端无 study_plan 存储/执行**：`server/src/routes/*` 无 `study_plan` 相关表/路由（grep 命中仅 `parents.plan` 订阅档、exam `reinforcePlan` 复习计划，均非学习计划）；SPLIT 约定「服务端为数据真源、服务端监督」→ 学习计划必须新增服务端 `study_plans` 表 + 执行 tick。
-  - **已有可复用执行链**：`todo-scheduler.ts`(ISSUE-025 实施的 genTime/statTime ephemeral agent) + `study-tracker`(每日达标评估) 已是把「家长规定」转成孩子每日 todo 并评估的机制——新学习计划应成为这份 todo 的**新数据源**，替换掉 `rules_json.daily` 的粗糙生成。
+  - **现有计划模型 = 死板的「每主题每天 X 课」**：`setChildTopicDaily`(`parent-library.ts:541`/`ipc-handlers.ts:413`) 把 `rules_json.daily` / `type`(必学|选学) 写进孩子库 `kb.topics`；`todo-scheduler.ts:102-115` 据此渲染「今天学 X 课」/「必学：XX」的 todo；`learning-summary.ts:155/262` 与 study-tracker 做每日达标评估。无「课程级天粒度」「某天多课」「空天不学」任何概念——用户嫌死板的根源。
+  - **家长 agent 已有改孩子 kb 的能力**：`custom-tools.ts` 的 `kb_query/kb_insert/kb_update`（child_id 参数，数据在 SPLIT 服务端 `kb.sqlite`）；缺「学习计划」这一高层实体，只有 topics.rules_json 粗糙载体。
+  - **服务端无 study_plan 存储**：`server/src/routes/*` 无相关表/路由（grep 仅 parents.plan 订阅档、exam reinforcePlan，均非学习计划）。
+  - **可复用执行链**：`todo-scheduler.ts`(ISSUE-025 genTime/statTime ephemeral agent) + study-tracker 已是「家长规定 → 每日 todo → 达标评估」链路——学习计划成为这份 todo 的**新数据源**。
+- **需求确认稿（vFinal5，2026-09-02 对话逐条确认锁定）**：
+  1. **范围**：新计划存服务端 `study_plans`，数据结构 = 「日期 → 内容项[]」的排期表。**移除 `rules_json.daily` 及其生成逻辑**，所有孩子统一走 `study_plans`；**存量不自动迁移**（2026-09-02 拍板：旧设置作废，家长在对话里重新制定；agent 可在孩子无任何 plan 时引导「还没有学习计划，要我排一份吗？」）；旧字段弃用。
+  2. **制定原则（纯对话）**：家长意图任意（"做 9 月计划""论语排完""数学每天 1 课"只是例子，非穷举）；agent 把意图**落实到每一天的具体内容**；不确定（哪几章？每天几课？哪些天？）→ **主动问家长确认，不擅自猜**；起草用内容知识（章节数/课程清单）铺排期。
+  3. **确认（纯对话）**：提案在聊天里大白话列出，家长回"确认"或"改：…"生效。**无表单 UI / 无预览卡 / 无草稿态**。工具 `study_plan_create/update/list/get`（list/get 供回显查看，如家长问"现在计划是什么"）。
+  4. **每日规则**：空天 = 不要求学；有内容 = 学那个。某天没学完 → **加到下一天内容里、持续累加**。多计划同一天 → **按天合并**（两份内容都出现）。
+  5. **修改**：家长随时对话改任意一天（"9 月 5 号数学改 2 课"）；生效计划可整体调整。
+  6. **执行**：每日「学什么」由 gen 链路读 `study_plans` 展开成 todo 给孩子（**学习计划只在客户端展示**；客户端 scheduler 与 server worker 均读服务端**当日聚合**）；**服务端每日定时检测当日完成情况，未完成项自动顺延叠加到下一天**（carry 由服务端定时执行）；派生 todo 标 `[家长]` 不可改，与 ISSUE-025 孩子自规划共存。
+  7. **能力前置**：家长 agent 需能读孩子课程/章节结构才能起草（确认 `kb_query` 够用，或补一个课程结构查询工具）。
+  8. **家长端展示（只读）**：家长中心左侧边栏新增「学习计划」只读面板（与学习考核/定时任务并列），按孩子切换看排期表；孩子详情页（`ChildDetailPage`）新增「学习计划」tab。两处均**只读**，编辑仍走家长对话（可加「在对话里修改」快捷按钮跳回聊天）。
+- **❌ 已被需求确认推翻、不再实现**：school/holiday 两套切换与自动判定、items 的 goal/target_days/done_days/status 状态机、周期边界 roll-over、自动每日挑选算法、"无每日配额可选池"、与旧模型共存过渡（改为直接替换）。
 - **改造方向**：
-  ① **数据模型（服务端新增 `study_plans` 表）**：字段建议 `id / child_id / mode('school'|'holiday') / period_start / period_end(或 open-ended) / items(JSON) / status / created_at / updated_at`；`items` 每项 = `{ topic, course?(单课或整主题), goal(如『学 N 天』/『某天学 A+B』), target_days?, done_days?, status('pending'|'done'|'rolled'), priority }`。支持「按课程排若干天」「某天多课」「无固定每日配额」三种粒度。
-  ② **服务端监督执行 tick**：复用 `scheduler.ts` 每分钟 tick 骨架（同 `classTimes`/`recording.times`），新增 study-plan 检查：每日 genTime 把**未过期且未完成**的 plan items 展开成当天待办 → 喂给 `todo-scheduler` 生成孩子 todolist（**取代 `rules_json.daily` 生成逻辑**）；每日 statTime 由 agent 依据进度判定各 item 完成度、`done_days++`，**未达标项 status 保持 pending/置 rolled 进入下一周期**（叠加语义）。
-  ③ **roll over（叠加）语义**：计划周期结束（period_end 或每日边界）时，仍 `pending` 的 item 不丢弃——自动 carry 到「下一周期计划」或延续执行（按 mode 选 school/holiday 当前生效那份）；在 todolist/进度里标注「📌 延续自上期」。
-  ④ **家长对话制定工具**：新增家长 agent 工具 `study_plan_create/update`（或复用 kb 写入语义）把对话结果持久化到服务端 `study_plans`；家长说「论语先进篇学 5 天、假期每天加英语 2 课、周末不学数学」→ agent 解析成结构化 items 写入。提示词约定：家长规定项在 todolist 标 `[家长]` 不可改（同 ISSUE-025）。
-  ⑤ **上学/假期切换**：家长可分别制定 school/holiday 两份；服务端按当前日期（是否在假期区间）自动选用生效那份（或叠加）；家长对话可指定「这是假期计划」。
-  ⑥ **迁移/共存**：现有 `rules_json.daily` 可自动导入为首份默认 plan（或标记为 deprecated，新制定走 study_plans）；`todo-scheduler` 的 `rules.daily` 生成分支逐步由 study_plans 展开替代。
-  ⑦ **回归**：ISSUE-025 todolist 渲染/统计、study-tracker 达标评估、topic rules 显示（`learning-summary.ts`）不破坏；服务端真源/多设备共享保持。
-- **⚠️ 与 ISSUE-025 关系**：本 issue 的「学习计划」是 ISSUE-025「todolist」的**更灵活上游数据源**——todolist 由学习计划（替代 rules.daily）+ 孩子自规划 融合生成；两者共用服务端存储 + 每日 gen/stat tick。
-- **优先级**：待定（本会话仅记录，未实施）
+  ① 数据表（服务端 `study_plan_items`：日期→内容行）；② 存量导入（`rules_json.daily` → 首份 plan）；③ 家长 agent 工具 `study_plan_create/update/list/get` + 提示词；④ gen 展开改读当日聚合 + **服务端每日定时检测完成、未完成顺延下一天** + 移除旧 `rules.daily` 生成分支；⑤ 能力前置（课程/章节结构只读查询）；⑥ 家长中心侧边栏只读面板 + 孩子详情页 tab；⑦ 回归（ISSUE-025 todolist 渲染/统计、learning-summary、服务端真源/多设备共享）。
+- **实施拆解（2026-09-02 落盘；R2/R3 拍板后开工）**：
+  - **P0 服务端数据层 ✅（2026-09-02 已实施）**：`server/src/db.ts` openDb 增 `study_plan_items`（`id / parent_id / child_id / kind('date'|'daily'预留) / date / topic_key / content(JSON) / origin('conversation'|'carry') / active / created_at / updated_at`），`meta.schema_version` '8'→'9'（无迁移数组，CREATE IF NOT EXISTS 惯例）；`server/src/routes/study-plans.ts`（fastify，authParent/assertChildOwned）：GET `study-plans?childId=` 列表、GET `study-plans/today?childId=&date=`（date 行展平 items[{planId,text,topicKey,carry}] 供 gen）、POST create（kind 暂仅收 date；content=[{text,topicKey?}]≤100 项）、PATCH/DELETE `/:id`（改 content/date/active、删除）；`server/src/index.ts` 注册。验证：tsc 0、build 过（dist/server.cjs 13:53）、`server/scripts/verify-study-plans.mjs` 冒烟 12/12（含跨家长 403 / 无 token 401）。
+  - **P0b 服务端每日定时 ✅（2026-09-02 已实施）**：`server/src/worker/study-plan-carry.ts` `runStudyPlanCarryTick`——每分钟 cron（worker/scheduler.ts）与启动补跑都触发，幂等游标 worker_state(child_id,'study_plan_carry').last_key=昨天日期；只处理「昨天有 date 行」的孩子（DISTINCT 预筛，避免全量开库）。**判定口径（保守）**：以孩子 kb `child_todo_stats` 昨天行的 parent_total/parent_done 为准——有统计且 parent_done<parent_total 才顺延；stats 缺失（todo 未生成/未统计）不臆断不顺延（防无限堆积）。顺延动作：昨天 items 中今天未排过的 text → 写今天 origin='carry' 新行（同 text 去重，today 聚合自然合并）。验证：`server/scripts/verify-study-plan-carry.mts`（tsx 直调，秒级）A 未达标去重顺延/B 无 stats 不顺延/C 达标不顺延/幂等 4/4 ✓。
+  - ~~**P1 存量导入**~~（R2 已拍：不迁移，无迁移代码；上线时现有孩子的每日安排变空属预期，家长对话重建）。
+  - **P2 家长 agent ✅（2026-09-02 已实施）**：`custom-tools.ts` 尾部新增 5 工具——`study_plan_create`（childName + days[{date,content[]}] 一次排多天；先 GET list?date= 查重防重复行）、`study_plan_list`（from/to 过滤 + 行 markdown 带 id 前缀）、`study_plan_get`（某天安排，date 缺省本地今天）、`study_plan_update`（act=replace/removeItems/delete；id 支持唯一前缀；删光自动转 delete）、`study_plan_sources`（**R3 只读课程结构**：kb RPC 组「主题课数/已学/未学清单」，指定 topic 列全部课+状态）；helper resolvePlanChild（按姓名匹配，同 exam_schedule_create 口径）/assertPlanDate/mapPlanRows/findPlanRowById。`pi-session.ts` 家长两会话 tools（:516/:562）+ customTools 对称挂载。`buildParentPrompt`（:136-199）加「### 2.5 学习计划」专节（sources 查结构→起草排期→聊天列提案等「确认/改」→落库；日常改=先 list 再 update/create；rules_json.daily 标已停用；删「设置每日目标」页面引导）。配套：服务端 GET /study-plans 加可选 date 过滤（冒烟 13/13 ✓）。⚠️ 家长 prompt 用户版本优先——已存用户版本的安装不自动吃到新段落。
+  - **P3 展开替换 ✅（2026-09-02 已实施）**：`todo-scheduler.ts` 删 TopicRule/loadTopicRules/buildParentLines，改 `loadTodayPlanItems`（GET `/study-plans/today?childId&date`，失败降级空=「空天不学」）+ `planItemsToParentLines`（同文本去重；carry 行标「（昨天没学完，今天补上）」）；**extractUnfinished 只取非 [家长] 行**（[家长] 未完成由服务端 carry 确定性顺延，防同文本双条）。`server/src/worker/tasks.ts` 删本地 rules 副本，`loadTodayPlanItemsServer` 直查 ctx.mainDb study_plan_items（SQL 与 /today 同口径）；worker kb-tools topics 输出摘 daily 注入。`learning-summary.ts` 摘 daily（字段/解析/进度 markdown 注入）；`ChildTopicsModal` 删「每天学习量」输入只留「主题类型」（type 仍写 rules_json 供考核选题；daily 传 "" 清遗留）；ProgressView「今日评估」→「今日学习情况」（去每日目标列）、LearningDashboard/CourseManager/TopicDetail 去 daily 展示；exam.ts 主题类型文案去「每天学习量」措辞。验证：双端 tsc 0、electron-vite build 过、dist/server.cjs 重建、冒烟 13/13。
+  - **P4 只读 UI ✅（2026-09-02 已实施）**：`electron/preload.ts` + `ipc-handlers.ts` 加 `studyPlanList(childId,{from,to})` / `studyPlanToday(childId,date?)` 透传（serverFetch 手拼 URL + currentSessionToken；from/to 客户端过滤，最多 500 行）。新 `src/components/StudyPlanPanel.tsx`（孩子切换 chips + 今天卡片[含 📌 carry 标注] + 未来 N 天排期表[默认 13 天，空天不列] + 刷新 + 「在对话里修改」回调，纯只读，编辑引导走右侧家长 AI）。`Dashboard.tsx` view 联合加 `"plan"` + 侧边栏「🗓 学习计划」入口 + 分发 `<StudyPlanPanel children onAskInChat={()=>parentChat.setCollapsed(false)}>`；`ChildDetailPage.tsx` TABS 加 plan + 渲染块（children=[child]）。验证：tsc 0 业务错、electron-vite build 通过。P4 剩余小项：P4 无。**P5 回归仍待做**。
+  - **P5 回归 ✅（2026-09-02 已实施）**：vitest 全量 **34 文件 / 311 用例全绿**（含 ISSUE-025 todo 统计 todo-scheduler.test 4/4、learning-summary/kb 相关，与改动前基线一致，无回归）；server 冒烟 verify-study-plans.mjs **13/13** + verify-study-plan-carry.mts **4/4**；双端 tsc 0、electron-vite build 通过。⚠️ 待发布前人工过一遍：家长中心→学习计划面板真机（8788/201）渲染 + 空态 + carry 标注；部署 201（dist/server.cjs）与客户端新版本推送尚未做（等用户确认）。
+  - **待拍已决（2026-09-02）**：**R2**=存量不迁移、家长对话重建；**R3**=新增家长只读课程结构小工具供起草（不放权 kb_query）。P0/P0b/P2/P3/P4/P5 按序实施。
+- **⚠️ 与 ISSUE-025 关系**：学习计划是 ISSUE-025「todolist」的**更灵活上游数据源**——todolist = 学习计划（替代 rules.daily）+ 孩子自规划 融合生成；共用每日 gen/stat tick。
+- **优先级**：✅ **实施完成（2026-09-02）**：P0 数据层 + P0b 每日顺延 + P2 家长工具/提示词 + P3 展开替换/旧 daily 收敛 + P4 只读 UI + P5 回归全绿。遗留：git 提交未做、201/公网部署未做、家长 prompt 用户版本不自动吃到新段（已存用户版本的安装需手动清理）。
 - **记录时间**：2026-09-02
 
 ## [ISSUE-029] 定时任务新模型：任务管理页（先创建任务 → 分配给孩子）+ 执行结果查询
