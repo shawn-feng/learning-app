@@ -68,7 +68,9 @@ const token = jwt.sign({ parent_id: "parent-smoke", email: "smoke@test.local", p
 const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 
 async function api(method, p, body) {
-  const r = await fetch(`${base}/api/v1${p}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const h = { Authorization: `Bearer ${token}` };
+  if (body !== undefined) h["Content-Type"] = "application/json";
+  const r = await fetch(`${base}/api/v1${p}`, { method, headers: h, body: body !== undefined ? JSON.stringify(body) : undefined });
   const text = await r.text();
   if (!r.ok) fail(`${method} ${p} → HTTP ${r.status}: ${text.slice(0, 300)}`);
   return text ? JSON.parse(text) : {};
@@ -130,6 +132,62 @@ const cfg = await api("GET", "/config");
 const auth = cfg.config?.auth;
 if (auth?.qwen?.key !== "sk-secret-test") fail(`GET /config 应解密回 auth: ${JSON.stringify(auth)}`);
 log("auth 读取解密回环 通过");
+
+// 5) 定时任务管理（新模型）：先创建 → 分配给孩子 → 有效配置 → 执行结果查询
+const task = await api("POST", "/scheduler/tasks", {
+  name: "每日学习记录总结 21:00",
+  type: "recording",
+  time: "21:00",
+  extra: { onNewSession: true },
+});
+if (!task?.ok || !task?.task?.id) fail(`创建任务失败: ${JSON.stringify(task)}`);
+const taskId = task.task.id;
+
+await api("POST", `/scheduler/tasks/${taskId}/assign`, { childId: "child-smoke", enabled: true });
+
+const eff = await api("GET", "/scheduler/effective-config");
+const effChild = eff.children?.["child-smoke"];
+if (!effChild?.recording?.enabled || !effChild.recording.times.includes("21:00") || effChild.recording.onNewSession !== true) {
+  fail(`effective-config 应含 recording 21:00 + onNewSession: ${JSON.stringify(effChild)}`);
+}
+log("有效配置（recording 21:00 + 会话前总结） 通过");
+
+const tasks2 = await api("GET", "/scheduler/tasks");
+const t2 = tasks2.tasks?.find((t) => t.id === taskId);
+if (!t2 || t2.assignments?.[0]?.childId !== "child-smoke" || t2.lastRun !== null) {
+  fail(`任务列表应含分配且无执行记录: ${JSON.stringify(t2)}`);
+}
+log("任务列表（含分配） 通过");
+
+// 模拟一次 worker 执行结果（ok + skip），验证结果查询
+{
+  const db = new DatabaseSync(dbPath);
+  const now = new Date().toISOString();
+  const ins = db.prepare(
+    "INSERT INTO task_runs (id, parent_id, child_id, task_id, task_name, task_type, date, point, status, message, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+  );
+  ins.run("run-1", "parent-smoke", "child-smoke", taskId, "每日学习记录总结 21:00", "recording", "2026-08-31", "21:00", "ok", "已总结", now, now);
+  ins.run("run-2", "parent-smoke", "child-smoke", null, "todo-gen", "todo_gen", "2026-09-01", "08:00", "skip", "无会话", now, now);
+  db.close();
+}
+const runs = await api("GET", "/scheduler/runs");
+if (runs.runs?.length !== 2) fail(`runs 应为 2 条: ${JSON.stringify(runs.runs)}`);
+const runsFiltered = await api("GET", "/scheduler/runs?childId=child-smoke&limit=1");
+if (runsFiltered.runs?.length !== 1) fail(`runs 按孩子过滤+limit 应为 1 条: ${JSON.stringify(runsFiltered)}`);
+log("执行结果查询（全部/按孩子过滤+limit） 通过");
+
+// 任务更新（关停）与删除
+await api("PATCH", `/scheduler/tasks/${taskId}`, { enabled: false });
+const eff2 = await api("GET", "/scheduler/effective-config");
+if (eff2.children?.["child-smoke"]?.recording?.enabled !== false) {
+  fail(`任务关闭后 effective-config 应为关闭: ${JSON.stringify(eff2.children?.["child-smoke"])}`);
+}
+log("任务关停 → 有效配置关闭 通过");
+
+await api("DELETE", `/scheduler/tasks/${taskId}`);
+const tasks3 = await api("GET", "/scheduler/tasks");
+if (tasks3.tasks?.some((t) => t.id === taskId)) fail("删除任务后列表不应再包含该任务");
+log("删除任务（历史结果保留） 通过");
 
 log("\n✅ 全部冒烟用例通过");
 child.kill("SIGTERM");

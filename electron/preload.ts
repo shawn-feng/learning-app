@@ -210,6 +210,18 @@ const api = {
   // 家长会话配置（autoNewSession 等，2026-08-24）
   schedulerParentConfigSet: (config: any) =>
     ipcRenderer.invoke("scheduler:parent_config:set", config),
+  // 定时任务管理（新模型：先建任务 → 分配给孩子 → 执行结果查询）
+  schedulerTasksList: () => ipcRenderer.invoke("scheduler:tasks:list"),
+  schedulerTaskCreate: (payload: { name: string; type: string; time: string; extra?: Record<string, unknown> }) =>
+    ipcRenderer.invoke("scheduler:task:create", payload),
+  schedulerTaskUpdate: (id: string, patch: { name?: string; time?: string; enabled?: boolean; extra?: Record<string, unknown> }) =>
+    ipcRenderer.invoke("scheduler:task:update", id, patch),
+  schedulerTaskDelete: (id: string) => ipcRenderer.invoke("scheduler:task:delete", id),
+  schedulerTaskAssign: (id: string, childId: string, enabled: boolean) =>
+    ipcRenderer.invoke("scheduler:task:assign", id, childId, enabled),
+  schedulerRunsList: (opts?: { childId?: string; limit?: number }) =>
+    ipcRenderer.invoke("scheduler:runs:list", opts),
+  schedulerEffectiveConfigGet: () => ipcRenderer.invoke("scheduler:effective_config:get"),
 
   // General settings (materials limit)
   materialsLimitGet: () => ipcRenderer.invoke("settings:materials_limit:get"),

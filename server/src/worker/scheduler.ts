@@ -9,6 +9,7 @@ import cron from "node-cron";
 import type { DatabaseSync } from "node:sqlite";
 import { getServerSecret, decryptJson } from "../crypto.js";
 import { getWorkerStateKey, setWorkerState } from "../db/sessions.js";
+import { findTaskForRun, recordTaskRun } from "../db/task-runs.js";
 import { listTasks, hhmm, type WorkerSchedulerChildConfig, type WorkerTask } from "./tasks.js";
 import { formatLocalDate } from "./kb-tools.js";
 
@@ -98,33 +99,67 @@ async function runTaskAtPoint(
   now: Date,
   settings: ParentSettings
 ): Promise<void> {
-  await task.run({
-    dataDir: deps.dataDir,
-    mainDb: deps.db,
-    parentId,
-    childId,
-    auth: settings.auth,
-    appSettings: settings.appSettings,
-    schedulerConfig: cc,
-    now,
-    point,
-  });
-  // 去重游标：last_run 记「触发点对应的当天时刻」（补跑 22:45 补 21:00 也判重）；
+  const startedAt = new Date();
+  let status: "ok" | "skip" | "error" = "ok";
+  let message = "";
+  try {
+    const result = await task.run({
+      dataDir: deps.dataDir,
+      mainDb: deps.db,
+      parentId,
+      childId,
+      auth: settings.auth,
+      appSettings: settings.appSettings,
+      schedulerConfig: cc,
+      now,
+      point,
+    });
+    status = result?.status === "skip" ? "skip" : "ok";
+    message = result?.message ?? "";
+  } catch (e) {
+    status = "error";
+    message = (e as Error).message ?? String(e);
+    console.error(`[worker] task=${task.type} child=${childId} failed@${point}:`, message);
+  }
+
+  // 执行结果写入 task_runs（家长「定时任务执行结果」查询；任务匹配 = 类型+时间点+孩子分配）
+  try {
+    const matched = findTaskForRun(deps.db, parentId, childId, task.type, point);
+    recordTaskRun(deps.db, {
+      parentId,
+      childId,
+      taskId: matched?.id ?? null,
+      taskName: matched?.name ?? task.type,
+      taskType: task.type,
+      date: formatLocalDate(now),
+      point,
+      status,
+      message,
+      startedAt: startedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error(`[worker] record task_runs failed (${task.type} ${childId}):`, (e as Error).message);
+  }
+
+  // 去重游标：仅成功/跳过才推进（失败下一分钟重试）；last_run 记「触发点当天时刻」，
   // last_key 记「当天已跑点集合」（todo 多时间点不互相覆盖）。
-  const [hh, mm] = point.split(":").map(Number);
-  const at = new Date(now);
-  at.setHours(hh, mm, 0, 0);
-  const today = formatLocalDate(now);
-  const ran = parseRunSet(getWorkerStateKey(deps.db, childId, task.type), today);
-  ran.add(point);
-  setWorkerState(
-    deps.db,
-    childId,
-    task.type,
-    at.toISOString(),
-    JSON.stringify({ date: today, points: [...ran].sort() })
-  );
-  console.log(`[worker] task=${task.type} child=${childId} done@${point}`);
+  if (status !== "error") {
+    const [hh, mm] = point.split(":").map(Number);
+    const at = new Date(now);
+    at.setHours(hh, mm, 0, 0);
+    const today = formatLocalDate(now);
+    const ran = parseRunSet(getWorkerStateKey(deps.db, childId, task.type), today);
+    ran.add(point);
+    setWorkerState(
+      deps.db,
+      childId,
+      task.type,
+      at.toISOString(),
+      JSON.stringify({ date: today, points: [...ran].sort() })
+    );
+  }
+  console.log(`[worker] task=${task.type} child=${childId} ${status}@${point}${message ? ` (${message})` : ""}`);
 }
 
 export async function runWorkerTick(deps: WorkerSchedulerDeps): Promise<void> {

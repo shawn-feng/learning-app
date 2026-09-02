@@ -88,6 +88,41 @@ export function openDb(dataDir: string): DatabaseSync {
       last_key TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (child_id, task)
     );
+    -- 定时任务管理（新模型）：任务定义（先创建）→ 分配给孩子（再分配）→ 执行结果（task_runs）
+    CREATE TABLE IF NOT EXISTS scheduler_tasks (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,             -- recording | todo_gen | todo_stat | auto_new_session
+      time TEXT NOT NULL,             -- HH:mm
+      extra_json TEXT NOT NULL DEFAULT '{}',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduler_tasks_parent ON scheduler_tasks(parent_id);
+    CREATE TABLE IF NOT EXISTS scheduler_task_assignments (
+      task_id TEXT NOT NULL,
+      child_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (task_id, child_id)
+    );
+    CREATE TABLE IF NOT EXISTS task_runs (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      child_id TEXT NOT NULL,
+      task_id TEXT,
+      task_name TEXT NOT NULL DEFAULT '',
+      task_type TEXT NOT NULL DEFAULT '',
+      date TEXT NOT NULL,
+      point TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'ok',   -- ok | skip | error
+      message TEXT NOT NULL DEFAULT '',
+      started_at TEXT NOT NULL,
+      finished_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_runs_parent ON task_runs(parent_id, date);
     -- 学习考核（EXAM-REQUIREMENTS.md）：每次考核一条记录（孩子端判分后客户端上报，服务端只存结果）。
     -- per_question 逐题明细(JSON)：qid/course/question/audioPath/asrText/startedAt/answeredAt/durationMs/pointGot/pointMax/correct/aiComment
     -- course_mastery(JSON)：{"<course>": {correct,total,rate}}；reinforce_plan(JSON)：{"<course>": {planReviewAt, focus[], aiSuggestion?}}
@@ -125,7 +160,7 @@ export function openDb(dataDir: string): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_exam_schedules_child ON exam_schedules(child_id, scheduled_at);
   `);
-  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '7')").run();
+  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '8')").run();
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('config_revision', '0')").run();
   // 旧库迁移：children 表加 profile_json（孩子详情 + 密码哈希上云，2026-08-30）
   try {

@@ -41,13 +41,19 @@ export interface WorkerTaskCtx {
   point?: string;
 }
 
+export interface WorkerRunResult {
+  /** ok=成功；skip=无内容跳过（如当天无对话）；缺省按 ok 记 */
+  status?: "ok" | "skip";
+  message?: string;
+}
+
 export interface WorkerTask {
   type: string;
   /** 返回应触发的时间点（HH:mm）；空数组 = 本任务不参与调度（如仅手动触发） */
   points(cfg: WorkerSchedulerChildConfig): string[];
   /** 补跑策略：latest=只补最近一个已过期点（recording 一天一次汇总）；all=按序补全部已过期点（todo 的 gen+stat） */
   catchUp?: "latest" | "all";
-  run(ctx: WorkerTaskCtx): Promise<void>;
+  run(ctx: WorkerTaskCtx): Promise<WorkerRunResult | void>;
 }
 
 const registry = new Map<string, WorkerTask>();
@@ -190,12 +196,12 @@ const recordingTask: WorkerTask = {
     cfg.recording?.enabled && Array.isArray(cfg.recording.times)
       ? cfg.recording.times.filter((t) => /^\d{2}:\d{2}$/.test(t))
       : [],
-  run: async (ctx) => {
+  run: async (ctx): Promise<WorkerRunResult> => {
     const date = formatLocalDate(ctx.now);
     const conversation = readServerDailyConversation(ctx.dataDir, ctx.parentId, ctx.childId, date);
     if (!conversation.trim()) {
       console.log(`[worker:recording] child ${ctx.childId}: ${date} 无会话，跳过`);
-      return;
+      return { status: "skip", message: `${date} 无会话，跳过` };
     }
     const existing = runKbQuery<Array<{ block: string; title: string; raw: string }>>(
       ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.daily_entries.queryByDate", { child_id: ctx.childId, date }
@@ -213,6 +219,7 @@ const recordingTask: WorkerTask = {
       const prompt = `${RECORDING_PROMPT}\n\n${provided}\n\n今天是 ${date}。以下是孩子 ${date} 的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}`;
       await session.prompt(prompt);
       console.log(`[worker:recording] child ${ctx.childId}: ${date} 已总结`);
+      return { status: "ok", message: `已总结 ${date} 的对话并写入 daily` };
     } finally {
       session.dispose();
     }
@@ -324,14 +331,15 @@ async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
 
 const DONE_RATE_OK = 0.8;
 
-async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<void> {
+/** @returns true = 跳过（当天无 todolist），false = 已执行统计 */
+async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
   const today = formatLocalDate(ctx.now);
   const todayTodo = runKbQuery<{ itemsMd: string } | null>(
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: today }
   );
   if (!todayTodo?.itemsMd?.trim()) {
     console.log(`[worker:todo-stat] child ${ctx.childId}: ${today} 无 todolist，跳过`);
-    return;
+    return true;
   }
   const conversation = readServerDailyConversation(ctx.dataDir, ctx.parentId, ctx.childId, today);
   const summaries = runKbQuery<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>(
@@ -370,6 +378,7 @@ async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<void> {
     session.dispose();
   }
   await saveTodoStatsServer(ctx, today);
+  return false;
 }
 
 function countTodoTasksServer(md: string): {
@@ -439,12 +448,18 @@ const todoTask: WorkerTask = {
     if (/^\d{2}:\d{2}$/.test(cfg.todo.statTime ?? "")) pts.push(cfg.todo!.statTime!);
     return pts;
   },
-  run: async (ctx) => {
+  run: async (ctx): Promise<WorkerRunResult> => {
     if (ctx.point === ctx.schedulerConfig.todo?.genTime) {
       await runTodoGenServer(ctx);
-    } else if (ctx.point === ctx.schedulerConfig.todo?.statTime) {
-      await runTodoStatServer(ctx);
+      return { status: "ok", message: `已生成 ${formatLocalDate(ctx.now)} 的今日计划` };
     }
+    if (ctx.point === ctx.schedulerConfig.todo?.statTime) {
+      const skipped = await runTodoStatServer(ctx);
+      return skipped
+        ? { status: "skip", message: `${formatLocalDate(ctx.now)} 无 todolist，跳过统计` }
+        : { status: "ok", message: `已统计 ${formatLocalDate(ctx.now)} 的完成度` };
+    }
+    return { status: "ok", message: "" };
   },
 };
 

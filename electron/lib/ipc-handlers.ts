@@ -603,6 +603,103 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // ---- 定时任务管理（新模型：先建任务 → 分配给孩子 → 执行结果查询；数据在服务端）----
+
+  ipcMain.handle("scheduler:tasks:list", async () => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ tasks?: unknown[] }>("/scheduler/tasks", { token });
+      return { success: true, tasks: data?.tasks ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:task:create", async (_e, payload: { name: string; type: string; time: string; extra?: Record<string, unknown> }) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ ok: boolean; task?: unknown }>("/scheduler/tasks", {
+        method: "POST",
+        token,
+        body: payload,
+      });
+      return { success: !!data?.ok, task: data?.task };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:task:update", async (_e, id: string, patch: { name?: string; time?: string; enabled?: boolean; extra?: Record<string, unknown> }) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ ok: boolean }>(`/scheduler/tasks/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        token,
+        body: patch,
+      });
+      return { success: !!data?.ok };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:task:delete", async (_e, id: string) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ ok: boolean }>(`/scheduler/tasks/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        token,
+      });
+      return { success: !!data?.ok };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:task:assign", async (_e, id: string, childId: string, enabled: boolean) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ ok: boolean }>(`/scheduler/tasks/${encodeURIComponent(id)}/assign`, {
+        method: "POST",
+        token,
+        body: { childId, enabled },
+      });
+      return { success: !!data?.ok };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:runs:list", async (_e, opts: { childId?: string; limit?: number } = {}) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const q = new URLSearchParams();
+      if (opts.childId) q.set("childId", opts.childId);
+      if (opts.limit) q.set("limit", String(opts.limit));
+      const data = await serverFetch<{ runs?: unknown[] }>(`/scheduler/runs${q.toString() ? `?${q}` : ""}`, { token });
+      return { success: true, runs: data?.runs ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:effective_config:get", async () => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ children?: Record<string, unknown> }>("/scheduler/effective-config", { token });
+      return { success: true, children: data?.children ?? {} };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ---- 通用设置（学习资料保留数量）----
 
   ipcMain.handle("settings:materials_limit:get", async () => {
