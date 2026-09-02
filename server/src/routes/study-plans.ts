@@ -163,10 +163,21 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
         items.push({ planId: r.id, text: it.text, topicKey: it.topicKey, carry: r.origin === "carry" });
       }
     }
-    return { ok: true, date: day, items };
+    // 文本去重（同日同文本只留一条——防御历史重复行；首个出现的 carry 标记保留）
+    const seenText = new Set<string>();
+    const dedup: typeof items = [];
+    for (const it of items) {
+      if (!it.text || seenText.has(it.text)) continue;
+      seenText.add(it.text);
+      dedup.push(it);
+    }
+    return { ok: true, date: day, items: dedup };
   });
 
   // 创建（家长 agent study_plan_create）
+  // 幂等合并语义（2026-09-02 修复同日重复行）：同 (child, kind=date, date) 已有 active 行时——
+  //   全部重复 → 不落库返回现有最新行（duplicated:true）；部分新增 → 新项追加进最新一行（同日保持单行），
+  //   杜绝「分多次追加同一天」时每次都以完整清单新建行造成面板重复。
   app.post("/api/v1/study-plans", async (req, reply) => {
     let parentId: string;
     try {
@@ -194,6 +205,33 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     if (!items) return reply.code(400).send({ error: "content 必填：非空 [{text, topicKey?}] 数组（≤100 项）" });
     const k = kind ?? "date";
     if (k !== "date") return reply.code(400).send({ error: "kind 当前仅支持 date（daily 预留）" });
+
+    // 幂等合并：查同 (child, kind, date) 的 active 行
+    const existingRows = deps.db
+      .prepare(
+        "SELECT id, content FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND kind = ? AND date = ? AND active = 1 ORDER BY created_at ASC"
+      )
+      .all(parentId, childId, k, day) as unknown as Array<{ id: string; content: string }>;
+    const have = new Set<string>();
+    for (const r of existingRows) {
+      for (const it of safeParseContent(r.content)) if (it.text) have.add(it.text);
+    }
+    const toAdd = items.filter((it) => !have.has(it.text));
+    if (existingRows.length > 0) {
+      if (toAdd.length === 0) {
+        // 全部已存在：幂等返回现有最新行，不新增
+        const last = existingRows[existingRows.length - 1];
+        return { ok: true, duplicated: true, row: fetchRow(deps.db, parentId, last.id) };
+      }
+      // 部分新增：追加进最新一行（同日单行 canonical）
+      const target = existingRows[existingRows.length - 1];
+      const merged = [...safeParseContent(target.content), ...toAdd];
+      deps.db
+        .prepare("UPDATE study_plan_items SET content = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(merged), new Date().toISOString(), target.id);
+      return { ok: true, merged: true, row: fetchRow(deps.db, parentId, target.id) };
+    }
+
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     deps.db

@@ -207,13 +207,23 @@ export default function StudyPlanPanel({ children, onAskInChat, lookaheadDays = 
           <div style={{ fontSize: 12, color: "#999" }}>今天没有安排内容（空天 = 不要求学）。</div>
         ) : (
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, display: "flex", flexDirection: "column", gap: 4 }}>
-            {todayItems.map((it, i) => (
-              <li key={`${it.planId}-${i}`} style={{ color: it.carry ? "#b7791f" : "#333" }}>
-                {it.carry ? "📌 " : ""}
-                {it.text}
-                {it.carry && <span style={{ color: "#999", fontSize: 11 }}>（昨天没学完，今天补上）</span>}
-              </li>
-            ))}
+            {(() => {
+              const seen = new Set<string>();
+              return todayItems
+                .filter((it) => {
+                  const t = (it.text || "").trim();
+                  if (!t || seen.has(t)) return false;
+                  seen.add(t);
+                  return true;
+                })
+                .map((it, i) => (
+                  <li key={`${it.planId}-${i}`} style={{ color: it.carry ? "#b7791f" : "#333" }}>
+                    {it.carry ? "📌 " : ""}
+                    {it.text}
+                    {it.carry && <span style={{ color: "#999", fontSize: 11 }}>（昨天没学完，今天补上）</span>}
+                  </li>
+                ));
+            })()}
           </ul>
         )}
       </div>
@@ -225,22 +235,31 @@ export default function StudyPlanPanel({ children, onAskInChat, lookaheadDays = 
       )}
       {byDate.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {byDate.map(([date, dayRows]) => (
-            <div key={date} style={{ border: "1px solid #f0f0f0", borderRadius: 10, padding: "8px 12px", background: "#fff" }}>
-              <div style={{ fontSize: 12, color: "#667eea", fontWeight: 600, marginBottom: 4 }}>{fmtDay(date)}</div>
-              {dayRows.map((r) =>
-                r.content.map((it, i) => (
-                  <div key={`${r.id}-${i}`} style={{ fontSize: 13, color: "#333", padding: "1px 0" }}>
-                    {r.origin === "carry" ? "📌 " : "• "}
+          {byDate.map(([date, dayRows]) => {
+            // 同日按行展平 + 文本去重（防御历史重复行：同一天同一课只显示一条）
+            const seen = new Set<string>();
+            const items = dayRows
+              .flatMap((r) => r.content.map((it) => ({ text: (it.text || "").trim(), carry: r.origin === "carry" })))
+              .filter((x) => {
+                if (!x.text || seen.has(x.text)) return false;
+                seen.add(x.text);
+                return true;
+              });
+            return (
+              <div key={date} style={{ border: "1px solid #f0f0f0", borderRadius: 10, padding: "8px 12px", background: "#fff" }}>
+                <div style={{ fontSize: 12, color: "#667eea", fontWeight: 600, marginBottom: 4 }}>{fmtDay(date)}</div>
+                {items.map((it, i) => (
+                  <div key={`${date}-${i}`} style={{ fontSize: 13, color: "#333", padding: "1px 0" }}>
+                    {it.carry ? "📌 " : "• "}
                     {it.text}
-                    {r.origin === "carry" && (
+                    {it.carry && (
                       <span style={{ color: "#999", fontSize: 11, marginLeft: 4 }}>（顺延来的补学）</span>
                     )}
                   </div>
-                ))
-              )}
-            </div>
-          ))}
+                ))}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -78,36 +78,47 @@ await waitHealth();
 
 const D = "2026-09-05";
 
-// create：同一天两行（多计划按天合并的存储形态）
+// create：首建 → 返回 row；同日二次 create → 幂等合并进同一行（单行 canonical，杜绝重复行）
 const c1 = await api("POST", "/study-plans", { childId: "child-sp", date: D, content: [{ text: "论语·先进篇 1-2 章", topicKey: "lunyu" }, { text: "数学练习" }] });
 assert(c1.ok && c1.row?.id, "create 返回 row.id");
 const c2 = await api("POST", "/study-plans", { childId: "child-sp", date: D, content: [{ text: "英语 2 课" }] });
-assert(c2.ok && c2.row?.id, "同日第二行 create 成功");
+assert(c2.ok && c2.merged === true && c2.row?.id === c1.row?.id, `同日二次 create 合并进同一行（merged=${c2.merged}）`);
 
-// today 聚合：两行 3 项平铺
+// create：全部重复 → 幂等不新增
+const c3 = await api("POST", "/study-plans", { childId: "child-sp", date: D, content: [{ text: "论语·先进篇 1-2 章" }, { text: "英语 2 课" }] });
+assert(c3.ok && c3.duplicated === true && c3.row?.id === c1.row?.id, "重复内容 create 幂等返回现有行（duplicated）");
+
+// today 聚合：单行 3 项平铺
 const t0 = await api("GET", `/study-plans/today?childId=child-sp&date=${D}`);
 assert(t0.ok && t0.date === D && t0.items.length === 3, `today 聚合 3 项（实际 ${t0.items.length}）`);
 assert(t0.items.every((i) => i.carry === false), "conversation 行 carry=false");
 
-// list
+// list：同日只有 1 行
 const l0 = await api("GET", "/study-plans?childId=child-sp");
-assert(l0.ok && l0.rows.length === 2, "list 2 行");
+assert(l0.ok && l0.rows.length === 1, `list 1 行（同日单行，实际 ${l0.rows.length}）`);
 
-// list + date 过滤（跨日期排期行的同文本去重依据）：只回该天行
+// list + date 过滤（跨日期同文本允许——各天独立）
 await api("POST", "/study-plans", { childId: "child-sp", date: "2026-09-06", content: [{ text: "论语·先进篇 1-2 章" }] });
 const l1 = await api("GET", `/study-plans?childId=child-sp&date=${D}`);
-assert(l1.ok && l1.rows.length === 2 && l1.rows.every((r) => r.date === D), `list?date= 过滤只回当天行（实际 ${l1.rows.length} 行）`);
+assert(l1.ok && l1.rows.length === 1 && l1.rows.every((r) => r.date === D), `list?date= 过滤只回当天行（实际 ${l1.rows.length} 行）`);
 
-// patch：改 c1 内容为 1 项
+// patch：整体替换内容（replace 语义，只留 1 项）
 const p1 = await api("PATCH", `/study-plans/${c1.row.id}`, { content: [{ text: "论语·先进篇 1-2 章" }] });
 assert(p1.ok && p1.row, "patch 内容成功");
 const t1 = await api("GET", `/study-plans/today?childId=child-sp&date=${D}`);
-assert(t1.items.length === 2, `patch 后 today 2 项（实际 ${t1.items.length}）`);
+assert(t1.items.length === 1, `patch 替换后 today 1 项（实际 ${t1.items.length}）`);
 
-// patch：停用 c2
-await api("PATCH", `/study-plans/${c2.row.id}`, { active: false });
+// patch 后再追加 → 仍合并回同一行（不产生第二行）
+await api("POST", "/study-plans", { childId: "child-sp", date: D, content: [{ text: "数学练习" }] });
+const l2 = await api("GET", `/study-plans?childId=child-sp&date=${D}`);
+assert(l2.rows.length === 1, `追加后同日仍 1 行（实际 ${l2.rows.length}）`);
+const t1b = await api("GET", `/study-plans/today?childId=child-sp&date=${D}`);
+assert(t1b.items.length === 2, `patch 后追加 today 2 项（实际 ${t1b.items.length}）`);
+
+// patch：停用 → today 为空
+await api("PATCH", `/study-plans/${c1.row.id}`, { active: false });
 const t2 = await api("GET", `/study-plans/today?childId=child-sp&date=${D}`);
-assert(t2.items.length === 1 && t2.items[0].text.includes("论语"), "停用 c2 后 today 仅剩 c1");
+assert(t2.ok && t2.items.length === 0, `停用后 today 空（实际 ${t2.items.length}）`);
 
 // carry：直连插一行 origin=carry 同日期 → 聚合出现 carry 标记
 {
@@ -119,11 +130,12 @@ assert(t2.items.length === 1 && t2.items[0].text.includes("论语"), "停用 c2 
 }
 const t3 = await api("GET", `/study-plans/today?childId=child-sp&date=${D}`);
 assert(t3.items.some((i) => i.carry === true && i.text.includes("补昨日")), "carry 行进入 today 并带 carry 标记");
+assert(t3.items.length === 1, "carry 与停用行互不影响");
 
-// delete：删 c1 → today 仅剩 carry 1 项
-await api("DELETE", `/study-plans/${c1.row.id}`);
+// delete：删 carry 行 → today 空
+await api("DELETE", `/study-plans/carry-1`);
 const t4 = await api("GET", `/study-plans/today?childId=child-sp&date=${D}`);
-assert(t4.items.length === 1 && t4.items[0].carry === true, "delete 后 today 仅剩 carry 行");
+assert(t4.items.length === 0, "delete 后 today 空");
 
 // 归属校验：别家家长访问 child-sp 数据 → 403
 const rForbidden = await fetch(`${base}/api/v1/study-plans?childId=child-sp`, { headers: { Authorization: `Bearer ${badToken}` } });
