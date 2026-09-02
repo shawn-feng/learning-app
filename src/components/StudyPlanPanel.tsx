@@ -14,7 +14,7 @@ interface PlanRow {
   kind: string;
   date: string;
   origin: string;
-  content: Array<{ text: string; topicKey?: string }>;
+  content: Array<{ text: string; topicKey?: string; done?: boolean }>;
   updatedAt: string;
 }
 
@@ -23,6 +23,7 @@ interface TodayItem {
   text: string;
   topicKey?: string;
   carry: boolean;
+  done?: boolean;
 }
 
 interface Props {
@@ -123,6 +124,8 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
   }
 
   const carryCount = todayItems.filter((it) => it.carry).length;
+  const doneTrue = todayItems.filter((it) => it.done === true).length;
+  const doneDetermined = todayItems.filter((it) => it.done !== undefined).length;
 
   return (
     <div>
@@ -197,6 +200,7 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
           {todayItems.length > 0 && (
             <span style={{ fontWeight: 400, color: "#888", marginLeft: 6 }}>
               {todayItems.length} 项{carryCount > 0 ? ` · ${carryCount} 项是补昨天的 📌` : ""}
+              {doneDetermined > 0 ? ` · 已完成 ${doneTrue} 项` : ""}
             </span>
           )}
         </div>
@@ -213,13 +217,18 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
                   seen.add(t);
                   return true;
                 })
-                .map((it, i) => (
-                  <li key={`${it.planId}-${i}`} style={{ color: it.carry ? "#b7791f" : "#333" }}>
-                    {it.carry ? "📌 " : ""}
-                    {it.text}
-                    {it.carry && <span style={{ color: "#999", fontSize: 11 }}>（昨天没学完，今天补上）</span>}
-                  </li>
-                ));
+                .map((it, i) => {
+                  const prefix = it.done === true ? "✅ " : it.done === false ? "⬜ " : it.carry ? "📌 " : "";
+                  const color = it.done === true ? "#2f9e44" : it.done === false ? "#888" : it.carry ? "#b7791f" : "#333";
+                  const note = it.done === true ? "（已学完）" : it.carry ? "（昨天没学完，今天补上）" : "";
+                  return (
+                    <li key={`${it.planId}-${i}`} style={{ color }}>
+                      {prefix}
+                      {it.text}
+                      {note && <span style={{ color: "#999", fontSize: 11 }}>{note}</span>}
+                    </li>
+                  );
+                });
             })()}
           </ul>
         )}
@@ -236,7 +245,13 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
             // 同日按行展平 + 文本去重（防御历史重复行：同一天同一课只显示一条）
             const seen = new Set<string>();
             const items = dayRows
-              .flatMap((r) => r.content.map((it) => ({ text: (it.text || "").trim(), carry: r.origin === "carry" })))
+              .flatMap((r) =>
+                r.content.map((it: any) => ({
+                  text: (it.text || "").trim(),
+                  carry: r.origin === "carry",
+                  done: it.done as boolean | undefined,
+                }))
+              )
               .filter((x) => {
                 if (!x.text || seen.has(x.text)) return false;
                 seen.add(x.text);
@@ -245,15 +260,19 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
             return (
               <div key={date} style={{ border: "1px solid #f0f0f0", borderRadius: 10, padding: "8px 12px", background: "#fff" }}>
                 <div style={{ fontSize: 12, color: "#667eea", fontWeight: 600, marginBottom: 4 }}>{fmtDay(date)}</div>
-                {items.map((it, i) => (
-                  <div key={`${date}-${i}`} style={{ fontSize: 13, color: "#333", padding: "1px 0" }}>
-                    {it.carry ? "📌 " : "• "}
-                    {it.text}
-                    {it.carry && (
-                      <span style={{ color: "#999", fontSize: 11, marginLeft: 4 }}>（顺延来的补学）</span>
-                    )}
-                  </div>
-                ))}
+                {items.map((it, i) => {
+                  // 未来排期：仅高亮「已学完」（提前学完仍排在那天），避免 ⬜ 噪声；carry 仍标 📌
+                  const prefix = it.done === true ? "✅ " : it.carry ? "📌 " : "• ";
+                  const color = it.done === true ? "#2f9e44" : it.carry ? "#b7791f" : "#333";
+                  const note = it.done === true ? "（已学完）" : it.carry ? "（顺延来的补学）" : "";
+                  return (
+                    <div key={`${date}-${i}`} style={{ fontSize: 13, color, padding: "1px 0" }}>
+                      {prefix}
+                      {it.text}
+                      {note && <span style={{ color: "#999", fontSize: 11, marginLeft: 4 }}>{note}</span>}
+                    </div>
+                  );
+                })}
               </div>
             );
           })}

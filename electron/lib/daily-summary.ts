@@ -13,7 +13,7 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { kbInsertTool, kbQueryTool, kbUpdateTool } from "./custom-tools";
+import { kbInsertTool, kbQueryTool, kbUpdateTool, todoListTool } from "./custom-tools";
 import { tagsToMarkdown, type DailyEntry, type TagDef } from "./kb-sqlite";
 import { dbQuery } from "./client-data";
 import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt";
@@ -164,9 +164,9 @@ export async function createEphemeralSession(childDir: string) {
     sessionManager: SessionManager.inMemory(),
     resourceLoader: loader,
     // customTools 的 name 必须同时出现在 tools 白名单（agent-session.js 的 isAllowedTool 会过滤），
-    // kb 三件套缺一不可（ISSUE-006 教训）。
-    tools: ["kb_query", "kb_insert", "kb_update"],
-    customTools: [kbQueryTool, kbInsertTool, kbUpdateTool],
+    // kb 三件套缺一不可（ISSUE-006 教训）；todo_list 用于汇总时一并核对孩子自定任务完成情况。
+    tools: ["kb_query", "kb_insert", "kb_update", "todo_list"],
+    customTools: [kbQueryTool, kbInsertTool, kbUpdateTool, todoListTool],
   });
   return session;
 }

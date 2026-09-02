@@ -89,6 +89,8 @@ const api = {
   piAbort: (childId: string) => ipcRenderer.invoke("pi:abort", childId),
   piDispose: (childId: string) => ipcRenderer.invoke("pi:dispose", childId),
   piReset: (childId: string) => ipcRenderer.invoke("pi:reset", childId),
+  // ISSUE-042：家长会话重置
+  piResetParent: () => ipcRenderer.invoke("pi:reset_parent"),
   // Token 统计读取（ISSUE-010）：汇总 / 最近日志（childId 缺省为家长全局）
   getTokenSummary: (childId?: string) => ipcRenderer.invoke("token:summary", childId || null),
   getTokenList: (childId?: string, limit?: number) =>

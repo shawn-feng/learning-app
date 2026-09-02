@@ -3,7 +3,7 @@ import {
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
-import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
+import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, resetParentSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, getVisionModel } from "./pi-runtime";
@@ -873,6 +873,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   // ISSUE-033：学习计划只读展示（家长面板；数据真源=服务端 study_plans，编辑走家长对话）
+  // 完成态取孩子 courses 表的课程状态（status ✅/⬜），按 (topic,title) 匹配计划项文本——
+  // 比解析 todo 勾选框更权威（课程状态是"这门课学没学"的真源，todo 的 - [x] 反而是照它判的）。
   // list：排期行列表（服务端 date 倒序最多 500；from/to 在此做日期段过滤，与服务端同步）
   ipcMain.handle("studyPlan:list", async (_e, childId: string, opts?: { from?: string; to?: string }) => {
     try {
@@ -883,7 +885,12 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       let rows = res.rows ?? [];
       if (opts?.from) rows = rows.filter((r: any) => r.date >= opts!.from!);
       if (opts?.to) rows = rows.filter((r: any) => r.date <= opts!.to!);
-      return { success: true, rows };
+      const doneOf = await loadCourseDoneMap(childId);
+      const enriched = rows.map((r: any) => ({
+        ...r,
+        content: (r.content ?? []).map((it: any) => ({ ...it, done: doneOf(it.topicKey, it.text) })),
+      }));
+      return { success: true, rows: enriched };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -892,15 +899,52 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("studyPlan:today", async (_e, childId: string, date?: string) => {
     try {
       const d = typeof date === "string" && date ? date : formatLocalDate(new Date());
-      const res = await serverFetch<{ ok: boolean; date: string; items: unknown[] }>(
-        `/study-plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(d)}`,
-        { token: currentSessionToken() }
-      );
-      return { success: true, date: res.date ?? d, items: res.items ?? [] };
+      const [res, doneOf] = await Promise.all([
+        serverFetch<{ ok: boolean; date: string; items: unknown[] }>(
+          `/study-plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(d)}`,
+          { token: currentSessionToken() }
+        ),
+        loadCourseDoneMap(childId),
+      ]);
+      const items = (res.items ?? []).map((it: any) => ({ ...it, done: doneOf(it.topicKey, it.text) }));
+      return { success: true, date: res.date ?? d, items };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  /** 构建计划项→课程完成态查询：取孩子全部 courses，按 (topic,title) 精确匹配，返回 true=✅ / false=⬜ / undefined=无对应课程。 */
+  async function loadCourseDoneMap(
+    childId: string
+  ): Promise<(topicKey: string | undefined, text: string) => boolean | undefined> {
+    try {
+      const courses = await dbQuery<Array<{ topic: string; title: string; status: string }>>(
+        "kb.courses.list",
+        { child_id: childId }
+      ).catch(() => [] as Array<{ topic: string; title: string; status: string }>);
+      const byTopicTitle = new Map<string, string>();
+      const byTitle = new Map<string, string>();
+      for (const c of courses ?? []) {
+        const title = (c.title || "").trim();
+        if (!title) continue;
+        byTopicTitle.set(`${c.topic}\u0000${title}`, c.status);
+        if (!byTitle.has(title)) byTitle.set(title, c.status);
+      }
+      return (topicKey, text) => {
+        const t = (text || "").trim();
+        if (!t) return undefined;
+        if (topicKey) {
+          const s = byTopicTitle.get(`${topicKey}\u0000${t}`);
+          if (s !== undefined) return s === "✅";
+        }
+        const s2 = byTitle.get(t);
+        if (s2 !== undefined) return s2 === "✅";
+        return undefined;
+      };
+    } catch {
+      return () => undefined;
+    }
+  }
 
   ipcMain.handle("skills:list", async () => {
     const skillsDir = getSkillsDir();
@@ -1332,6 +1376,19 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const session = await getChildSession(childId);
       attachSessionEvents(session, childId, getMainWindow);
       return { success: true, history: [], materials: [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ISSUE-042：家长会话重置（对齐 pi:reset）
+  ipcMain.handle("pi:reset_parent", async () => {
+    try {
+      await resetParentSession();
+      // 重建干净会话并重新挂载事件（ParentChatPanel 仍挂载，需保证下一次 piPromptParent 可用）
+      const session = await getParentSession();
+      attachSessionEvents(session, "parent", getMainWindow);
+      return { success: true, history: [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

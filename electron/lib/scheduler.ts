@@ -8,9 +8,7 @@ import { listChildren } from "./child-auth";
 import { summarizeDailyConversation, formatLocalDate } from "./daily-summary";
 import { resetChildSession } from "./pi-session";
 import { handleCloudInbox } from "./delivery";
-// ISSUE-025：孩子 Todolist 定时生成 / 统计
-import { runTodoGen, runTodoStat } from "./todo-scheduler";
-// 方案B：服务端无头 worker 接管 recording/todo 后，本地关闭对应调度避免双跑
+// 方案B：服务端无头 worker 接管 recording 后，本地关闭其调度避免双跑；gen/stat 已完全移交服务端
 import { hasServerFeature, refreshServerFeatures } from "./server-features";
 
 export interface TaskState {
@@ -498,29 +496,8 @@ export function startScheduler(): void {
         }
       }
 
-      // ISSUE-025：孩子 Todolist 生成 / 统计。各自按配置时间点每天只跑一次
-      // （lastRun 记录执行时刻，与本地日期+hhmm 比对去重；跨天自动失效）。
-      // 方案B：服务端无头 worker 已接管 → 本地跳过，避免双跑。
-      if (cc.todo.enabled && !hasServerFeature("worker")) {
-        const nowMin = hhmm(now);
-        for (const [kind, point, fn] of [
-          ["gen", cc.todo.genTime, () => runTodoGen(child.childId)],
-          ["stat", cc.todo.statTime, () => runTodoStat(child.childId)],
-        ] as const) {
-          if (nowMin !== point) continue;
-          const last = cs.todo.lastRun ? new Date(cs.todo.lastRun) : null;
-          const alreadyRan =
-            last && formatLocalDate(last) === formatLocalDate(now) && hhmm(last) === nowMin;
-          if (alreadyRan) continue;
-          try {
-            await fn();
-            cs.todo.lastRun = new Date().toISOString();
-            saveTaskState(state);
-          } catch (e) {
-            console.error(`Todo ${kind} failed for child ${child.childId}:`, e);
-          }
-        }
-      }
+      // ISSUE-025 的 gen/stat 已完全移交服务端无头 worker（方案B），客户端不再本地调度。
+      // 见 server/src/worker/scheduler.ts 的 runPlanTick（carry+gen）与 runStatTick。
 
       // ISSUE-041 消息交换轮询（设备级配置，默认 2 分钟一次，可关闭）。
       // 云端只做消息交换：拉分配包 → 本地落库合并 → ack；顺带响应家长「请求刷新进度」标记。
@@ -601,33 +578,7 @@ export async function runCatchUp(): Promise<void> {
       }
     }
 
-    // ISSUE-025：todo 生成/统计 catch-up（启动/休眠恢复：已过配置时间点且当天没跑过 → 补跑）。
-    // 注意顺序：先补 stat 再补 gen 没有意义，应按时间先后（gen 通常早于 stat）；这里按配置值
-    // 比较 hhmm 决定补哪个。两个都过了则先 gen 后 stat。
-    if (cc.todo.enabled && !hasServerFeature("worker")) {
-      const nowMin = hhmm(now);
-      const lastTodo = cs.todo.lastRun ? new Date(cs.todo.lastRun) : null;
-      const ranToday = (point: string) =>
-        !!lastTodo && formatLocalDate(lastTodo) === formatLocalDate(now) && hhmm(lastTodo) === point;
-      const genDue = cc.todo.genTime <= nowMin && !ranToday(cc.todo.genTime);
-      const statDue = cc.todo.statTime <= nowMin && !ranToday(cc.todo.statTime);
-      if (genDue) {
-        try {
-          await runTodoGen(child.childId);
-          cs.todo.lastRun = new Date().toISOString();
-        } catch (e) {
-          console.error(`Todo gen catch-up failed for child ${child.childId}:`, e);
-        }
-      }
-      if (statDue && !ranToday(cc.todo.statTime)) {
-        try {
-          await runTodoStat(child.childId);
-          cs.todo.lastRun = new Date().toISOString();
-        } catch (e) {
-          console.error(`Todo stat catch-up failed for child ${child.childId}:`, e);
-        }
-      }
-    }
+    // ISSUE-025 的 gen/stat catch-up 已移除：客户端不再本地调度，由服务端 worker 统一负责。
   }
 
   saveTaskState(state);

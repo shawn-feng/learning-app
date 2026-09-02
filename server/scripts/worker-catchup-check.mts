@@ -44,7 +44,10 @@ function fail(msg: string): never {
   db.exec(`CREATE TABLE IF NOT EXISTS parents (id TEXT PRIMARY KEY, email TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS children (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL DEFAULT '{}', updated TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS worker_state (child_id TEXT NOT NULL, task TEXT NOT NULL, last_run TEXT NOT NULL DEFAULT '', last_key TEXT NOT NULL DEFAULT '', PRIMARY KEY (child_id, task));`);
+    CREATE TABLE IF NOT EXISTS worker_state (child_id TEXT NOT NULL, task TEXT NOT NULL, last_run TEXT NOT NULL DEFAULT '', last_key TEXT NOT NULL DEFAULT '', PRIMARY KEY (child_id, task));
+    CREATE TABLE IF NOT EXISTS scheduler_tasks (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, time TEXT NOT NULL, extra_json TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS scheduler_task_assignments (task_id TEXT NOT NULL, child_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, PRIMARY KEY (task_id, child_id));
+    CREATE TABLE IF NOT EXISTS task_runs (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, child_id TEXT NOT NULL, task_id TEXT, task_name TEXT NOT NULL DEFAULT '', task_type TEXT NOT NULL DEFAULT '', date TEXT NOT NULL, point TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'ok', message TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT NOT NULL);`);
   const now = new Date().toISOString();
   db.prepare("INSERT INTO parents (id, email, created_at, updated_at) VALUES (?,?,?,?)").run("p1", "a@b.c", now, now);
   db.prepare("INSERT INTO children (id, parent_id, name, created_at, updated_at) VALUES (?,?,?,?,?)").run("c1", "p1", "娃", now, now);

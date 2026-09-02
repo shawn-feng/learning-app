@@ -166,7 +166,66 @@ export default function ParentChatPanel() {
     });
   }, [patchWorking]);
 
+  // ISSUE-042：家长会话管理命令（对齐 Learn.tsx:645-694）
+  const COMMANDS: Record<string, { desc: string }> = {
+    reset: { desc: "重置会话：清空当前对话，重新开始" },
+    help: { desc: "查看可用命令" },
+  };
+
+  function addSystemMessage(text: string) {
+    setMessages((prev) => [...prev, { id: nextId(), role: "ai", text, time: nowTime() }]);
+  }
+
+  function showHelp() {
+    const lines = ["📖 可用命令："];
+    for (const [name, info] of Object.entries(COMMANDS)) {
+      lines.push(`  /${name} —— ${info.desc}`);
+    }
+    addSystemMessage(lines.join("\n"));
+  }
+
+  async function runResetCommand() {
+    setBusy(true);
+    try {
+      const r = await window.api.piResetParent();
+      if (r?.success) {
+        setMessages([
+          { id: nextId(), role: "ai", text: "✅ 会话已重置，重新开始吧！有什么需要帮忙的？😊", time: nowTime() },
+        ]);
+        workingIdRef.current = null;
+        setBusy(false);
+      } else {
+        addSystemMessage(`⚠️ 重置失败：${r?.error || "未知错误"}`);
+        setBusy(false);
+      }
+    } catch (e: any) {
+      addSystemMessage(`⚠️ 重置失败：${e?.message || "网络错误"}`);
+      setBusy(false);
+    }
+  }
+
+  async function handleCommand(raw: string) {
+    const parts = raw.slice(1).split(/\s+/).filter(Boolean);
+    const name = (parts[0] || "").toLowerCase();
+    switch (name) {
+      case "reset":
+        await runResetCommand();
+        break;
+      case "help":
+        showHelp();
+        break;
+      default:
+        addSystemMessage(`❓ 未知命令「/${name}」。输入 /help 查看可用命令。`);
+    }
+  }
+
   async function handleSend(text: string, opts?: import("./ChatWindow").SendOptions) {
+    const trimmed = text.trim();
+    // 命令拦截：以 / 开头即触发命令，不发送给 AI
+    if (trimmed.startsWith("/")) {
+      await handleCommand(trimmed);
+      return;
+    }
     // ISSUE-037：附件走可逆标记塞进 text（与 Learn.tsx:764-798 同范式）
     const images = opts?.images || [];
     const textFiles = opts?.textFiles || [];

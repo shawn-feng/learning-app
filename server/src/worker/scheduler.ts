@@ -1,16 +1,25 @@
 /**
  * 服务端无头 worker 调度器（方案B 阶段②）。
- * 每分钟 cron：遍历所有家长 → 孩子 → 注册的 WorkerTask，命中配置时间点且当天该点未跑过
- * （worker_state 去重，比对「本地日期 + hh:mm」）则执行，与客户端 scheduler.ts 语义一致。
- * 配置来源：服务端 settings 的 scheduler_config（客户端 saveSchedulerConfig 已 push 上云）。
+ * 每 5 分钟 cron：遍历所有家长 → 孩子，分别跑 plan / stat / recording 三类任务。
+ * - plan（carry+gen）：carry 顺延（游标=昨天）先于当日 todolist 生成（游标=今天；今天已有 todolist 则跳过）。
+ * - stat（完成度统计）：游标=今天，事件驱动——当天有新的 daily 学习记录且已有 todolist 时执行一次。
+ * - recording：仍按配置的 recording.times 时间点触发（5 分钟桶匹配，保证落点不错过）。
+ * **触发源（2026-09-02 修复，勿再回退）**：优先读 scheduler_tasks + 分配（buildEffectiveChildConfig，
+ * 服务端即真源，不依赖客户端推送时机）；无任务分配的孩子回退旧 settings scheduler_config（老客户端兼容）。
  * 注：本调度器在 learning-server 进程内，设备 7x24 在线 → 客户端关机/休眠不再导致漏跑。
  */
 import cron from "node-cron";
 import type { DatabaseSync } from "node:sqlite";
 import { getServerSecret, decryptJson } from "../crypto.js";
+import { runKbQuery } from "../routes/db.js";
 import { getWorkerStateKey, setWorkerState } from "../db/sessions.js";
-import { findTaskForRun, recordTaskRun } from "../db/task-runs.js";
-import { listTasks, hhmm, type WorkerSchedulerChildConfig, type WorkerTask } from "./tasks.js";
+import {
+  buildEffectiveChildConfig,
+  findTaskForRun,
+  recordTaskRun,
+  type EffectiveChildConfig,
+} from "../db/task-runs.js";
+import { listTasks, hhmm, runTodoGenServer, runTodoStatServer, type WorkerSchedulerChildConfig, type WorkerTask, type WorkerTaskCtx } from "./tasks.js";
 import { formatLocalDate } from "./kb-tools.js";
 import { runStudyPlanCarryTick } from "./study-plan-carry.js";
 
@@ -56,21 +65,19 @@ function readParentSettings(db: DatabaseSync, dataDir: string, parentId: string)
 }
 
 export function startWorkerScheduler(deps: WorkerSchedulerDeps): void {
-  cron.schedule("* * * * *", () => {
-    // 学习计划顺延检测先于 todo 各时间点（carry 行须在当天 gen 前落库）
-    void runStudyPlanCarryTick({ dataDir: deps.dataDir, db: deps.db }).catch((e) =>
-      console.error("[worker] study-plan carry tick failed:", (e as Error).message)
-    );
-    void runWorkerTick(deps).catch((e) => console.error("[worker] tick failed:", (e as Error).message));
+  cron.schedule("*/5 * * * *", async () => {
+    // 顺序执行：先 plan（carry→gen），再 stat，最后 recording。保证 carry 行在 gen 前落库、todolist 在 stat 前生成。
+    try { await runPlanTick(deps); } catch (e) { console.error("[worker] plan tick failed:", (e as Error).message); }
+    try { await runStatTick(deps); } catch (e) { console.error("[worker] stat tick failed:", (e as Error).message); }
+    try { await runWorkerTick(deps); } catch (e) { console.error("[worker] tick failed:", (e as Error).message); }
   });
-  // 启动补跑：服务端重启/掉线错过当天时间点 → 按任务 catchUp 策略补跑（不阻塞启动）
-  setTimeout(() => {
-    void runStudyPlanCarryTick({ dataDir: deps.dataDir, db: deps.db }).catch((e) =>
-      console.error("[worker] study-plan carry catch-up failed:", (e as Error).message)
-    );
-    void runWorkerCatchUp(deps).catch((e) => console.error("[worker] catch-up failed:", (e as Error).message));
+  // 启动补跑：服务端重启/掉线 → plan/stat 游标自愈（下一 tick 重试），recording 按 catchUp 补跑（不阻塞启动）
+  setTimeout(async () => {
+    try { await runPlanTick(deps); } catch (e) { console.error("[worker] plan catch-up failed:", (e as Error).message); }
+    try { await runStatTick(deps); } catch (e) { console.error("[worker] stat catch-up failed:", (e as Error).message); }
+    try { await runWorkerCatchUp(deps); } catch (e) { console.error("[worker] catch-up failed:", (e as Error).message); }
   }, 3000);
-  console.log("[worker] 无头 worker 调度器已启动（每分钟，recording/todo 自主任务 + 学习计划顺延）");
+  console.log("[worker] 无头 worker 调度器已启动（每5分钟：plan(carry+gen)/stat 游标驱动 + recording 定时）");
 }
 
 /**
@@ -90,10 +97,82 @@ function parseRunSet(key: string, today: string): Set<string> {
   return new Set();
 }
 
+/** 把 HH:mm 向下取整到 5 分钟桶起点（分钟数）。 */
+function bucketStartMin(nowMin: string): number {
+  const [h, m] = nowMin.split(":").map(Number);
+  return Math.floor((h * 60 + m) / 5) * 5;
+}
+
+/** 配置的触发点是否落在本 5 分钟桶内（保证每点每桶恰好触发一次）。 */
+function pointInBucket(point: string, nowMin: string): boolean {
+  const [ph, pm] = point.split(":").map(Number);
+  const pt = ph * 60 + pm;
+  const bs = bucketStartMin(nowMin);
+  return pt >= bs && pt < bs + 5;
+}
+
+/**
+ * 合并某孩子的执行配置：任务模型孩子（有任一分配任务）→ 该类型以任务为准、未分配类型关闭；
+ * 无任务分配的孩子（旧模型）→ 原样用 legacy scheduler_config。
+ */
+function resolveChildConfig(
+  legacy: WorkerSchedulerChildConfig | undefined,
+  eff: EffectiveChildConfig | undefined
+): WorkerSchedulerChildConfig | undefined {
+  if (!legacy && !eff) return undefined;
+  const base: WorkerSchedulerChildConfig = legacy ? JSON.parse(JSON.stringify(legacy)) : {};
+  if (!eff) return base;
+  const hasTask = eff.recording.enabled || eff.todo.enabled || eff.autoNewSession.enabled;
+  if (!hasTask) return base;
+  return {
+    ...base,
+    // 任务驱动：enabled 以任务分配为准（避免旧 per-child 配置残留误跑/双跑）
+    recording: {
+      enabled: eff.recording.enabled,
+      times: eff.recording.enabled ? eff.recording.times : [],
+      onNewSession: eff.recording.enabled ? eff.recording.onNewSession : false,
+    },
+    todo: {
+      enabled: eff.todo.enabled,
+      genTime: eff.todo.enabled ? eff.todo.genTime : "",
+      statTime: eff.todo.enabled ? eff.todo.statTime : "",
+    },
+    autoNewSession: { ...eff.autoNewSession },
+  };
+}
+
+/** 遍历某家长的（孩子 id, 合并配置）序列；skippedParent 标记无任何可用配置。 */
+function collectChildConfigs(
+  deps: WorkerSchedulerDeps,
+  parentId: string,
+  settings: ParentSettings
+): Array<{ childId: string; cc: WorkerSchedulerChildConfig }> {
+  const effMap = buildEffectiveChildConfig(deps.db, parentId);
+  const legacyChildren = settings.schedulerConfig?.children ?? {};
+  const children = deps.db.prepare("SELECT id FROM children WHERE parent_id = ?").all(parentId) as Array<{ id: string }>;
+  const out: Array<{ childId: string; cc: WorkerSchedulerChildConfig }> = [];
+  for (const c of children) {
+    const cc = resolveChildConfig(legacyChildren[c.id], effMap[c.id]);
+    if (!cc) continue;
+    out.push({ childId: c.id, cc });
+  }
+  return out;
+}
+
 /** 该时间点今天是否已跑过。 */
 function alreadyRanToday(deps: WorkerSchedulerDeps, childId: string, taskType: string, point: string, today: string): boolean {
   const key = getWorkerStateKey(deps.db, childId, taskType);
   return parseRunSet(key, today).has(point);
+}
+
+/** worker 任务类型 → 任务表类型（todo 按时间点拆 gen/stat；recording 同名）。 */
+function schedulerTaskTypeFor(task: WorkerTask, cc: WorkerSchedulerChildConfig, point: string): string {
+  if (task.type === "todo") {
+    if (point === cc.todo?.genTime) return "todo_gen";
+    if (point === cc.todo?.statTime) return "todo_stat";
+    return "todo";
+  }
+  return task.type;
 }
 
 /** 在指定时间点执行某任务（成功才记 worker_state，失败不记 → 下轮/补跑自愈）。 */
@@ -132,13 +211,14 @@ async function runTaskAtPoint(
 
   // 执行结果写入 task_runs（家长「定时任务执行结果」查询；任务匹配 = 类型+时间点+孩子分配）
   try {
-    const matched = findTaskForRun(deps.db, parentId, childId, task.type, point);
+    const matchType = schedulerTaskTypeFor(task, cc, point);
+    const matched = findTaskForRun(deps.db, parentId, childId, matchType, point);
     recordTaskRun(deps.db, {
       parentId,
       childId,
       taskId: matched?.id ?? null,
       taskName: matched?.name ?? task.type,
-      taskType: task.type,
+      taskType: matchType,
       date: formatLocalDate(now),
       point,
       status,
@@ -177,20 +257,19 @@ export async function runWorkerTick(deps: WorkerSchedulerDeps): Promise<void> {
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   for (const p of parents) {
     const settings = readParentSettings(deps.db, deps.dataDir, p.id);
-    const childrenCfg = settings.schedulerConfig?.children;
-    if (!childrenCfg) continue;
-    const children = deps.db.prepare("SELECT id FROM children WHERE parent_id = ?").all(p.id) as Array<{ id: string }>;
-    for (const c of children) {
-      const cc = childrenCfg[c.id];
-      if (!cc) continue;
+    for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
       for (const task of listTasks()) {
-        if (!task.points(cc).includes(nowMin)) continue;
-        if (alreadyRanToday(deps, c.id, task.type, nowMin, today)) continue;
-        try {
-          await runTaskAtPoint(deps, p.id, c.id, cc, task, nowMin, now, settings);
-        } catch (e) {
-          // 失败不记 worker_state → 下一分钟（仅当仍命中该时间点）或下次补跑自愈；不阻塞其它孩子/任务
-          console.error(`[worker] task=${task.type} child=${c.id} failed:`, (e as Error).message);
+        // 5 分钟桶匹配：配置的触发点落在本桶内才跑（保证每点每桶恰好一次，不漏非整 5 分的点）
+        const pts = task.points(cc).filter((pt) => pointInBucket(pt, nowMin));
+        if (!pts.length) continue;
+        for (const pt of pts) {
+          if (alreadyRanToday(deps, childId, task.type, pt, today)) continue;
+          try {
+            await runTaskAtPoint(deps, p.id, childId, cc, task, pt, now, settings);
+          } catch (e) {
+            // 失败不记 worker_state → 下一桶（仍命中）或下次补跑自愈；不阻塞其它孩子/任务
+            console.error(`[worker] task=${task.type} child=${childId} failed:`, (e as Error).message);
+          }
         }
       }
     }
@@ -209,12 +288,7 @@ export async function runWorkerCatchUp(deps: WorkerSchedulerDeps): Promise<void>
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   for (const p of parents) {
     const settings = readParentSettings(deps.db, deps.dataDir, p.id);
-    const childrenCfg = settings.schedulerConfig?.children;
-    if (!childrenCfg) continue;
-    const children = deps.db.prepare("SELECT id FROM children WHERE parent_id = ?").all(p.id) as Array<{ id: string }>;
-    for (const c of children) {
-      const cc = childrenCfg[c.id];
-      if (!cc) continue;
+    for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
       for (const task of listTasks()) {
         const points = task.points(cc).filter((t) => t <= nowMin).sort();
         if (!points.length) continue;
@@ -223,13 +297,121 @@ export async function runWorkerCatchUp(deps: WorkerSchedulerDeps): Promise<void>
             ? [points[points.length - 1]]
             : points; // "all"（默认）：按序补全部
         for (const point of candidates) {
-          if (alreadyRanToday(deps, c.id, task.type, point, today)) continue;
+          if (alreadyRanToday(deps, childId, task.type, point, today)) continue;
           try {
-            await runTaskAtPoint(deps, p.id, c.id, cc, task, point, now, settings);
+            await runTaskAtPoint(deps, p.id, childId, cc, task, point, now, settings);
           } catch (e) {
-            console.error(`[worker] catch-up task=${task.type} child=${c.id} failed:`, (e as Error).message);
+            console.error(`[worker] catch-up task=${task.type} child=${childId} failed:`, (e as Error).message);
           }
         }
+      }
+    }
+  }
+}
+
+// ---------- plan (carry + gen) / stat：游标驱动，不再按固定时刻 ----------
+
+/** 某 (childId, key) 是否已处理过指定 day（游标 = worker_state.last_key === day）。 */
+function cursorDayDone(deps: WorkerSchedulerDeps, childId: string, key: string, day: string): boolean {
+  return getWorkerStateKey(deps.db, childId, key) === day;
+}
+function markCursorDay(deps: WorkerSchedulerDeps, childId: string, key: string, day: string, now: Date): void {
+  setWorkerState(deps.db, childId, key, now.toISOString(), day);
+}
+
+/** 构造 gen/stat 所需的 WorkerTaskCtx（不依赖时间点，point 留空）。 */
+function buildTodoCtx(
+  deps: WorkerSchedulerDeps,
+  parentId: string,
+  childId: string,
+  cc: WorkerSchedulerChildConfig,
+  settings: ParentSettings,
+  now: Date
+): WorkerTaskCtx {
+  return {
+    dataDir: deps.dataDir,
+    mainDb: deps.db,
+    parentId,
+    childId,
+    auth: settings.auth,
+    appSettings: settings.appSettings,
+    schedulerConfig: cc,
+    now,
+    point: "",
+  };
+}
+
+/** 今天是否已有 todolist（用于 gen 跳过判定 / stat 前置条件）。 */
+function todayHasTodolist(deps: WorkerSchedulerDeps, parentId: string, childId: string, today: string): boolean {
+  const todo = runKbQuery<{ itemsMd: string } | null>(
+    deps.dataDir, deps.db, parentId, "kb.todo.get", { child_id: childId, date: today }
+  );
+  return !!todo?.itemsMd?.trim();
+}
+
+/**
+ * plan tick：先 carry（游标=昨天，昨天未完成→顺延到今天），再 gen（游标=今天）。
+ * gen 每天每孩子一次：今天还没有 todolist 就生成，已有则跳过。
+ * carry 与 gen 合并且 carry 在前，保证顺延行在 gen 读取当日排期前落库。
+ */
+export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
+  // carry 先于 gen：runStudyPlanCarryTick 内部按 (child, 昨天) 游标幂等
+  await runStudyPlanCarryTick(deps).catch((e) =>
+    console.error("[worker] study-plan carry failed:", (e as Error).message)
+  );
+  const now = new Date();
+  const today = formatLocalDate(now);
+  const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
+  for (const p of parents) {
+    const settings = readParentSettings(deps.db, deps.dataDir, p.id);
+    for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
+      if (!cc.todo?.enabled) continue;
+      try {
+        if (!cursorDayDone(deps, childId, "todo_gen", today)) {
+          if (!todayHasTodolist(deps, p.id, childId, today)) {
+            await runTodoGenServer(buildTodoCtx(deps, p.id, childId, cc, settings, now));
+            console.log(`[worker:plan] child=${childId}: ${today} 已生成 todolist`);
+          } else {
+            console.log(`[worker:plan] child=${childId}: ${today} todolist 已存在，跳过 gen`);
+          }
+          markCursorDay(deps, childId, "todo_gen", today, now);
+        }
+      } catch (e) {
+        console.error(`[worker:plan] gen child=${childId} failed:`, (e as Error).message);
+      }
+    }
+  }
+}
+
+/** 当天是否有新的 daily 学习记录（stat 的事件触发条件）。 */
+function todayHasDaily(deps: WorkerSchedulerDeps, parentId: string, childId: string, today: string): boolean {
+  const daily = runKbQuery<Array<unknown>>(
+    deps.dataDir, deps.db, parentId, "kb.daily_entries.queryByDate", { child_id: childId, date: today }
+  );
+  return !!daily && daily.length > 0;
+}
+
+/**
+ * stat tick：游标=今天，事件驱动——当天有新的 daily 学习记录且今天已有 todolist 时，执行一次。
+ * 不再按固定时刻：只要出现新学习记录就统计，且每天只统计一次（游标防重）。
+ */
+export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
+  const now = new Date();
+  const today = formatLocalDate(now);
+  const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
+  for (const p of parents) {
+    const settings = readParentSettings(deps.db, deps.dataDir, p.id);
+    for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
+      if (!cc.todo?.enabled) continue;
+      try {
+        if (cursorDayDone(deps, childId, "todo_stat", today)) continue;
+        if (!todayHasTodolist(deps, p.id, childId, today)) continue;
+        if (!todayHasDaily(deps, p.id, childId, today)) continue;
+        await runTodoStatServer(buildTodoCtx(deps, p.id, childId, cc, settings, now));
+        markCursorDay(deps, childId, "todo_stat", today, now);
+        console.log(`[worker:stat] child=${childId}: ${today} 已统计完成度`);
+      } catch (e) {
+        console.error(`[worker:stat] child=${childId} failed:`, (e as Error).message);
       }
     }
   }

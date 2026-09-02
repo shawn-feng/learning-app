@@ -98,6 +98,18 @@ export const RECORDING_PROMPT = `# 学习记录流程及要求
 
 本任务没有文件读写工具（read/write/edit 均不可用），一切数据读写只能走 kb 工具。
 
+### 8. 核对今日自定任务（todolist 完成情况）
+
+汇总写库完成后，用 todo_list 工具核对孩子今天的「自定任务」完成情况（仅限 todolist 中**不带 [家长] 标记**的项）：
+
+1. todo_list action=read（date 省略即今天）读取当天 todolist；
+2. 对照本次对话记录，判断每个自定任务孩子今天是否实际完成（依据：对话中是否提及做了这件事，或学习/生活记录能体现完成）；
+3. 完成的把 `- [ ]` 改为 `- [x]`，未完成的保持 `- [ ]`；
+4. todo_list action=update 整体写回（先 read 再改，保留 [家长] 项与所有其它内容，只改自定任务的勾选）；
+5. 若今天没有 todolist、或 todolist 中没有自定任务，跳过本步（不要凭空创建 todolist）。
+
+重要：[家长] 项的完成由系统按课程状态（courses.status）自动判定，本任务**绝不动 [家长] 项**——只处理孩子自定任务。
+
 ## 文件格式
 
 ### daily 记录（单一真相源，4 区块，存于 kb.sqlite 的 daily_entries 表）

@@ -659,6 +659,26 @@ export async function resetChildSession(
   }
 }
 
+// ISSUE-042：家长会话重置（对齐 resetChildSession，作用于 cachedParentSession）
+export async function resetParentSession(
+  archiveLimit: number = DEFAULT_ARCHIVE_LIMIT
+): Promise<void> {
+  const sessionsDir = getParentSessionsDir("parent");
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  if (cachedParentSession) {
+    // 热路径：在当前 sessionManager 上开全新空会话，旧会话完整保留为归档
+    cachedParentSession.sessionManager.newSession();
+    const agent: any = (cachedParentSession as any).agent;
+    if (agent && agent.state) agent.state.messages = [];
+    const hotFile: string | undefined = (cachedParentSession as any).sessionFile;
+    pruneArchivedSessions(sessionsDir, hotFile ?? undefined, archiveLimit);
+  } else {
+    // 冷路径：仅归档清理
+    pruneArchivedSessions(sessionsDir, undefined, archiveLimit);
+  }
+}
+
 /**
  * 清理归档会话文件：保留 sessions 目录下最近 limit 个 .jsonl，更早的删除。
  * 当前活跃会话文件（activeFile）永不被删。limit<1 时不保留任何历史归档（仅当前会话）。

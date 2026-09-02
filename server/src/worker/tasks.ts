@@ -212,7 +212,7 @@ const recordingTask: WorkerTask = {
     const session = await createWorkerEphemeralSession(
       ctx,
       RECORDING_SYSTEM_PROMPT,
-      ["kb_query", "kb_insert", "kb_update"],
+      ["kb_query", "kb_insert", "kb_update", "todo_list"],
       kbTools
     );
     try {
@@ -282,18 +282,6 @@ function planItemsToParentLines(items: PlanTodayItemLite[]): string[] {
   return lines;
 }
 
-function extractSelfTasks(md: string): string[] {
-  const out: string[] = [];
-  for (const line of md.split("\n")) {
-    const m = /^\s*[-*]\s*\[( |x|X)\]\s*(.*)$/.exec(line);
-    if (!m) continue;
-    if (/\[家长\]/.test(m[2])) continue;
-    const content = m[2].trim();
-    if (content) out.push(`- [ ] ${content}`);
-  }
-  return out;
-}
-
 /**
  * 从 markdown 提取昨日未完成项（供「酌情并入今天」）。
  * 只取孩子自规划项：`[家长]` 项未完成由学习计划 carry（服务端每日顺延）确定性处理，
@@ -311,54 +299,73 @@ function extractUnfinished(md: string): string[] {
   return out;
 }
 
-async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
+export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
   const today = formatLocalDate(ctx.now);
-  const planItems = loadTodayPlanItemsServer(ctx, today);
+  // gen 只在当天尚无 todolist 时生成（调度器游标已保证一天一次；这里双保险，不覆盖既有内容）
   const todayTodo = runKbQuery<{ itemsMd: string } | null>(
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: today }
   );
+  if (todayTodo?.itemsMd?.trim()) {
+    console.log(`[worker:todo-gen] child ${ctx.childId}: ${today} 已有 todolist，跳过`);
+    return;
+  }
+  const planItems = loadTodayPlanItemsServer(ctx, today);
   const yesterdayTodo = runKbQuery<{ itemsMd: string } | null>(
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: prevDate(today) }
   );
   const parentLines = planItemsToParentLines(planItems);
-  const selfTasks = extractSelfTasks(todayTodo?.itemsMd ?? "");
   const yesterdayUnfinished = extractUnfinished(yesterdayTodo?.itemsMd ?? "");
-  const parts: string[] = [`今天是 ${today}。请为孩子生成今天的 todolist（今日计划）。`];
-  if (parentLines.length > 0) {
-    parts.push("【家长规定项（来自学习计划，必须全部保留，标 [家长]，绝不能删改文字）】\n" + parentLines.join("\n"));
-  } else {
-    parts.push("【家长规定项】今天的学习计划没有安排内容（空天 = 不要求学）。");
-  }
-  if (selfTasks.length > 0) {
-    parts.push("【今天已记录的自规划项（孩子之前要求的，必须保留）】\n" + selfTasks.join("\n"));
-  }
+  const sections: string[] = [];
+  sections.push(
+    parentLines.length > 0
+      ? "【家长规定项】\n" + parentLines.join("\n")
+      : "【家长规定项】今天的学习计划没有安排内容（空天 = 不要求学）。"
+  );
   if (yesterdayUnfinished.length > 0) {
-    parts.push("【昨日未完成项（酌情并入今天，可调整表述）】\n" + yesterdayUnfinished.join("\n"));
+    sections.push("【昨日未完成项（酌情并入今天）】\n" + yesterdayUnfinished.join("\n"));
   }
-  parts.push(
-    "请用 todo_list 工具：先 action=read（date 省略即今天）确认当前内容，再 action=update 整体写入。\n" +
-      "格式要求：markdown checkbox（`- [ ]` 未完成 / `- [x]` 已完成）；家长规定项保留 `[家长]` 标记并排在前面；" +
-      "孩子自规划项排在后面；可在自规划区补充 1~3 条对孩子今天合理的事（如读书、运动、家务），但不要编造离谱任务。"
+  runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.put", {
+    child_id: ctx.childId,
+    date: today,
+    items_md: sections.join("\n\n"),
+  });
+  console.log(
+    `[worker:todo-gen] child ${ctx.childId}: ${today} 已生成（家长项 ${parentLines.length} / 昨日未完 ${yesterdayUnfinished.length}）`
   );
-  const kbTools = createWorkerKbTools(ctx);
-  const session = await createWorkerEphemeralSession(
-    ctx,
-    "你是一个认真细致的「今日计划」整理助手。你只负责孩子的 Todolist（今日计划）markdown 的生成与完成度核对，不做其他事。",
-    ["todo_list", "kb_query", "get_date"],
-    kbTools
-  );
-  try {
-    await session.prompt(parts.join("\n\n"));
-    console.log(`[worker:todo-gen] child ${ctx.childId}: ${today} 已生成`);
-  } finally {
-    session.dispose();
-  }
 }
 
 const DONE_RATE_OK = 0.8;
 
-/** @returns true = 跳过（当天无 todolist），false = 已执行统计 */
-async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
+/** 剥 [家长] 前缀与 carry 后缀，取计划项文本用于匹配课程标题。 */
+function stripParentText(line: string): string {
+  return line
+    .replace(/^\[家长\]\s*/, "")
+    .replace(/（昨天没学完，今天补上）\s*$/, "")
+    .trim();
+}
+
+/**
+ * 按课程标题匹配完成态：✅=完成 / ⬜=未完成 / undefined=无对应课程（不判断，保持原样）。
+ * 学习计划项的文本即课程名，与 courses.title 1:1（标题兜底匹配，与面板 loadCourseDoneMap 同口径）。
+ */
+function courseDoneFor(
+  courses: Array<{ topic: string; title: string; status: string }>,
+  parentLine: string
+): boolean | undefined {
+  const t = stripParentText(parentLine);
+  if (!t) return undefined;
+  const c = courses.find((x) => x.title.trim() === t);
+  return c ? c.status === "✅" : undefined;
+}
+
+/**
+ * 纯代码统计（不再调 LLM）。
+ * 完成情况真源 = courses.status（由 recording 的 LLM 判定后写入 ✅）。
+ * - [家长] 项：对照课程状态确定性打勾；
+ * - 非[家长]项（孩子自定任务）：保持原样，由孩子「汇总」（聊天调工具 / 定时汇总任务）判定完成。
+ * @returns true = 跳过（当天无 todolist），false = 已执行统计
+ */
+export async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
   const today = formatLocalDate(ctx.now);
   const todayTodo = runKbQuery<{ itemsMd: string } | null>(
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: today }
@@ -367,41 +374,25 @@ async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
     console.log(`[worker:todo-stat] child ${ctx.childId}: ${today} 无 todolist，跳过`);
     return true;
   }
-  const conversation = readServerDailyConversation(ctx.dataDir, ctx.parentId, ctx.childId, today);
-  const summaries = runKbQuery<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>(
-    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.progress.list", { child_id: ctx.childId }
-  );
-  const kbTools = createWorkerKbTools(ctx);
-  const session = await createWorkerEphemeralSession(
-    ctx,
-    "你是一个认真细致的「今日计划」整理助手。你只负责孩子的 Todolist（今日计划）markdown 的生成与完成度核对，不做其他事。",
-    ["todo_list", "kb_query", "get_date"],
-    kbTools
-  );
-  try {
-    const prompt = [
-      `今天是 ${today}。以下是孩子今天的 todolist 与学习情况，请核对完成度并更新。`,
-      "【今天的 todolist】",
-      todayTodo.itemsMd,
-      "",
-      conversation.trim()
-        ? `【今天孩子的对话记录（判断依据之一）】\n${conversation}`
-        : "【今天孩子的对话记录】今天没有对话记录。",
-      "",
-      summaries.length
-        ? `【各主题学习进度摘要（判断 [家长] 项——学习计划安排的具体课程——的完成情况）】\n${summaries
-            .map((p) => `- ${p.topic}：已学 ${p.learned}/${p.total}${p.next ? `，下一课「${p.next}」` : ""}`)
-            .join("\n")}`
-        : "",
-      "",
-      "请用 todo_list 工具处理：先 action=read 确认，再 action=update 写回。规则：",
-      "1. 已完成的任务把 `- [ ]` 改为 `- [x]`（依据：学习类对照进度/对话是否学了；生活类对照对话是否提及）；",
-      "2. `[家长]` 项只能打勾完成，绝不能删除或修改文字；",
-      "3. 未完成的保持 `- [ ]`，不要为了好看而全打勾——完成度必须真实。",
-    ].join("\n");
-    await session.prompt(prompt);
-  } finally {
-    session.dispose();
+  const courses = runKbQuery<Array<{ topic: string; title: string; status: string }>>(
+    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.courses.list", { child_id: ctx.childId }
+  ) ?? [];
+  const newMd = todayTodo.itemsMd
+    .split("\n")
+    .map((raw) => {
+      const m = /^\s*[-*]\s*\[( |x|X)\]\s*(\[家长\].*)$/.exec(raw);
+      if (!m) return raw;
+      const done = courseDoneFor(courses, m[2]);
+      if (done === undefined) return raw; // 无对应课程 → 保持原样
+      return `- [${done ? "x" : " "}] ${m[2]}`;
+    })
+    .join("\n");
+  if (newMd !== todayTodo.itemsMd) {
+    runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.put", {
+      child_id: ctx.childId,
+      date: today,
+      items_md: newMd,
+    });
   }
   await saveTodoStatsServer(ctx, today);
   return false;
@@ -463,31 +454,4 @@ async function saveTodoStatsServer(ctx: WorkerTaskCtx, date: string): Promise<vo
   });
 }
 
-const todoTask: WorkerTask = {
-  type: "todo",
-  // gen/stat 两个时间点都要补（与客户端 runCatchUp 一致：按时间先后各补一次）
-  catchUp: "all",
-  points: (cfg) => {
-    if (!cfg.todo?.enabled) return [];
-    const pts: string[] = [];
-    if (/^\d{2}:\d{2}$/.test(cfg.todo.genTime ?? "")) pts.push(cfg.todo!.genTime!);
-    if (/^\d{2}:\d{2}$/.test(cfg.todo.statTime ?? "")) pts.push(cfg.todo!.statTime!);
-    return pts;
-  },
-  run: async (ctx): Promise<WorkerRunResult> => {
-    if (ctx.point === ctx.schedulerConfig.todo?.genTime) {
-      await runTodoGenServer(ctx);
-      return { status: "ok", message: `已生成 ${formatLocalDate(ctx.now)} 的今日计划` };
-    }
-    if (ctx.point === ctx.schedulerConfig.todo?.statTime) {
-      const skipped = await runTodoStatServer(ctx);
-      return skipped
-        ? { status: "skip", message: `${formatLocalDate(ctx.now)} 无 todolist，跳过统计` }
-        : { status: "ok", message: `已统计 ${formatLocalDate(ctx.now)} 的完成度` };
-    }
-    return { status: "ok", message: "" };
-  },
-};
-
 registerTask(recordingTask);
-registerTask(todoTask);
