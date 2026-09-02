@@ -26,7 +26,9 @@ function check(name, cond, detail) {
 }
 
 async function api(method, p, body) {
-  const res = await fetch(`${BASE}${p}`, { method, headers: H, body: body ? JSON.stringify(body) : undefined });
+  // DELETE 无 body：去掉 content-type，避免 Fastify 报 FST_ERR_CTP_EMPTY_JSON_BODY
+  const headers = method === "DELETE" && !body ? { Authorization: H.Authorization } : H;
+  const res = await fetch(`${BASE}${p}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const json = await res.json().catch(() => ({}));
   return { status: res.status, json };
 }
@@ -89,12 +91,15 @@ const recOk = r.status === 200 && rec.length === 2 && rec.find((x) => x.course =
 check("exam/course-records 每课聚合（难点/重点/计划复习）", recOk, JSON.stringify(r.json).slice(0, 300));
 
 // 7) 考核 v2 排期（§14）：固定配置 → 懒生成 → 多档去重 → 自定义 → config 按排期 → 提交关联
-r = await api("POST", "/api/v1/exam/fixed-config", { frequencies: ["weekly"], courseCount: 3, time: "20:00" });
-check("fixed-config 保存", r.status === 200 && r.json?.ok === true && r.json?.config?.frequencies?.includes("weekly"), JSON.stringify(r.json));
+r = await api("POST", "/api/v1/exam/fixed-config", { frequencies: ["weekly"], courseCount: 3, time: "20:00", weekly: { weekday: 5, time: "19:30" } });
+check("fixed-config 保存（含 weekly 周几配置）", r.status === 200 && r.json?.ok === true && r.json?.config?.frequencies?.includes("weekly") && r.json?.config?.weekly?.weekday === 5, JSON.stringify(r.json));
 r = await api("GET", "/api/v1/exam/schedules/smoke-child-1");
 const schedOk = r.status === 200 && (r.json?.generated ?? 0) >= 1
   && (r.json?.schedules || []).some((s) => s.kind === "fixed" && s.freq === "weekly");
 check("排期懒生成（固定每周）", schedOk, JSON.stringify(r.json)?.slice(0, 200));
+const wkSch = (r.json?.schedules || []).find((s) => s.freq === "weekly");
+const wkDayOk = wkSch && new Date(wkSch.scheduledAt).getDay() === 5 && new Date(wkSch.scheduledAt).getHours() === 19 && new Date(wkSch.scheduledAt).getMinutes() === 30;
+check("每周排期落在配置的周几几点（周五 19:30）", !!wkDayOk, wkSch ? wkSch.scheduledAt : "无 weekly 排期");
 
 // v3 §14.9：固定排期 config 两段式（第一段 = 选课 prompt + 候选清单；第二段 = 选中课程 rubric）
 const fixedSch = (r.json?.schedules || []).find((s) => s.kind === "fixed" && s.status === "pending");
@@ -128,6 +133,25 @@ const cfgSchOk = r.status === 200 && r.json?.schedule?.kind === "custom"
   && Array.isArray(r.json?.courses) && r.json.courses.length >= 1
   && r.json.courses[0].title === "学而篇第一章" && !!r.json.courses[0].assessRubric && !!r.json.scoringPrompt;
 check("config 按自定义排期选课（scope 指定课程 + rubric）", cfgSchOk, JSON.stringify(r.json)?.slice(0, 250));
+
+// v3.1：自定义排期带考核 prompt → 选课两段式（第一段 selectionPrompt + 候选；第二段 rubric）
+r = await api("POST", "/api/v1/exam/schedules", {
+  childId: "smoke-child-1", scheduledAt: "2026-09-25T10:00:00",
+  scope: { topics: ["lunyu"], note: "带 prompt 的自定义", prompt: "本次考论语的学而篇最近学的 2 门课，每课考完整。" },
+});
+const cusPid = r.json?.id;
+check("自定义排期创建（带 prompt）", r.status === 200 && r.json?.ok === true && !!cusPid, JSON.stringify(r.json));
+r = await api("GET", `/api/v1/exam/config/smoke-child-1?schedule=${cusPid}`);
+const cusP1Ok = r.status === 200 && r.json?.schedule?.kind === "custom"
+  && !!r.json?.selectionPrompt && r.json.selectionPrompt.includes("学而篇")
+  && Array.isArray(r.json?.candidates) && r.json.candidates.length >= 1 && !r.json.courses;
+check("自定义 config 第一段（家长 prompt + 候选）", cusP1Ok, JSON.stringify(r.json)?.slice(0, 250));
+r = await api("GET", `/api/v1/exam/config/smoke-child-1?schedule=${cusPid}&courses=${encodeURIComponent("学而篇第一章,学而篇第二章")}`);
+const cusP2Ok = r.status === 200 && Array.isArray(r.json?.courses) && r.json.courses.length >= 1
+  && !!r.json.courses[0].assessRubric && !!r.json.scoringPrompt;
+check("自定义 config 第二段（选中课程 rubric + 判分 prompt）", cusP2Ok, JSON.stringify(r.json)?.slice(0, 250));
+r = await api("DELETE", `/api/v1/exam/schedules/${cusPid}`);
+check("清理自定义测试排期", r.status === 200 && r.json?.ok === true, JSON.stringify(r.json));
 
 r = await api("POST", "/api/v1/exam/attempts", {
   childId: "smoke-child-1", topic: "lunyu", title: "排期考核提交", score: 90,

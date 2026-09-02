@@ -218,9 +218,13 @@ export async function cancelExamSchedule(id: string): Promise<{ ok: boolean }> {
 // ==================== 固定考核配置（家长设置：频率档 + 每轮课程数 N + 时刻） ====================
 
 export interface FixedExamConfigData {
+  /** 启用的固定频率档：daily | weekly（UI 标签管理；monthly+ 保留兼容） */
   frequencies: string[];
   courseCount: number;
+  /** 每日考核时刻 HH:mm */
   time: string;
+  /** 每周考核：周几（1=周一…7=周日）+ 时刻 */
+  weekly: { weekday: number; time: string };
   anchorAt: string;
   /** 各频率档选课 prompt（家长可编辑；缺省用服务端默认模板） */
   selectionPrompts: Record<string, string>;
@@ -235,7 +239,13 @@ export async function getFixedExamConfig(): Promise<{ config: FixedExamConfigDat
 }
 
 export async function saveFixedExamConfig(
-  patch: Partial<{ frequencies: string[]; courseCount: number; time: string; selectionPrompts: Record<string, string> }>
+  patch: Partial<{
+    frequencies: string[];
+    courseCount: number;
+    time: string;
+    weekly: { weekday: number; time: string };
+    selectionPrompts: Record<string, string>;
+  }>
 ): Promise<{ ok: boolean; config: FixedExamConfigData }> {
   return serverFetch<{ ok: boolean; config: FixedExamConfigData }>("/exam/fixed-config", {
     method: "POST",

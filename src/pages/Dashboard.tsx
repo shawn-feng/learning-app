@@ -5,6 +5,7 @@ import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
 import CourseManager from "../components/CourseManager";
 import ParentChatPanel from "../components/ParentChatPanel";
+import ExamAdminPanel from "../components/ExamAdminPanel";
 import Settings from "./Settings";
 import ChildDetailPage from "../components/ChildDetailPage";
 import { useChatPanel } from "../hooks/useChatPanel";
@@ -21,7 +22,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [children, setChildren] = useState<any[]>([]);
   const [showAddChild, setShowAddChild] = useState(false);
   const [selectedChild, setSelectedChild] = useState<any>(null);
-  const [view, setView] = useState<"children" | "courses" | "tokens" | "settings">("children");
+  const [view, setView] = useState<"children" | "courses" | "exam" | "tokens" | "settings">("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
@@ -77,6 +78,19 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             <div className="child-avatar">📚</div>
             <div className="child-info">
               <div className="name">课程管理</div>
+            </div>
+          </div>
+          <div
+            className="child-card"
+            style={{ border: "none" }}
+            onClick={() => {
+              setView("exam");
+              setDetailChild(null);
+            }}
+          >
+            <div className="child-avatar">🎯</div>
+            <div className="child-info">
+              <div className="name">学习考核</div>
             </div>
           </div>
           <div
@@ -199,6 +213,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           )}
 
           {view === "courses" && !detailChild && <CourseManager />}
+
+          {view === "exam" && !detailChild && <ExamAdminPanel children={children} />}
 
           {view === "tokens" && !detailChild && <TokenStatsPanel childrenList={children} />}
 

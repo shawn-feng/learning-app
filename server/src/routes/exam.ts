@@ -116,13 +116,15 @@ function masteryLevel(rate: number): string {
 // ==================== 考核 v2：固定频率配置 / 排期生成（EXAM-REQUIREMENTS §14） ====================
 
 interface FixedExamConfig {
-  /** 固定考核频率档（多档并存）：daily | weekly | monthly | halfyear | yearly */
+  /** 固定考核频率档：daily | weekly（UI 标签管理）；monthly/halfyear/yearly 保留兼容（旧数据/旧排期） */
   frequencies: string[];
-  /** 每轮考核的课程数 N（§14.3，默认 3） */
+  /** 每轮考核的课程数 N（§14.3，默认 3；v3 起数量由选课 prompt 规则决定，此字段仅兼容保留） */
   courseCount: number;
-  /** 排期锚点时刻 HH:mm（默认 20:00，孩子晚上学习时段） */
+  /** 每日考核时刻 HH:mm（默认 20:00，孩子晚上学习时段） */
   time: string;
-  /** 首次生成锚点（ISO）；各档从锚点按周期步进 */
+  /** 每周考核：周几几点（weekday 1=周一…7=周日；time HH:mm；缺省用 time） */
+  weekly: { weekday: number; time: string };
+  /** 首次生成锚点（ISO）；仅 monthly+ 档步进用，daily/weekly 按各自时刻实时定位 */
   anchorAt: string;
   /** 各频率档「选课 prompt」（家长可编辑；缺省用 DEFAULT_SELECTION_PROMPTS）——
    *  选课由客户端 LLM 按本 prompt 执行（§14.9，取代代码打分选课）。模板占位符由服务端注入：
@@ -134,6 +136,7 @@ const DEFAULT_FIXED_CONFIG: FixedExamConfig = {
   frequencies: ["weekly"],
   courseCount: 3,
   time: "20:00",
+  weekly: { weekday: 1, time: "20:00" },
   anchorAt: "",
   selectionPrompts: {},
 };
@@ -193,6 +196,10 @@ function getFixedConfig(db: DatabaseSync, parentId: string): FixedExamConfig {
   }
   // 选课 prompt：默认 + 家长覆盖合并（缺省档位回退默认模板）
   cfg.selectionPrompts = { ...DEFAULT_SELECTION_PROMPTS, ...(cfg.selectionPrompts ?? {}) };
+  // weekly 缺省回退（旧数据无 weekly 字段）：周一 20:00
+  if (!cfg.weekly || typeof cfg.weekly !== "object") cfg.weekly = { weekday: 1, time: cfg.time || "20:00" };
+  if (!cfg.weekly.time) cfg.weekly.time = cfg.time || "20:00";
+  if (!cfg.weekly.weekday || cfg.weekly.weekday < 1 || cfg.weekly.weekday > 7) cfg.weekly.weekday = 1;
   return cfg;
 }
 
@@ -250,29 +257,56 @@ export function ensureFixedSchedules(db: DatabaseSync, parentId: string, childId
   const cfg = getFixedConfig(db, parentId);
   if (!cfg.frequencies?.length) return 0;
   const HORIZON_MS = 60 * 86400000; // 未来 60 天
-  // 锚点：已配置 anchorAt 用其值；否则用「今天配置时刻」（已过则明天同刻），保证固定排期落在配置的时间点
-  let anchor: number;
-  if (cfg.anchorAt) {
-    anchor = new Date(cfg.anchorAt).getTime();
-  } else {
-    const [h, m] = (cfg.time || "20:00").split(":").map(Number);
-    const d = new Date();
-    d.setHours(Number.isFinite(h) ? h : 20, Number.isFinite(m) ? m : 0, 0, 0);
-    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
-    anchor = d.getTime();
-  }
   const now = Date.now();
-  // 各档候选：锚点（含当天）之后、不超过 anchor+horizon 的所有时间点——
-  // 从 anchor 本身起步，保证「今天配置时刻」的考核会生成（此前 anchor+step 起步导致当天排期缺失）
   const byDay = new Map<number, { time: number; freq: string; rank: number }>();
-  for (const freq of cfg.frequencies) {
-    const step = freqToMs(freq);
-    let t = anchor;
-    while (t <= anchor + HORIZON_MS) {
-      const day = dayStart(t);
-      const cur = byDay.get(day);
-      if (!cur || FREQ_RANK[freq] > cur.rank) byDay.set(day, { time: t, freq, rank: FREQ_RANK[freq] });
-      t += step;
+  const add = (t: number, freq: string) => {
+    const day = dayStart(t);
+    const cur = byDay.get(day);
+    if (!cur || FREQ_RANK[freq] > cur.rank) byDay.set(day, { time: t, freq, rank: FREQ_RANK[freq] });
+  };
+  // 每日：每天 cfg.time 时刻（今天该时刻未过则今天，否则明天起）
+  if (cfg.frequencies.includes("daily")) {
+    const [h, m] = (cfg.time || "20:00").split(":").map(Number);
+    const d = new Date(now);
+    d.setHours(Number.isFinite(h) ? h : 20, Number.isFinite(m) ? m : 0, 0, 0);
+    if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+    while (d.getTime() <= now + HORIZON_MS) {
+      add(d.getTime(), "daily");
+      d.setDate(d.getDate() + 1);
+    }
+  }
+  // 每周：cfg.weekly.weekday（1=周一…7=周日）的 weekly.time 时刻；当天该时刻未过则当天，否则下个同星期几
+  if (cfg.frequencies.includes("weekly")) {
+    const w = cfg.weekly || {};
+    const weekday = Number(w.weekday) || 1;
+    const wtime = w.time || cfg.time || "20:00";
+    const [h, m] = wtime.split(":").map(Number);
+    const target = weekday % 7; // 1-7 → JS getDay（0=周日）：1→周一,7→周日
+    const d = new Date(now);
+    d.setHours(Number.isFinite(h) ? h : 20, Number.isFinite(m) ? m : 0, 0, 0);
+    d.setDate(d.getDate() + ((target - d.getDay() + 7) % 7));
+    if (d.getTime() <= now) d.setDate(d.getDate() + 7);
+    while (d.getTime() <= now + HORIZON_MS) {
+      add(d.getTime(), "weekly");
+      d.setDate(d.getDate() + 7);
+    }
+  }
+  // monthly/halfyear/yearly：保留旧 anchor 步进（兼容旧数据；UI 已不再生成这三档）
+  const legacy = cfg.frequencies.filter((f) => f === "monthly" || f === "halfyear" || f === "yearly");
+  if (legacy.length) {
+    let anchor: number;
+    if (cfg.anchorAt) {
+      anchor = new Date(cfg.anchorAt).getTime();
+    } else {
+      const [h, m] = (cfg.time || "20:00").split(":").map(Number);
+      const d = new Date();
+      d.setHours(Number.isFinite(h) ? h : 20, Number.isFinite(m) ? m : 0, 0, 0);
+      if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+      anchor = d.getTime();
+    }
+    for (const freq of legacy) {
+      const step = freqToMs(freq);
+      for (let t = anchor; t <= anchor + HORIZON_MS; t += step) add(t, freq);
     }
   }
   // 只保留「还没生成」的排期（同日已存在 fixed 排期 → 跳过）；按时间排序
@@ -475,8 +509,9 @@ export function buildSelectionPrompt(
   let RANGE: string;
   if (freq === "daily") RANGE = TODAY;
   else if (freq === "monthly") RANGE = monthStart + " ~ " + scheduledDay;
+  else if (freq === "custom") RANGE = "（自定义考核，选课范围由下面的规则指定，不按周期窗口）";
   else RANGE = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10) + " ~ " + scheduledDay;
-  // 每主题统计（monthly：本月/本月前；其余：本周期窗口内）
+  // 每主题统计（monthly：本月/本月前；其余：本周期窗口内；custom：全部候选）
   const byTopic = new Map<string, { name: string; month: number; prev: number; window: number }>();
   const bump = (topic: string, name: string, key: "month" | "prev" | "window") => {
     let e = byTopic.get(topic);
@@ -493,6 +528,8 @@ export function buildSelectionPrompt(
       const inMonth = (fl >= monthStart && fl <= scheduledDay) || (lr >= monthStart && lr <= scheduledDay);
       if (inMonth) bump(c.topic, c.topicName, "month");
       else if (fl === "✅" || (fl !== "" && fl < monthStart)) bump(c.topic, c.topicName, "prev"); // ✅=已学无日期（更早学习）
+    } else if (freq === "custom") {
+      bump(c.topic, c.topicName, "window"); // 自定义：统计全部候选，由规则决定挑多少
     } else {
       const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
       if ((fl >= winStart && fl <= scheduledDay) || (lr >= winStart && lr <= scheduledDay)) bump(c.topic, c.topicName, "window");
@@ -506,23 +543,27 @@ export function buildSelectionPrompt(
       statLines.push("[" + e.name + "] 本周期 " + e.window + " 门 → 选 " + Math.ceil(e.window * 0.4) + " 门");
     } else if (freq === "yearly") {
       statLines.push("[" + e.name + "] 本周期 " + e.window + " 门 → 选 " + Math.ceil(e.window * 0.6) + " 门");
+    } else if (freq === "custom") {
+      statLines.push("[" + e.name + "] 候选 " + e.window + " 门（数量由你的规则决定）");
     } else {
       statLines.push("[" + e.name + "] 本周期 " + e.window + " 门 → 全部选入");
     }
   }
   // 每门课周期归属标记（服务端代码精确计算，LLM 按标记挑选、不自己算日期）：
-  // daily/weekly/halfyear/yearly → ★ 本周期（窗口内）；monthly → ★ 本月 / ◐ 本月前
+  // daily/weekly/halfyear/yearly → ★ 本周期（窗口内）；monthly → ★ 本月 / ◐ 本月前；custom → 不打标记
   const flagByTitle = new Map<string, string>();
-  for (const c of candidates) {
-    const fl = c.firstLearned || "";
-    const lr = c.lastReview || "";
-    if (freq === "monthly") {
-      const inMonth = (fl >= monthStart && fl <= scheduledDay) || (lr >= monthStart && lr <= scheduledDay);
-      if (inMonth) flagByTitle.set(c.title, "★ 本月");
-      else if (fl === "✅" || (fl !== "" && fl < monthStart)) flagByTitle.set(c.title, "◐ 本月前"); // ✅=已学无日期（更早学习）
-    } else {
-      const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
-      if ((fl >= winStart && fl <= scheduledDay) || (lr >= winStart && lr <= scheduledDay)) flagByTitle.set(c.title, "★ 本周期");
+  if (freq !== "custom") {
+    for (const c of candidates) {
+      const fl = c.firstLearned || "";
+      const lr = c.lastReview || "";
+      if (freq === "monthly") {
+        const inMonth = (fl >= monthStart && fl <= scheduledDay) || (lr >= monthStart && lr <= scheduledDay);
+        if (inMonth) flagByTitle.set(c.title, "★ 本月");
+        else if (fl === "✅" || (fl !== "" && fl < monthStart)) flagByTitle.set(c.title, "◐ 本月前"); // ✅=已学无日期（更早学习）
+      } else {
+        const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
+        if ((fl >= winStart && fl <= scheduledDay) || (lr >= winStart && lr <= scheduledDay)) flagByTitle.set(c.title, "★ 本周期");
+      }
     }
   }
   const STATS = statLines.length ? statLines.join("\n") : "（本周期暂无学习/复习过的课程，请输出空数组）";
@@ -600,8 +641,38 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         status: String(sch.status),
         scope,
       };
-      // 自定义排期：家长已指定主题/课程范围 → 直接返回课程（带 rubric），跳过选课 LLM
+      // 自定义排期：scope 指定范围
       if (scope.topics || scope.courses) {
+        // 第二段优先：客户端选课完成 → 按选中 title 返回 rubric + 判分 prompt（自定义与固定统一）
+        if (coursesParam) {
+          const titles = coursesParam
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          return {
+            schedule,
+            courses: fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, titles),
+            scoringPrompt: buildScoringPrompt(),
+          };
+        }
+        const customPrompt = String(scope.prompt || "");
+        if (customPrompt) {
+          // 自定义考核带「考核 prompt」→ 走选课两段式：LLM 按家长写的规则从候选（scope 限定或全部）里挑
+          const all = listLearnedCourseMeta(deps.db, deps.config.dataDir, parentId, childId);
+          const topics = Array.isArray(scope.topics) ? scope.topics : [];
+          const courses = Array.isArray(scope.courses) ? scope.courses : [];
+          const candidates = all.filter(
+            (c) => (!topics.length || topics.includes(c.topic)) && (!courses.length || courses.includes(c.title))
+          );
+          const selectionPrompt = buildSelectionPrompt(
+            customPrompt,
+            candidates,
+            "custom",
+            new Date(String(sch.scheduled_at)).getTime()
+          );
+          return { schedule, selectionPrompt, candidates };
+        }
+        // 无 prompt（旧行为）：直接返回范围课程（带 rubric），跳过选课 LLM
         return {
           schedule,
           courses: selectScopeCourses(deps.config.dataDir, parentId, childId, scope),
@@ -835,6 +906,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       frequencies?: string[];
       courseCount?: number;
       time?: string;
+      weekly?: { weekday?: number; time?: string };
       selectionPrompts?: Record<string, string>;
     };
     const cur = getFixedConfig(deps.db, parentId);
@@ -843,6 +915,13 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       : cur.frequencies;
     const courseCount = Number.isFinite(body.courseCount) ? Math.min(20, Math.max(1, Math.round(body.courseCount!))) : cur.courseCount;
     const time = /^\d{2}:\d{2}$/.test(String(body.time ?? "")) ? String(body.time) : cur.time;
+    // 每周：周几（1=周一…7=周日）+ 时刻
+    const weekly: FixedExamConfig["weekly"] = { ...(cur.weekly ?? { weekday: 1, time }) };
+    if (body.weekly && typeof body.weekly === "object") {
+      const wd = Number(body.weekly.weekday);
+      if (Number.isInteger(wd) && wd >= 1 && wd <= 7) weekly.weekday = wd;
+      if (/^\d{2}:\d{2}$/.test(String(body.weekly.time ?? ""))) weekly.time = String(body.weekly.time);
+    }
     // 各频率档选课 prompt：合并保存（只更新传入的档；空字符串 = 恢复默认，删除该档覆盖）
     const selectionPrompts: Record<string, string> = { ...(cur.selectionPrompts ?? {}) };
     if (body.selectionPrompts && typeof body.selectionPrompts === "object") {
@@ -853,9 +932,13 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         else selectionPrompts[f] = s;
       }
     }
-    // 频率或时刻变化 → 重置锚点（从当前时间重新排期）；并清掉未来「待考核」的固定排期，
+    // 频率或时刻变化 → 重置锚点；并清掉未来「待考核」的固定排期，
     // 避免旧锚点（不同时刻）的排期按天去重挡住新时刻排期的生成（2026-09-01 实测旧 11:26 排期挡住 20:00）
-    const changed = JSON.stringify(frequencies) !== JSON.stringify(cur.frequencies) || time !== cur.time;
+    const changed =
+      JSON.stringify(frequencies) !== JSON.stringify(cur.frequencies) ||
+      time !== cur.time ||
+      weekly.weekday !== (cur.weekly?.weekday ?? 1) ||
+      weekly.time !== (cur.weekly?.time ?? cur.time);
     if (changed) {
       deps.db
         .prepare("DELETE FROM exam_schedules WHERE kind = 'fixed' AND status = 'pending' AND scheduled_at > ?")
@@ -865,7 +948,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       frequencies,
       courseCount,
       time,
-      anchorAt: changed ? "" : cur.anchorAt, // 变化时锚点置空 → 懒生成按「今天配置时刻（已过则明天）」重新铺排期
+      weekly,
+      anchorAt: changed ? "" : cur.anchorAt, // 变化时锚点置空 → 懒生成按配置重新铺排期
       selectionPrompts,
     };
     deps.db
