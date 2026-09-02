@@ -410,7 +410,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // ISSUE-031：设置孩子某主题的每天学习量（daily + type），写入孩子库 topics.rules_json
+  // ISSUE-031/ISSUE-033：设置孩子某主题的「主题类型」（type=必学/选学/复习，考核选题标注）+ 清空遗留
+  // daily（旧「每天学习量」已停用，学习安排改由学习计划 study_plans 决定）——写入孩子库 topics.rules_json
   ipcMain.handle(
     "parent:setChildTopicDaily",
     async (_e, childId: string, topicDir: string, daily: string, type: string) => {
@@ -866,6 +867,36 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         range: typeof range === "number" ? Math.min(365, Math.max(1, Math.floor(range))) : 30,
       }).catch(() => []);
       return { success: true, rows };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ISSUE-033：学习计划只读展示（家长面板；数据真源=服务端 study_plans，编辑走家长对话）
+  // list：排期行列表（服务端 date 倒序最多 500；from/to 在此做日期段过滤，与服务端同步）
+  ipcMain.handle("studyPlan:list", async (_e, childId: string, opts?: { from?: string; to?: string }) => {
+    try {
+      const res = await serverFetch<{ ok: boolean; rows: unknown[] }>(
+        `/study-plans?childId=${encodeURIComponent(childId)}`,
+        { token: currentSessionToken() }
+      );
+      let rows = res.rows ?? [];
+      if (opts?.from) rows = rows.filter((r: any) => r.date >= opts!.from!);
+      if (opts?.to) rows = rows.filter((r: any) => r.date <= opts!.to!);
+      return { success: true, rows };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // today：某天的排期聚合（date 缺省=本地今天；items 含 carry 标记，供面板高亮今天/顺延项）
+  ipcMain.handle("studyPlan:today", async (_e, childId: string, date?: string) => {
+    try {
+      const d = typeof date === "string" && date ? date : formatLocalDate(new Date());
+      const res = await serverFetch<{ ok: boolean; date: string; items: unknown[] }>(
+        `/study-plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(d)}`,
+        { token: currentSessionToken() }
+      );
+      return { success: true, date: res.date ?? d, items: res.items ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

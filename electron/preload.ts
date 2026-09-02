@@ -258,6 +258,12 @@ const api = {
   todoStatsList: (childId: string, range?: number) =>
     ipcRenderer.invoke("todo:stats:list", childId, range),
 
+  // ISSUE-033：学习计划（家长端只读面板数据源；编辑走家长对话 study_plan_* 工具）
+  studyPlanList: (childId: string, opts?: { from?: string; to?: string }) =>
+    ipcRenderer.invoke("studyPlan:list", childId, opts),
+  studyPlanToday: (childId: string, date?: string) =>
+    ipcRenderer.invoke("studyPlan:today", childId, date),
+
   // Voice (STT + TTS)
   voiceConfigGet: () => ipcRenderer.invoke("voice:config:get"),
   voiceConfigSet: (patch: any) => ipcRenderer.invoke("voice:config:set", patch),

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowLeft, KeyRound, Trash2 } from "lucide-react";
 import IconButton from "./IconButton";
 import LearningDashboard from "./LearningDashboard";
+import StudyPlanPanel from "./StudyPlanPanel";
 import { ChildTopicsContent } from "./ChildTopicsModal";
 import { AgentPromptContent } from "./AgentPromptEditor";
 import SessionReview from "./SessionReview";
@@ -16,6 +17,7 @@ interface Props {
 
 const TABS = [
   { key: "progress", label: "📊 学习进度" },
+  { key: "plan", label: "🗓 学习计划" },
   { key: "topics", label: "📚 学习主题" },
   { key: "prompt", label: "🤖 AI 提示词" },
   { key: "exam", label: "🎯 考核记录" },
@@ -108,6 +110,13 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
       {tab === "progress" && (
         <div>
           <LearningDashboard childId={child.childId} />
+        </div>
+      )}
+
+      {/* ISSUE-033 P4：学习计划只读（编辑走家长中心右侧 AI 对话） */}
+      {tab === "plan" && (
+        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+          <StudyPlanPanel children={[child]} />
         </div>
       )}
 
