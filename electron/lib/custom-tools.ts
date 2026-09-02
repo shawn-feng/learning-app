@@ -1710,3 +1710,116 @@ export const studyPlanSourcesTool = defineTool({
     };
   },
 });
+
+// ==================== 家长库只读查询（parent_library_topics / parent_library_courses） ====================
+// ISSUE-033 补充：家长 agent 制定学习计划前需要了解「家长库教学内容」（家长库 parent.sqlite 是权威名册），
+// 与 study_plan_sources（孩子库已学/未学）互补——家长库含全部可学主题/课程（含未分配给孩子、孩子快照后
+// 新增的课），起草与核对课程名以家长库为准。只读、最小权限，不放权写。
+interface ParentLibTopicRow {
+  name: string;
+  topic_key: string;
+  method: string;
+  assess_method: string;
+  rules_json: string;
+}
+
+async function loadParentLibTopics(): Promise<ParentLibTopicRow[]> {
+  return dbQuery<ParentLibTopicRow[]>("parent_lib.topics.list", {}).catch(() => []);
+}
+
+/** 家长库主题总览：每个主题的课程数 / html 资料覆盖 / method / 考核方法状态。 */
+export const parentLibraryTopicsTool = defineTool({
+  name: "parent_library_topics",
+  label: "家长库主题总览（只读）",
+  description:
+    "查看**家长库（教学内容库）的主题总览**：每个主题有多少门课程、html 资料齐不齐、教学方法和考核方法有没有写。\n\n" +
+    "**何时调用**：家长要让某主题进学习计划，但不确定孩子库里有没有、或想了解家长库全部可学主题时（如「给 xx 排个计划」起草前核对主题内容）；**家长库是权威名册**——含还没分配给孩子、或孩子快照之后才新增的课程。要查某主题的具体课程清单用 parent_library_courses。",
+  parameters: Type.Object({}),
+  execute: async (_toolCallId, _params) => {
+    const topics = await loadParentLibTopics();
+    if (topics.length === 0) {
+      return {
+        content: [{ type: "text" as const, text: "家长库还没有主题。家长先在「课程管理」页新建主题/导入课程，之后才能给孩子排学习计划。" }],
+      };
+    }
+    const allCourses = await dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", {}).catch(() => []);
+    const byTopic = new Map<string, Array<Record<string, unknown>>>();
+    for (const c of allCourses ?? []) {
+      const key = String(c.topic ?? "");
+      if (!key) continue;
+      const arr = byTopic.get(key) ?? [];
+      arr.push(c);
+      byTopic.set(key, arr);
+    }
+    const lines: string[] = [`家长库主题总览（共 ${topics.length} 个）：`];
+    let grandTotal = 0;
+    let grandHtml = 0;
+    for (const t of topics) {
+      const courses = byTopic.get(t.topic_key) ?? [];
+      const total = courses.length;
+      const html = courses.filter((c) => String(c.html_path ?? "").trim()).length;
+      grandTotal += total;
+      grandHtml += html;
+      const methodTxt = t.method?.trim() ? "method 已写" : "method 未写";
+      const assessTxt = t.assess_method?.trim() ? "考核方法已写" : "考核方法未写";
+      let rules: Record<string, string> = {};
+      try { rules = JSON.parse(t.rules_json || "{}"); } catch { rules = {}; }
+      const typeTxt = rules.type ? ` · 类型 ${rules.type}` : "";
+      const lack = total && html < total ? `（缺 ${total - html} 份资料）` : "";
+      lines.push(`- ${t.name}（${t.topic_key}）：共 ${total} 课，html 资料 ${html}${lack} · ${methodTxt} · ${assessTxt}${typeTxt}`);
+    }
+    lines.push(`合计：${grandTotal} 课 / html 资料 ${grandHtml} 份。`);
+    lines.push("提示：主题要先在「孩子管理 → 学习主题」分配给孩子，孩子才能学、也才能排进学习计划；某主题的课程名册用 parent_library_courses 查。");
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  },
+});
+
+/** 家长库某主题的课程名册（权威课程名）：起草排期按这里的中文课程名安排。 */
+export const parentLibraryCoursesTool = defineTool({
+  name: "parent_library_courses",
+  label: "家长库课程名册（只读）",
+  description:
+    "查看**家长库某主题下的完整课程名册**（权威名册，含孩子快照后新增的课），每门课标注有无 html 资料与标签。\n\n" +
+    "**参数**：`topic`（必填，主题键如 lunyu 或中文名 论语）、`keyword`（可选，只列标题包含该词的课，如「先进篇」）、`limit`（默认 80，1~200）、`offset`（翻页，默认 0）。\n\n" +
+    "**何时调用**：给某主题起草学习计划、要按真实课程名逐日安排时（如家长说「把论语先进篇学完」，先查先进篇的课名清单）；**课程名以此工具返回为准，不要编造**。",
+  parameters: Type.Object({
+    topic: Type.String({ description: "主题键或中文名（如 lunyu / 论语），必填" }),
+    keyword: Type.Optional(Type.String({ description: "只列标题包含此词的课程（如 先进篇 / 第 5 章）" })),
+    limit: Type.Optional(Type.Number({ description: "最多列多少门（默认 80，最大 200）" })),
+    offset: Type.Optional(Type.Number({ description: "跳过前 N 门（翻页用，默认 0）" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const want = (params.topic || "").trim();
+    if (!want) throw new Error("parent_library_courses 需要 topic（主题键如 lunyu 或中文名）");
+    const topics = await loadParentLibTopics();
+    const hit = topics.find((t) => t.topic_key === want || t.name === want);
+    if (!hit) {
+      const names = topics.map((t) => `${t.name}(${t.topic_key})`).join("、");
+      throw new Error(`家长库找不到主题「${want}」${names ? `（现有主题：${names}）` : ""}`);
+    }
+    const rows = await dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", { topic: hit.topic_key });
+    let list = rows ?? [];
+    const kw = (params.keyword || "").trim();
+    if (kw) list = list.filter((c) => String(c.title ?? "").includes(kw));
+    const limit = Math.max(1, Math.min(200, Math.floor(params.limit ?? 80)));
+    const offset = Math.max(0, Math.floor(params.offset ?? 0));
+    const shown = list.slice(offset, offset + limit);
+    const lines: string[] = [];
+    lines.push(`「${hit.name}（${hit.topic_key}）」课程名册${kw ? `（标题含「${kw}」）` : ""}：共 ${list.length} 门，显示 ${offset + 1}~${offset + shown.length}：`);
+    if (shown.length === 0) {
+      lines.push("（没有匹配的课程）");
+    }
+    for (const c of shown) {
+      const title = String(c.title ?? "").trim();
+      if (!title) continue;
+      const html = String(c.html_path ?? "").trim() ? "有资料" : "无资料";
+      const tags = String(c.tags ?? "").trim();
+      lines.push(`- ${title}（${html}）${tags ? `[${tags}]` : ""}`);
+    }
+    if (offset + shown.length < list.length) {
+      lines.push(`… 其余 ${list.length - offset - shown.length} 门略（可加 keyword 过滤或用 offset=${offset + limit} 翻页）`);
+    }
+    lines.push("起草排期时课程名以此名册为准，不要编造。");
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  },
+});
