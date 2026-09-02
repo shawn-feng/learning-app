@@ -420,12 +420,25 @@ function listLearnedCourseMeta(
   dataDir: string,
   parentId: string,
   childId: string
-): Array<{ topic: string; topicName: string; title: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; lastExamAt: string; planReviewAt: string }> {
+): Array<{ topic: string; topicName: string; title: string; topicType: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; lastExamAt: string; planReviewAt: string }> {
   const kb = openKb(dataDir, parentId, childId);
   const parent = openParentLib(dataDir, parentId);
   try {
     const topicNames = new Map(
       (parent.prepare("SELECT topic_key, name FROM topics").all() as Array<{ topic_key: string; name: string }>).map((r) => [r.topic_key, r.name])
+    );
+    // 必学/选学/复习：孩子库 topics.rules_json.type（家长给孩子设置该主题的「每天学习量类型」）。
+    // 家长考核 prompt 里的「必学课程」即主题类型=必学 的主题下的课程——注入到候选清单让选课 LLM 可筛选。
+    const childTopicTypes = new Map(
+      (kb.prepare("SELECT topic_key, rules_json FROM topics").all() as Array<{ topic_key: string; rules_json: string }>).map((r) => {
+        let type = "";
+        try {
+          type = String((JSON.parse(r.rules_json || "{}") as { type?: string }).type || "");
+        } catch {
+          /* 损坏的 rules_json 视为未标注 */
+        }
+        return [r.topic_key, type] as const;
+      })
     );
     const rows = kb
       .prepare(
@@ -441,6 +454,7 @@ function listLearnedCourseMeta(
         topic: r.topic,
         topicName: topicNames.get(r.topic) ?? r.topic,
         title: r.title,
+        topicType: childTopicTypes.get(r.topic) ?? "",
         firstLearned: learnedNoDate ? "✅" : fl,
         lastReview: r.last_review ?? "",
         mastery: r.mastery ?? "",
@@ -495,7 +509,7 @@ function fetchCoursesWithRubric(
 /** 构建某频率档的完整选课 prompt：模板（家长可编辑）+ 注入今天日期/周期范围/统计/候选清单。 */
 export function buildSelectionPrompt(
   template: string,
-  candidates: Array<{ topic: string; topicName: string; title: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; lastExamAt: string; planReviewAt: string }>,
+  candidates: Array<{ topic: string; topicName: string; title: string; topicType: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; lastExamAt: string; planReviewAt: string }>,
   freq: string,
   scheduledTs: number
 ): string {
@@ -567,6 +581,7 @@ export function buildSelectionPrompt(
     .map(
       (c, i) =>
         i + 1 + ". [" + c.topicName + "] " + c.title +
+        " | 主题类型:" + (c.topicType || "-") +
         " | 首次学习:" + (c.firstLearned || "-") +
         " | 最近复习:" + (c.lastReview || "-") +
         " | 引导掌握度:" + (c.mastery || "-") +
@@ -576,7 +591,7 @@ export function buildSelectionPrompt(
         (flagByTitle.get(c.title) ? " " + flagByTitle.get(c.title) : "")
     )
     .join("\n");
-  // 模板（家长可编辑的规则文本）+ 统一在尾部追加「统计 + 候选清单」——
+  // 模板（家长可编辑的规则文本）+ 统一在尾部追加「统计 + 候选清单 + 标注说明」——
   // 模板无需自带 {{CLIST}} 占位符（旧模板若带会被替换为空），保证任何周期的 LLM 都能看到课程清单。
   const head = template
     .replace(/{{TODAY}}/g, TODAY)
@@ -587,8 +602,12 @@ export function buildSelectionPrompt(
     head +
     "\n\n【各主题选课数量】\n" +
     STATS +
-    "\n\n【课程清单】每行一门：序号. [主题] 课程名 | 首次学习 | 最近复习 | 引导掌握度 | 考核掌握度 | 上次考核 | 计划复习\n" +
-    CLIST
+    "\n\n【课程清单】每行一门：序号. [主题] 课程名 | 主题类型 | 首次学习 | 最近复习 | 引导掌握度 | 考核掌握度 | 上次考核 | 计划复习\n" +
+    CLIST +
+    "\n\n【标注说明】\n" +
+    "- 周期标记：★ 本周期 / ★ 本月 / ◐ 本月前 = 课程在本周期窗口内的归属（系统按学习/复习日期精确计算，你只按标记挑选，不要自己推算日期）。\n" +
+    "- 主题类型：必学 / 选学 / 复习 = 家长给孩子安排该主题时的「每天学习量类型」。家长规则里说的「必学课程」指主题类型=必学的主题下的课程；「只考核必学的」即只从这些课程中挑选。未标注（-）表示该主题未设置类型。\n" +
+    "- 家长对标注一无所知，只会用日常说法（如「今天学习的课」「本周复习的课」「必学的」），请按此语义映射到上述标注后选择。"
   );
 }
 
