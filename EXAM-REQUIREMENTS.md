@@ -293,4 +293,6 @@ status(待考核|进行中|已完成|过期), attempt_id(关联 exam_attempts), 
   - scope 无 prompt（旧数据）→ 直接返回范围课程，跳过选课 LLM。
   - ⚠️ 第二段（courses 参数）必须在 scope 分支内**优先处理**（曾因 scope 分支先返回导致自定义第二段拿不到 rubric）。
 - **家长端**：`ExamAdminPanel` 标签「每天 / 每周」（启用开关 + prompt + 时间，每周加周几下拉）+ 自定义考核多列表（时间/状态/内容/prompt 摘要/取消）+ 创建表单（孩子 + datetime-local + prompt 必填 + 内容说明）。
+- **家长端（9-02 三连改）**：`ExamAdminPanel` **三标签页**（每天/每周/自定义考核，点击只显示该标签内容，不堆叠）；每天/每周 = 启用开关 + 时间（每周加周几下拉）+ prompt + 恢复默认 + 保存；**自定义考核先设置考核（时间点+prompt+内容说明）再分配给孩子**（孩子多选，默认全选，多孩子共用一个考核；创建 = 每孩子各一条排期），列表按「时间点|prompt」聚合显示各孩子状态，可 ✕ 取消分配 / ＋补分配；输入框参照课程管理（minHeight 40vh、monospace、13px）。
+- **prompt 只描述「考哪些课/知识点」**（家长不懂 JSON）：默认模板与家长编辑的 prompt **不含任何 JSON/输出格式说明**——JSON 输出格式由客户端引擎 `selectCoursesForSchedule` 自动附加（「只输出 JSON、课程名必须与清单完全一致」）；已清空 8788 库固化的旧模板全文。⚠️ 注意：PUT fixed-config 以合并后配置为 base 再存会把默认模板全文固化进库（模板升级旧库不跟），后续可考虑存 diff。
 - 验证：daily/weekly 排期按配置生成、自定义两段式、冒烟 24/24。
