@@ -134,7 +134,6 @@ export default function CourseManager() {
               <div style={{ fontSize: 12, color: "#888", margin: "6px 0 12px" }}>
                 {t.total} 门课程 · html 资料 {t.htmlCount} 份 · 方法{t.method ? "已填写" : "未填写"}
                 · 考核{t.assessMethod ? "已填写" : "未填写"}
-                {t.rules?.daily ? ` · 每日 ${t.rules.daily} 课` : ""}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <CardBtn icon={GraduationCap} title="教学方法" onClick={() => setDetail({ topic: t, tab: "method" })} />

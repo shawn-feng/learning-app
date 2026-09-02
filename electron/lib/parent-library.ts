@@ -535,8 +535,10 @@ export async function listChildAllocatedTopics(
 }
 
 /**
- * 设置孩子某主题的「每天学习量」（ISSUE-031，SPLIT：写服务端 kb.topics.upsert）。
- * 写入孩子 kb topics.rules_json 的 `daily` / `type` 字段；主题不存在则忽略。
+ * 设置孩子某主题的「主题类型」+ 清空遗留 daily（ISSUE-031/ISSUE-033，SPLIT：写服务端 kb.topics.upsert）。
+ * 写入孩子 kb topics.rules_json 的 `type`（必学/选学/复习，考核选题标注）；`daily`（旧「每天学习量」）
+ * 已停用（ISSUE-033：每天学什么由学习计划 study_plans 决定）——daily 参数保留仅为调用方传 "" 清掉历史遗留值。
+ * 主题不存在则忽略。
  */
 export async function setChildTopicDaily(
   childId: string,

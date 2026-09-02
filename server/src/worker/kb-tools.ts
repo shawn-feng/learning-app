@@ -166,9 +166,9 @@ export function createWorkerKbTools(b: WorkerBindings) {
             const p = agg.find((x) => x.topic === t.topic_key);
             let rules: Record<string, string> = {};
             try { rules = JSON.parse(t.rules_json || "{}"); } catch { rules = {}; }
-            const daily = rules.daily ? ` 每日目标 ${rules.daily} 课` : "";
+            // rules_json.daily（每日目标）已停用（ISSUE-033）：每天学什么以学习计划为准，勿再注入旧目标
             const type = rules.type ? `（${rules.type}）` : "";
-            lines.push(`- ${t.name}${type}（${t.topic_key}）：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${p?.next?.trim() ? `，下一课「${p.next.trim()}」` : ""}${daily}`);
+            lines.push(`- ${t.name}${type}（${t.topic_key}）：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${p?.next?.trim() ? `，下一课「${p.next.trim()}」` : ""}`);
           }
           return ok(lines.join("\n"));
         }

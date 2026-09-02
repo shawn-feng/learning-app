@@ -17,8 +17,7 @@ interface TopicSummary {
   percent: number;
   next: string;
   updated: string;
-  daily: number | null;
-  type: string;
+  type: string; // 必学 / 选学 / 复习（旧 daily 每日目标已停用，ISSUE-033：每日安排看学习计划）
 }
 
 interface LearningSummary {
@@ -205,15 +204,15 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
               {/* 总览：今日评估 + 主题卡片（点击钻取） */}
               {!drill && (
                 <>
-                  {/* 今日评估 */}
-                  {summary.topics.some((t) => t.daily != null || t.type) && (
+                  {/* 今日学习情况（按主题看今天是否学过；每天学什么以学习计划为准，见 ISSUE-033） */}
+                  {summary.topics.some((t) => t.type) && (
                     <div className="settings-section" style={{ marginBottom: 24 }}>
-                      <h3 style={{ marginBottom: 8 }}>今日评估</h3>
+                      <h3 style={{ marginBottom: 8 }}>今日学习情况</h3>
                       <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
                         <thead>
                           <tr style={{ borderBottom: "1px solid #eee" }}>
                             <th style={{ textAlign: "left", padding: "8px 4px" }}>主题</th>
-                            <th style={{ textAlign: "left", padding: "8px 4px" }}>每日目标</th>
+                            <th style={{ textAlign: "left", padding: "8px 4px" }}>类型</th>
                             <th style={{ textAlign: "left", padding: "8px 4px" }}>完成情况</th>
                           </tr>
                         </thead>
@@ -223,10 +222,7 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
                             return (
                               <tr key={t.name} style={{ borderBottom: "1px solid #f5f5f5" }}>
                                 <td style={{ padding: "8px 4px" }}>{t.name}</td>
-                                <td style={{ padding: "8px 4px" }}>
-                                  {t.daily != null ? `${t.daily} 课/天` : "—"}
-                                  {t.type ? `（${t.type}）` : ""}
-                                </td>
+                                <td style={{ padding: "8px 4px" }}>{t.type || "—"}</td>
                                 <td style={{ padding: "8px 4px" }}>
                                   {updatedToday ? (
                                     <span style={{ color: "#48bb78" }}>✅ 今天已学习</span>
@@ -262,7 +258,6 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
                               {t.type && (
                                 <span className={`badge ${t.type === "必学" ? "must" : "optional"}`}>{t.type}</span>
                               )}
-                              {t.daily !== null && <span className="badge daily">每日 {t.daily}</span>}
                             </div>
                           </div>
 

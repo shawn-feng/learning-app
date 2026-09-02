@@ -11,8 +11,7 @@ interface TopicSummary {
   percent: number;
   next: string;
   updated: string;
-  daily: number | null;
-  type: string;
+  type: string; // 必学 / 选学 / 复习（旧 daily 每日目标已停用，ISSUE-033）
 }
 
 interface LearningSummary {
@@ -279,7 +278,6 @@ export default function LearningDashboard({ childId }: Props) {
                   {t.type && (
                     <span className={`badge ${t.type === "必学" ? "must" : "optional"}`}>{t.type}</span>
                   )}
-                  {t.daily !== null && <span className="badge daily">每日 {t.daily}</span>}
                 </div>
               </div>
 

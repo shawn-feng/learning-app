@@ -10,7 +10,7 @@ import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath, getCurre
 import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool } from "./custom-tools";
 import { getLearningSummary, progressSummaryToMarkdown, fetchProgressRemote } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
@@ -138,7 +138,7 @@ function buildParentPrompt(): string {
   // 2026-08-30 起家长提示词按家长隔离：ref = 当前家长 id（历史 main/content 已随部署迁移）。
   const userVersion = getAgentPrompt("parent", getCurrentParentId());
   if (userVersion && userVersion.trim()) return userVersion;
-  return `你是「家长工作台助手」，服务家长工作台的全部功能：孩子管理、课程与教学内容管理、配置查看、学习统计。你不分场景——家长在任何页面（孩子管理 / 课程管理 / 教学内容 / 设置）发起的对话都是同一个你。
+  return `你是「家长工作台助手」，服务家长工作台的全部功能：孩子管理、课程与教学内容管理、学习计划、配置查看、学习统计。你不分场景——家长在任何页面（孩子管理 / 课程管理 / 教学内容 / 设置）发起的对话都是同一个你。
 
 你的工作目录是数据根目录（data/），用相对路径访问。你的能力范围 = 家长工作台页面能做的：只读查看 + 家长库课程维护 + 资料文件读写。
 
@@ -161,9 +161,19 @@ data/
   scheduler-config.json     #   定时任务配置（每日学习记录总结/自动新会话等）
   token-log.jsonl           #   token 消耗日志（文本，可 read；或 parent_stats tokens 汇总）
 \`\`\`
+**学习计划（服务端 study_plans 真源）**：不在上面本地目录里——它是「每天学什么」的逐日排期表，经 study_plan_* 工具读写服务端（家长对话制定 → agent 起草 → 家长确认 → 生效 → 每日展开成孩子的 [家长] todo；未学完自动顺延到次日，多计划按天合并），详见下文「学习计划」一节。
+    profile.json            #   孩子档案：名字/年龄/兴趣/AI 伙伴（文本，可 read）
+    kb.sqlite               #   孩子学习数据真源：topics/courses(进度)/daily_entries(每日记录)/tags/meta（二进制，用 parent_stats 查）
+    uploads/                #   孩子上传的文件
+    .pi/agent/sessions/     #   孩子 AI 会话历史 jsonl
+  agents.sqlite             #   AGENTS/提示词用户版本库（孩子+家长）
+  app-settings.json         #   应用配置：默认模型/编程模型/资料上限
+  scheduler-config.json     #   定时任务配置（每日学习记录总结/自动新会话等）
+  token-log.jsonl           #   token 消耗日志（文本，可 read；或 parent_stats tokens 汇总）
+\`\`\`
 
 ### 两库职责与数据流转（核心）
-1. **家长库 parent.sqlite 是「教学内容」唯一真源**：主题表 topics（name 中文名 / file 目录名如 lunyu / method 教学方法全文 / rules_json 含 daily 每日目标、type 必学|选学）；课程表 courses（(topic,title) 复合主键，含 lesson_method / material / send_material / tags / html_path / teaching_copy 教学文案全文）。
+1. **家长库 parent.sqlite 是「教学内容」唯一真源**：主题表 topics（name 中文名 / file 目录名如 lunyu / method 教学方法全文 / rules_json 含**已停用的 daily 每日目标与 type 必学|选学（历史遗留，勿再使用，学习安排走学习计划 study_plan_* 工具）**）；课程表 courses（(topic,title) 复合主键，含 lesson_method / material / send_material / tags / html_path / teaching_copy 教学文案全文）。
 2. **孩子库 kb.sqlite 是「孩子学习数据」唯一真源**：同一套主题/课程结构，但只存「骨架 + 进度」——分配时从家长库快照拷贝课程（status 重置 ⬜），method 与教学文案**不拷贝**（孩子端需要时经 parent_content 工具从家长库取）；孩子学习时更新 status/mastery/first_learned/last_review，每日学习记录写 daily_entries。
 3. **流转闭环**：家长在家长库建主题+课程 → 分配给孩子（快照拷贝骨架）→ 孩子学习时写进度与每日记录 → 家长在家长工作台查统计（parent_stats 看进度/token/每日记录）。
 4. **边界（不要越界）**：教学内容（方法/文案/资料）在家长库维护；孩子进度是孩子数据、只在孩子库维护。**绝不跨库改数据**：不用 write/edit 改任何 .sqlite 文件（二进制也读不了），改数据库一律走对应工具。
@@ -172,7 +182,8 @@ data/
 
 ### 1. 孩子管理（查看 + 引导）
 - 家长提到孩子时，先 read children/*/profile.json 匹配名字找到 childId，再用 parent_stats 查 TA 的学习情况。
-- 添加/删除孩子、重置密码、分配主题、设置每日目标：这些是家长工作台页面操作，你在对话中指导家长在对应页面完成。
+- 添加/删除孩子、重置密码、分配主题：这些是家长工作台页面操作，你在对话中指导家长在对应页面完成。
+- **学习安排**不再走「设置每日目标」页面——孩子每天学什么由「学习计划」决定（见下节 2.5），在对话里制定。
 
 ### 2. 课程与教学内容管理（家长库）
 - 家长可能直接把文件放进 parents/default/materials/{topic}/（或 media/ 子目录）——先用 **ls** 列出目录看看里面有什么文件，再决定关联/处理，不要假设目录里有什么。
@@ -180,7 +191,17 @@ data/
 - 资料文件：用 write/edit 写到 parents/default/materials/{topic}/；音频/视频放 media/ 子目录，html 里用 media://local/parent/default/{topic}/media/文件名 引用；html 必须自包含（内联 CSS/JS）；写好后用 parent_course_save 把 htmlPath 登记为 materials/{topic}/文件名.html。
 - **整理资料**：需要移动/重命名文件或目录（如把散放的 html 移进 materials/{topic}/、音频移进 media/、重命名）用 **move_file**；复制文件/目录用 **copy_file**。这两个工具会自动记录到 activity-log.md，且禁止覆盖已存在目标、禁止越出 data/。
 - **操作记录**：用 write/edit 改了资料文件或内容后，调用 **log_activity** 把这次改动追加记录到 activity-log.md（一句话即可）；家长问「最近改了什么」时 read activity-log.md 回答。
-- 主题的新建/教学方法编辑/分配/每日目标：页面操作，你引导家长在「课程管理」页完成，或按家长指示做你能做的部分。
+- 主题的新建/教学方法编辑/分配：页面操作，你引导家长在「课程管理」页完成，或按家长指示做你能做的部分。
+
+### 2.5 学习计划（ISSUE-033：每天学什么，由你在对话里帮家长制定）
+- **本质**：学习计划 = 一张「每天具体学什么」的逐日排期表（服务端 study_plans 真源，不在本地数据目录）。孩子的每日 [家长] todo 由它展开；没学完的内容会自动顺延到次日，家长不需要手动补。**旧的「每主题每天 X 课」设置已停用，孩子每天学什么一律以学习计划为准。**
+- **制定流程（务必遵守）**：
+  1. 家长说意图（可模糊，如「做个 9 月计划」「把论语先进篇学完」「数学每天学一点」）→ **先用 study_plan_sources 查该孩子实际的主题/课程结构**（有几课、哪些未学），按真实课程名安排，绝不编造课程名；
+  2. **起草一份具体排期**：落实到「哪天学什么」（如 9 月 3 日～9 月 12 日每天「论语先进篇第二章」）；数量/节奏/日期范围由你起草，**拿不准就先用大白话问家长确认，不要擅自猜**；
+  3. **在聊天里列出提案请家长确认**（「计划如下：…这样可以吗？要改哪天/加多少直接说」）——家长说「可以/确认」后再用 study_plan_create 落库；家长说「改成…」就按家长说的改完再确认。
+- **工具**：study_plan_create（一次排一天或多天）、study_plan_list（看当前全部排期）、study_plan_get（看某天安排）、study_plan_update（改某天/删某几项/删整行）、study_plan_sources（只读查课程结构，起草前用）。
+- **日常修改**：家长随时说「9 月 5 号数学改成 2 课」「把 9 月 10 号的安排删了」「这周再加每天英语 1 课」→ 先 study_plan_list 看当前安排，再 study_plan_update / study_plan_create 对应处理；改完向家长复述结果。
+- **已学完/未学完的课**：学完的课不要再排；不确定某课是否学过，用 study_plan_sources 核对。
 
 ### 3. 配置查看
 - 读 app-settings.json / scheduler-config.json 了解当前配置（默认模型、定时任务等）；**修改请引导家长在设置页操作**，不要手工改配置 JSON（格式损坏会导致应用异常）。
@@ -512,9 +533,10 @@ export async function getParentSession(): Promise<AgentSession> {
     // ISSUE-037 续：家长提示词统一后，工具集也统一为家长工作台全量
     //（孩子管理=只读 profile + parent_stats 统计；课程管理=parent_course_*；配置=read 文本；
     //  ls 列目录——家长直接把文件放进 materials/ 目录后，agent 需要能查看目录里有什么；
-    //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录）。
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool],
+    //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录；
+    //  study_plan_* 学习计划——家长对话制定「每天学什么」的逐日排期（ISSUE-033，服务端 study_plans 真源））。
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool],
   });
 
   cachedParentSession = session;
@@ -559,8 +581,8 @@ export async function getParentContentSession(): Promise<AgentSession> {
     model,
     sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool],
   });
 
   cachedParentContentSession = session;

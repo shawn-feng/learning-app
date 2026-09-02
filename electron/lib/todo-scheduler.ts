@@ -1,14 +1,16 @@
 /**
  * ISSUE-025：孩子 Todolist（今日计划）的定时生成 / 统计。
  *
- * - 生成（genTime）：ephemeral agent 融合「家长规定项（来自各主题 rules_json 的 daily/必学，
- *   标 [家长] 不可改）」+「孩子自规划项（当天对话中 agent 已写 / 孩子要求）」+「昨日未完成项」，
+ * - 生成（genTime）：ephemeral agent 融合「家长规定项（来自学习计划 study_plans 当日聚合，
+ *   ISSUE-033 替代旧 rules_json.daily，标 [家长] 不可改）」+「孩子自规划项（当天对话中 agent
+ *   已写 / 孩子要求）」+「昨日未完成项（仅自规划项；[家长] 项由服务端 carry 顺延，不重复并入）」，
  *   生成当天 todolist markdown，经 todo_list 工具整体写回服务端（child_todos 表）。
  * - 统计（statTime）：ephemeral agent 依据当天会话 + 学习进度把 `- [ ]` 打勾为 `- [x]` 写回；
  *   主进程随后**确定性解析** markdown（数 checkbox），计算完成率/家长项 vs 自规划项拆分/
  *   连续达标天数，落库 child_todo_stats（供孩子端「我的执行力」趋势）。
  *
- * 数据真源在服务端（server/src/routes/db.ts 的 kb.todo.* handler，child_kb 独立文件，自动进备份）。
+ * 数据真源在服务端（server/src/routes/db.ts 的 kb.todo.* handler，child_kb 独立文件，自动进备份；
+ * 学习计划经 server 路由 study-plans.ts，客户端只读当日聚合 /study-plans/today，无展开逻辑）。
  * [家长] 项不可删改文字、只能打勾——由 agent 提示词约定执行（服务端不解析内容）。
  */
 import path from "path";
@@ -19,7 +21,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { getChildDir } from "./config";
-import { dbQuery, dbExec } from "./client-data";
+import { dbQuery, dbExec, currentSessionToken } from "./client-data";
+import { serverFetch } from "./server-client";
 import { formatLocalDate, readDailyConversation } from "./daily-summary";
 import { todoListTool, kbQueryTool, getDateTool, countTodoTasks } from "./custom-tools";
 import { logRound } from "./token-stats";
@@ -77,44 +80,47 @@ function prevDate(date: string): string {
   return formatLocalDate(prev);
 }
 
-interface TopicRule {
-  name: string;
-  topicKey: string;
-  daily: string;
-  type: string;
+/** 服务端 GET /study-plans/today 的聚合 item（ISSUE-033：conversation 排期行 + carry 顺延行展平）。 */
+interface PlanTodayItem {
+  planId: string;
+  text: string;
+  topicKey?: string;
+  carry: boolean;
 }
 
-/** 取孩子各主题的 rules_json（家长规定项数据源）。 */
-async function loadTopicRules(childId: string): Promise<TopicRule[]> {
-  const rows = await dbQuery<
-    Array<{ name: string; topic_key: string; rules_json: string }>
-  >("kb.topics.list", { child_id: childId }).catch(() => []);
-  return (rows ?? []).map((r) => {
-    let rules: Record<string, string> = {};
-    try {
-      rules = JSON.parse(r.rules_json || "{}") as Record<string, string>;
-    } catch {
-      rules = {};
-    }
-    return {
-      name: r.name,
-      topicKey: r.topic_key,
-      daily: String(rules.daily ?? ""),
-      type: String(rules.type ?? ""),
-    };
-  });
+interface PlanTodayResponse {
+  ok: boolean;
+  date: string;
+  items: PlanTodayItem[];
 }
 
-/** 家长规定项 → markdown 行（设了 daily →「今天学 X 课」；type=必学未设 daily →「必学」；都没设 → 跳过）。 */
-function buildParentLines(rules: TopicRule[]): string[] {
+/**
+ * 读学习计划当日聚合（ISSUE-033 数据源，替代旧 rules_json.daily）。
+ * 只读服务端展平结果，不在此展开任何排期/顺延逻辑（carry 是服务端每日定时动作）。
+ * 无计划 / 服务端不可达 → 空数组（当天 = 无家长规定项，「空天不学」），不阻塞 todo 生成。
+ */
+async function loadTodayPlanItems(childId: string, today: string): Promise<PlanTodayItem[]> {
+  try {
+    const res = await serverFetch<PlanTodayResponse>(
+      `/study-plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(today)}`,
+      { method: "GET", token: currentSessionToken(), timeoutMs: 10000 }
+    );
+    return res.items ?? [];
+  } catch (err) {
+    console.log(`Todo gen ${childId}: 拉取学习计划当日聚合失败（${(err as Error).message}），按无家长项处理`);
+    return [];
+  }
+}
+
+/** 当日计划 items → [家长] markdown 行（同文本去重；carry = 昨天没学完服务端顺延来的，标注原因）。 */
+function planItemsToParentLines(items: PlanTodayItem[]): string[] {
   const lines: string[] = [];
-  for (const r of rules) {
-    if (r.daily && r.daily.trim()) {
-      lines.push(`- [ ] [家长] ${r.name}（${r.topicKey}）：今天学 ${r.daily.trim()} 课`);
-    } else if (r.type === "必学") {
-      lines.push(`- [ ] [家长] 必学：${r.name}（${r.topicKey}）`);
-    }
-    // 完全没设规则的主题不进 todolist
+  const seen = new Set<string>();
+  for (const it of items) {
+    const text = (it.text || "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    lines.push(it.carry ? `- [ ] [家长] ${text}（昨天没学完，今天补上）` : `- [ ] [家长] ${text}`);
   }
   return lines;
 }
@@ -132,12 +138,17 @@ function extractSelfTasks(md: string): string[] {
   return out;
 }
 
-/** 从 markdown 提取未完成项原文（昨日顺延用；[家长] 项也在内，agent 决定是否并入今天）。 */
+/**
+ * 从 markdown 提取昨日未完成项（供「酌情并入今天」）。
+ * 只取孩子自规划项：`[家长]` 项未完成由学习计划 carry（服务端每日顺延）确定性处理，
+ * 若这里再并入会造成同文本重复出现两条。
+ */
 function extractUnfinished(md: string): string[] {
   const out: string[] = [];
   for (const line of md.split("\n")) {
     const m = /^\s*[-*]\s*\[( )\]\s*(.*)$/.exec(line);
     if (!m) continue;
+    if (/\[家长\]/.test(m[2])) continue;
     const content = m[2].trim();
     if (content) out.push(`- [ ] ${content}`);
   }
@@ -146,14 +157,14 @@ function extractUnfinished(md: string): string[] {
 
 /**
  * 生成点任务：生成（或刷新）当天 todolist。
- * 上下文 = 家长项基线（服务端拼好，[家长] 不可改）+ 今天已有的自规划项 + 昨日未完成项，
+ * 上下文 = 家长项基线（学习计划当日聚合，[家长] 不可改）+ 今天已有的自规划项 + 昨日未完成项（仅自规划），
  * 由 agent 一次性 todo_list.update 写回（覆盖式；prompt 要求保留全部 [家长] 项）。
  */
 export async function runTodoGen(childId: string): Promise<void> {
   const childDir = getChildDir(childId);
   const today = formatLocalDate(new Date());
-  const [topicRules, todayTodo, yesterdayTodo] = await Promise.all([
-    loadTopicRules(childId),
+  const [planItems, todayTodo, yesterdayTodo] = await Promise.all([
+    loadTodayPlanItems(childId, today),
     dbQuery<{ itemsMd: string } | null>("kb.todo.get", { child_id: childId, date: today }).catch(() => null),
     dbQuery<{ itemsMd: string } | null>("kb.todo.get", {
       child_id: childId,
@@ -161,7 +172,7 @@ export async function runTodoGen(childId: string): Promise<void> {
     }).catch(() => null),
   ]);
 
-  const parentLines = buildParentLines(topicRules);
+  const parentLines = planItemsToParentLines(planItems);
   const selfTasks = extractSelfTasks(todayTodo?.itemsMd ?? "");
   const yesterdayUnfinished = extractUnfinished(yesterdayTodo?.itemsMd ?? "");
 
@@ -169,11 +180,11 @@ export async function runTodoGen(childId: string): Promise<void> {
   parts.push(`今天是 ${today}。请为孩子生成今天的 todolist（今日计划）。`);
   if (parentLines.length > 0) {
     parts.push(
-      "【家长规定项（来自学习规则）——必须全部保留，标 [家长]，绝不能删改文字】\n" +
+      "【家长规定项（来自学习计划，必须全部保留，标 [家长]，绝不能删改文字）】\n" +
         parentLines.join("\n")
     );
   } else {
-    parts.push("【家长规定项】今天没有设置学习规则的主题（家长项为空）。");
+    parts.push("【家长规定项】今天的学习计划没有安排内容（空天 = 不要求学）。");
   }
   if (selfTasks.length > 0) {
     parts.push("【今天已记录的自规划项（孩子之前要求的，必须保留）】\n" + selfTasks.join("\n"));
@@ -236,7 +247,7 @@ export async function runTodoStat(childId: string): Promise<void> {
         : "【今天孩子的对话记录】今天没有对话记录。",
       "",
       summaries.length
-        ? `【各主题学习进度摘要（判断「[家长] 每天学 X 课」类完成情况）】\n${summaries
+        ? `【各主题学习进度摘要（判断 [家长] 项——学习计划安排的具体课程——的完成情况）】\n${summaries
             .map((p) => `- ${p.topic}：已学 ${p.learned}/${p.total}${p.next ? `，下一课「${p.next}」` : ""}`)
             .join("\n")}`
         : "",

@@ -24,8 +24,7 @@ export interface TopicSummary {
   percent: number; // 0-100，保留一位小数
   next: string; // 下一步
   updated: string; // 最近更新日期
-  daily: number | null; // 每日目标
-  type: string; // 必学 / 选学
+  type: string; // 主题类型：必学 / 选学 / 复习（考核选题标注；rules_json.daily 每日目标已停用 ISSUE-033）
 }
 
 export interface LearningSummary {
@@ -152,8 +151,6 @@ export function getLearningSummary(childId: string): LearningSummary {
     } catch {
       rules = {};
     }
-    const dailyRaw = rules.daily;
-    const daily = dailyRaw ? parseInt(String(dailyRaw), 10) : null;
     return {
       name: t.name,
       topicKey: t.topic_key,
@@ -162,7 +159,7 @@ export function getLearningSummary(childId: string): LearningSummary {
       percent: percent(learned, total),
       next,
       updated,
-      daily: daily !== null && Number.isFinite(daily) ? daily : null,
+      // rules_json.daily（每日目标）已停用（ISSUE-033：学习计划 study_plans 是唯一每日安排源）
       type: rules.type || "",
     };
   });
@@ -259,9 +256,8 @@ export function progressSummaryToMarkdown(summary: LearningSummary): string {
       : "（已全部学完或暂无下一课）";
     const type = t.type ? `（${t.type}）` : "";
     const key = t.topicKey;
-    const daily = t.daily != null ? ` 每日目标 ${t.daily} 课` : "";
     lines.push(
-      `- ${t.name}${type}（${key}）：已学 ${t.learned}/${t.total}（${t.percent}%），${next}${daily}`
+      `- ${t.name}${type}（${key}）：已学 ${t.learned}/${t.total}（${t.percent}%），${next}`
     );
   }
   return lines.join("\n");

@@ -652,7 +652,6 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
               <InfoRow k="课程数" v={String(courses.length)} />
               <InfoRow k="html 资料" v={`${topic.htmlCount} 份`} />
               <InfoRow k="学习方法" v={savedMethod ? `${savedMethod.length} 字符` : "未填写"} />
-              <InfoRow k="每日目标" v={topic.rules?.daily ? `${topic.rules.daily} 课` : "未设置"} />
               <InfoRow k="主题类型" v={topic.rules?.type || "未设置"} />
             </div>
           )}

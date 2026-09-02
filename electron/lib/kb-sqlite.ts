@@ -10,7 +10,8 @@
  *   courses(topic, title, sort_order, status, mastery, first_learned, last_review,
  *           review_count, material, send_material, tags) —— 每主题每课一行（进度明细）
  *   topic_progress —— **视图**（非表）：learned/total/next/updated 由 courses 实时计算
- *   topics(name, topic_key, method, progress, rules_json) —— 主题清单 + 每日目标（rules 并入；topic_key=纯拼音主题键=目录名）
+ *   topics(name, topic_key, method, progress, rules_json) —— 主题清单 + rules（type=必学/选学/复习 考核标注；
+ *     daily 每日目标已停用 ISSUE-033，每天学什么由服务端学习计划 study_plans 决定；topic_key=纯拼音主题键=目录名）
  *   tags(tag, dimension, criteria) —— **标签定义表**（词表 + 判断标准），替代倒排索引
  *   meta(key, value) —— 迁移标记 / schema 版本
  *

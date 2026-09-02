@@ -228,36 +228,56 @@ const recordingTask: WorkerTask = {
 
 // ---------- todo ----------
 
-interface TopicRule {
-  name: string;
-  topicKey: string;
-  daily: string;
-  type: string;
+/** 主库 study_plan_items 当日排期行（与 routes/study-plans.ts GET /today 同口径：kind='date' + active=1）。 */
+interface PlanRowLite {
+  origin: string;
+  content: string;
 }
 
-function loadTopicRules(ctx: WorkerTaskCtx): TopicRule[] {
-  const rows = runKbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>(
-    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.topics.list", { child_id: ctx.childId }
-  );
-  return (rows ?? []).map((r) => {
-    let rules: Record<string, string> = {};
-    try {
-      rules = JSON.parse(r.rules_json || "{}");
-    } catch {
-      rules = {};
+interface PlanTodayItemLite {
+  text: string;
+  carry: boolean;
+}
+
+function parsePlanContent(raw: string): Array<{ text: string }> {
+  try {
+    const arr = JSON.parse(raw) as unknown;
+    return Array.isArray(arr) ? (arr as Array<{ text: string }>) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 读学习计划当日聚合（ISSUE-033，替代旧 rules_json.daily）。
+ * 服务端 worker 直接查主库 study_plan_items（SQL 与客户端读 GET /study-plans/today 同口径），
+ * 只把行内 content 展平为 items——carry 顺延行由 study-plan-carry.ts 每日写入，这里不做任何排期展开。
+ */
+function loadTodayPlanItemsServer(ctx: WorkerTaskCtx, today: string): PlanTodayItemLite[] {
+  const rows = ctx.mainDb
+    .prepare(
+      "SELECT origin, content FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND kind = 'date' AND date = ? ORDER BY created_at ASC"
+    )
+    .all(ctx.parentId, ctx.childId, today) as unknown as PlanRowLite[];
+  const items: PlanTodayItemLite[] = [];
+  for (const r of rows) {
+    for (const it of parsePlanContent(r.content)) {
+      if (!it.text) continue;
+      items.push({ text: it.text, carry: r.origin === "carry" });
     }
-    return { name: r.name, topicKey: r.topic_key, daily: String(rules.daily ?? ""), type: String(rules.type ?? "") };
-  });
+  }
+  return items;
 }
 
-function buildParentLines(rules: TopicRule[]): string[] {
+/** 当日计划 items → [家长] markdown 行（同文本去重；carry = 昨天没学完顺延来的，标注原因）。 */
+function planItemsToParentLines(items: PlanTodayItemLite[]): string[] {
   const lines: string[] = [];
-  for (const r of rules) {
-    if (r.daily && r.daily.trim()) {
-      lines.push(`- [ ] [家长] ${r.name}（${r.topicKey}）：今天学 ${r.daily.trim()} 课`);
-    } else if (r.type === "必学") {
-      lines.push(`- [ ] [家长] 必学：${r.name}（${r.topicKey}）`);
-    }
+  const seen = new Set<string>();
+  for (const it of items) {
+    const text = (it.text || "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    lines.push(it.carry ? `- [ ] [家长] ${text}（昨天没学完，今天补上）` : `- [ ] [家长] ${text}`);
   }
   return lines;
 }
@@ -274,11 +294,17 @@ function extractSelfTasks(md: string): string[] {
   return out;
 }
 
+/**
+ * 从 markdown 提取昨日未完成项（供「酌情并入今天」）。
+ * 只取孩子自规划项：`[家长]` 项未完成由学习计划 carry（服务端每日顺延）确定性处理，
+ * 若这里再并入会造成同文本重复出现两条。
+ */
 function extractUnfinished(md: string): string[] {
   const out: string[] = [];
   for (const line of md.split("\n")) {
     const m = /^\s*[-*]\s*\[( )\]\s*(.*)$/.exec(line);
     if (!m) continue;
+    if (/\[家长\]/.test(m[2])) continue;
     const content = m[2].trim();
     if (content) out.push(`- [ ] ${content}`);
   }
@@ -287,21 +313,21 @@ function extractUnfinished(md: string): string[] {
 
 async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
   const today = formatLocalDate(ctx.now);
-  const topicRules = loadTopicRules(ctx);
+  const planItems = loadTodayPlanItemsServer(ctx, today);
   const todayTodo = runKbQuery<{ itemsMd: string } | null>(
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: today }
   );
   const yesterdayTodo = runKbQuery<{ itemsMd: string } | null>(
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: prevDate(today) }
   );
-  const parentLines = buildParentLines(topicRules);
+  const parentLines = planItemsToParentLines(planItems);
   const selfTasks = extractSelfTasks(todayTodo?.itemsMd ?? "");
   const yesterdayUnfinished = extractUnfinished(yesterdayTodo?.itemsMd ?? "");
   const parts: string[] = [`今天是 ${today}。请为孩子生成今天的 todolist（今日计划）。`];
   if (parentLines.length > 0) {
-    parts.push("【家长规定项（来自学习规则）——必须全部保留，标 [家长]，绝不能删改文字】\n" + parentLines.join("\n"));
+    parts.push("【家长规定项（来自学习计划，必须全部保留，标 [家长]，绝不能删改文字）】\n" + parentLines.join("\n"));
   } else {
-    parts.push("【家长规定项】今天没有设置学习规则的主题（家长项为空）。");
+    parts.push("【家长规定项】今天的学习计划没有安排内容（空天 = 不要求学）。");
   }
   if (selfTasks.length > 0) {
     parts.push("【今天已记录的自规划项（孩子之前要求的，必须保留）】\n" + selfTasks.join("\n"));
@@ -363,7 +389,7 @@ async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
         : "【今天孩子的对话记录】今天没有对话记录。",
       "",
       summaries.length
-        ? `【各主题学习进度摘要（判断「[家长] 每天学 X 课」类完成情况）】\n${summaries
+        ? `【各主题学习进度摘要（判断 [家长] 项——学习计划安排的具体课程——的完成情况）】\n${summaries
             .map((p) => `- ${p.topic}：已学 ${p.learned}/${p.total}${p.next ? `，下一课「${p.next}」` : ""}`)
             .join("\n")}`
         : "",

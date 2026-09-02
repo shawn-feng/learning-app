@@ -26,7 +26,6 @@ interface AllocateResult {
 interface ChildTopicInfo {
   name: string;
   topicKey: string;
-  daily: string;
   type: string;
 }
 
@@ -35,18 +34,20 @@ interface Props {
   onClose: () => void;
 }
 
-const DAILY_TYPES = ["必学", "选学", "复习"];
+/** 主题类型（考核选题标注；旧「每天学习量 daily」已停用，见 ISSUE-033）。 */
+const TOPIC_TYPES = ["必学", "选学", "复习"];
 
 /**
- * 孩子管理页「学习主题」弹窗（ISSUE-029 / ISSUE-031）：
+ * 孩子管理页「学习主题」弹窗（ISSUE-029 / ISSUE-031 / ISSUE-033）：
  * 从家长主题库给孩子「添加学习主题」（快照拷贝，不覆盖孩子进度）；
- * 添加时可设置、添加后也可随时修改「每天学习量」（daily + type，存孩子库 topics.rules_json）。
+ * 添加时/添加后可设置该主题的「主题类型」（type=必学/选学/复习，存孩子库 topics.rules_json，
+ * 供学习考核选题标注）。旧「每天学习量 daily」设置已移除——每天学什么由学习计划决定（家长对话制定）。
  */
 export function ChildTopicsContent({ child }: { child: ChildInfo }) {
   const [topics, setTopics] = useState<ParentTopic[]>([]);
   const [allocated, setAllocated] = useState<Map<string, ChildTopicInfo>>(new Map()); // topicKey → 信息
   const [busy, setBusy] = useState<string | null>(null);
-  const [addPanel, setAddPanel] = useState<{ topicKey: string; daily: string; type: string } | null>(null);
+  const [addPanel, setAddPanel] = useState<{ topicKey: string; type: string } | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
@@ -62,21 +63,21 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
     setTopics(t?.success ? t.data || [] : []);
     const map = new Map<string, ChildTopicInfo>();
     for (const x of a?.success ? a.data || [] : []) {
-      map.set(x.topicKey, { name: x.name, topicKey: x.topicKey, daily: x.daily || "", type: x.type || "" });
+      map.set(x.topicKey, { name: x.name, topicKey: x.topicKey, type: x.type || "" });
     }
     setAllocated(map);
   }
 
-  async function addTopic(topicDir: string, daily: string, type: string) {
+  async function addTopic(topicDir: string, type: string) {
     setBusy(`add-${topicDir}`);
     setMsg(null);
     try {
       const r = await window.api.parentAllocate(child.childId, topicDir);
       if (r?.success) {
         const d: AllocateResult = r.data;
-        // 分配后立刻写入每天学习量（ISSUE-031：默认带父库量，可独立改写）
-        if (daily || type) {
-          await window.api.parentSetChildTopicDaily(child.childId, topicDir, daily, type);
+        // 分配后立刻写入主题类型（daily 传 "" 顺带清掉遗留的旧「每天学习量」，ISSUE-033）
+        if (type) {
+          await window.api.parentSetChildTopicDaily(child.childId, topicDir, "", type);
         }
         setMsg({
           ok: true,
@@ -94,18 +95,18 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
     }
   }
 
-  async function saveDaily(info: ChildTopicInfo) {
-    setBusy(`daily-${info.topicKey}`);
+  async function saveType(info: ChildTopicInfo) {
+    setBusy(`type-${info.topicKey}`);
     setMsg(null);
     try {
       const r = await window.api.parentSetChildTopicDaily(
         child.childId,
         info.topicKey,
-        info.daily,
+        "",
         info.type
       );
       if (r?.success) {
-        setMsg({ ok: true, text: `已保存「${info.name}」每天学习量：${info.daily || "—"}（${info.type || "未设类型"}）` });
+        setMsg({ ok: true, text: `已保存「${info.name}」主题类型：${info.type || "未设类型"}` });
         await refresh();
       } else {
         setMsg({ ok: false, text: r?.error || "保存失败" });
@@ -149,7 +150,8 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
     <>
       <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>学习主题 — {child.name}</div>
       <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
-        从家长主题库给孩子添加学习主题（添加后孩子即可学习该主题；再次添加不会覆盖孩子进度）
+        从家长主题库给孩子添加学习主题（添加后孩子即可学习该主题；再次添加不会覆盖孩子进度）。
+        每天学什么由「学习计划」安排（在家长对话里说，如「9 月每天 1 课论语」）；此处只设置主题的考核类型（必学/选学/复习）。
       </p>
 
         {msg && (
@@ -217,7 +219,6 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                         onClick={() =>
                           setAddPanel({
                             topicKey: t.topicKey,
-                            daily: (t.rules?.daily as string) || "",
                             type: (t.rules?.type as string) || "必学",
                           })
                         }
@@ -236,7 +237,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                     )}
                   </div>
 
-                  {/* 分配时弹框：设置每天学习量 */}
+                  {/* 分配时弹框：设置主题类型 */}
                   {isAdding && (
                     <div
                       style={{
@@ -248,27 +249,21 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                         borderTop: "1px dashed #eee",
                       }}
                     >
-                      <label style={{ fontSize: 12, color: "#666" }}>每天学习量</label>
-                      <input
-                        type="text"
-                        value={addPanel?.daily || ""}
-                        placeholder="如 3 或 1 内容单元"
-                        onChange={(e) => setAddPanel({ ...addPanel!, daily: e.target.value })}
-                        style={{ width: 120, padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #ddd" }}
-                      />
+                      <label style={{ fontSize: 12, color: "#666" }}>主题类型</label>
                       <select
                         value={addPanel?.type || "必学"}
                         onChange={(e) => setAddPanel({ ...addPanel!, type: e.target.value })}
                         style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #ddd" }}
                       >
-                        {DAILY_TYPES.map((tp) => (
+                        {TOPIC_TYPES.map((tp) => (
                           <option key={tp} value={tp}>
                             {tp}
                           </option>
                         ))}
                       </select>
+                      <span style={{ fontSize: 11, color: "#999" }}>（考核选题标注；每天学什么由学习计划安排）</span>
                       <button
-                        onClick={() => addTopic(addPanel!.topicKey, addPanel!.daily, addPanel!.type)}
+                        onClick={() => addTopic(addPanel!.topicKey, addPanel!.type)}
                         disabled={busy !== null}
                         style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "#38a169", color: "#fff", fontSize: 12, cursor: "pointer" }}
                       >
@@ -283,7 +278,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                     </div>
                   )}
 
-                  {/* 分配后可编辑：每天学习量 */}
+                  {/* 分配后可编辑：主题类型 */}
                   {has && (
                     <div
                       style={{
@@ -295,18 +290,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                         borderTop: "1px dashed #eee",
                       }}
                     >
-                      <label style={{ fontSize: 12, color: "#666" }}>每天学习量</label>
-                      <input
-                        type="text"
-                        value={info.daily}
-                        placeholder="如 3 或 1 内容单元"
-                        onChange={(e) =>
-                          setAllocated(
-                            new Map(allocated).set(t.topicKey, { ...info, daily: e.target.value })
-                          )
-                        }
-                        style={{ width: 120, padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #ddd" }}
-                      />
+                      <label style={{ fontSize: 12, color: "#666" }}>主题类型</label>
                       <select
                         value={info.type}
                         onChange={(e) =>
@@ -316,18 +300,18 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                         }
                         style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #ddd" }}
                       >
-                        {DAILY_TYPES.map((tp) => (
+                        {TOPIC_TYPES.map((tp) => (
                           <option key={tp} value={tp}>
                             {tp}
                           </option>
                         ))}
                       </select>
                       <button
-                        onClick={() => saveDaily(info)}
+                        onClick={() => saveType(info)}
                         disabled={busy !== null}
                         style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer" }}
                       >
-                        {busy === `daily-${t.topicKey}` ? "保存中…" : "保存"}
+                        {busy === `type-${t.topicKey}` ? "保存中…" : "保存"}
                       </button>
                       <IconButton
                         icon={Trash2}

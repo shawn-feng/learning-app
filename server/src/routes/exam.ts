@@ -427,7 +427,8 @@ function listLearnedCourseMeta(
     const topicNames = new Map(
       (parent.prepare("SELECT topic_key, name FROM topics").all() as Array<{ topic_key: string; name: string }>).map((r) => [r.topic_key, r.name])
     );
-    // 必学/选学/复习：孩子库 topics.rules_json.type（家长给孩子设置该主题的「每天学习量类型」）。
+    // 必学/选学/复习：孩子库 topics.rules_json.type（家长给孩子设置的「主题类型」，考核选题标注；
+    // 旧「每天学习量」daily 已停用 ISSUE-033）。
     // 家长考核 prompt 里的「必学课程」即主题类型=必学 的主题下的课程——注入到候选清单让选课 LLM 可筛选。
     const childTopicTypes = new Map(
       (kb.prepare("SELECT topic_key, rules_json FROM topics").all() as Array<{ topic_key: string; rules_json: string }>).map((r) => {
@@ -606,7 +607,7 @@ export function buildSelectionPrompt(
     CLIST +
     "\n\n【标注说明】\n" +
     "- 周期标记：★ 本周期 / ★ 本月 / ◐ 本月前 = 课程在本周期窗口内的归属（系统按学习/复习日期精确计算，你只按标记挑选，不要自己推算日期）。\n" +
-    "- 主题类型：必学 / 选学 / 复习 = 家长给孩子安排该主题时的「每天学习量类型」。家长规则里说的「必学课程」指主题类型=必学的主题下的课程；「只考核必学的」即只从这些课程中挑选。未标注（-）表示该主题未设置类型。\n" +
+    "- 主题类型：必学 / 选学 / 复习 = 家长给孩子安排该主题时标注的考核选题类型（ISSUE-033 起与每日学习量无关——每天学什么由学习计划决定）。家长规则里说的「必学课程」指主题类型=必学的主题下的课程；「只考核必学的」即只从这些课程中挑选。未标注（-）表示该主题未设置类型。\n" +
     "- 家长对标注一无所知，只会用日常说法（如「今天学习的课」「本周复习的课」「必学的」），请按此语义映射到上述标注后选择。"
   );
 }

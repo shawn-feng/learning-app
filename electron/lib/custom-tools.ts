@@ -27,6 +27,8 @@ import { dbExec, dbQuery, childIdFromCwd } from "./client-data";
 import { executePageAction, recentInteractions } from "./page-bridge";
 import { generateHtmlLesson } from "./programming-agent";
 import { createExamSchedule } from "./exam";
+import { currentSessionToken } from "./client-data";
+import { serverFetch } from "./server-client";
 import { listChildren } from "./child-auth";
 
 /** 解析 topics.rules_json（损坏时回退空对象）。 */
@@ -214,7 +216,7 @@ export const getProgressTool = defineTool({
   label: "查询学习进度（仅 frontmatter 摘要）",
   description:
     "返回当前孩子的学习进度摘要——**只含各主题 frontmatter 的 learned/total/next/updated，不含几百行的逐课正文**。" +
-    "当你需要确认「下一课是什么」「已学多少」「今日是否已完成每日目标」时，使用本工具，" +
+    "当你需要确认「下一课是什么」「已学多少」时，使用本工具，" +
     "**不要**用 read 工具去读取进度文件（`learning/{topic}/{topic}.md`）的正文（那只为一个 next 字段而浪费大量上下文）。" +
     "日常教学流与 study-tracker 评估流都应优先用本工具确认进度；只有明确需要逐课状态时才读全文。",
   parameters: Type.Object({}),
@@ -316,9 +318,9 @@ export const kbQueryTool = defineTool({
           const p = progressAgg.find((x) => x.topic === dirName);
           const next = p?.next?.trim() ? `，下一课「${p.next.trim()}」` : "";
           const rules = safeParseRules(t.rules_json);
-          const daily = rules.daily ? ` 每日目标 ${rules.daily} 课` : "";
+          // rules_json.daily（每日目标）已停用（ISSUE-033）：每天学什么以学习计划为准，勿再向 agent 注入旧目标
           const type = rules.type ? `（${rules.type}）` : "";
-          lines.push(`- ${t.name}${type}（${dirName}）：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${next}${daily}`);
+          lines.push(`- ${t.name}${type}（${dirName}）：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${next}`);
         }
         return { content: [{ type: "text" as const, text: lines.join("\n") }] };
       }
@@ -1285,5 +1287,426 @@ export const todoListTool = defineTool({
       };
     }
     throw new Error("todo_list 的 action 仅支持 read / update");
+  },
+});
+
+// ==================== ISSUE-033：学习计划（家长对话制定 → 逐日排期表，服务端 study_plans） ====================
+
+/** 本地时区 YYYY-MM-DD（同 todoLocalDate，学习计划工具默认「今天」用本地时区，不落 UTC）。 */
+function studyPlanLocalDate(): string {
+  return todoLocalDate();
+}
+
+/** 校验日期 YYYY-MM-DD；非法抛错提示（agent 必须把家长口语换算成具体日期后再落库）。 */
+function assertPlanDate(d: string, what = "日期"): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    throw new Error(`${what}「${d}」格式不对，应为 YYYY-MM-DD（如 2026-09-05）；把家长说的日期换算成具体年月日再调用`);
+  }
+}
+
+/** 按姓名匹配孩子 → childId；找不到时列出已有孩子姓名（与 exam_schedule_create 同一口径）。 */
+async function resolvePlanChild(childName: string): Promise<{ childId: string; name: string }> {
+  const name = (childName || "").trim();
+  if (!name) throw new Error("缺少孩子姓名（childName）");
+  const children = await listChildren().catch(() => []);
+  const child = children.find((c: any) => c.name === name || c.childName === name);
+  if (!child) {
+    const names = children.map((c: any) => c.name || c.childName).join("、");
+    throw new Error(`找不到孩子「${name}」${names ? `（现有孩子：${names}）` : ""}`);
+  }
+  return { childId: String(child.childId || child.id), name };
+}
+
+/** 服务端 GET /study-plans/today 的返回（当日家长排期行展平 items，供生成 [家长] todo 与查看某天）。 */
+interface PlanTodayItems {
+  ok: boolean;
+  date: string;
+  items: Array<{ planId: string; text: string; topicKey?: string; carry: boolean }>;
+}
+
+/** 服务端 GET /study-plans（列表）的行结构（snake→camel 映射后）。 */
+interface StudyPlanRowDto {
+  id: string;
+  childId: string;
+  kind: string;
+  date: string;
+  origin: string;
+  content: Array<{ text: string; topicKey?: string }>;
+  updatedAt: string;
+}
+
+/** 服务端 GET /study-plans 原始行（snake_case）。 */
+interface StudyPlanRowRaw {
+  id: string;
+  childId: string;
+  kind: string;
+  date: string;
+  origin: string;
+  content: string;
+  updatedAt: string;
+}
+
+function mapPlanRows(rows: StudyPlanRowRaw[]): StudyPlanRowDto[] {
+  return rows.map((r) => {
+    let content: Array<{ text: string; topicKey?: string }> = [];
+    try {
+      const arr = JSON.parse(r.content);
+      if (Array.isArray(arr)) content = arr;
+    } catch {
+      /* 损坏内容置空 */
+    }
+    return {
+      id: r.id,
+      childId: r.childId,
+      kind: r.kind,
+      date: r.date,
+      origin: r.origin,
+      content,
+      updatedAt: r.updatedAt,
+    };
+  });
+}
+
+/** 按 id（支持唯一前缀）从列表里定位行：找不到/不唯一时给最近日期提示（date 作为 agent 记忆锚点）。 */
+function findPlanRowById(rows: StudyPlanRowDto[], id: string): StudyPlanRowDto {
+  const trimmed = (id || "").trim();
+  const exact = rows.find((r) => r.id === trimmed);
+  if (exact) return exact;
+  const byPrefix = rows.filter((r) => r.id.startsWith(trimmed));
+  if (byPrefix.length === 1) return byPrefix[0];
+  if (byPrefix.length > 1) {
+    throw new Error(`id 前缀「${trimmed}」匹配到 ${byPrefix.length} 行，请用 study_plan_list 拿完整 id`);
+  }
+  const sample = rows.slice(0, 3).map((r) => `${r.date}(${r.id.slice(0, 8)}…)`).join("、");
+  throw new Error(
+    `找不到 id=${trimmed} 的排期行${sample ? `。最近的排期行：${sample}——先用 study_plan_list 找到正确的那行 id` : "（该孩子还没有排期行，用 study_plan_create 新建）"}`
+  );
+}
+
+/** 把行转成可读 markdown（回显用）。 */
+function planRowsToMarkdown(rows: StudyPlanRowDto[]): string {
+  if (rows.length === 0) return "（暂无排期行）";
+  return rows
+    .map((r) => {
+      const tags = [r.origin === "carry" ? "📌 延续" : "", r.kind !== "date" ? `kind=${r.kind}` : ""]
+        .filter(Boolean)
+        .join(" ");
+      const head = `- ${r.date}${tags ? `（${tags}）` : ""} [id=${r.id.slice(0, 8)}]`;
+      const body = r.content.map((it) => `    - ${it.text}`).join("\n");
+      return `${head}\n${body}`;
+    })
+    .join("\n");
+}
+
+/** 学习计划 · 创建排期行（study_plan_create）：家长「做什么（模糊也行）→ 查结构 → 排到哪些天」一次落库。 */
+export const studyPlanCreateTool = defineTool({
+  name: "study_plan_create",
+  label: "创建学习计划排期（逐日）",
+  description:
+    "为某孩子创建**学习计划排期行**（「每天学什么」的逐日安排，服务端真源）。一次调用可以同时排**多天**（如整个 9 月的某主题），也可只排一天多课。\n\n" +
+    "**参数**：`childName`（孩子姓名，必填）、`days`（必填：要排的日期数组，每项 = `date`（YYYY-MM-DD，具体哪天学）+ `content`（当天内容：**课程/章节名文本数组**，如 [\"论语先进篇第二章\"]；一天排多课就放多项））。\n\n" +
+    "**用前先查**：排内容前先用 `study_plan_sources` 查该孩子的主题/课程结构，按实际存在的课程名安排；数量节奏（每天几课）由你按家长意图起草，**日期与内容不确定时先问家长，不要猜**。\n\n" +
+    "**语义**：空天 = 不要求学，所以只排「有内容的那些天」；同一天想追加内容再调一次即可（同文本自动去重合并）。未学完的内容会在次日自动顺延（服务端每日检查），家长无需手动补。",
+  parameters: Type.Object({
+    childName: Type.String({ description: "孩子姓名（必填）" }),
+    days: Type.Array(
+      Type.Object({
+        date: Type.String({ description: "哪天学，YYYY-MM-DD（如 2026-09-05）；家长说「周五」等口语先换算成日期" }),
+        content: Type.Array(Type.String({ description: "当天要学的课程/章节名，如 论语先进篇第二章（一项一课）" })),
+      }),
+      { description: "排期日期数组（必填）：每项 = 某天的学习内容安排" }
+    ),
+  }),
+  execute: async (_toolCallId, params) => {
+    const { childId, name } = await resolvePlanChild(params.childName);
+    if (!Array.isArray(params.days) || params.days.length === 0) {
+      throw new Error("study_plan_create 需要 days（至少一天的学习安排）");
+    }
+    const created: string[] = [];
+    for (const day of params.days) {
+      const date = (day.date || "").trim();
+      assertPlanDate(date, "排期日期");
+      const textItems = Array.isArray(day.content) ? day.content.map((t) => String(t).trim()).filter(Boolean) : [];
+      if (textItems.length === 0) {
+        throw new Error(`${date} 没有内容：content 至少一项（这天空着就不用排）`);
+      }
+      if (textItems.length > 100) throw new Error(`${date} 内容超过 100 项上限`);
+      // 同一天重复调用时先查已排文本，避免 create 语义下也制造重复行（服务端不做幂等，客户端去重）
+      const existing = await serverFetch<{ ok: boolean; rows: StudyPlanRowRaw[] }>(
+        `/study-plans?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(date)}`,
+        {
+          method: "GET",
+          token: currentSessionToken(),
+        }
+      );
+      const seen = new Set<string>();
+      for (const r of existing.rows ?? []) {
+        for (const it of mapPlanRows([r])[0].content) seen.add(it.text);
+      }
+      const fresh = textItems.filter((t) => !seen.has(t));
+      if (fresh.length === 0) {
+        created.push(`${date}：内容已存在，跳过`);
+        continue;
+      }
+      const res = await serverFetch<{ ok: boolean; row: StudyPlanRowRaw }>("/study-plans", {
+        method: "POST",
+        body: {
+          childId,
+          date,
+          kind: "date",
+          content: fresh.map((text) => ({ text, topicKey: undefined })),
+        },
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      });
+      created.push(`${date}：${fresh.length} 项`);
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `已为「${name}」创建学习计划：\n${created.map((c) => `- ${c}`).join("\n")}\n（未学完会自动顺延到次日；想改某天直接说，用 study_plan_list 看当前安排）`,
+        },
+      ],
+    };
+  },
+});
+
+/**
+ * 学习计划 · 查看排期行列表（study_plan_list）：家长问「现在计划是什么/这周排了什么」、
+ * 或需要行 id 来做 update/delete 时调用。
+ */
+export const studyPlanListTool = defineTool({
+  name: "study_plan_list",
+  label: "查看孩子学习计划（排期行列表）",
+  description:
+    "查看某孩子的**全部生效学习计划排期行**（按日期倒序，最多 500 行）。每行含：`date`（哪天）、`content`（那天学什么，一项一课）、`origin`（conversation=家长排的 / carry=📌 未学完顺延来的）、`id`（行 id——**改/删某行时用它**）。\n\n" +
+    "**何时调用**：家长问「孩子现在排了什么计划」「这周/这个月怎么安排的」「某天学什么」；或 study_plan_update / 删某天之前，先 list 确认要动的行 id。\n\n" +
+    "**可选过滤**：`from` / `to`（YYYY-MM-DD，只看该日期段，含边界）。",
+  parameters: Type.Object({
+    childName: Type.String({ description: "孩子姓名（必填）" }),
+    from: Type.Optional(Type.String({ description: "只看此日期（含）之后的排期行，YYYY-MM-DD" })),
+    to: Type.Optional(Type.String({ description: "只看此日期（含）之前的排期行，YYYY-MM-DD" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const { childId, name } = await resolvePlanChild(params.childName);
+    const rowsRaw = await serverFetch<{ ok: boolean; rows: StudyPlanRowRaw[] }>(
+      `/study-plans?childId=${encodeURIComponent(childId)}`,
+      {
+        method: "GET",
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      }
+    );
+    let rows = mapPlanRows(rowsRaw.rows ?? []);
+    if (params.from) {
+      assertPlanDate(params.from, "from");
+      rows = rows.filter((r) => r.date >= params.from!);
+    }
+    if (params.to) {
+      assertPlanDate(params.to, "to");
+      rows = rows.filter((r) => r.date <= params.to!);
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `「${name}」的学习计划：\n${planRowsToMarkdown(rows)}`,
+        },
+      ],
+    };
+  },
+});
+
+/**
+ * 学习计划 · 查某天安排（study_plan_get）：展示某一天孩子要学什么（含顺延来的 carry 项）。
+ * 家长问「今天/9 月 5 号学什么」时用；date 缺省 = 本地今天。
+ */
+export const studyPlanGetTool = defineTool({
+  name: "study_plan_get",
+  label: "查看某天学习安排",
+  description:
+    "查看某孩子**某一天**的学习安排（当天排期行展平后的清单；📌 = 前一天没学完自动顺延来的）。\n\n" +
+    "**参数**：`childName`（必填）、`date`（可选，YYYY-MM-DD；缺省 = 今天）。\n\n" +
+    "**何时调用**：家长问「今天/明天/9 月 5 号学什么」「昨天没学的顺延了吗」。",
+  parameters: Type.Object({
+    childName: Type.String({ description: "孩子姓名（必填）" }),
+    date: Type.Optional(Type.String({ description: "哪天，YYYY-MM-DD（缺省 = 今天）" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const { childId, name } = await resolvePlanChild(params.childName);
+    const date = (params.date || "").trim() || studyPlanLocalDate();
+    assertPlanDate(date, "查询日期");
+    const res = await serverFetch<PlanTodayItems>(
+      `/study-plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(date)}`,
+      {
+        method: "GET",
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      }
+    );
+    const items = res.items ?? [];
+    if (items.length === 0) {
+      return {
+        content: [{ type: "text" as const, text: `「${name}」${date} 没有排学习内容（空天 = 不要求学）。` }],
+      };
+    }
+    const lines = items.map((it) => `- ${it.carry ? "📌 " : ""}${it.text}`);
+    return {
+      content: [{ type: "text" as const, text: `「${name}」${date} 的学习安排：\n${lines.join("\n")}` }],
+    };
+  },
+});
+
+/**
+ * 学习计划 · 修改/删除排期行（study_plan_update）：家长「9 月 5 号改成 X」「把某天的某课删掉」「停掉某行」。
+ * 先 study_plan_list 拿行 id；act = replace（整行内容换成 content）/ removeItems（删当天部分课）/ delete（删整行）。
+ */
+export const studyPlanUpdateTool = defineTool({
+  name: "study_plan_update",
+  label: "修改学习计划（改某天 / 删部分课 / 删整行）",
+  description:
+    "修改某孩子**已有的排期行**（先 study_plan_list 拿到要动的行 id）。三种动作：\n\n" +
+    "- `act: \"replace\"` + `id` + `content`（string[]）：把那一行的当天内容**整体替换**为新清单（家长「9 月 5 号改成只学数学两课」）。\n" +
+    "- `act: \"removeItems\"` + `id` + `content`（string[]）：只**删掉其中的几项**，其余保留（家长「把 9 月 5 号英语那项去掉」；传要删的课程名）。\n" +
+    "- `act: \"delete\"` + `id`：**删除整行**（家长「把 9 月 5 号的安排都取消」）。\n\n" +
+    "**carry 行（📌 顺延来的）也可以改/删**——删掉即放弃补学。改完要给孩子看到最新安排，可用 study_plan_get 核对当天。",
+  parameters: Type.Object({
+    childName: Type.String({ description: "孩子姓名（必填）" }),
+    act: Type.String({ description: "动作：replace（整行替换）| removeItems（删其中几项）| delete（删整行）" }),
+    id: Type.String({ description: "目标排期行 id（study_plan_list 返回，形如 xxxx-…-xxxx；可传完整或前 8 位）" }),
+    content: Type.Optional(Type.Array(Type.String({ description: "课程/章节名文本数组（replace 的新内容 / removeItems 要删的项）" }))),
+  }),
+  execute: async (_toolCallId, params) => {
+    const { childId, name } = await resolvePlanChild(params.childName);
+    const act = (params.act || "").trim();
+    if (!["replace", "removeItems", "delete"].includes(act)) {
+      throw new Error("study_plan_update 的 act 仅支持 replace / removeItems / delete");
+    }
+    // 先取全量列表（服务端无单行 GET，list 即真源）
+    const rowsRaw = await serverFetch<{ ok: boolean; rows: StudyPlanRowRaw[] }>(
+      `/study-plans?childId=${encodeURIComponent(childId)}`,
+      {
+        method: "GET",
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      }
+    );
+    const rows = mapPlanRows(rowsRaw.rows ?? []);
+    const row = findPlanRowById(rows, (params.id || "").trim());
+    if (!row) throw new Error(`找不到 id 前缀「${wantId}」的排期行（先 study_plan_list 核对）`);
+
+    if (act === "delete") {
+      await serverFetch<{ ok: boolean }>(`/study-plans/${encodeURIComponent(row.id)}`, {
+        method: "DELETE",
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      });
+      return {
+        content: [
+          { type: "text" as const, text: `已删除「${name}」${row.date} 的学习安排（整行）。` },
+        ],
+      };
+    }
+    const textItems = Array.isArray(params.content) ? params.content.map((t) => String(t).trim()).filter(Boolean) : [];
+    if (textItems.length === 0) throw new Error(`study_plan_update ${act} 需要 content（至少一项课程/章节名）`);
+    if (textItems.length > 100) throw new Error("content 超过 100 项上限");
+    const oldTexts = row.content.map((it) => it.text);
+    const next: Array<{ text: string; topicKey?: string }> =
+      act === "replace" ? textItems.map((text) => ({ text })) : oldTexts.filter((t) => !textItems.includes(t));
+    if (next.length === 0) {
+      // 全删光了 → 等价于删整行
+      await serverFetch<{ ok: boolean }>(`/study-plans/${encodeURIComponent(row.id)}`, {
+        method: "DELETE",
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      });
+      return {
+        content: [
+          { type: "text" as const, text: `「${name}」${row.date} 的内容已全部移除（该行已删除，成为空天）。` },
+        ],
+      };
+    }
+    const res = await serverFetch<{ ok: boolean; row: StudyPlanRowRaw }>(`/study-plans/${encodeURIComponent(row.id)}`, {
+      method: "PATCH",
+      body: { content: next },
+      token: currentSessionToken(),
+      timeoutMs: 15000,
+    });
+    const changed = oldTexts.filter((t) => !next.some((n) => n.text === t)).length;
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text:
+            act === "replace"
+              ? `已将「${name}」${row.date} 的安排替换为 ${next.length} 项。`
+              : `已从「${name}」${row.date} 移除 ${changed} 项，剩余 ${next.length} 项。`,
+        },
+      ],
+    };
+  },
+});
+
+/**
+ * 学习计划 · 只读课程结构（study_plan_sources，R3 拍板形态）：起草排期前查孩子主题/课程结构。
+ * 只读、最小权限：列主题 + 每主题课程数/已学/未学清单，不放开 kb_query 写能力。
+ */
+export const studyPlanSourcesTool = defineTool({
+  name: "study_plan_sources",
+  label: "查看孩子课程结构（起草计划用）",
+  description:
+    "查看某孩子的**课程结构**（只读，起草学习计划前先查这里，不猜课程名）：列出孩子每个主题（如 论语 lunyu）下**有哪些课、哪些还没学**，供你把家长意图落到具体课程/章节。\n\n" +
+    "**参数**：`childName`（必填）、`topic`（可选，只查某个主题——主题键如 lunyu 或中文名；不填则列全部主题的概览 + 未学课程清单）。\n\n" +
+    "**何时调用**：家长说「把先进篇排一下」「数学还有多少没学」等需要知道课程结构/数量才能安排的时候；已学完的课程不用再排。",
+  parameters: Type.Object({
+    childName: Type.String({ description: "孩子姓名（必填）" }),
+    topic: Type.Optional(Type.String({ description: "主题键或中文名（如 lunyu / 论语）；缺省 = 全部主题" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const { childId, name } = await resolvePlanChild(params.childName);
+    const topics = await dbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>("kb.topics.list", {
+      child_id: childId,
+    });
+    if (topics.length === 0) {
+      return {
+        content: [{ type: "text" as const, text: `「${name}」还没有分配任何学习主题（先去「课程管理」给孩子分配主题，才能排计划）。` }],
+      };
+    }
+    const aggAll = await dbQuery<Array<{ topic: string; learned: number; total: number; next: string }>>("kb.progress.list", {
+      child_id: childId,
+    });
+    const wantTopic = (params.topic || "").trim();
+    const targetTopic = wantTopic
+      ? topics.find((t) => t.topic_key === wantTopic || t.name === wantTopic)
+      : undefined;
+    if (wantTopic && !targetTopic) {
+      const keys = topics.map((t) => `${t.name}(${t.topic_key})`).join("、");
+      throw new Error(`找不到主题「${wantTopic}」${keys ? `（孩子的主题：${keys}）` : ""}`);
+    }
+    const lines: string[] = [`「${name}」的课程结构：`];
+    for (const t of wantTopic && targetTopic ? [targetTopic] : topics) {
+      const key = t.topic_key;
+      const agg = aggAll.find((p) => p.topic === key);
+      const learned = agg?.learned ?? 0;
+      const total = agg?.total ?? 0;
+      const rules = safeParseRules(t.rules_json);
+      const dailyNote = rules.daily ? `（旧规则曾设每天 ${rules.daily} 课，已停用；新计划在对话里说）` : "";
+      // 取课程清单（含已学状态），未学的单列
+      const rows = await dbQuery<Array<Record<string, unknown>>>("kb.courses.list", { child_id: childId, topic: key });
+      const titles = rows.map((r) => String(r.title ?? ""));
+      const statusOf = (title: string) => rows.find((r) => String(r.title) === title)?.status ?? "";
+      const notLearned = titles.filter((ti) => statusOf(ti) !== "✅");
+      lines.push(`- ${t.name}（${key}）：共 ${total} 课，已学 ${learned}${notLearned.length ? `，未学 ${notLearned.length} 课` : "，已全部学完 ✅"}${dailyNote}`);
+      // 全主题模式只列未学；指定主题模式列全部课 + 状态（供「重排已学课复习」）
+      const show = wantTopic ? titles.map((ti) => `${ti}${statusOf(ti) === "✅" ? "（已学）" : "（未学）"}`) : notLearned.map((ti) => `${ti}（未学）`);
+      if (show.length > 0) {
+        const cap = show.length > 40 ? show.slice(0, 40).concat([`… 其余 ${show.length - 40} 课略`]) : show;
+        for (const s of cap) lines.push(`    - ${s}`);
+      }
+    }
+    return {
+      content: [{ type: "text" as const, text: lines.join("\n") }],
+    };
   },
 });
