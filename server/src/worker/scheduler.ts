@@ -12,6 +12,7 @@ import { getWorkerStateKey, setWorkerState } from "../db/sessions.js";
 import { findTaskForRun, recordTaskRun } from "../db/task-runs.js";
 import { listTasks, hhmm, type WorkerSchedulerChildConfig, type WorkerTask } from "./tasks.js";
 import { formatLocalDate } from "./kb-tools.js";
+import { runStudyPlanCarryTick } from "./study-plan-carry.js";
 
 interface WorkerSchedulerDeps {
   dataDir: string;
@@ -56,13 +57,20 @@ function readParentSettings(db: DatabaseSync, dataDir: string, parentId: string)
 
 export function startWorkerScheduler(deps: WorkerSchedulerDeps): void {
   cron.schedule("* * * * *", () => {
+    // 学习计划顺延检测先于 todo 各时间点（carry 行须在当天 gen 前落库）
+    void runStudyPlanCarryTick({ dataDir: deps.dataDir, db: deps.db }).catch((e) =>
+      console.error("[worker] study-plan carry tick failed:", (e as Error).message)
+    );
     void runWorkerTick(deps).catch((e) => console.error("[worker] tick failed:", (e as Error).message));
   });
   // 启动补跑：服务端重启/掉线错过当天时间点 → 按任务 catchUp 策略补跑（不阻塞启动）
   setTimeout(() => {
+    void runStudyPlanCarryTick({ dataDir: deps.dataDir, db: deps.db }).catch((e) =>
+      console.error("[worker] study-plan carry catch-up failed:", (e as Error).message)
+    );
     void runWorkerCatchUp(deps).catch((e) => console.error("[worker] catch-up failed:", (e as Error).message));
   }, 3000);
-  console.log("[worker] 无头 worker 调度器已启动（每分钟，recording/todo 自主任务）");
+  console.log("[worker] 无头 worker 调度器已启动（每分钟，recording/todo 自主任务 + 学习计划顺延）");
 }
 
 /**

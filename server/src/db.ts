@@ -159,8 +159,26 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_exam_schedules_child ON exam_schedules(child_id, scheduled_at);
+    -- 学习计划（ISSUE-033，2026-09-02）：家长对话制定 → 「每天学什么」的排期行（服务端为数据真源）。
+    -- kind=date：某固定日期（YYYY-MM-DD）学 content 里的内容；kind=daily 预留（每日循环，当前无生成来源，create 暂只收 date）。
+    -- origin=conversation（家长对话确认落库）| carry（服务端每日定时把昨日未完成顺延写为当天行）。
+    -- content JSON 数组：[{"text":"先进篇 1-2 章","topicKey":"lunyu"}]；text 为给孩子的 [家长] todo 行文本。
+    CREATE TABLE IF NOT EXISTS study_plan_items (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      child_id TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'date',
+      date TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '[]',
+      origin TEXT NOT NULL DEFAULT 'conversation',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_study_plan_child ON study_plan_items(child_id, date);
+    CREATE INDEX IF NOT EXISTS idx_study_plan_parent ON study_plan_items(parent_id, date);
   `);
-  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '8')").run();
+  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '9')").run();
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('config_revision', '0')").run();
   // 旧库迁移：children 表加 profile_json（孩子详情 + 密码哈希上云，2026-08-30）
   try {
