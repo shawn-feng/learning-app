@@ -10,8 +10,8 @@ import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath, getCurre
 import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool } from "./custom-tools";
-import { getLearningSummary, progressSummaryToMarkdown, fetchProgressRemote } from "./learning-summary";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate } from "./custom-tools";
+import { getTodayPlan, fetchTodayPlanRemote } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
 import {
@@ -72,8 +72,8 @@ const LEARNING_NAV_INSTRUCTIONS = `
 - 只使用上述受控操作；**不存在、也不要请求任何在页面上执行任意代码的能力**（桥脚本无 execute_javascript）。
 
 ### 进度查询（省上下文，务必遵守）
-各主题的 **进度摘要（learned/total/next/updated）由系统从课程表自动计算**，已放在系统提示顶部的「孩子的学习进度概览」里，确定「下一课」或查询进度时：
-- **直接用**系统提示里给出的 \`next\` 值，或调用 \`get_progress\` 工具（只回摘要，不含逐课明细）；
+孩子的**当天学习计划（Todolist）已由系统在会话开头注入**到系统提示顶部的「孩子今天的学习计划」段——孩子一开会话就知道自己今天该学什么（含 \`[家长]\` 规定项与孩子自规划项）。确定「今天学哪课」直接看该段即可；中途想刷新当天计划或查各主题进度时：
+- 调用 \`todo_list\`（action=read，date 缺省=今天）拿到当天最新 Todolist，或调用 \`get_progress\` 工具（只回各主题摘要 learned/total/next，不含逐课明细）；
 - **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 500+ 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
 - 需要逐课状态（如逐课核对掌握度）时，用 kb_query 查进度（listOnly 只看课程清单），不要 read 文件；
 - 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。同一课要写多个字段（状态/掌握度/首次学习/最近复习）时，用 kb_update 的 fields 批量参数一次完成（fields 传 [{field,value},...] 数组），不要拆成多次调用。
@@ -225,24 +225,25 @@ data/
 
 /**
  * 孩子会话的 system prompt 头部（替换 SDK 默认的 "expert coding assistant" 身份 + Pi 文档噪声）。
- * 这里描述身份，并附带「孩子的学习进度概览」（由 learning-summary 从各进度文件 frontmatter
- * 解析而来，仅 frontmatter 级信息）。所有行为规范（交流准则、学习方法、内容展示、角色）放在
- * LEARNING_NAV_INSTRUCTIONS 里，经 buildAgentsMd 生成 AGENTS 内容，在本函数末尾内联注入。
+ * 这里描述身份，并在会话开头注入「孩子今天的学习计划」（由当天 Todolist 渲染，ISSUE-045）。
+ * 所有行为规范（交流准则、学习方法、内容展示、角色）放在 LEARNING_NAV_INSTRUCTIONS 里，
+ * 经 buildAgentsMd 生成 AGENTS 内容，在本函数末尾内联注入。
  * 孩子的完整行为规范以「data/agents.sqlite 用户版本 / 代码默认」为唯一真源（家长可编辑、孩子只读；
  * ISSUE-033：AGENTS 纯 SQLite 存储，不落任何物理文件）。
  *
- * 注入进度概览的目的（ISSUE-006）：让 agent 开会话即知「下一课」是什么，无需为了确认 next
- * 而去 read 整个进度文件（论语等主题正文可达几百行，纯浪费上下文）。
+ * 注入当天计划的目的（ISSUE-045）：让孩子 agent 开会话即知「今天该学什么」（含 [家长] 规定项
+ * 与孩子自规划项），无需为了确认今天任务而去 read 进度文件正文或反复查进度（省上下文）。
+ * 若当天无 Todolist，planContext 为空串，则不注入任何段落，保持 prompt 精简。
  *
- * @param progressContext 进度概览 markdown；为空字符串时不注入（如该孩子暂无主题）。
+ * @param planContext 当天学习计划 markdown（来自 Todolist）；为空字符串时不注入（如该孩子当天无 Todolist）。
  */
-function buildChildPrompt(childId: string, profile: ChildProfile, progressContext?: string): string {
+function buildChildPrompt(childId: string, profile: ChildProfile, planContext?: string): string {
   const emoji = profile.aiEmoji || "🌟";
   let prompt = `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，陪伴和引导${profile.name}学习、生活和成长。`;
-  if (progressContext && progressContext.trim()) {
+  if (planContext && planContext.trim()) {
     prompt +=
-      `\n\n## 孩子的学习进度概览（已在下方替你读好，**无需再读进度文件正文**即可知道下一步学什么）\n` +
-      progressContext;
+      `\n\n## 孩子今天的学习计划（已由系统从 Todolist 读好，**无需再读进度文件正文**即可知道今天该学什么）\n` +
+      planContext;
   }
   // ISSUE-033：AGENTS 行为规范不以「文件」形式由 SDK 附加为 <project_context>（无任何磁盘 AGENTS
   // 文件，孩子不可写），改为在此内联注入——内容来自 data/agents.sqlite 用户版本 / 代码默认
@@ -408,9 +409,11 @@ async function createChildSession(
   const profile = getProfile(childId);
   if (!profile) throw new Error("Child profile not found");
 
-  // 进度概览（仅 frontmatter 级）：注入系统提示，使 agent 开会话即知下一课，
-  // 无需 read 整个进度文件（ISSUE-006）。无主题时 topics 为空，progressContext 为空串不注入。
-  const progressContext = progressSummaryToMarkdown(getLearningSummary(childId));
+  // ISSUE-045：当天学习计划（Todolist）注入——与 AGENTS 同一「会话前远程预取 → 本地缓存 → 同步读」模式。
+  // systemPromptOverride 是 SDK 同步回调，无法 await，故先预取当天 Todolist 到本地缓存，
+  // 再经 getTodayPlan 同步读；当天无 Todolist 则 planContext 为空串，buildChildPrompt 不注入任何段落。
+  // 日期用 todoLocalDate()（本地时区 YYYY-MM-DD），与 todo_list 工具保持同一「今天」口径。
+  const today = todoLocalDate();
 
   // ISSUE-033：AGENTS 纯 SQLite 存储（data/agents.sqlite），行为规范经 buildChildPrompt 内联注入
   // （resolveChildAgents：SQLite 用户版本 → 代码默认），不落任何物理文件——孩子只读、不可写，
@@ -419,9 +422,12 @@ async function createChildSession(
   // 先远程预取该孩子的用户版本写入本地缓存（buildChildPrompt 同步读缓存即取到服务端最新版）；
   // 服务端不可达时回退本地缓存/代码默认。
   await fetchAgentPromptRemote("child", childId).catch(() => null);
-  // SPLIT 收尾：学习进度概览同样「会话前远程预取 → 本地缓存 → getLearningSummary 同步读缓存」
+  // ISSUE-045：当天 Todolist 同样「会话前远程预取 → 本地缓存 → getTodayPlan 同步读缓存」
   // （服务端不可达时降级为旧缓存/空，不阻断会话创建）。
-  await fetchProgressRemote(childId).catch(() => null);
+  await fetchTodayPlanRemote(childId, today).catch(() => null);
+
+  // 同步读取当天计划（已从缓存取，无 Todolist 返回空串 → 不注入）。
+  const planContext = getTodayPlan(childId);
 
   const modelRuntime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -431,7 +437,7 @@ async function createChildSession(
     agentDir: path.join(childDir, ".pi", "agent"),
     // 替换 SDK 默认 base：去掉 "expert coding assistant" 身份与 Pi 自身文档索引（对孩子是噪声），
     // 换成孩子专属的学习伙伴身份。AGENTS / 技能段 / cwd / 时间注入由 SDK 在 customPrompt 模式下自动附加。
-    systemPromptOverride: () => buildChildPrompt(childId, profile, progressContext),
+    systemPromptOverride: () => buildChildPrompt(childId, profile, planContext),
     // shared/skills 已无教学技能（recording / study-tracker 均已移除，目录为空），
     // 该扫描路径仅作兜底，未来若再加技能无需改加载逻辑。
     // 注意：noSkills 必须为 true —— SDK 的 packageManager 会自动发现并启用 ~/.agents/skills

@@ -262,3 +262,50 @@ export function progressSummaryToMarkdown(summary: LearningSummary): string {
   }
   return lines.join("\n");
 }
+
+// ==================== ISSUE-045：当天学习计划（Todolist）注入 ====================
+//
+// 与进度概览同一「会话前远程预取 → 本地缓存 → 同步读」模式（systemPromptOverride 是同步链，
+// 没法在回调里 await）：createChildSession 在创建会话前调用 fetchTodayPlanRemote(childId, date)
+// 把当天 Todolist 预取到本地缓存，buildChildPrompt 经 getTodayPlan(childId) 同步读缓存注入系统提示。
+// 缓存缺失 / 当天无 Todolist 时返回空串，buildChildPrompt 据此「不注入任何段落」，保持 prompt 精简。
+//
+// 数据来源：kb.todo.get（服务端 child_todos 表，多设备共享），与 todo_list 工具 read 分支同一真源、
+// 同一「今天」口径（本地时区 YYYY-MM-DD）。
+
+function todayPlanCachePath(childId: string): string {
+  return path.join(getDataDir(), "cache", `today-plan-${childId}.json`);
+}
+
+/** 会话创建前远程预取孩子当天 Todolist 到本地缓存（同步读链路的真源）。 */
+export async function fetchTodayPlanRemote(childId: string, date: string): Promise<void> {
+  try {
+    const todo = await dbQuery<{ date: string; itemsMd: string; updated: string } | null>("kb.todo.get", {
+      child_id: childId,
+      date,
+    });
+    // 与 todo_list 工具 read 分支口径一致：itemsMd 为空（null/空白）即「今天还没有 todolist」。
+    const itemsMd = todo?.itemsMd?.trim() ? todo.itemsMd : "";
+    fs.mkdirSync(path.dirname(todayPlanCachePath(childId)), { recursive: true });
+    fs.writeFileSync(
+      todayPlanCachePath(childId),
+      JSON.stringify({ itemsMd, date, ts: Date.now() }),
+      "utf-8"
+    );
+  } catch {
+    /* 离线/未登录：保留旧缓存或留空，getTodayPlan 降级为不注入 */
+  }
+}
+
+/** 同步读取当天学习计划（Todolist markdown）；无缓存 / 当天无 Todolist 返回空串（不注入）。 */
+export function getTodayPlan(childId: string): string {
+  try {
+    const cached = JSON.parse(fs.readFileSync(todayPlanCachePath(childId), "utf-8")) as {
+      itemsMd: string;
+    };
+    return cached.itemsMd ?? "";
+  } catch {
+    /* 无缓存：返回空 */
+    return "";
+  }
+}

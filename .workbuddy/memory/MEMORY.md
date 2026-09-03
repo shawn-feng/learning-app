@@ -20,6 +20,7 @@
 ## 构建与验证
 - 沙箱禁 `git stash`（戳坏 .git/refs）；用 `git diff`/`git show HEAD:<file>`。
 - `rm -rf out` 被沙箱拦截 → 直接 `npm run build`(electron-vite 自清)；`tsc --noEmit` 先过滤 5 条环境告警再看业务错。
+- **⚠️ 长 prompt 模板字符串内反引号必须转义（2026-09-03 复现）**：`LEARNING_NAV_INSTRUCTIONS`（pi-session.ts，反引号模板）里行内代码若误写裸 `` `[家长]` `` 而未用 `\`` 转义 → 模板提前闭合 → 模块求值 `ReferenceError: 家长 is not defined`（报错行 `X:79` 处）。**`node --check`/esbuild 都查不出**（裸反引号对偶闭合、语法合法，仅运行时崩）。定位法：报错行号逆推源码 + `awk` 数模板范围内 `[^\\]\``（gsub 统计 `\\\`` 与全部 `` ` ``，行 75 `raw=2 escaped=0` 即异常）。**规避**：模板字符串内行内代码反引号一律 `\`` 转义（与 recording-prompt 同规）。另一并发优化：`electron.vite.config.ts` 三处 `emptyOutDir` 已改 `true`（防 stale chunk，非本 bug 根因）。
 - vitest：残留 `setInterval` 致 worker exit 1（`vi.spyOn(global,"setImmediate")`+finally mockRestore）；**Windows 盘符小写 bug(#10692)**：跑前先 `cd "C:/Users/79734/Documents/pi"`(大写盘符)。
 - **跑真实 LLM 的 vitest**：`PI_TEST_DATA_DIR`→Temp 隔离，拷真实 `auth.json`+`app-settings.json` 到 `$TEMP/pi-test-data/parents/<pid>/`，`setCurrentParentId(pid)`，并 `delete globalThis.__learningAppModelRuntime`。
 
