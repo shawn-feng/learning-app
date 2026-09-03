@@ -309,3 +309,15 @@ status(待考核|进行中|已完成|过期), attempt_id(关联 exam_attempts), 
 - **getExamConfig 固定排期第一段**：freq=daily|weekly → 计划候选 + source="plan"；monthly+ 历史排期与自定义考核仍走「学习痕迹」候选（custom 分支不变）。第二段 rubric/判分链路不变（未学课在父库同样有 assess_rubric，可正常出卷）。
 - **空窗口**：无计划 → candidates 空 → LLM 输出空数组 → 孩子端「暂无考核内容」（无计划不考）。
 - 验证：冒烟 27/27（新增 study-plan 创建 / kb 补未学课 / config 第一段含未学课+planDate）；真实数据珊珊 daily@9-03 候选 5 门（未学 2 门在列）、weekly@9-07 候选 18 门（近7天含未学 11 门）。
+
+### 14.12 孩子端作答交互：答完锁定 + 实测问题修复（2026-09-03）
+
+> 用户拍板：**一题答完（离开本题）即锁定不可回改**——因为后面题目可能含前面题目的答案/提示（防孩子回头照着改，作答失真）。锁定题回看只读（可听录音），未答空题可前后补答，全部答完才可提交。
+
+- **作答脚本**（`src/lib/exam-template.ts` 生成考试 iframe 内容）：`saveCurrent()` 在离开本题（上一题/下一题/提交）时保存文本框并把「有内容」（asr 非空或录音）的题标 `locked`；锁定视图 textarea disabled、麦克风禁用（显示「🔒 已答完」）、可播放录音、进度条常显「已答 x/N 题」。转写占位「识别中…」不落答案；asr:done 仅在未手工编辑时覆盖。
+- **实测问题修复**：
+  1. 答案串题：出卷 LLM 每课 qid 都从 q1 编号 → 跨课重复致 answers 共享。修：组装题目时 qid 用**全局序号**覆盖。
+  2. 语音报 `invalid security origin`：srcDoc iframe sandbox 缺 `allow-same-origin` → 不透明源非安全上下文，getUserMedia 被拒。修：sandbox 加 allow-same-origin（配 allow="microphone"；主进程已有 setPermissionRequestHandler 放行 media）。
+  3. 本题用时不刷新：进入题目每秒实时累计，答完（answeredAt）冻结，重录重计。
+  4. 录音切题竞态：录音中切题会把录音存到新题（onstop 读全局题号）。修：录音开始时记录 recQid，onstop 用它定位；被切走的录音题即时锁定防漏锁。
+- **考核结果入口**：家长中心「🎯 学习考核」新增第 4 标签「考核记录」（孩子选择器 + 每课程掌握表/逐题明细/原音回放）——此前仅藏在孩子详情页第 5 个 tab，家长找不到。
