@@ -993,3 +993,40 @@
   6. **隐私/体积**：**绝不记 prompt/消息正文、auth token、密钥**（现有 sync-logger 已不记内容，保持）；文本只记长度/摘要；轮转上限（如 5000 行 / 20MB）防膨胀；日志文件本身不入 git（`linux-016.zip` 等已列永不上库清单，沿用）。
 - **优先级**：中（ISSUE-043 现场已靠手工 `server-connection.json`+`curl` 取证，但通用化后所有"某平台某孩子异常"都能自助定位，省去反复登机/上 Mac）。
 - **记录时间**：2026-09-03
+
+## [ISSUE-045] 孩子 agent 会话注入：去掉「学习进度概览」，改为注入当天学习计划（无 todolist 则不注入）
+
+- **类型**：需求 / 提示词调整（孩子 agent system prompt 注入内容变更）
+- **描述**：
+  1. **移除**每次孩子会话（开 Session）时注入到 system prompt 的「孩子的学习进度概览」段落（现由 `getLearningSummary` 生成，附在 `buildChildPrompt` 末尾）。
+  2. **改为注入当天的学习计划**：内容来源 = 该孩子**当天的 Todolist**（今日计划 markdown）。即开会话即把今天要做的事（含 `[家长]` 规定项 + 孩子自规划项）放进提示词，让孩子 agent 一开始就清楚「今天该学什么」。
+  3. **当天无 Todolist 则不注入**：查 `kb.todo.get`（today）若无内容（返回空/「今天还没有 todolist」），**不注入任何进度/计划段落**，保持 prompt 精简。
+- **影响范围**：孩子 agent 开会话时的 system prompt（前缀缓存公共前缀）注入内容；影响孩子 agent「开局即知下一步/今天任务」的方式。家长模式不受影响。
+- **现状 / 排查入口**：
+  - **移除点①（计算）**：`electron/lib/pi-session.ts:413` `const progressContext = progressSummaryToMarkdown(getLearningSummary(childId));` —— 进度概览在此生成，需替换为当天计划获取。
+  - **移除点②（注入段落）**：`electron/lib/pi-session.ts:239` `buildChildPrompt(childId, profile, progressContext?)` 及其 `:242-245` 注入的 `## 孩子的学习进度概览（已在下方替你读好，无需再读进度文件正文即可知道下一步学什么）` 整段 —— 改为注入当天计划（或按 `progressContext` 同款「空串则不注入」约定处理）。
+  - **说明同步（必改，否则与注入内容矛盾）**：`electron/lib/pi-session.ts:74-79` `LEARNING_NAV_INSTRUCTIONS` 里「各主题的进度摘要……已放在系统提示顶部的『孩子的学习进度概览』里」相关文字，需改写为指向「当天的学习计划（Todolist）」，并删除/改写「直接用系统提示里给出的 next 值」等依赖进度概览的表述（agent 找下一课改为走 `todo_list` / `get_progress` 工具）。
+  - **当天计划数据源**：`electron/lib/custom-tools.ts:1266-1274` `todo_list` 工具的 `read` 分支 → `dbQuery("kb.todo.get", { child_id, date })` 返回 `itemsMd`（非空即 todolist 文本，空则返回 `今天还没有 todolist。`）。日期用 `todoLocalDate()`（`:1197`，本地时区 YYYY-MM-DD，与 `todo_list` 工具保持一致）。session 构建处应以"今天"查 `kb.todo.get`：**有 `itemsMd` 则注入，无则不注入**。
+  - **存储位置**：todolist 存服务端 `child_todos` 表（多设备共享，`custom-tools.ts:1246`）。注意 `getLearningSummary` 当前是同步读本地缓存（`pi-session.ts:422` 注释「会话前远程预取→本地缓存→同步读」），新计划读取需同样处理同步/缓存，避免开会话阻塞或读到昨天的旧计划（跨天边界要用同一"今天"）。
+  - **前置能力已具备**：孩子 agent 工具列表已含 `todo_list`（`pi-session.ts:476`），agent 会话中仍可随时 `todo_list` read 当日计划；本 issue 是把"开局即知"从进度概览改为计划概览，并去掉冗余的进度注入。
+- **优先级**：待定（建议中——与 ISSUE-033 学习计划、ISSUE-025 Todolist 衔接；去掉进度概览可省上下文，但需确认 agent「找下一课」路径在缺失进度概览后仍正确，避免退化为去 read 几百行进度文件正文）
+- **记录时间**：2026-09-03
+
+## [ISSUE-046] 学习考核 Ubuntu 客户端点「按住说话」录音按钮提示「没有权限」（Linux 特有媒体权限预检缺失）
+
+- **类型**：缺陷 / 跨平台 bug（仅 Linux/Ubuntu 暴露）
+- **现象**：闻闻的 Ubuntu 客户端在考核页点「开始答题 / 按住说话」录音按钮时，提示「没有权限」，无法录音；Windows / macOS 客户端正常（client 0.1.9 在 Win/Mac 工作，因 10:15 已修过 `allow-same-origin` 沙盒 iframe 录音权限，当时只靠 `setPermissionRequestHandler` 放行 `media` 在 Win/Mac 够用）。
+- **根因**：考核页录音是在 **`srcDoc` 沙盒 iframe** 里调用 `navigator.mediaDevices.getUserMedia({audio:true})`；`getUserMedia` 在弹「权限请求」前会先走一次**权限预检** `session.setPermissionCheckHandler`。代码**只实现了 `setPermissionRequestHandler`（放行 `media`），漏掉了 `setPermissionCheckHandler`**。Electron 对未实现的 check handler，在 **Linux(Ubuntu) 上默认拒绝媒体权限**，预检被拒就直接抛 `NotAllowedError` → 表现即「没有权限」。而 Windows/macOS 对未设 check 的默认行为不同，所以一直没暴露——典型「只在一个平台测过漏掉的跨平台坑」。
+- **修复**（`electron/main.ts`，主进程）：新增 `const allowMedia = (p: string) => p === "media" || p === "microphone" || p === "camera";`，同时实现两个 handler：
+  ```ts
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowMedia(permission));
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(allowMedia(permission));
+  });
+  ```
+  覆盖 `media`/`microphone`/`camera` 全部媒体权限串，兼容不同 Electron 分支。
+- **版本**：客户端 0.1.9 → **0.1.10**（纯客户端修复，服务端 0.3.1 不变）。
+- **验证**：`tsc --noEmit` 对 `main.ts` 0 错；改动已提交 git（commit `76ecf9d`）+ 打 tag `v0.1.10` 并推送到 origin/github 双远端，已触发 GitHub Actions `build-linux` 出 `deb`/`AppImage`（产物名 `学习伙伴_0.1.10_amd64.deb`）。
+- **部署 / 现状**：改的是**主进程**，闻闻 Ubuntu 客户端必须**重装新 Linux 包（deb/AppImage）+ 本地重启 GUI 客户端**才生效（SSH 杀不掉桌面进程，见 PACKAGING §4.2）。截至记录时：CI 已在跑、产物待手动取回部署到 201（192.168.1.201）。关联 ISSUE-027（学习考核）真 bug。
+- **优先级**：P0（已修复未发布，等构建产物部署）
+- **记录时间**：2026-09-03
