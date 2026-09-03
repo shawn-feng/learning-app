@@ -351,7 +351,7 @@ function lastExamAtByCourse(db: DatabaseSync, childId: string): Map<string, stri
 }
 
 /** 最近一次考核的 reinforce_plan（按 course 的 planReviewAt，供选课「复习计划到期」打分）。 */
-function latestReinforcePlan(db: DatabaseSync, childId: string): Record<string, { planReviewAt?: string }> {
+function latestReinforcePlan(db: DatabaseSync, childId: string): Record<string, { planReviewAt?: string; focus?: string[] }> {
   const row = db
     .prepare("SELECT reinforce_plan FROM exam_attempts WHERE child_id = ? AND reinforce_plan != '{}' ORDER BY submitted_at DESC LIMIT 1")
     .get() as { reinforce_plan?: string } | undefined;
@@ -465,6 +465,115 @@ function listLearnedCourseMeta(
         planReviewAt: reinforce[r.title]?.planReviewAt ?? "",
       };
     });
+  } finally {
+    kb.close();
+    parent.close();
+  }
+}
+
+/**
+ * 课程综合学习情况（家长计划/复习决策用「一站式」查询）：一次性聚合每门课
+ *   学习时间(first_learned) / 复习时间(last_review) / 复习次数(review_count) /
+ *   考核时间(最近一次) / 考核次数(含该课的不同 attempt 数) /
+ *   学习情况(status + mastery) / 复习情况 / 考核情况(exam_mastery + 累计正确率)。
+ * 考试数据来自主库 exam_attempts（按 per_question.course 聚合），学习/复习数据来自孩子库 courses。
+ * 仅纳入「有学习/复习/考核信号」的课程（复习计划制定聚焦于已学课程）。
+ */
+function listCourseStatus(
+  db: DatabaseSync,
+  dataDir: string,
+  parentId: string,
+  childId: string
+): Array<Record<string, unknown>> {
+  const kb = openKb(dataDir, parentId, childId);
+  const parent = openParentLib(dataDir, parentId);
+  try {
+    const topicNames = new Map(
+      (parent.prepare("SELECT topic_key, name FROM topics").all() as Array<{ topic_key: string; name: string }>).map((r) => [r.topic_key, r.name])
+    );
+    const childTopicTypes = new Map(
+      (kb.prepare("SELECT topic_key, rules_json FROM topics").all() as Array<{ topic_key: string; rules_json: string }>).map((r) => {
+        let type = "";
+        try {
+          type = String((JSON.parse(r.rules_json || "{}") as { type?: string }).type || "");
+        } catch {
+          /* 损坏的 rules_json 视为未标注 */
+        }
+        return [r.topic_key, type] as const;
+      })
+    );
+    // 考核聚合：按 course 统计 考核次数(不同 attempt) / 最近考核时间 / 累计正确率
+    const examRows = db
+      .prepare("SELECT id, submitted_at, per_question FROM exam_attempts WHERE child_id = ? AND per_question != '[]'")
+      .all(childId) as Array<{ id: string; submitted_at: string; per_question: string }>;
+    const examStat = new Map<string, { ids: Set<string>; lastAt: string; correct: number; total: number }>();
+    for (const er of examRows) {
+      let pq: Array<Record<string, unknown>> = [];
+      try {
+        pq = JSON.parse(er.per_question) as Array<Record<string, unknown>>;
+      } catch {
+        pq = [];
+      }
+      for (const q of pq) {
+        const course = String(q.course ?? "");
+        if (!course) continue;
+        const got = Number(q.pointGot) || 0;
+        const max = Number(q.pointMax) || 0;
+        const isCorrect = max > 0 && got >= max * 0.6;
+        let s = examStat.get(course);
+        if (!s) {
+          s = { ids: new Set<string>(), lastAt: "", correct: 0, total: 0 };
+          examStat.set(course, s);
+        }
+        s.ids.add(er.id);
+        s.total += 1;
+        if (isCorrect) s.correct += 1;
+        if (er.submitted_at > s.lastAt) s.lastAt = er.submitted_at;
+      }
+    }
+    const reinforce = latestReinforcePlan(db, childId);
+    const rows = kb
+      .prepare(
+        "SELECT topic, title, status, mastery, exam_mastery, first_learned, last_review, review_count FROM courses ORDER BY topic, sort_order, title"
+      )
+      .all() as Array<{
+        topic: string;
+        title: string;
+        status: string;
+        mastery: string;
+        exam_mastery: string;
+        first_learned: string;
+        last_review: string;
+        review_count: number;
+      }>;
+    const out: Array<Record<string, unknown>> = [];
+    for (const r of rows) {
+      const fl = r.first_learned ?? "";
+      const lr = r.last_review ?? "";
+      const learnedNoDate = String(r.status ?? "").trim() === "✅" && !fl;
+      const es = examStat.get(r.title);
+      const rp = reinforce[r.title];
+      // 仅纳入有学习/复习/考核信号的课程（复习计划制定聚焦于已学课程）
+      if (!fl && !lr && String(r.status ?? "").trim() !== "✅" && !es) continue;
+      out.push({
+        topic: r.topic,
+        topicName: topicNames.get(r.topic) ?? r.topic,
+        title: r.title,
+        topicType: childTopicTypes.get(r.topic) ?? "",
+        status: r.status ?? "⬜",
+        mastery: r.mastery ?? "",
+        firstLearned: learnedNoDate ? "✅" : fl,
+        lastReview: lr,
+        reviewCount: Number(r.review_count) || 0,
+        lastExamAt: es?.lastAt ?? "",
+        examCount: es?.ids.size ?? 0,
+        examMastery: r.exam_mastery ?? "",
+        examRate: es && es.total ? Math.round((es.correct / es.total) * 1000) / 1000 : 0,
+        planReviewAt: rp?.planReviewAt ?? "",
+        focus: Array.isArray(rp?.focus) ? rp!.focus!.map(String) : [],
+      });
+    }
+    return out;
   } finally {
     kb.close();
     parent.close();
@@ -1341,5 +1450,25 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }));
     // 掌握度等级（来自最近聚合率）
     return { records: out };
+  });
+
+  // ===== 课程综合学习情况「一站式」查询（家长计划/复习决策：学习/复习/考核全景） =====
+  app.get("/api/v1/courses/status/:childId", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { childId } = req.params as { childId: string };
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const records = listCourseStatus(deps.db, deps.config.dataDir, parentId, childId);
+    return { records };
   });
 }

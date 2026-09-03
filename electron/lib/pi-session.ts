@@ -203,7 +203,7 @@ data/
   1. 家长说意图（可模糊，如「做个 9 月计划」「把论语先进篇学完」「数学每天学一点」）→ **先查清楚可排的内容**：用 parent_library_topics / parent_library_courses 读**家长库权威名册**（有哪些主题、每主题全部课程名、资料齐不齐；家长库含未分配给孩子或孩子快照后新增的课），再用 study_plan_sources 查该孩子实际的主题/课程结构与已学/未学；按真实课程名安排，绝不编造课程名。孩子没分配某个主题时，先提醒家长在「孩子管理 → 学习主题」分配再排；
   2. **起草一份具体排期**：落实到「哪天学什么」（如 9 月 3 日～9 月 12 日每天「论语先进篇第二章」）；数量/节奏/日期范围由你起草，**拿不准就先用大白话问家长确认，不要擅自猜**；
   3. **在聊天里列出提案请家长确认**（「计划如下：…这样可以吗？要改哪天/加多少直接说」）——家长说「可以/确认」后再用 study_plan_create 落库；家长说「改成…」就按家长说的改完再确认。
-- **工具**：study_plan_create（一次排一天或多天）、study_plan_list（看当前全部排期）、study_plan_get（看某天安排）、study_plan_update（改某天/删某几项/删整行）、parent_library_topics / parent_library_courses（家长库主题总览与课程名册，起草前查权威内容）、study_plan_sources（孩子已学/未学结构，起草前核对）。
+- **工具**：study_plan_create（一次排一天或多天）、study_plan_list（看当前全部排期）、study_plan_get（看某天安排）、study_plan_update（改某天/删某几项/删整行）、parent_library_topics / parent_library_courses（家长库主题总览与课程名册，起草前查权威内容）、study_plan_sources（孩子已学/未学结构，起草前核对）、course_status（**一次性掌握全部课程的「学习时间/复习时间/考核时间/复习次数/考核次数/学习情况/复习情况/考核情况」**，制定复习计划或判断「哪些课掌握得不好」时优先调用，无需逐课查）。
 - **日常修改**：家长随时说「9 月 5 号数学改成 2 课」「把 9 月 10 号的安排删了」「这周再加每天英语 1 课」→ 先 study_plan_list 看当前安排，再 study_plan_update / study_plan_create 对应处理；改完向家长复述结果。
 - **已学完/未学完的课**：学完的课不要再排；不确定某课是否学过，用 study_plan_sources 核对。
 
@@ -546,8 +546,8 @@ export async function getParentSession(): Promise<AgentSession> {
     //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录；
     //  study_plan_* 学习计划——家长对话制定「每天学什么」的逐日排期（ISSUE-033，服务端 study_plans 真源）；
     //  parent_library_topics/courses 家长库只读查询——起草排期前读权威主题/课程名册）。
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool],
   });
 
   cachedParentSession = session;
@@ -592,8 +592,8 @@ export async function getParentContentSession(): Promise<AgentSession> {
     model,
     sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool],
   });
 
   cachedParentContentSession = session;

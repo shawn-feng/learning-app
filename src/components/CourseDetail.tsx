@@ -37,6 +37,18 @@ interface Props {
   topicName: string; // 主题显示名（中文，如 "论语"）
   course: CourseItemLite;
   onBack: () => void;
+  /** 考核/复习全景（来自服务端 course_status；缺省不显示考核块） */
+  courseStatus?: {
+    status?: string;
+    examMastery?: string;
+    examCount?: number;
+    lastExamAt?: string;
+    examRate?: number;
+    reviewCount?: number;
+    lastReview?: string;
+    planReviewAt?: string;
+    focus?: string[];
+  } | null;
 }
 
 /**
@@ -44,7 +56,7 @@ interface Props {
  * 两者均取自数据库唯一真源；不再从 materials 文件读取任何内容。
  * 两端（孩子/家长）共用。
  */
-export default function CourseDetail({ childId, topicDir, topicName, course, onBack }: Props) {
+export default function CourseDetail({ childId, topicDir, topicName, course, onBack, courseStatus }: Props) {
   const [summaries, setSummaries] = useState<CourseDailySummary[] | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -75,6 +87,19 @@ export default function CourseDetail({ childId, topicDir, topicName, course, onB
   if (course.lastReview) rows.push(["最近复习", course.lastReview]);
   if (course.reviewCount > 0) rows.push(["复习次数", String(course.reviewCount)]);
   if (course.tags) rows.push(["标签", course.tags]);
+  // 考核/复习全景（来自服务端 course_status）
+  if (courseStatus) {
+    const cs = courseStatus;
+    if (cs.examRate != null && (cs.examCount ?? 0) > 0) {
+      rows.push(["考核正确率", `${Math.round((cs.examRate ?? 0) * 100)}%`]);
+    }
+    if ((cs.examCount ?? 0) > 0) rows.push(["考核次数", String(cs.examCount)]);
+    if (cs.lastExamAt) rows.push(["最近考核", cs.lastExamAt]);
+    if (cs.examMastery) rows.push(["考核掌握度", cs.examMastery]);
+    if (cs.reviewCount != null && cs.reviewCount !== course.reviewCount) rows.push(["复习次数", String(cs.reviewCount)]);
+    if (cs.planReviewAt) rows.push(["计划复习", cs.planReviewAt]);
+    if (cs.focus && cs.focus.length > 0) rows.push(["复习重点", cs.focus.join("；")]);
+  }
 
   return (
     <div className="dashboard-panel">

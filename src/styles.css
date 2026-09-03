@@ -1453,6 +1453,19 @@ input, textarea {
   font-weight: 600;
 }
 
+.lesson-exam {
+  color: #2f8a52;
+  font-weight: 600;
+  background: #ecf7f0;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.lesson-exam.weak {
+  color: #c0392b;
+  background: #fdeeec;
+}
+
 .lesson-tags {
   color: #38a169;
 }

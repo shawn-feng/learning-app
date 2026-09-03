@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type CSSProperties } from "react";
 import CourseDetail, { matchesCourseSearch } from "./CourseDetail";
 import IconButton from "./IconButton";
 import { ArrowLeft } from "lucide-react";
@@ -54,7 +54,33 @@ interface TopicDetail {
   items: CourseItem[];
 }
 
+/** 课程综合全景（服务端 course_status 返回的维度子集，列表行与单课详情展示用）。 */
+interface CourseStatusLite {
+  topic: string;
+  title: string;
+  status: string;
+  examMastery: string;
+  examCount: number;
+  lastExamAt: string;
+  examRate: number;
+  planReviewAt: string;
+  focus: string[];
+}
+
 // 进度数据源已从 SQLite（kb.sqlite，ISSUE-023 P2）统一；此处不再读旧 markdown（study-topics.md 等）。
+
+/** 课程列表排序按钮样式。 */
+function sortBtn(active: boolean): CSSProperties {
+  return {
+    padding: "3px 10px",
+    borderRadius: 6,
+    border: active ? "1.5px solid #667eea" : "1px solid #ddd",
+    background: active ? "#f0f4ff" : "#fff",
+    color: active ? "#3b4cca" : "#6b7686",
+    fontSize: 12,
+    cursor: "pointer",
+  };
+}
 
 export default function ProgressView({ childrenList, selectedChild, onSelectChild }: Props) {
   const [summary, setSummary] = useState<LearningSummary | null>(null);
@@ -63,6 +89,10 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
   const [drill, setDrill] = useState<{ topic: TopicSummary; detail: TopicDetail | null; course: CourseItem | null } | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [search, setSearch] = useState("");
+  // 课程综合全景：title -> 考核/复习情况（服务端 course_status，一次拉全量）
+  const [courseStatusMap, setCourseStatusMap] = useState<Record<string, CourseStatusLite>>({});
+  // 课程列表排序：null=默认原序 | 'rateAsc' | 'rateDesc'
+  const [sortBy, setSortBy] = useState<null | "rateAsc" | "rateDesc">(null);
 
   useEffect(() => {
     if (!selectedChild) {
@@ -76,6 +106,16 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
       .learningSummary(selectedChild.childId)
       .then((r: any) => setSummary(r?.success ? r.data : null))
       .finally(() => setLoading(false));
+    // 拉取该孩子全部课程的考核/复习全景（失败静默，不影响列表）
+    window.api
+      .courseStatus(selectedChild.childId)
+      .then((r: any) => {
+        const arr: CourseStatusLite[] = r?.success ? r.data || [] : [];
+        const map: Record<string, CourseStatusLite> = {};
+        for (const c of arr) if (c?.title) map[c.title] = c;
+        setCourseStatusMap(map);
+      })
+      .catch(() => setCourseStatusMap({}));
   }, [selectedChild]);
 
   function openTopic(t: TopicSummary) {
@@ -105,6 +145,34 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
 
   function todayStr() {
     return new Date().toISOString().slice(0, 10);
+  }
+
+  /** 课程考核正确率：优先用服务端 course_status 的 examRate；无则返回 null（未考核/无数据）。 */
+  function examRateOf(title: string): number | null {
+    const s = courseStatusMap[title];
+    if (!s) return null;
+    if (s.examRate != null && (s.examCount ?? 0) > 0) return s.examRate;
+    return null;
+  }
+
+  /** 课程列表展示排序后的条目（保持原序 or 按考核正确率）。 */
+  function sortedCourseItems(items: CourseItem[]): CourseItem[] {
+    if (!sortBy) return items;
+    const arr = [...items];
+    const rateOf = (c: CourseItem) => {
+      const r = examRateOf(c.title);
+      return r == null ? -1 : r; // 未考核排最后
+    };
+    arr.sort((a, b) => {
+      const ra = rateOf(a);
+      const rb = rateOf(b);
+      // 未考核（-1）永远沉底，不参与升降序
+      if (ra < 0 && rb < 0) return 0;
+      if (ra < 0) return 1;
+      if (rb < 0) return -1;
+      return sortBy === "rateAsc" ? ra - rb : rb - ra;
+    });
+    return arr;
   }
 
   return (
@@ -147,6 +215,7 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
                   topicName={drill.topic.name}
                   course={drill.course}
                   onBack={goBack}
+                  courseStatus={courseStatusMap[drill.course.title] ?? null}
                 />
               )}
 
@@ -174,26 +243,60 @@ export default function ProgressView({ childrenList, selectedChild, onSelectChil
                       </span>
                     )}
                   </div>
-                  <div className="lesson-list">
-                    {drill.detail.items.filter((c) => matchesCourseSearch(c, search)).map((c) => (
-                      <button className="lesson-row" key={c.title} onClick={() => openCourse(c)}>
-                        <span className="lesson-status">{c.status}</span>
-                        <span className="lesson-main">
-                          <span className="lesson-title">{c.title}</span>
-                          <span className="lesson-sub">
-                            {c.mastery && <span className="lesson-mastery">掌握度 {c.mastery}</span>}
-                            {c.tags && <span className="lesson-tags">{c.tags}</span>}
-                            {(c.firstLearned || c.reviewCount > 0) && (
-                              <span className="lesson-meta">
-                                {c.firstLearned ? `首次 ${c.firstLearned}` : ""}
-                                {c.reviewCount > 0 ? ` · 复习 ${c.reviewCount} 次` : ""}
-                              </span>
-                            )}
-                          </span>
-                        </span>
-                        <span className="lesson-arrow">›</span>
+                  {/* 排序：按考核正确率 */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontSize: 12, color: "#6b7686", flexWrap: "wrap" }}>
+                    <span>排序：</span>
+                    <button
+                      onClick={() => setSortBy(sortBy === "rateAsc" ? null : "rateAsc")}
+                      style={sortBtn(sortBy === "rateAsc")}
+                      title="考核正确率从低到高（需关注的在前）"
+                    >
+                      考核准确率 低→高{sortBy === "rateAsc" ? " ✓" : ""}
+                    </button>
+                    <button
+                      onClick={() => setSortBy(sortBy === "rateDesc" ? null : "rateDesc")}
+                      style={sortBtn(sortBy === "rateDesc")}
+                      title="考核正确率从高到低"
+                    >
+                      考核准确率 高→低{sortBy === "rateDesc" ? " ✓" : ""}
+                    </button>
+                    {sortBy && (
+                      <button onClick={() => setSortBy(null)} style={sortBtn(false)}>
+                        恢复原序
                       </button>
-                    ))}
+                    )}
+                    <span style={{ color: "#bbb" }}>（无考核数据的课程排在最后）</span>
+                  </div>
+                  <div className="lesson-list">
+                    {sortedCourseItems(drill.detail.items)
+                      .filter((c) => matchesCourseSearch(c, search))
+                      .map((c) => {
+                        const rate = examRateOf(c.title);
+                        return (
+                          <button className="lesson-row" key={c.title} onClick={() => openCourse(c)}>
+                            <span className="lesson-status">{c.status}</span>
+                            <span className="lesson-main">
+                              <span className="lesson-title">{c.title}</span>
+                              <span className="lesson-sub">
+                                {c.mastery && <span className="lesson-mastery">掌握度 {c.mastery}</span>}
+                                {rate != null && (
+                                  <span className={`lesson-exam ${rate < 0.7 ? "weak" : ""}`} title="历次考核逐题正确率">
+                                    🎯 考核 {Math.round(rate * 100)}%
+                                  </span>
+                                )}
+                                {c.tags && <span className="lesson-tags">{c.tags}</span>}
+                                {(c.firstLearned || c.reviewCount > 0) && (
+                                  <span className="lesson-meta">
+                                    {c.firstLearned ? `首次 ${c.firstLearned}` : ""}
+                                    {c.reviewCount > 0 ? ` · 复习 ${c.reviewCount} 次` : ""}
+                                  </span>
+                                )}
+                              </span>
+                            </span>
+                            <span className="lesson-arrow">›</span>
+                          </button>
+                        );
+                      })}
                     {!loadingDetail && drill.detail.items.filter((c) => matchesCourseSearch(c, search)).length === 0 && (
                       <div className="lesson-search-empty">没有匹配「{search}」的课程</div>
                     )}

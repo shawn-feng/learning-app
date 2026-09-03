@@ -26,7 +26,7 @@ import {
 import { dbExec, dbQuery, childIdFromCwd } from "./client-data";
 import { executePageAction, recentInteractions } from "./page-bridge";
 import { generateHtmlLesson } from "./programming-agent";
-import { createExamSchedule } from "./exam";
+import { createExamSchedule, getCourseStatus, type CourseStatusItem } from "./exam";
 import { currentSessionToken } from "./client-data";
 import { serverFetch } from "./server-client";
 import { listChildren } from "./child-auth";
@@ -1820,6 +1820,83 @@ export const parentLibraryCoursesTool = defineTool({
       lines.push(`… 其余 ${list.length - offset - shown.length} 门略（可加 keyword 过滤或用 offset=${offset + limit} 翻页）`);
     }
     lines.push("起草排期时课程名以此名册为准，不要编造。");
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+  },
+});
+
+/** 课程综合学习情况（一站式）：某孩子每门课的 学习时间/复习时间/考核时间/复习次数/考核次数/学习情况/复习情况/考核情况。 */
+export const courseStatusTool = defineTool({
+  name: "course_status",
+  label: "课程综合学习情况（一站式）",
+  description:
+    "一次性获取某个孩子**全部课程的综合学习情况**，用于判断「哪些课掌握得不好、该优先复习/考核」。\n\n" +
+    "每个课程返回 8 类信息：① 学习时间(firstLearned) ② 复习时间(lastReview) ③ 考核时间(lastExamAt) ④ 复习次数(reviewCount) ⑤ 考核次数(examCount) ⑥ 学习情况(status 是否已学✅ / mastery 引导掌握度) ⑦ 复习情况(lastReview + reviewCount) ⑧ 考核情况(examMastery 考核掌握度 + examRate 正确率 + planReviewAt 计划复习时间 + focus 计划复习重点)。\n\n" +
+    "**参数**：`childName`（孩子姓名，必填）、`topic`（可选，只查某主题，如 lunyu 或 论语）、`onlyWeak`（可选 true，只返回需关注/薄弱的课程，减少噪音）、`keyword`（可选，课程名含此词）。\n\n" +
+    "**何时调用**：家长说「哪些课掌握得不好」「帮我安排复习计划」「优先复习哪些」「这次考核考什么」等需要了解课程整体掌握度时——**一次调用即可拿到全部课程的维度，无需逐课查询**；根据 examRate 低 / 从未复习(reviewCount=0) / 计划复习已到期(planReviewAt ≤ 今天) / status 未学 等判断薄弱项。",
+  parameters: Type.Object({
+    childName: Type.String({ description: "孩子姓名（必填）" }),
+    topic: Type.Optional(Type.String({ description: "只查某主题（如 lunyu 或 论语），不填则查全部主题" })),
+    onlyWeak: Type.Optional(Type.Boolean({ description: "true=只返回需关注/薄弱的课程（考核正确率低、从未复习、计划复习已到期、未学），减少噪音" })),
+    keyword: Type.Optional(Type.String({ description: "只返回课程名含此词的课程" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const childName = (params.childName || "").trim();
+    if (!childName) throw new Error("course_status 需要 childName（孩子姓名）");
+    const children = await listChildren().catch(() => []);
+    const child = children.find((c: any) => c.name === childName || c.childName === childName);
+    if (!child) {
+      const names = children.map((c: any) => c.name || c.childName).join("、");
+      throw new Error(`找不到孩子「${childName}」${names ? `（现有孩子：${names}）` : ""}`);
+    }
+    const childId = child.childId || child.id;
+    let items: CourseStatusItem[];
+    try {
+      items = await getCourseStatus(childId);
+    } catch (e: any) {
+      throw new Error(`查询课程学习情况失败：${e?.message ?? e}`);
+    }
+    // 过滤
+    const wantTopic = (params.topic || "").trim();
+    const kw = (params.keyword || "").trim();
+    let list = items.filter((c) => {
+      if (wantTopic && c.topic !== wantTopic && c.topicName !== wantTopic) return false;
+      if (kw && !c.title.includes(kw)) return false;
+      return true;
+    });
+    if (params.onlyWeak) {
+      const today = new Date().toISOString().slice(0, 10);
+      list = list.filter((c) => {
+        if (String(c.status ?? "").trim() !== "✅") return true; // 未学
+        if (c.examRate > 0 && c.examRate < 0.7) return true; // 考核正确率低
+        if (Number(c.reviewCount) === 0) return true; // 从未复习
+        if (c.planReviewAt && c.planReviewAt <= today) return true; // 计划复习已到期
+        if (!c.lastReview) return true; // 无复习记录
+        return false;
+      });
+    }
+    const lines: string[] = [];
+    lines.push(`「${childName}」课程综合学习情况：共 ${items.length} 门${list.length !== items.length ? `，需关注 ${list.length} 门` : ""}${wantTopic ? `（主题=${wantTopic}）` : ""}${kw ? `（含「${kw}」）` : ""}：`);
+    if (list.length === 0) {
+      lines.push("（没有匹配的课程）");
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    for (const c of list) {
+      const weak: string[] = [];
+      if (String(c.status ?? "").trim() !== "✅") weak.push("未学");
+      if (c.examRate > 0 && c.examRate < 0.7) weak.push(`考核正确率${(c.examRate * 100).toFixed(0)}%`);
+      if (Number(c.reviewCount) === 0) weak.push("从未复习");
+      if (c.planReviewAt && c.planReviewAt <= today) weak.push(`计划复习${c.planReviewAt}已到期`);
+      const tag = weak.length ? ` ⚠️需关注(${weak.join("、")})` : "";
+      lines.push(
+        `- ${c.title}（${c.topicName}${c.topicType ? `/${c.topicType}` : ""}）` +
+          ` 学习:${c.status || "⬜"}${c.mastery ? "·" + c.mastery : ""}` +
+          ` | 学于${c.firstLearned || "-"} 复习${c.lastReview || "-"}(${c.reviewCount}次)` +
+          ` | 考于${c.lastExamAt || "-"}草(${c.examCount}次,正确率${c.examRate ? (c.examRate * 100).toFixed(0) + "%" : "-"}) 考核掌握:${c.examMastery || "-"}` +
+          `${c.planReviewAt ? ` | 计划复习:${c.planReviewAt}${c.focus?.length ? " 重点:" + c.focus.join("、") : ""}` : ""}` +
+          tag
+      );
+    }
+    lines.push("说明：以上为单次批量结果，LLM 据此判断薄弱项并安排复习/考核；课程名以家长库名册为准。");
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   },
 });

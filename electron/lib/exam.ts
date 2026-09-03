@@ -316,6 +316,34 @@ export async function getExamCourseRecords(childId: string): Promise<ExamCourseR
   return data.records ?? [];
 }
 
+/** 课程综合学习情况（一站式）：某孩子每门课的学习/复习/考核全景，供家长计划与复习决策。 */
+export interface CourseStatusItem {
+  topic: string;
+  topicName: string;
+  title: string;
+  topicType: string;
+  status: string;
+  mastery: string;
+  firstLearned: string;
+  lastReview: string;
+  reviewCount: number;
+  lastExamAt: string;
+  examCount: number;
+  examMastery: string;
+  examRate: number;
+  planReviewAt: string;
+  focus: string[];
+}
+
+/** 取某孩子全部课程的综合学习情况（一次调用返回所有维度，LLM 自行判断薄弱项）。 */
+export async function getCourseStatus(childId: string): Promise<CourseStatusItem[]> {
+  const data = await serverFetch<{ records: CourseStatusItem[] }>(
+    `/courses/status/${encodeURIComponent(childId)}`,
+    { method: "GET", token: currentSessionToken(), timeoutMs: 20000 }
+  );
+  return data.records ?? [];
+}
+
 /** 取语音文件为 data URL（家长端「听原音」：<audio src> 直接可播；文件走鉴权流式下载）。 */
 export async function getExamAudioDataUrl(fileId: string): Promise<string> {
   const buf = await serverFetchBinary(`/files/${encodeURIComponent(fileId)}`, {

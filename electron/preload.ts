@@ -328,6 +328,7 @@ const api = {
     ipcRenderer.invoke("exam:submit", payload, voices),
   examAttempts: (childId: string) => ipcRenderer.invoke("exam:attempts", childId),
   examCourseRecords: (childId: string) => ipcRenderer.invoke("exam:courseRecords", childId),
+  courseStatus: (childId: string) => ipcRenderer.invoke("course:status", childId),
   examAudio: (fileId: string) => ipcRenderer.invoke("exam:audio", fileId),
   examGenerate: (childId: string, topicConfig: any) => ipcRenderer.invoke("exam:generate", childId, topicConfig),
   examScore: (childId: string, scoringPrompt: string, answers: any[]) =>

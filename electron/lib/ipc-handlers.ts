@@ -46,7 +46,7 @@ import {
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
-import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig } from "./exam";
+import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
 import { generateExamQuestions, scoreExamAttempt, selectCoursesForSchedule } from "./exam-engine";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
@@ -1974,6 +1974,14 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("exam:courseRecords", async (_e, childId: string) => {
     try {
       return { success: true, data: await getExamCourseRecords(childId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 课程综合学习情况「一站式」（全景：学习/复习/考核），供家长端课程列表与单课详情
+  ipcMain.handle("course:status", async (_e, childId: string) => {
+    try {
+      return { success: true, data: await getCourseStatus(childId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
