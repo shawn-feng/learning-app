@@ -218,10 +218,9 @@ export default function ExamView({ childId, onExit }: Props) {
       course: string;
       stem: string;
       pointMax: number;
-      audioBlob: Blob | null;
+      /** 多次按住说话的多段录音（dataURL base64）——宿主合并为单段后上传 */
+      audioB64s?: string[];
       asr: string;
-      startedAt: number | null;
-      answeredAt: number | null;
       durationMs: number | null;
     }>;
   }) {
@@ -245,11 +244,24 @@ export default function ExamView({ childId, onExit }: Props) {
       if (!s?.success) throw new Error(s?.error || "判分失败");
       const scored = s.data as ScoredResult;
 
-      // 2) 上传语音（files 通道），提交时携带 fileId
+      // 2) 上传语音（files 通道），提交时携带 fileId。
+      // 每题可能有多段录音（多次按住说话，同聊天 ISSUE-021）：≥2 段先用主进程 voice:merge 拼成单个 WAV，
+      // 1 段直接用；无段则无语音（仅文字作答）。
+      const plainB64 = (s: string) => {
+        const i = s.indexOf(",");
+        return i >= 0 ? s.slice(i + 1) : s; // dataURL → 纯 base64（voice:merge 需要）
+      };
+      const b64ToBuf = (s: string) => Uint8Array.from(atob(plainB64(s)), (c) => c.charCodeAt(0)).buffer;
       const voices: Array<{ qid: string; buffer: ArrayBuffer; name: string }> = [];
       for (const q of payload.perQuestion) {
-        if (q.audioBlob) {
-          voices.push({ qid: q.qid, buffer: await q.audioBlob.arrayBuffer(), name: `voice-${q.qid}.webm` });
+        const segs: string[] = Array.isArray(q.audioB64s) ? q.audioB64s : [];
+        if (!segs.length) continue;
+        if (segs.length === 1) {
+          voices.push({ qid: q.qid, buffer: b64ToBuf(segs[0]), name: `voice-${q.qid}.webm` });
+        } else {
+          const m: any = await window.api.voiceMerge(childId, segs.map(plainB64));
+          if (!m?.success || !m.data) throw new Error(`合并语音失败：${m?.error || ""}`);
+          voices.push({ qid: q.qid, buffer: b64ToBuf(m.data), name: `voice-${q.qid}.wav` });
         }
       }
       const gotByQid = new Map(scored.perQuestion.map((x) => [x.qid, x]));
@@ -260,8 +272,6 @@ export default function ExamView({ childId, onExit }: Props) {
           course: q.course,
           question: q.stem,
           asrText: q.asr || "",
-          startedAt: q.startedAt ?? undefined,
-          answeredAt: q.answeredAt ?? undefined,
           durationMs: q.durationMs ?? undefined,
           pointGot: g?.pointGot ?? 0,
           pointMax: Number(q.pointMax) || 10,
@@ -276,7 +286,7 @@ export default function ExamView({ childId, onExit }: Props) {
         childId,
         topic: currentSchedule.kind === "custom" ? String(currentSchedule.scope?.note || "") : currentSchedule.freq,
         title: `${currentSchedule.title} · ${new Date().toLocaleDateString("zh-CN")}`,
-        startedAt: new Date(payload.perQuestion[0]?.startedAt ?? Date.now()).toISOString(),
+        startedAt: new Date(currentSchedule.scheduledAt || Date.now()).toISOString(),
         submittedAt: payload.submittedAt || new Date().toISOString(),
         score: Number(scored.score) || 0,
         perQuestion,
