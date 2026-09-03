@@ -108,9 +108,16 @@ app.whenReady().then(() => {
   } catch (e) {
     console.error("Failed to init shared skills:", e);
   }
-  // 放行麦克风权限（语音输入需要 getUserMedia({audio:true})）
+  // 放行麦克风/摄像头权限（语音输入与考核录音需要 getUserMedia({audio:true})）。
+  // 注意：仅实现 setPermissionRequestHandler 不够。getUserMedia 会先走权限「预检」
+  // （setPermissionCheckHandler），预检被拒则直接抛 NotAllowedError —— 在 Linux(Ubuntu) 上
+  // 不实现该 handler 时默认拒绝，表现为「没有权限」/ Permission denied，而 Windows/macOS 表现不同，
+  // 因此只在 Windows/macOS 测过会漏掉这个 Linux 专属问题。这里同时实现 check 与 request 两个 handler。
+  // 权限字符串：Electron 43 为 "media"；一并放行 "microphone"/"camera" 以兼容不同版本/分支。
+  const allowMedia = (p: string) => p === "media" || p === "microphone" || p === "camera";
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowMedia(permission));
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(permission === "media");
+    callback(allowMedia(permission));
   });
 
   // macOS 系统级麦克风权限：主动申请一次，让 app 出现在「系统设置→隐私与安全性→麦克风」
