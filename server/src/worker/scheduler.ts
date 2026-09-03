@@ -355,7 +355,7 @@ function todayHasTodolist(deps: WorkerSchedulerDeps, parentId: string, childId: 
  * carry 与 gen 合并且 carry 在前，保证顺延行在 gen 读取当日排期前落库。
  */
 export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
-  // carry 先于 gen：runStudyPlanCarryTick 内部按 (child, 昨天) 游标幂等
+  // carry 先于 gen：runStudyPlanCarryTick 内部按 (child, 昨天) 游标幂等（一天一次，已顺延过即跳过）
   await runStudyPlanCarryTick(deps).catch((e) =>
     console.error("[worker] study-plan carry failed:", (e as Error).message)
   );
@@ -367,17 +367,12 @@ export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
     for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
       if (!cc.todo?.enabled) continue;
       try {
-        if (!cursorDayDone(deps, childId, "todo_gen", today)) {
-          if (!todayHasTodolist(deps, p.id, childId, today)) {
-            await runTodoGenServer(buildTodoCtx(deps, p.id, childId, cc, settings, now));
-            console.log(`[worker:plan] child=${childId}: ${today} 已生成 todolist`);
-          } else {
-            console.log(`[worker:plan] child=${childId}: ${today} todolist 已存在，跳过 gen`);
-          }
-          markCursorDay(deps, childId, "todo_gen", today, now);
-        }
+        // 2026-09-03：gen = todolist↔计划「同步」（不再是生成一次就锁死）——每次 tick 以最新
+        // study_plan_items 刷新今日【家长规定项】：家长中途改计划 ≤5 分钟反映到 todo；
+        // 无变化不写回；同文本已勾保持 [x]；孩子自定任务等非家长内容原样保留。
+        await runTodoGenServer(buildTodoCtx(deps, p.id, childId, cc, settings, now));
       } catch (e) {
-        console.error(`[worker:plan] gen child=${childId} failed:`, (e as Error).message);
+        console.error(`[worker:plan] todo-sync child=${childId} failed:`, (e as Error).message);
       }
     }
   }

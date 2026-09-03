@@ -39,7 +39,7 @@
 ## 学习计划（ISSUE-033，2026-09-02 已实施 P0/P0b/P2/P3/P4）
 - 主库 `study_plan_items`：date 定日 / daily 每日（+ origin carry 顺延）；**直接替换 rules_json.daily**；空天不学；未完成加到下一天累加；多计划同天合并。
 - `routes/study-plans.ts`：CRUD + GET /study-plans/today 聚合（展平 items[{planId,text,topicKey,carry}]，按 text 去重）+ GET ?date=。
-- `worker/study-plan-carry.ts`：每日顺延幂等 tick（游标=昨天；**v2 判定=昨天 child_todos 未勾 `[家长]` 行**——v1 依赖 child_todo_stats 在 stats 缺失时不顺延，9/2 实测漏延，已弃）。gen（tasks.ts）只生成计划当日项，**不自动并入昨日未完成自规划项**（2026-09-03 用户明确）。
+- `worker/study-plan-carry.ts`：每日顺延幂等 tick（游标=昨天；**v2 判定=昨天 child_todos 未勾 `[家长]` 行**——v1 依赖 child_todo_stats 在 stats 缺失时不顺延，9/2 实测漏延，已弃）。gen（tasks.ts runTodoGenServer）= **todolist↔计划每次同步**（2026-09-03 改：不再是生成一次锁死，家长中途改计划 ≤5 分钟反映到 todo；同文本勾选保留、孩子自定内容保留、无变化不写）。
 - UI：家长中心侧边栏「🗓 学习计划」只读面板（Dashboard view="plan"）+ ChildDetailPage TABS "plan"；编辑走家长对话。
 - ⚠️ 重复项修复：POST 幂等合并（同 child+date 单行 canonical）+ /today 去重 + 存量清理脚本 `server/scripts/fix-study-plan-dups.mjs`。显示截断修复：去掉 `lookaheadDays` 上限（展示全部未来排期）。
 

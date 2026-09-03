@@ -282,33 +282,77 @@ function planItemsToParentLines(items: PlanTodayItemLite[]): string[] {
   return lines;
 }
 
+/** 从 [家长] markdown 行提取计划文本键（剥 checkbox/[家长] 前缀与顺延后缀），如 "- [x] [家长] 论语X（昨天没学完，今天补上）" → "论语X"。 */
+function parentTextKey(line: string): string {
+  const m = /^\s*[-*]\s*\[( |x|X)\]\s*\[家长\]\s*(.*)$/.exec(line);
+  if (!m) return "";
+  return stripParentText(m[2]);
+}
+
+/** 读旧 todolist：已勾的 [家长] 文本键集合（计划没变的项保持勾选状态，避免 stat/孩子勾选被重置）。 */
+function checkedParentKeys(md: string): Set<string> {
+  const s = new Set<string>();
+  for (const line of md.split("\n")) {
+    if (!/\[家长\]/.test(line)) continue;
+    const m = /^\s*[-*]\s*\[(x|X)\]\s*\[家长\]/.exec(line);
+    if (!m) continue;
+    const k = parentTextKey(line);
+    if (k) s.add(k);
+  }
+  return s;
+}
+
+/** 旧 todolist 中「非 [家长] 行」内容（孩子自定任务等）——同步计划时原样保留，不丢孩子侧内容。 */
+function nonParentBody(md: string): string {
+  const kept: string[] = [];
+  for (const line of md.split("\n")) {
+    if (/\[家长\]/.test(line)) continue;
+    if (line.trim() === "【家长规定项】") continue;
+    kept.push(line);
+  }
+  // 去首尾空行、压缩连续空行
+  const trimmed = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return trimmed;
+}
+
+/**
+ * 今日 todolist 与学习计划同步（2026-09-03 起：gen 不再是「生成一次就锁死」）。
+ * 每次 plan tick 调用：以 study_plan_items 当日聚合为真源，重写【家长规定项】段——
+ *   计划中途被家长修改（增/删/改课）会在下一次 tick（≤5 分钟）反映到 todolist；
+ *   同文本已勾（stat/孩子勾选）保持 [x]；孩子自定任务等非家长内容原样保留。
+ * 无既有 todolist 时等同首次生成。
+ */
 export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
   const today = formatLocalDate(ctx.now);
-  // gen 只在当天尚无 todolist 时生成（调度器游标已保证一天一次；这里双保险，不覆盖既有内容）
   const todayTodo = runKbQuery<{ itemsMd: string } | null>(
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: today }
   );
-  if (todayTodo?.itemsMd?.trim()) {
-    console.log(`[worker:todo-gen] child ${ctx.childId}: ${today} 已有 todolist，跳过`);
-    return;
-  }
-  // 2026-09-03：gen 只生成学习计划当日项（家长规定项）——不自动并入昨日未完成的自规划项、
-  // 不补充任何额外任务（todolist 内容 = 学习计划，孩子自定任务由孩子自己在聊天里安排）。
+  const oldMd = (todayTodo?.itemsMd ?? "").trim();
+  const oldChecked = checkedParentKeys(oldMd);
+  const others = nonParentBody(oldMd);
+
   const planItems = loadTodayPlanItemsServer(ctx, today);
-  const parentLines = planItemsToParentLines(planItems);
-  const sections: string[] = [];
-  sections.push(
+  const wantLines = planItemsToParentLines(planItems); // 新计划行（全未勾 + carry 标记）
+  const parentLines = wantLines.map((line) => {
+    const k = parentTextKey(line);
+    if (k && oldChecked.has(k)) return line.replace(/^(\s*[-*]\s*)\[( |x|X)\]/, "$1[x]");
+    return line;
+  });
+
+  const head =
     parentLines.length > 0
       ? "【家长规定项】\n" + parentLines.join("\n")
-      : "【家长规定项】今天的学习计划没有安排内容（空天 = 不要求学）。"
-  );
+      : "【家长规定项】今天的学习计划没有安排内容（空天 = 不要求学）。";
+  const mdNew = others ? `${head}\n\n${others}` : head;
+
+  if (mdNew === oldMd) return; // 无变化（含首次之外计划未动）→ 不写
   runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.put", {
     child_id: ctx.childId,
     date: today,
-    items_md: sections.join("\n\n"),
+    items_md: mdNew,
   });
   console.log(
-    `[worker:todo-gen] child ${ctx.childId}: ${today} 已生成（家长项 ${parentLines.length}）`
+    `[worker:todo-gen] child ${ctx.childId}: ${today} todolist 已同步（家长项 ${parentLines.length}${oldMd ? " / 计划变更后重写" : " / 首次生成"}）`
   );
 }
 
