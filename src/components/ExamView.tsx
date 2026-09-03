@@ -130,7 +130,13 @@ export default function ExamView({ childId, onExit }: Props) {
           const sel: any = await window.api.examSelectCourses(childId, data.selectionPrompt);
           if (!sel?.success) throw new Error(sel?.error || "选课失败");
           const titles: string[] = sel.data || [];
-          if (!titles.length) throw new Error("这次考核没有选出要考的课程——这个周期可能还没有学习或复习过的课程。可以先学一学再来，或者请爸爸妈妈在「设置 → 学习考核」里调整选课规则。");
+          // 固定档（每天/每周）候选来自家长学习计划（无计划则不考）；自定义档仍是学习/复习痕迹口径
+          const isPlanFreq = data.schedule?.freq === "daily" || data.schedule?.freq === "weekly";
+          if (!titles.length) throw new Error(
+            isPlanFreq
+              ? `这次考核没有选出要考的课程——${data.schedule?.freq === "daily" ? "今天" : "近 7 天"}的学习计划里还没有安排课程（有计划的课程无论是否完成都会考核）。可以先请爸爸妈妈在学习计划里排上内容，或调整考核选课规则后再试。`
+              : "这次考核没有选出要考的课程——这个周期可能还没有学习或复习过的课程。可以先学一学再来，或请爸爸妈妈在「学习考核」里调整选课规则。"
+          );
           // 第二段：按选中课程拉 rubric + 判分 prompt
           setPrepText("正在准备课程考核内容…");
           const cfg2: any = await window.api.examConfig(childId, sch.id, titles.join(","));

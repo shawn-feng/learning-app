@@ -21,8 +21,8 @@ const WEEKDAYS: Array<{ v: number; label: string }> = [
 ];
 
 const DEFAULT_HINTS: Record<string, string> = {
-  daily: "默认：考今天学习/复习过的所有课程",
-  weekly: "默认：考本周学习/复习过的所有课程",
+  daily: "默认：考今天学习计划里安排的所有课程（无论是否完成）",
+  weekly: "默认：考近 7 天学习计划里安排的所有课程（无论是否完成）",
 };
 
 interface ScheduleRow {
@@ -340,7 +340,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
             <span style={{ fontSize: 13 }}>考核时间：</span>
             <input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value || "20:00")} style={inputStyle} />
           </div>
-          <div style={label}>选课规则 prompt（AI 按规则从今天学习/复习过的课程中挑选）</div>
+          <div style={label}>选课规则 prompt（AI 按规则从今天学习计划安排的课程中挑选）</div>
           <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 6 }}>{DEFAULT_HINTS.daily}。清空保存 = 恢复系统默认。</p>
           <textarea
             value={prompts.daily ?? ""}
@@ -379,7 +379,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
             </select>
             <input type="time" value={weeklyTime} onChange={(e) => setWeeklyTime(e.target.value || "20:00")} style={inputStyle} />
           </div>
-          <div style={label}>选课规则 prompt（AI 按规则从本周学习/复习过的课程中挑选）</div>
+          <div style={label}>选课规则 prompt（AI 按规则从近 7 天学习计划安排的课程中挑选）</div>
           <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 6 }}>{DEFAULT_HINTS.weekly}。清空保存 = 恢复系统默认。</p>
           <textarea
             value={prompts.weekly ?? ""}
