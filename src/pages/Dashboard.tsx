@@ -4,6 +4,7 @@ import IconButton from "../components/IconButton";
 import { LoadingBlock } from "../components/Loading";
 import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
+import SessionSyncPanel from "../components/SessionSyncPanel";
 import CourseManager from "../components/CourseManager";
 import ParentChatPanel from "../components/ParentChatPanel";
 import ExamAdminPanel from "../components/ExamAdminPanel";
@@ -25,7 +26,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [children, setChildren] = useState<any[]>([]);
   const [childrenLoading, setChildrenLoading] = useState(true);
   const [showAddChild, setShowAddChild] = useState(false);
-  const [view, setView] = useState<"children" | "courses" | "plan" | "exam" | "scheduler" | "tokens" | "settings">("children");
+  const [view, setView] = useState<"children" | "courses" | "plan" | "exam" | "scheduler" | "tokens" | "sync" | "settings">("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
@@ -135,6 +136,19 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             <div className="child-avatar">📈</div>
             <div className="child-info">
               <div className="name">Token 消耗</div>
+            </div>
+          </div>
+          <div
+            className="child-card"
+            style={{ border: "none" }}
+            onClick={() => {
+              setView("sync");
+              setDetailChild(null);
+            }}
+          >
+            <div className="child-avatar">📡</div>
+            <div className="child-info">
+              <div className="name">会话同步</div>
             </div>
           </div>
           <div
@@ -264,6 +278,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           {view === "scheduler" && !detailChild && <SchedulerTasksPanel children={children} />}
 
           {view === "tokens" && !detailChild && <TokenStatsPanel childrenList={children} />}
+
+          {view === "sync" && !detailChild && <SessionSyncPanel childrenList={children} />}
 
           {view === "settings" && !detailChild && <Settings />}
         </div>

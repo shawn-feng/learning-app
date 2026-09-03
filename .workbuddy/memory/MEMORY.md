@@ -56,4 +56,6 @@
 - **本地 Windows 无法产出 Linux/Mac 包**（缺 fpm/mksquashfs）→ 走 GitHub Actions CI（build-linux.yml/build-mac.yml，tag 触发），`gh run download <id> --repo shawn-feng/learning-app` 取产物。
 - **GitHub Push Protection**：测试里别塞像云厂商密钥的串（曾因假值 `AKID...` 被拒）。
 - 公网 feed=`https://www.aixuexihao.top/download/`：windows 走 `publish-update.py`；linux/mac 手动 oss2 传 OSS + `aliyun-run.py` 拉到 ECS `/opt/learning-cloud/download/`。
+- **⚠️ 致命坑：`publish-update.py` 只传 OSS，不拷 ECS 本地！** 公网 feed 由 ECS nginx 从 `/opt/learning-cloud/download/` 提供，所以 **windows 的 exe/blockmap/latest.yml 也必须单独 `aliyun-run.py` curl 拷到 ECS**（如同 linux/mac 的 ecs_copy 脚本），否则 `/download/latest.yml` 显示旧版、windows 客户端走旧下载链。0.1.9 发布时一度漏拷 windows 文件 → feed 显示 0.1.8，已补 `ecs_copy_win` 修正。正确顺序：OSS 上传(windows 用 publish-update / linux-mac 用 oss2) ＋ **两类都再 aliyun-run 拷 ECS 本地**。
 - electron-updater：`latest-linux.yml` path=AppImage，`latest-mac.yml` 每项带 arch（arm64 dmg 降级全量）。
+- windows 安装包文件名含空格（`学习伙伴 Setup x.y.z.exe`），公网 URL 空格必须编码为 `%20` 才能正常拉取（否则 curl 返回 000）。

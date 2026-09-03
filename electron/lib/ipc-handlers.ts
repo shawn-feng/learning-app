@@ -21,6 +21,8 @@ import { dbQuery, currentSessionToken } from "./client-data";
 import { serverFetch } from "./server-client";
 import { formatLocalDate } from "./daily-summary";
 import { syncChildSessions } from "./session-sync";
+import { listChildren } from "./child-auth";
+import { getSyncStatus, getSyncLog, readSyncLogFile } from "./sync-logger";
 import {
   allocateTopicToChild,
   copyMaterialIntoParent,
@@ -97,6 +99,55 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("server:set_config", async (_e, url: string) => {
     setServerUrl(typeof url === "string" ? url : "");
     return { ok: true, url: getServerUrl() };
+  });
+
+  // ---- 会话同步状态 / 日志（ISSUE-043 完善：失败可感知、可手动重试、可导出）----
+  // 当前各孩子的同步状态快照（最近同步时间 / 成败 / 连续失败数 / 连的 server / 待同步字节）
+  ipcMain.handle("sessions:syncStatus", async () => {
+    try {
+      return { success: true, status: getSyncStatus() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 最近 N 条同步日志
+  ipcMain.handle("sessions:syncLog", async (_e, limit?: number) => {
+    try {
+      return { success: true, entries: getSyncLog(limit ?? 100) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 手动立即同步（家长在「会话同步」面板点按钮触发）；fire-and-forget，结果看状态快照
+  ipcMain.handle("sessions:forceSync", async () => {
+    try {
+      void listChildren()
+        .then((children: any[]) => {
+          for (const c of children) void syncChildSessions(c.childId, "manual").catch(() => {});
+        })
+        .catch(() => {});
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 导出同步日志到本机文件（主进程弹保存对话框）
+  ipcMain.handle("sessions:exportLog", async (e: IpcMainInvokeEvent) => {
+    try {
+      const content = readSyncLogFile();
+      if (!content) return { success: false, error: "暂无同步日志（会话同步尚未发生过）" };
+      const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
+      const res = await dialog.showSaveDialog(win!, {
+        title: "导出会话同步日志",
+        defaultPath: `session-sync-log-${new Date().toISOString().slice(0, 10)}.jsonl`,
+        filters: [{ name: "JSON Lines", extensions: ["jsonl", "log", "txt"] }],
+      });
+      if (res.canceled || !res.filePath) return { success: true, canceled: true };
+      fs.writeFileSync(res.filePath, content, "utf-8");
+      return { success: true, filePath: res.filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   ipcMain.handle("auth:register", async (_e, email: string, password: string) => {
@@ -1095,7 +1146,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         await session.prompt(text, imgCount > 0 ? { images: images! } : undefined);
         console.log(`[pi:prompt] prompt() completed`);
         // 方案B 阶段①：每轮对话后即时增量同步会话 jsonl 上云（失败由 5min 定时/退出兜底重试）
-        void syncChildSessions(childId).catch(() => {});
+        void syncChildSessions(childId, "prompt").catch(() => {});
         // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件（前端已自行收起工作气泡）
         if (childPromptAbort?.stopped) {
           _e.sender.send("pi:reply_end", { childId });

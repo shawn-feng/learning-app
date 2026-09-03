@@ -102,6 +102,11 @@ const api = {
   sessionReviewDates: (childId: string) => ipcRenderer.invoke("sessions:reviewDates", childId),
   sessionReviewMessages: (childId: string, date: string) =>
     ipcRenderer.invoke("sessions:reviewMessages", childId, date),
+  // 会话同步状态 / 日志（ISSUE-043 完善：失败可感知、可手动重试、可导出）
+  sessionSyncStatus: () => ipcRenderer.invoke("sessions:syncStatus"),
+  sessionSyncLog: (limit?: number) => ipcRenderer.invoke("sessions:syncLog", limit),
+  sessionForceSync: () => ipcRenderer.invoke("sessions:forceSync"),
+  sessionExportLog: () => ipcRenderer.invoke("sessions:exportLog"),
   piGetModels: () => ipcRenderer.invoke("pi:get_models"),
   piSwitchModel: (childId: string, provider: string, modelId: string) =>
     ipcRenderer.invoke("pi:switch_model", childId, provider, modelId),

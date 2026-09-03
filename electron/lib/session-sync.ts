@@ -10,6 +10,13 @@ import { getChildDir } from "./config";
 import { currentSessionToken } from "./client-data";
 import { serverFetch } from "./server-client";
 import { listChildren } from "./child-auth";
+import {
+  markSyncAttempt,
+  markSyncSuccess,
+  markSyncFailure,
+  markSyncSkip,
+  type SyncTrigger,
+} from "./sync-logger";
 
 interface FileSyncState {
   syncedBytes: number;
@@ -82,14 +89,23 @@ function collectDeltas(childId: string, state: SyncState): Delta[] {
   return out;
 }
 
-/** 同步单个孩子的增量会话到服务端（幂等；服务端 ack 后推进本地游标）。 */
-export async function syncChildSessions(childId: string): Promise<void> {
+/** 同步单个孩子的增量会话到服务端（幂等；服务端 ack 后推进本地游标）。
+ * @param trigger 触发源：prompt（每轮对话后）/ timer（5min 定时）/ quit（退出前）/ manual（手动立即同步）
+ */
+export async function syncChildSessions(childId: string, trigger: SyncTrigger = "manual"): Promise<void> {
   if (syncing.has(childId)) return;
   const token = currentSessionToken();
   if (!token) return;
   const state = loadSyncState(childId);
   const deltas = collectDeltas(childId, state);
-  if (deltas.length === 0) return;
+  if (deltas.length === 0) {
+    markSyncSkip(childId);
+    return;
+  }
+
+  // 本次待同步字节（各 delta 行拼接后的近似字节数），用于面板展示「还有多少没上云」
+  const pendingBytes = deltas.reduce((acc, d) => acc + d.lines.join("\n").length + d.lines.length, 0);
+  markSyncAttempt(childId, trigger, pendingBytes);
 
   syncing.add(childId);
   try {
@@ -118,10 +134,19 @@ export async function syncChildSessions(childId: string): Promise<void> {
         }
       }
       saveSyncState(childId, next);
+      markSyncSuccess(childId, trigger, pendingBytes);
+    } else {
+      // 服务端返回了但 ok=false：异常，记入失败（游标不推进，下次重试）
+      markSyncFailure(childId, trigger, "server", "服务端未确认同步（ok=false）");
+      console.warn(`[session-sync] child ${childId} 同步被服务端拒绝（保留游标待重试）`);
     }
   } catch (err) {
     // 失败不推进游标，下次触发（每轮对话/5min/退出）自动重试
-    console.warn(`[session-sync] child ${childId} 同步失败（保留游标待重试）:`, (err as Error).message);
+    const e = err as { status?: number; message?: string };
+    const errType = typeof e?.status === "number" && e.status > 0 ? `http:${e.status}` : "network";
+    const errMsg = e?.message || String(err);
+    markSyncFailure(childId, trigger, errType, errMsg);
+    console.warn(`[session-sync] child ${childId} 同步失败（保留游标待重试，类型=${errType}）:`, errMsg);
   } finally {
     syncing.delete(childId);
   }
@@ -137,7 +162,7 @@ export function startSessionSyncTimer(): void {
       void listChildren()
         .then((children) => {
           for (const c of children) {
-            void syncChildSessions(c.childId).catch(() => {});
+            void syncChildSessions(c.childId, "timer").catch(() => {});
           }
         })
         .catch(() => {});
@@ -158,7 +183,7 @@ export function flushSessionSync(): void {
     void listChildren()
       .then((children) => {
         for (const c of children) {
-          void syncChildSessions(c.childId).catch(() => {});
+          void syncChildSessions(c.childId, "quit").catch(() => {});
         }
       })
       .catch(() => {});
