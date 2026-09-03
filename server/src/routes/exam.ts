@@ -147,13 +147,13 @@ const DEFAULT_FIXED_CONFIG: FixedExamConfig = {
 export const DEFAULT_SELECTION_PROMPTS: Record<string, string> = {
   daily:
     "本次是每日考核。\n" +
-    "【如何获取本周期课程】课程清单里每门课标注了「首次学习」和「最近复习」日期，两者任一等于今天（{{TODAY}}）即为本周期学习/复习过的课程（清单中已用「★ 本周期」标出）。\n" +
-    "【选择原则】带「★ 本周期」标记的课程**全部选入**，不挑选、不遗漏。\n" +
+    "【如何获取本周期课程】候选清单就是**今天（{{TODAY}}）学习计划**里安排的全部课程（每门标有「计划日期:{{TODAY}}」）。计划内的课程**无论是否完成**都要考核。\n" +
+    "【选择原则】候选清单中的课程**全部选入**，不挑选、不遗漏。\n" +
     "【如何考核】每门选中的课程按它的考核内容完整出题（出题阶段会提供）。",
   weekly:
     "本次是每周考核。\n" +
-    "【如何获取本周期课程】课程清单里每门课标注了「首次学习」和「最近复习」日期，两者任一落在本周期 {{RANGE}} 内即为本周期学习/复习过的课程（清单中已用「★ 本周期」标出）。\n" +
-    "【选择原则】带「★ 本周期」标记的课程**全部选入**，不挑选、不遗漏。\n" +
+    "【如何获取本周期课程】候选清单就是**近 7 天（{{RANGE}}）学习计划**里安排的全部课程（每门标有「计划日期」，含今天）。计划内的课程**无论是否完成**都要考核。\n" +
+    "【选择原则】候选清单中的课程**全部选入**，不挑选、不遗漏。\n" +
     "【如何考核】每门选中的课程按它的考核内容完整出题（出题阶段会提供）。",
   monthly:
     "本次是每月考核，分两部分选课。\n" +
@@ -420,7 +420,7 @@ function listLearnedCourseMeta(
   dataDir: string,
   parentId: string,
   childId: string
-): Array<{ topic: string; topicName: string; title: string; topicType: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; lastExamAt: string; planReviewAt: string }> {
+): CourseMeta[] {
   const kb = openKb(dataDir, parentId, childId);
   const parent = openParentLib(dataDir, parentId);
   try {
@@ -470,7 +470,129 @@ function listLearnedCourseMeta(
   }
 }
 
-/** 按选中课程 title 拉取 rubric（选课 LLM 输出后第二阶段：客户端出卷/判分用）。 */
+/** 选课候选课程元数据（服务端第一段下发；两种来源：学习痕迹 / 学习计划）。 */
+interface CourseMeta {
+  topic: string;
+  topicName: string;
+  title: string;
+  topicType: string;
+  firstLearned: string;
+  lastReview: string;
+  mastery: string;
+  examMastery: string;
+  lastExamAt: string;
+  planReviewAt: string;
+  /** 学习计划来源：该课在家长计划中排的（最早）日期 YYYY-MM-DD */
+  planDate?: string;
+}
+
+/** 毫秒时间戳 → 本地日期 YYYY-MM-DD（学习计划 date 为家长本地日期语义，必须用本地而非 UTC）。 */
+function localDateStr(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** 固定档计划窗口：daily=今天；weekly=近 7 天（含今天，用户拍板 2026-09-03）。 */
+function planWindowFor(freq: string, scheduledTs: number): { start: string; end: string; label: string } {
+  const end = localDateStr(scheduledTs);
+  if (freq === "daily") return { start: end, end, label: "今天" };
+  const start = localDateStr(scheduledTs - 6 * 86400000);
+  return { start, end, label: "近 7 天（含今天）" };
+}
+
+/** 从家长学习计划（study_plan_items）构建考核候选（每日/每周固定档）：
+ *  候选 = 窗口内（date∈[start,end]）计划行 content 的课程（text 精确匹配孩子库 title），
+ *  **无论是否完成**（status⬜/无学习痕迹也算）都进候选——考核倒逼计划执行。
+ *  返回 courses（含该课最早计划日期 planDate）+ unmatched（计划文本匹配不到课程的清单，供提示）。 */
+function listPlanCourseMeta(
+  db: DatabaseSync,
+  dataDir: string,
+  parentId: string,
+  childId: string,
+  start: string,
+  end: string
+): { courses: CourseMeta[]; unmatched: string[] } {
+  const kb = openKb(dataDir, parentId, childId);
+  const parent = openParentLib(dataDir, parentId);
+  try {
+    const topicNames = new Map(
+      (parent.prepare("SELECT topic_key, name FROM topics").all() as Array<{ topic_key: string; name: string }>).map((r) => [r.topic_key, r.name])
+    );
+    const childTopicTypes = new Map(
+      (kb.prepare("SELECT topic_key, rules_json FROM topics").all() as Array<{ topic_key: string; rules_json: string }>).map((r) => {
+        let type = "";
+        try {
+          type = String((JSON.parse(r.rules_json || "{}") as { type?: string }).type || "");
+        } catch {
+          /* 损坏的 rules_json 视为未标注 */
+        }
+        return [r.topic_key, type] as const;
+      })
+    );
+    const rows = db
+      .prepare(
+        "SELECT date, content FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND kind = 'date' AND date >= ? AND date <= ? ORDER BY date ASC"
+      )
+      .all(parentId, childId, start, end) as Array<{ date: string; content: string }>;
+    const want = new Map<string, string>(); // text → 最早计划日期
+    for (const r of rows) {
+      let items: Array<{ text?: unknown }> = [];
+      try {
+        const a = JSON.parse(r.content);
+        items = Array.isArray(a) ? a : [];
+      } catch {
+        items = [];
+      }
+      for (const it of items) {
+        if (!it || typeof it.text !== "string" || !it.text.trim()) continue;
+        const t = it.text.trim();
+        if (!want.has(t) || r.date < want.get(t)!) want.set(t, r.date);
+      }
+    }
+    const lastExam = lastExamAtByCourse(db, childId);
+    const courses: CourseMeta[] = [];
+    const unmatched: string[] = [];
+    for (const [title, planDate] of want) {
+      const hit = kb
+        .prepare("SELECT topic, status, mastery, exam_mastery, first_learned, last_review FROM courses WHERE title = ?")
+        .all(title) as Array<{
+        topic: string;
+        status: string;
+        mastery: string;
+        exam_mastery: string;
+        first_learned: string;
+        last_review: string;
+      }>;
+      if (!hit.length) {
+        unmatched.push(title);
+        continue;
+      }
+      const r = hit[0]; // 同名跨主题歧义罕见：取首行（与 fetchCoursesWithRubric 的 title 口径一致）
+      const fl = r.first_learned ?? "";
+      courses.push({
+        topic: r.topic,
+        topicName: topicNames.get(r.topic) ?? r.topic,
+        title,
+        topicType: childTopicTypes.get(r.topic) ?? "",
+        firstLearned: String(r.status ?? "").trim() === "✅" && !fl ? "✅" : fl,
+        lastReview: r.last_review ?? "",
+        mastery: r.mastery ?? "",
+        examMastery: r.exam_mastery ?? "",
+        lastExamAt: lastExam.get(title) ?? "",
+        planReviewAt: "",
+        planDate,
+      });
+    }
+    courses.sort((a, b) => (a.planDate ?? "").localeCompare(b.planDate ?? "") || a.title.localeCompare(b.title));
+    return { courses, unmatched };
+  } finally {
+    kb.close();
+    parent.close();
+  }
+}
+
+
 function fetchCoursesWithRubric(
   dataDir: string,
   parentId: string,
@@ -507,22 +629,28 @@ function fetchCoursesWithRubric(
   }
 }
 
-/** 构建某频率档的完整选课 prompt：模板（家长可编辑）+ 注入今天日期/周期范围/统计/候选清单。 */
+/** 构建某频率档的完整选课 prompt：模板（家长可编辑）+ 注入今天日期/周期范围/统计/候选清单。
+ *  source="learned"（默认）：候选来自「学习/复习痕迹」，按首次学习/最近复习打周期标记；
+ *  source="plan"：候选来自「家长学习计划」（study_plan_items），**计划内无论是否完成都考核**，
+ *  按计划日期标注（daily=今天计划；weekly=近 7 天计划），供每日/每周固定考核使用。 */
 export function buildSelectionPrompt(
   template: string,
-  candidates: Array<{ topic: string; topicName: string; title: string; topicType: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; lastExamAt: string; planReviewAt: string }>,
+  candidates: CourseMeta[],
   freq: string,
-  scheduledTs: number
+  scheduledTs: number,
+  source: "learned" | "plan" = "learned"
 ): string {
   const TODAY = new Date().toISOString().slice(0, 10);
   const scheduledDay = new Date(scheduledTs).toISOString().slice(0, 10);
   const monthStart = scheduledDay.slice(0, 7) + "-01";
+  const planWin = source === "plan" ? planWindowFor(freq, scheduledTs) : null;
   let RANGE: string;
-  if (freq === "daily") RANGE = TODAY;
+  if (planWin) RANGE = planWin.start === planWin.end ? planWin.start : planWin.start + " ~ " + planWin.end;
+  else if (freq === "daily") RANGE = TODAY;
   else if (freq === "monthly") RANGE = monthStart + " ~ " + scheduledDay;
   else if (freq === "custom") RANGE = "（自定义考核，选课范围由下面的规则指定，不按周期窗口）";
   else RANGE = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10) + " ~ " + scheduledDay;
-  // 每主题统计（monthly：本月/本月前；其余：本周期窗口内；custom：全部候选）
+  // 每主题统计（monthly：本月/本月前；其余：本周期窗口内；custom：全部候选；plan：窗口内计划课）
   const byTopic = new Map<string, { name: string; month: number; prev: number; window: number }>();
   const bump = (topic: string, name: string, key: "month" | "prev" | "window") => {
     let e = byTopic.get(topic);
@@ -532,23 +660,30 @@ export function buildSelectionPrompt(
     }
     e[key]++;
   };
-  for (const c of candidates) {
-    const fl = c.firstLearned || "";
-    const lr = c.lastReview || "";
-    if (freq === "monthly") {
-      const inMonth = (fl >= monthStart && fl <= scheduledDay) || (lr >= monthStart && lr <= scheduledDay);
-      if (inMonth) bump(c.topic, c.topicName, "month");
-      else if (fl === "✅" || (fl !== "" && fl < monthStart)) bump(c.topic, c.topicName, "prev"); // ✅=已学无日期（更早学习）
-    } else if (freq === "custom") {
-      bump(c.topic, c.topicName, "window"); // 自定义：统计全部候选，由规则决定挑多少
-    } else {
-      const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
-      if ((fl >= winStart && fl <= scheduledDay) || (lr >= winStart && lr <= scheduledDay)) bump(c.topic, c.topicName, "window");
+  if (planWin) {
+    // 计划模式：候选即窗口内计划课，逐主题计数全部选入
+    for (const c of candidates) bump(c.topic, c.topicName, "window");
+  } else {
+    for (const c of candidates) {
+      const fl = c.firstLearned || "";
+      const lr = c.lastReview || "";
+      if (freq === "monthly") {
+        const inMonth = (fl >= monthStart && fl <= scheduledDay) || (lr >= monthStart && lr <= scheduledDay);
+        if (inMonth) bump(c.topic, c.topicName, "month");
+        else if (fl === "✅" || (fl !== "" && fl < monthStart)) bump(c.topic, c.topicName, "prev"); // ✅=已学无日期（更早学习）
+      } else if (freq === "custom") {
+        bump(c.topic, c.topicName, "window"); // 自定义：统计全部候选，由规则决定挑多少
+      } else {
+        const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
+        if ((fl >= winStart && fl <= scheduledDay) || (lr >= winStart && lr <= scheduledDay)) bump(c.topic, c.topicName, "window");
+      }
     }
   }
   const statLines: string[] = [];
   for (const [, e] of byTopic) {
-    if (freq === "monthly") {
+    if (planWin) {
+      statLines.push("[" + e.name + "] " + planWin.label + "计划 " + e.window + " 门 → 全部选入");
+    } else if (freq === "monthly") {
       statLines.push("[" + e.name + "] 本月 " + e.month + " 门 → 选 " + Math.ceil(e.month * 0.5) + " 门；本月前 " + e.prev + " 门 → 选 " + Math.ceil(e.month * 0.25) + " 门");
     } else if (freq === "halfyear") {
       statLines.push("[" + e.name + "] 本周期 " + e.window + " 门 → 选 " + Math.ceil(e.window * 0.4) + " 门");
@@ -561,9 +696,9 @@ export function buildSelectionPrompt(
     }
   }
   // 每门课周期归属标记（服务端代码精确计算，LLM 按标记挑选、不自己算日期）：
-  // daily/weekly/halfyear/yearly → ★ 本周期（窗口内）；monthly → ★ 本月 / ◐ 本月前；custom → 不打标记
+  // daily/weekly/halfyear/yearly → ★ 本周期（窗口内）；monthly → ★ 本月 / ◐ 本月前；custom/plan → 不打标记（plan 用「计划日期」列标注）
   const flagByTitle = new Map<string, string>();
-  if (freq !== "custom") {
+  if (freq !== "custom" && !planWin) {
     for (const c of candidates) {
       const fl = c.firstLearned || "";
       const lr = c.lastReview || "";
@@ -577,20 +712,28 @@ export function buildSelectionPrompt(
       }
     }
   }
-  const STATS = statLines.length ? statLines.join("\n") : "（本周期暂无学习/复习过的课程，请输出空数组）";
+  const STATS = statLines.length
+    ? statLines.join("\n")
+    : planWin
+      ? "（" + planWin.label + "没有安排学习计划课程，请输出空数组）"
+      : "（本周期暂无学习/复习过的课程，请输出空数组）";
   const CLIST = candidates
-    .map(
-      (c, i) =>
-        i + 1 + ". [" + c.topicName + "] " + c.title +
-        " | 主题类型:" + (c.topicType || "-") +
-        " | 首次学习:" + (c.firstLearned || "-") +
-        " | 最近复习:" + (c.lastReview || "-") +
-        " | 引导掌握度:" + (c.mastery || "-") +
-        " | 考核掌握度:" + (c.examMastery || "-") +
-        " | 上次考核:" + (c.lastExamAt || "-") +
-        " | 计划复习:" + (c.planReviewAt || "-") +
-        (flagByTitle.get(c.title) ? " " + flagByTitle.get(c.title) : "")
-    )
+    .map((c, i) => {
+      const parts = [
+        i + 1 + ". [" + c.topicName + "] " + c.title,
+        planWin ? "计划日期:" + (c.planDate || "-") : null,
+        "主题类型:" + (c.topicType || "-"),
+        "首次学习:" + (c.firstLearned || "-"),
+        "最近复习:" + (c.lastReview || "-"),
+        "引导掌握度:" + (c.mastery || "-"),
+        "考核掌握度:" + (c.examMastery || "-"),
+        "上次考核:" + (c.lastExamAt || "-"),
+        planWin ? null : "计划复习:" + (c.planReviewAt || "-"),
+      ].filter((x): x is string => x !== null);
+      const flag = flagByTitle.get(c.title);
+      if (flag) parts.push(flag);
+      return parts.join(" | ");
+    })
     .join("\n");
   // 模板（家长可编辑的规则文本）+ 统一在尾部追加「统计 + 候选清单 + 标注说明」——
   // 模板无需自带 {{CLIST}} 占位符（旧模板若带会被替换为空），保证任何周期的 LLM 都能看到课程清单。
@@ -599,17 +742,19 @@ export function buildSelectionPrompt(
     .replace(/{{RANGE}}/g, RANGE)
     .replace(/{{STATS}}/g, STATS)
     .replace(/{{CLIST}}/g, "");
-  return (
-    head +
-    "\n\n【各主题选课数量】\n" +
-    STATS +
-    "\n\n【课程清单】每行一门：序号. [主题] 课程名 | 主题类型 | 首次学习 | 最近复习 | 引导掌握度 | 考核掌握度 | 上次考核 | 计划复习\n" +
-    CLIST +
-    "\n\n【标注说明】\n" +
-    "- 周期标记：★ 本周期 / ★ 本月 / ◐ 本月前 = 课程在本周期窗口内的归属（系统按学习/复习日期精确计算，你只按标记挑选，不要自己推算日期）。\n" +
-    "- 主题类型：必学 / 选学 / 复习 = 家长给孩子安排该主题时标注的考核选题类型（ISSUE-033 起与每日学习量无关——每天学什么由学习计划决定）。家长规则里说的「必学课程」指主题类型=必学的主题下的课程；「只考核必学的」即只从这些课程中挑选。未标注（-）表示该主题未设置类型。\n" +
-    "- 家长对标注一无所知，只会用日常说法（如「今天学习的课」「本周复习的课」「必学的」），请按此语义映射到上述标注后选择。"
-  );
+  const legendHead = "【课程清单】每行一门：序号. [主题] 课程名" + (planWin ? " | 计划日期" : "") + " | 主题类型 | 首次学习 | 最近复习 | 引导掌握度 | 考核掌握度 | 上次考核" + (planWin ? "" : " | 计划复习") + "\n";
+  const notes = planWin
+    ? "\n\n【标注说明】\n" +
+      "- 候选课程来自家长设置的**学习计划**（按日期排期，窗口 " + RANGE + "）：**计划内的课程无论是否完成都要考核**——不要用「是否学过/复习过」过滤课程，也不要额外补录计划外的课。\n" +
+      "- 「计划日期」= 家长计划里安排的日期（窗口内排过多次的取最早一次）。家长口中的「今天学的课」= 计划日期为今天的课；「本周/近几天学的课」= 计划日期落在本窗口内的课。\n" +
+      "- 若你的规则模板里出现「★ 本周期」「学习/复习过的课程」等字眼，那是旧版规则的残留描述，请忽略，以本段说明为准。\n" +
+      "- 主题类型：必学 / 选学 / 复习 = 家长给孩子主题标注的考核选题类型。家长说的「必学课程」指主题类型=必学的主题下的课程；「只考核必学的」即只从这些课程中挑选。未标注（-）表示未设置类型。\n" +
+      "- 家长对标注一无所知，只会用日常说法（如「今天学习的课」「必学的」），请按此语义映射到「计划日期」与「主题类型」后选择。"
+    : "\n\n【标注说明】\n" +
+      "- 周期标记：★ 本周期 / ★ 本月 / ◐ 本月前 = 课程在本周期窗口内的归属（系统按学习/复习日期精确计算，你只按标记挑选，不要自己推算日期）。\n" +
+      "- 主题类型：必学 / 选学 / 复习 = 家长给孩子安排该主题时标注的考核选题类型（ISSUE-033 起与每日学习量无关——每天学什么由学习计划决定）。家长规则里说的「必学课程」指主题类型=必学的主题下的课程；「只考核必学的」即只从这些课程中挑选。未标注（-）表示该主题未设置类型。\n" +
+      "- 家长对标注一无所知，只会用日常说法（如「今天学习的课」「本周复习的课」「必学的」），请按此语义映射到上述标注后选择。";
+  return head + "\n\n【各主题选课数量】\n" + STATS + "\n\n" + legendHead + CLIST + notes;
 }
 
 
@@ -708,15 +853,26 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         };
       }
       // 第一段：选课 prompt（家长可编辑模板 + 注入周期范围/统计/候选清单）+ 候选课程元数据（无 rubric）
+      // v2026-09-03：daily/weekly 固定档候选改为「家长学习计划」（study_plan_items，计划内无论是否完成都考核）；
+      // 其余（custom 走上面分支；monthly+ 为历史兼容排期）仍用「学习/复习痕迹」候选。
       const cfg = getFixedConfig(deps.db, parentId);
       const freq = String(sch.freq || "weekly");
+      const ts = new Date(String(sch.scheduled_at)).getTime();
+      const template = cfg.selectionPrompts[freq] || DEFAULT_SELECTION_PROMPTS[freq] || DEFAULT_SELECTION_PROMPTS.weekly;
+      if (freq === "daily" || freq === "weekly") {
+        const win = planWindowFor(freq, ts);
+        const { courses: planCourses, unmatched } = listPlanCourseMeta(deps.db, deps.config.dataDir, parentId, childId, win.start, win.end);
+        const selectionPrompt = buildSelectionPrompt(template, planCourses, freq, ts, "plan");
+        return {
+          schedule,
+          selectionPrompt,
+          candidates: planCourses,
+          // 匹配不到孩子库课程的计划文本（供调试/提示；正常情况家长计划与课程标题一致）
+          unmatched,
+        };
+      }
       const candidates = listLearnedCourseMeta(deps.db, deps.config.dataDir, parentId, childId);
-      const selectionPrompt = buildSelectionPrompt(
-        cfg.selectionPrompts[freq] || DEFAULT_SELECTION_PROMPTS[freq] || DEFAULT_SELECTION_PROMPTS.weekly,
-        candidates,
-        freq,
-        new Date(String(sch.scheduled_at)).getTime()
-      );
+      const selectionPrompt = buildSelectionPrompt(template, candidates, freq, ts);
       return { schedule, selectionPrompt, candidates };
     }
     const kb = openKb(deps.config.dataDir, parentId, childId);

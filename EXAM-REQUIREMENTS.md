@@ -297,3 +297,15 @@ status(待考核|进行中|已完成|过期), attempt_id(关联 exam_attempts), 
 - **家长端（9-02 三连改）**：`ExamAdminPanel` **三标签页**（每天/每周/自定义考核，点击只显示该标签内容，不堆叠）；每天/每周 = 启用开关 + 时间（每周加周几下拉）+ prompt + 恢复默认 + 保存；**自定义考核先设置考核（时间点+prompt+内容说明）再分配给孩子**（孩子多选，默认全选，多孩子共用一个考核；创建 = 每孩子各一条排期），列表按「时间点|prompt」聚合显示各孩子状态，可 ✕ 取消分配 / ＋补分配；输入框参照课程管理（minHeight 40vh、monospace、13px）。
 - **prompt 只描述「考哪些课/知识点」**（家长不懂 JSON）：默认模板与家长编辑的 prompt **不含任何 JSON/输出格式说明**——JSON 输出格式由客户端引擎 `selectCoursesForSchedule` 自动附加（「只输出 JSON、课程名必须与清单完全一致」）；已清空 8788 库固化的旧模板全文。⚠️ 注意：PUT fixed-config 以合并后配置为 base 再存会把默认模板全文固化进库（模板升级旧库不跟），后续可考虑存 diff。
 - 验证：daily/weekly 排期按配置生成、自定义两段式、冒烟 24/24。
+
+### 14.11 每日/每周考核候选改「学习计划源」（2026-09-03，取代 §14.9/§14.10 的学习痕迹口径）
+
+> 用户拍板：每日/每周考核的课程**从家长学习计划（study_plan_items）中获取，计划内无论是否完成都考核**；每周范围=**近 7 天（含今天）**；某天/本周无计划排期 → **无计划则不考**（不自动回退旧口径）。背景：ISSUE-033 后「每天学什么」已完全由学习计划驱动（gen 计划↔todolist 同步），考核随之计划驱动，倒逼计划执行（未学也考）。
+
+- **候选构建**（服务端新增 `listPlanCourseMeta`）：查主库 `study_plan_items`（child+active=1+kind='date'，date∈窗口）展平 content 项 → 按 text **精确匹配孩子库课程 title**（真实计划文本即课程标题，8/8 实测全中）→ **不看 first_learned/last_review/status**（status⬜ 未学课也进候选）；每课标 `planDate`（窗口内排多次取最早）；匹配不到孩子库的计划文本进 `unmatched` 返回（暴露课号录错等数据问题，如真实数据「汉字宫第190课·储粮之仓」与课程表不符）。
+- **窗口**（`planWindowFor`，本地日期）：daily=考核执行日当天；weekly=执行日往前 6 天 ~ 执行日（近 7 天滚动，与周几无关）。⚠️ 计划 date 为家长本地日期语义，窗口须**本地日期**换算（勿用 UTC toISOString）。
+- **选课 prompt**（`buildSelectionPrompt` 增 `source:"learned"|"plan"`）：plan 模式候选行加「| 计划日期:YYYY-MM-DD」列、不打 ★/◐ 标记、统计段「[主题] 今天/近7天计划 N 门 → 全部选入」；尾部「标注说明」替换为计划语义（**计划内无论是否完成都考**、旧模板里「★本周期/学习/复习过」字眼是旧版残留请忽略、家长说法映射）。
+- **默认模板重写**（`DEFAULT_SELECTION_PROMPTS.daily/weekly`）：由「考周期内学习/复习过的课」改为「考今天/近 7 天学习计划里的全部课程（无论是否完成）」。
+- **getExamConfig 固定排期第一段**：freq=daily|weekly → 计划候选 + source="plan"；monthly+ 历史排期与自定义考核仍走「学习痕迹」候选（custom 分支不变）。第二段 rubric/判分链路不变（未学课在父库同样有 assess_rubric，可正常出卷）。
+- **空窗口**：无计划 → candidates 空 → LLM 输出空数组 → 孩子端「暂无考核内容」（无计划不考）。
+- 验证：冒烟 27/27（新增 study-plan 创建 / kb 补未学课 / config 第一段含未学课+planDate）；真实数据珊珊 daily@9-03 候选 5 门（未学 2 门在列）、weekly@9-07 候选 18 门（近7天含未学 11 门）。

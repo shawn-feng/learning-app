@@ -101,14 +101,37 @@ const wkSch = (r.json?.schedules || []).find((s) => s.freq === "weekly");
 const wkDayOk = wkSch && new Date(wkSch.scheduledAt).getDay() === 5 && new Date(wkSch.scheduledAt).getHours() === 19 && new Date(wkSch.scheduledAt).getMinutes() === 30;
 check("每周排期落在配置的周几几点（周五 19:30）", !!wkDayOk, wkSch ? wkSch.scheduledAt : "无 weekly 排期");
 
-// v3 §14.9：固定排期 config 两段式（第一段 = 选课 prompt + 候选清单；第二段 = 选中课程 rubric）
-const fixedSch = (r.json?.schedules || []).find((s) => s.kind === "fixed" && s.status === "pending");
+// v3 §14.9 + 2026-09-03：固定排期候选 = 家长学习计划（study_plan_items，计划内无论是否完成都考核）
+// 先给孩子造「近 7 天窗口内」的学习计划（date=weekly 排期所在本地日，含未学课程），再取 config 第一段
+const wkLocal = (() => {
+  const d = new Date(wkSch.scheduledAt);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+})();
+r = await api("POST", "/api/v1/study-plans", {
+  childId: "smoke-child-1", date: wkLocal,
+  content: [
+    { text: "学而篇第一章", topicKey: "lunyu" },
+    { text: "学而篇第二章", topicKey: "lunyu" },
+    { text: "学而篇第三章", topicKey: "lunyu" }, // 未学（kb 无学习痕迹）也须进候选
+  ],
+});
+check("study-plan 创建（考核计划源）", r.status === 200 && r.json?.ok === true, JSON.stringify(r.json)?.slice(0, 200));
+
+// 补一条「未学」课程行（status 默认 ⬜、无 first_learned/last_review）——计划内未完成课程也须进候选
+r = await api("POST", "/api/v1/db/exec", { op: "kb.courses.upsert", args: { child_id: "smoke-child-1", topic: "lunyu", title: "学而篇第三章", sort_order: 3 } });
+check("kb 补未学课程（学而篇第三章）", r.status === 200 && r.json?.result?.ok === true, JSON.stringify(r.json)?.slice(0, 200));
+
+// 固定排期候选清单以计划所在的 weekly 排期为准（wkSch 即计划 date 围绕的排期）
+const fixedSch = wkSch;
 r = await api("GET", `/api/v1/exam/config/smoke-child-1?schedule=${fixedSch?.id}`);
 const cfgSelOk = r.status === 200 && r.json?.schedule?.kind === "fixed"
-  && !!r.json?.selectionPrompt && r.json.selectionPrompt.includes("课程清单")
+  && !!r.json?.selectionPrompt && r.json.selectionPrompt.includes("学习计划")
+  && r.json.selectionPrompt.includes("计划日期") && r.json.selectionPrompt.includes("无论是否完成")
   && Array.isArray(r.json?.candidates) && r.json.candidates.length >= 2
-  && r.json.candidates.some((c) => c.title === "学而篇第一章");
-check("config 第一段（选课 prompt + 候选清单）", cfgSelOk, JSON.stringify(r.json)?.slice(0, 250));
+  && r.json.candidates.some((c) => c.title === "学而篇第一章")
+  && r.json.candidates.some((c) => c.title === "学而篇第三章" && !!c.planDate); // 未学课也进候选且带计划日期
+check("config 第一段（固定档=学习计划候选，含未完成课）", cfgSelOk, JSON.stringify(r.json)?.slice(0, 300));
 r = await api("GET", `/api/v1/exam/config/smoke-child-1?schedule=${fixedSch?.id}&courses=${encodeURIComponent("学而篇第一章,学而篇第二章")}`);
 const cfgSel2Ok = r.status === 200 && Array.isArray(r.json?.courses) && r.json.courses.length === 2
   && r.json.courses[0].assessRubric.includes("学而时习之") && !!r.json.scoringPrompt;
