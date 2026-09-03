@@ -158,7 +158,9 @@ export default function ExamView({ childId, onExit }: Props) {
         const g: any = await window.api.examGenerate(childId, topicConfig);
         if (!g?.success) throw new Error(g?.error || "出卷失败");
         const questions: QuestionUI[] = (g.data || []).map((q: any, i: number) => ({
-          qid: q.qid || `q${i + 1}`,
+          // qid 必须全局唯一：出卷 LLM 每课独立编号（都从 q1 起），跨课会重复导致答案串题
+          // （answers[qid] 共享、改一题动另一题）——用全局序号覆盖
+          qid: `q${i + 1}`,
           course: q.course,
           stem: q.stem,
           pointMax: Number(q.pointMax) || 10,
@@ -446,7 +448,9 @@ export default function ExamView({ childId, onExit }: Props) {
           <iframe
             ref={iframeRef}
             srcDoc={examHtml}
-            sandbox="allow-scripts allow-modals allow-forms"
+            // allow-same-origin 必须有：srcDoc iframe 无它将是不透明源（非安全上下文），
+            // navigator.mediaDevices.getUserMedia 抛 "invalid security origin"，语音无法用
+            sandbox="allow-scripts allow-modals allow-forms allow-same-origin"
             allow="microphone"
             style={{ width: "100%", height: "100%", border: "none", background: "#fff" }}
             title="学习考核"

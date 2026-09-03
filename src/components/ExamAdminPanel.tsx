@@ -6,9 +6,11 @@
  *   - 自定义考核：**左侧考核列表 + 右侧编辑表单**；新建时右侧空白，家长填好
  *     （时间点 + prompt + 内容说明 + 分配孩子）保存即创建；点列表项可在右侧修改并保存
  *     （已完成的孩子锁定为历史，不受影响）。
+ *   - 考核记录：按孩子查看历次考核成绩 / 逐题评估 / 原音回放（复用 ExamRecords）。
  * 月度/半年/年度不再作为固定档（由自定义考核灵活安排）。
  */
 import { useCallback, useEffect, useState } from "react";
+import ExamRecords from "./ExamRecords";
 
 const WEEKDAYS: Array<{ v: number; label: string }> = [
   { v: 1, label: "周一" },
@@ -59,8 +61,10 @@ function toLocalInput(iso: string): string {
 }
 
 export default function ExamAdminPanel({ children }: { children: any[] }) {
-  // 标签：每天 / 每周 / 自定义考核
-  const [tab, setTab] = useState<"daily" | "weekly" | "custom">("daily");
+  // 标签：每天 / 每周 / 自定义考核 / 考核记录
+  const [tab, setTab] = useState<"daily" | "weekly" | "custom" | "records">("daily");
+  // 考核记录：选哪个孩子看
+  const [recordChildId, setRecordChildId] = useState("");
   // 每天
   const [enabledDaily, setEnabledDaily] = useState(true);
   const [dailyTime, setDailyTime] = useState("20:00");
@@ -84,6 +88,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
   // 默认分配：全选所有孩子（孩子可共用考核）
   useEffect(() => {
     if (children?.length && formAssigned.length === 0) setFormAssigned(children.map((c) => c.childId));
+    if (children?.length && !recordChildId) setRecordChildId(children[0].childId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [children]);
 
@@ -297,6 +302,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
     ["daily", "每天"],
     ["weekly", "每周"],
     ["custom", "自定义考核"],
+    ["records", "考核记录"],
   ];
 
   return (
@@ -311,7 +317,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
         {TAB_LIST.map(([id, l]) => (
           <button
             key={id}
-            onClick={() => setTab(id as "daily" | "weekly" | "custom")}
+            onClick={() => setTab(id as "daily" | "weekly" | "custom" | "records")}
             style={{
               padding: "8px 18px",
               borderRadius: 8,
@@ -523,6 +529,37 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ===== 考核记录（按孩子查看历次考核成绩 / 逐题评估 / 原音回放） ===== */}
+      {tab === "records" && (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>查看孩子：</span>
+            {(children || []).map((c) => (
+              <button
+                key={c.childId}
+                onClick={() => setRecordChildId(c.childId)}
+                style={{
+                  padding: "6px 16px",
+                  borderRadius: 999,
+                  border: recordChildId === c.childId ? "2px solid #667eea" : "1px solid #ddd",
+                  background: recordChildId === c.childId ? "#f0f4ff" : "#fff",
+                  color: recordChildId === c.childId ? "#3b4cca" : "#555",
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+          {recordChildId ? (
+            <ExamRecords childId={recordChildId} />
+          ) : (
+            <p style={{ color: "#888", fontSize: 13 }}>还没有孩子。请先在「孩子管理」里添加孩子。</p>
+          )}
         </div>
       )}
     </div>

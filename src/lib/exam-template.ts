@@ -109,7 +109,7 @@ window.EXAM_DATA = ${dataJson};
   var idx = 0;
   var examStart = Date.now();
   var answers = {};
-  var media = null, chunks = [], recTimer = null, recStart = 0;
+  var media = null, chunks = [], recTimer = null, recStart = 0, qTimerInt = null;
   var $ = function(id){ return document.getElementById(id); };
   $("examTitle").textContent = D.title || "学习考核";
   $("examSubject").textContent = D.subject || "科目";
@@ -126,6 +126,24 @@ window.EXAM_DATA = ${dataJson};
     });
   }
   function fmtDur(ms){ if(ms==null) return "—"; var s=Math.round(ms/1000); return Math.floor(s/60)+"分"+(s%60)+"秒"; }
+  // 本题实时用时：进入题目即开始累计（每秒刷新）；作答完成（answeredAt）后冻结显示。
+  function stopQTimer(){ if(qTimerInt){ clearInterval(qTimerInt); qTimerInt = null; } }
+  function startQTimer(){
+    stopQTimer();
+    var q = D.questions[idx]; if(!q) return;
+    var a = answers[q.id] || {};
+    if(!a.startedAt) a.startedAt = Date.now();
+    answers[q.id] = a;
+    var paint = function(){
+      var cur = answers[q.id] || {};
+      if(!cur.startedAt) cur.startedAt = Date.now();
+      var ms = (cur.answeredAt || Date.now()) - cur.startedAt;
+      $("qTimer").textContent = "本题用时：" + fmtDur(ms);
+      if(cur.answeredAt){ stopQTimer(); }
+    };
+    paint();
+    qTimerInt = setInterval(paint, 1000);
+  }
   function renderQuestion(){
     var q = D.questions[idx];
     $("qCourse").textContent = q.course || "";
@@ -137,7 +155,8 @@ window.EXAM_DATA = ${dataJson};
     $("asr").value = a.asr || "";
     if(a.audioUrl){ $("play").src = a.audioUrl; $("play").style.display="block"; $("rerecBtn").style.display="inline-block"; }
     else { $("play").src=""; $("play").style.display="none"; $("rerecBtn").style.display="none"; }
-    $("qTimer").textContent = "本题用时：" + (a.answeredAt ? fmtDur(a.answeredAt-a.startedAt) : "—");
+    $("qTimer").textContent = "";
+    startQTimer();
     $("prevBtn").disabled = idx===0;
     $("nextBtn").disabled = idx===D.questions.length-1;
     renderProgress(); updateDone();
@@ -149,7 +168,7 @@ window.EXAM_DATA = ${dataJson};
     if(!a.answeredAt) a.answeredAt = Date.now();
     if(a.startedAt) a.durationMs = a.answeredAt - a.startedAt;
     answers[q.id] = a;
-    $("qTimer").textContent = "本题用时：" + fmtDur(a.durationMs);
+    stopQTimer(); startQTimer(); // 答完冻结显示最终用时
     renderProgress(); updateDone();
   }
   function updateDone(){
@@ -202,6 +221,7 @@ window.EXAM_DATA = ${dataJson};
     $("play").src=""; $("play").style.display="none";
     $("rerecBtn").style.display="none";
     $("asr").value="";
+    stopQTimer(); startQTimer(); // 重录重新计时
     renderProgress(); updateDone();
   });
   $("asr").addEventListener("input", function(){
