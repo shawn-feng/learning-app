@@ -876,6 +876,13 @@ function formatTime(ts: number | undefined): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 从 html 正文提取 <title>（恢复链路标题兜底，避免旧资料显示「未命名资料」）。 */
+function extractHtmlTitle(html: string): string | undefined {
+  const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html || "");
+  const t = m ? m[1].replace(/<[^>]+>/g, "").trim() : "";
+  return t || undefined;
+}
+
 /**
  * 从 session 历史里重建「学习资料」列表。
  * 资料由 display_content 工具产生，参数（format/content/title）记录在 assistant 消息的
@@ -885,12 +892,17 @@ export async function getSessionMaterials(session: AgentSession, cwd?: string): 
   const messages: any[] = (session as any).messages || [];
   // SPLIT 方案 A：display_content 的完整内容在 toolResult.details.panelContent 里（服务端远程拉取，
   // 无本地缓存）。恢复时优先取 toolResult 内容；旧会话（toolResult 无内容）则远程拉或读本地 outputs。
-  const resultContent = new Map<string, string>();
+  // ⚠️ panelContent 还带回 title（display_content 执行时按课程名/文件名算好）——若只回填内容丢标题，
+  // 退出再进入资料会显示「未命名资料」（2026-09-03 修复）。
+  const resultContent = new Map<string, { content: string; title?: string }>();
   for (const m of messages) {
     if (m.role !== "toolResult" || m.toolName !== "display_content") continue;
     const panel = m.details?.panelContent;
     if (panel && typeof panel.content === "string" && panel.content.trim()) {
-      resultContent.set(m.toolCallId, panel.content);
+      resultContent.set(m.toolCallId, {
+        content: panel.content,
+        title: typeof panel.title === "string" && panel.title.trim() ? panel.title : undefined,
+      });
     }
   }
   const materials: MaterialItem[] = [];
@@ -915,8 +927,9 @@ export async function getSessionMaterials(session: AgentSession, cwd?: string): 
       if (seen.has(filePath)) continue;
       seen.add(filePath);
       // 内容来源优先级：① 旧版工具参数自带 content → ② 对应 toolResult 的 panelContent → ③ 兜底拉取
+      const rc = resultContent.get(c.id);
       let content = typeof args.content === "string" ? args.content : "";
-      if (!content) content = resultContent.get(c.id) ?? "";
+      if (!content) content = rc?.content ?? "";
       if (!content && cwd) {
         try {
           // 路径语义与 display_content 一致（见 custom-tools.ts）：
@@ -945,7 +958,13 @@ export async function getSessionMaterials(session: AgentSession, cwd?: string): 
         id: `mat-${materials.length}-${c.id || m.timestamp || Date.now()}`,
         format: "html",
         content,
-        title: typeof args.title === "string" ? args.title : undefined,
+        title: (typeof args.title === "string" && args.title.trim())
+          ? args.title
+          : rc?.title
+            ? rc.title
+            : content
+              ? extractHtmlTitle(content)
+              : undefined,
         time: formatTime(m.timestamp),
         filePath,
       });
