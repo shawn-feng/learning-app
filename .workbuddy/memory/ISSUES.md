@@ -688,8 +688,17 @@
   - **P5 回归 ✅（2026-09-02 已实施）**：vitest 全量 **34 文件 / 311 用例全绿**（含 ISSUE-025 todo 统计 todo-scheduler.test 4/4、learning-summary/kb 相关，与改动前基线一致，无回归）；server 冒烟 verify-study-plans.mjs **13/13** + verify-study-plan-carry.mts **4/4**；双端 tsc 0、electron-vite build 通过。⚠️ 待发布前人工过一遍：家长中心→学习计划面板真机（8788/201）渲染 + 空态 + carry 标注；部署 201（dist/server.cjs）与客户端新版本推送尚未做（等用户确认）。
   - **待拍已决（2026-09-02）**：**R2**=存量不迁移、家长对话重建；**R3**=新增家长只读课程结构小工具供起草（不放权 kb_query）。P0/P0b/P2/P3/P4/P5 按序实施。
 - **⚠️ 与 ISSUE-025 关系**：学习计划是 ISSUE-025「todolist」的**更灵活上游数据源**——todolist = 学习计划（替代 rules.daily）+ 孩子自规划 融合生成；共用每日 gen/stat tick。
-- **优先级**：✅ **实施完成（2026-09-02）**：P0 数据层 + P0b 每日顺延 + P2 家长工具/提示词 + P3 展开替换/旧 daily 收敛 + P4 只读 UI + P5 回归全绿。遗留：git 提交未做、201/公网部署未做、家长 prompt 用户版本不自动吃到新段（已存用户版本的安装需手动清理）。
-- **记录时间**：2026-09-02
+- **🔧 2026-09-03 机制收敛 v2（实施完成）**：
+  - **carry v2（判定真源改 todo）**：`study-plan-carry.ts` 判定从 child_todo_stats → **昨天 child_todos 未勾 `[家长]` 行**（stat 已按当天活动确定性打勾），幂等游标不变。v1 缺陷实测：9/2 珊珊 stat（当时 LLM 版）因服务端缺 qwen-tokenplan key 报 `No API key`（task_runs 17:13/17:17 error）未产出 stats → v1"stats 缺失不顺延"漏延汉字宫 190/191/192 三课；v2 不依赖 stats，昨日 todo 未勾即顺延（存量已手动补珊珊 9/3 carry 行）。`verify-study-plan-carry.mts` 改 v2 语义 4/4 ✓。
+  - **stat = 纯代码 + 当天活动判定**：不再调 LLM（原 LLM 版依赖 API key，缺 key 即崩）。`[家长]` 行完成 = courses.`first_learned` 或 `last_review` == today——**复习课 status 早已 ✅，只按 status 无法判断"当天是否真的学/复习了"**（与家长面板同口径，9/3 统一）。非 [家长] 自定任务由 recording/汇总会话（已挂 todo_list）判定。
+  - **scheduler 每 5 分钟（9/2 深夜重构，9/3 生效）**：cron `*/5`；plan tick = carry(v2)→gen；stat tick = **事件驱动**（当天有 daily 学习记录 且 已有 todolist → 跑一次，游标=今天防重，无记录不空转）；recording 保留定时（5 分钟桶匹配）。genTime/statTime 时间点模型废弃。
+  - **gen = 计划↔todolist 每次同步**：不再"当天生成一次锁死"（todo_gen 游标废弃）。每次 plan tick 以最新 study_plan_items 重写【家长规定项】——家长中途改计划 ≤5 分钟自动反映；同 text 已勾([x])保持；孩子自定任务等非家长内容原样保留；无变化不写回。gen **不再自动并入昨日未完成自规划项**（曾导致 9/3 todo 自动多出"阅读课外书"等三条，9/3 用户明确去掉）。
+  - **客户端移除 gen/stat 定时**（9/2 用户决定）：服务端 worker 为唯一真源；客户端 scheduler 只留 recording 兜底（hasServerFeature("worker") 门控）。
+  - **家长面板完成态 = 当天活动判定**（复习课正确）：StudyPlanPanel done = 课程 first_learned/last_review == 目标日期（today=今天 / 排期行=各自 date）；未来排期不再按 status 高亮"已学完"，只标 📌 顺延。服务端 stat courseDoneFor 同口径。
+  - **资料恢复标题修复**（9/3 顺手）：getSessionMaterials title 依次兜底 args.title → toolResult.panelContent.title → HTML `<title>`（修复重进会话左侧资料变"未命名资料"）。
+  - **验证**：verify-study-plan-carry.mts(v2) 4/4、verify-study-plans.mjs 17/17、双端 tsc 0；端到端（本地珊珊插/删测试课 ≤1 tick 反映、勾选与孩子内容保留）通过。
+- **优先级**：✅ **实施完成（2026-09-02 P0-P5；2026-09-03 机制收敛 v2）**。git 已分批发推远端（063311a/6f73706/4ebf0ab/97f9808/ca437a5/eebc389 等）。**遗留：201 / 公网部署未做（用户 9/3 明确暂缓，待确认）；客户端新版本未发布**；家长 prompt 用户版本不自动吃到新段（已存用户版本的安装需手动清理）。
+- **记录时间**：2026-09-02（2026-09-03 更新）
 
 ## [ISSUE-038] 定时任务新模型：任务管理页（先创建任务 → 分配给孩子）+ 执行结果查询
 
