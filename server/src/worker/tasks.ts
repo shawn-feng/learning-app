@@ -16,6 +16,7 @@ import { readServerDailyConversation } from "../db/sessions.js";
 import { getWorkerRuntime, pickWorkerModel } from "./runtime.js";
 import { createWorkerKbTools, formatLocalDate } from "./kb-tools.js";
 import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt.js";
+import { findCourseByPlanText } from "../plan-text.js";
 
 /** 与客户端 scheduler.ts 的 SchedulerChildConfig 对齐（结构兼容，缺省字段调用方已补齐）。 */
 export interface WorkerSchedulerChildConfig {
@@ -371,7 +372,7 @@ function stripParentText(line: string): string {
  * 学习计划里某课可能是「复习」（该课 status 早已 ✅）——只看 status 无法判断今天是否
  * 真的学/复习了。须看课程的 首次学习(first_learned) / 最近复习(last_review) 是否等于
  * 目标日期（stat 时点=今天）：当天有学习或复习记录才算完成。
- * 计划项文本即课程名，与 courses.title 1:1（标题兜底匹配）。
+ * 计划项文本即课程名（可能带「复习：」等动作前缀，见 ../plan-text.ts：匹配前剥前缀落到真实课程行）。
  */
 function courseDoneFor(
   today: string,
@@ -382,7 +383,9 @@ function courseDoneFor(
 ): boolean | undefined {
   const t = stripParentText(parentLine);
   if (!t) return undefined;
-  const c = courses.find((x) => x.title.trim() === t);
+  // 计划项文本可能是「复习：<课程名>」等带动作前缀的写法（家长对已学课的复习安排）：
+  // 精确匹配不到时剥前缀再匹配真实课程名（复习课的 last_review/first_learned 写在真实课程行上）。
+  const c = findCourseByPlanText(courses, t);
   if (!c) return undefined;
   const learned = (c.first_learned || "").trim();
   const reviewed = (c.last_review || "").trim();

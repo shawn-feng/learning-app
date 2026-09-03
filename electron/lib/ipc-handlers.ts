@@ -966,11 +966,25 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   /**
+   * 计划项文本 → 真实课程名（家长对已学课会安排「复习：<课程名>」等带动作前缀的项，
+   * courses 表真实标题不含前缀；匹配须先剥前缀，与服务端 ../plan-text.ts 同口径）。
+   */
+  function planTextToCourseText(text: string): string {
+    const t = (text || "").trim();
+    if (!t) return "";
+    const m = /^(?:复习|温习|学习|预习|背诵|朗读|跟读|听读|挑战|巩固|掌握)\s*[:：]\s*(.+)$/.exec(t);
+    if (m) return m[1].trim();
+    const s = /^(.*?)[（(](?:复习|温习|回看)[）)]\s*$/.exec(t);
+    if (s && s[1].trim()) return s[1].trim();
+    return t;
+  }
+
+  /**
    * 构建计划项→课程「当天活动」判定（2026-09-03，与服务端 stat 的 courseDoneFor 同口径）：
    * 学习计划里某课可能是「复习」（该课 status 早已 ✅）——只看 status 无法判断目标日期当天
    * 是否真的学/复习了。判定 = 课程的 首次学习(first_learned) 或 最近复习(last_review) 等于
    * 目标日期 → true；课程存在但当天无记录 → false；无对应课程 → undefined。
-   * 匹配键：(topic,title) 精确（topicKey+text），title 兜底（text 即课程名，剥 carry 语义在服务端已做）。
+   * 匹配键：(topic,title) 精确（topicKey+text 剥动作前缀后的课程名），title 兜底。
    */
   async function loadCourseDoneMap(
     childId: string
@@ -993,8 +1007,11 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       return (date, topicKey, text) => {
         const t = (text || "").trim();
         if (!t) return undefined;
-        let rec = topicKey ? byTopicTitle.get(`${topicKey}\u0000${t}`) : undefined;
-        if (!rec) rec = byTitle.get(t);
+        // 复习项计划文本与真实课程名差一个「复习：」前缀 → 归一后再查（匹配失败返回 undefined 保持原样）
+        const ct = planTextToCourseText(t);
+        if (!ct) return undefined;
+        let rec = topicKey ? byTopicTitle.get(`${topicKey}\u0000${ct}`) : undefined;
+        if (!rec) rec = byTitle.get(ct);
         if (!rec) return undefined;
         return rec.first_learned === date || rec.last_review === date;
       };

@@ -13,6 +13,7 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
+import { planTextToCourseText } from "../plan-text.js";
 
 interface ExamDeps {
   config: ServerConfig;
@@ -502,7 +503,8 @@ function planWindowFor(freq: string, scheduledTs: number): { start: string; end:
 }
 
 /** 从家长学习计划（study_plan_items）构建考核候选（每日/每周固定档）：
- *  候选 = 窗口内（date∈[start,end]）计划行 content 的课程（text 精确匹配孩子库 title），
+ *  候选 = 窗口内（date∈[start,end]）计划行 content 的课程（text 归一为真实课程名后匹配孩子库 title；
+ *  「复习：<课程名>」等动作前缀会被剥掉，见 ../plan-text.ts），
  *  **无论是否完成**（status⬜/无学习痕迹也算）都进候选——考核倒逼计划执行。
  *  返回 courses（含该课最早计划日期 planDate）+ unmatched（计划文本匹配不到课程的清单，供提示）。 */
 function listPlanCourseMeta(
@@ -546,7 +548,9 @@ function listPlanCourseMeta(
       }
       for (const it of items) {
         if (!it || typeof it.text !== "string" || !it.text.trim()) continue;
-        const t = it.text.trim();
+        // 计划文本可能是「复习：<课程名>」等动作前缀写法：归一成真实课程名再查课程库
+        // （否则复习项永远匹配不到课程、进 unmatched，考核倒逼复习就落空）。
+        const t = planTextToCourseText(it.text.trim());
         if (!want.has(t) || r.date < want.get(t)!) want.set(t, r.date);
       }
     }

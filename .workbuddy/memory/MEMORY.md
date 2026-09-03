@@ -30,11 +30,12 @@
 
 ## 服务端 worker 调度（方案B，当前真源）
 - **cron = 每 5 分钟**（`*/5 * * * *`）。`server/src/worker/scheduler.ts`：顺序 `await runPlanTick → runStatTick → runWorkerTick(recording)`。
-- **runPlanTick**：先 `runStudyPlanCarryTick`（carry，游标=昨天，幂等），再 gen（游标=今天；**今天已有 todolist 则跳过**）。
-- **runStatTick**：游标=今天，事件驱动——**当天 daily 有新的学习记录 且 已有 todolist** 才执行（stat 由 ephemeral agent 勾 checkbox 完成项，随后代码数 `parent_done/parent_total` 写 child_kb `child_todo_stats`）。
+- **runPlanTick**：先 `runStudyPlanCarryTick`（carry，游标=昨天，幂等），再 gen = 每次 tick 以最新 study_plan_items 同步今日【家长规定项】（家长中途改计划 ≤5 分钟反映；同文本勾选保留；孩子自定内容保留；无变化不写回）。
+- **runStatTick**：事件驱动且**当天可多次**（2026-09-03 改，勿回退到「一天一次」）——今天已有 todolist 且 daily 有记录才跑；去重 = worker_state `todo_stat`.last_key 存 JSON `{date,count}`（count=上次统计时当天 daily 条数），**daily 条数新增（孩子又学完一课）→ 下次 tick（≤5min）重跑**；旧纯日期 last_key 当天会先补跑一次升级 JSON（存量自愈）。stat 纯代码勾 `[家长]` checkbox（对照 courses first_learned/last_review==今天），随后数 parent_done/parent_total 写 child_kb `child_todo_stats`。
+- **⚠️ 计划项「复习：<课程名>」前缀**：家长对已学课（status=✅）排复习，计划文本带「复习：」前缀但 courses 真实标题不含。所有「计划文本→课程」匹配必须先剥前缀（`server/src/plan-text.ts` `planTextToCourseText`/`findCourseByPlanText`，动作词：复习/温习/学习/预习/背诵/朗读/跟读/听读/挑战/巩固/掌握 + 尾部（复习）标注）。消费点：worker stat courseDoneFor、客户端面板 loadCourseDoneMap（electron/lib/ipc-handlers.ts 内联同款正则，**须与服务端同步**）、exam 选题 listPlanCourseMeta。漏剥=复习项永不打勾/面板不显示已学/考核进 unmatched。
 - **客户端 gen/stat 已彻底移除（2026-09-02）**：`electron/lib/scheduler.ts` 两处 `cc.todo.enabled && !hasServerFeature("worker")` 块 + import 删除。服务端 worker 为唯一真源；`runTodoGen/runTodoStat`（todo-scheduler.ts）保留作工具函数但不再被调度。
 - **能力探测**：客户端 `server-features.ts` 拉 `/api/v1/version` 的 `features`（含 `worker`）；`hasServerFeature("worker")` 控制 recording 本地调度开关。服务端 `routes/version.ts` 声明 `SERVER_FEATURES=["session_sync","worker","exam"]`。
-- **游标**：`worker_state(childId, 'todo_gen'|'todo_stat').last_key=今天`；carry=`study_plan_carry=昨天`。幂等保证每天每孩子一次。
+- **游标**：gen 无游标（每次同步）；stat=`todo_stat`.last_key={date,count}；carry=`study_plan_carry=昨天`。
 
 ## 学习计划（ISSUE-033，2026-09-02 已实施 P0/P0b/P2/P3/P4）
 - 主库 `study_plan_items`：date 定日 / daily 每日（+ origin carry 顺延）；**直接替换 rules_json.daily**；空天不学；未完成加到下一天累加；多计划同天合并。
@@ -51,6 +52,7 @@
 - **服务端构建**：`node scripts/build.mjs`（esbuild→dist/server.cjs），勿用 `npm run build`(tsc 不产 server.cjs)。改 src 后确认 `dist/server.cjs` mtime 新。
 - **⚠️ pkg 二进制已不可用**（agent SDK 动态 import 导致 ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING）→ **201 直接 `node /opt/learning-server/server.cjs`**（201 Node v24.15.0）；service `ExecStart=/usr/bin/node /opt/learning-server/server.cjs`，`Environment=SERVER_DATA_DIR=/opt/learning-server/data`。
 - **201 客户端升级**：先 `pkill -TERM -f '/opt/学习伙伴/xuexihub'` 再 `sudo dpkg -i learning-app_x.y.z_amd64.deb`；验证 `dpkg -l learning-app` 显示 `ii`。
+- ⚠️ **`server/scripts/learning-server.service` 仍写 `ExecStart=/opt/learning-server/learning-server`（旧 pkg 路径），与现状不符**：pkg 已废弃，201 实际用 `node /opt/learning-server/server.cjs` 运行。下次发布前把该行改为 `ExecStart=/usr/bin/node /opt/learning-server/server.cjs`（并保留 `Environment=SERVER_DATA_DIR=/opt/learning-server/data`），否则 systemd 起不来。
 
 ## 发布流程
 - **本地 Windows 无法产出 Linux/Mac 包**（缺 fpm/mksquashfs）→ 走 GitHub Actions CI（build-linux.yml/build-mac.yml，tag 触发），`gh run download <id> --repo shawn-feng/learning-app` 取产物。

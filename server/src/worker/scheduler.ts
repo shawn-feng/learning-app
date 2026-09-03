@@ -1,8 +1,9 @@
 /**
  * 服务端无头 worker 调度器（方案B 阶段②）。
  * 每 5 分钟 cron：遍历所有家长 → 孩子，分别跑 plan / stat / recording 三类任务。
- * - plan（carry+gen）：carry 顺延（游标=昨天）先于当日 todolist 生成（游标=今天；今天已有 todolist 则跳过）。
- * - stat（完成度统计）：游标=今天，事件驱动——当天有新的 daily 学习记录且已有 todolist 时执行一次。
+ * - plan（carry+gen）：carry 顺延（游标=昨天）先于当日 todolist 同步（gen，以最新计划重写家长项）。
+ * - stat（完成度统计）：事件驱动且**当天可多次**——今天有 daily 学习记录且已有 todolist 时统计，
+ *   之后每新增 daily 记录（孩子又学完一课）都会在 ≤5 分钟内再统计，打勾/完成度实时反映。
  * - recording：仍按配置的 recording.times 时间点触发（5 分钟桶匹配，保证落点不错过）。
  * **触发源（2026-09-02 修复，勿再回退）**：优先读 scheduler_tasks + 分配（buildEffectiveChildConfig，
  * 服务端即真源，不依赖客户端推送时机）；无任务分配的孩子回退旧 settings scheduler_config（老客户端兼容）。
@@ -311,12 +312,29 @@ export async function runWorkerCatchUp(deps: WorkerSchedulerDeps): Promise<void>
 
 // ---------- plan (carry + gen) / stat：游标驱动，不再按固定时刻 ----------
 
-/** 某 (childId, key) 是否已处理过指定 day（游标 = worker_state.last_key === day）。 */
-function cursorDayDone(deps: WorkerSchedulerDeps, childId: string, key: string, day: string): boolean {
-  return getWorkerStateKey(deps.db, childId, key) === day;
+/**
+ * stat 去重扩展键（worker_state.last_key）的存储格式。
+ * - 旧格式：纯日期字符串（如 "2026-09-03"）= 「当天已跑过一次」（老逻辑一天只统计一次，
+ *   2026-09-03 改为「新增 daily 记录即重跑」后，遇到旧格式当天先补跑一次再升级为 JSON）。
+ * - 新格式：JSON {date, count}——count = 上次统计时当天 daily 学习记录条数；
+ *   当天 daily 条数增加（孩子又学完新课/复习课）→ 下一 5 分钟 tick 会重跑统计，让打勾及时反映。
+ */
+interface StatSeen {
+  ranToday: boolean;
+  /** 上次统计时的 daily 条数；-1 = 旧格式当天已跑（强制再跑一次后刷新）。 */
+  count: number;
 }
-function markCursorDay(deps: WorkerSchedulerDeps, childId: string, key: string, day: string, now: Date): void {
-  setWorkerState(deps.db, childId, key, now.toISOString(), day);
+
+function parseStatSeen(raw: string, today: string): StatSeen {
+  if (!raw) return { ranToday: false, count: -1 };
+  try {
+    const o = JSON.parse(raw) as { date?: string; count?: number };
+    if (o?.date === today) return { ranToday: true, count: Number.isFinite(o.count) ? (o.count as number) : -1 };
+    return { ranToday: false, count: -1 }; // 跨天：视为未跑
+  } catch {
+    // 旧格式纯日期：当天已跑过一次 → count=-1 强制再跑一次（把旧一行统计升级成新格式）
+    return raw === today ? { ranToday: true, count: -1 } : { ranToday: false, count: -1 };
+  }
 }
 
 /** 构造 gen/stat 所需的 WorkerTaskCtx（不依赖时间点，point 留空）。 */
@@ -350,8 +368,8 @@ function todayHasTodolist(deps: WorkerSchedulerDeps, parentId: string, childId: 
 }
 
 /**
- * plan tick：先 carry（游标=昨天，昨天未完成→顺延到今天），再 gen（游标=今天）。
- * gen 每天每孩子一次：今天还没有 todolist 就生成，已有则跳过。
+ * plan tick：先 carry（游标=昨天，昨天未完成→顺延到今天），再 gen（每次 tick 以最新计划
+ * 同步今日【家长规定项】——家长中途改计划 ≤5 分钟反映到 todolist）。
  * carry 与 gen 合并且 carry 在前，保证顺延行在 gen 读取当日排期前落库。
  */
 export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
@@ -378,17 +396,21 @@ export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
   }
 }
 
-/** 当天是否有新的 daily 学习记录（stat 的事件触发条件）。 */
-function todayHasDaily(deps: WorkerSchedulerDeps, parentId: string, childId: string, today: string): boolean {
-  const daily = runKbQuery<Array<unknown>>(
-    deps.dataDir, deps.db, parentId, "kb.daily_entries.queryByDate", { child_id: childId, date: today }
+/** 当天 daily 学习记录（stat 事件触发条件：有记录才统计；条数变化驱动重跑）。 */
+function todayDailyEntries(deps: WorkerSchedulerDeps, parentId: string, childId: string, today: string): unknown[] {
+  return (
+    runKbQuery<unknown[]>(
+      deps.dataDir, deps.db, parentId, "kb.daily_entries.queryByDate", { child_id: childId, date: today }
+    ) ?? []
   );
-  return !!daily && daily.length > 0;
 }
 
 /**
- * stat tick：游标=今天，事件驱动——当天有新的 daily 学习记录且今天已有 todolist 时，执行一次。
- * 不再按固定时刻：只要出现新学习记录就统计，且每天只统计一次（游标防重）。
+ * stat tick：事件驱动，**当天可多次统计**（2026-09-03 修复：不再「每天一次就锁死」）。
+ * 触发条件 = 今天已有 todolist 且已有 daily 学习记录；去重粒度 = 「上次统计后是否新增了
+ * daily 记录」（worker_state.last_key = {date, count}）——
+ * 孩子上午学完一课后 5 分钟内打勾；下午/晚上又学新课 → 条数增加 → 再次统计，
+ * 保证当天任意时刻的完成情况都能及时反映到 [家长] todo 与完成度统计。
  */
 export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
   const now = new Date();
@@ -399,12 +421,20 @@ export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
     for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
       if (!cc.todo?.enabled) continue;
       try {
-        if (cursorDayDone(deps, childId, "todo_stat", today)) continue;
         if (!todayHasTodolist(deps, p.id, childId, today)) continue;
-        if (!todayHasDaily(deps, p.id, childId, today)) continue;
+        const daily = todayDailyEntries(deps, p.id, childId, today);
+        if (daily.length === 0) continue; // 无学习记录不统计（避免空转）
+        const seen = parseStatSeen(getWorkerStateKey(deps.db, childId, "todo_stat"), today);
+        if (seen.ranToday && seen.count >= daily.length) continue; // 无新增记录 → 不重复跑
         await runTodoStatServer(buildTodoCtx(deps, p.id, childId, cc, settings, now));
-        markCursorDay(deps, childId, "todo_stat", today, now);
-        console.log(`[worker:stat] child=${childId}: ${today} 已统计完成度`);
+        setWorkerState(
+          deps.db,
+          childId,
+          "todo_stat",
+          now.toISOString(),
+          JSON.stringify({ date: today, count: daily.length })
+        );
+        console.log(`[worker:stat] child=${childId}: ${today} 已统计完成度（daily ${daily.length} 条${seen.ranToday ? "，有新增" : "，首次"}）`);
       } catch (e) {
         console.error(`[worker:stat] child=${childId} failed:`, (e as Error).message);
       }
