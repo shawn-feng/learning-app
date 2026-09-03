@@ -1,8 +1,11 @@
 /**
  * 学习考核 · 考试页面 HTML（应用内版本，与 assets/exam-template.html 设计稿同源）。
- * 渲染：宿主 <iframe sandbox="allow-scripts allow-modals allow-forms" allow="microphone" srcDoc={buildExamHtml(...)}>。
+ * 渲染：宿主 <iframe sandbox="allow-scripts allow-modals allow-forms allow-same-origin" allow="microphone" srcDoc={buildExamHtml(...)}>。
+ * 注意：sandbox 必须含 allow-same-origin（否则 srcDoc iframe 是不透明源、非安全上下文，getUserMedia 报 invalid security origin）。
  * 题目注入：开始考核时把本场题目 JSON 填入（服务端/宿主在考核开始时生成题目后调用本函数）。
  * 作答回传：iframe 内经 postMessage 上报 exam:asr（请求语音转写）/ exam:submit（提交全部作答，含录音 Blob）。
+ * 锁定规则（2026-09-03 用户拍板）：**一题答完（离开本题）即锁定，不可回改**——防孩子看到后题提示后回头改前题；
+ * 锁定题回看只读（可听录音），未作答的空题仍可前后自由移动，全部答完才可提交。
  */
 
 export interface ExamTemplateQuestion {
@@ -58,6 +61,7 @@ export function buildExamHtml(
   .asr-label{font-size:20px; color:var(--muted); margin:14px 0 6px}
   .asr{width:100%; min-height:96px; font-size:24px; font-family:inherit; color:var(--ink); border:1px solid var(--line); border-radius:12px; padding:12px 14px; resize:vertical; background:#fffdf7;}
   .asr:focus{outline:2px solid var(--brand)}
+  .asr:disabled{background:#eef1f5;color:#555;cursor:not-allowed}
   .q-timer{font-size:18px; color:var(--muted); margin-top:12px; text-align:right}
   .exam-foot{flex:0 0 auto; background:var(--card); border-top:1px solid var(--line); padding:14px 22px; display:flex; align-items:center; gap:14px;}
   .nav{font-size:24px; border:1px solid var(--line); background:#fff; border-radius:12px; padding:12px 22px; cursor:pointer}
@@ -66,6 +70,8 @@ export function buildExamHtml(
   .submit{font-size:26px; font-weight:700; border:none; border-radius:14px; padding:14px 34px; background:var(--ok); color:#fff; cursor:pointer;}
   .submit:disabled{opacity:.45; cursor:not-allowed}
   .done-tag{font-size:20px; color:var(--ok)}
+  .lock-tag{font-size:20px;color:var(--warn);margin:8px 0 0;display:none}
+  .mic-btn:disabled{background:#aab6cc;cursor:not-allowed;animation:none}
 </style>
 </head>
 <body>
@@ -91,6 +97,7 @@ export function buildExamHtml(
         <audio class="play" id="play" controls style="display:none"></audio>
         <div class="asr-label">语音转写（可修改 / 也可直接输入文字兜底）：</div>
         <textarea class="asr" id="asr" placeholder="说完后这里会显示转写文字；若语音识别不准，你可以直接修改或输入。"></textarea>
+        <div class="lock-tag" id="lockTag"></div>
         <div class="q-timer" id="qTimer">本题用时：—</div>
       </div>
     </div>
@@ -110,6 +117,8 @@ window.EXAM_DATA = ${dataJson};
   var examStart = Date.now();
   var answers = {};
   var media = null, chunks = [], recTimer = null, recStart = 0, qTimerInt = null;
+  var recQid = null; // 正在录音的题 id（onstop 用它定位，防「停止录音与切题竞态」把录音存错题）
+  var RECOG = "识别中…"; // 转写占位（不得当作作答内容保存）
   var $ = function(id){ return document.getElementById(id); };
   $("examTitle").textContent = D.title || "学习考核";
   $("examSubject").textContent = D.subject || "科目";
@@ -117,20 +126,23 @@ window.EXAM_DATA = ${dataJson};
     var s = Math.floor((Date.now()-examStart)/1000);
     $("elapsed").textContent = String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
   }, 1000);
+  function curQ(){ return D.questions[idx]; }
+  function qIndex(qid){ for(var i=0;i<D.questions.length;i++){ if(D.questions[i].id===qid) return i; } return -1; }
+  function hasAnswer(a){ return !!(a && ((a.asr && String(a.asr).trim() && a.asr!==RECOG) || a.audioBlob)); }
   function renderProgress(){
     var p = $("progress"); p.innerHTML = "";
     D.questions.forEach(function(q,i){
       var d = document.createElement("div");
-      d.className = "dot" + (i===idx?" cur":"") + (answers[q.id]&&answers[q.id].answeredAt?" done":"");
+      d.className = "dot" + (i===idx?" cur":"") + (answers[q.id]&&answers[q.id].locked?" done":"");
       p.appendChild(d);
     });
   }
   function fmtDur(ms){ if(ms==null) return "—"; var s=Math.round(ms/1000); return Math.floor(s/60)+"分"+(s%60)+"秒"; }
-  // 本题实时用时：进入题目即开始累计（每秒刷新）；作答完成（answeredAt）后冻结显示。
+  // 本题实时用时：进入题目即累计（每秒刷新）；作答完成（locked/answeredAt）后冻结。
   function stopQTimer(){ if(qTimerInt){ clearInterval(qTimerInt); qTimerInt = null; } }
   function startQTimer(){
     stopQTimer();
-    var q = D.questions[idx]; if(!q) return;
+    var q = curQ(); if(!q) return;
     var a = answers[q.id] || {};
     if(!a.startedAt) a.startedAt = Date.now();
     answers[q.id] = a;
@@ -144,44 +156,69 @@ window.EXAM_DATA = ${dataJson};
     paint();
     qTimerInt = setInterval(paint, 1000);
   }
+  // 锁定视图：已答完（locked）的题只读——文本框禁用、麦克风禁用、可播放录音、展示锁定提示
+  function paintLocked(){
+    var q = curQ(); if(!q) return;
+    var a = answers[q.id] || {};
+    var locked = !!a.locked;
+    var recording = !!(media && media.state === "recording");
+    $("asr").disabled = locked;
+    $("micBtn").disabled = locked;
+    $("micBtn").textContent = locked ? "🔒 已答完" : (recording ? "⏹ 停止" : "🎤 开始回答");
+    $("micBtn").className = "mic-btn" + (recording && !locked ? " rec" : "");
+    $("rerecBtn").style.display = (a.audioUrl && !locked) ? "inline-block" : "none";
+    $("lockTag").style.display = locked ? "block" : "none";
+    $("lockTag").textContent = locked ? "🔒 本题已答完，不可修改（可以点开录音回听）" : "";
+    $("recTime").textContent = recording ? $("recTime").textContent : "";
+  }
   function renderQuestion(){
-    var q = D.questions[idx];
-    $("qCourse").textContent = q.course || "";
-    $("qStem").textContent = q.stem || "";
+    var q = curQ(); if(!q) return;
     var a = answers[q.id] || {};
     if(!a.startedAt) a.startedAt = Date.now();
     answers[q.id] = a;
     stopRec(true);
+    $("qCourse").textContent = q.course || "";
+    $("qStem").textContent = q.stem || "";
     $("asr").value = a.asr || "";
-    if(a.audioUrl){ $("play").src = a.audioUrl; $("play").style.display="block"; $("rerecBtn").style.display="inline-block"; }
-    else { $("play").src=""; $("play").style.display="none"; $("rerecBtn").style.display="none"; }
-    $("qTimer").textContent = "";
+    if(a.audioUrl){ $("play").src = a.audioUrl; $("play").style.display="block"; }
+    else { $("play").src=""; $("play").style.display="none"; }
+    paintLocked();
     startQTimer();
     $("prevBtn").disabled = idx===0;
     $("nextBtn").disabled = idx===D.questions.length-1;
     renderProgress(); updateDone();
   }
-  function commitAnswer(){
-    var q = D.questions[idx];
+  // 离开当前题前调用：保存文本框内容；若本题已有作答内容 → 打答完时间并锁定（之后不可改）
+  function saveCurrent(){
+    var q = curQ(); if(!q) return;
     var a = answers[q.id] || {};
-    a.asr = $("asr").value;
-    if(!a.answeredAt) a.answeredAt = Date.now();
-    if(a.startedAt) a.durationMs = a.answeredAt - a.startedAt;
+    if(a.locked) return; // 已锁定的只读题不再动
+    var v = $("asr").value;
+    a.asr = (v && v !== RECOG) ? v : "";
+    if(hasAnswer(a)){
+      if(!a.answeredAt) a.answeredAt = Date.now();
+      if(a.startedAt) a.durationMs = a.answeredAt - a.startedAt;
+      a.locked = true;
+    }
     answers[q.id] = a;
-    stopQTimer(); startQTimer(); // 答完冻结显示最终用时
-    renderProgress(); updateDone();
+    stopQTimer(); startQTimer();
   }
   function updateDone(){
-    var all = D.questions.every(function(q){ return answers[q.id] && answers[q.id].answeredAt; });
+    var done = 0;
+    D.questions.forEach(function(q){ if(answers[q.id] && answers[q.id].locked) done++; });
+    var all = done === D.questions.length;
     $("submitBtn").disabled = !all;
-    $("doneTag").textContent = all ? "全部答完，可提交 ✓" : "";
+    $("doneTag").textContent = all ? "全部答完，可提交 ✓" : ("已答 " + done + " / " + D.questions.length + " 题（答完的题不可再改）");
   }
   function stopRec(silent){
     if(media && media.state==="recording"){ media.stop(); }
     if(recTimer){ clearInterval(recTimer); recTimer=null; }
-    if(!silent){ $("micBtn").classList.remove("rec"); $("micBtn").textContent="🎤 开始回答"; $("recTime").textContent=""; }
+    if(!silent){ paintLocked(); $("recTime").textContent=""; }
   }
   $("micBtn").addEventListener("click", function(){
+    var q = curQ(); if(!q) return;
+    var a = answers[q.id] || {};
+    if(a.locked) return; // 已答完锁定
     if(media && media.state==="recording"){ media.stop(); return; }
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ alert("当前环境不支持录音"); return; }
     navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
@@ -191,22 +228,36 @@ window.EXAM_DATA = ${dataJson};
       media.onstop = function(){
         stream.getTracks().forEach(function(t){ t.stop(); });
         var blob = new Blob(chunks, {type: media.mimeType || "audio/webm"});
-        var q = D.questions[idx];
-        var a = answers[q.id] || {};
-        if(a.audioUrl) URL.revokeObjectURL(a.audioUrl);
-        a.audioBlob = blob; a.audioUrl = URL.createObjectURL(blob);
-        answers[q.id] = a;
-        $("play").src = a.audioUrl; $("play").style.display="block";
-        $("rerecBtn").style.display="inline-block";
-        var prevAsr = a.asr || "";
-        $("asr").value = "识别中…";
-        if(window.parent && window.parent!==window){ window.parent.postMessage({ type:"exam:asr", qid:q.id, blob:blob }, "*"); }
-        setTimeout(function(){ var cur = answers[q.id] || {}; if(!cur.asrEdited){ $("asr").value = prevAsr; } }, 3000);
-        commitAnswer();
+        var qid = recQid; recQid = null;
+        var q = D.questions.find(function(x){ return x.id === qid; });
+        if(!q){ return; } // 题目已不在本场（极端），丢弃
+        var rec = answers[qid] || {};
+        if(rec.audioUrl) URL.revokeObjectURL(rec.audioUrl);
+        rec.audioBlob = blob; rec.audioUrl = URL.createObjectURL(blob);
+        // 录音完成 = 本题有内容；若已不在该题（录音中切题），立即锁定，避免漏锁导致永远无法提交
+        if(qIndex(qid) !== idx){
+          if(!rec.answeredAt) rec.answeredAt = Date.now();
+          if(rec.startedAt) rec.durationMs = rec.answeredAt - rec.startedAt;
+          rec.locked = true;
+        }
+        answers[qid] = rec;
+        if(qIndex(qid) === idx && !rec.locked){
+          $("play").src = rec.audioUrl; $("play").style.display="block";
+          paintLocked();
+          $("asr").value = RECOG;
+          if(window.parent && window.parent!==window){ window.parent.postMessage({ type:"exam:asr", qid:qid, blob:blob }, "*"); }
+          setTimeout(function(){
+            var cur = answers[qid] || {};
+            if(!cur.locked && !cur.asrEdited && qIndex(qid) === idx){ $("asr").value = cur.asr || ""; }
+          }, 3000);
+        }
+        updateDone(); renderProgress();
       };
       media.start();
       recStart = Date.now();
-      $("micBtn").classList.add("rec"); $("micBtn").textContent="⏹ 停止";
+      recQid = q.id;
+      $("micBtn").textContent="⏹ 停止"; $("micBtn").classList.add("rec");
+      $("recTime").textContent = "00:00";
       recTimer = setInterval(function(){
         var s = Math.floor((Date.now()-recStart)/1000);
         $("recTime").textContent = String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
@@ -214,34 +265,35 @@ window.EXAM_DATA = ${dataJson};
     }).catch(function(err){ alert("无法录音：" + err.message); });
   });
   $("rerecBtn").addEventListener("click", function(){
-    var q = D.questions[idx];
+    var q = curQ(); if(!q) return;
     var a = answers[q.id] || {};
+    if(a.locked) return;
     if(a.audioUrl){ URL.revokeObjectURL(a.audioUrl); }
-    answers[q.id] = { startedAt:a.startedAt };
+    answers[q.id] = { startedAt:a.startedAt, asr:a.asr||"" };
     $("play").src=""; $("play").style.display="none";
-    $("rerecBtn").style.display="none";
-    $("asr").value="";
-    stopQTimer(); startQTimer(); // 重录重新计时
+    $("asr").value = a.asr || "";
+    paintLocked();
     renderProgress(); updateDone();
   });
   $("asr").addEventListener("input", function(){
-    var q = D.questions[idx];
+    var q = curQ(); if(!q) return;
     var a = answers[q.id] || {};
+    if(a.locked) return; // 锁定题 textarea 已 disabled，双保险
     a.asrEdited = true;
+    a.asr = $("asr").value === RECOG ? "" : $("asr").value;
     answers[q.id] = a;
-    commitAnswer();
   });
-  $("prevBtn").addEventListener("click", function(){ if(idx>0){ commitAnswer(); idx--; renderQuestion(); } });
-  $("nextBtn").addEventListener("click", function(){ if(idx<D.questions.length-1){ commitAnswer(); idx++; renderQuestion(); } });
+  $("prevBtn").addEventListener("click", function(){ if(idx>0){ saveCurrent(); idx--; renderQuestion(); } });
+  $("nextBtn").addEventListener("click", function(){ if(idx<D.questions.length-1){ saveCurrent(); idx++; renderQuestion(); } });
   $("submitBtn").addEventListener("click", function(){
-    commitAnswer();
+    saveCurrent();
     var payload = {
       title: D.title, subject: D.subject,
       submittedAt: new Date().toISOString(),
       perQuestion: D.questions.map(function(q){
         var a = answers[q.id] || {};
         return { qid:q.id, course:q.course, stem:q.stem, pointMax:q.pointMax || 10,
-                 audioBlob:a.audioBlob||null, asr:a.asr||"",
+                 audioBlob:a.audioBlob||null, asr:(a.asr&&a.asr!==RECOG)?a.asr:"",
                  startedAt:a.startedAt||null, answeredAt:a.answeredAt||null, durationMs:a.durationMs||null };
       })
     };
@@ -255,14 +307,10 @@ window.EXAM_DATA = ${dataJson};
       var q = D.questions.find(function(x){ return x.id === d.qid; });
       if(!q) return;
       var a = answers[q.id] || {};
-      if(!a.asrEdited){
+      if(!a.asrEdited){ // 孩子没有手动改过 → 用转写文本；否则保留手工内容
         a.asr = String(d.text || "");
         answers[q.id] = a;
-        if(idx === D.questions.indexOf(q)){ $("asr").value = a.asr; }
-        commitAnswer();
-      } else {
-        a.asr = String(d.text || "");
-        answers[q.id] = a;
+        if(qIndex(q.id) === idx){ $("asr").value = a.asr || ""; }
       }
     }
   });
