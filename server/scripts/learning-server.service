@@ -6,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 部署路径：/opt/learning-server/learning-server（pkg 产物，Linux x64）
-ExecStart=/opt/learning-server/learning-server
+# 部署路径：/opt/learning-server/server.cjs（node 直跑，pkg 已废弃）
+ExecStart=/usr/bin/node /opt/learning-server/server.cjs
 WorkingDirectory=/opt/learning-server
 # 数据目录（数据库 / materials / 大文件 / server-config.json）
 Environment=SERVER_DATA_DIR=/opt/learning-server/data
