@@ -1,16 +1,18 @@
 /**
  * 服务端无头 worker 调度器（方案B 阶段②）。
- * 每 5 分钟 cron：遍历所有家长 → 孩子，分别跑 plan / stat / recording 三类任务。
+ * 每 2 分钟 cron：遍历所有家长 → 孩子，分别跑 plan / stat / recording 三类任务。
  * - plan（carry+gen）：carry 顺延（游标=昨天）先于当日家长 todolist 同步（gen，以最新计划物化家长项）。
  * - stat（完成度统计）：事件驱动且**当天可多次**——当天有 daily 学习记录即统计（runTodoStatServer 内部
- *   自判有无 todo_items），每新增 daily 记录（孩子又学完一课）都会在 ≤5 分钟内再统计，完成情况实时反映。
+ *   自判有无 todo_items），每新增 daily 记录（孩子又学完一课）都会在 ≤2 分钟内再统计，完成情况实时反映。
  * - recording：仍按配置的 recording.times 时间点触发（5 分钟桶匹配，保证落点不错过）。
  * **触发源（2026-09-02 修复，勿再回退）**：优先读 scheduler_tasks + 分配（buildEffectiveChildConfig，
  * 服务端即真源，不依赖客户端推送时机）；无任务分配的孩子回退旧 settings scheduler_config（老客户端兼容）。
  * 注：本调度器在 learning-server 进程内，设备 7x24 在线 → 客户端关机/休眠不再导致漏跑。
  */
 import cron from "node-cron";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { getServerSecret, decryptJson } from "../crypto.js";
 import { runKbQuery } from "../routes/db.js";
 import { getWorkerStateKey, setWorkerState } from "../db/sessions.js";
@@ -66,7 +68,7 @@ function readParentSettings(db: DatabaseSync, dataDir: string, parentId: string)
 }
 
 export function startWorkerScheduler(deps: WorkerSchedulerDeps): void {
-  cron.schedule("*/5 * * * *", async () => {
+  cron.schedule("*/2 * * * *", async () => {
     // 顺序执行：先 plan（carry→gen），再 stat，最后 recording。保证 carry 行在 gen 前落库、todolist 在 stat 前生成。
     try { await runPlanTick(deps); } catch (e) { console.error("[worker] plan tick failed:", (e as Error).message); }
     try { await runStatTick(deps); } catch (e) { console.error("[worker] stat tick failed:", (e as Error).message); }
@@ -78,7 +80,7 @@ export function startWorkerScheduler(deps: WorkerSchedulerDeps): void {
     try { await runStatTick(deps); } catch (e) { console.error("[worker] stat catch-up failed:", (e as Error).message); }
     try { await runWorkerCatchUp(deps); } catch (e) { console.error("[worker] catch-up failed:", (e as Error).message); }
   }, 3000);
-  console.log("[worker] 无头 worker 调度器已启动（每5分钟：plan(carry+gen)/stat 游标驱动 + recording 定时）");
+  console.log("[worker] 无头 worker 调度器已启动（每2分钟：plan(carry+gen)/stat 游标驱动 + recording 定时）");
 }
 
 /**
@@ -317,7 +319,7 @@ export async function runWorkerCatchUp(deps: WorkerSchedulerDeps): Promise<void>
  * - 旧格式：纯日期字符串（如 "2026-09-03"）= 「当天已跑过一次」（老逻辑一天只统计一次，
  *   2026-09-03 改为「新增 daily 记录即重跑」后，遇到旧格式当天先补跑一次再升级为 JSON）。
  * - 新格式：JSON {date, count}——count = 上次统计时当天 daily 学习记录条数；
- *   当天 daily 条数增加（孩子又学完新课/复习课）→ 下一 5 分钟 tick 会重跑统计，让打勾及时反映。
+ *   当天 daily 条数增加（孩子又学完新课/复习课）→ 下一 tick（≤2 分钟）会重跑统计，让打勾及时反映。
  */
 interface StatSeen {
   ranToday: boolean;
@@ -361,7 +363,7 @@ function buildTodoCtx(
 
 /**
  * plan tick：先 carry（游标=昨天，昨天未完成→顺延到今天），再 gen（每次 tick 以最新计划
- * 同步今日家长 todolist——家长中途改计划 ≤5 分钟反映到 todolist）。
+ * 同步今日家长 todolist——家长中途改计划 ≤2 分钟反映到 todolist）。
  * carry 与 gen 合并且 carry 在前，保证顺延行在 gen 读取当日排期前落库。
  */
 export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
@@ -374,12 +376,14 @@ export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   for (const p of parents) {
     const settings = readParentSettings(deps.db, deps.dataDir, p.id);
-    for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
-      if (!cc.todo?.enabled) continue;
+    // 2026-09-04：gen 不再受旧 todo.enabled 开关/调度任务约束——只要孩子今天有学习计划排期就物化 todolist
+    // （新模型里学习计划就是家长 todo 的真源；无计划则自然无事可物化）。
+    for (const childId of listChildIds(deps.db, p.id)) {
+      if (!childHasPlanToday(deps.db, p.id, childId, today)) continue;
       try {
         // gen = todolist 家长项 ↔ 学习计划「同步」——每次 tick 以最新 study_plan_items 物化今日家长
-        // todo_items：家长中途改计划 ≤5 分钟反映；孩子自规划项（source=child）不受影响。
-        await runTodoGenServer(buildTodoCtx(deps, p.id, childId, cc, settings, now));
+        // todo_items：家长中途改计划 ≤2 分钟反映；孩子自规划项（source=child）不受影响。
+        await runTodoGenServer(buildTodoCtx(deps, p.id, childId, {}, settings, now));
       } catch (e) {
         console.error(`[worker:plan] todo-sync child=${childId} failed:`, (e as Error).message);
       }
@@ -396,10 +400,41 @@ function todayDailyEntries(deps: WorkerSchedulerDeps, parentId: string, childId:
   );
 }
 
+/** 某家长的全部孩子 id。 */
+function listChildIds(db: DatabaseSync, parentId: string): string[] {
+  return (db.prepare("SELECT id FROM children WHERE parent_id = ?").all(parentId) as Array<{ id: string }>).map(
+    (r) => r.id
+  );
+}
+
+/** 孩子今天是否有活跃学习计划排期（gen 的真源触发条件：有计划才物化 todolist）。 */
+function childHasPlanToday(db: DatabaseSync, parentId: string, childId: string, today: string): boolean {
+  const r = db
+    .prepare("SELECT 1 AS x FROM study_plan_items WHERE parent_id=? AND child_id=? AND active=1 AND date=? LIMIT 1")
+    .get(parentId, childId, today);
+  return !!r;
+}
+
+/** 孩子今天是否有 todo_items（stat 的触发条件之一：有 todolist 才统计；gen 会先从计划物化）。 */
+function childHasTodosToday(dataDir: string, parentId: string, childId: string, today: string): boolean {
+  const p = join(dataDir, "kb", parentId, `${childId}.sqlite`);
+  if (!existsSync(p)) return false;
+  try {
+    const kb = new DatabaseSync(p, { readOnly: true });
+    try {
+      return !!kb.prepare("SELECT 1 AS x FROM todo_items WHERE todo_date=? LIMIT 1").get(today);
+    } finally {
+      kb.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
 /**
  * stat tick：事件驱动，**当天可多次统计**（2026-09-04 起：runTodoStatServer 内部自判——当天有
  * todo_items 才统计，并回写计划完成态；这里用 daily 条数变化驱动重跑，孩子新学/复习完一课即在
- * ≤5 分钟内刷新）。worker_state.last_key = {date, count}，daily 新增 → 重跑。
+ * ≤2 分钟内刷新）。worker_state.last_key = {date, count}，daily 新增 → 重跑。
  */
 export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
   const now = new Date();
@@ -407,14 +442,18 @@ export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   for (const p of parents) {
     const settings = readParentSettings(deps.db, deps.dataDir, p.id);
-    for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
-      if (!cc.todo?.enabled) continue;
+    // 2026-09-04：stat 不再受旧 todo.enabled 开关约束——今天有计划或有 todo_items 的孩子都统计
+    // （runTodoStatServer 内部自判无 todo_items 即跳过；daily 条数变化驱动当天多次重跑）。
+    for (const childId of listChildIds(deps.db, p.id)) {
+      if (!childHasPlanToday(deps.db, p.id, childId, today) && !childHasTodosToday(deps.dataDir, p.id, childId, today)) {
+        continue;
+      }
       try {
         const daily = todayDailyEntries(deps, p.id, childId, today);
         if (daily.length === 0) continue; // 无学习记录不统计（避免空转）
         const seen = parseStatSeen(getWorkerStateKey(deps.db, childId, "todo_stat"), today);
         if (seen.ranToday && seen.count >= daily.length) continue; // 无新增记录 → 不重复跑
-        await runTodoStatServer(buildTodoCtx(deps, p.id, childId, cc, settings, now));
+        await runTodoStatServer(buildTodoCtx(deps, p.id, childId, {}, settings, now));
         setWorkerState(
           deps.db,
           childId,
