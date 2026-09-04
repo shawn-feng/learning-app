@@ -10,8 +10,9 @@ import { getChildDir, getSkillsDir, getDataDir, getSchedulerConfigPath, getCurre
 import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
+import { parseCourseKey } from "./kb-sqlite";
 import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool } from "./custom-tools";
-import { getTodayPlan, fetchTodayPlanRemote } from "./learning-summary";
+import { getTodayPlan, fetchTodayPlanRemote, fetchCourseLessonRemote, getCourseLessonCached, type CourseLessonCache } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
 import {
@@ -243,13 +244,42 @@ data/
  *
  * @param planContext 当天学习计划 markdown（来自 Todolist）；为空字符串时不注入（如该孩子当天无 Todolist）。
  */
-function buildChildPrompt(childId: string, profile: ChildProfile, planContext?: string): string {
+function buildChildPrompt(
+  childId: string,
+  profile: ChildProfile,
+  planContext?: string,
+  courseKey?: string,
+  courseLesson?: CourseLessonCache | null
+): string {
   const emoji = profile.aiEmoji || "🌟";
   let prompt = `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，陪伴和引导${profile.name}学习、生活和成长。`;
   if (planContext && planContext.trim()) {
     prompt +=
       `\n\n## 孩子今天的学习计划（已由系统从 Todolist 读好，**无需再读进度文件正文**即可知道今天该学什么）\n` +
       planContext;
+  }
+  // ISSUE-029 任务2：courseKey（格式 <topic>:<title>，如 english:12-yellow-01-Unit1-hello-story）
+  // → 按课隔离子会话。外语课（topic=english）在此注入「全程英文教学 + 本课教法/词表」，
+  // 确保 agent 第一轮即英文开口；普通课程子会话仅注入教法（中文教学），主会话完全不受影响。
+  const course = courseKey ? parseCourseKey(courseKey) : null;
+  if (course) {
+    const isEnglish = course.topic === "english";
+    const method = (courseLesson?.lessonMethod || "").trim();
+    const copy = (courseLesson?.teachingCopy || "").trim();
+    let seg = `\n\n## 当前课程：《${course.title}》（本会话为本课专用会话，上下文独立）`;
+    if (isEnglish) {
+      const allowChinese = getEnglishAllowChinese(childId);
+      seg +=
+        `\n\n- **与孩子交流全程使用英文**：句子简短清晰、语速放慢，词汇以本课词表为主，` +
+        `新词一轮最多引入 1-2 个并立即确认孩子理解。即使孩子说中文，也先用简短英文温和回应，再鼓励他/她用英文说。`;
+      seg += allowChinese
+        ? `\n- 零基础兜底：若孩子连续 2-3 次明显听不懂（反复询问/沉默/直接说听不懂），可用一句简短中文解释关键意思，然后立刻回到英文继续。`
+        : `\n- 家长已关闭「允许中文」：全程只说英文，借助重复、动作描述、展示资料等方式帮助孩子理解，不使用中文。`;
+    }
+    if (method) seg += `\n\n- 本课教学方法：\n${truncateForPrompt(method, 1500)}`;
+    if (copy) seg += `\n\n- 本课教学文案与词表：\n${truncateForPrompt(copy, 2500)}`;
+    seg += `\n\n- 本课结束前，按课程状态自然收尾并鼓励孩子；学习进度由系统记录，你无需读写进度文件。`;
+    prompt += seg;
   }
   // ISSUE-033：AGENTS 行为规范不以「文件」形式由 SDK 附加为 <project_context>（无任何磁盘 AGENTS
   // 文件，孩子不可写），改为在此内联注入——内容来自 data/agents.sqlite 用户版本 / 代码默认
@@ -258,30 +288,86 @@ function buildChildPrompt(childId: string, profile: ChildProfile, planContext?: 
   return prompt;
 }
 
+/** 提示词注入截断：超过 max 字符截断并标注，防课程长文撑爆 system prompt 前缀缓存。 */
+function truncateForPrompt(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max) + "\n…（内容过长已截断）";
+}
+
+/** 「允许中文」双语兜底开关（ISSUE-029）：scheduler-config.json 的 children.<id>.english.allowChinese，默认开。 */
+function getEnglishAllowChinese(childId: string): boolean {
+  try {
+    const p = getSchedulerConfigPath();
+    if (!fs.existsSync(p)) return true;
+    const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
+    const v = raw?.children?.[childId]?.english?.allowChinese;
+    return typeof v === "boolean" ? v : true;
+  } catch {
+    return true;
+  }
+}
+
+/** 会话缓存 key：主会话=childId；课程子会话=childId|courseKey（互不冲突，主会话各调用点无需改动）。 */
+function sessionKey(childId: string, courseKey?: string): string {
+  return courseKey ? `${childId}|${courseKey}` : childId;
+}
+
+/** 课程子会话目录名：<topic>-<title 安全化>（如 english-12-yellow-01-Unit1-hello-story），杜绝路径非法字符。 */
+function courseSessionsSubdir(info: { topic: string; title: string }): string {
+  const safe =
+    info.title
+      .replace(/[^\w\u4e00-\u9fa5-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 80) || "course";
+  return `${info.topic}-${safe}`;
+}
+
 interface SessionEntry {
   session: AgentSession;
   childId: string;
+  courseKey?: string; // 有值 = 课程子会话（按课隔离目录）
 }
 
 const activeSessions = new Map<string, SessionEntry>();
-// 同一 childId 的「正在创建会话」Promise，避免并发重复创建（pi:start_child 与 pi:prompt 竞态、
+// 同一 key 的「正在创建会话」Promise，避免并发重复创建（pi:start_child 与 pi:prompt 竞态、
 // 或 /reset 与首次 prompt 竞态导致重复 newSession / 会话对象被覆盖 / EEXIST）。
 const sessionPromises = new Map<string, Promise<AgentSession>>();
 let cachedParentSession: AgentSession | null = null;
 let cachedParentContentSession: AgentSession | null = null;
 
 export async function getChildSession(
-  childId: string
+  childId: string,
+  courseKey?: string
 ): Promise<AgentSession> {
-  const existing = activeSessions.get(childId);
+  const key = sessionKey(childId, courseKey);
+  const existing = activeSessions.get(key);
   if (existing) return existing.session;
-  const inflight = sessionPromises.get(childId);
+  const inflight = sessionPromises.get(key);
   if (inflight) return inflight;
-  const promise = createChildSession(childId).finally(() => {
-    sessionPromises.delete(childId);
+  const promise = createChildSession(childId, courseKey).finally(() => {
+    sessionPromises.delete(key);
   });
-  sessionPromises.set(childId, promise);
+  sessionPromises.set(key, promise);
   return promise;
+}
+
+/**
+ * 丢弃某门课的子会话（进入课程前调用，保证「每次进入 = 干净窗口」）：
+ * 课程子会话不沿用上次内存会话——按课隔离 + 每次进入 newSession 的语义由
+ * pi:start_child（带 courseKey）先 dispose 再创建实现；主会话不受影响。
+ */
+export function disposeChildCourseSession(childId: string, courseKey: string): void {
+  const key = sessionKey(childId, courseKey);
+  const entry = activeSessions.get(key);
+  if (entry) {
+    try {
+      entry.session.dispose();
+    } catch {
+      /* 忽略 */
+    }
+    activeSessions.delete(key);
+  }
+  sessionPromises.delete(key);
 }
 
 // ---- 自动新建会话开关（autoNewSession）----
@@ -407,18 +493,34 @@ function maybeSummarizeBeforeNewSession(childId: string): void {
   }
 }
 
-/** 实际创建孩子会话（被 getChildSession 的并发保护包裹，确保同一 childId 只创建一次）。 */
+/** 实际创建孩子会话（被 getChildSession 的并发保护包裹，确保同一 key 只创建一次）。 */
 async function createChildSession(
-  childId: string
+  childId: string,
+  courseKey?: string
 ): Promise<AgentSession> {
   const childDir = getChildDir(childId);
   const profile = getProfile(childId);
   if (!profile) throw new Error("Child profile not found");
 
+  // ISSUE-029 任务2：courseKey（格式 <topic>:<title>，如 english:12·Yellow-Unit1-hello-story）
+  // → 按课隔离子会话（sessions/english-<title>/，每次进入干净窗口，复用主 agent 身份）。
+  // 教学内容经服务端远程预取（SPLIT：孩子 kb 真源在服务端，本地库 courses/topics 可能为空壳），
+  // 同步读走本地缓存（getCourseLessonCached，miss 回退本地库直读兜底）；查不到降级「无教法注入」。
+  const course = courseKey ? parseCourseKey(courseKey) : null;
+  if (course) {
+    await fetchCourseLessonRemote(childId, course.topic, course.title).catch(() => null);
+  }
+  const courseLesson = course ? getCourseLessonCached(childId, course.topic, course.title) : null;
+  if (course && !courseLesson) {
+    console.warn(`[pi-session] course lesson not found: ${courseKey}（降级为无教法注入）`);
+  }
+
   // ISSUE-045：当天学习计划（Todolist）注入——与 AGENTS 同一「会话前远程预取 → 本地缓存 → 同步读」模式。
   // systemPromptOverride 是 SDK 同步回调，无法 await，故先预取当天 Todolist 到本地缓存，
   // 再经 getTodayPlan 同步读；当天无 Todolist 则 planContext 为空串，buildChildPrompt 不注入任何段落。
   // 日期用 todoLocalDate()（本地时区 YYYY-MM-DD），与 todo_list 工具保持同一「今天」口径。
+  // ISSUE-029 任务2：课程子会话（英语课等）跳过 Todolist 注入——当天计划属于主会话语境，
+  // 子会话只教本课内容，避免噪声与语言污染。
   const today = todoLocalDate();
 
   // ISSUE-033：AGENTS 纯 SQLite 存储（data/agents.sqlite），行为规范经 buildChildPrompt 内联注入
@@ -430,10 +532,12 @@ async function createChildSession(
   await fetchAgentPromptRemote("child", childId).catch(() => null);
   // ISSUE-045：当天 Todolist 同样「会话前远程预取 → 本地缓存 → getTodayPlan 同步读缓存」
   // （服务端不可达时降级为旧缓存/空，不阻断会话创建）。
-  await fetchTodayPlanRemote(childId, today).catch(() => null);
-
-  // 同步读取当天计划（已从缓存取，无 Todolist 返回空串 → 不注入）。
-  const planContext = getTodayPlan(childId);
+  let planContext = "";
+  if (!course) {
+    await fetchTodayPlanRemote(childId, today).catch(() => null);
+    // 同步读取当天计划（已从缓存取，无 Todolist 返回空串 → 不注入）。
+    planContext = getTodayPlan(childId);
+  }
 
   const modelRuntime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -443,7 +547,7 @@ async function createChildSession(
     agentDir: path.join(childDir, ".pi", "agent"),
     // 替换 SDK 默认 base：去掉 "expert coding assistant" 身份与 Pi 自身文档索引（对孩子是噪声），
     // 换成孩子专属的学习伙伴身份。AGENTS / 技能段 / cwd / 时间注入由 SDK 在 customPrompt 模式下自动附加。
-    systemPromptOverride: () => buildChildPrompt(childId, profile, planContext),
+    systemPromptOverride: () => buildChildPrompt(childId, profile, planContext, courseKey, courseLesson),
     // shared/skills 已无教学技能（recording / study-tracker 均已移除，目录为空），
     // 该扫描路径仅作兜底，未来若再加技能无需改加载逻辑。
     // 注意：noSkills 必须为 true —— SDK 的 packageManager 会自动发现并启用 ~/.agents/skills
@@ -459,12 +563,22 @@ async function createChildSession(
   });
   await loader.reload();
 
-  const sessionsDir = path.join(childDir, ".pi", "agent", "sessions");
+  // ISSUE-029 任务2：课程子会话落盘到 sessions/<topic>-<title>/ 独立子目录（照搬家长
+  // parent / parent-content 双会话先例），主会话 jsonl 留在 sessions/ 根，互不污染。
+  const sessionsDir = course
+    ? path.join(childDir, ".pi", "agent", "sessions", courseSessionsSubdir(course))
+    : path.join(childDir, ".pi", "agent", "sessions");
+  fs.mkdirSync(sessionsDir, { recursive: true });
   const mgr = SessionManager.continueRecent(childDir, sessionsDir);
-  // 自动新建会话开关：开启且（最后一条消息不是今天 / 已过设定的时间节点）时，
-  // 在当前管理器上开一个全新空会话（旧会话文件保留为归档）。遵循官方「懒落盘」语义：
-  // 空会话不写盘，首条 assistant 回复时才独占创建并落盘，不在此手写任何 header 文件。
-  if (shouldAutoNewSession(childId)) {
+  if (course) {
+    // 课程子会话（英语课等）：每次进入都开全新干净窗口——上下文从零开始，防主会话
+    // 中文/其他科目对话污染，也防上次本课对话残留（复习进度由 courses 状态驱动，不靠会话历史）。
+    // 「进入即新窗口」由 pi:start_child 带 courseKey 时先 disposeChildCourseSession 保证。
+    mgr.newSession();
+  } else if (shouldAutoNewSession(childId)) {
+    // 自动新建会话开关：开启且（最后一条消息不是今天 / 已过设定的时间节点）时，
+    // 在当前管理器上开一个全新空会话（旧会话文件保留为归档）。遵循官方「懒落盘」语义：
+    // 空会话不写盘，首条 assistant 回复时才独占创建并落盘，不在此手写任何 header 文件。
     // 配置了「每次新建会话前自动总结」时，先对之前的会话（今天之前最后有对话的一天）做按天汇总，
     // fire-and-forget：不阻塞会话打开，失败只记日志（汇总本身幂等，重复触发不重复写 daily）。
     maybeSummarizeBeforeNewSession(childId);
@@ -497,7 +611,7 @@ async function createChildSession(
     session.setThinkingLevel("high");
   }
 
-  activeSessions.set(childId, { session, childId });
+  activeSessions.set(sessionKey(childId, courseKey), { session, childId, courseKey });
   return session;
 }
 

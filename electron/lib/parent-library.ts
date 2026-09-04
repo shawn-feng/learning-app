@@ -454,6 +454,8 @@ export async function allocateTopicToChild(
 ): Promise<{ copied: number; existing: number }> {
   // SPLIT：家长库读服务端 parent_lib，孩子 kb 写服务端 kb.*（保留孩子既有进度）。
   const [topics, pCourses, cCourses] = await Promise.all([
+    // 注意：主题级教学方法（topics.method）不快照进孩子库（用户 2026-09-04 拍板）——
+    // 教法真源始终在家长库，孩子端经服务端 kb.courses.get / parent_content 实时读家长库。
     dbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>("parent_lib.topics.list", {}).catch(() => []),
     dbQuery<Array<Record<string, unknown>>>("parent_lib.courses.list", { topic: topicDir }).catch(() => []),
     dbQuery<Array<Record<string, unknown>>>("kb.courses.list", { child_id: childId, topic: topicDir }).catch(() => []),
@@ -464,6 +466,7 @@ export async function allocateTopicToChild(
       child_id: childId,
       name: topicRow.name,
       topic_key: topicRow.topic_key,
+      // 主题级教学方法不快照（真源家长库，实时读）——见上方注释
       method: "",
       progress: "",
       rules_json: topicRow.rules_json || "{}",

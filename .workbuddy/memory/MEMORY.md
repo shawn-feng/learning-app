@@ -56,8 +56,11 @@
 - `learning-server`(8788) 只部署家庭局域网 **201(192.168.1.201)**，**不部署公网 ECS(47.96.154.226)**；ECS 只跑 `learning-cloud`。
 - **服务端构建**：`node scripts/build.mjs`（esbuild→dist/server.cjs），勿用 `npm run build`(tsc 不产 server.cjs)。改 src 后确认 `dist/server.cjs` mtime 新。
 - **⚠️ pkg 二进制已不可用**（agent SDK 动态 import 导致 ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING）→ **201 直接 `node /opt/learning-server/server.cjs`**（201 Node v24.15.0）；service `ExecStart=/usr/bin/node /opt/learning-server/server.cjs`，`Environment=SERVER_DATA_DIR=/opt/learning-server/data`。
-- **201 客户端升级**：先 `pkill -TERM -f '/opt/学习伙伴/xuexihub'` 再 `sudo dpkg -i learning-app_x.y.z_amd64.deb`；验证 `dpkg -l learning-app` 显示 `ii`。
-- ⚠️ **`server/scripts/learning-server.service` 仍写 `ExecStart=/opt/learning-server/learning-server`（旧 pkg 路径），与现状不符**：pkg 已废弃，201 实际用 `node /opt/learning-server/server.cjs` 运行。下次发布前把该行改为 `ExecStart=/usr/bin/node /opt/learning-server/server.cjs`（并保留 `Environment=SERVER_DATA_DIR=/opt/learning-server/data`），否则 systemd 起不来。
+- **201 客户端升级**：`sudo dpkg -i learning-app_x.y.z_amd64.deb`；验证 `dpkg -l learning-app` 显示 `ii`。⚠️ dpkg 只覆盖磁盘二进制，GUI 进程仍跑内存旧版，**须 201 本地手动重启「学习伙伴」**才生效（SSH 杀不掉桌面会话进程）。
+- **✅ 201 部署现况(2026-09-04)**：learning-server **0.3.2**(study-plan v2) + learning-app **0.1.11**(deb 已装，GUI 待本地重启)。service ExecStart 已正确=`/usr/bin/node /opt/learning-server/server.cjs`，repo 副本 server/scripts/learning-server.service 亦已同步修正（13013c5）。
+- **健康路由是真 `/api/v1/health`**（不是 /health，/health 404）。health 端点返回 {"ok":true,"db":"ok"}。
+- **Actions 构件下载需 API token**：`gh auth status` 可能显示未登录，但 `gh auth token` 可取到有效 gho_ token；用 `curl -H "Authorization: token $T" .../actions/artifacts/<id>/zip` 下载（328MB 大文件务必 run_in_background，首跑会 SIGTERM）。
+- 201 凭据：SSH 账户 `shanshan` / `123456`（sudo 同密码），paramiko 直连。部署脚本模板留存 tmp/deploy/*.py。
 
 ## 发布流程
 - **本地 Windows 无法产出 Linux/Mac 包**（缺 fpm/mksquashfs）→ 走 GitHub Actions CI（build-linux.yml/build-mac.yml，tag 触发），`gh run download <id> --repo shawn-feng/learning-app` 取产物。

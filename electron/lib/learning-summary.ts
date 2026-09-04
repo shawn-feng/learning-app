@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { getChildDir, getDataDir } from "./config";
 import { dbQuery } from "./client-data";
-import { chapterKey, type CourseDailySummary } from "./kb-sqlite";
+import { chapterKey, getCourseLessonSync, type CourseDailySummary, type CourseLessonSync } from "./kb-sqlite";
 
 /**
  * 学习进度汇总（SPLIT 收尾：数据唯一真源在服务端 kb 库）。
@@ -315,4 +315,69 @@ export function getTodayPlan(childId: string): string {
     /* 无缓存：返回空 */
     return "";
   }
+}
+
+// ==================== 课程教学内容远程预取（ISSUE-029 任务2：英语课子会话注入用） ====================
+// 与 fetchTodayPlanRemote 同一「会话前远程预取 → 本地缓存 → 同步读」模式：
+// SPLIT 架构下孩子 kb 真源在服务端（本地 kb.sqlite 的 topics/courses 可能为空壳），
+// 课程教学方法/文案必须经服务端 RPC 取。离线/失败保留旧缓存，降级不阻断会话创建。
+
+export interface CourseLessonCache {
+  topic: string;
+  title: string;
+  lessonMethod: string; // 教学方法（服务端已做课程级→主题级 fallback）
+  teachingCopy: string; // 教学文案全文
+  htmlPath: string; // 学习资料 html 地址
+  material: string;
+  sendMaterial: string;
+}
+
+function courseLessonCachePath(childId: string): string {
+  return path.join(getDataDir(), "cache", `course-lesson-${childId}.json`);
+}
+
+function loadCourseLessonCache(childId: string): Record<string, CourseLessonCache> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(courseLessonCachePath(childId), "utf-8")) as {
+      lessons?: Record<string, CourseLessonCache>;
+    };
+    return parsed.lessons ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** 会话创建前远程预取某课教学内容（kb.courses.get）→ 写本地缓存（按 topic:title 多课共存）。
+ * 服务端已把课程级 lesson_method 为空时回退主题级 topics.method。 */
+export async function fetchCourseLessonRemote(childId: string, topic: string, title: string): Promise<void> {
+  try {
+    const row = await dbQuery<Record<string, unknown> | null>("kb.courses.get", {
+      child_id: childId,
+      topic,
+      title,
+    });
+    if (!row) return;
+    const cache = loadCourseLessonCache(childId);
+    cache[`${topic}:${title}`] = {
+      topic: String(row.topic ?? topic),
+      title: String(row.title ?? title),
+      lessonMethod: String(row.lesson_method ?? ""),
+      teachingCopy: String(row.teaching_copy ?? ""),
+      htmlPath: String(row.html_path ?? ""),
+      material: String(row.material ?? ""),
+      sendMaterial: String(row.send_material ?? ""),
+    };
+    const p = courseLessonCachePath(childId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ lessons: cache }, null, 2), "utf-8");
+  } catch {
+    /* 离线/未登录：保留旧缓存，getCourseLessonCached 降级 */
+  }
+}
+
+/** 同步读取某课教学内容（远程预取缓存；miss 时回退本地孩子库直读——离线快照兜底）。 */
+export function getCourseLessonCached(childId: string, topic: string, title: string): CourseLessonCache | null {
+  const hit = loadCourseLessonCache(childId)[`${topic}:${title}`];
+  if (hit) return hit;
+  return getCourseLessonSync(getChildDir(childId), topic, title);
 }

@@ -3,7 +3,7 @@ import {
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
-import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, resetParentSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
+import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, disposeChildCourseSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, resetParentSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, getVisionModel } from "./pi-runtime";
@@ -1093,12 +1093,18 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   // ---- Pi session handlers ----
 
-  ipcMain.handle("pi:start_child", async (_e: IpcMainInvokeEvent, childId: string) => {
-    try {
-      const session = await getChildSession(childId);
-      attachSessionEvents(session, childId, getMainWindow);
-      const history = getSessionHistory(session);
-      const materials = (await getSessionMaterials(session, getChildDir(childId))).slice(-getMaterialsLimit());
+  ipcMain.handle(
+    "pi:start_child",
+    async (_e: IpcMainInvokeEvent, childId: string, courseKey?: string) => {
+      try {
+        // ISSUE-029 任务2：courseKey（<topic>:<title>，如 english:12-yellow-01-...）→ 按课隔离子会话。
+        // 进入课程 = 每次全新干净窗口：先丢弃旧子会话（dispose + 清创建 Promise）再创建；
+        // 不传 courseKey 时走主会话，行为与之前完全一致。
+        if (courseKey) disposeChildCourseSession(childId, courseKey);
+        const session = await getChildSession(childId, courseKey);
+        attachSessionEvents(session, childId, getMainWindow);
+        const history = getSessionHistory(session);
+        const materials = (await getSessionMaterials(session, getChildDir(childId))).slice(-getMaterialsLimit());
       // ISSUE-041：孩子打开会话时立即处理一轮云端收件箱（分配包/进度请求），不等定时轮询
       try {
         const { handleCloudInbox } = await import("./delivery");
@@ -1132,12 +1138,16 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       _e: IpcMainInvokeEvent,
       childId: string,
       text: string,
-      images: Array<{ type: "image"; mimeType: string; data: string }> | null
+      images: Array<{ type: "image"; mimeType: string; data: string }> | null,
+      courseKey?: string
     ) => {
       const imgCount = images?.length || 0;
-      console.log(`[pi:prompt] child=${childId} text="${text.slice(0, 50)}" images=${imgCount}`);
+      console.log(
+        `[pi:prompt] child=${childId}${courseKey ? ` course=${courseKey}` : ""} text="${text.slice(0, 50)}" images=${imgCount}`
+      );
       try {
-        const session = await getChildSession(childId);
+        // ISSUE-029 任务2：courseKey 有值时路由到对应课程子会话（英语课），否则主会话。
+        const session = await getChildSession(childId, courseKey);
         // 图片上传：若当前模型不支持图像输入，自动切换到视觉模型（ISSUE-008）。
         // 切换是会话级、持久的（qwen3-vl 也能正常聊文字），仅切一次，不做切换提示状态回退。
         if (imgCount > 0) {

@@ -62,15 +62,41 @@ function saveSyncState(childId: string, state: SyncState): void {
   fs.writeFileSync(p, JSON.stringify(state, null, 2), "utf-8");
 }
 
-/** 扫描 sessions 目录，返回每文件未同步的增量（字节游标切片，UTF-8 安全）。 */
+/** 递归收集 sessions 目录下所有 .jsonl（含课程子会话目录 english-<title>/ 等，ISSUE-029 任务2）；
+ * 返回相对 sessions 目录的 posix 风格相对路径（根目录文件与旧版裸文件名一致，游标天然兼容）。 */
+export function walkJsonlFiles(dir: string, out: string[]): void {
+  const walk = (cur: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(cur, e.name);
+      if (e.isDirectory()) {
+        walk(full);
+      } else if (e.isFile() && e.name.endsWith(".jsonl")) {
+        // 基准固定为根 dir（非当前层 cur），保证子目录文件带完整父路径前缀
+        out.push(path.relative(dir, full).split(path.sep).join("/"));
+      }
+    }
+  };
+  walk(dir);
+}
+
+/** 扫描 sessions 目录，返回每文件未同步的增量（字节游标切片，UTF-8 安全）。
+ * ISSUE-029 任务2：递归遍历子目录，课程子会话（如 english-<title>/xxx.jsonl）同样增量上云；
+ * name 用相对路径（如 english-12-yellow-01/xxx.jsonl）区分同名文件、避免游标冲突。 */
 function collectDeltas(childId: string, state: SyncState): Delta[] {
   const dir = sessionsDirOf(childId);
   if (!fs.existsSync(dir)) return [];
   const out: Delta[] = [];
-  for (const f of fs.readdirSync(dir)) {
-    if (!f.endsWith(".jsonl")) continue;
-    const full = path.join(dir, f);
-    const prev = state.files[f] ?? { syncedBytes: 0, lineCount: 0, lastTs: 0 };
+  const files: string[] = [];
+  walkJsonlFiles(dir, files);
+  for (const rel of files) {
+    const full = path.join(dir, ...rel.split("/"));
+    const prev = state.files[rel] ?? { syncedBytes: 0, lineCount: 0, lastTs: 0 };
     let buf: Buffer;
     try {
       buf = fs.readFileSync(full);
@@ -84,7 +110,7 @@ function collectDeltas(childId: string, state: SyncState): Delta[] {
       .map((l) => l.replace(/\r$/, ""))
       .filter((l) => l.trim() !== "");
     if (lines.length === 0) continue;
-    out.push({ name: f, fromOffset: prev.syncedBytes, fromIndex: prev.lineCount, lines });
+    out.push({ name: rel, fromOffset: prev.syncedBytes, fromIndex: prev.lineCount, lines });
   }
   return out;
 }

@@ -59,10 +59,16 @@ const api = {
   },
 
   // Pi actions (renderer -> main)
-  piStartChild: (childId: string) => ipcRenderer.invoke("pi:start_child", childId),
+  // ISSUE-029 任务2：courseKey（<topic>:<title>）有值时进入/路由到课程子会话（英语课），否则主会话
+  piStartChild: (childId: string, courseKey?: string) =>
+    ipcRenderer.invoke("pi:start_child", childId, courseKey),
   piStartParent: () => ipcRenderer.invoke("pi:start_parent"),
-  piPrompt: (childId: string, text: string, images?: Array<{ type: "image"; mimeType: string; data: string }> | null) =>
-    ipcRenderer.invoke("pi:prompt", childId, text, images || null),
+  piPrompt: (
+    childId: string,
+    text: string,
+    images?: Array<{ type: "image"; mimeType: string; data: string }> | null,
+    courseKey?: string
+  ) => ipcRenderer.invoke("pi:prompt", childId, text, images || null, courseKey),
   // 文件上传落盘（ISSUE-008）：保存到 data/children/<childId>/uploads/，返回相对路径
   saveUpload: (childId: string, name: string, mime: string, data: ArrayBuffer) =>
     ipcRenderer.invoke("file:save_upload", { childId, name, mime, data }),

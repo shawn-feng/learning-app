@@ -251,6 +251,12 @@ export default function Learn({ child, onExit }: Props) {
   const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const childIdRef = useRef(child.childId);
+  // ISSUE-029 任务2：当前课程子会话（英语课）。空串 = 主会话；`english:<title>` = 英语课按课隔离子会话
+  const [currentCourseKey, setCurrentCourseKey] = useState("");
+  const courseKeyRef = useRef("");
+  const courseTitle = currentCourseKey
+    ? currentCourseKey.slice(currentCourseKey.indexOf(":") + 1) || currentCourseKey
+    : "";
   // ISSUE-019：课程时间段提醒横幅（上课/下课；顶部 1/3 区域，常驻到点击关闭；含提醒方式）
   const [classReminder, setClassReminder] = useState<{
     type: "start" | "end" | "custom";
@@ -376,7 +382,14 @@ export default function Learn({ child, onExit }: Props) {
 
   useEffect(() => {
     childIdRef.current = child.childId;
-    window.api.piStartChild(child.childId).then((r: any) => {
+    courseKeyRef.current = currentCourseKey;
+    // ISSUE-029 任务2：currentCourseKey 变化即切换会话——英语课=按课隔离子会话（干净窗口、
+    // 主进程先 dispose 旧子会话再创建），空串=主会话（continueRecent 带原中文课历史）。
+    // 切换时先清空旧消息/资料，防跨会话残留（随后 pi:start_child 回填新会话 history）。
+    setMessages([]);
+    setMaterials([]);
+    setSelectedMaterialId(null);
+    window.api.piStartChild(child.childId, currentCourseKey || undefined).then((r: any) => {
       if (r?.success) {
         if (Array.isArray(r.history) && r.history.length > 0) {
           setMessages(
@@ -410,7 +423,7 @@ export default function Learn({ child, onExit }: Props) {
         console.error("Failed to start session:", r?.error);
       }
     });
-  }, [child.childId]);
+  }, [child.childId, currentCourseKey]);
 
   // 更新当前工作气泡（按 id 定位）
   const patchWorking = useCallback((patch: (m: ChatMessage) => ChatMessage) => {
@@ -816,7 +829,8 @@ export default function Learn({ child, onExit }: Props) {
       const result = await window.api.piPrompt(
         child.childId,
         promptText,
-        sdkImages.length ? sdkImages : undefined
+        sdkImages.length ? sdkImages : undefined,
+        courseKeyRef.current || undefined
       );
       if (!result.success) {
         // 若 pi:reply_error 已处理则 workingIdRef 已清空，跳过
@@ -1098,6 +1112,40 @@ export default function Learn({ child, onExit }: Props) {
               </div>
             ) : (
               <>
+                {/* ISSUE-029 任务2：英语课子会话模式横条——显示当前课程 + 退出回主会话 */}
+                {currentCourseKey && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                      padding: "6px 12px",
+                      background: "#E6F1FB",
+                      borderBottom: "1px solid #B5D4F4",
+                      flex: "0 0 auto",
+                    }}
+                  >
+                    <span style={{ fontWeight: 500, fontSize: 13, color: "#0C447C", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {"🌍 英语课 · " + courseTitle}
+                    </span>
+                    <button
+                      onClick={() => setCurrentCourseKey("")}
+                      style={{
+                        border: "none",
+                        background: "transparent",
+                        color: "#185FA5",
+                        cursor: "pointer",
+                        fontSize: 13,
+                        fontWeight: 500,
+                        flex: "0 0 auto",
+                      }}
+                      title="退出英语课，回到主会话"
+                    >
+                      退出英语课 ✕
+                    </button>
+                  </div>
+                )}
                 <div className="chat-resize-handle" onPointerDown={chat.startDrag} title="拖动调整聊天宽度" />
                 <button
                   className="chat-collapse-btn"
@@ -1153,7 +1201,17 @@ export default function Learn({ child, onExit }: Props) {
         </div>
       )}
 
-      {showTodo && <TodoModal childId={child.childId} onClose={() => setShowTodo(false)} />}
+      {showTodo && (
+        <TodoModal
+          childId={child.childId}
+          onClose={() => setShowTodo(false)}
+          // ISSUE-029 任务2：今日计划里的英语课项点击「进入课程」→ 切到英语子会话
+          onStartCourse={(courseKey) => {
+            setShowTodo(false);
+            setCurrentCourseKey(courseKey);
+          }}
+        />
+      )}
 
       {/* ISSUE-047 方案A：我的提醒（独立弹框，不放今日计划里） */}
       {showReminders && <MyRemindersModal childId={child.childId} onClose={() => setShowReminders(false)} />}

@@ -40,11 +40,15 @@ kb.prepare("INSERT INTO courses (topic, title, sort_order, status, first_learned
   .run("lunyu", "论语学而篇第一章", 1, "✅", "", "", 2); // 已学 → 复习目标
 kb.prepare("INSERT INTO courses (topic, title, sort_order, status) VALUES (?,?,?,?)").run("lunyu", "论语先进篇第二章", 2, "⬜");
 // 空 child_kb 需有 today entries 由 stat 判 daily（此处直接跳过该门，见 stat 说明）
+const today = formatLocalDate(new Date());
+const yesterday = formatLocalDate(new Date(new Date().setDate(new Date().getDate() - 1)));
+
+// 提前学场景：孩子昨天已学过八佾篇第一章（first_learned=昨天），家长把它排成今天的新学计划
+kb.prepare("INSERT INTO courses (topic, title, sort_order, status, first_learned) VALUES (?,?,?,?,?)")
+  .run("lunyu", "论语八佾篇第一章", 3, "✅", yesterday);
 kb.close();
 
-const today = formatLocalDate(new Date());
-
-// 造今天两条计划：新学先进篇第二章 + 复习学而篇第一章
+// 造今天三条计划：新学先进篇第二章 + 复习学而篇第一章 + 新学八佾篇第一章（昨天已提前学）
 main.prepare(
   "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, mode, origin, status, done_at, active, created_at, updated_at) " +
     "VALUES (?,?,?,?,?,?,?, 'conversation','pending','',1,?,?)"
@@ -53,6 +57,10 @@ main.prepare(
   "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, mode, origin, status, done_at, active, created_at, updated_at) " +
     "VALUES (?,?,?,?,?,?,?, 'conversation','pending','',1,?,?)"
 ).run("plan-rev", PARENT, CHILD, today, "lunyu", "论语学而篇第一章", "review", now, now);
+main.prepare(
+  "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, mode, origin, status, done_at, active, created_at, updated_at) " +
+    "VALUES (?,?,?,?,?,?,?, 'conversation','pending','',1,?,?)"
+).run("plan-early", PARENT, CHILD, today, "lunyu", "论语八佾篇第一章", "new", now, now);
 
 const ctxBase = { dataDir: dir, mainDb: main, parentId: PARENT, childId: CHILD, auth: {}, schedulerConfig: {}, now: new Date(), point: "" } as never;
 const ctx = () => ({ ...ctxBase, now: new Date() }) as never;
@@ -61,14 +69,19 @@ const ctx = () => ({ ...ctxBase, now: new Date() }) as never;
 await (runTodoGenServer as (c: unknown) => Promise<void>)(ctx());
 const pkb = openKb(dir, PARENT, CHILD);
 const todayRows = pkb.prepare("SELECT id, title, source, plan_id, status, note FROM todo_items WHERE todo_date=? ORDER BY sort").all(today) as Array<Record<string, string>>;
-assert(todayRows.length === 2, "gen 生成 2 条家长 todo", todayRows);
+assert(todayRows.length === 3, "gen 生成 3 条家长 todo", todayRows);
 assert(todayRows.some((r) => r.plan_id === "plan-new" && r.title === "论语先进篇第二章"), "todo: 新学先进篇第二章");
 assert(todayRows.some((r) => r.plan_id === "plan-rev" && r.title === "论语学而篇第一章" && r.note === "复习"), "todo: 复习学而篇第一章(note=复习)");
+// 提前学：gen 直接判完成——todo 带 done 建行 + 计划行回写 done（不再被 carry 顺延）
+const earlyTodo = todayRows.find((r) => r.plan_id === "plan-early");
+assert(!!earlyTodo && earlyTodo.status === "done", "gen 预判提前学：todo 直接 done", earlyTodo);
+const planEarly = q1<{ status: string; done_at: string }>("SELECT status, done_at FROM study_plan_items WHERE id='plan-early'");
+assert(planEarly.status === "done" && planEarly.done_at === today, "gen 预判提前学：plan 行标 done", planEarly);
 
 // 幂等：再跑一次 gen 不新增
 await (runTodoGenServer as (c: unknown) => Promise<void>)(ctx());
 const cnt2 = pkb.prepare("SELECT COUNT(*) c FROM todo_items WHERE todo_date=?").get(today) as { c: number };
-assert(cnt2.c === 2, "gen 幂等：不重复新增", cnt2);
+assert(cnt2.c === 3, "gen 幂等：不重复新增", cnt2);
 
 // ---------- 模拟 recording：孩子学了先进篇第二章（首次学习=今天） & 复习了学而篇第一章（最近复习=今天） ----------
 pkb.prepare("UPDATE courses SET first_learned=?, status='✅' WHERE title='论语先进篇第二章'").run(today);
@@ -84,13 +97,12 @@ const planRev = q1<{ status: string }>("SELECT status FROM study_plan_items WHER
 assert(planRev.status === "done", "stat 回写 plan-rev(review): done", planRev);
 const pkb2 = openKb(dir, PARENT, CHILD);
 const doneTodos = pkb2.prepare("SELECT id,status FROM todo_items WHERE todo_date=? AND source='parent' AND status='done'").all(today);
-assert(doneTodos.length === 2, "stat 勾选今日家长 todo 为 done", doneTodos);
+assert(doneTodos.length === 3, "stat 勾选今日家长 todo 为 done(含提前学项)", doneTodos);
 const statsRow = pkb2.prepare("SELECT total,done,parent_total,parent_done,self_total FROM child_todo_stats WHERE date=?").get(today);
-assert(statsRow && (statsRow as any).total === 2 && (statsRow as any).parent_total === 2 && (statsRow as any).parent_done === 2, "child_todo_stats 写入(2 家长项全完成)", statsRow);
+assert(statsRow && (statsRow as any).total === 3 && (statsRow as any).parent_total === 3 && (statsRow as any).parent_done === 3, "child_todo_stats 写入(3 家长项全完成)", statsRow);
 pkb2.close();
 
 // ---------- carry：把「昨天」一条 pending 排期顺延到今天 ----------
-const yesterday = formatLocalDate(new Date(new Date().setDate(new Date().getDate() - 1)));
 main.prepare(
   "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, mode, origin, status, done_at, active, created_at, updated_at) " +
     "VALUES (?,?,?,?,?,?,?, 'conversation','pending','',1,?,?)"

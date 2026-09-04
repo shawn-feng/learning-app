@@ -205,6 +205,57 @@ export function openKbDb(childDir: string): DatabaseSync {
   return db;
 }
 
+// ==================== 英语课子会话数据层（ISSUE-029 终版任务2） ====================
+
+/** courseKey 解析：格式 `<topic>:<title>`（topic=主题目录名，如 english）。非法格式返回 null。 */
+export function parseCourseKey(courseKey: string): { topic: string; title: string } | null {
+  const idx = courseKey.indexOf(":");
+  if (idx <= 0 || idx >= courseKey.length - 1) return null;
+  return { topic: courseKey.slice(0, idx), title: courseKey.slice(idx + 1) };
+}
+
+/** 某课的同步教学内容（英语子会话 systemPrompt 注入用——systemPromptOverride 是同步回调不能 await）。 */
+export interface CourseLessonSync {
+  topic: string;
+  title: string;
+  lessonMethod: string; // 每课教学方法全文
+  teachingCopy: string; // 教学文案全文
+  htmlPath: string; // 学习资料 html 地址
+  material: string; // 教学资料说明
+  sendMaterial: string; // 要发送的学习资料
+}
+
+/** 同步读取孩子库某课教学内容；查不到/库异常返回 null（降级为无课程注入，不阻断会话创建）。 */
+export function getCourseLessonSync(childDir: string, topic: string, title: string): CourseLessonSync | null {
+  let db: DatabaseSync | null = null;
+  try {
+    db = openKbDb(childDir);
+    const row = db
+      .prepare(
+        "SELECT topic, title, lesson_method, teaching_copy, html_path, material, send_material FROM courses WHERE topic = ? AND title = ?"
+      )
+      .get(topic, title) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      topic: String(row.topic ?? topic),
+      title: String(row.title ?? title),
+      lessonMethod: String(row.lesson_method ?? ""),
+      teachingCopy: String(row.teaching_copy ?? ""),
+      htmlPath: String(row.html_path ?? ""),
+      material: String(row.material ?? ""),
+      sendMaterial: String(row.send_material ?? ""),
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* 忽略 */
+    }
+  }
+}
+
 /**
  * v4 → v5 就地迁移：courses 表加 `lesson_method`（每课教学方法全文）与 `html_path`（学习资料 html 地址）。
  * 幂等：通过列存在性判断，只在缺少这两列时执行一次。

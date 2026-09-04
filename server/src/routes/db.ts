@@ -190,6 +190,49 @@ export const queryHandlers: Record<string, QueryHandler> = {
       db.close();
     }
   },
+  // ISSUE-029 任务2：精确取某课教学内容（英语课子会话 systemPrompt 注入用，客户端会话前远程预取）。
+  // 课程行（进度/teaching_copy 快照）从孩子库取——行存在即代表该主题已分配给孩子；
+  // 主题级教学方法**不快照**（用户 2026-09-04 拍板）：真源始终在家长库 topics.method，此处实时读——
+  // 教法优先课程级 lesson_method（若家长填充过），为空时回家长库取主题级 method。
+  "kb.courses.get": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const topic = str(args.topic);
+    const title = str(args.title);
+    if (!topic || !title) throw new ApiError(400, "缺少 topic / title");
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      const row = db
+        .prepare(
+          "SELECT topic, title, lesson_method, teaching_copy, html_path, material, send_material " +
+            "FROM courses WHERE topic = ? AND title = ?"
+        )
+        .get(topic, title) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      let method = String(row.lesson_method ?? "");
+      if (!method) {
+        const pdb = openParentLib(ctx.dataDir, ctx.parentId);
+        try {
+          const t = pdb.prepare("SELECT method FROM topics WHERE topic_key = ?").get(topic) as
+            | { method?: string }
+            | undefined;
+          method = String(t?.method ?? "");
+        } finally {
+          pdb.close();
+        }
+      }
+      return {
+        topic: row.topic,
+        title: row.title,
+        lesson_method: method,
+        teaching_copy: row.teaching_copy,
+        html_path: row.html_path,
+        material: row.material,
+        send_material: row.send_material,
+      };
+    } finally {
+      db.close();
+    }
+  },
   "kb.tags.list": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
@@ -209,18 +252,39 @@ export const queryHandlers: Record<string, QueryHandler> = {
     }
   },
   // ISSUE-025 重构（2026-09-04）：取某天 todolist（todo_items 一事一行，按 sort/created 排序）。date 缺省 = 今天。
+  // ISSUE-029 任务2：每行带出 topic_key / course_name（英语课入口判定）——plan_id 回查主库 study_plan_items；
+  // 孩子自规划项（无 plan_id）两字段为空串。
   "kb.todo.list": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const date = str(args.date);
     if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
-      return db
+      const rows = db
         .prepare(
           "SELECT id, todo_date, title, source, plan_id, status, done_at, due_time, done_time, note, sort, created_at, updated_at " +
             "FROM todo_items WHERE todo_date = ? ORDER BY sort, created_at"
         )
-        .all(date);
+        .all(date) as Array<Record<string, unknown>>;
+      const planIds = [
+        ...new Set(
+          rows.map((r) => r.plan_id).filter((v): v is string => typeof v === "string" && v !== "")
+        ),
+      ];
+      const byId = new Map<string, { topic_key: string; course_name: string }>();
+      if (planIds.length > 0) {
+        const placeholders = planIds.map(() => "?").join(",");
+        const planRows = ctx.mainDb
+          .prepare(`SELECT id, topic_key, course_name FROM study_plan_items WHERE id IN (${placeholders})`)
+          .all(...planIds) as Array<{ id: string; topic_key: string; course_name: string }>;
+        for (const p of planRows) byId.set(p.id, p);
+      }
+      for (const r of rows) {
+        const p = typeof r.plan_id === "string" ? byId.get(r.plan_id) : undefined;
+        r.topic_key = p?.topic_key ?? "";
+        r.course_name = p?.course_name ?? "";
+      }
+      return rows;
     } finally {
       db.close();
     }
@@ -378,6 +442,7 @@ export const execHandlers: Record<string, ExecHandler> = {
     }
   },
   // ISSUE-025 重构（2026-09-04）：由 gen 物化一条「家长规定项」todo（source=parent，关联 study_plan_items）。
+  // status/done_at 可选：gen 预判课程已学过（提前学等）时带 done 建行，避免已完成项先建 pending 再等 stat。
   "kb.todo.addParent": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const date = str(args.date);
@@ -385,6 +450,9 @@ export const execHandlers: Record<string, ExecHandler> = {
     const title = str(args.title);
     if (!title.trim()) throw new ApiError(400, "缺少 title");
     const planId = str(args.plan_id);
+    const status = str(args.status, "pending");
+    if (status !== "pending" && status !== "done") throw new ApiError(400, "status 仅支持 pending / done");
+    const doneAt = status === "done" ? str(args.done_at, date) : "";
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
       const now = new Date().toISOString();
@@ -394,8 +462,8 @@ export const execHandlers: Record<string, ExecHandler> = {
       const id = crypto.randomUUID();
       db.prepare(
         "INSERT INTO todo_items (id, child_id, todo_date, title, source, plan_id, status, done_at, due_time, done_time, note, sort, created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, 'parent', ?, 'pending', '', '', '', ?, ?, ?, ?)"
-      ).run(id, childId, date, title.trim(), planId, str(args.note), num(args.sort, maxSort.m + 1), now, now);
+          "VALUES (?, ?, ?, ?, 'parent', ?, ?, ?, '', '', ?, ?, ?, ?)"
+      ).run(id, childId, date, title.trim(), planId, status, doneAt, str(args.note), num(args.sort, maxSort.m + 1), now, now);
       return { ok: true, id };
     } finally {
       db.close();

@@ -274,7 +274,9 @@ function loadTodoRowsServer(ctx: WorkerTaskCtx, date: string): TodoRow[] {
  * 今日家长 todolist 与学习计划同步（v2）。每次 plan tick 调用：
  * 以 study_plan_items 当日排期为真源，把「今天要学/复习的课」物化进 child kb 的 todo_items（source=parent，
  * 关联 plan_id）。规则：
- *  - 计划里某课今日有排 → 若尚无对应家长 todo 则新增（pending）；已有且计划仍在则保留（含已完成态）；
+ *  - 预判完成：new 行课程已标注学过（✅/first_learned，不限日期，提前学也算）→ 计划行直接标 done，
+ *    对应 todo 物化为 done——否则该行会被 carry 反复顺延（stat 只由当天 daily 驱动，无 daily 时不会回写）；
+ *  - 计划里某课今日有排 → 若尚无对应家长 todo 则新增；已有且计划仍在则保留（含已完成态）；
  *  - 计划的课被删除/停用 → 对应家长 todo 一并删除；
  *  - 同一 (course_name, mode) 若今天有 conversation+carry 两行 → 只物化一个（去重，保留先落库的行）；
  *  - 孩子自规划项（source=child）绝不动。
@@ -285,8 +287,32 @@ export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
   const todoRows = loadTodoRowsServer(ctx, today);
   const now = new Date().toISOString();
 
+  // 0) 预判已完成（与 stat 的 planCourseDone 同口径）：new 行课程已学过即 done（提前学也算）；
+  //    review 行当天已复习过也算。标记计划行，供物化 todo 时带完成态、并防 carry 顺延已完成行。
+  const courses =
+    runKbQuery<Array<{ title: string; status: string; first_learned: string; last_review: string }>>(
+      ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.courses.list", { child_id: ctx.childId }
+    ) ?? [];
+  const courseByTitle = new Map<string, { status: string; first_learned: string; last_review: string }>();
+  for (const c of courses) {
+    const title = (c.title || "").trim();
+    if (title && !courseByTitle.has(title)) courseByTitle.set(title, c);
+  }
+  const doneById = new Map<string, boolean>();
+  let preDone = 0;
+  for (const r of planRows) {
+    const course = courseByTitle.get(r.course_name);
+    const isDone = course ? planCourseDone(today, course, r.mode) : false;
+    doneById.set(r.id, isDone);
+    if (isDone && r.status !== "done") {
+      ctx.mainDb
+        .prepare("UPDATE study_plan_items SET status = 'done', done_at = ?, updated_at = ? WHERE id = ?")
+        .run(today, now, r.id);
+      preDone++;
+    }
+  }
+
   const planIds = new Set(planRows.map((r) => r.id));
-  const childTodos = todoRows.filter((t) => t.source !== "parent");
   const parentTodos = todoRows.filter((t) => t.source === "parent");
 
   // 1) 删除：计划已删/停用的家长 todo（其 plan_id 不在今日计划里）
@@ -297,7 +323,7 @@ export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
       removed++;
     }
   }
-  // 2) 去重 & 新增：按 (course_name, mode) 保留首个 plan_id，缺的补家长 todo
+  // 2) 去重 & 新增：按 (course_name, mode) 保留首个 plan_id，缺的补家长 todo（已判完成的行带 done 建行）
   const seenCourse = new Set<string>();
   let added = 0;
   for (const r of planRows) {
@@ -306,29 +332,43 @@ export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
     seenCourse.add(courseKey);
     const exist = parentTodos.find((t) => t.plan_id === r.id);
     if (exist) continue;
+    const isDone = doneById.get(r.id) ?? false;
     runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.addParent", {
       child_id: ctx.childId,
       date: today,
       title: r.course_name,
       plan_id: r.id,
       note: r.mode === "review" ? "复习" : "",
+      status: isDone ? "done" : "pending",
+      done_at: isDone ? today : "",
     });
     added++;
   }
-  if (removed || added) {
-    console.log(`[worker:todo-gen] child ${ctx.childId}: ${today} 家长项同步（新增 ${added}，删除 ${removed}）`);
+  if (removed || added || preDone) {
+    console.log(
+      `[worker:todo-gen] child ${ctx.childId}: ${today} 家长项同步（新增 ${added}，删除 ${removed}，预判已完成 ${preDone}）`
+    );
   }
 }
 
 const DONE_RATE_OK = 0.8;
 
-/** 按课程「当天活动」判某排期行是否完成（v2：精确按 course 的日期字段，无前缀剥取）。 */
-function planCourseDone(today: string, course: { first_learned: string; last_review: string }, mode: string): boolean {
-  const learned = (course.first_learned || "").trim();
+/**
+ * 判某排期行是否完成（2026-09-04 语义调整）：
+ *  - review（复习）行：必须「当天」复习过（last_review == 今天）——复习就是为了当天巩固；
+ *  - new（新学）行：课程在 courses 里标注学过（状态 ✅ 或有首次学习日期）即完成，**不要求日期在计划当天**
+ *    ——提前学（把明天的课今天学了）也算完成。mode 由家长 agent 制定计划时按已学/未学判定，
+ *    不会把没学过的课排成复习，故 new 行无需再防错排。
+ */
+function planCourseDone(
+  today: string,
+  course: { status?: string; first_learned: string; last_review: string },
+  mode: string
+): boolean {
   const reviewed = (course.last_review || "").trim();
   if (mode === "review") return reviewed === today;
-  // new：首次学习 或 当天复习过（防首次学习日期在别天但今天补复习的边界，视当天有学习动作即完成）
-  return learned === today || reviewed === today;
+  if ((course.status || "").trim() === "✅") return true;
+  return !!(course.first_learned || "").trim();
 }
 
 /**
@@ -348,10 +388,10 @@ export async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
   }
   const planRows = loadPlanRowsServer(ctx, today);
   const courses =
-    runKbQuery<Array<{ topic: string; title: string; first_learned: string; last_review: string }>>(
+    runKbQuery<Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>>(
       ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.courses.list", { child_id: ctx.childId }
     ) ?? [];
-  const courseByTitle = new Map<string, { first_learned: string; last_review: string }>();
+  const courseByTitle = new Map<string, { status: string; first_learned: string; last_review: string }>();
   for (const c of courses) {
     const title = (c.title || "").trim();
     if (title && !courseByTitle.has(title)) courseByTitle.set(title, c);

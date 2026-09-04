@@ -29,6 +29,8 @@ interface TodoRow {
   due_time: string;   // 约定截止 HH:MM（孩子自规划可带）
   done_time: string;  // 真实完成时刻 ISO（打勾时写）
   done_at: string;    // 完成日期 YYYY-MM-DD
+  topic_key?: string; // ISSUE-029 任务2：来自学习计划的课程主题（english = 英语课，可进独立子会话）
+  course_name?: string; // 学习计划中的真实课程名（english:<course_name> 即 courseKey）
 }
 
 interface TodoItem {
@@ -38,6 +40,8 @@ interface TodoItem {
   note: string;
   dueTime: string;    // HH:MM 或 ""
   doneTime: string;   // ISO 或 ""
+  topicKey: string;   // "" = 非课程计划项
+  courseName: string;
 }
 
 /** 约定 HH:MM 前完成 + 已完成后 → 判定按时/超时。dueTime 空或未完成不算。 */
@@ -67,9 +71,12 @@ const RATE_OK = 0.8; // 对齐主进程 DONE_RATE_OK
 export default function TodoModal({
   childId,
   onClose,
+  onStartCourse,
 }: {
   childId: string;
   onClose: () => void;
+  /** ISSUE-029 任务2：英语课项点击「进入课程」→ Learn 切到英语子会话（english:<course_name>） */
+  onStartCourse?: (courseKey: string) => void;
 }) {
   const [tab, setTab] = useState<"today" | "stats">("today");
   const [todoRows, setTodoRows] = useState<TodoRow[]>([]);
@@ -111,6 +118,8 @@ export default function TodoModal({
     note: r.note || "",
     dueTime: r.due_time || "",
     doneTime: r.done_time || "",
+    topicKey: r.topic_key || "",
+    courseName: r.course_name || r.title || "",
   }));
   const doneCount = items.filter((i) => i.done).length;
   const rate = items.length > 0 ? doneCount / items.length : 0;
@@ -267,6 +276,28 @@ export default function TodoModal({
                       >
                         {it.text}
                       </span>
+                      {/* ISSUE-029 任务2：英语课项（家长排期、未完成）可一键进入英语子会话 */}
+                      {it.topicKey === "english" && !it.done && (
+                        <button
+                          onClick={() => onStartCourse?.(`english:${it.courseName}`)}
+                          style={{
+                            display: "inline-block",
+                            marginLeft: 8,
+                            border: "none",
+                            background: "#185FA5",
+                            color: "white",
+                            padding: "3px 10px",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            fontWeight: 500,
+                            cursor: "pointer",
+                            verticalAlign: "middle",
+                          }}
+                          title="进入英语课专用会话（全程英文教学）"
+                        >
+                          🌍 进入课程
+                        </button>
+                      )}
                       {/^\d{2}:\d{2}$/.test(it.dueTime) && (
                         <span
                           style={{

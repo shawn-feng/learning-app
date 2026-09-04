@@ -113,31 +113,30 @@ function fetchRow(db: DatabaseSync, parentId: string, id: string): PlanRow | und
 }
 
 /**
- * 服务端计算每行完成态：读孩子 kb 该课当天活动。
- * mode=new → courses.first_learned == date；mode=review → courses.last_review == date。
+ * 读孩子库课程状态（学过没学过/首次/最近复习），供按行 mode 判完成（2026-09-04 语义，与 worker stat 同口径）：
+ *  - mode=new → 课程标注学过（状态 ✅ 或有首次学习日期）即 done，**不限日期**（提前学也算）；
+ *  - mode=review → courses.last_review == 该行日期 才 done（复习必须当天）。
  * 找不到对应课程 → done=false（排了但课程表没有，视为未完成）。
  */
-function loadCourseDoneMap(
+function loadCourseStates(
   dataDir: string,
   parentId: string,
-  childId: string,
-  date: string
-): Map<string, boolean> {
-  const key = (topicKey: string, courseName: string) => `${topicKey}\u0000${courseName}\u0000${date}`;
-  const out = new Map<string, boolean>();
+  childId: string
+): Map<string, { status: string; first_learned: string; last_review: string }> {
+  const out = new Map<string, { status: string; first_learned: string; last_review: string }>();
   try {
     const db = openKb(dataDir, parentId, childId);
     try {
       const rows = db
-        .prepare("SELECT topic, title, first_learned, last_review FROM courses")
-        .all() as Array<{ topic: string; title: string; first_learned: string; last_review: string }>;
+        .prepare("SELECT topic, title, status, first_learned, last_review FROM courses")
+        .all() as Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>;
       for (const c of rows) {
         const title = (c.title || "").trim();
         if (!title) continue;
-        // 只记录「今天有活动」的课；调用方按 (topic,title) 查。
-        const learned = (c.first_learned || "").trim() === date;
-        const reviewed = (c.last_review || "").trim() === date;
-        if (learned || reviewed) out.set(key((c.topic || "").trim(), title), true);
+        const key = `${(c.topic || "").trim()}\u0000${title}`;
+        if (!out.has(key)) {
+          out.set(key, { status: c.status || "", first_learned: c.first_learned || "", last_review: c.last_review || "" });
+        }
       }
     } finally {
       db.close();
@@ -148,8 +147,18 @@ function loadCourseDoneMap(
   return out;
 }
 
-function toDto(r: PlanRow, doneMap: Map<string, boolean>): StudyPlanRowDto {
-  const done = doneMap.has(`${r.topic_key}\u0000${r.course_name}\u0000${r.date}`);
+/** 单行完成判定（与 worker stat 的 planCourseDone 同口径）。 */
+function planRowDone(r: PlanRow, states: Map<string, { status: string; first_learned: string; last_review: string }>): boolean {
+  const c = states.get(`${r.topic_key}\u0000${r.course_name}`);
+  if (!c) return false;
+  if (r.mode === "review") return (c.last_review || "").trim() === r.date;
+  return (c.status || "").trim() === "✅" || !!(c.first_learned || "").trim();
+}
+
+function toDto(
+  r: PlanRow,
+  states: Map<string, { status: string; first_learned: string; last_review: string }>
+): StudyPlanRowDto {
   return {
     id: r.id,
     childId: r.child_id,
@@ -160,7 +169,7 @@ function toDto(r: PlanRow, doneMap: Map<string, boolean>): StudyPlanRowDto {
     origin: r.origin,
     status: r.status,
     doneAt: r.done_at,
-    done,
+    done: planRowDone(r, states),
     active: r.active,
     updatedAt: r.updated_at,
   };
@@ -200,12 +209,9 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     if (date) rows = rows.filter((r) => r.date === date);
     if (from) rows = rows.filter((r) => r.date >= from!);
     if (to) rows = rows.filter((r) => r.date <= to!);
-    // 完成态按行各自的 date 判定（每行可能不同天）
-    const byDate = new Map<string, Map<string, boolean>>();
-    for (const r of rows) {
-      if (!byDate.has(r.date)) byDate.set(r.date, loadCourseDoneMap(deps.config.dataDir ?? "", parentId, childId, r.date));
-    }
-    const out = rows.map((r) => toDto(r, byDate.get(r.date) ?? new Map()));
+    // 完成态按行 mode 判定（new=学过即完成不限日期；review=当天复习过）
+    const states = loadCourseStates(deps.config.dataDir ?? "", parentId, childId);
+    const out = rows.map((r) => toDto(r, states));
     return { ok: true, rows: out };
   });
 
@@ -233,7 +239,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
         "SELECT * FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND date = ? ORDER BY created_at ASC"
       )
       .all(parentId, childId, day) as unknown as PlanRow[];
-    const doneMap = loadCourseDoneMap(deps.config.dataDir ?? "", parentId, childId, day);
+    const states = loadCourseStates(deps.config.dataDir ?? "", parentId, childId);
     const items = rows.map((r) => ({
       planId: r.id,
       topicKey: r.topic_key,
@@ -243,7 +249,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       carry: r.origin === "carry",
       status: r.status,
       doneAt: r.done_at,
-      done: doneMap.has(`${r.topic_key}\u0000${r.course_name}\u0000${day}`),
+      done: planRowDone(r, states),
     }));
     return { ok: true, date: day, items };
   });
