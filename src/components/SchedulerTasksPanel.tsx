@@ -11,10 +11,12 @@ interface ChildItem {
 interface SchedulerTask {
   id: string;
   name: string;
-  type: "recording" | "todo_gen" | "todo_stat" | "auto_new_session";
+  type: "recording" | "todo_gen" | "todo_stat" | "auto_new_session" | "reminder";
   time: string;
   extra: Record<string, unknown>;
   enabled: boolean;
+  /** ISSUE-047：parent | child（孩子 agent 自建的提醒 task） */
+  owner?: "parent" | "child";
   createdAt: string;
   updatedAt: string;
   assignments: Array<{ childId: string; enabled: boolean }>;
@@ -55,6 +57,11 @@ const TYPE_META: Record<SchedulerTask["type"], { label: string; icon: string; hi
     label: "自动新建会话",
     icon: "🔄",
     hint: "到点自动开新会话（旧会话保留为归档）",
+  },
+  reminder: {
+    label: "孩子自建提醒",
+    icon: "🔔",
+    hint: "孩子通过对话设置的定时提醒（到点语音播报；家长可在此关闭/删除）",
   },
 };
 
@@ -253,7 +260,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                 }}
                 style={{ padding: "6px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd" }}
               >
-                {(Object.keys(TYPE_META) as SchedulerTask["type"][]).map((t) => (
+                {(Object.keys(TYPE_META) as SchedulerTask["type"][]).filter((t) => t !== "reminder").map((t) => (
                   <option key={t} value={t}>
                     {TYPE_META[t].icon} {TYPE_META[t].label}
                   </option>
@@ -332,7 +339,10 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                     <span style={{ fontSize: 22 }}>{meta.icon}</span>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{task.name}</div>
-                      <div style={{ fontSize: 11, color: "#999" }}>{meta.label}</div>
+                      <div style={{ fontSize: 11, color: "#999" }}>
+                        {meta.label}
+                        {task.owner === "child" && <span style={{ color: "#b7791f", marginLeft: 4 }}>·孩子自建</span>}
+                      </div>
                     </div>
                   </div>
                   <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#666", cursor: "pointer", flexShrink: 0 }}>

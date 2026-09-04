@@ -1,6 +1,6 @@
 /**
  * 学习考核 · 孩子端锁定考试视图（EXAM-REQUIREMENTS.md §4 / §14.6）。
- * v2：左侧进入后先展示「考核时间点列表」（固定排期 + 家长自定义），到期可点「开始这次考核」。
+ * v2：左侧进入后先展示「今天可考核的排期」（固定排期 + 家长自定义；考核只按日期，当天 0 点起可考），点「开始这次考核」。
  * - 流程：取排期列表 → 点开始 → 服务端按排期选课（config?schedule=）→ 客户端出卷（内存 session，每课完整出题）
  *   → iframe 渲染考试模板（srcDoc + allow="microphone"）→ 逐题语音作答 → 提交 → 客户端判分（prompt 取自服务端）
  *   → 上传语音 + 上报结果（关联 scheduleId）→ 排期标记完成 → 展示报告。
@@ -64,8 +64,7 @@ const FREQ_LABEL: Record<string, string> = { daily: "每天", weekly: "每周", 
 
 function fmtTime(iso: string): string {
   const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `📅 ${d.getMonth() + 1}月${d.getDate()}日（今天）`;
 }
 
 export default function ExamView({ childId, onExit }: Props) {
@@ -377,15 +376,15 @@ export default function ExamView({ childId, onExit }: Props) {
           <div style={{ padding: 24, maxWidth: 720, margin: "0 auto" }}>
             <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>考核安排</div>
             <p style={{ color: "#6b7686", fontSize: 13, marginTop: 0 }}>
-              到了考核时间就可以开始。点「开始这次考核」进入锁定考核，中途不能退出。
+              到达考核日期就可以开始，全天可随时考。点「开始这次考核」进入锁定考核，中途不能退出。
             </p>
             {schedules.length === 0 && (
               <p style={{ color: "#888", fontSize: 13 }}>
-                今天没有考核安排。固定考核会在设定的考核时间自动出现在这里；如果想让爸爸妈妈临时安排一次，可以请他们在家长助手里说「周五晚上考论语的乡党篇」。
+                今天没有考核安排。固定考核会在设定的考核日期自动出现；如果想让爸爸妈妈临时安排一次，可以请他们在家长助手里说「周五考论语的乡党篇」。
               </p>
             )}
             {schedules.map((sch) => {
-              // pending（已到点）或 started（上次开始后中断/出卷失败）都可重新开始
+              // pending（已到日期）或 started（上次开始后中断/出卷失败）都可重新开始
               const overdue = sch.pending || sch.status === "started";
               return (
                 <div

@@ -33,8 +33,8 @@ const api = {
     registerListener("pi:reply_error", callback),
   onPiSessionReset: (callback: (data: { childId: string }) => void) =>
     registerListener("pi:session_reset", callback),
-  // ISSUE-019：课程时间段提醒（上课/下课，家长在定时任务里按孩子配置）
-  onClassReminder: (callback: (data: { childId: string; type: "start" | "end"; label: string }) => void) =>
+  // ISSUE-019/047：课程时间段提醒（上课/下课）+ 孩子端自建定时提醒（custom，type 含 "custom"）
+  onClassReminder: (callback: (data: { childId: string; type: "start" | "end" | "custom"; label: string; mode?: "both" | "chime" | "voice" }) => void) =>
     registerListener("class:reminder", callback),
   // 图片上传时主进程自动切换到视觉模型的通知（前端据此提示）
   onPiVisionModelSwitched: (callback: (data: { childId: string; modelId: string }) => void) =>
@@ -231,6 +231,10 @@ const api = {
   schedulerRunsList: (opts?: { childId?: string; limit?: number }) =>
     ipcRenderer.invoke("scheduler:runs:list", opts),
   schedulerEffectiveConfigGet: () => ipcRenderer.invoke("scheduler:effective_config:get"),
+
+  // ISSUE-047：孩子端「我的提醒」列表/取消（非 Todolist；独立提醒管理）
+  reminderList: (childId: string) => ipcRenderer.invoke("scheduler:reminder:list", childId),
+  reminderCancel: (id: string) => ipcRenderer.invoke("scheduler:task:delete", id),
 
   // General settings (materials limit)
   materialsLimitGet: () => ipcRenderer.invoke("settings:materials_limit:get"),

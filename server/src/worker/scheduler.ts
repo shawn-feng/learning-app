@@ -1,9 +1,9 @@
 /**
  * 服务端无头 worker 调度器（方案B 阶段②）。
  * 每 5 分钟 cron：遍历所有家长 → 孩子，分别跑 plan / stat / recording 三类任务。
- * - plan（carry+gen）：carry 顺延（游标=昨天）先于当日 todolist 同步（gen，以最新计划重写家长项）。
- * - stat（完成度统计）：事件驱动且**当天可多次**——今天有 daily 学习记录且已有 todolist 时统计，
- *   之后每新增 daily 记录（孩子又学完一课）都会在 ≤5 分钟内再统计，打勾/完成度实时反映。
+ * - plan（carry+gen）：carry 顺延（游标=昨天）先于当日家长 todolist 同步（gen，以最新计划物化家长项）。
+ * - stat（完成度统计）：事件驱动且**当天可多次**——当天有 daily 学习记录即统计（runTodoStatServer 内部
+ *   自判有无 todo_items），每新增 daily 记录（孩子又学完一课）都会在 ≤5 分钟内再统计，完成情况实时反映。
  * - recording：仍按配置的 recording.times 时间点触发（5 分钟桶匹配，保证落点不错过）。
  * **触发源（2026-09-02 修复，勿再回退）**：优先读 scheduler_tasks + 分配（buildEffectiveChildConfig，
  * 服务端即真源，不依赖客户端推送时机）；无任务分配的孩子回退旧 settings scheduler_config（老客户端兼容）。
@@ -359,17 +359,9 @@ function buildTodoCtx(
   };
 }
 
-/** 今天是否已有 todolist（用于 gen 跳过判定 / stat 前置条件）。 */
-function todayHasTodolist(deps: WorkerSchedulerDeps, parentId: string, childId: string, today: string): boolean {
-  const todo = runKbQuery<{ itemsMd: string } | null>(
-    deps.dataDir, deps.db, parentId, "kb.todo.get", { child_id: childId, date: today }
-  );
-  return !!todo?.itemsMd?.trim();
-}
-
 /**
  * plan tick：先 carry（游标=昨天，昨天未完成→顺延到今天），再 gen（每次 tick 以最新计划
- * 同步今日【家长规定项】——家长中途改计划 ≤5 分钟反映到 todolist）。
+ * 同步今日家长 todolist——家长中途改计划 ≤5 分钟反映到 todolist）。
  * carry 与 gen 合并且 carry 在前，保证顺延行在 gen 读取当日排期前落库。
  */
 export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
@@ -385,9 +377,8 @@ export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
     for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
       if (!cc.todo?.enabled) continue;
       try {
-        // 2026-09-03：gen = todolist↔计划「同步」（不再是生成一次就锁死）——每次 tick 以最新
-        // study_plan_items 刷新今日【家长规定项】：家长中途改计划 ≤5 分钟反映到 todo；
-        // 无变化不写回；同文本已勾保持 [x]；孩子自定任务等非家长内容原样保留。
+        // gen = todolist 家长项 ↔ 学习计划「同步」——每次 tick 以最新 study_plan_items 物化今日家长
+        // todo_items：家长中途改计划 ≤5 分钟反映；孩子自规划项（source=child）不受影响。
         await runTodoGenServer(buildTodoCtx(deps, p.id, childId, cc, settings, now));
       } catch (e) {
         console.error(`[worker:plan] todo-sync child=${childId} failed:`, (e as Error).message);
@@ -406,11 +397,9 @@ function todayDailyEntries(deps: WorkerSchedulerDeps, parentId: string, childId:
 }
 
 /**
- * stat tick：事件驱动，**当天可多次统计**（2026-09-03 修复：不再「每天一次就锁死」）。
- * 触发条件 = 今天已有 todolist 且已有 daily 学习记录；去重粒度 = 「上次统计后是否新增了
- * daily 记录」（worker_state.last_key = {date, count}）——
- * 孩子上午学完一课后 5 分钟内打勾；下午/晚上又学新课 → 条数增加 → 再次统计，
- * 保证当天任意时刻的完成情况都能及时反映到 [家长] todo 与完成度统计。
+ * stat tick：事件驱动，**当天可多次统计**（2026-09-04 起：runTodoStatServer 内部自判——当天有
+ * todo_items 才统计，并回写计划完成态；这里用 daily 条数变化驱动重跑，孩子新学/复习完一课即在
+ * ≤5 分钟内刷新）。worker_state.last_key = {date, count}，daily 新增 → 重跑。
  */
 export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
   const now = new Date();
@@ -421,7 +410,6 @@ export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
     for (const { childId, cc } of collectChildConfigs(deps, p.id, settings)) {
       if (!cc.todo?.enabled) continue;
       try {
-        if (!todayHasTodolist(deps, p.id, childId, today)) continue;
         const daily = todayDailyEntries(deps, p.id, childId, today);
         if (daily.length === 0) continue; // 无学习记录不统计（避免空转）
         const seen = parseStatSeen(getWorkerStateKey(deps.db, childId, "todo_stat"), today);

@@ -712,6 +712,69 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // —— ISSUE-047：孩子端 agent 自建定时提醒 ——
+  // 创建提醒（关联孩子 + 频率/语音）；取消走 scheduler:task:delete，列举走 scheduler:reminder:list。
+  ipcMain.handle(
+    "scheduler:reminder:create",
+    async (
+      _e,
+      payload: {
+        childId: string;
+        name: string;
+        text: string;
+        time: string;
+        frequency: "once" | "daily" | "weekly" | "interval";
+        weekday?: number;
+        intervalMinutes?: number;
+        voice?: boolean;
+        fireAt?: string;
+        owner?: "parent" | "child";
+      }
+    ) => {
+      try {
+        const token = currentSessionToken();
+        if (!token) return { success: false, error: "未登录" };
+        const data = await serverFetch<{ ok: boolean; id?: string }>("/scheduler/reminders", {
+          method: "POST",
+          token,
+          body: payload,
+        });
+        return { success: !!data?.ok, id: data?.id };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  ipcMain.handle("scheduler:reminder:list", async (_e, childId: string) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ reminders?: unknown[] }>(
+        `/scheduler/reminders/list?childId=${encodeURIComponent(childId)}`,
+        { token }
+      );
+      return { success: true, reminders: data?.reminders ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 客户端每分钟轮询：取该孩子到期且未播报的提醒（服务端已就地标记，幂等）
+  ipcMain.handle("scheduler:reminder:due", async (_e, childId: string) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ reminders?: Array<{ id: string; text: string; voice: boolean }> }>(
+        `/scheduler/reminders?childId=${encodeURIComponent(childId)}`,
+        { token }
+      );
+      return { success: true, reminders: data?.reminders ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("scheduler:task:assign", async (_e, id: string, childId: string, enabled: boolean) => {
     try {
       const token = currentSessionToken();
@@ -897,16 +960,16 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     return result;
   });
 
-  // ISSUE-025：孩子 Todolist（今日计划）读取——孩子端「今日计划」弹框与「我的执行力」趋势数据源。
-  // 数据真源在服务端 child_todos / child_todo_stats 表（SPLIT，kb.todo.* handler），这里只读返回。
+  // ISSUE-025 重构（2026-09-04）：孩子 Todolist 读取（一事一行）——孩子端「今日计划」弹框与「我的执行力」趋势数据源。
+  // 数据真源在服务端孩子 kb 的 todo_items / child_todo_stats 表，这里只读返回 rows（不再返回 markdown）。
   ipcMain.handle("todo:get", async (_e, childId: string, date?: string) => {
     try {
       const d = typeof date === "string" && date ? date : formatLocalDate(new Date());
-      const todo = await dbQuery<{ itemsMd: string; updated: string } | null>("kb.todo.get", {
+      const rows = await dbQuery<unknown[]>("kb.todo.list", {
         child_id: childId,
         date: d,
-      }).catch(() => null);
-      return { success: true, date: d, itemsMd: todo?.itemsMd ?? "", updated: todo?.updated ?? "" };
+      }).catch(() => []);
+      return { success: true, date: d, rows: rows ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -923,11 +986,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // ISSUE-033：学习计划只读展示（家长面板；数据真源=服务端 study_plans，编辑走家长对话）
-  // 完成态 = 课程「当天活动」判定（2026-09-03）：计划里某课可能是复习（status 早已 ✅），
-  // 只看 status 无法判断当天是否真的学/复习了 → 取 courses.first_learned / last_review
-  // 是否等于目标日期（today=请求的 date；list 每行用 r.date）。
-  // list：排期行列表（服务端 date 倒序最多 500；from/to 在此做日期段过滤，与服务端同步）
+  // ISSUE-033 重构（2026-09-04）：学习计划只读展示（家长面板；数据真源=服务端 study_plans，一课一行，
+  // done 由服务端按课程当天活动下发——客户端不再本地剥文本前缀现算）。
   ipcMain.handle("studyPlan:list", async (_e, childId: string, opts?: { from?: string; to?: string }) => {
     try {
       const res = await serverFetch<{ ok: boolean; rows: unknown[] }>(
@@ -937,88 +997,24 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       let rows = res.rows ?? [];
       if (opts?.from) rows = rows.filter((r: any) => r.date >= opts!.from!);
       if (opts?.to) rows = rows.filter((r: any) => r.date <= opts!.to!);
-      const doneOf = await loadCourseDoneMap(childId);
-      const enriched = rows.map((r: any) => ({
-        ...r,
-        content: (r.content ?? []).map((it: any) => ({ ...it, done: doneOf(r.date, it.topicKey, it.text) })),
-      }));
-      return { success: true, rows: enriched };
+      return { success: true, rows };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
-  // today：某天的排期聚合（date 缺省=本地今天；items 含 carry 标记，供面板高亮今天/顺延项）
+  // today：某天的排期聚合（date 缺省=本地今天；items 每课一行含 mode/carry/done）
   ipcMain.handle("studyPlan:today", async (_e, childId: string, date?: string) => {
     try {
       const d = typeof date === "string" && date ? date : formatLocalDate(new Date());
-      const [res, doneOf] = await Promise.all([
-        serverFetch<{ ok: boolean; date: string; items: unknown[] }>(
-          `/study-plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(d)}`,
-          { token: currentSessionToken() }
-        ),
-        loadCourseDoneMap(childId),
-      ]);
-      const items = (res.items ?? []).map((it: any) => ({ ...it, done: doneOf(d, it.topicKey, it.text) }));
-      return { success: true, date: res.date ?? d, items };
+      const res = await serverFetch<{ ok: boolean; date: string; items: unknown[] }>(
+        `/study-plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(d)}`,
+        { token: currentSessionToken() }
+      );
+      return { success: true, date: res.date ?? d, items: res.items ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
-
-  /**
-   * 计划项文本 → 真实课程名（家长对已学课会安排「复习：<课程名>」等带动作前缀的项，
-   * courses 表真实标题不含前缀；匹配须先剥前缀，与服务端 ../plan-text.ts 同口径）。
-   */
-  function planTextToCourseText(text: string): string {
-    const t = (text || "").trim();
-    if (!t) return "";
-    const m = /^(?:复习|温习|学习|预习|背诵|朗读|跟读|听读|挑战|巩固|掌握)\s*[:：]\s*(.+)$/.exec(t);
-    if (m) return m[1].trim();
-    const s = /^(.*?)[（(](?:复习|温习|回看)[）)]\s*$/.exec(t);
-    if (s && s[1].trim()) return s[1].trim();
-    return t;
-  }
-
-  /**
-   * 构建计划项→课程「当天活动」判定（2026-09-03，与服务端 stat 的 courseDoneFor 同口径）：
-   * 学习计划里某课可能是「复习」（该课 status 早已 ✅）——只看 status 无法判断目标日期当天
-   * 是否真的学/复习了。判定 = 课程的 首次学习(first_learned) 或 最近复习(last_review) 等于
-   * 目标日期 → true；课程存在但当天无记录 → false；无对应课程 → undefined。
-   * 匹配键：(topic,title) 精确（topicKey+text 剥动作前缀后的课程名），title 兜底。
-   */
-  async function loadCourseDoneMap(
-    childId: string
-  ): Promise<(date: string, topicKey: string | undefined, text: string) => boolean | undefined> {
-    try {
-      const courses = await dbQuery<
-        Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>
-      >("kb.courses.list", { child_id: childId }).catch(
-        () => [] as Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>
-      );
-      const byTopicTitle = new Map<string, { first_learned: string; last_review: string }>();
-      const byTitle = new Map<string, { first_learned: string; last_review: string }>();
-      for (const c of courses ?? []) {
-        const title = (c.title || "").trim();
-        if (!title) continue;
-        const rec = { first_learned: (c.first_learned || "").trim(), last_review: (c.last_review || "").trim() };
-        byTopicTitle.set(`${c.topic}\u0000${title}`, rec);
-        if (!byTitle.has(title)) byTitle.set(title, rec);
-      }
-      return (date, topicKey, text) => {
-        const t = (text || "").trim();
-        if (!t) return undefined;
-        // 复习项计划文本与真实课程名差一个「复习：」前缀 → 归一后再查（匹配失败返回 undefined 保持原样）
-        const ct = planTextToCourseText(t);
-        if (!ct) return undefined;
-        let rec = topicKey ? byTopicTitle.get(`${topicKey}\u0000${ct}`) : undefined;
-        if (!rec) rec = byTitle.get(ct);
-        if (!rec) return undefined;
-        return rec.first_learned === date || rec.last_review === date;
-      };
-    } catch {
-      return () => undefined;
-    }
-  }
 
   ipcMain.handle("skills:list", async () => {
     const skillsDir = getSkillsDir();

@@ -546,37 +546,21 @@
 - **优先级**：已完成（2026-08-31 实施 + 全链路验证 + 提交 de2ef67；2026-09-01 归档记录）
 - **记录时间**：2026-09-01
 
-## [ISSUE-029] 英语学习模块（英语角）：专用英语 agent + 词汇感知/主题限定 + 每条语音发音评测 + 会话进 daily
+## [ISSUE-029] 英语学科：复用现有科目体系 + 英文教学 + 教学后发音测评入 daily（终版 2026-09-04）
 
-- **类型**：需求 / 新功能（2026-08-31 讨论定需求，2026-09-01 起分阶段实施；本条目为模块总索引）
-- **描述**：孩子学英语时切换到**专用英语 agent**（英文对话伙伴）：① 专用 system prompt——了解孩子已掌握词汇、沟通尽量用孩子懂的词、家长可设「当前主题/场景」限定对话范围防跑题；② 孩子用语音时**每条语音都做发音评测**、指出发音问题（前端评测卡 + agent 英文点评）；③ 英语会话内容**记录进 daily**、会话上云家长可回顾。
-- **已确认分叉（用户 2026-08-31 拍板）**：
-  1. 切换方式 = **显式入口**（孩子点「英语角」进入/退出，不做自动切换）
-  2. 词汇基线 = **课程提取 + 家长补充**（从英语课程内容提取词表，家长可增减）
-  3. 评测范围 = **自由对话全评**（英语角每条语音都评，ASR 文本回填 refText 自评分）
-  4. 会话归属 = **上云可回顾**（session-sync 改递归，家长端可回顾英语对话）
-- **需求/调研文档（后续查找入口）**：
-  - 需求确认版：根目录 `ENGLISH-AGENT-REQUIREMENTS.md`（总体模型/会话形态/prompt 设计/词汇/评测/daily/上云/任务拆分/待定项）
-  - 评测服务调研：`RESEARCH-pronunciation-assessment-2026-08-31.md`（腾讯智聆/阿里儿童/讯飞/Azure/开源对比）
-- **✅ 已完成（2026-09-01 上午，任务 1：评测服务接入）**：
-  - `electron/lib/assessment/`（仿 voice 模块）：`types.ts`（AssessmentResult 统一结构 score/accuracy/fluency/completeness/words[phones]）、`assessment-config.ts`（enabled/provider/providers，`shared/assessment-config.json`，打码/补丁复用 `voice-config.maskSecret`）、`providers/tencent-soe.ts`、`providers/aliyun-kid.ts`、`index.ts`（assessAudio 入口）
-  - 智聆（**完整实现**）：`wss://soe.cloud.tencent.com/soe/api/<AppID>?参数&signature`；签名=除 signature 外参数**字典序**拼 `host/api/<appid>?k=v&...` 原文，SecretKey **HmacSha1→base64**；score_coeff=1.0（儿童最低苛刻度）/eval_mode=1（句子）/rec_mode=1/voice_format=1（wav）/16k_en；发送 wav 分片 1280B/40ms（1:1 实时率防报错）+ `{"type":"end"}` 结束帧；结果 `{code,result:"{...}",final:1}`（SuggestedScore/PronAccuracy/PronFluency/PronCompletion/Words[PhoneInfo]）
-  - 阿里儿童 `en.word_kid.score`（**实验性，协议逆向还原**）：鉴权 `POST https://api.cloud.ssapi.cn:8080/auth/authorize`（request_sign=MD5("app_secret=&appid=&timestamp=&user_client_ip=&user_id=" 字典序拼接)）→ warrant_id → `wss://api.cloud.ssapi.cn` 发 connect（param.app{timestamp,applicationId,sig=MD5(appSecret+timestamp)}+param.sdk）/start（param.request{coreType,refText,rank}+param.audio{sampleRate:16000,channel:1,sampleBytes:2,audioType:"wav"}+param.app{userId}）/分片音频/`{"cmd":"stop"}`；返回 `{request_id,eof,params,refText,result{overall,details[{char,score,phone[{char,score,start,end}]}]}}`。⚠️ 技术方=声希科技，wss path 与包细节待真实密钥实测微调（aliyun-kid.ts 头部注释）
-  - 链路：IPC `assessment:config:get/set` + `assessment:test`（录音评测固定 "hello"）、`electron/preload.ts`（assessmentConfigGet/Set/Test）、家长端「设置 → 发音评测」新 tab（`src/components/AssessmentSettings.tsx`，仿 VoiceSettings：启用开关 + 两服务卡片 + 字段 + 保存/默认/测试）
-  - 测试：`test/assessment.test.ts` 9 例（配置打码/补丁跳过含 `*` 值/智聆签名自洽+字典序/双解析映射）；验证：tsc 0 业务错、vitest 全量 34 文件/311 例全绿、build 通过
-- **⏳ 待办（任务 2-7，按 `ENGLISH-AGENT-REQUIREMENTS.md` §10 顺序）**：
-  1. 英语会话骨架：`pi-session.ts` 新增 `getChildEnglishSession(childId)`（独立单例 + `sessions/english/` 独立子目录，照搬 parent-content 先例）+ `buildEnglishPrompt`（英文身份 + 词汇注入 + 主题限定）+ AGENTS 用户版按 `ref=<childId>-english` 存 agents.sqlite（家长可编辑）；工具精简（get_date/kb_query）
-  2. 前端「英语角」入口（Learn.tsx 边栏）+ chat 路由切换（进入用英语 session、退出回主会话）+ IPC/preload 路由参数
-  3. 英语角语音链路：录音 → ASR 与 `assessAudio` **并行**，ASR 文本回填 refText 自评分；评测卡 UI（总分+音素）+ 结果以 user 附注注入 agent 做英文点评
-  4. 词表：课程词表提取 + 家长端编辑 UI + prompt 注入（第一版可先家长手填主题词表）
-  5. `session-sync.ts` 扫描改**递归**（当前 `fs.readdirSync` 只扫根目录，英语会话子目录上云需改）
-  6. daily 增强（可选）：RECORDING_PROMPT 加「英语口语练习」类别（当天评测均分/高频音素问题）
-- **⚠️ 已知注意点**：
-  - `readDailyConversation`（daily-summary.ts:47）**递归**扫 jsonl → 英语会话放 `sessions/english/` 子目录后**自动进 daily，零改动**；但 `session-sync.ts:63` 非递归 → 上云需改。
-  - 英语 agent 不用 LEARNING_NAV_INSTRUCTIONS，`buildEnglishPrompt` 独立；主会话导航工具（display_content/page_action/todo_list）不挂英语会话。
-  - 发音评测服务 key 在家长端配置（智聆 AppID/SecretId/SecretKey；阿里 AppKey/AppSecret）；阿里端**未实测**，首次需真实密钥验证。
-- **优先级**：实施中（任务 1 已完成，任务 2-7 待实施；需求文档已闭环）
-- **记录时间**：2026-09-01
+- **类型**：需求 / 新功能（2026-08-31 起讨论；2026-09-04 终版定调：**英语=普通学科，完全复用 topics/courses 体系，不单独建**）
+- **终版模型（2026-09-04 用户拍板）**：英语作为一门普通学科，课程管理/引导/考核/记录/家长排计划**全部复用现有 topics/courses 体系**；差异仅两点——① 教学时 child agent **用英文**(topic `teach_lang='en`)；② 教学后 agent 引导**发音测评**(跟读重点词/句式,智聆/阿里)，测评作为「学习情况」**记入 daily**(复用 readDailyConversation/RECORDING_PROMPT，不建独立表)。
+- **完全复用、不新建**：独立英语会话/AGENTS ref、独立入口/路由、独立评测表 `english_assessments`、`session-sync` 递归特殊化、独立选课/绑课 UI——全部推翻(初版"英语角"设计)。教学内容/资料存 topic/course 与其他科目同；现有 `server/data/materials/<pid>/english/` 资料(teach-data.js 单词→IPA+句式、learn/ HTML、emma 口型视频、剧集)结构化可直接接入。
+- **需求文档**：根目录 `ENGLISH-AGENT-REQUIREMENTS.md`（2026-09-04 终版：§1 复用总体模型 / §2 仅两点差异 / §3 教学语言切换 / §4 发音测评入 daily / §5 内容存 topic/course / §6 简化任务 / §7 全复用数据模型 / §8 范围）
+- **评测调研**：`RESEARCH-pronunciation-assessment-2026-08-31.md`
+- **✅ 已完成（2026-09-01，任务 1：评测服务接入）**：`electron/lib/assessment/`（types/assessment-config/providers/tencent-soe+aliyun-kid/index）；智聆完整实现真实链路自测通过；阿里实验性(协议逆向,门控默认关,待真实密钥实测)；家长端「设置→发音评测」tab；`test/assessment.test.ts` 9 例。
+- **⏳ 待办（按 `ENGLISH-AGENT-REQUIREMENTS.md` §6 重排，大幅简化）**：
+  1. 英语教学语言支持：child agent 按 topic `teach_lang` 切换英文(prompt 注入语言指令；复用现有会话/AGENTS，不新建)。
+  2. 教学后发音测评环节 + 评测卡 UI + 测评结果写入 daily(复用现有 daily 机制，不需独立表)。
+  3. 英语 course 内容接入：解析 teach-data.js 提词表/句式进 course 内容、`display_content` 展示 `learn/` 与口型视频(复用现有展示)。
+  4. 家长排计划/回顾：完全复用 study-plan + SessionReview，仅验收 + 英语课 `teach_lang` 标注 + 测评入 daily 两处。
+- **优先级**：需求终版已定(2026-09-04)，任务 1 已完成，任务 2-4 待实施。
+- **记录时间**：2026-09-01（内容 2026-09-04 终版重写）
 
 ## [ISSUE-030] 学习资料显示字号可调（孩子左侧边栏加「资料字号」按钮）
 
@@ -1043,3 +1027,36 @@
 - **部署 / 现状**：改的是**主进程**，闻闻 Ubuntu 客户端必须**重装新 Linux 包（deb/AppImage）+ 本地重启 GUI 客户端**才生效（SSH 杀不掉桌面进程，见 PACKAGING §4.2）。截至记录时：CI 已在跑、产物待手动取回部署到 201（192.168.1.201）。关联 ISSUE-027（学习考核）真 bug。
 - **优先级**：P0（已修复未发布，等构建产物部署）
 - **记录时间**：2026-09-03
+
+## [ISSUE-047] 孩子端：让 agent 直接制定「定时任务」（到点语音提醒 + 频率设置）
+
+- **类型**：需求 / 功能扩展（扩展 ISSUE-038 定时任务新模型，能力开放到孩子 agent + 新增语音提醒/频率）
+- **描述**：
+  1. **孩子端可让 agent 创建定时任务**：孩子对话中说"半小时后提醒我喝水""每天晚上 9 点提醒我读英语""每周六上午提醒我练字"等，孩子 agent 应能**直接创建一条定时任务**（无需家长经设置页操作），到点执行。
+  2. **到点语音提醒**：这类任务到点时，用**语音**对孩子播报提醒内容（"该喝水啦""该读英语啦"），即提醒以语音形式呈现（类似 ISSUE-019 的「上课/下课」语音播报，但由孩子/agent 自定义内容）。
+  3. **可设置频率**：任务支持频率配置——单次（once）、每天（daily）、每周某天（weekly）、每隔 N（interval）等；不只是当前"每天固定时间点跑一次"的单一模式。
+- **影响范围**：①孩子 agent 工具集（需新增"创建/查询/取消定时任务"工具）；②服务端定时任务模型（`server/src/routes/scheduler.ts` 任务结构 + `server/src/worker/scheduler.ts` 执行调度）需支持「孩子自建任务」归属与「频率」字段；③客户端提醒播报链路（复用/扩展 `class:reminder` 语音事件）。
+- **现状 / 排查入口**：
+  - **现有定时任务模型（家长侧，ISSUE-038）**：
+    - 服务端：`server/src/routes/scheduler.ts` —— `POST /api/v1/scheduler/tasks`（创建，先建）、`GET`（列表含分配+最近执行结果）、`PATCH/DELETE /:id`、`POST /:id/assign`（分配给孩子、enabled=false 取消分配）。任务结构含 `name/type/time/extra`；执行由 `server/src/worker/scheduler.ts` 的 `runTaskAtPoint`（按 `task.type` + `point(time)` 每天跑一次，**无频率概念**）。
+    - 客户端 IPC：`electron/lib/ipc-handlers.ts:658-` `scheduler:tasks:list` / `scheduler:task:create` / `:update` / `:delete` / `:assign` → 调服务端。家长在「任务管理页」创建再分配给孩子。
+  - **现有语音提醒链路（家长侧，ISSUE-019）**：`electron/lib/scheduler.ts:396` `w.webContents.send("class:reminder", { childId, type, label, mode })` → 渲染侧（preload.ts:38 `class:reminder` 监听）语音播报上课/下课。`mode` 已含提醒模式概念，可复用为"自定义语音提醒"载体。
+  - **孩子 agent 工具（无建任务能力）**：`electron/lib/pi-session.ts:476` 孩子 agent 工具列表（read/write/edit/ls/display_content/get_date/get_progress/kb_query/kb_insert/kb_update/create_html_lesson/parent_content/summarize_conversation/page_action/page_inspect/todo_list）——**没有"创建定时任务"工具**，agent 无法在对话里落一条定时任务，本 issue 需新增（如 `schedule_task`，支持 create/list/cancel + frequency + reminderText）。
+- **改造方向（建议）**：
+  1. **新增孩子 agent 工具 `schedule_task`**（或扩展）：参数含 `action(create/list/cancel)`、`text`(提醒内容)、`time`(HH:MM 或 ISO)、`frequency`(once/daily/weekly/interval)、`intervalMinutes?`、`weekday?`、`voice`(默认 true 语音)。落库到该孩子的任务（owner=child，区别于家长 owner=parent），并复用 `scheduler:task:create` 链路（需服务端允许 child 归属任务，或在 `extra` 标 `owner:"child"`）。
+  2. **服务端任务模型扩展**：`routes/scheduler.ts` 任务结构加 `frequency`/`voice`/`owner` 字段；`worker/scheduler.ts` 执行调度按 `frequency` 判定是否到点（daily/weekly/interval/once），到点且 `voice` 的任务通过"提醒事件"下发（沿用 `class:reminder` 事件或新增 `child:reminder`），由客户端语音播报 `text`。
+  3. **客户端播报**：扩展 `class:reminder` 事件（或新增监听）支持自定义 `text` 语音播报（现 `class:reminder` 的 label 已是文本，主要把"上课/下课"替换为任务 `text` 即可语音读出）；需保证 app 在前台/通知中心能播（参考 ISSUE-019 的铃声+语音播报）。
+  4. **边界**：孩子自建任务**是否需家长审核/可见**？建议家长端「任务管理页」也能看到孩子自建任务（只读或可调），避免孩子被 agent 误建一堆任务；取消/修改走 `schedule_task` 工具或家长页。
+- **优先级**：待定（建议中——语音提醒是孩子端高频诉求；但需先定"孩子自建任务归属/家长可见性/频率模型"三处设计，且与 ISSUE-038 服务端模型、ISSUE-019 语音链路强耦合，建议和 ISSUE-038 一起规划）
+- **记录时间**：2026-09-04
+- **✅ 已实现（2026-09-04，v1）**：
+  - **设计定案**：家长只读可见（孩子说建即生效，家长任务管理页可见/可关闭删除，不经审核）；全频率 once/daily/weekly/interval；孩子「我的提醒」独立弹框（不放今日计划）。
+  - **服务端**：`db.ts` scheduler_tasks 扩列（owner/frequency/reminder_text/weekday/interval_minutes/voice/fire_at/last_fired_at/expired，含旧库 ALTER 迁移）；`task-runs.ts` type 加 `reminder` + `createReminderTask/listChildReminders/listFamilyReminders/takeDueReminders`（到期判定按频率：daily/weekly 按本地日期去重、interval 从创建时刻起算 `last_fired_at`、once 触发即置 expired）；`routes/scheduler.ts` 加 `POST/GET /reminders` + `GET /reminders/list`，通用 POST 拒 `type=reminder`，`TaskWithAssignments` 下发 owner。
+  - **Electron 客户端**：`ipc-handlers.ts` 加 `scheduler:reminder:create/list/due`；`scheduler.ts` 每分钟 tick 调 `/reminders` 拉到期项 → `broadcastCustomReminder(type="custom")` 复用 class:reminder；`preload.ts`/`Learn.tsx` type 加 `"custom"` 播报文案与横幅。
+  - **孩子 agent**：`custom-tools.ts` 加 `scheduleTaskTool`（create/list/cancel，owner=child）；`pi-session.ts` 注册 + tools 白名单 + 行为规范加「定时提醒」段。
+  - **家长面板**：`SchedulerTasksPanel.tsx` 类型加 `reminder`+`owner`，TYPE_META 加「孩子自建提醒」卡片；新建下拉过滤 reminder（家长建提醒走对话/专用口）。
+  - **孩子端 UI（方案A，跟进追加 10:0x）**：新增 `src/components/MyRemindersModal.tsx`（🔔「我的提醒」弹框，独立于今日计划——提醒≠"要做的事"，不放 Todolist）；侧栏加 Bell 图标入口（Learn.tsx）；preload 加 `reminderList`/`reminderCancel`（复用 scheduler:reminder:list / task:delete）。列该孩子 reminder 类任务，按 once 优先/时间排序、已过期/已停用分组置灰，可逐条取消。electron-vite build 过。
+  - **验证**：server tsc 0 错、esbuild 构建过、electron-vite build 过；冒烟测试 `scripts/smoke-reminder.ts` 14/14（daily 当日去重、weekly 仅当天、interval 首隔后触发且间隔内不重复、once 触发即 expired、voice=false、disabled 不触发）。⚠️ 测试曾误报 interval 立即触发，实为跨 case 共享 DB 串扰，非实现缺陷。
+  - **部署注意**：server.cjs 需重新构建后同步到 201（`node scripts/build.mjs`）；本改动不影响 `learning-cloud`。
+  - **边界/后续**：家长通过对话建提醒（owner=parent）尚未做独立工具，可用 `schedule_task`(child) 或待续；提醒横幅沿用 ISSUE-019「点击关闭」不自动消失。
+- **备注**：ISSUE-019 提醒循环 15s 重复、本提醒也复用该横幅，属既有产品形态。

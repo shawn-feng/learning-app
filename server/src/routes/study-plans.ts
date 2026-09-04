@@ -1,12 +1,15 @@
 /**
- * 学习计划（ISSUE-033，2026-09-02）路由：家长对话制定 → 「每天学什么」排期行（服务端数据真源）。
- * - GET  /api/v1/study-plans?childId=xxx             排期行列表（date 倒序，供家长回显 / 只读面板）
- * - POST /api/v1/study-plans                         创建排期行（家长 agent 工具 study_plan_create 落库点）
- * - PATCH  /api/v1/study-plans/:id                   更新某行（content/date/active；家长 agent 工具 study_plan_update）
- * - DELETE /api/v1/study-plans/:id                   删除某行（study_plan_update 覆盖「删某天」场景）
- * - GET  /api/v1/study-plans/today?childId=&date=    当日聚合：kind=date AND date=@d AND active 的行按 content 展平为 items，
- *                                                    含 origin='carry'（未完成顺延）；gen 侧据此生成 [家长] todo 行。
- * 鉴权：家长 JWT；childId 必须归属该家长；行归属按 parent_id 校验。
+ * 学习计划（ISSUE-033 重构 v2，2026-09-04）路由：家长对话制定 → 「每天学什么」排期（服务端数据真源）。
+ * 每行 = 一门课的排期（一课一行，不再 content JSON 塞多课）：
+ *   date=执行日期 · topic_key · course_name(真实课程名, 不带「复习：」前缀) · mode(new|review)
+ *   status(pending|done|carried) · done_at —— 由 worker stat 在孩子当天实际学/复习完对应课程后写入。
+ * 家长面板的完成态 = 服务端直接读 status/done_at 下发（不再靠客户端剥文本前缀现算）。
+ * - GET    /api/v1/study-plans?childId=&date=&from=&to=  排期行列表（一课一行，date 倒序）
+ * - GET    /api/v1/study-plans/today?childId=&date=       当日聚合（gen 据此生成家长 todolist；含 carry 标记）
+ * - POST   /api/v1/study-plans                           创建（家长 agent study_plan_create 落库点）
+ * - PATCH  /api/v1/study-plans/:id                        更新单行（改 date/停用/标记）
+ * - DELETE /api/v1/study-plans/:id                        删除单行
+ * 鉴权：家长 JWT；childId 归属校验；行归属按 parent_id。
  */
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -14,15 +17,32 @@ import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
+import { openKb } from "../db/kb.js";
 
 interface StudyPlanDeps {
   config: ServerConfig;
   db: DatabaseSync;
 }
 
-interface PlanItem {
-  text: string;
+interface PlanItemInput {
   topicKey?: string;
+  courseName?: string;
+  mode?: string;
+}
+
+export interface StudyPlanRowDto {
+  id: string;
+  childId: string;
+  date: string;
+  topicKey: string;
+  courseName: string;
+  mode: string;
+  origin: string;
+  status: string;
+  doneAt: string;
+  done: boolean; // 服务端按 child kb 课程当天活动判定（new 看 first_learned / review 看 last_review == date）
+  active: number;
+  updatedAt: string;
 }
 
 function authParent(req: { headers: Record<string, string | string[] | undefined> }, secret: string): string {
@@ -53,15 +73,21 @@ function validDate(d: unknown): d is string {
   return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
 }
 
-/** 校验并规范化 content 数组：[{ text 必填非空, topicKey? }]，上限 100 项防滥用。 */
-function parseContent(raw: unknown): PlanItem[] | null {
+/** 校验并规范化排期输入数组：[{topicKey?, courseName 必填, mode?}]，上限 100 防滥用。 */
+function parseItems(raw: unknown): PlanItemInput[] | null {
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100) return null;
-  const items: PlanItem[] = [];
+  const items: PlanItemInput[] = [];
   for (const it of raw) {
     if (typeof it !== "object" || it === null) return null;
-    const { text, topicKey } = it as { text?: unknown; topicKey?: unknown };
-    if (typeof text !== "string" || !text.trim()) return null;
-    items.push({ text: text.trim(), topicKey: typeof topicKey === "string" && topicKey ? topicKey : undefined });
+    const { topicKey, courseName, mode } = it as { topicKey?: unknown; courseName?: unknown; mode?: unknown };
+    if (typeof courseName !== "string" || !courseName.trim()) return null;
+    const m = typeof mode === "string" ? mode.trim().toLowerCase() : "";
+    if (m && m !== "new" && m !== "review") return null;
+    items.push({
+      topicKey: typeof topicKey === "string" && topicKey.trim() ? topicKey.trim() : "",
+      courseName: courseName.trim(),
+      mode: m === "review" ? "review" : "new",
+    });
   }
   return items;
 }
@@ -69,12 +95,14 @@ function parseContent(raw: unknown): PlanItem[] | null {
 interface PlanRow {
   id: string;
   child_id: string;
-  kind: string;
   date: string;
-  content: string;
+  topic_key: string;
+  course_name: string;
+  mode: string;
   origin: string;
+  status: string;
+  done_at: string;
   active: number;
-  created_at: string;
   updated_at: string;
 }
 
@@ -84,16 +112,62 @@ function fetchRow(db: DatabaseSync, parentId: string, id: string): PlanRow | und
     | undefined;
 }
 
-function listChildRows(db: DatabaseSync, parentId: string, childId: string): PlanRow[] {
-  return db
-    .prepare(
-      "SELECT * FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 ORDER BY date DESC, updated_at DESC LIMIT 500"
-    )
-    .all(parentId, childId) as unknown as PlanRow[];
+/**
+ * 服务端计算每行完成态：读孩子 kb 该课当天活动。
+ * mode=new → courses.first_learned == date；mode=review → courses.last_review == date。
+ * 找不到对应课程 → done=false（排了但课程表没有，视为未完成）。
+ */
+function loadCourseDoneMap(
+  dataDir: string,
+  parentId: string,
+  childId: string,
+  date: string
+): Map<string, boolean> {
+  const key = (topicKey: string, courseName: string) => `${topicKey}\u0000${courseName}\u0000${date}`;
+  const out = new Map<string, boolean>();
+  try {
+    const db = openKb(dataDir, parentId, childId);
+    try {
+      const rows = db
+        .prepare("SELECT topic, title, first_learned, last_review FROM courses")
+        .all() as Array<{ topic: string; title: string; first_learned: string; last_review: string }>;
+      for (const c of rows) {
+        const title = (c.title || "").trim();
+        if (!title) continue;
+        // 只记录「今天有活动」的课；调用方按 (topic,title) 查。
+        const learned = (c.first_learned || "").trim() === date;
+        const reviewed = (c.last_review || "").trim() === date;
+        if (learned || reviewed) out.set(key((c.topic || "").trim(), title), true);
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    // 读不到课程表则不判定（保持未完成）
+  }
+  return out;
+}
+
+function toDto(r: PlanRow, doneMap: Map<string, boolean>): StudyPlanRowDto {
+  const done = doneMap.has(`${r.topic_key}\u0000${r.course_name}\u0000${r.date}`);
+  return {
+    id: r.id,
+    childId: r.child_id,
+    date: r.date,
+    topicKey: r.topic_key,
+    courseName: r.course_name,
+    mode: r.mode,
+    origin: r.origin,
+    status: r.status,
+    doneAt: r.done_at,
+    done,
+    active: r.active,
+    updatedAt: r.updated_at,
+  };
 }
 
 export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDeps): void {
-  // 列表（家长回显 / 只读面板；可选 date 精确过滤某天，供 create 去重查重）
+  // 列表（家长回显 / 只读面板）。可 date 精确、from/to 段过滤。
   app.get("/api/v1/study-plans", async (req, reply) => {
     let parentId: string;
     try {
@@ -102,37 +176,40 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const { childId, date } = (req.query ?? {}) as { childId?: string; date?: string };
+    const { childId, date, from, to } = (req.query ?? {}) as {
+      childId?: string;
+      date?: string;
+      from?: string;
+      to?: string;
+    };
     if (!childId) return reply.code(400).send({ error: "childId 必填" });
-    if (date !== undefined && !validDate(date)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
+    for (const d of [date, from, to]) {
+      if (d !== undefined && !validDate(d)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
+    }
     try {
       assertChildOwned(deps.db, parentId, childId);
     } catch (err) {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const rows = date
-      ? (deps.db
-          .prepare(
-            "SELECT * FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND date = ? ORDER BY date DESC, updated_at DESC LIMIT 500"
-          )
-          .all(parentId, childId, date) as unknown as PlanRow[])
-      : listChildRows(deps.db, parentId, childId);
-    return {
-      ok: true,
-      rows: rows.map((r) => ({
-        id: r.id,
-        childId: r.child_id,
-        kind: r.kind,
-        date: r.date,
-        origin: r.origin,
-        content: safeParseContent(r.content),
-        updatedAt: r.updated_at,
-      })),
-    };
+    let rows: PlanRow[] = deps.db
+      .prepare(
+        "SELECT * FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 ORDER BY date DESC, created_at ASC LIMIT 2000"
+      )
+      .all(parentId, childId) as unknown as PlanRow[];
+    if (date) rows = rows.filter((r) => r.date === date);
+    if (from) rows = rows.filter((r) => r.date >= from!);
+    if (to) rows = rows.filter((r) => r.date <= to!);
+    // 完成态按行各自的 date 判定（每行可能不同天）
+    const byDate = new Map<string, Map<string, boolean>>();
+    for (const r of rows) {
+      if (!byDate.has(r.date)) byDate.set(r.date, loadCourseDoneMap(deps.config.dataDir ?? "", parentId, childId, r.date));
+    }
+    const out = rows.map((r) => toDto(r, byDate.get(r.date) ?? new Map()));
+    return { ok: true, rows: out };
   });
 
-  // 当日聚合（gen 侧生成 [家长] todo 行；date 缺省 = UTC 当天兜底，客户端应显式传本地日期）
+  // 当日聚合（gen 据此生成家长 todolist / 查看某天）。每课一行；status 直接下发完成态。
   app.get("/api/v1/study-plans/today", async (req, reply) => {
     let parentId: string;
     try {
@@ -153,31 +230,26 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     }
     const rows = deps.db
       .prepare(
-        "SELECT * FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND kind = 'date' AND date = ? ORDER BY created_at ASC"
+        "SELECT * FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND date = ? ORDER BY created_at ASC"
       )
       .all(parentId, childId, day) as unknown as PlanRow[];
-    const items: Array<{ planId: string; text: string; topicKey?: string; carry: boolean }> = [];
-    for (const r of rows) {
-      const content = safeParseContent(r.content);
-      for (const it of content) {
-        items.push({ planId: r.id, text: it.text, topicKey: it.topicKey, carry: r.origin === "carry" });
-      }
-    }
-    // 文本去重（同日同文本只留一条——防御历史重复行；首个出现的 carry 标记保留）
-    const seenText = new Set<string>();
-    const dedup: typeof items = [];
-    for (const it of items) {
-      if (!it.text || seenText.has(it.text)) continue;
-      seenText.add(it.text);
-      dedup.push(it);
-    }
-    return { ok: true, date: day, items: dedup };
+    const doneMap = loadCourseDoneMap(deps.config.dataDir ?? "", parentId, childId, day);
+    const items = rows.map((r) => ({
+      planId: r.id,
+      topicKey: r.topic_key,
+      courseName: r.course_name,
+      text: r.course_name, // 兼容旧「一项文本」直觉：todolist 标题用课程名
+      mode: r.mode,
+      carry: r.origin === "carry",
+      status: r.status,
+      doneAt: r.done_at,
+      done: doneMap.has(`${r.topic_key}\u0000${r.course_name}\u0000${day}`),
+    }));
+    return { ok: true, date: day, items };
   });
 
-  // 创建（家长 agent study_plan_create）
-  // 幂等合并语义（2026-09-02 修复同日重复行）：同 (child, kind=date, date) 已有 active 行时——
-  //   全部重复 → 不落库返回现有最新行（duplicated:true）；部分新增 → 新项追加进最新一行（同日保持单行），
-  //   杜绝「分多次追加同一天」时每次都以完整清单新建行造成面板重复。
+  // 创建（家长 agent study_plan_create）。body: { childId, date, items: [{topicKey?, courseName, mode?}] }
+  // 幂等合并（同日同课程已存在则跳过；模式不同则升级为 review 标注）。
   app.post("/api/v1/study-plans", async (req, reply) => {
     let parentId: string;
     try {
@@ -186,11 +258,10 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const { childId, date, content, kind } = (req.body ?? {}) as {
+    const { childId, date, items } = (req.body ?? {}) as {
       childId?: string;
       date?: string;
-      content?: unknown;
-      kind?: string;
+      items?: unknown;
     };
     if (!childId) return reply.code(400).send({ error: "childId 必填" });
     try {
@@ -201,48 +272,41 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     }
     const day = date ?? new Date().toISOString().slice(0, 10);
     if (!validDate(day)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
-    const items = parseContent(content);
-    if (!items) return reply.code(400).send({ error: "content 必填：非空 [{text, topicKey?}] 数组（≤100 项）" });
-    const k = kind ?? "date";
-    if (k !== "date") return reply.code(400).send({ error: "kind 当前仅支持 date（daily 预留）" });
+    const parsed = parseItems(items);
+    if (!parsed) return reply.code(400).send({ error: "items 应为 [{courseName, mode?}] 数组（≤100 项）" });
 
-    // 幂等合并：查同 (child, kind, date) 的 active 行
-    const existingRows = deps.db
+    const existing = deps.db
       .prepare(
-        "SELECT id, content FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND kind = ? AND date = ? AND active = 1 ORDER BY created_at ASC"
+        "SELECT topic_key, course_name, mode FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND date = ?"
       )
-      .all(parentId, childId, k, day) as unknown as Array<{ id: string; content: string }>;
-    const have = new Set<string>();
-    for (const r of existingRows) {
-      for (const it of safeParseContent(r.content)) if (it.text) have.add(it.text);
-    }
-    const toAdd = items.filter((it) => !have.has(it.text));
-    if (existingRows.length > 0) {
-      if (toAdd.length === 0) {
-        // 全部已存在：幂等返回现有最新行，不新增
-        const last = existingRows[existingRows.length - 1];
-        return { ok: true, duplicated: true, row: fetchRow(deps.db, parentId, last.id) };
+      .all(parentId, childId, day) as unknown as Array<{ topic_key: string; course_name: string; mode: string }>;
+    const have = new Set(existing.map((r) => `${r.topic_key}\u0000${r.course_name}\u0000${r.mode}`));
+    const inserted: string[] = [];
+    const skipped: string[] = [];
+    for (const it of parsed) {
+      const k = `${it.topicKey}\u0000${it.courseName}\u0000${it.mode}`;
+      if (have.has(k)) {
+        skipped.push(`${it.courseName}（${it.mode}）`);
+        continue;
       }
-      // 部分新增：追加进最新一行（同日单行 canonical）
-      const target = existingRows[existingRows.length - 1];
-      const merged = [...safeParseContent(target.content), ...toAdd];
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const topicKey = it.topicKey ?? "";
+      const courseName = it.courseName ?? "";
+      const mode = it.mode ?? "new";
       deps.db
-        .prepare("UPDATE study_plan_items SET content = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(merged), new Date().toISOString(), target.id);
-      return { ok: true, merged: true, row: fetchRow(deps.db, parentId, target.id) };
+        .prepare(
+          "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, mode, origin, status, done_at, active, created_at, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'conversation', 'pending', '', 1, ?, ?)"
+        )
+        .run(id, parentId, childId, day, topicKey, courseName, mode, now, now);
+      have.add(k);
+      inserted.push(`${it.courseName}（${it.mode === "review" ? "复习" : "新学"}）`);
     }
-
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    deps.db
-      .prepare(
-        "INSERT INTO study_plan_items (id, parent_id, child_id, kind, date, content, origin, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'conversation', 1, ?, ?)"
-      )
-      .run(id, parentId, childId, k, day, JSON.stringify(items), now, now);
-    return { ok: true, row: fetchRow(deps.db, parentId, id) };
+    return { ok: true, inserted, skipped, date: day };
   });
 
-  // 更新（家长 agent study_plan_update：改 content / 改日期 / 停用）
+  // 更新单行（家长 agent study_plan_update：改 date / 改 mode / 停用）
   app.patch("/api/v1/study-plans/:id", async (req, reply) => {
     let parentId: string;
     try {
@@ -254,34 +318,39 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     const { id } = req.params as { id: string };
     const cur = fetchRow(deps.db, parentId, id);
     if (!cur) return reply.code(403).send({ error: "无权访问该排期行" });
-    const { date, content, active } = (req.body ?? {}) as {
+    const { date, mode, active } = (req.body ?? {}) as {
       date?: string;
-      content?: unknown;
+      mode?: string;
       active?: boolean;
     };
-    const next: { date: string; content: string; active: number; updated_at: string } = {
-      date: cur.date,
-      content: cur.content,
-      active: cur.active,
-      updated_at: new Date().toISOString(),
-    };
+    const sets: string[] = [];
+    const vals: Array<string | number> = [];
     if (date !== undefined) {
       if (!validDate(date)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
-      next.date = date;
+      sets.push("date = ?");
+      vals.push(date);
     }
-    if (content !== undefined) {
-      const items = parseContent(content);
-      if (!items) return reply.code(400).send({ error: "content 应为非空 [{text, topicKey?}] 数组（≤100 项）" });
-      next.content = JSON.stringify(items);
+    if (mode !== undefined) {
+      const m = String(mode).trim().toLowerCase();
+      if (m !== "new" && m !== "review") return reply.code(400).send({ error: "mode 仅支持 new / review" });
+      sets.push("mode = ?");
+      vals.push(m);
     }
-    if (active !== undefined) next.active = active ? 1 : 0;
-    deps.db
-      .prepare("UPDATE study_plan_items SET date = ?, content = ?, active = ?, updated_at = ? WHERE id = ?")
-      .run(next.date, next.content, next.active, next.updated_at, id);
-    return { ok: true, row: fetchRow(deps.db, parentId, id) };
+    if (active !== undefined) {
+      sets.push("active = ?");
+      vals.push(active ? 1 : 0);
+    }
+    if (sets.length > 0) {
+      sets.push("updated_at = ?");
+      vals.push(new Date().toISOString());
+      deps.db
+        .prepare(`UPDATE study_plan_items SET ${sets.join(", ")} WHERE id = ?`)
+        .run(...vals, id);
+    }
+    return { ok: true };
   });
 
-  // 删除（家长 agent「把 9 月 5 号删了」）
+  // 删除单行（家长 agent「把某天/某课删了」）
   app.delete("/api/v1/study-plans/:id", async (req, reply) => {
     let parentId: string;
     try {
@@ -296,13 +365,4 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     deps.db.prepare("DELETE FROM study_plan_items WHERE id = ?").run(id);
     return { ok: true };
   });
-}
-
-function safeParseContent(raw: string): PlanItem[] {
-  try {
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? (arr as PlanItem[]) : [];
-  } catch {
-    return [];
-  }
 }

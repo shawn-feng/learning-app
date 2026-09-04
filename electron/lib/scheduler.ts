@@ -10,6 +10,9 @@ import { resetChildSession } from "./pi-session";
 import { handleCloudInbox } from "./delivery";
 // 方案B：服务端无头 worker 接管 recording 后，本地关闭其调度避免双跑；gen/stat 已完全移交服务端
 import { hasServerFeature, refreshServerFeatures } from "./server-features";
+// ISSUE-047：孩子端 agent 自建定时提醒——每分钟轮询服务端到期提醒并播报（需已登录才能拉取）
+import { currentSessionToken } from "./client-data";
+import { serverFetch } from "./server-client";
 
 export interface TaskState {
   children: Record<
@@ -398,6 +401,31 @@ function broadcastClassReminder(
   }
 }
 
+// ISSUE-047：孩子端 agent 自建定时提醒——到点广播自定义语音提醒（复用 class:reminder 通道，type="custom"）。
+function broadcastCustomReminder(childId: string, text: string, mode: "both" | "chime" | "voice"): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) {
+      w.webContents.send("class:reminder", { childId, type: "custom", label: text || "", mode });
+    }
+  }
+}
+
+/** 拉取该孩子当前到期且未播报的提醒（服务端已就地去重标记，幂等）。未登录时返回空。 */
+async function fetchDueReminders(childId: string): Promise<Array<{ id: string; text: string; voice: boolean }>> {
+  const token = currentSessionToken();
+  if (!token) return [];
+  try {
+    const data = await serverFetch<{ reminders?: Array<{ id: string; text: string; voice: boolean }> }>(
+      `/scheduler/reminders?childId=${encodeURIComponent(childId)}`,
+      { token }
+    );
+    return data?.reminders ?? [];
+  } catch (e) {
+    console.error(`Fetch due reminders failed for child ${childId}:`, e);
+    return [];
+  }
+}
+
 // 本地定时备份：设备级，按 backup.hour:minute 每天跑一次（需已选定 destDir）。
 // 动态 import backup.ts，避免 electron-vite 把 zip 逻辑打进无关 chunk 时互相耦合。
 async function runBackupIfDue(state: TaskState, now: Date): Promise<void> {
@@ -494,6 +522,18 @@ export function startScheduler(): void {
           if (nowMin === ct.start) fire("start");
           if (nowMin === ct.end) fire("end");
         }
+      }
+
+      // ISSUE-047：孩子端 agent 自建定时提醒——每分钟轮询服务端到期提醒并语音播报。
+      // 服务端已按频率就地去重（daily/weekly 今天不重播、interval 按间隔、once 触发即过期），
+      // 客户端仅需把返回结果广播给孩子端即可（幂等：同周期不会被重复拉到）。
+      try {
+        const due = await fetchDueReminders(child.childId);
+        for (const r of due) {
+          broadcastCustomReminder(child.childId, r.text, r.voice ? "both" : "chime");
+        }
+      } catch (e) {
+        console.error(`Custom reminder broadcast failed for child ${child.childId}:`, e);
       }
 
       // ISSUE-025 的 gen/stat 已完全移交服务端无头 worker（方案B），客户端不再本地调度。

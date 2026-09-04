@@ -3,27 +3,31 @@ import { RefreshCw, MessageSquare } from "lucide-react";
 import IconButton from "./IconButton";
 
 /**
- * 学习计划只读面板（ISSUE-033 P4）：家长查看孩子的「每天学什么」排期表。
- * - 数据真源=服务端 study_plans（studyPlan:list / studyPlan:today IPC 透传）；
+ * 学习计划只读面板（ISSUE-033 P4 重构 2026-09-04）：家长查看孩子的「每天学什么」排期表。
+ * - 数据真源=服务端 study_plans（一课一行；studyPlan:list / studyPlan:today IPC 透传，done 由服务端按课程当天活动下发）；
  * - 本面板**只读**：编辑一律走右侧「家长 AI」对话（study_plan_* 工具），带「在对话里修改」引导按钮；
  * - 今天卡片单独展示（含 📌 昨天没学完顺延来的 carry 项），其后为未来 N 天排期表（空天=不要求学，不列出）。
  */
 interface PlanRow {
   id: string;
   childId: string;
-  kind: string;
   date: string;
+  courseName: string;
+  mode: string;
   origin: string;
-  content: Array<{ text: string; topicKey?: string; done?: boolean }>;
+  status: string;
+  done: boolean;
   updatedAt: string;
 }
 
 interface TodayItem {
   planId: string;
+  courseName: string;
   text: string;
-  topicKey?: string;
+  mode: string;
   carry: boolean;
-  done?: boolean;
+  status: string;
+  done: boolean;
 }
 
 interface Props {
@@ -126,7 +130,6 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
   const carryCount = todayItems.filter((it) => it.carry).length;
   const doneTrue = todayItems.filter((it) => it.done === true).length;
   const doneDetermined = todayItems.filter((it) => it.done !== undefined).length;
-
   return (
     <div>
       <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
@@ -212,18 +215,19 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
               const seen = new Set<string>();
               return todayItems
                 .filter((it) => {
-                  const t = (it.text || "").trim();
+                  const t = (it.courseName || it.text || "").trim();
                   if (!t || seen.has(t)) return false;
                   seen.add(t);
                   return true;
                 })
                 .map((it, i) => {
-                  // 完成 = 当天是否真的学/复习（复习课 status 早已 ✅，须看课程当天的学习/复习记录）
-                  const done = it.done;
-                  const prefix = done === true ? "✅ " : done === false ? "⬜ " : it.carry ? "📌 " : "";
-                  const color = done === true ? "#2f9e44" : done === false ? "#888" : it.carry ? "#b7791f" : "#333";
+                  const done = it.done === true;
+                  const label = it.courseName || it.text || "";
+                  const modeTag = it.mode === "review" ? "复习" : it.mode === "new" ? "新学" : "";
+                  const prefix = done ? "✅ " : it.carry ? "📌 " : "⬜ ";
+                  const color = done ? "#2f9e44" : it.carry ? "#b7791f" : "#888";
                   const note =
-                    done === true
+                    done
                       ? it.carry
                         ? "（补昨天的，今天已学）"
                         : "（今天已学）"
@@ -233,8 +237,9 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
                   return (
                     <li key={`${it.planId}-${i}`} style={{ color }}>
                       {prefix}
-                      {it.text}
-                      {note && <span style={{ color: "#999", fontSize: 11 }}>{note}</span>}
+                      {label}
+                      {modeTag ? <span style={{ color: "#999", fontSize: 11, marginLeft: 4 }}>（{modeTag}）</span> : null}
+                      {note && <span style={{ color: "#999", fontSize: 11, marginLeft: 4 }}>{note}</span>}
                     </li>
                   );
                 });
@@ -251,32 +256,22 @@ export default function StudyPlanPanel({ children, onAskInChat }: Props) {
       {byDate.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {byDate.map(([date, dayRows]) => {
-            // 同日按行展平 + 文本去重（防御历史重复行：同一天同一课只显示一条）
-            const seen = new Set<string>();
-            const items = dayRows
-              .flatMap((r) =>
-                r.content.map((it: any) => ({
-                  text: (it.text || "").trim(),
-                  carry: r.origin === "carry",
-                }))
-              )
-              .filter((x) => {
-                if (!x.text || seen.has(x.text)) return false;
-                seen.add(x.text);
-                return true;
-              });
+            const items = dayRows.filter(
+              (r, idx, self) => self.findIndex((x) => x.courseName === r.courseName) === idx
+            );
             return (
               <div key={date} style={{ border: "1px solid #f0f0f0", borderRadius: 10, padding: "8px 12px", background: "#fff" }}>
                 <div style={{ fontSize: 12, color: "#667eea", fontWeight: 600, marginBottom: 4 }}>{fmtDay(date)}</div>
-                {items.map((it, i) => {
-                  // 未来排期尚未执行：完成须按「当天活动」判定（未来无记录），不显示 ✅/⬜，只标 📌 顺延
-                  const prefix = it.carry ? "📌 " : "• ";
-                  const color = it.carry ? "#b7791f" : "#333";
-                  const note = it.carry ? "（顺延来的补学）" : "";
+                {items.map((r, i) => {
+                  const modeTag = r.mode === "review" ? "复习" : "新学";
+                  const prefix = r.origin === "carry" ? "📌 " : "• ";
+                  const color = r.origin === "carry" ? "#b7791f" : "#333";
+                  const note = r.origin === "carry" ? "（顺延来的补学）" : "";
                   return (
                     <div key={`${date}-${i}`} style={{ fontSize: 13, color, padding: "1px 0" }}>
                       {prefix}
-                      {it.text}
+                      {r.courseName}
+                      <span style={{ color: "#999", fontSize: 11, marginLeft: 4 }}>（{modeTag}）</span>
                       {note && <span style={{ color: "#999", fontSize: 11, marginLeft: 4 }}>{note}</span>}
                     </div>
                   );

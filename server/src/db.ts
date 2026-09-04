@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
+import crypto from "node:crypto";
 
 /**
  * 打开服务端主库并初始化 schema。
@@ -93,10 +94,20 @@ export function openDb(dataDir: string): DatabaseSync {
       id TEXT PRIMARY KEY,
       parent_id TEXT NOT NULL,
       name TEXT NOT NULL,
-      type TEXT NOT NULL,             -- recording | todo_gen | todo_stat | auto_new_session
-      time TEXT NOT NULL,             -- HH:mm
+      type TEXT NOT NULL,             -- recording | todo_gen | todo_stat | auto_new_session | reminder
+      time TEXT NOT NULL,             -- HH:mm（daily/weekly/interval 用；once 也填目标时刻便于展示）
       extra_json TEXT NOT NULL DEFAULT '{}',
       enabled INTEGER NOT NULL DEFAULT 1,
+      -- ISSUE-047：孩子端 agent 自建定时提醒 + 频率 + 语音
+      owner TEXT NOT NULL DEFAULT 'parent',   -- parent | child（孩子 agent 创建则为 child）
+      frequency TEXT NOT NULL DEFAULT 'daily', -- once | daily | weekly | interval
+      reminder_text TEXT,             -- 到点语音播报的提醒内容（reminder 类型用）
+      weekday INTEGER,                -- weekly：0=周日..6=周六
+      interval_minutes INTEGER,       -- interval：每隔 N 分钟
+      voice INTEGER NOT NULL DEFAULT 1, -- 1=语音播报 0=仅通知
+      fire_at TEXT,                   -- once：目标触发时间 ISO（<=now 即到期）
+      last_fired_at TEXT,             -- 上次触发时间（daily/weekly 按「今天是否触发过」、interval 按间隔去重）
+      expired INTEGER NOT NULL DEFAULT 0, -- once 触发后置 1，不再触发
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -159,18 +170,21 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_exam_schedules_child ON exam_schedules(child_id, scheduled_at);
-    -- 学习计划（ISSUE-033，2026-09-02）：家长对话制定 → 「每天学什么」的排期行（服务端为数据真源）。
-    -- kind=date：某固定日期（YYYY-MM-DD）学 content 里的内容；kind=daily 预留（每日循环，当前无生成来源，create 暂只收 date）。
-    -- origin=conversation（家长对话确认落库）| carry（服务端每日定时把昨日未完成顺延写为当天行）。
-    -- content JSON 数组：[{"text":"先进篇 1-2 章","topicKey":"lunyu"}]；text 为给孩子的 [家长] todo 行文本。
+    -- 学习计划（ISSUE-033 重构 2026-09-04）：家长对话制定 → 「每天学什么」排期（服务端为数据真源）。
+    -- 每行 = 一门课的排期（不再 content JSON 数组塞多课）。mode 区分 学/复习；status/done_at 由 stat 在孩子当天
+    -- 实际学/复习完对应课程后写入（家长面板与 carry 都直接读这两列，精确匹配，不靠文本前缀）。
+    -- date=执行日期；origin=conversation（家长对话落库）| carry（服务端把昨日未完成顺延写为当天行）。
     CREATE TABLE IF NOT EXISTS study_plan_items (
       id TEXT PRIMARY KEY,
       parent_id TEXT NOT NULL,
       child_id TEXT NOT NULL,
-      kind TEXT NOT NULL DEFAULT 'date',
       date TEXT NOT NULL DEFAULT '',
-      content TEXT NOT NULL DEFAULT '[]',
+      topic_key TEXT NOT NULL DEFAULT '',
+      course_name TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'new',
       origin TEXT NOT NULL DEFAULT 'conversation',
+      status TEXT NOT NULL DEFAULT 'pending',
+      done_at TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -178,8 +192,10 @@ export function openDb(dataDir: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_study_plan_child ON study_plan_items(child_id, date);
     CREATE INDEX IF NOT EXISTS idx_study_plan_parent ON study_plan_items(parent_id, date);
   `);
-  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '9')").run();
+  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '10')").run();
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('config_revision', '0')").run();
+  // 学习计划 v2 就地迁移（须在 meta 表建好后跑；不 DROP 旧数据，改成展开 content JSON → 一课一行）
+  migrateStudyPlanV2(db);
   // 旧库迁移：children 表加 profile_json（孩子详情 + 密码哈希上云，2026-08-30）
   try {
     db.exec("ALTER TABLE children ADD COLUMN profile_json TEXT");
@@ -194,6 +210,28 @@ export function openDb(dataDir: string): DatabaseSync {
     }
   } catch {
     // 已存在则忽略
+  }
+  // 旧库迁移：scheduler_tasks 扩列（ISSUE-047 孩子端自建提醒 + 频率 + 语音，2026-09-04）
+  try {
+    const stCols = (db.prepare("PRAGMA table_info(scheduler_tasks)").all() as Array<{ name: string }>).map((c) => c.name);
+    const stAdd: Record<string, string> = {
+      owner: "TEXT NOT NULL DEFAULT 'parent'",
+      frequency: "TEXT NOT NULL DEFAULT 'daily'",
+      reminder_text: "TEXT",
+      weekday: "INTEGER",
+      interval_minutes: "INTEGER",
+      voice: "INTEGER NOT NULL DEFAULT 1",
+      fire_at: "TEXT",
+      last_fired_at: "TEXT",
+      expired: "INTEGER NOT NULL DEFAULT 0",
+    };
+    for (const [col, def] of Object.entries(stAdd)) {
+      if (!stCols.includes(col)) {
+        db.exec(`ALTER TABLE scheduler_tasks ADD COLUMN ${col} ${def}`);
+      }
+    }
+  } catch {
+    // 新库无旧表则忽略
   }
   // 旧库迁移：materials 主键从单列 id（base64url(路径)）升级为复合主键 (parent_id, id)。
   // 旧设计跨家长同路径冲突：ON CONFLICT 只更新 size/updated_at 不更新 parent_id，
@@ -224,6 +262,92 @@ export function openDb(dataDir: string): DatabaseSync {
     // 新库无旧表则忽略
   }
   return db;
+}
+
+/**
+ * 学习计划 v1→v2 就地迁移（2026-09-04）：若 study_plan_items 仍是旧结构（含 content JSON 一天多课），
+ * 展开成「一课一行」新结构。不 DROP 旧数据（保住家长排期）。幂等：成功后写 meta study_plan_v2_migrated=1。
+ * 只做结构性展开：mode 由「复习/温习」前缀判定；status 一律留 pending——启动后 worker stat 会按 courses
+ * 当天活动把当天真正学完的课回写 done。孩子 kb 的旧 child_todos 迁移走 scripts/migrate-study-plan-v2.mts。
+ */
+function migrateStudyPlanV2(db: DatabaseSync): void {
+  try {
+    const oldPlanSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='study_plan_items'").get() as
+      | { sql?: string }
+      | undefined)?.sql ?? "";
+    const done =
+      (db.prepare("SELECT value FROM meta WHERE key='study_plan_v2_migrated'").get() as { value?: string } | undefined)
+        ?.value === "1";
+    if (!oldPlanSql.includes("content TEXT") || done) return;
+    const oldRows = db
+      .prepare(
+        "SELECT id,parent_id,child_id,date,content,origin,active,created_at,updated_at FROM study_plan_items"
+      )
+      .all() as Array<{
+      id: string; parent_id: string; child_id: string; date: string; content: string;
+      origin: string; active: number; created_at: string; updated_at: string;
+    }>;
+    const now = new Date().toISOString();
+    db.exec("BEGIN");
+    db.exec("DROP TABLE IF EXISTS study_plan_items");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS study_plan_items (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT NOT NULL,
+        child_id TEXT NOT NULL,
+        date TEXT NOT NULL DEFAULT '',
+        topic_key TEXT NOT NULL DEFAULT '',
+        course_name TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'new',
+        origin TEXT NOT NULL DEFAULT 'conversation',
+        status TEXT NOT NULL DEFAULT 'pending',
+        done_at TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_study_plan_child ON study_plan_items(child_id, date);
+      CREATE INDEX IF NOT EXISTS idx_study_plan_parent ON study_plan_items(parent_id, date);
+    `);
+    const ins = db.prepare(
+      `INSERT INTO study_plan_items
+        (id,parent_id,child_id,date,topic_key,course_name,mode,origin,status,done_at,active,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    );
+    let n = 0;
+    for (const r of oldRows) {
+      let items: Array<{ text?: string; topicKey?: string }> = [];
+      try {
+        const a = JSON.parse(r.content);
+        items = Array.isArray(a) ? a : [];
+      } catch {
+        continue;
+      }
+      const seen = new Set<string>();
+      for (const it of items) {
+        if (!it || typeof it.text !== "string" || !it.text.trim()) continue;
+        const t = it.text.trim();
+        const rev = /^(?:复习|温习)\s*[:：]?\s*(.+)$/.exec(t);
+        const course = rev ? rev[1].trim() : t.replace(/^[^：:]{1,4}[:：]\s*/, "").trim();
+        if (!course) continue;
+        const mode = rev ? "review" : "new";
+        const k = `${mode}\u0000${course}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const topicKey = typeof it.topicKey === "string" && it.topicKey ? it.topicKey : "";
+        ins.run(
+          crypto.randomUUID(), r.parent_id, r.child_id, r.date, topicKey, course, mode,
+          r.origin, "pending", "", r.active ? 1 : 0, r.created_at || now, r.updated_at || now
+        );
+        n++;
+      }
+    }
+    db.exec("COMMIT");
+    db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('study_plan_v2_migrated', '1')").run();
+    console.log(`[db] study_plan_items v1→v2 就地转换 ${n} 条课程行（完成态待 stat 回写）`);
+  } catch (e) {
+    console.error("[db] study_plan_items 迁移失败：", (e as Error).message);
+  }
 }
 
 /** 读取全局配置 revision（未设置返回 0）。 */

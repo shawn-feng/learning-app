@@ -16,7 +16,6 @@ import { readServerDailyConversation } from "../db/sessions.js";
 import { getWorkerRuntime, pickWorkerModel } from "./runtime.js";
 import { createWorkerKbTools, formatLocalDate } from "./kb-tools.js";
 import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt.js";
-import { findCourseByPlanText } from "../plan-text.js";
 
 /** 与客户端 scheduler.ts 的 SchedulerChildConfig 对齐（结构兼容，缺省字段调用方已补齐）。 */
 export interface WorkerSchedulerChildConfig {
@@ -227,224 +226,189 @@ const recordingTask: WorkerTask = {
   },
 };
 
-// ---------- todo ----------
+// ---------- todo（v2：一事一行 / 一课一行，纯 SQL） ----------
 
-/** 主库 study_plan_items 当日排期行（与 routes/study-plans.ts GET /today 同口径：kind='date' + active=1）。 */
-interface PlanRowLite {
+/** 主库某天 study_plan_items 行（一课一行）。 */
+interface PlanCourseRow {
+  id: string;
+  date: string;
+  topic_key: string;
+  course_name: string;
+  mode: string;
   origin: string;
-  content: string;
+  status: string;
+  done_at: string;
 }
 
-interface PlanTodayItemLite {
-  text: string;
-  carry: boolean;
+interface TodoRow {
+  id: string;
+  title: string;
+  source: string;
+  plan_id: string;
+  status: string;
+  done_at: string;
+  note: string;
 }
 
-function parsePlanContent(raw: string): Array<{ text: string }> {
-  try {
-    const arr = JSON.parse(raw) as unknown;
-    return Array.isArray(arr) ? (arr as Array<{ text: string }>) : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * 读学习计划当日聚合（ISSUE-033，替代旧 rules_json.daily）。
- * 服务端 worker 直接查主库 study_plan_items（SQL 与客户端读 GET /study-plans/today 同口径），
- * 只把行内 content 展平为 items——carry 顺延行由 study-plan-carry.ts 每日写入，这里不做任何排期展开。
- */
-function loadTodayPlanItemsServer(ctx: WorkerTaskCtx, today: string): PlanTodayItemLite[] {
-  const rows = ctx.mainDb
+/** 读主库某天全部排期行。 */
+function loadPlanRowsServer(ctx: WorkerTaskCtx, date: string): PlanCourseRow[] {
+  return ctx.mainDb
     .prepare(
-      "SELECT origin, content FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND kind = 'date' AND date = ? ORDER BY created_at ASC"
+      "SELECT id, date, topic_key, course_name, mode, origin, status, done_at FROM study_plan_items " +
+        "WHERE parent_id = ? AND child_id = ? AND active = 1 AND date = ? ORDER BY created_at ASC"
     )
-    .all(ctx.parentId, ctx.childId, today) as unknown as PlanRowLite[];
-  const items: PlanTodayItemLite[] = [];
-  for (const r of rows) {
-    for (const it of parsePlanContent(r.content)) {
-      if (!it.text) continue;
-      items.push({ text: it.text, carry: r.origin === "carry" });
-    }
-  }
-  return items;
+    .all(ctx.parentId, ctx.childId, date) as unknown as PlanCourseRow[];
 }
 
-/** 当日计划 items → [家长] markdown 行（同文本去重；carry = 昨天没学完顺延来的，标注原因）。 */
-function planItemsToParentLines(items: PlanTodayItemLite[]): string[] {
-  const lines: string[] = [];
-  const seen = new Set<string>();
-  for (const it of items) {
-    const text = (it.text || "").trim();
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    lines.push(it.carry ? `- [ ] [家长] ${text}（昨天没学完，今天补上）` : `- [ ] [家长] ${text}`);
-  }
-  return lines;
-}
-
-/** 从 [家长] markdown 行提取计划文本键（剥 checkbox/[家长] 前缀与顺延后缀），如 "- [x] [家长] 论语X（昨天没学完，今天补上）" → "论语X"。 */
-function parentTextKey(line: string): string {
-  const m = /^\s*[-*]\s*\[( |x|X)\]\s*\[家长\]\s*(.*)$/.exec(line);
-  if (!m) return "";
-  return stripParentText(m[2]);
-}
-
-/** 读旧 todolist：已勾的 [家长] 文本键集合（计划没变的项保持勾选状态，避免 stat/孩子勾选被重置）。 */
-function checkedParentKeys(md: string): Set<string> {
-  const s = new Set<string>();
-  for (const line of md.split("\n")) {
-    if (!/\[家长\]/.test(line)) continue;
-    const m = /^\s*[-*]\s*\[(x|X)\]\s*\[家长\]/.exec(line);
-    if (!m) continue;
-    const k = parentTextKey(line);
-    if (k) s.add(k);
-  }
-  return s;
-}
-
-/** 旧 todolist 中「非 [家长] 行」内容（孩子自定任务等）——同步计划时原样保留，不丢孩子侧内容。 */
-function nonParentBody(md: string): string {
-  const kept: string[] = [];
-  for (const line of md.split("\n")) {
-    if (/\[家长\]/.test(line)) continue;
-    if (line.trim() === "【家长规定项】") continue;
-    kept.push(line);
-  }
-  // 去首尾空行、压缩连续空行
-  const trimmed = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  return trimmed;
+/** 读孩子 kb 某天全部 todo_items。 */
+function loadTodoRowsServer(ctx: WorkerTaskCtx, date: string): TodoRow[] {
+  return (
+    runKbQuery<TodoRow[]>(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.list", {
+      child_id: ctx.childId,
+      date,
+    }) ?? []
+  );
 }
 
 /**
- * 今日 todolist 与学习计划同步（2026-09-03 起：gen 不再是「生成一次就锁死」）。
- * 每次 plan tick 调用：以 study_plan_items 当日聚合为真源，重写【家长规定项】段——
- *   计划中途被家长修改（增/删/改课）会在下一次 tick（≤5 分钟）反映到 todolist；
- *   同文本已勾（stat/孩子勾选）保持 [x]；孩子自定任务等非家长内容原样保留。
- * 无既有 todolist 时等同首次生成。
+ * 今日家长 todolist 与学习计划同步（v2）。每次 plan tick 调用：
+ * 以 study_plan_items 当日排期为真源，把「今天要学/复习的课」物化进 child kb 的 todo_items（source=parent，
+ * 关联 plan_id）。规则：
+ *  - 计划里某课今日有排 → 若尚无对应家长 todo 则新增（pending）；已有且计划仍在则保留（含已完成态）；
+ *  - 计划的课被删除/停用 → 对应家长 todo 一并删除；
+ *  - 同一 (course_name, mode) 若今天有 conversation+carry 两行 → 只物化一个（去重，保留先落库的行）；
+ *  - 孩子自规划项（source=child）绝不动。
  */
 export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
   const today = formatLocalDate(ctx.now);
-  const todayTodo = runKbQuery<{ itemsMd: string } | null>(
-    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: today }
-  );
-  const oldMd = (todayTodo?.itemsMd ?? "").trim();
-  const oldChecked = checkedParentKeys(oldMd);
-  const others = nonParentBody(oldMd);
+  const planRows = loadPlanRowsServer(ctx, today);
+  const todoRows = loadTodoRowsServer(ctx, today);
+  const now = new Date().toISOString();
 
-  const planItems = loadTodayPlanItemsServer(ctx, today);
-  const wantLines = planItemsToParentLines(planItems); // 新计划行（全未勾 + carry 标记）
-  const parentLines = wantLines.map((line) => {
-    const k = parentTextKey(line);
-    if (k && oldChecked.has(k)) return line.replace(/^(\s*[-*]\s*)\[( |x|X)\]/, "$1[x]");
-    return line;
-  });
+  const planIds = new Set(planRows.map((r) => r.id));
+  const childTodos = todoRows.filter((t) => t.source !== "parent");
+  const parentTodos = todoRows.filter((t) => t.source === "parent");
 
-  const head =
-    parentLines.length > 0
-      ? "【家长规定项】\n" + parentLines.join("\n")
-      : "【家长规定项】今天的学习计划没有安排内容（空天 = 不要求学）。";
-  const mdNew = others ? `${head}\n\n${others}` : head;
-
-  if (mdNew === oldMd) return; // 无变化（含首次之外计划未动）→ 不写
-  runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.put", {
-    child_id: ctx.childId,
-    date: today,
-    items_md: mdNew,
-  });
-  console.log(
-    `[worker:todo-gen] child ${ctx.childId}: ${today} todolist 已同步（家长项 ${parentLines.length}${oldMd ? " / 计划变更后重写" : " / 首次生成"}）`
-  );
+  // 1) 删除：计划已删/停用的家长 todo（其 plan_id 不在今日计划里）
+  let removed = 0;
+  for (const t of parentTodos) {
+    if (!planIds.has(t.plan_id)) {
+      runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.removeByPlan", { child_id: ctx.childId, id: t.id, plan_id: t.plan_id });
+      removed++;
+    }
+  }
+  // 2) 去重 & 新增：按 (course_name, mode) 保留首个 plan_id，缺的补家长 todo
+  const seenCourse = new Set<string>();
+  let added = 0;
+  for (const r of planRows) {
+    const courseKey = `${r.course_name}\u0000${r.mode}`;
+    if (seenCourse.has(courseKey)) continue; // conversation+carry 同日同课去重
+    seenCourse.add(courseKey);
+    const exist = parentTodos.find((t) => t.plan_id === r.id);
+    if (exist) continue;
+    runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.addParent", {
+      child_id: ctx.childId,
+      date: today,
+      title: r.course_name,
+      plan_id: r.id,
+      note: r.mode === "review" ? "复习" : "",
+    });
+    added++;
+  }
+  if (removed || added) {
+    console.log(`[worker:todo-gen] child ${ctx.childId}: ${today} 家长项同步（新增 ${added}，删除 ${removed}）`);
+  }
 }
 
 const DONE_RATE_OK = 0.8;
 
-/** 剥 [家长] 前缀与 carry 后缀，取计划项文本用于匹配课程标题。 */
-function stripParentText(line: string): string {
-  return line
-    .replace(/^\[家长\]\s*/, "")
-    .replace(/（昨天没学完，今天补上）\s*$/, "")
-    .trim();
+/** 按课程「当天活动」判某排期行是否完成（v2：精确按 course 的日期字段，无前缀剥取）。 */
+function planCourseDone(today: string, course: { first_learned: string; last_review: string }, mode: string): boolean {
+  const learned = (course.first_learned || "").trim();
+  const reviewed = (course.last_review || "").trim();
+  if (mode === "review") return reviewed === today;
+  // new：首次学习 或 当天复习过（防首次学习日期在别天但今天补复习的边界，视当天有学习动作即完成）
+  return learned === today || reviewed === today;
 }
 
 /**
- * 按课程「当天活动」匹配完成态（2026-09-03 起，与面板 loadCourseDoneMap 同口径）：
- * 学习计划里某课可能是「复习」（该课 status 早已 ✅）——只看 status 无法判断今天是否
- * 真的学/复习了。须看课程的 首次学习(first_learned) / 最近复习(last_review) 是否等于
- * 目标日期（stat 时点=今天）：当天有学习或复习记录才算完成。
- * 计划项文本即课程名（可能带「复习：」等动作前缀，见 ../plan-text.ts：匹配前剥前缀落到真实课程行）。
- */
-function courseDoneFor(
-  today: string,
-  courses: Array<{
-    topic: string; title: string; status: string; first_learned: string; last_review: string;
-  }>,
-  parentLine: string
-): boolean | undefined {
-  const t = stripParentText(parentLine);
-  if (!t) return undefined;
-  // 计划项文本可能是「复习：<课程名>」等带动作前缀的写法（家长对已学课的复习安排）：
-  // 精确匹配不到时剥前缀再匹配真实课程名（复习课的 last_review/first_learned 写在真实课程行上）。
-  const c = findCourseByPlanText(courses, t);
-  if (!c) return undefined;
-  const learned = (c.first_learned || "").trim();
-  const reviewed = (c.last_review || "").trim();
-  return (learned === today || reviewed === today) ? true : false;
-}
-
-/**
- * 纯代码统计（不再调 LLM）。
- * 完成情况真源 = courses 的当天活动（first_learned / last_review == 今天；由 recording 的 LLM 判定后写入）。
- * - [家长] 项：对照课程「当天是否学习/复习」确定性打勾（复习课仅当天复习过才算完成，勿看 status）；
- * - 非[家长]项（孩子自定任务）：保持原样，由孩子「汇总」（聊天调工具 / 定时汇总任务）判定完成。
- * @returns true = 跳过（当天无 todolist），false = 已执行统计
+ * 纯代码统计（v2，不再碰 markdown/不再剥前缀）。数据源全结构化：
+ *  - 完成真源 = courses 当天活动（first_learned / last_review == 今天）；
+ *  - stat 先按今天排期行精确 join courses → 今天实际学/复习完的行 → 回写 study_plan_items.status='done' + done_at；
+ *  - 再据此勾选 child kb 今日家长 todo（source=parent，按 plan_id 关联）；
+ *  - 最后从 todo_items 汇总 child_todo_stats（家长/孩子项分开）。
+ * @returns true = 跳过（当天无 todo_items），false = 已执行统计
  */
 export async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
   const today = formatLocalDate(ctx.now);
-  const todayTodo = runKbQuery<{ itemsMd: string } | null>(
-    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date: today }
-  );
-  if (!todayTodo?.itemsMd?.trim()) {
+  const todoRows = loadTodoRowsServer(ctx, today);
+  if (todoRows.length === 0) {
     console.log(`[worker:todo-stat] child ${ctx.childId}: ${today} 无 todolist，跳过`);
     return true;
   }
-  const courses = runKbQuery<
-    Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>
-  >(
-    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.courses.list", { child_id: ctx.childId }
-  ) ?? [];
-  const newMd = todayTodo.itemsMd
-    .split("\n")
-    .map((raw) => {
-      const m = /^\s*[-*]\s*\[( |x|X)\]\s*(\[家长\].*)$/.exec(raw);
-      if (!m) return raw;
-      const done = courseDoneFor(today, courses, m[2]);
-      if (done === undefined) return raw; // 无对应课程 → 保持原样
-      return `- [${done ? "x" : " "}] ${m[2]}`;
-    })
-    .join("\n");
-  if (newMd !== todayTodo.itemsMd) {
-    runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.put", {
-      child_id: ctx.childId,
-      date: today,
-      items_md: newMd,
-    });
+  const planRows = loadPlanRowsServer(ctx, today);
+  const courses =
+    runKbQuery<Array<{ topic: string; title: string; first_learned: string; last_review: string }>>(
+      ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.courses.list", { child_id: ctx.childId }
+    ) ?? [];
+  const courseByTitle = new Map<string, { first_learned: string; last_review: string }>();
+  for (const c of courses) {
+    const title = (c.title || "").trim();
+    if (title && !courseByTitle.has(title)) courseByTitle.set(title, c);
+  }
+  // 1) 回写今天排期行的完成态
+  // 记录每排期行「是否完成」的判定结果（判定依据 courses 当天活动，与库内 status 无关），
+  // 供第 2) 步同步家长 todo 用——不能读 r.status（那是在本函数开头 load 的陈旧内存值，
+  // 第 1) 步的 UPDATE 尚未反映进去）。
+  const doneOfPlan = new Map<string, boolean>();
+  let planDoneCount = 0;
+  for (const r of planRows) {
+    const course = courseByTitle.get(r.course_name);
+    if (!course) {
+      doneOfPlan.set(r.id, false); // 排了但孩子课程表没有该课 → 不完成
+      continue;
+    }
+    const isDone = planCourseDone(today, course, r.mode);
+    doneOfPlan.set(r.id, isDone);
+    if (isDone && r.status !== "done") {
+      ctx.mainDb
+        .prepare("UPDATE study_plan_items SET status = 'done', done_at = ?, updated_at = ? WHERE id = ?")
+        .run(today, new Date().toISOString(), r.id);
+      planDoneCount++;
+    }
+  }
+  // 2) 勾选/取消家长 todo（按 plan_id 关联今天排期行的 done 判定）
+  const doneByPlanId = doneOfPlan;
+  let todoChanged = 0;
+  for (const t of todoRows) {
+    if (t.source !== "parent") continue;
+    const shouldDone = doneByPlanId.get(t.plan_id) ?? false;
+    if ((t.status === "done") !== shouldDone) {
+      runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.set", {
+        child_id: ctx.childId,
+        id: t.id,
+        status: shouldDone ? "done" : "pending",
+      });
+      todoChanged++;
+    }
+  }
+  if (planDoneCount || todoChanged) {
+    console.log(`[worker:todo-stat] child ${ctx.childId}: ${today} 完成项 ${planDoneCount}（排期回写），todo 调整 ${todoChanged}`);
   }
   await saveTodoStatsServer(ctx, today);
   return false;
 }
 
-function countTodoTasksServer(md: string): {
+/** 按 todo_items 行汇总（一事一行：source=parent → 家长项）。 */
+function countTodoTasksServer(rows: TodoRow[]): {
   total: number; done: number; parentTotal: number; parentDone: number; selfTotal: number; selfDone: number;
 } {
   let total = 0, done = 0, parentTotal = 0, parentDone = 0, selfTotal = 0, selfDone = 0;
-  for (const line of md.split("\n")) {
-    const m = /^\s*[-*]\s*\[( |x|X)\]\s*(.*)$/.exec(line);
-    if (!m) continue;
+  for (const r of rows) {
     total++;
-    const isDone = m[1].toLowerCase() === "x";
+    const isDone = r.status === "done";
     if (isDone) done++;
-    if (/\[家长\]/.test(m[2])) {
+    if (r.source === "parent") {
       parentTotal++;
       if (isDone) parentDone++;
     } else {
@@ -461,11 +425,9 @@ interface TodoStatsRow {
 }
 
 async function saveTodoStatsServer(ctx: WorkerTaskCtx, date: string): Promise<void> {
-  const todo = runKbQuery<{ itemsMd: string } | null>(
-    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.get", { child_id: ctx.childId, date }
-  );
-  if (!todo?.itemsMd?.trim()) return;
-  const c = countTodoTasksServer(todo.itemsMd);
+  const todoRows = loadTodoRowsServer(ctx, date);
+  if (todoRows.length === 0) return;
+  const c = countTodoTasksServer(todoRows);
   const rate = c.total > 0 ? c.done / c.total : 0;
   let streak = 0;
   const yesterday = prevDate(date);

@@ -13,7 +13,6 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
-import { planTextToCourseText } from "../plan-text.js";
 
 interface ExamDeps {
   config: ServerConfig;
@@ -246,6 +245,29 @@ function dayStart(t: number): number {
 }
 
 /**
+ * 一次性迁移：把存量考核排期的时间粒度从「具体时刻」归一到「该日期本地 0 点」。
+ * 2026-09-04 起考核只按日期（用户拍板：只设考核日期、不约定时间，到当天 0 点即可考）。
+ * 只改仍为 pending/started 的行（done 历史保留原样），幂等（已为 0 点则跳过）。
+ */
+export function normalizeExamScheduleDays(db: DatabaseSync): number {
+  const rows = db
+    .prepare("SELECT id, scheduled_at, status FROM exam_schedules WHERE status IN ('pending','started')")
+    .all() as Array<{ id: string; scheduled_at: string; status: string }>;
+  let n = 0;
+  const upd = db.prepare("UPDATE exam_schedules SET scheduled_at = ? WHERE id = ?");
+  for (const r of rows) {
+    const ts = new Date(r.scheduled_at).getTime();
+    if (Number.isNaN(ts)) continue;
+    const ds = dayStart(ts);
+    if (ds !== ts) {
+      upd.run(new Date(ds).toISOString(), r.id);
+      n++;
+    }
+  }
+  return n;
+}
+
+/**
  * 固定排期懒生成（幂等）：确保该孩子未来 HORIZON 天内有固定排期。
  * 各频率档从 anchorAt 按周期步进；同一日期多档重叠 → 只保留周期最长档（rank 最大）。
  * 已存在同 child+同日+kind=fixed 的排期则跳过（重复调用不重复生成）。
@@ -255,66 +277,57 @@ export function ensureFixedSchedules(db: DatabaseSync, parentId: string, childId
   if (!cfg.frequencies?.length) return 0;
   const HORIZON_MS = 60 * 86400000; // 未来 60 天
   const now = Date.now();
-  const byDay = new Map<number, { time: number; freq: string; rank: number }>();
-  const add = (t: number, freq: string) => {
-    const day = dayStart(t);
+  const todayDay = dayStart(now); // 今天本地 0 点
+  const byDay = new Map<number, { day: number; freq: string; rank: number }>();
+  const add = (day: number, freq: string) => {
     const cur = byDay.get(day);
-    if (!cur || FREQ_RANK[freq] > cur.rank) byDay.set(day, { time: t, freq, rank: FREQ_RANK[freq] });
+    if (!cur || FREQ_RANK[freq] > cur.rank) byDay.set(day, { day, freq, rank: FREQ_RANK[freq] });
   };
-  // 每日：每天 cfg.time 时刻（今天该时刻未过则今天，否则明天起）
+  // ⚠️ 2026-09-04：考核只按「日期」粒度（用户拍板），不再约定具体时刻——排期时间都取该日本地 0 点，
+  // 只要到了这一天（0 点起）整个白天都可考核。daily/weekly 不再读取 cfg.time。
+  // 每日：今天起每天生成一个「当天可考」排期（含今天——今天 0 点已过即今天 pending，全天可考）
   if (cfg.frequencies.includes("daily")) {
-    const [h, m] = (cfg.time || "20:00").split(":").map(Number);
-    const d = new Date(now);
-    d.setHours(Number.isFinite(h) ? h : 20, Number.isFinite(m) ? m : 0, 0, 0);
-    if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+    let d = new Date(todayDay);
     while (d.getTime() <= now + HORIZON_MS) {
-      add(d.getTime(), "daily");
+      add(dayStart(d.getTime()), "daily");
       d.setDate(d.getDate() + 1);
     }
   }
-  // 每周：cfg.weekly.weekday（1=周一…7=周日）的 weekly.time 时刻；当天该时刻未过则当天，否则下个同星期几
+  // 每周：cfg.weekly.weekday（1=周一…7=周日），该日的 0 点；今天若是该周几则含今天
   if (cfg.frequencies.includes("weekly")) {
     const w = cfg.weekly || {};
     const weekday = Number(w.weekday) || 1;
-    const wtime = w.time || cfg.time || "20:00";
-    const [h, m] = wtime.split(":").map(Number);
     const target = weekday % 7; // 1-7 → JS getDay（0=周日）：1→周一,7→周日
-    const d = new Date(now);
-    d.setHours(Number.isFinite(h) ? h : 20, Number.isFinite(m) ? m : 0, 0, 0);
+    let d = new Date(todayDay);
     d.setDate(d.getDate() + ((target - d.getDay() + 7) % 7));
-    if (d.getTime() <= now) d.setDate(d.getDate() + 7);
     while (d.getTime() <= now + HORIZON_MS) {
-      add(d.getTime(), "weekly");
+      add(dayStart(d.getTime()), "weekly");
       d.setDate(d.getDate() + 7);
     }
   }
-  // monthly/halfyear/yearly：保留旧 anchor 步进（兼容旧数据；UI 已不再生成这三档）
+  // monthly/halfyear/yearly：保留旧 anchor 步进（兼容旧数据；UI 已不再生成这三档），时间也取日 0 点
   const legacy = cfg.frequencies.filter((f) => f === "monthly" || f === "halfyear" || f === "yearly");
   if (legacy.length) {
     let anchor: number;
     if (cfg.anchorAt) {
-      anchor = new Date(cfg.anchorAt).getTime();
+      anchor = dayStart(new Date(cfg.anchorAt).getTime());
     } else {
-      const [h, m] = (cfg.time || "20:00").split(":").map(Number);
-      const d = new Date();
-      d.setHours(Number.isFinite(h) ? h : 20, Number.isFinite(m) ? m : 0, 0, 0);
-      if (d.getTime() <= now) d.setDate(d.getDate() + 1);
-      anchor = d.getTime();
+      anchor = todayDay;
     }
     for (const freq of legacy) {
       const step = freqToMs(freq);
-      for (let t = anchor; t <= anchor + HORIZON_MS; t += step) add(t, freq);
+      for (let t = anchor; t <= anchor + HORIZON_MS; t += step) add(dayStart(t), freq);
     }
   }
-  // 只保留「还没生成」的排期（同日已存在 fixed 排期 → 跳过）；按时间排序
+  // 只保留「还没生成」的排期（同日已存在 fixed 排期 → 跳过）；按日期排序
   const existing = new Set(
     (db
       .prepare("SELECT scheduled_at FROM exam_schedules WHERE child_id = ? AND kind = 'fixed'")
       .all(childId) as Array<{ scheduled_at: string }>).map((r) => dayStart(new Date(r.scheduled_at).getTime()))
   );
   const pending = Array.from(byDay.values())
-    .filter((x) => x.time > now && !existing.has(dayStart(x.time)))
-    .sort((a, b) => a.time - b.time);
+    .filter((x) => !existing.has(x.day))
+    .sort((a, b) => a.day - b.day);
   if (!pending.length) return 0;
   const ins = db.prepare(
     "INSERT OR IGNORE INTO exam_schedules (id, parent_id, child_id, kind, freq, scheduled_at, scope, status, created_at) VALUES (?, ?, ?, 'fixed', ?, ?, '{}', 'pending', ?)"
@@ -322,7 +335,7 @@ export function ensureFixedSchedules(db: DatabaseSync, parentId: string, childId
   let n = 0;
   for (const p of pending) {
     const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    ins.run(id, parentId, childId, p.freq, new Date(p.time).toISOString(), new Date().toISOString());
+    ins.run(id, parentId, childId, p.freq, new Date(p.day).toISOString(), new Date().toISOString());
     n++;
   }
   return n;
@@ -611,11 +624,10 @@ function planWindowFor(freq: string, scheduledTs: number): { start: string; end:
   return { start, end, label: "近 7 天（含今天）" };
 }
 
-/** 从家长学习计划（study_plan_items）构建考核候选（每日/每周固定档）：
- *  候选 = 窗口内（date∈[start,end]）计划行 content 的课程（text 归一为真实课程名后匹配孩子库 title；
- *  「复习：<课程名>」等动作前缀会被剥掉，见 ../plan-text.ts），
- *  **无论是否完成**（status⬜/无学习痕迹也算）都进候选——考核倒逼计划执行。
- *  返回 courses（含该课最早计划日期 planDate）+ unmatched（计划文本匹配不到课程的清单，供提示）。 */
+/** 从家长学习计划（study_plan_items，一课一行）构建考核候选（每日/每周固定档）：
+ *  候选 = 窗口内（date∈[start,end]）计划行 course_name 的课程（真实课程名，精确匹配孩子库 title），
+ *  **无论是否完成**（status pending 或已完成都进候选）——考核倒逼计划执行。
+ *  返回 courses（含该课最早计划日期 planDate）+ unmatched（计划课程匹配不到课程的清单，供提示）。 */
 function listPlanCourseMeta(
   db: DatabaseSync,
   dataDir: string,
@@ -643,25 +655,14 @@ function listPlanCourseMeta(
     );
     const rows = db
       .prepare(
-        "SELECT date, content FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND kind = 'date' AND date >= ? AND date <= ? ORDER BY date ASC"
+        "SELECT date, topic_key, course_name FROM study_plan_items WHERE parent_id = ? AND child_id = ? AND active = 1 AND date >= ? AND date <= ? ORDER BY date ASC"
       )
-      .all(parentId, childId, start, end) as Array<{ date: string; content: string }>;
-    const want = new Map<string, string>(); // text → 最早计划日期
+      .all(parentId, childId, start, end) as Array<{ date: string; topic_key: string; course_name: string }>;
+    const want = new Map<string, string>(); // course_name → 最早计划日期
     for (const r of rows) {
-      let items: Array<{ text?: unknown }> = [];
-      try {
-        const a = JSON.parse(r.content);
-        items = Array.isArray(a) ? a : [];
-      } catch {
-        items = [];
-      }
-      for (const it of items) {
-        if (!it || typeof it.text !== "string" || !it.text.trim()) continue;
-        // 计划文本可能是「复习：<课程名>」等动作前缀写法：归一成真实课程名再查课程库
-        // （否则复习项永远匹配不到课程、进 unmatched，考核倒逼复习就落空）。
-        const t = planTextToCourseText(it.text.trim());
-        if (!want.has(t) || r.date < want.get(t)!) want.set(t, r.date);
-      }
+      const title = (r.course_name || "").trim();
+      if (!title) continue; // 一课一行，course_name 即真实课程名（无前缀），精确匹配
+      if (!want.has(title) || r.date < want.get(title)!) want.set(title, r.date);
     }
     const lastExam = lastExamAtByCourse(db, childId);
     const courses: CourseMeta[] = [];
@@ -1044,6 +1045,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       throw err;
     }
     const generated = ensureFixedSchedules(deps.db, parentId, childId);
+    const migrated = normalizeExamScheduleDays(deps.db);
     const rows = deps.db
       .prepare("SELECT * FROM exam_schedules WHERE child_id = ? ORDER BY scheduled_at ASC LIMIT 100")
       .all(childId) as Array<Record<string, unknown>>;
@@ -1089,11 +1091,13 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       throw err;
     }
     const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // 2026-09-04：自定义考核也只按日期——入库时间取该日期本地 0 点（到当天即可考）
+    const dayTs = dayStart(parsedAt.getTime());
     deps.db
       .prepare(
         "INSERT INTO exam_schedules (id, parent_id, child_id, kind, freq, scheduled_at, scope, status, created_at) VALUES (?, ?, ?, 'custom', '', ?, ?, 'pending', ?)"
       )
-      .run(id, parentId, childId, parsedAt.toISOString(), JSON.stringify(body.scope ?? {}), new Date().toISOString());
+      .run(id, parentId, childId, new Date(dayTs).toISOString(), JSON.stringify(body.scope ?? {}), new Date().toISOString());
     return { ok: true, id };
   });
 

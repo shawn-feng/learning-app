@@ -52,12 +52,29 @@ CREATE TABLE IF NOT EXISTS tags (
   criteria TEXT NOT NULL DEFAULT ''
 );
 
--- ISSUE-025：孩子 Todolist（今天 / 历史某天的计划 markdown，child_id 即 kb 文件，date 唯一）
-CREATE TABLE IF NOT EXISTS child_todos (
-  date TEXT PRIMARY KEY,
-  items_md TEXT NOT NULL DEFAULT '',
-  updated TEXT NOT NULL DEFAULT ''
+-- ISSUE-025 重构（2026-09-04）：孩子 Todolist 从「一天一行 markdown」改为「一事一行」。
+-- 每行 = 一条待办：source=parent（来自学习计划，由 gen 生成/stat 打勾，孩子只读）/ child（孩子自规划，孩子可增删）。
+-- plan_id 关联主库 study_plan_items.id（家长规定项），stat 据此精确回写完成态。
+-- status=pending|done；done_at=完成日期(YYYY-MM-DD，stat/recording 打勾写)；due_time=约定截止 HH:MM(孩子自规划可带)；
+-- done_time=真实完成时刻(ISO，打勾时写，用于「是否按时」判定)；note=备注（顺延原因/孩子说明）。
+CREATE TABLE IF NOT EXISTS todo_items (
+  id TEXT PRIMARY KEY,
+  child_id TEXT NOT NULL DEFAULT '',
+  todo_date TEXT NOT NULL,
+  title TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'child',
+  plan_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  done_at TEXT NOT NULL DEFAULT '',
+  due_time TEXT NOT NULL DEFAULT '',
+  done_time TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  sort INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_todo_child_date ON todo_items(child_id, todo_date);
+CREATE INDEX IF NOT EXISTS idx_todo_plan ON todo_items(plan_id);
 
 -- ISSUE-025：每日完成统计（统计点 agent 打完勾后主进程解析落库，供「我的执行力」趋势）
 CREATE TABLE IF NOT EXISTS child_todo_stats (
@@ -104,10 +121,38 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   fs.mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, `${childId}.sqlite`));
   db.exec("PRAGMA journal_mode = WAL;");
+  // Todolist v2（2026-09-04）：child_todos(items_md) → todo_items(一事一行)。旧表不兼容直接 DROP。
+  try {
+    const oldSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='child_todos'").get() as
+      | { sql?: string }
+      | undefined)?.sql ?? "";
+    if (oldSql.includes("items_md")) {
+      db.exec("DROP TABLE IF EXISTS child_todos;");
+    }
+  } catch {
+    // 忽略
+  }
   db.exec(KB_SCHEMA_TABLES);
   ensureKbExamColumn(db);
+  ensureTodoTimeColumns(db);
   db.exec(KB_SCHEMA_VIEWS);
   return db;
+}
+
+/** 孩子库 todo_items 时间列就地迁移（幂等）：加 due_time(约定截止 HH:MM)/done_time(真实完成时刻 ISO)。 */
+function ensureTodoTimeColumns(db: DatabaseSync): void {
+  let cols: string[] = [];
+  try {
+    cols = (db.prepare("PRAGMA table_info(todo_items)").all() as Array<{ name: string }>).map((c) => c.name);
+  } catch {
+    return; // todo_items 未建（无任何 todo 场景），忽略
+  }
+  if (!cols.includes("due_time")) {
+    try { db.exec("ALTER TABLE todo_items ADD COLUMN due_time TEXT NOT NULL DEFAULT ''"); } catch { /* 忽略 */ }
+  }
+  if (!cols.includes("done_time")) {
+    try { db.exec("ALTER TABLE todo_items ADD COLUMN done_time TEXT NOT NULL DEFAULT ''"); } catch { /* 忽略 */ }
+  }
 }
 
 /** 孩子库考核列就地迁移（幂等）：courses.exam_mastery（考核掌握度，与引导 mastery 双轨）。 */

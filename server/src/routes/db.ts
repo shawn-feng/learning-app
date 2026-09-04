@@ -2,6 +2,7 @@
  * 数据读写 RPC（DESIGN-SPLIT §3.4）：客户端不持有 SQLite，
  * 通过语义化 op 读写服务端数据；child 相关 op 强制归属校验。
  */
+import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
@@ -207,17 +208,19 @@ export const queryHandlers: Record<string, QueryHandler> = {
       db.close();
     }
   },
-  // ISSUE-025：取某天 todolist markdown（无则返回 null）。date 缺省 = 今天（本地日期由客户端计算传入）。
-  "kb.todo.get": (ctx, args) => {
+  // ISSUE-025 重构（2026-09-04）：取某天 todolist（todo_items 一事一行，按 sort/created 排序）。date 缺省 = 今天。
+  "kb.todo.list": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const date = str(args.date);
     if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
-      const row = db
-        .prepare("SELECT date, items_md, updated FROM child_todos WHERE date = ?")
-        .get(date) as { date: string; items_md: string; updated: string } | undefined;
-      return row ? { date: row.date, itemsMd: row.items_md, updated: row.updated } : null;
+      return db
+        .prepare(
+          "SELECT id, todo_date, title, source, plan_id, status, done_at, due_time, done_time, note, sort, created_at, updated_at " +
+            "FROM todo_items WHERE todo_date = ? ORDER BY sort, created_at"
+        )
+        .all(date);
     } finally {
       db.close();
     }
@@ -315,6 +318,120 @@ type ExecHandler = (ctx: RpcContext, args: Record<string, unknown>) => unknown;
 
 // 导出供服务端无头 worker 直接调用（方案B 阶段②），语义与 /db/exec 完全一致。
 export const execHandlers: Record<string, ExecHandler> = {
+  // ISSUE-025 重构（2026-09-04）：新增一条 todo（孩子自规划项；家长规定项由 gen 生成，不从此写入）。
+  // due_time 可选：约定截止 HH:MM（培养孩子时间规划，见 todo_time 特性）。
+  "kb.todo.add": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const date = str(args.date);
+    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
+    const title = str(args.title);
+    if (!title.trim()) throw new ApiError(400, "缺少 title");
+    const source = str(args.source, "child");
+    if (source !== "child") throw new ApiError(400, "kb.todo.add 仅允许 source=child（家长项由 gen 生成）");
+    const dueTime = str(args.due_time, "").trim();
+    if (dueTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(dueTime)) {
+      throw new ApiError(400, "due_time 格式应为 HH:MM（如 15:00）");
+    }
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      const now = new Date().toISOString();
+      const maxSort = db
+        .prepare("SELECT COALESCE(MAX(sort), 0) AS m FROM todo_items WHERE todo_date = ?")
+        .get(date) as { m: number };
+      const id = crypto.randomUUID();
+      db.prepare(
+        "INSERT INTO todo_items (id, child_id, todo_date, title, source, plan_id, status, done_at, due_time, done_time, note, sort, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, 'child', '', 'pending', '', ?, '', ?, ?, ?, ?)"
+      ).run(id, childId, date, title.trim(), dueTime, str(args.note), maxSort.m + 1, now, now);
+      return { ok: true, id, sort: maxSort.m + 1 };
+    } finally {
+      db.close();
+    }
+  },
+  // ISSUE-025 重构（2026-09-04）：把某条 todo 标记 done/pending（孩子打勾 / stat 回写）。
+  // done：done_at 记当天日期，done_time 记真实完成时刻 ISO（用于「是否按时」判定）；uncheck 清空两者。
+  "kb.todo.set": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const id = str(args.id);
+    if (!id) throw new ApiError(400, "缺少 id");
+    const status = str(args.status, "done");
+    if (status !== "done" && status !== "pending") throw new ApiError(400, "status 仅支持 done / pending");
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      const row = db.prepare("SELECT id FROM todo_items WHERE id = ? AND child_id = ?").get(id, childId) as
+        | { id: string }
+        | undefined;
+      if (!row) return { ok: false, error: "未找到该 todo（非该孩子）" };
+      const nowIso = new Date().toISOString();
+      db.prepare(
+        "UPDATE todo_items SET status = ?, done_at = ?, done_time = ?, updated_at = ? WHERE id = ?"
+      ).run(
+        status,
+        status === "done" ? nowIso.slice(0, 10) : "",
+        status === "done" ? nowIso : "",
+        nowIso,
+        id
+      );
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  },
+  // ISSUE-025 重构（2026-09-04）：由 gen 物化一条「家长规定项」todo（source=parent，关联 study_plan_items）。
+  "kb.todo.addParent": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const date = str(args.date);
+    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
+    const title = str(args.title);
+    if (!title.trim()) throw new ApiError(400, "缺少 title");
+    const planId = str(args.plan_id);
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      const now = new Date().toISOString();
+      const maxSort = db
+        .prepare("SELECT COALESCE(MAX(sort), 0) AS m FROM todo_items WHERE todo_date = ?")
+        .get(date) as { m: number };
+      const id = crypto.randomUUID();
+      db.prepare(
+        "INSERT INTO todo_items (id, child_id, todo_date, title, source, plan_id, status, done_at, due_time, done_time, note, sort, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, 'parent', ?, 'pending', '', '', '', ?, ?, ?, ?)"
+      ).run(id, childId, date, title.trim(), planId, str(args.note), num(args.sort, maxSort.m + 1), now, now);
+      return { ok: true, id };
+    } finally {
+      db.close();
+    }
+  },
+  // ISSUE-025 重构（2026-09-04）：gen 删除某条「家长规定项」todo（按 id + plan_id 精确，防误删孩子项）。
+  "kb.todo.removeByPlan": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const id = str(args.id);
+    const planId = str(args.plan_id);
+    if (!id) throw new ApiError(400, "缺少 id");
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      db.prepare("DELETE FROM todo_items WHERE id = ? AND child_id = ? AND plan_id = ? AND source = 'parent'").run(
+        id,
+        childId,
+        planId
+      );
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  },
+  // ISSUE-025 重构（2026-09-04）：删除一条 todo（孩子删自己的自规划项）。
+  "kb.todo.remove": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const id = str(args.id);
+    if (!id) throw new ApiError(400, "缺少 id");
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      db.prepare("DELETE FROM todo_items WHERE id = ? AND child_id = ? AND source = 'child'").run(id, childId);
+      return { ok: true };
+    } finally {
+      db.close();
+    }
+  },
   "kb.daily_entries.insert": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
@@ -360,24 +477,7 @@ export const execHandlers: Record<string, ExecHandler> = {
       db.close();
     }
   },
-  // ISSUE-025：整体写入某天的 todolist markdown（upsert）。agent 的 todo_list 工具与定时
-  // 生成/统计都走这里；[家长] 项不可改约束在 agent 提示词层执行（服务端不解析内容）。
-  "kb.todo.put": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const date = str(args.date);
-    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      db.prepare(
-        `INSERT INTO child_todos (date, items_md, updated) VALUES (?, ?, ?)
-         ON CONFLICT(date) DO UPDATE SET items_md = excluded.items_md, updated = excluded.updated`
-      ).run(date, str(args.items_md), str(args.updated, new Date().toISOString()));
-      return { ok: true };
-    } finally {
-      db.close();
-    }
-  },
-  // ISSUE-025：写某天完成统计（upsert）。由主进程在统计点 agent 打完勾后解析 markdown 落库。
+  // ISSUE-025 重构：写某天完成统计（upsert）。由服务端 stat 在纯代码统计后按 todo_items 汇总落库。
   "kb.todo.stats.upsert": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const date = str(args.date);

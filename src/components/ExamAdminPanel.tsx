@@ -1,8 +1,8 @@
 /**
  * 家长端「学习考核」面板（家长中心左侧边栏）。
  * 标签组织（点击标签只显示该标签内容）：
- *   - 每天：启用开关 + 考核时间 + 选课 prompt + 保存
- *   - 每周：启用开关 + 周几 + 考核时间 + 选课 prompt + 保存
+ *   - 每天：启用开关 + 选课 prompt + 保存（每天可考核一次，到当天 0 点即全天可考）
+ *   - 每周：启用开关 + 周几 + 选课 prompt + 保存（到该周几 0 点即全天可考）
  *   - 自定义考核：**左侧考核列表 + 右侧编辑表单**；新建时右侧空白，家长填好
  *     （时间点 + prompt + 内容说明 + 分配孩子）保存即创建；点列表项可在右侧修改并保存
  *     （已完成的孩子锁定为历史，不受影响）。
@@ -47,17 +47,25 @@ interface CustomGroup {
   rows: ScheduleRow[];
 }
 
-function fmtTime(iso: string): string {
+/** ISO 时间 → 日期（YYYY-MM-DD，本地），考核只按日期粒度（2026-09-04）。 */
+function fmtDay(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** ISO 时间 → datetime-local 输入框值（本地时区） */
-function toLocalInput(iso: string): string {
+/** ISO 时间 → date 输入框值（YYYY-MM-DD，本地） */
+function toLocalDate(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** date 输入值（YYYY-MM-DD）→ 该日本地 0 点的 ISO 字符串 */
+function dateToIso(dateStr: string): string {
+  const [y, m, day] = dateStr.split("-").map(Number);
+  const d = new Date(y, (m || 1) - 1, day || 1, 0, 0, 0, 0); // 本地时区 0 点
+  return d.toISOString();
 }
 
 export default function ExamAdminPanel({ children }: { children: any[] }) {
@@ -186,7 +194,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
   /** 点左侧列表项：右侧显示该考核详情（可编辑保存）。 */
   function openGroup(g: CustomGroup) {
     setSelKey(g.key);
-    setFormAt(toLocalInput(g.scheduledAt));
+    setFormAt(toLocalDate(g.scheduledAt));
     setFormPrompt(g.prompt);
     setFormNote(g.note);
     // 已完成的孩子锁定为历史，只勾选可编辑的行
@@ -197,7 +205,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
   /** 保存考核：新建=创建排期；编辑=按新内容/新分配重建未完成的行（已完成的行保留为历史）。 */
   async function saveCustom() {
     if (!formAt) {
-      setMsg({ ok: false, text: "请选择考核时间点" });
+      setMsg({ ok: false, text: "请选择考核日期" });
       return;
     }
     if (!formPrompt.trim()) {
@@ -210,7 +218,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
     }
     setSaving(true);
     try {
-      const iso = new Date(formAt).toISOString();
+      const iso = dateToIso(formAt);
       const scope = { topics: [], note: formNote.trim() || "自定义考核", prompt: formPrompt.trim() };
       if (!selKey) {
         // —— 新建 ——
@@ -220,7 +228,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
           if (r?.success) okCount++;
         }
         if (okCount > 0) {
-          setMsg({ ok: true, text: `✓ 已创建并分配给 ${okCount} 个孩子，到点可开始` });
+          setMsg({ ok: true, text: `✓ 已创建并分配给 ${okCount} 个孩子，当天可开始` });
           setFormAt("");
           setFormPrompt("");
           setFormNote("");
@@ -342,10 +350,9 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
             <span style={{ fontSize: 13, fontWeight: 600 }}>启用每日考核</span>
             {!enabledDaily && <span style={{ fontSize: 12, color: "#999" }}>（关闭后不会自动生成每日考核）</span>}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-            <span style={{ fontSize: 13 }}>考核时间：</span>
-            <input type="time" value={dailyTime} onChange={(e) => setDailyTime(e.target.value || "20:00")} style={inputStyle} />
-          </div>
+          <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 6 }}>
+            📅 每天考核一次：到达当天（0 点起）孩子就可在「学习考核」里参加，不限具体时刻。
+          </p>
           <div style={label}>选课规则 prompt（AI 按规则从今天学习计划安排的课程中挑选）</div>
           <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 6 }}>{DEFAULT_HINTS.daily}。清空保存 = 恢复系统默认。</p>
           <textarea
@@ -375,7 +382,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
             {!enabledWeekly && <span style={{ fontSize: 12, color: "#999" }}>（关闭后不会自动生成每周考核）</span>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 13 }}>考核时间：</span>
+            <span style={{ fontSize: 13 }}>考核日期：</span>
             <select value={weeklyWeekday} onChange={(e) => setWeeklyWeekday(Number(e.target.value))} style={inputStyle}>
               {WEEKDAYS.map((w) => (
                 <option key={w.v} value={w.v}>
@@ -383,7 +390,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
                 </option>
               ))}
             </select>
-            <input type="time" value={weeklyTime} onChange={(e) => setWeeklyTime(e.target.value || "20:00")} style={inputStyle} />
+            <span style={{ fontSize: 12, color: "#6b7686" }}>（到达该日 0 点起，孩子当天即可考核，不限时刻）</span>
           </div>
           <div style={label}>选课规则 prompt（AI 按规则从近 7 天学习计划安排的课程中挑选）</div>
           <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 6 }}>{DEFAULT_HINTS.weekly}。清空保存 = 恢复系统默认。</p>
@@ -430,7 +437,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
             <div style={{ ...label, marginBottom: 8 }}>考核列表（{groups.length}）</div>
             {groups.length === 0 ? (
               <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
-                还没有自定义考核。点上方「新建考核」设置，或对家长助手说「周五晚上考论语的乡党篇」。
+                还没有自定义考核。点上方「新建考核」设置，或对家长助手说「周五考论语的乡党篇」。
               </p>
             ) : (
               groups.map((g) => {
@@ -449,7 +456,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
                       cursor: "pointer",
                     }}
                   >
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{fmtTime(g.scheduledAt)}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>📅 {fmtDay(g.scheduledAt)}</div>
                     {g.note && (
                       <div style={{ fontSize: 12, color: "#6b7686", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {g.note}
@@ -478,8 +485,8 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
                 ) : (
                   <>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                      <span style={{ fontSize: 13 }}>考核时间：</span>
-                      <input type="datetime-local" value={formAt} onChange={(e) => setFormAt(e.target.value)} style={inputStyle} />
+                      <span style={{ fontSize: 13 }}>考核日期（当天即可考核）：</span>
+                      <input type="date" value={formAt} onChange={(e) => setFormAt(e.target.value)} style={inputStyle} />
                     </div>
                     <input
                       type="text"

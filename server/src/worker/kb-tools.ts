@@ -63,38 +63,6 @@ function progressToMarkdownLite(
     .join("\n");
 }
 
-function countTodoTasks(md: string): {
-  total: number;
-  done: number;
-  parentTotal: number;
-  parentDone: number;
-  selfTotal: number;
-  selfDone: number;
-} {
-  let total = 0;
-  let done = 0;
-  let parentTotal = 0;
-  let parentDone = 0;
-  let selfTotal = 0;
-  let selfDone = 0;
-  for (const line of md.split("\n")) {
-    const m = /^\s*[-*]\s*\[( |x|X)\]\s*(.*)$/.exec(line);
-    if (!m) continue;
-    total++;
-    const isDone = m[1].toLowerCase() === "x";
-    if (isDone) done++;
-    const isParent = /\[家长\]/.test(m[2]);
-    if (isParent) {
-      parentTotal++;
-      if (isDone) parentDone++;
-    } else {
-      selfTotal++;
-      if (isDone) selfDone++;
-    }
-  }
-  return { total, done, parentTotal, parentDone, selfTotal, selfDone };
-}
-
 // ---------- 工具工厂（按家长+孩子绑定） ----------
 
 /** 创建 worker ephemeral 会话使用的工具（kb_query / kb_insert / kb_update / todo_list / get_date）。 */
@@ -321,31 +289,62 @@ export function createWorkerKbTools(b: WorkerBindings) {
 
   const todoListTool = defineTool({
     name: "todo_list",
-    label: "读写今日计划（Todolist）",
+    label: "读写孩子 Todolist（一事一条）",
     description:
-      "读写孩子当天的 Todolist（今日计划，markdown，`- [ ]` 未完成 / `- [x]` 已完成）。\n" +
-      "**read**：`action: \"read\"` + `date`（缺省=今天）返回完整 todolist。\n" +
-      "**update**：`action: \"update\"` + `markdown` 整体覆盖写入。⚠️ 先 read 再改。\n" +
-      "**规则**：`[家长]` 项绝不能删除或修改文字，只能把 `[ ]` 改成 `[x]`。",
+      "读写孩子当天的 Todolist。每件事是一条结构化记录（非 markdown）。\n" +
+      "**read**：`action:\"read\"` + `date`(缺省=今天) 返回当天清单，每条含 id/标题/来源(家长|孩子)/是否完成/截止时间(due)/备注。\n" +
+      "**add**：`action:\"add\"` + `title`（+可选 date,note,due_time）新增一条**孩子自规划项**。\n" +
+      "  孩子说了「几点前要完成」（如『我 3 点前写完数学』）时，把时刻填进 **due_time**（HH:MM，如 15:00），title 只写干净的事（数学作业），不要把时间写进标题。\n" +
+      "**check**：`action:\"check\"` + `id` 把某条标记完成（系统会记下真实完成时刻）；`action:\"uncheck\"` + `id` 取消。\n" +
+      "**remove**：`action:\"remove\"` + `id` 删除（仅孩子自规划项）。\n" +
+      "**规则**：来源=家长 的项（来自学习计划）**绝不能删除或改标题**，只能由系统按课程实际学习核对完成；孩子自规划项（来源=孩子）孩子可增删、可自行 check/uncheck。",
     parameters: Type.Object({
-      action: Type.String({ description: "read=读取；update=写入" }),
+      action: Type.String({ description: "read=读取 | add=新增 | check=完成 | uncheck=取消完成 | remove=删除" }),
       date: Type.Optional(Type.String({ description: "日期 YYYY-MM-DD（缺省=今天）" })),
-      markdown: Type.Optional(Type.String({ description: "update 时必填：完整 todolist markdown" })),
+      title: Type.Optional(Type.String({ description: "add 时必填：事项标题（干净，不带时间）" })),
+      due_time: Type.Optional(Type.String({ description: "add 时可选：约定截止时刻 HH:MM（如 15:00），孩子说几点前完成时填这" })),
+      id: Type.Optional(Type.String({ description: "check/uncheck/remove 时必填：事项 id（read 返回）" })),
+      note: Type.Optional(Type.String({ description: "add 时可带备注" })),
     }),
     execute: async (_tc, params) => {
       const date = params.date || formatLocalDate(new Date());
       if (params.action === "read") {
-        const todo = query<{ date: string; itemsMd: string; updated: string } | null>("kb.todo.get", { date });
-        const text = todo?.itemsMd?.trim() ? todo.itemsMd : `${date} 还没有 todolist。`;
-        return ok(text);
+        const rows = query<Array<Record<string, unknown>>>("kb.todo.list", { date });
+        if (!rows || rows.length === 0) {
+          return ok(`${date} 还没有安排 Todolist——今天没有具体任务（空天 = 不要求学）。`);
+        }
+        const lines = rows.map((r) => {
+          const src = r.source === "parent" ? "[家长] " : "";
+          const st = r.status === "done" ? "x" : " ";
+          const due = r.due_time ? ` ⏰${String(r.due_time)}前` : "";
+          const note = r.note ? `（${r.note}）` : "";
+          return `- [${st}] ${src}${r.title}${due}${note} [id=${String(r.id).slice(0, 8)}]`;
+        });
+        return ok(`「${date}」的 Todolist：\n${lines.join("\n")}`);
       }
-      if (params.action === "update") {
-        if (!params.markdown) throw new Error("todo_list update 需要 markdown 参数");
-        exec("kb.todo.put", { date, items_md: params.markdown });
-        const c = countTodoTasks(params.markdown);
-        return ok(`已保存 ${date} 的 todolist：共 ${c.total} 项（已完成 ${c.done}，家长规定 ${c.parentTotal} 项，自规划 ${c.selfTotal} 项）。`);
+      if (params.action === "add") {
+        if (!params.title || !String(params.title).trim()) throw new Error("todo_list add 需要 title");
+        const r = exec<{ ok: boolean; id: string }>("kb.todo.add", {
+          date,
+          title: params.title,
+          note: params.note ?? "",
+          due_time: params.due_time ?? "",
+        });
+        const dueMsg = params.due_time ? `，约定 ${params.due_time} 前完成` : "";
+        return ok(`已新增自规划项「${params.title}」${dueMsg}。`);
       }
-      throw new Error("todo_list 的 action 仅支持 read / update");
+      if (params.action === "check" || params.action === "uncheck") {
+        if (!params.id) throw new Error("todo_list check/uncheck 需要 id");
+        const r = exec<{ ok: boolean }>("kb.todo.set", { id: params.id, status: params.action === "check" ? "done" : "pending" });
+        if (r.ok) return ok(params.action === "check" ? "已标记完成。" : "已取消完成。");
+        return ok("未找到该事项。");
+      }
+      if (params.action === "remove") {
+        if (!params.id) throw new Error("todo_list remove 需要 id");
+        exec("kb.todo.remove", { id: params.id });
+        return ok("已删除该自规划项。");
+      }
+      throw new Error("todo_list 的 action 仅支持 read / add / check / uncheck / remove");
     },
   });
 

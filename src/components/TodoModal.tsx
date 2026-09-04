@@ -2,10 +2,9 @@ import { useEffect, useState } from "react";
 import { ListTodo, TrendingUp, X } from "lucide-react";
 
 /**
- * ISSUE-025：孩子端「今日计划」弹框。
- * - 「今日计划」标签：只读展示当天 todolist markdown（checkbox 列表）。
- *   [家长] 项带「家长安排」标签，由 AI 老师管理，孩子只能完成（打勾由 AI 老师核对）；
- *   普通项即孩子自规划/老师补充项。列表只读，不提供手动勾选（完成判定仅 agent 自动）。
+ * ISSUE-025 重构（2026-09-04）：孩子端「今日计划」弹框。
+ * - 「今日计划」标签：只读展示当天 todolist（一事一条）。来源=家长（parent，来自学习计划）项带「家长安排」
+ *   标签；来源=孩子（child）为孩子自规划项。列表只读，不提供手动勾选（完成判定由系统/agent 自动核对）。
  * - 「我的执行力」标签：近 N 天完成率趋势（柱状）+ 连续达标天数 + 家长项 vs 自规划项对比。
  *   数据源服务端 child_todo_stats（kb.todo.stats.list，经 todo:stats:list IPC 读取）。
  */
@@ -21,22 +20,38 @@ interface TodoStatsRow {
   streak: number;
 }
 
+interface TodoRow {
+  id: string;
+  title: string;
+  source: string;
+  status: string;
+  note: string;
+  due_time: string;   // 约定截止 HH:MM（孩子自规划可带）
+  done_time: string;  // 真实完成时刻 ISO（打勾时写）
+  done_at: string;    // 完成日期 YYYY-MM-DD
+}
+
 interface TodoItem {
   done: boolean;
   isParent: boolean;
   text: string;
+  note: string;
+  dueTime: string;    // HH:MM 或 ""
+  doneTime: string;   // ISO 或 ""
 }
 
-function parseItems(md: string): TodoItem[] {
-  const items: TodoItem[] = [];
-  for (const line of md.split("\n")) {
-    const m = /^\s*[-*]\s*\[( |x|X)\]\s*(.*)$/.exec(line);
-    if (!m) continue;
-    const text = m[2].trim();
-    if (!text) continue;
-    items.push({ done: m[1] === "x" || m[1] === "X", isParent: /\[家长\]/.test(text), text });
-  }
-  return items;
+/** 约定 HH:MM 前完成 + 已完成后 → 判定按时/超时。dueTime 空或未完成不算。 */
+function isOnTime(it: { dueTime: string; doneTime: string }): boolean | undefined {
+  const due = it.dueTime || "";
+  const doneIso = it.doneTime || "";
+  if (!/^\d{2}:\d{2}$/.test(due)) return undefined;
+  if (!doneIso) return undefined; // 未完成
+  // doneIso 是 UTC ISO；取它的本地时分
+  const d = new Date(doneIso);
+  if (isNaN(d.getTime())) return undefined;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}` <= due;
 }
 
 function fmtDate(date: string): string {
@@ -57,7 +72,7 @@ export default function TodoModal({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<"today" | "stats">("today");
-  const [itemsMd, setItemsMd] = useState("");
+  const [todoRows, setTodoRows] = useState<TodoRow[]>([]);
   const [today, setToday] = useState("");
   const [rows, setRows] = useState<TodoStatsRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -72,8 +87,8 @@ export default function TodoModal({
         ]);
         if (!alive) return;
         if (t?.success) {
-          setItemsMd(t.itemsMd || "");
           setToday(t.date || "");
+          setTodoRows(Array.isArray(t.rows) ? (t.rows as TodoRow[]) : []);
         }
         if (s?.success && Array.isArray(s.rows)) {
           setRows(s.rows as TodoStatsRow[]);
@@ -89,11 +104,20 @@ export default function TodoModal({
     };
   }, [childId]);
 
-  const items = parseItems(itemsMd);
-  const parentItems = items.filter((i) => i.isParent);
-  const selfItems = items.filter((i) => !i.isParent);
+  const items: TodoItem[] = todoRows.map((r) => ({
+    done: r.status === "done",
+    isParent: r.source === "parent",
+    text: r.title || "",
+    note: r.note || "",
+    dueTime: r.due_time || "",
+    doneTime: r.done_time || "",
+  }));
   const doneCount = items.filter((i) => i.done).length;
   const rate = items.length > 0 ? doneCount / items.length : 0;
+  // 「时间规划」汇总：设了 due 的自规划项里，按时完成的数量
+  const timedItems = items.filter((i) => /^\d{2}:\d{2}$/.test(i.dueTime));
+  const timedOnTime = timedItems.filter((i) => isOnTime(i) === true).length;
+  const timedLate = timedItems.filter((i) => isOnTime(i) === false).length;
   // 连续达标天数取最近一条（今天的统计若已生成，即今天；否则沿用昨天）
   const streak = rows.length > 0 ? rows[0].streak : 0;
   const lastOk = rows.find((r) => r.rate >= RATE_OK);
@@ -243,6 +267,28 @@ export default function TodoModal({
                       >
                         {it.text}
                       </span>
+                      {/^\d{2}:\d{2}$/.test(it.dueTime) && (
+                        <span
+                          style={{
+                            display: "inline-block",
+                            fontSize: 11,
+                            marginLeft: 6,
+                            padding: "0 5px",
+                            borderRadius: 4,
+                            background: it.done ? (isOnTime(it) ? "#eaf3de" : "#fcebeb") : "#faeeda",
+                            color: it.done ? (isOnTime(it) ? "#3b6d11" : "#a32d2d") : "#854f0b",
+                          }}
+                        >
+                          {it.done
+                            ? isOnTime(it)
+                              ? `⏰ ${it.dueTime}前 · 按时✓`
+                              : `⏰ ${it.dueTime}前 · 超时`
+                            : `⏰ ${it.dueTime}前`}
+                        </span>
+                      )}
+                      {it.note && (
+                        <span style={{ fontSize: 11, color: "#999", marginLeft: 6 }}>（{it.note}）</span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -252,6 +298,12 @@ export default function TodoModal({
               <div style={{ fontSize: 12, color: "#999", marginTop: 12, lineHeight: 1.6 }}>
                 {doneCount}/{items.length} 已完成（{Math.round(rate * 100)}%）
                 {streak > 0 && <> · 🔥 已连续达标 {streak} 天</>}
+                {timedItems.length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    {timedItems.length} 项设了时间 · {timedOnTime} 项按时
+                    {timedLate > 0 ? <> · {timedLate} 项超时</> : ""}
+                  </div>
+                )}
                 <br />
                 完成情况由 AI 老师每天自动核对，不用手动打勾～
               </div>

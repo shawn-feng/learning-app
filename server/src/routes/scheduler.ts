@@ -19,7 +19,12 @@ import {
   buildEffectiveChildConfig,
   listTaskRuns,
   listTasksWithAssignments,
+  createReminderTask,
+  listChildReminders,
+  takeDueReminders,
   type SchedulerTaskType,
+  type ReminderFrequency,
+  type ReminderOwner,
 } from "../db/task-runs.js";
 
 interface SchedulerDeps {
@@ -84,6 +89,10 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
     if (!name?.trim()) return reply.code(400).send({ error: "任务名称必填" });
     if (!type || !(SCHEDULER_TASK_TYPES as string[]).includes(type)) {
       return reply.code(400).send({ error: `type 仅支持: ${SCHEDULER_TASK_TYPES.join(" / ")}` });
+    }
+    // reminder 类任务走专用 /reminders 接口（需关联孩子 + 频率/语音字段），不走通用任务创建
+    if (type === "reminder") {
+      return reply.code(400).send({ error: "reminder 类型请使用 POST /api/v1/scheduler/reminders" });
     }
     if (!validTime(time)) return reply.code(400).send({ error: "time 必填（HH:mm）" });
     const id = crypto.randomUUID();
@@ -223,6 +232,107 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       throw err;
     }
     return { children: buildEffectiveChildConfig(deps.db, parentId) };
+  });
+
+  // —— ISSUE-047：孩子端 agent 自建定时提醒（语音 + 频率）——
+  // 创建提醒：关联孩子 + 频率/语音字段；owner 默认 child（agent 创建）。家长也可带 owner=parent。
+  app.post("/api/v1/scheduler/reminders", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const b = (req.body ?? {}) as {
+      childId?: string;
+      name?: string;
+      text?: string;
+      time?: string;
+      frequency?: string;
+      weekday?: number;
+      intervalMinutes?: number;
+      voice?: boolean;
+      fireAt?: string;
+      owner?: string;
+    };
+    if (!b.childId) return reply.code(400).send({ error: "childId 必填" });
+    try {
+      assertChildOwned(deps.db, parentId, b.childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    if (!b.name?.trim()) return reply.code(400).send({ error: "提醒名称必填" });
+    if (!b.text?.trim()) return reply.code(400).send({ error: "提醒内容(text)必填" });
+    if (!validTime(b.time)) return reply.code(400).send({ error: "time 必填（HH:mm）" });
+    const freqs: ReminderFrequency[] = ["once", "daily", "weekly", "interval"];
+    const frequency = (b.frequency as ReminderFrequency) || "daily";
+    if (!freqs.includes(frequency)) return reply.code(400).send({ error: `frequency 仅支持: ${freqs.join(" / ")}` });
+    if (frequency === "weekly" && (b.weekday == null || b.weekday < 0 || b.weekday > 6)) {
+      return reply.code(400).send({ error: "weekly 需提供 weekday（0=周日..6=周六）" });
+    }
+    if (frequency === "interval" && !(b.intervalMinutes && b.intervalMinutes > 0)) {
+      return reply.code(400).send({ error: "interval 需提供 intervalMinutes(>0)" });
+    }
+    if (frequency === "once" && !b.fireAt) {
+      return reply.code(400).send({ error: "once 需提供 fireAt(ISO 目标时间)" });
+    }
+    const id = createReminderTask(deps.db, {
+      parentId,
+      childId: b.childId,
+      name: b.name.trim(),
+      text: b.text.trim(),
+      time: b.time,
+      frequency,
+      weekday: b.weekday ?? null,
+      intervalMinutes: b.intervalMinutes ?? null,
+      voice: b.voice !== false,
+      fireAt: b.fireAt ?? null,
+      owner: (b.owner as ReminderOwner) ?? "child",
+    });
+    return { ok: true, id };
+  });
+
+  // 到期提醒拉取（客户端每分钟轮询）：返回该孩子当前到期且尚未播报的提醒，并就地标记已触发（幂等）。
+  app.get("/api/v1/scheduler/reminders", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { childId } = req.query as { childId?: string };
+    if (!childId) return reply.code(400).send({ error: "childId 必填" });
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const due = takeDueReminders(deps.db, parentId, childId);
+    return { reminders: due };
+  });
+
+  // 某孩子的全部提醒（agent 列举 / 家长可见用）
+  app.get("/api/v1/scheduler/reminders/list", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { childId } = req.query as { childId?: string };
+    if (!childId) return reply.code(400).send({ error: "childId 必填" });
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    return { reminders: listChildReminders(deps.db, parentId, childId) };
   });
 }
 

@@ -31,19 +31,23 @@
 
 ## 服务端 worker 调度（方案B，当前真源）
 - **cron = 每 5 分钟**（`*/5 * * * *`）。`server/src/worker/scheduler.ts`：顺序 `await runPlanTick → runStatTick → runWorkerTick(recording)`。
-- **runPlanTick**：先 `runStudyPlanCarryTick`（carry，游标=昨天，幂等），再 gen = 每次 tick 以最新 study_plan_items 同步今日【家长规定项】（家长中途改计划 ≤5 分钟反映；同文本勾选保留；孩子自定内容保留；无变化不写回）。
-- **runStatTick**：事件驱动且**当天可多次**（2026-09-03 改，勿回退到「一天一次」）——今天已有 todolist 且 daily 有记录才跑；去重 = worker_state `todo_stat`.last_key 存 JSON `{date,count}`（count=上次统计时当天 daily 条数），**daily 条数新增（孩子又学完一课）→ 下次 tick（≤5min）重跑**；旧纯日期 last_key 当天会先补跑一次升级 JSON（存量自愈）。stat 纯代码勾 `[家长]` checkbox（对照 courses first_learned/last_review==今天），随后数 parent_done/parent_total 写 child_kb `child_todo_stats`。
-- **⚠️ 计划项「复习：<课程名>」前缀**：家长对已学课（status=✅）排复习，计划文本带「复习：」前缀但 courses 真实标题不含。所有「计划文本→课程」匹配必须先剥前缀（`server/src/plan-text.ts` `planTextToCourseText`/`findCourseByPlanText`，动作词：复习/温习/学习/预习/背诵/朗读/跟读/听读/挑战/巩固/掌握 + 尾部（复习）标注）。消费点：worker stat courseDoneFor、客户端面板 loadCourseDoneMap（electron/lib/ipc-handlers.ts 内联同款正则，**须与服务端同步**）、exam 选题 listPlanCourseMeta。漏剥=复习项永不打勾/面板不显示已学/考核进 unmatched。
-- **客户端 gen/stat 已彻底移除（2026-09-02）**：`electron/lib/scheduler.ts` 两处 `cc.todo.enabled && !hasServerFeature("worker")` 块 + import 删除。服务端 worker 为唯一真源；`runTodoGen/runTodoStat`（todo-scheduler.ts）保留作工具函数但不再被调度。
+- **runPlanTick**：先 `runStudyPlanCarryTick`（carry，游标=昨天，纯 SQL 顺延未完成排期行），再 gen（tasks.ts runTodoGenServer）= 每次 tick 以最新 study_plan_items 当日排期物化今日 parent todo_items（家长中途改计划 ≤5 分钟反映；孩子自规划项绝不动）。
+- **runStatTick**：事件驱动且**当天可多次**（2026-09-03 改，勿回退到「一天一次」）——今天有 todo_items 且 daily 有记录才跑；去重 = worker_state `todo_stat`.last_key 存 JSON `{date,count}`（count=上次统计时当天 daily 条数），**daily 条数新增（孩子又学完一课）→ 下次 tick（≤5min）重跑**。stat（tasks.ts runTodoStatServer）纯代码按 **courses first_learned/last_review==今天** 判定→①回写 study_plan_items.status='done'+done_at ②按 plan_id 同步勾今日 parent todo ③汇总 child_kb `child_todo_stats`。
+- **⚠️ stat 勾 todo 判定 map 勿用 `r.status`**（loadPlanRowsServer 开头 load 的陈旧内存值，第1步 UPDATE 后不反映→todo 永不勾）；须用 planCourseDone 判定结果 doneOfPlan（2026-09-04 冒烟 FAIL→PASS 实证）。
+- **客户端 gen/stat 已彻底移除**：服务端 worker 为唯一真源；`electron/lib/todo-scheduler.ts` 已删（孤儿死代码）。
 - **能力探测**：客户端 `server-features.ts` 拉 `/api/v1/version` 的 `features`（含 `worker`）；`hasServerFeature("worker")` 控制 recording 本地调度开关。服务端 `routes/version.ts` 声明 `SERVER_FEATURES=["session_sync","worker","exam"]`。
 - **游标**：gen 无游标（每次同步）；stat=`todo_stat`.last_key={date,count}；carry=`study_plan_carry=昨天`。
 
-## 学习计划（ISSUE-033，2026-09-02 已实施 P0/P0b/P2/P3/P4）
-- 主库 `study_plan_items`：date 定日 / daily 每日（+ origin carry 顺延）；**直接替换 rules_json.daily**；空天不学；未完成加到下一天累加；多计划同天合并。
-- `routes/study-plans.ts`：CRUD + GET /study-plans/today 聚合（展平 items[{planId,text,topicKey,carry}]，按 text 去重）+ GET ?date=。
-- `worker/study-plan-carry.ts`：每日顺延幂等 tick（游标=昨天；**v2 判定=昨天 child_todos 未勾 `[家长]` 行**——v1 依赖 child_todo_stats 在 stats 缺失时不顺延，9/2 实测漏延，已弃）。gen（tasks.ts runTodoGenServer）= **todolist↔计划每次同步**（2026-09-03 改：不再是生成一次锁死，家长中途改计划 ≤5 分钟反映到 todo；同文本勾选保留、孩子自定内容保留、无变化不写）。
-- UI：家长中心侧边栏「🗓 学习计划」只读面板（Dashboard view="plan"）+ ChildDetailPage TABS "plan"；编辑走家长对话。
-- ⚠️ 重复项修复：POST 幂等合并（同 child+date 单行 canonical）+ /today 去重 + 存量清理脚本 `server/scripts/fix-study-plan-dups.mjs`。显示截断修复：去掉 `lookaheadDays` 上限（展示全部未来排期）。
+## 学习计划 / todolist（ISSUE-033，2026-09-04 起全链路改「多列表」，不兼容旧数据/旧客户端）
+- **主库 `study_plan_items`（一课一行）**：删 content JSON；列 = `parent_id/child_id/date(执行日)/topic_key/course_name(真实课程名)/mode('new'|'review')/origin('conversation'|'carry')/status('pending'|'done'|'carried')/done_at/active`。**完成态由 stat 回写**（不再藏「复习：」前缀于文本）。旧表含 content 列→**启动就地转换非 DROP**（db.ts `migrateStudyPlanV2`，meta study_plan_v2_migrated=1 幂等，status 留 pending 待 stat 回写）；一次性全量脚本 `server/scripts/migrate-study-plan-v2.mts <dataDir>`（主库+child_todos→todo_items，含备份）。
+- **孩子 kb `todo_items`（一事一行，替代 child_todos/items_md）**：`child_id/todo_date/title/source('parent'|'child')/plan_id(→study_plan_items.id)/status('pending'|'done')/done_at/note/sort`。child_todo_stats 保留（由 todo_items 汇总）。
+- **kb.todo ops（routes/db.ts exec/queryHandlers）**：`list`(query) / `add`(仅 child)/`addParent`(source=parent,plan_id)/`set`(check/uncheck+done_at)/`remove`(仅 child)/`removeByPlan`(仅 parent by plan_id)。⚠️ 写操必须放 **execHandlers**、读放 queryHandlers，放错 registry 会运行时报错。
+- **gen/stat/carry 纯 SQL（tasks.ts / study-plan-carry.ts）**：gen=按今日排期物化 parent todo（plan_id 幂等，删计划已删的，孩子项不动）；stat=**courses 当天活动(first_learned/last_review==today)判定**→①回写 study_plan_items.status/done_at ②按 plan_id 同步勾 parent todo ③汇总 child_todo_stats；carry=昨日 status='pending' 行 UPDATE date=今天 origin='carry'，昨日原行置 carried+active=0，纯 SQL 不再读 todo md。
+- **⚠️ stat 勾 todo 的坑**：判定 map 勿用 `r.status`（loadPlanRowsServer 函数开头 load 的陈旧内存值，第1步 UPDATE 后不反映）→ todo 永不勾。须用 planCourseDone 判定结果（`doneOfPlan`）。
+- **服务端 /study-plans 与 /today 下发每行 `done`**（openKb 查 courses 当天活动）——**家长面板 done 以服务端为准，客户端不再本地剥前缀现算**。客户端 TodoModal 从 rows 渲染、StudyPlanPanel 用 courseName/mode/carry/done。
+- **工具契约**：`todo_list` = read/add/check/uncheck/remove（结构化，非整读整写 md）；`study_plan_update` 行级 act=delete/reschedule/setmode。家长排课时「复习：」前缀在 **agent-tool 入口归一为 mode=review**（存 course_name 干净），库内/worker 不再有前缀剥取。**plan-text.ts 已删**。
+- UI：家长中心侧边栏「🗓 学习计划」只读面板 + ChildDetailPage TABS "plan"；编辑走家长对话。
+- 验证：`server/scripts/verify-study-plan-v2.mts`（10/10）。旧 verify-study-plans/carry/fix-dups/check-plan-match 已删。**注意勿与另一窗口并发改动（CourseDetail/Exam*/LearningDashboard/verify-exam-smoke 等 exam 工作）混入本提交。**
 
 ## 学习考核（EXAM，ISSUE-027）
 - 存储全服务端；出卷+判分客户端内存 session；判分 prompt 服务端下发。v3 选课 LLM：固定考核只留每天/每周（每周 `weekly{weekday,time}`）；config 两段式（?schedule=选课无 rubric；&courses=带 rubric+scoring）。判分必带 rubric。家长端 ExamAdminPanel。

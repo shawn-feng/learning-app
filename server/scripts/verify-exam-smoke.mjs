@@ -98,8 +98,12 @@ const schedOk = r.status === 200 && (r.json?.generated ?? 0) >= 1
   && (r.json?.schedules || []).some((s) => s.kind === "fixed" && s.freq === "weekly");
 check("排期懒生成（固定每周）", schedOk, JSON.stringify(r.json)?.slice(0, 200));
 const wkSch = (r.json?.schedules || []).find((s) => s.freq === "weekly");
-const wkDayOk = wkSch && new Date(wkSch.scheduledAt).getDay() === 5 && new Date(wkSch.scheduledAt).getHours() === 19 && new Date(wkSch.scheduledAt).getMinutes() === 30;
-check("每周排期落在配置的周几几点（周五 19:30）", !!wkDayOk, wkSch ? wkSch.scheduledAt : "无 weekly 排期");
+// 2026-09-04：考核只按日期——排期时间即该日本地 0 点（不再带具体时刻）；校验落在配置周几且为当天 0 点
+const wkDayOk = wkSch && (() => {
+  const d = new Date(wkSch.scheduledAt);
+  return d.getDay() === 5 && d.getHours() === 0 && d.getMinutes() === 0;
+})();
+check("每周排期落在配置的周几、时间取该日 0 点（周五）", !!wkDayOk, wkSch ? wkSch.scheduledAt : "无 weekly 排期");
 
 // v3 §14.9 + 2026-09-03：固定排期候选 = 家长学习计划（study_plan_items，计划内无论是否完成都考核）
 // 先给孩子造「近 7 天窗口内」的学习计划（date=weekly 排期所在本地日，含未学课程），再取 config 第一段

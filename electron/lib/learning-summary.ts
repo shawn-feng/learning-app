@@ -270,34 +270,41 @@ export function progressSummaryToMarkdown(summary: LearningSummary): string {
 // 把当天 Todolist 预取到本地缓存，buildChildPrompt 经 getTodayPlan(childId) 同步读缓存注入系统提示。
 // 缓存缺失 / 当天无 Todolist 时返回空串，buildChildPrompt 据此「不注入任何段落」，保持 prompt 精简。
 //
-// 数据来源：kb.todo.get（服务端 child_todos 表，多设备共享），与 todo_list 工具 read 分支同一真源、
-// 同一「今天」口径（本地时区 YYYY-MM-DD）。
+// 数据来源：kb.todo.list（服务端孩子 kb todo_items 表，一事一行，多设备共享），与 todo_list 工具 read
+// 分支同一真源、同一「今天」口径（本地时区 YYYY-MM-DD）。序列化为纯文本注入（不再是 md checkbox）。
 
 function todayPlanCachePath(childId: string): string {
   return path.join(getDataDir(), "cache", `today-plan-${childId}.json`);
 }
 
+/** 把 todo_items 行渲染成可读文本（家长项带来源前缀，孩子项标注）。 */
+function todoRowsToText(rows: Array<Record<string, unknown>>): string {
+  const lines = rows.map((r) => {
+    const src = r.source === "parent" ? "[家长安排] " : "[自规划] ";
+    const st = r.status === "done" ? "✅ " : "⬜ ";
+    const note = r.note ? `（${r.note}）` : "";
+    return `- ${st}${src}${r.title}${note}`;
+  });
+  return lines.join("\n");
+}
+
 /** 会话创建前远程预取孩子当天 Todolist 到本地缓存（同步读链路的真源）。 */
 export async function fetchTodayPlanRemote(childId: string, date: string): Promise<void> {
   try {
-    const todo = await dbQuery<{ date: string; itemsMd: string; updated: string } | null>("kb.todo.get", {
+    const rows = (await dbQuery<Array<Record<string, unknown>>>("kb.todo.list", {
       child_id: childId,
       date,
-    });
-    // 与 todo_list 工具 read 分支口径一致：itemsMd 为空（null/空白）即「今天还没有 todolist」。
-    const itemsMd = todo?.itemsMd?.trim() ? todo.itemsMd : "";
+    })) ?? [];
+    // 与 todo_list 工具 read 分支口径一致：无行即「今天还没有 todolist」。
+    const text = rows.length ? todoRowsToText(rows) : "";
     fs.mkdirSync(path.dirname(todayPlanCachePath(childId)), { recursive: true });
-    fs.writeFileSync(
-      todayPlanCachePath(childId),
-      JSON.stringify({ itemsMd, date, ts: Date.now() }),
-      "utf-8"
-    );
+    fs.writeFileSync(todayPlanCachePath(childId), JSON.stringify({ itemsMd: text, date, ts: Date.now() }), "utf-8");
   } catch {
     /* 离线/未登录：保留旧缓存或留空，getTodayPlan 降级为不注入 */
   }
 }
 
-/** 同步读取当天学习计划（Todolist markdown）；无缓存 / 当天无 Todolist 返回空串（不注入）。 */
+/** 同步读取当天学习计划（Todolist 文本）；无缓存 / 当天无 Todolist 返回空串（不注入）。 */
 export function getTodayPlan(childId: string): string {
   try {
     const cached = JSON.parse(fs.readFileSync(todayPlanCachePath(childId), "utf-8")) as {

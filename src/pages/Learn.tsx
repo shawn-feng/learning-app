@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, TextSelect, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, TextSelect, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
 import TodoModal from "../components/TodoModal";
+import MyRemindersModal from "../components/MyRemindersModal";
 import ExamView from "../components/ExamView";
 import { useChatPanel } from "../hooks/useChatPanel";
 import type { MaterialsPanelHandle, PageAction, PageEvent, PageExecResultUplink } from "../lib/page-bridge";
@@ -173,18 +174,21 @@ async function speakReminder(text: string): Promise<void> {
   }
 }
 
-/** ISSUE-019：按提醒方式播报一次（铃声 + 语音），横幅首次与循环共用 */
-function playReminderAlert(mode: "both" | "chime" | "voice", type: "start" | "end", label: string): void {
+/** ISSUE-019/047：按提醒方式播报一次（铃声 + 语音），横幅首次与循环共用。
+ *  type=custom 为 ISSUE-047 孩子端自建提醒——直接播报 label（提醒内容），不附加课程前缀。 */
+function playReminderAlert(mode: "both" | "chime" | "voice", type: "start" | "end" | "custom", label: string): void {
   if (mode === "both" || mode === "chime") playChime();
   if (mode === "both" || mode === "voice") {
     const text =
-      type === "start"
-        ? label
-          ? `${label}上课时间到啦，请开始学习吧！`
-          : "上课时间到啦，请开始学习吧！"
-        : label
-          ? `${label}下课啦，休息一下吧！`
-          : "下课啦，休息一下吧！";
+      type === "custom"
+        ? label || "定时提醒时间到啦！"
+        : type === "start"
+          ? label
+            ? `${label}上课时间到啦，请开始学习吧！`
+            : "上课时间到啦，请开始学习吧！"
+          : label
+            ? `${label}下课啦，休息一下吧！`
+            : "下课啦，休息一下吧！";
     void speakReminder(text);
   }
 }
@@ -249,7 +253,7 @@ export default function Learn({ child, onExit }: Props) {
   const childIdRef = useRef(child.childId);
   // ISSUE-019：课程时间段提醒横幅（上课/下课；顶部 1/3 区域，常驻到点击关闭；含提醒方式）
   const [classReminder, setClassReminder] = useState<{
-    type: "start" | "end";
+    type: "start" | "end" | "custom";
     label: string;
     mode: "both" | "chime" | "voice";
   } | null>(null);
@@ -341,6 +345,8 @@ export default function Learn({ child, onExit }: Props) {
   const [changePwdMsg, setChangePwdMsg] = useState("");
   // ISSUE-025：今日计划（Todolist）弹框
   const [showTodo, setShowTodo] = useState(false);
+  // ISSUE-047 方案A：孩子端「我的提醒」弹框（独立于计划；提醒不一定是"要做的事"）
+  const [showReminders, setShowReminders] = useState(false);
   // 学习考核（EXAM-REQUIREMENTS.md）：锁定考试视图开关（true 时全屏覆盖，考试中不可退出）
   const [examOpen, setExamOpen] = useState(false);
   // 待考核科目数（周期到点标红提醒，不强制打断；0 = 无）
@@ -569,7 +575,7 @@ export default function Learn({ child, onExit }: Props) {
 
   // ISSUE-019：课程时间段提醒（家长在定时任务里按孩子配置；到点主进程广播）
   const handleClassReminder = useCallback(
-    (data: { childId: string; type: "start" | "end"; label: string; mode?: "both" | "chime" | "voice" }) => {
+    (data: { childId: string; type: "start" | "end" | "custom"; label: string; mode?: "both" | "chime" | "voice" }) => {
       if (data.childId !== childIdRef.current) return;
       const mode = data.mode || "both";
       setClassReminder({ type: data.type, label: data.label, mode });
@@ -949,6 +955,15 @@ export default function Learn({ child, onExit }: Props) {
             >
               <CalendarClock size={20} />
             </button>
+
+            {/* ISSUE-047 方案A：我的提醒（孩子自建定时提醒，独立于今日计划） */}
+            <button
+              className="sidebar-icon-btn"
+              title="我的提醒"
+              onClick={() => setShowReminders(true)}
+            >
+              <Bell size={20} />
+            </button>
           </div>
 
           <div className="sidebar-menu">
@@ -1113,13 +1128,25 @@ export default function Learn({ child, onExit }: Props) {
       {classReminder && (
         <div className="class-reminder-banner" onClick={() => setClassReminder(null)}>
           <div className="class-reminder-inner">
-            <div className="class-reminder-icon">{classReminder.type === "start" ? "⏰" : "🎉"}</div>
-            <div className="class-reminder-title">
-              {classReminder.type === "start" ? "上课时间到！" : "下课啦！"}
+            <div className="class-reminder-icon">
+              {classReminder.type === "start" ? "⏰" : classReminder.type === "end" ? "🎉" : "🔔"}
             </div>
-            {classReminder.label && <div className="class-reminder-label">{classReminder.label}</div>}
+            <div className="class-reminder-title">
+              {classReminder.type === "start"
+                ? "上课时间到！"
+                : classReminder.type === "end"
+                  ? "下课啦！"
+                  : classReminder.label || "定时提醒"}
+            </div>
+            {classReminder.type === "custom" && classReminder.label && (
+              <div className="class-reminder-label">{classReminder.label}</div>
+            )}
             <div className="class-reminder-sub">
-              {classReminder.type === "start" ? "请开始学习吧 📚" : "休息一下，放松放松 ☕"}
+              {classReminder.type === "start"
+                ? "请开始学习吧 📚"
+                : classReminder.type === "end"
+                  ? "休息一下，放松放松 ☕"
+                  : "⏰ 这是你设置的定时提醒 · 点击关闭"}
             </div>
             <div className="class-reminder-dismiss">👆 点击关闭提示</div>
           </div>
@@ -1127,6 +1154,9 @@ export default function Learn({ child, onExit }: Props) {
       )}
 
       {showTodo && <TodoModal childId={child.childId} onClose={() => setShowTodo(false)} />}
+
+      {/* ISSUE-047 方案A：我的提醒（独立弹框，不放今日计划里） */}
+      {showReminders && <MyRemindersModal childId={child.childId} onClose={() => setShowReminders(false)} />}
 
       {/* ISSUE-026：切换展示页弹框（替代原 popover；点选项切换 view 后关闭） */}
       {showView && (
