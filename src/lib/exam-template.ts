@@ -317,8 +317,10 @@ window.EXAM_DATA = ${dataJson};
   });
   $("prevBtn").addEventListener("click", function(){ if(idx>0){ saveCurrent(); idx--; renderQuestion(); } });
   $("nextBtn").addEventListener("click", function(){
-    var q = curQ(); var a = q && answers[q.id];
-    if(a && !a.locked) return; // 当前题没答完不允许看下一题
+    var q = curQ();
+    // 只要当前题已有作答内容（录过音/有文字）即可切下一题；saveCurrent() 会锁定本题，
+    // ASR 识别文本晚到也安全（asr:done 对已锁定题仍并入）。仅「完全没答」才禁止（防偷看后题）。
+    if(q && !curHasContent()) return;
     if(idx < D.questions.length - 1){ saveCurrent(); idx++; renderQuestion(); }
   });
   $("submitBtn").addEventListener("click", function(){

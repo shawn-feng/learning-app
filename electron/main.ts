@@ -12,7 +12,7 @@ import { startScheduler, runCatchUp } from "./lib/scheduler";
 import { startSessionSyncTimer, flushSessionSync } from "./lib/session-sync";
 import { startServerFeaturesSync } from "./lib/server-features";
 import { lintAllChildren } from "./lib/kb-lint";
-import { registerCustomSchemes, registerMediaProtocol, registerAssetProtocol } from "./lib/media-protocol";
+import { registerCustomSchemes, registerMediaProtocol, registerAssetProtocol, registerAppProtocol } from "./lib/media-protocol";
 import { initUpdater, silentCheckForUpdates } from "./lib/updater";
 
 let mainWindow: BrowserWindow | null = null;
@@ -92,8 +92,11 @@ function createWindow() {
   if (process.env["ELECTRON_RENDERER_URL"]) {
     mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
   } else {
-    // Built output: out/main/index.js -> renderer at out/renderer/index.html
-    mainWindow.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
+    // Built output: 用 app://bundle 加载渲染层（ISSUE-048）。替代 loadFile(file://)——
+    // Ubuntu/Chromium143 下 file:// 顶层无真实源，考核页 srcDoc iframe 的 getUserMedia 被
+    // Permissions-Policy 拒绝；app:// 是 standard+secure scheme，顶层有源且响应带
+    // Permissions-Policy: microphone=*,camera=*（见 registerAppProtocol）。
+    mainWindow.loadURL("app://bundle/index.html");
   }
 }
 
@@ -119,6 +122,39 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(allowMedia(permission));
   });
+  // ⚠️ Ubuntu 实测根因补充（2026-09-04，ISSUE-046 修复在 Linux 仍无效的深层原因）：
+  // Chromium 的 Permissions-Policy（特性策略）在**权限 handler 之前**就已判定。考试页在
+  // srcDoc 沙盒 iframe 里 getUserMedia，顶层文档（生产为 file:// 加载）若无
+  // `Permissions-Policy` 响应头，Linux/Chromium 默认 allowlist 不向无源 iframe 开放 media →
+  // console 报 "Permissions policy violation: microphone is not allowed in this document."，
+  // MediaStreamManager 直接 PERMISSION_DENIED，setPermissionCheckHandler 放行也无效。
+  // 修复：给主窗口顶层文档响应注入 Permissions-Policy，显式允许 microphone/camera 给所有 frame
+  // （考试 iframe 自身已有 allow="microphone"，缺的是顶层文档背书）。
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    try {
+      const rt = details.resourceType;
+      // 只处理文档响应（顶层页面 + 其 iframe 页面）；file:// 主文档在 Electron 下也可被拦截
+      if (rt === "mainFrame" || rt === "subFrame" || rt === "document") {
+        const headers = details.responseHeaders ?? {};
+        const add = "microphone=*, camera=*";
+        // 合并已有 permissions-policy（若已存在则追加，逗号分隔），避免覆盖其它策略
+        const existingKey = Object.keys(headers).find((k) => k.toLowerCase() === "permissions-policy");
+        if (existingKey) {
+          const cur = Array.isArray(headers[existingKey])
+            ? headers[existingKey].join(",")
+            : String(headers[existingKey]);
+          headers[existingKey] = cur.trim().endsWith(",") ? [cur + add] : [cur + ", " + add];
+        } else {
+          headers["Permissions-Policy"] = [add];
+        }
+        callback({ responseHeaders: headers });
+        return;
+      }
+    } catch (e) {
+      console.error("[main] onHeadersReceived Permissions-Policy 注入失败:", e);
+    }
+    callback({});
+  });
 
   // macOS 系统级麦克风权限：主动申请一次，让 app 出现在「系统设置→隐私与安全性→麦克风」
   // 列表并弹出授权询问。若缺 Info.plist 的 NSMicrophoneUsageDescription，系统会静默拒绝且 app 不登记。
@@ -134,6 +170,8 @@ app.whenReady().then(() => {
   registerMediaProtocol();
   // 注册 asset:// 协议，把沙盒 iframe(srcDoc) 里引用的共享资料文件映射到本地
   registerAssetProtocol();
+  // 注册 app://bundle 协议，生产渲染层顶层（替代 file:// 加载，见 createWindow）
+  registerAppProtocol();
 
   registerIpcHandlers(getMainWindow);
   startScheduler(); // 本地 cron，无网络请求，立即注册

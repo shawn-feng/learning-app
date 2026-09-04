@@ -115,6 +115,10 @@ export function registerCustomSchemes(): void {
   protocol.registerSchemesAsPrivileged([
     { scheme: "media", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
     { scheme: "asset", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+    // app://bundle/... = 生产渲染层顶层（替代 file://）：标准+secure scheme 让顶层有真实源，
+    // Chromium 的 Permissions-Policy 默认 allowlist 'self' 才能匹配到考试 iframe（srcdoc 同源继承），
+    // 否则 Linux(Chromium143) 下 file:// 顶层的无源 iframe 一律被拒 getUserMedia（见 main.ts 注释）。
+    { scheme: "app", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: false } },
   ]);
 }
 
@@ -164,6 +168,54 @@ export function registerAssetProtocol(): void {
       const rel = resolveAssetTarget(url.pathname);
       if (!rel) return new Response("forbidden", { status: 403 });
       return await proxyMaterial(rel, request);
+    } catch {
+      return new Response("not found", { status: 404 });
+    }
+  });
+}
+
+/**
+ * app://bundle = 生产渲染层顶层加载（替代 file://，ISSUE-048，2026-09-04）。
+ *
+ * 为什么需要：Ubuntu(Chromium 143) 下用 loadFile(file://) 加载顶层时，文件 URL 无真实源，
+ * Chromium Permissions-Policy 默认 allowlist('self') 匹配不到任何 frame → 考核页
+ * srcDoc 沙盒 iframe 里的 getUserMedia 被 policy 直接拒绝（"Permissions policy violation:
+ * microphone is not allowed"），即便 sandbox/allow/permission handler 都放行。
+ * 用 standard+secure 的 app://bundle 顶层则有真实源：srcdoc iframe 同源继承 'self' 即被允许，
+ * 并对顶层文档响应显式注入 Permissions-Policy 头（microphone/camera 允许所有 frame）双保险。
+ * 资源路径与文件相对引用兼容：app://bundle/index.html → ./assets/x.js 解析为 app://bundle/assets/x.js。
+ */
+import fs from "fs";
+
+function rendererDir(): string {
+  // production: out/main/index.js → app.asar/out/renderer（asar 内 fs 可读）
+  return path.join(__dirname, "..", "renderer");
+}
+
+/** 仅允许渲染层 bundle 内的静态资源（防目录穿越）。 */
+function resolveBundlePath(pathname: string): string | null {
+  const clean = decodeURIComponent(pathname).replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!clean || clean.includes("..")) return null;
+  const p = path.join(rendererDir(), clean);
+  return p.startsWith(rendererDir() + path.sep) ? p : null;
+}
+
+export function registerAppProtocol(): void {
+  protocol.handle("app", async (request) => {
+    try {
+      const url = new URL(request.url);
+      if (url.host !== "bundle") return new Response("not found", { status: 404 });
+      const filePath = resolveBundlePath(url.pathname) ?? path.join(rendererDir(), "index.html");
+      const buf = await fs.promises.readFile(filePath);
+      const headers = new Headers();
+      headers.set("Content-Type", mimeFor(filePath));
+      // 顶层文档显式放行 media（对 srcdoc 无源 iframe 也要能采集）
+      if (filePath.endsWith(".html")) {
+        headers.set("Permissions-Policy", "microphone=*, camera=*");
+        // 允许本 app 跨源访问服务端（与 file:// 时代一致：服务端 CORS 已放行）
+        headers.set("Access-Control-Allow-Origin", "*");
+      }
+      return new Response(buf, { headers });
     } catch {
       return new Response("not found", { status: 404 });
     }
