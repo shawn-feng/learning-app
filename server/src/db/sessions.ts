@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { ApiError } from "../auth/proxy.js";
 
 /** 服务端会话镜像目录（按 parentId/childId 隔离）。 */
 export function getSessionsDir(dataDir: string, parentId: string, childId: string): string {
@@ -15,13 +16,38 @@ export function getSessionsDir(dataDir: string, parentId: string, childId: strin
   return dir;
 }
 
-/** 仅允许 basename 且 .jsonl 结尾（防目录穿越）。 */
+/**
+ * 校验并归一会话文件的相对路径（ISSUE-051）。
+ * - 客户端自 ISSUE-029 起用 posix 相对路径（如 english-<title>/xxx.jsonl）区分同名课程子会话，
+ *   故允许 `a/b/c.jsonl` 这类相对路径；逐段校验防目录穿越。
+ * - 拒绝：绝对路径、空段(`//`)、`.`/`..` 段、段首 `.`(隐藏)、非 `.jsonl` 结尾、总长超限。
+ * - 返回 posix 相对路径（丢弃反斜杠/盘符，防御 Windows 风格穿越如 `C:\..\x`）。
+ */
 export function sanitizeSessionFile(name: string): string {
-  const base = path.basename(name);
-  if (base !== name || !base.endsWith(".jsonl") || base.length > 128 || base.startsWith(".")) {
-    throw new Error(`非法会话文件名: ${name}`);
+  const bad = (): never => {
+    // ISSUE-051：非法文件名属客户端输入错误 → ApiError(400)，经路由 handleAuthError 转 4xx，
+    // 不再被 fastify 兜底成 500 掩盖。
+    throw new ApiError(400, `非法会话文件名: ${String(name)}`);
+  };
+  if (typeof name !== "string" || name.length === 0 || name.length > 512) {
+    bad();
   }
-  return base;
+  // 归一为 posix 分隔符，拒绝反斜杠与盘符（绝对路径 / \ 开头、Windows 反斜杠都被防住）
+  const norm = name.replace(/\\/g, "/");
+  if (norm.startsWith("/") || /^[A-Za-z]:/.test(norm)) {
+    bad();
+  }
+  const segments = norm.split("/");
+  for (const seg of segments) {
+    if (seg === "" || seg === "." || seg === ".." || seg.startsWith(".")) {
+      bad();
+    }
+    // 段内长度上限，避免超长标题撑爆路径
+    if (seg.length > 96) bad();
+  }
+  const base = segments[segments.length - 1];
+  if (!base.endsWith(".jsonl")) bad();
+  return segments.join("/");
 }
 
 /** 本地时区 YYYY-MM-DD（服务端本地时区；部署在家庭局域网，与客户端同区）。 */
@@ -69,7 +95,9 @@ export function appendAndIndexSession(
   const synced = row ?? { synced_bytes: 0, line_count: 0 };
 
   const dir = getSessionsDir(dataDir, parentId, childId);
+  // ISSUE-051：file 可能是 english-<title>/xxx.jsonl 子目录相对路径，须确保父目录存在
   const full = path.join(dir, file);
+  fs.mkdirSync(path.dirname(full), { recursive: true });
 
   // 以服务端行数为权威：只处理 index >= line_count 的行（fromIndex 落后则跳过重叠段）
   const skip = Math.max(0, synced.line_count - fromIndex);
@@ -201,9 +229,24 @@ export function readServerDailyConversation(
   const start = new Date(y, m - 1, d).getTime();
   const end = start + 24 * 3600 * 1000;
   const msgs: { ts: number; role: string; text: string }[] = [];
-  for (const f of fs.readdirSync(dir)) {
-    if (!f.endsWith(".jsonl")) continue;
-    for (const line of fs.readFileSync(path.join(dir, f), "utf-8").split("\n").filter(Boolean)) {
+  // ISSUE-051：english 课程子会话 jsonl 在子目录（english-<title>/），需递归收集
+  const files: string[] = [];
+  const collect = (cur: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(cur, e.name);
+      if (e.isDirectory()) collect(full);
+      else if (e.isFile() && e.name.endsWith(".jsonl")) files.push(full);
+    }
+  };
+  collect(dir);
+  for (const f of files) {
+    for (const line of fs.readFileSync(f, "utf-8").split("\n").filter(Boolean)) {
       try {
         const entry = JSON.parse(line);
         if (entry.type !== "message" || !entry.message) continue;
