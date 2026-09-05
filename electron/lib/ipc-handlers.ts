@@ -47,7 +47,7 @@ import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerCon
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
-import { generateExamQuestions, scoreExamAttempt, selectCoursesForSchedule } from "./exam-engine";
+import { generateExamQuestions, generateCourseQuestions, scoreExamAttempt, selectCoursesForSchedule } from "./exam-engine";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -2003,6 +2003,15 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("exam:generate", async (_e, childId: string, topicConfig: any) => {
     try {
       const questions = await generateExamQuestions(topicConfig, childId);
+      return { success: true, data: questions };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 流式出题（ISSUE-049）：单门课程出题一次（首门就绪即可开考，其余课程后台逐门生成后增量追加）
+  ipcMain.handle("exam:generateCourse", async (_e, childId: string, topicName: string, course: any) => {
+    try {
+      const questions = await generateCourseQuestions(topicName, course, childId);
       return { success: true, data: questions };
     } catch (err) {
       return { success: false, error: (err as Error).message };

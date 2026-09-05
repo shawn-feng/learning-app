@@ -89,6 +89,10 @@ export async function selectCoursesForSchedule(selectionPrompt: string, childId:
  * @param topicConfig 服务端下发的科目考核配置（课程 = 选课结果，每课带 assess_rubric）
  * @param childId 孩子 id（session 工作目录按孩子隔离）
  */
+/**
+ * 为一门科目生成本场考核的全部主观题（逐课并发出题，汇总返回）。
+ * 流式出题（2026-09-05 ISSUE-049）下 ExamView 不再调用本函数；保留供一次性出题/测试等场景。
+ */
 export async function generateExamQuestions(topicConfig: ExamTopicConfig, childId: string): Promise<GeneratedQuestion[]> {
   const runtime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -118,6 +122,21 @@ export async function generateExamQuestions(topicConfig: ExamTopicConfig, childI
   }
   if (failed) console.warn(`[exam] ${failed}/${courses.length} 门课程出题失败已跳过`);
   return questions;
+}
+
+/**
+ * 为单门课程出题（流式出题用：ExamView 首门就绪即开考，其余课程后台逐门调用本函数，
+ * 每门完成后把题目增量追加到答题流）。每次独立内存 session，一次 LLM 调用覆盖该课全部知识点。
+ */
+export async function generateCourseQuestions(
+  topicName: string,
+  course: ExamCourseConfig,
+  childId: string
+): Promise<GeneratedQuestion[]> {
+  const runtime = await getSharedRuntime();
+  const model = await getDefaultModel();
+  const childDir = getChildDir(childId || "default");
+  return generateForCourse(course, topicName, childDir, runtime, model);
 }
 
 const GENERATION_PER_COURSE_RULES =

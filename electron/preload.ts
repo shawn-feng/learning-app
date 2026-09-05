@@ -341,6 +341,8 @@ const api = {
   courseStatus: (childId: string) => ipcRenderer.invoke("course:status", childId),
   examAudio: (fileId: string) => ipcRenderer.invoke("exam:audio", fileId),
   examGenerate: (childId: string, topicConfig: any) => ipcRenderer.invoke("exam:generate", childId, topicConfig),
+  examGenerateCourse: (childId: string, topicName: string, course: any) =>
+    ipcRenderer.invoke("exam:generateCourse", childId, topicName, course),
   examScore: (childId: string, scoringPrompt: string, answers: any[]) =>
     ipcRenderer.invoke("exam:score", childId, scoringPrompt, answers),
 

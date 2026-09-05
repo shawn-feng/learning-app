@@ -80,6 +80,12 @@ export default function ExamView({ childId, onExit }: Props) {
   const busyRef = useRef(false);
   // 本场考核的候选课程（含 rubric，判分锚定用；startExam 时从 config 获取）
   const examCoursesRef = useRef<CourseConfig[]>([]);
+  // 流式出题（ISSUE-049）：exam iframe 就绪后由 beginStreaming 逐门后台生成、按序增量送达。
+  // runId 防重复进入/卸载后仍往已卸载 iframe 发送。
+  const streamPlanRef = useRef<{ childId: string; topicName: string; courses: CourseConfig[] } | null>(null);
+  const streamRunRef = useRef(0);
+  // 幂等：同一场考试只启动一次流式出题（iframe 因 srcDoc 变化重载会再次触发 onLoad）
+  const streamStartedRef = useRef(false);
   // 准备阶段提示文案（选课/出题/判分共用「批改中」遮罩）
   const [prepText, setPrepText] = useState("");
 
@@ -146,32 +152,13 @@ export default function ExamView({ childId, onExit }: Props) {
         if (!courses.length) throw new Error("这次考核暂时没有可考核的内容（可以先学一学再来，或请爸爸妈妈在「设置 → 学习考核」里调整选课规则）");
         examCoursesRef.current = courses;
         setScoringPrompt(scoring);
-        // 逐课完整出题（每课一次 LLM 调用，覆盖该课全部知识点）
-        setPrepText(`正在为 ${courses.length} 门课程出题…`);
-        const topicConfig = {
-          topicKey: sch.id,
-          name: data.schedule?.title || sch.title,
-          assessMethod: "",
-          courses,
-        };
-        const g: any = await window.api.examGenerate(childId, topicConfig);
-        if (!g?.success) throw new Error(g?.error || "出卷失败");
-        const questions: QuestionUI[] = (g.data || []).map((q: any, i: number) => ({
-          // qid 必须全局唯一：出卷 LLM 每课独立编号（都从 q1 起），跨课会重复导致答案串题
-          // （answers[qid] 共享、改一题动另一题）——用全局序号覆盖
-          qid: `q${i + 1}`,
-          course: q.course,
-          stem: q.stem,
-          pointMax: Number(q.pointMax) || 10,
-        }));
-        if (!questions.length) throw new Error("出卷未返回题目");
-        setExamHtml(
-          buildExamHtml(
-            questions.map((q) => ({ id: q.qid, course: q.course, pointMax: q.pointMax, stem: q.stem })),
-            data.schedule?.title || sch.title,
-            `${data.schedule?.title || sch.title} · 学习考核`
-          )
-        );
+        // 流式出题（ISSUE-049）：不再等全部课程出完才显示。先渲染「空考试壳」（提示总课程数），
+        // iframe 加载就绪后 beginStreaming 逐门并发出题，每出好一门就 postMessage 把题目追加进答题流。
+        const topicName = data.schedule?.title || sch.title;
+        streamPlanRef.current = { childId, topicName, courses };
+        streamRunRef.current++; // 使上一场（若有）的生成循环失效
+        streamStartedRef.current = false; // 新一场重新允许 onLoad 启动
+        setExamHtml(buildExamHtml([], topicName, `${topicName} · 学习考核`, courses.length));
         setStage("exam");
       } catch (e: any) {
         setError(`开始考核失败：${String(e?.message || e)}`);
@@ -180,6 +167,59 @@ export default function ExamView({ childId, onExit }: Props) {
     },
     [childId]
   );
+
+  // ===== 流式出题：iframe 就绪后逐门生成（并发 3），按课程顺序 flush 送达 =====
+  async function beginStreaming(plan: { childId: string; topicName: string; courses: CourseConfig[] }) {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    const runId = ++streamRunRef.current;
+    const total = plan.courses.length;
+    const ready: (any[] | null)[] = new Array(total).fill(null);
+    let delivered = 0;
+    let okAny = false;
+    const post = (questions: any[], remaining: number) => {
+      try {
+        win.postMessage({ type: "exam:addQuestions", questions, remaining }, "*");
+      } catch {
+        /* iframe 已卸载则忽略 */
+      }
+    };
+    const flush = () => {
+      while (delivered < total && ready[delivered]) {
+        post(ready[delivered]!, total - delivered - 1);
+        delivered++;
+      }
+    };
+    let next = 0;
+    const worker = async () => {
+      while (runId === streamRunRef.current && next < total) {
+        const i = next++;
+        const course = plan.courses[i];
+        try {
+          const g: any = await window.api.examGenerateCourse(plan.childId, plan.topicName, course);
+          if (runId !== streamRunRef.current) return; // 已切场/退出
+          if (g?.success && Array.isArray(g.data)) {
+            ready[i] = g.data;
+            okAny = true;
+          } else {
+            ready[i] = [];
+            console.warn(`[exam] 出题失败（已跳过该门课）：${course.title}`, g?.error || "");
+          }
+        } catch (e) {
+          ready[i] = [];
+          console.error(`[exam] 出题失败（已跳过该门课）：${course.title}`, e);
+        }
+        flush();
+      }
+    };
+    // 并发上限 3（与 generateExamQuestions 一致，避免同时太多本地 LLM 调用）
+    await Promise.all(Array.from({ length: Math.min(3, total) }, () => worker()));
+    flush(); // 收尾（含最后一门）
+    if (!okAny && runId === streamRunRef.current) {
+      setError("这次出卷失败了，请返回重新进入考核再试一次。");
+      setStage("error");
+    }
+  }
 
   // 接收 iframe 消息：ASR 转写请求 / 考核提交
   useEffect(() => {
@@ -463,6 +503,16 @@ export default function ExamView({ childId, onExit }: Props) {
             allow="microphone"
             style={{ width: "100%", height: "100%", border: "none", background: "#fff" }}
             title="学习考核"
+            onLoad={() => {
+              // iframe 脚本就绪后开始流式出题（首门课题目送达即开始作答，其余后台逐门追加）
+              if (streamStartedRef.current) return;
+              const plan = streamPlanRef.current;
+              if (!plan) return;
+              streamStartedRef.current = true;
+              beginStreaming(plan).catch((e) => {
+                console.error("[exam] 流式出题启动失败", e);
+              });
+            }}
           />
         )}
 

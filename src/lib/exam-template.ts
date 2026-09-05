@@ -22,9 +22,11 @@ export interface ExamTemplateQuestion {
 export function buildExamHtml(
   questions: ExamTemplateQuestion[],
   subject: string,
-  title: string
+  title: string,
+  /** 流式出题（ISSUE-049）：本场考核总课程数；>0 表示题目会由宿主在后台逐门生成后增量送达 */
+  pendingCourses = 0
 ): string {
-  const dataJson = JSON.stringify({ title, subject, questions })
+  const dataJson = JSON.stringify({ title, subject, questions, pendingCourses })
     .replace(/</g, "\\u003c") // 防题面注入 HTML（stem 来自 LLM 出卷，必须转义）
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
@@ -77,6 +79,9 @@ export function buildExamHtml(
   .submit:disabled{opacity:.45; cursor:not-allowed}
   .done-tag{font-size:20px; color:var(--ok)}
   .lock-tag{font-size:20px;color:var(--warn);margin:8px 0 0;display:none}
+  .stream-banner{flex:0 0 auto; background:#fff8ec; border-bottom:1px solid #f0e2c0; padding:10px 22px; font-size:20px; color:var(--warn); display:none;}
+  .stream-banner b{font-weight:700}
+  .stream-empty{padding:30px 22px; text-align:center; color:var(--muted); font-size:24px; display:none;}
 </style>
 </head>
 <body>
@@ -88,7 +93,9 @@ export function buildExamHtml(
     <span class="clock" id="elapsed" title="总用时">总用时 00:00</span>
   </div>
   <div class="progress" id="progress"></div>
+  <div class="stream-banner" id="streamBanner"></div>
   <div class="stage">
+    <div class="stream-empty" id="streamEmpty"></div>
     <div class="q-card" id="qCard">
       <span class="q-course" id="qCourse"></span>
       <div class="q-stem" id="qStem"></div>
@@ -186,8 +193,56 @@ window.EXAM_DATA = ${dataJson};
     updateNav();
     renderProgress(); updateDone();
   }
+  // ===== 流式出题（ISSUE-049）：首门课就绪即可开始作答，其余课程由宿主后台生成后增量送达 =====
+  var totalCourses = Number(D.pendingCourses) || 0; // 本场考核总课程数
+  var remainingCourses = totalCourses;              // 还差几门课的题目未送达
+  function showStreamEmpty(msg){
+    var e = $("streamEmpty"); if(!e) return;
+    e.style.display = "block"; e.textContent = msg || "";
+    $("qCard").style.display = "none";
+    $("progress").style.display = "none";
+    $("nextBtn").disabled = true; $("prevBtn").disabled = true;
+  }
+  function hideStreamEmpty(){
+    var e = $("streamEmpty"); if(e) e.style.display = "none";
+    $("qCard").style.display = "block";
+    $("progress").style.display = "flex";
+  }
+  function renderBanner(){
+    var b = $("streamBanner"); if(!b) return;
+    if(totalCourses <= 0 || remainingCourses <= 0){ b.style.display = "none"; return; }
+    b.style.display = "block";
+    var ready = totalCourses - remainingCourses;
+    b.innerHTML = "📥 正在生成其余 <b>" + remainingCourses + "</b> 门课的题目…（已就绪 <b>" + ready + "/" + totalCourses + "</b> 门）。可以先答下面的题，新题会不断加入。";
+  }
+  /** 宿主每出好一门课即调用：把该课题目按序追加到题流（全局重编号），并刷新导航/进度。 */
+  function appendCourseQuestions(qs, remainingAfter){
+    if(totalCourses > 0 && remainingAfter != null) remainingCourses = remainingAfter;
+    var wasEmpty = D.questions.length === 0;
+    for(var i = 0; i < (qs || []).length; i++){
+      var q = qs[i];
+      D.questions.push({
+        id: "q" + (D.questions.length + 1), // 全局唯一序号（LLM 每课都从 q1 起，必须覆盖防串题）
+        course: q.course || "",
+        stem: q.stem || "",
+        pointMax: Number(q.pointMax) || 10
+      });
+    }
+    if(wasEmpty){
+      hideStreamEmpty();
+      idx = 0;
+      renderQuestion(); // paintState 内部会刷新 nav/进度/done
+    } else {
+      paintState(); // 安全重绘当前题（保留已答内容），同时刷新 nav/dots/done 计数
+    }
+    renderBanner();
+  }
   function renderQuestion(){
-    var q = curQ(); if(!q) return;
+    var q = curQ();
+    if(!q){
+      if(D.questions.length === 0 && totalCourses > 0){ showStreamEmpty("📥 正在生成第 1 门课的题目，请稍候…"); renderBanner(); }
+      return;
+    }
     if(media && media.state === "recording"){ endRec(); }
     var a = answers[q.id] || { segs: [], sec: 0 };
     if(!a.segs) a.segs = [];
@@ -213,9 +268,16 @@ window.EXAM_DATA = ${dataJson};
   function updateDone(){
     var done = 0;
     D.questions.forEach(function(q){ if(answers[q.id] && answers[q.id].locked) done++; });
-    var all = done === D.questions.length;
+    var pending = totalCourses > 0 ? remainingCourses : 0;
+    var all = pending === 0 && done === D.questions.length;
     $("submitBtn").disabled = !all;
-    $("doneTag").textContent = all ? "全部答完，可提交 ✓" : ("已答 " + done + " / " + D.questions.length + " 题");
+    if(all){
+      $("doneTag").textContent = "全部答完，可提交 ✓";
+    } else if(pending > 0 && done === D.questions.length && D.questions.length > 0){
+      $("doneTag").textContent = "已答完当前 " + done + " 题，还有 " + pending + " 门课的题目正在生成…";
+    } else {
+      $("doneTag").textContent = "已答 " + done + " / " + D.questions.length + " 题";
+    }
   }
   function stopMic(){
     if(media && media.state === "recording"){ media.stop(); }
@@ -349,7 +411,13 @@ window.EXAM_DATA = ${dataJson};
   });
   window.addEventListener("message", function(ev){
     var d = ev.data;
-    if(d && d.type === "exam:asr:done"){
+    if(!d || typeof d !== "object") return;
+    if(d.type === "exam:addQuestions"){
+      // 流式出题：宿主每出好一门课就把题目送达，追加到题流（顺序保证由宿主控制）
+      appendCourseQuestions(d.questions || [], d.remaining);
+      return;
+    }
+    if(d.type === "exam:asr:done"){
       var q = D.questions.find(function(x){ return x.id === d.qid; });
       if(!q) return;
       transcribing = false;
@@ -375,7 +443,14 @@ window.EXAM_DATA = ${dataJson};
       }
     }
   });
-  renderQuestion();
+  // 流式出题（ISSUE-049）：初始只有空壳（题目等宿主逐门送达）；普通出题（questions 直接给全）原样工作
+  if(totalCourses > 0){
+    remainingCourses = totalCourses;
+    renderBanner();
+    showStreamEmpty("📥 正在生成第 1 门课的题目，请稍候…（本场共 " + totalCourses + " 门课）");
+  } else {
+    renderQuestion();
+  }
 })();
 </script>
 </body>
