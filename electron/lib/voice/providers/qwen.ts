@@ -74,18 +74,77 @@ export async function transcribe(wav: Buffer, creds: Record<string, string>): Pr
   );
 
   const json: any = await res.json().catch(() => ({}));
+
+  // 多路径提取识别文本，兼容两种计费通道的响应结构（ISSUE-052）：
+  //   - 按量 DashScope：双层 output.output.sentence[]（sentence 是数组）
+  //   - token-plan MaaS：单层 output.sentence（sentence 是对象）/ output.text / 顶层 text
+  //   （token-plan 实测响应会在顶层与 output 下同时放同名 sentence/text/request_id）
+  function pickText(body: any): string {
+    if (!body || typeof body !== "object") return "";
+    const readStr = (v: unknown): string => (typeof v === "string" ? v : "");
+    const arrText =
+      Array.isArray(body?.output?.output?.sentence) && body.output.output.sentence.length
+        ? readStr(body.output.output.sentence[0]?.text)
+        : "";
+    if (arrText) return arrText;
+    // 单层 output（sentence 是对象）
+    const single = readStr(body?.output?.sentence?.text);
+    if (single) return single;
+    return (
+      readStr(body?.output?.text) ||
+      readStr(body?.text) ||
+      readStr(body?.result?.text) ||
+      ""
+    );
+  }
+
+  // 提取错误真因 code/message（多路径：顶层 / output 下 / sentence 内）
+  function pickError(body: any): { code: string; message: string } {
+    const code = String(
+      body?.code ?? body?.output?.code ?? body?.error?.code ?? body?.output?.error?.code ?? ""
+    );
+    const message = String(
+      body?.message ??
+        body?.output?.message ??
+        body?.error?.message ??
+        body?.output?.error?.message ??
+        body?.output?.sentence?.text ??
+        ""
+    );
+    return { code, message };
+  }
+
+  // 「没识别到语音」语义判定（静音/太轻）：响应 code 或 message 命中即短路，不发起 fallback。
+  // 兼容两种写法：NO_WORDS（下划线）/ no words（空格，部分文案转义后空格）/ 中文提示。
+  function isNoSpeech(code: string, message: string): boolean {
+    const hay = `${code} ${message}`;
+    return (
+      /\bno[\s_-]*words\b/i.test(hay) ||
+      /NO_WORDS/i.test(code) ||
+      /没有识别到语音|未检测到语音|no speech/i.test(hay)
+    );
+  }
+
   if (!res.ok) {
-    const code = json?.code || "";
-    const message = json?.message || `HTTP ${res.status}`;
+    const { code, message } = pickError(json);
+    const msg = message || `HTTP ${res.status}`;
     // 没有识别到语音内容（静音/太轻）：语义错误，不应回退到其他服务
-    if (code === "CLIENT_ERROR" && /NO_WORDS/i.test(message)) {
+    if (isNoSpeech(code, msg)) {
       throw new Error("没有识别到语音，请靠近麦克风再说一次");
     }
-    throw new Error(`千问识别失败: ${message}`);
+    throw new Error(`千问识别失败: ${code ? `[${code}] ` : ""}${msg}`);
   }
-  const text: unknown = json?.output?.output?.sentence?.text;
-  if (typeof text === "string" && text.trim()) {
+
+  const text = pickText(json);
+  if (text.trim()) {
     return text.trim();
   }
-  throw new Error("千问识别失败: 未返回识别文本");
+  // HTTP 成功但没拿到文本：透出响应里的 code/message 真因（或 HTTP 状态），不再笼统报「未返回识别文本」，
+  // 避免掩盖 token-plan 与按量通道结构差异（ISSUE-052）。若响应确实空（静音无字），按语义短路处理。
+  const { code, message } = pickError(json);
+  if (isNoSpeech(code, message)) {
+    throw new Error("没有识别到语音，请靠近麦克风再说一次");
+  }
+  const shown = message || (code ? `[${code}]` : `HTTP ${res.status}`) || "响应无识别文本";
+  throw new Error(`千问识别失败: ${code ? `[${code}] ` : ""}${shown}`);
 }
