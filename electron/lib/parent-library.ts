@@ -18,7 +18,7 @@ import fs from "fs";
 import path from "path";
 import { getDataDir, getChildrenDir, getCurrentParentId, getServerUrl } from "./config";
 import { normalizeTopicKey } from "./kb-sqlite";
-import { buildAssetUrl, fetchMaterialContent } from "./media-protocol";
+import { buildAssetUrl, buildMediaUrl, fetchMaterialContent, isMediaExt } from "./media-protocol";
 import { openKbDb, type CourseItem } from "./kb-sqlite";
 import { dbExec, dbQuery } from "./client-data";
 import { serverFetch } from "./server-client";
@@ -882,7 +882,14 @@ function rewriteHtmlAssetRefs(html: string, parentId: string, fileDir: string): 
     if (segs.length < 2) return m; // 需落在 主题/... 之下
     const topic = segs[0];
     const rest = segs.slice(1).join("/");
-    return pre + buildAssetUrl(parentId, topic, rest) + suffix + post;
+    const rel = `${topic}/${rest}`;
+    // 音视频（mp4/mp3/… 属 media 白名单）改写为 media:// 协议；其余（css/js/图片/字体等属 asset
+    // 白名单）改写为 asset://。此前统一改 asset:// 会把音视频落入 asset 白名单之外 → resolveAssetTarget
+    // 返回 null → 403 播不出；完整 media:// 才能走 media 白名单正常播（P1，2026-09-06 复盘修正）。
+    const url = isMediaExt(rel)
+      ? buildMediaUrl(parentId, topic, rest)
+      : buildAssetUrl(parentId, topic, rest);
+    return pre + url + suffix + post;
   });
 }
 

@@ -346,9 +346,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     // SPLIT M8-B：编辑器实时读服务端（远程取 + 缓存兜底）
     const userVer = await fetchAgentPromptRemote(scope, ref);
     if (userVer !== null) return { content: userVer, customized: true };
-    // 无用户整体版本：返回当前默认内容（孩子=buildAgentsMd 代码默认，家长=代码默认提示词），
-    // 让家长在默认基础上修改（ISSUE-033 修：此前返回空串导致编辑器空白）。
-    return { content: getDefaultPrompt(scope, ref), customized: false };
+    // 无用户版本：区分 scope——家长默认提示词不可整体改，编辑器显示空、只填「追加补充」
+    // （buildParentPrompt 会把它追加在默认后）；孩子 AGENTS 可整体定制，返回代码默认当编辑底稿。
+    return { content: scope === "parent" ? "" : getDefaultPrompt(scope, ref), customized: false };
   });
 
   ipcMain.handle("agents:save", async (_e, scope: string, ref: string, content: string) => {

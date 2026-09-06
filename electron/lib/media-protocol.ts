@@ -161,6 +161,17 @@ export function buildAssetUrl(parentId: string, topic: string, relPathFromTopic:
   return `asset://local/parent/${parentId}/${topic}/${clean}`;
 }
 
+/** 由 (parentId, topic, 相对主题目录的路径) 拼出 media:// 绝对 URL（纯函数；parentId 仅占位）。 */
+export function buildMediaUrl(parentId: string, topic: string, relPathFromTopic: string): string {
+  const clean = relPathFromTopic.replace(/\\/g, "/").replace(/^\/+/, "");
+  return `media://local/parent/${parentId}/${topic}/${clean}`;
+}
+
+/** 判断扩展名是否属于 media 白名单（音视频走 media:// 协议才可播；asset:// 白名单不含音视频会 403）。 */
+export function isMediaExt(rel: string): boolean {
+  return ALLOWED_EXT.has(path.extname(rel).toLowerCase());
+}
+
 export function registerAssetProtocol(): void {
   protocol.handle("asset", async (request) => {
     try {

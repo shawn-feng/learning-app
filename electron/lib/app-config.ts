@@ -92,7 +92,7 @@ export const APP_CONFIG_REGISTRY: Record<string, ConfigEntry> = {
 
   "agents.parent": {
     file: "agents", scope: "global", type: "struct",
-    desc: "家长提示词用户版本（agents.sqlite）。有用户版=整体覆盖代码默认。读看；编辑/重置请在 AgentPromptEditor。",
+    desc: "家长提示词补充片段（agents.sqlite，追加在系统默认之后；默认不可改）。读看；编辑/清除请在家长中心「AI 提示词补充」。",
   },
 };
 
@@ -120,7 +120,7 @@ function parentPromptHasUserVersion(): string {
     const pid = currentParentId();
     if (!pid) return "（未登录）";
     const v = getAgentPrompt("parent", pid);
-    return v && v.trim() ? "存在用户保存版本（当前生效，覆盖代码默认）" : "（无用户版本，使用代码默认）";
+    return v && v.trim() ? "存在家长补充片段（追加在默认提示词之后生效）" : "（无补充，使用代码默认提示词）";
   } catch {
     return "（读取失败）";
   }

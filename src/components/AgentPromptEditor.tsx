@@ -48,7 +48,7 @@ export function AgentPromptContent({ scope, refKey, title }: Omit<Props, "onClos
     try {
       const r = await window.api.agentsSave(scope, ref, content);
       if (r?.success) {
-        setMsg({ ok: true, text: "已保存（整体替换默认提示词）" });
+        setMsg({ ok: true, text: scope === "parent" ? "已保存，将追加到家长 AI 提示词末尾" : "已保存（整体替换默认提示词）" });
         setCustomized(true);
         await load();
       } else {
@@ -65,7 +65,7 @@ export function AgentPromptContent({ scope, refKey, title }: Omit<Props, "onClos
     try {
       const r = await window.api.agentsSave(scope, ref, "");
       if (r?.success) {
-        setMsg({ ok: true, text: "已恢复默认（删除自定义版本）" });
+        setMsg({ ok: true, text: scope === "parent" ? "已清除补充内容（家长 AI 提示词回到默认）" : "已恢复默认（删除自定义版本）" });
         setCustomized(false);
         await load();
       } else {
@@ -96,7 +96,11 @@ export function AgentPromptContent({ scope, refKey, title }: Omit<Props, "onClos
     <>
       <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>{title}</div>
         <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
-          {customized
+          {scope === "parent"
+            ? customized
+              ? "当前已有补充内容（追加在家长 AI 提示词默认内容之后）"
+              : "默认提示词由系统管理、不可修改；在这里填写你的补充要求，会追加到家长 AI 提示词末尾"
+            : customized
             ? "当前为自定义版本（整体替换默认提示词）"
             : "当前为系统默认提示词，保存后即整体替换为你的版本"}
         </p>
@@ -151,7 +155,7 @@ export function AgentPromptContent({ scope, refKey, title }: Omit<Props, "onClos
             fontFamily: "monospace",
             resize: "vertical",
           }}
-          placeholder="在此编辑 AI 提示词（整体替换默认）…"
+          placeholder={scope === "parent" ? "在此填写你想追加到家长 AI 提示词的要求…" : "在此编辑 AI 提示词（整体替换默认）…"}
         />
 
         <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>

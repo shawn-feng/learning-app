@@ -12,6 +12,7 @@ import SchedulerTasksPanel from "../components/SchedulerTasksPanel";
 import StudyPlanPanel from "../components/StudyPlanPanel";
 import Settings from "./Settings";
 import ChildDetailPage from "../components/ChildDetailPage";
+import AgentPromptEditor from "../components/AgentPromptEditor";
 import { useChatPanel } from "../hooks/useChatPanel";
 
 interface Props {
@@ -29,6 +30,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [view, setView] = useState<"children" | "courses" | "plan" | "exam" | "scheduler" | "tokens" | "sync" | "settings">("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
+  // 家长「AI 提示词」弹窗（scope=parent，ref 由主进程归一化为当前家长 id）
+  const [agentPrompt, setAgentPrompt] = useState<{ scope: string; ref: string; title: string } | null>(null);
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
   const parentChat = useChatPanel("parent", 360);
 
@@ -53,9 +56,9 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
         <div className="actions">
           <IconButton
             icon={Bot}
-            title="家长 AI 提示词"
+            title="家长 AI 提示词补充（追加到默认提示词末尾）"
             onClick={() =>
-              setAgentPrompt({ scope: "parent", ref: "main", title: "编辑家长 AI 提示词" })
+              setAgentPrompt({ scope: "parent", ref: "main", title: "家长 AI 提示词补充（追加到末尾，默认不可改）" })
             }
           />
           <IconButton icon={ArrowLeft} title="返回主页" onClick={onEnterChildMode} />
@@ -324,6 +327,15 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             setShowAddChild(false);
             refresh();
           }}
+        />
+      )}
+
+      {agentPrompt && (
+        <AgentPromptEditor
+          scope={agentPrompt.scope}
+          refKey={agentPrompt.ref}
+          title={agentPrompt.title}
+          onClose={() => setAgentPrompt(null)}
         />
       )}
       </div>

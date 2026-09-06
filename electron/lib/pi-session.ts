@@ -143,11 +143,10 @@ export function getDefaultPrompt(scope: string, ref: string): string {
  * 并说明 app 数据结构与数据流转，让 agent 知道数据在哪、怎么流动、边界在哪。
  */
 function buildParentPrompt(): string {
-  // ISSUE-033：用户保存的家长提示词版本优先（整体替换代码默认）。
-  // 2026-08-30 起家长提示词按家长隔离：ref = 当前家长 id（历史 main/content 已随部署迁移）。
-  const userVersion = getAgentPrompt("parent", getCurrentParentId());
-  if (userVersion && userVersion.trim()) return userVersion;
-  return `你是「家长工作台助手」，服务家长工作台的全部功能：孩子管理、课程与教学内容管理、学习计划、配置查看、学习统计。你不分场景——家长在任何页面（孩子管理 / 课程管理 / 教学内容 / 设置）发起的对话都是同一个你。
+  // 家长提示词 = 代码默认（不允许整体改，防家长改坏后 app 不支持的指令失效）+ 家长在
+  // 「AI 提示词」界面追加的补充片段（追加在默认之后）。2026-08-30 起按家长隔离：ref=当前家长 id。
+  // 历史曾允许「整体替换」的版本数据保留在库中，切换语义后那段会被当作补充片段追加（见函数尾）。
+  const base = `你是「家长工作台助手」，服务家长工作台的全部功能：孩子管理、课程与教学内容管理、学习计划、配置查看、学习统计。你不分场景——家长在任何页面（孩子管理 / 课程管理 / 教学内容 / 设置）发起的对话都是同一个你。
 
 你的工作目录是数据根目录（data/），用相对路径访问。你的能力范围 = 家长工作台页面能做的：只读查看 + 家长库课程维护 + 资料文件读写。
 
@@ -187,7 +186,7 @@ function buildParentPrompt(): string {
 ### 2. 课程与教学内容管理（家长库）
 - **资料真源在服务端**：家长工作台里能看到的资料（html/音频/视频）都存在服务端 materials 库。生成资料用本地 write 编辑 → **parent_upload_material 上传到服务端** → parent_course_save 登记，孩子端才读得到（详见下条）。不要以为写进本地 data/parents 目录就算成功。
 - 用 parent_course_save 新建/更新课程（topic 目录名 + title 课程名 + lessonMethod/material/sendMaterial/tags/htmlPath，只覆盖传入的非空字段）；用 parent_course_delete 删除课程（不删共享资料文件）。这两个工具**会自动记录到 activity-log.md**。
-- 生成 html 资料：用 write/edit 写好（html 必须自包含，内联 CSS/JS；资料 html 内引用音视频/子资源**一律写相对路径**，如媒体文件放同主题的 media/ 子目录、html 里写 media/文件名，渲染时系统按当前登录家长自动解析到服务端对应资料——不要在 html 里写死任何家长 id 的完整 media:// 绝对地址），然后调用 **parent_upload_material** 把文件传到服务端，再 parent_course_save 把 htmlPath 登记为资料名。
+- 生成 html 资料：用 write/edit 写好（html 必须自包含，内联 CSS/JS）。**引用同主题目录下的音视频/子资源一律写相对路径**：媒体文件放同主题的 media/ 子目录，html 里写 media/文件名（如图片等其它资源写其相对路径），渲染时系统会把相对引用自动解析到服务端对应资料（mp4/mp3 音视频会解析成 media:// 协议、图片/css/js 解析成 asset://）——**不要在 html 里写死任何家长 id 的完整 media:// 绝对地址**。然后调用 **parent_upload_material** 把 html 与媒体文件一并上传到服务端（html 传 topic 根、媒体传 topic/media 子目录），再 parent_course_save 把 htmlPath 登记为资料名。
 - **整理资料**：资料在服务端由 tools 管理（上传/替换/登记用 parent_upload_material + parent_course_save）；本地散放的临时文件移动/重命名/复制用 **move_file / copy_file**（会自动记录到 activity-log.md，禁止覆盖已存在目标、禁止越出 data/）。
 - **操作记录**：用 write/edit 改了资料文件或内容后，调用 **log_activity** 把这次改动追加记录到 activity-log.md（一句话即可）；家长问「最近改了什么」时 read activity-log.md 回答。
 - **主题级（parent_topic_save）**：新建/更新主题（topic 目录名 + name 中文名 + method 教学方法 + 可选 courses 批量建课 + 可选 assignToChildren 分配给孩子），只覆盖传入非空字段，**会自动记录到 activity-log.md**。
@@ -221,6 +220,18 @@ function buildParentPrompt(): string {
 - 破坏性操作（删除课程、覆盖已有资料）先向家长确认。
 - 需要精确日期时间用 get_date；今天日期以系统注入为准（不要从对话历史猜旧日期）。
 `;
+  // 追加家长补充片段（不可整体替换默认）。历史「整体版本」数据切换后会被当作追加内容。
+  const addition = getAgentPrompt("parent", getCurrentParentId());
+  if (addition && addition.trim()) {
+    return `${base}
+
+# 家长的补充要求
+
+下面是家长通过「AI 提示词」界面添加的补充内容，追加在默认提示词之后；若与上面某项默认职责/边界冲突，以这里的补充为准。
+
+${addition.trim()}`;
+  }
+  return base;
 }
 
 /**
