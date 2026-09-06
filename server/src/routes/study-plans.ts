@@ -18,6 +18,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
+import { openParentLib } from "../db/parent-lib.js";
 
 interface StudyPlanDeps {
   config: ServerConfig;
@@ -117,6 +118,9 @@ function fetchRow(db: DatabaseSync, parentId: string, id: string): PlanRow | und
  *  - mode=new → 课程标注学过（状态 ✅ 或有首次学习日期）即 done，**不限日期**（提前学也算）；
  *  - mode=review → courses.last_review == 该行日期 才 done（复习必须当天）。
  * 找不到对应课程 → done=false（排了但课程表没有，视为未完成）。
+ *
+ * key 用**课程名(title)**匹配（与 worker 的 courseByTitle 同口径）——计划行 topic_key 常为空
+ * （家长 agent 排课时未填），若用 topic_key+course_name 复合 key 会查不到 → 面板误显示未完成。
  */
 function loadCourseStates(
   dataDir: string,
@@ -133,9 +137,8 @@ function loadCourseStates(
       for (const c of rows) {
         const title = (c.title || "").trim();
         if (!title) continue;
-        const key = `${(c.topic || "").trim()}\u0000${title}`;
-        if (!out.has(key)) {
-          out.set(key, { status: c.status || "", first_learned: c.first_learned || "", last_review: c.last_review || "" });
+        if (!out.has(title)) {
+          out.set(title, { status: c.status || "", first_learned: c.first_learned || "", last_review: c.last_review || "" });
         }
       }
     } finally {
@@ -147,9 +150,28 @@ function loadCourseStates(
   return out;
 }
 
+/** 以课程库为锚匹配计划行课程（与 worker 同口径）：找 title 是 course_name（最长）前缀的课程，
+ * 兼容「××章（上）/（下）」等拆章排法——课程库整章 title 必命中。 */
+function lookupState(
+  states: Map<string, { status: string; first_learned: string; last_review: string }>,
+  planCourseName: string
+): { status: string; first_learned: string; last_review: string } | undefined {
+  const name = (planCourseName || "").trim();
+  if (!name) return undefined;
+  let best: { status: string; first_learned: string; last_review: string } | undefined;
+  let bestLen = -1;
+  for (const [title, st] of states) {
+    if (title && name.startsWith(title) && title.length > bestLen) {
+      best = st;
+      bestLen = title.length;
+    }
+  }
+  return best;
+}
+
 /** 单行完成判定（与 worker stat 的 planCourseDone 同口径）。 */
 function planRowDone(r: PlanRow, states: Map<string, { status: string; first_learned: string; last_review: string }>): boolean {
-  const c = states.get(`${r.topic_key}\u0000${r.course_name}`);
+  const c = lookupState(states, r.course_name);
   if (!c) return false;
   if (r.mode === "review") return (c.last_review || "").trim() === r.date;
   return (c.status || "").trim() === "✅" || !!(c.first_learned || "").trim();
@@ -287,19 +309,41 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       )
       .all(parentId, childId, day) as unknown as Array<{ topic_key: string; course_name: string; mode: string }>;
     const have = new Set(existing.map((r) => `${r.topic_key}\u0000${r.course_name}\u0000${r.mode}`));
+    // ISSUE-029 任务2：topic_key 自动反查——排课工具契约只传课程名（不传 topic），此前 topic_key
+    // 恒存空串，英语课入口按钮（按 topic_key==='english' 判定）永远不显示。入库时按课程名在
+    // 家长库 courses（(topic,title) 复合主键，title 基本唯一）反查补全；查不到留空（不影响
+    // gen/stat 完成判定——那两处按 course_name 匹配）。
+    const titleToTopic = new Map<string, string>();
+    try {
+      const pdb = openParentLib(deps.config.dataDir, parentId);
+      try {
+        const crows = pdb.prepare("SELECT topic, title FROM courses").all() as Array<{
+          topic: string;
+          title: string;
+        }>;
+        for (const r of crows) {
+          const t = (r.title || "").trim();
+          if (t && !titleToTopic.has(t)) titleToTopic.set(t, r.topic);
+        }
+      } finally {
+        pdb.close();
+      }
+    } catch {
+      /* 家长库不可用时 topic_key 留空 */
+    }
     const inserted: string[] = [];
     const skipped: string[] = [];
     for (const it of parsed) {
-      const k = `${it.topicKey}\u0000${it.courseName}\u0000${it.mode}`;
+      const courseName = (it.courseName ?? "").trim();
+      const topicKey = it.topicKey || titleToTopic.get(courseName) || "";
+      const mode = it.mode ?? "new";
+      const k = `${topicKey}\u0000${courseName}\u0000${mode}`;
       if (have.has(k)) {
         skipped.push(`${it.courseName}（${it.mode}）`);
         continue;
       }
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
-      const topicKey = it.topicKey ?? "";
-      const courseName = it.courseName ?? "";
-      const mode = it.mode ?? "new";
       deps.db
         .prepare(
           "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, mode, origin, status, done_at, active, created_at, updated_at) " +
@@ -307,7 +351,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
         )
         .run(id, parentId, childId, day, topicKey, courseName, mode, now, now);
       have.add(k);
-      inserted.push(`${it.courseName}（${it.mode === "review" ? "复习" : "新学"}）`);
+      inserted.push(`${it.courseName}（${mode === "review" ? "复习" : "新学"}）`);
     }
     return { ok: true, inserted, skipped, date: day };
   });

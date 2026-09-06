@@ -301,7 +301,7 @@ export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
   const doneById = new Map<string, boolean>();
   let preDone = 0;
   for (const r of planRows) {
-    const course = courseByTitle.get(r.course_name);
+    const course = lookupCourseByTitle(courseByTitle, r.course_name);
     const isDone = course ? planCourseDone(today, course, r.mode) : false;
     doneById.set(r.id, isDone);
     if (isDone && r.status !== "done") {
@@ -344,14 +344,53 @@ export async function runTodoGenServer(ctx: WorkerTaskCtx): Promise<void> {
     });
     added++;
   }
-  if (removed || added || preDone) {
+  // 3) 同步已有家长 todo 的完成态（与 stat step2 同口径）——gen 每次 tick 都跑，
+  //    保证「课程已学过（含提前学/拆章）」但 todo 仍是历史 pending 的项被勾上；
+  //    stat 受 daily 新增去重限制不一定及时重跑，故由 gen 兜底。
+  let todoSync = 0;
+  for (const t of parentTodos) {
+    if (!planIds.has(t.plan_id)) continue; // 已被删除的孤儿项
+    const shouldDone = doneById.get(t.plan_id) ?? false;
+    if ((t.status === "done") !== shouldDone) {
+      runKbExec(ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.todo.set", {
+        child_id: ctx.childId,
+        id: t.id,
+        status: shouldDone ? "done" : "pending",
+      });
+      todoSync++;
+    }
+  }
+  if (removed || added || preDone || todoSync) {
     console.log(
-      `[worker:todo-gen] child ${ctx.childId}: ${today} 家长项同步（新增 ${added}，删除 ${removed}，预判已完成 ${preDone}）`
+      `[worker:todo-gen] child ${ctx.childId}: ${today} 家长项同步（新增 ${added}，删除 ${removed}，预判已完成 ${preDone}，todo 调整 ${todoSync}）`
     );
   }
 }
 
 const DONE_RATE_OK = 0.8;
+
+/**
+ * 以课程库为锚匹配计划行课程（2026-09-06 语义）：给定计划行 course_name（可能带拆章/修饰后缀，如
+ * 「论语泰伯篇第二十章（上）」），在课程库中找「title 是该名（最长）前缀」的课程——课程库标题是权威，
+ * 计划行只是在其后追加「（上）（下）」等排法说明。整章 title 必命中，天然覆盖任意后缀，无需剥后缀清单。
+ * 取最长 title（最具体），避免同前缀多课程歧义（如同时存在「…第二十章」与「…第二十章（上）」）。
+ */
+function lookupCourseByTitle(
+  courseByTitle: Map<string, { status: string; first_learned: string; last_review: string }>,
+  planCourseName: string
+): { status: string; first_learned: string; last_review: string } | undefined {
+  const name = (planCourseName || "").trim();
+  if (!name) return undefined;
+  let best: { status: string; first_learned: string; last_review: string } | undefined;
+  let bestLen = -1;
+  for (const [title, course] of courseByTitle) {
+    if (title && name.startsWith(title) && title.length > bestLen) {
+      best = course;
+      bestLen = title.length;
+    }
+  }
+  return best;
+}
 
 /**
  * 判某排期行是否完成（2026-09-04 语义调整）：
@@ -403,7 +442,7 @@ export async function runTodoStatServer(ctx: WorkerTaskCtx): Promise<boolean> {
   const doneOfPlan = new Map<string, boolean>();
   let planDoneCount = 0;
   for (const r of planRows) {
-    const course = courseByTitle.get(r.course_name);
+    const course = lookupCourseByTitle(courseByTitle, r.course_name);
     if (!course) {
       doneOfPlan.set(r.id, false); // 排了但孩子课程表没有该课 → 不完成
       continue;
