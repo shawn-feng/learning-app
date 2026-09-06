@@ -765,12 +765,12 @@ export const parentUploadMaterialTool = defineTool({
     "**闭环**：先 write 写好本地文件 → 调本工具上传 → 用 parent_course_save 把返回的 path 登记为 htmlPath；若课程已存在只补 htmlPath，仅传 topic+title+htmlPath 即可。\n\n" +
     "**⚠️ 视频编码规范（孩子端 Linux 播放要求）**：上传的视频文件**必须是 H.264 编码**（h264/avc1），**严禁 HEVC/H.265**（hevc/hvc1）——孩子端 Electron 的 Chromium 不内置 HEVC 解码器，HEVC 视频会「有声无画」（黑屏）；音频用 AAC。若素材是 HEVC，先用 ffmpeg 转码成 H.264 再上传：ffmpeg -i 源.mp4 -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -profile:v main -movflags +faststart -c:a aac -b:a 128k 输出.mp4。含视频的 mp4 必须加 +faststart（moov 前置）才能正常拖动播放。",
   parameters: Type.Object({
-    localPath: Type.String({ description: "要上传的本地文件路径（必填，write 出来的文件）" }),
+    localPath: Type.String({ description: "要上传的本地文件路径（必填；支持绝对路径或相对会话工作目录的路径，如 parents/default/materials/lunyu/x.html）" }),
     topic: Type.String({ description: "主题目录名（如 lunyu，仅允许字母/数字/_/-）" }),
     subDir: Type.Optional(Type.String({ description: "可选子目录（如 media / media/xx）；音频/视频等媒体传 media" })),
   }),
-  execute: async (_toolCallId, params) => {
-    const localPath = (params.localPath || "").trim();
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    let localPath = (params.localPath || "").trim();
     const topic = (params.topic || "").trim();
     if (!localPath || !topic) {
       throw new Error("parent_upload_material 需要 localPath + topic");
@@ -778,8 +778,11 @@ export const parentUploadMaterialTool = defineTool({
     if (!/^[a-zA-Z0-9_-]+$/.test(topic)) {
       throw new Error(`topic「${topic}」仅允许字母/数字/_/-（如 lunyu），请修正后再传`);
     }
+    // P2：与 move_file/copy_file 一致，接受绝对路径或相对会话工作目录(通常 data/ 或家长目录)的路径，
+    // 由 guardCwd 解析并防越界；禁止直接裸用 fs.existsSync(相对)，否则 agent 传相对路径会误报「不存在」。
+    localPath = guardCwd(ctx.cwd, localPath);
     if (!fs.existsSync(localPath)) {
-      throw new Error(`本地文件不存在：${localPath}（请先用 write/edit 写好再上传）`);
+      throw new Error(`本地文件不存在：${localPath}（请先用 write/edit 写好再上传；相对路径相对会话工作目录）`);
     }
     if (fs.statSync(localPath).isDirectory()) {
       throw new Error(`localPath 是目录不是文件：${localPath}（请逐个文件上传）`);
@@ -804,7 +807,7 @@ export const parentUploadMaterialTool = defineTool({
       content: [
         {
           type: "text" as const,
-          text: `已上传 ${path.basename(localPath)} 到服务端 <${topic}${subDir ? `/${subDir}` : ""}>，返回路径：${rel}。请用 parent_course_save 把该路径登记为 htmlPath（媒体文件的 html 引用用 media:// 协议）。`,
+          text: `已上传 ${path.basename(localPath)} 到服务端 <${topic}${subDir ? `/${subDir}` : ""}>，返回路径：${rel}。请用 parent_course_save 把该路径登记为 htmlPath（html 里对音视频/图片用相对路径引用即可，渲染时会自动解析成 media:// / asset:// 协议）。`,
         },
       ],
     };
