@@ -419,6 +419,15 @@ export default function Learn({ child, onExit }: Props) {
         if (typeof r.materialsLimit === "number" && r.materialsLimit > 0) {
           materialsLimitRef.current = r.materialsLimit;
         }
+        // ISSUE-029 任务2：进入英语子会话后自动注入开场教学指令——复用 handleSend 完整流程
+        // （hiddenUser 不渲染孩子气泡，但创建工作气泡），thinking/工具调用实时可见，
+        // 孩子能看到 AI 正在准备课程，不再面对空白界面等待。
+        if (currentCourseKey) {
+          const courseTitle = currentCourseKey.slice(currentCourseKey.indexOf(":") + 1);
+          void handleSend(`[进入英语课:${courseTitle}] 我准备好了，请开始本课的英文教学。`, {
+            hiddenUser: true,
+          });
+        }
       } else {
         console.error("Failed to start session:", r?.error);
       }
@@ -519,17 +528,26 @@ export default function Learn({ child, onExit }: Props) {
   // 正式回复到达 —— 在同一个气泡里替换为正式消息
   const handleReply = useCallback((data: { childId: string; text: string }) => {
     if (data.childId !== childIdRef.current) return;
+    // ISSUE-029 任务2：英语课「举手标记」检测——剥除标记后展示；若在主会话收到标记，
+    // 自动切入对应英语子会话（切换由基础设施完成；子会话打开后会自动注入开场教学指令）。
+    const hand = data.text.match(/\[进入英语课[:：]([^\]]+)\]/);
+    const display = hand ? data.text.replace(/\[进入英语课[:：][^\]]+\]/g, "").trim() : data.text;
+    if (hand && !courseKeyRef.current) {
+      const courseName = hand[1].trim();
+      if (courseName) setCurrentCourseKey(`english:${courseName}`);
+    }
+    if (!display) return; // 回复只剩标记（如刚切会话的过渡轮）则不渲染空气泡
     const id = workingIdRef.current;
     workingIdRef.current = null;
     setMessages((prev) => {
       if (id && prev.some((m) => m.id === id)) {
         return prev.map((m) =>
           m.id === id
-            ? { ...m, text: data.text, working: false }
+            ? { ...m, text: display, working: false }
             : m
         );
       }
-      return [...prev, { id: nextId(), role: "ai", text: data.text, time: nowTime() }];
+      return [...prev, { id: nextId(), role: "ai", text: display, time: nowTime() }];
     });
     setBusy(false);
   }, []);
@@ -777,7 +795,9 @@ export default function Learn({ child, onExit }: Props) {
       time: nowTime(),
     };
     workingIdRef.current = workingMsg.id;
-    setMessages((prev) => [...prev, userMsg, workingMsg]);
+    // ISSUE-029 任务2：hiddenUser（英语子会话自动开场）不渲染孩子气泡，但工作气泡照常创建
+    // ——thinking/工具调用事件渲染到工作气泡，孩子能看到 AI 正在准备课程，不再面对空白界面。
+    setMessages((prev) => [...prev, ...(opts?.hiddenUser ? [] : [userMsg]), workingMsg]);
     setBusy(true);
     try {
       // 拼接发给 AI 的正文：语音注明识别误差来源；附件用可逆标记（文件名|相对路径），

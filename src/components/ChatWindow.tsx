@@ -69,6 +69,10 @@ export interface SendOptions {
   textFiles?: TextFileAttachment[];
   // ISSUE-036：通用文件附件（任意类型）
   files?: FileAttachment[];
+  // ISSUE-029 任务2：隐藏用户气泡（英语子会话自动开场指令）——指令仍发给 AI、仍写会话历史
+  // （历史恢复时被 restoreAttachments 的 [...] 剥离规则隐藏），但本地不渲染孩子气泡；
+  // 工作气泡（thinking/工具调用 trace）照常创建，孩子能看到 AI 正在思考。
+  hiddenUser?: boolean;
 }
 
 // 消息时间戳（HH:mm）——各消息构造点统一调用，避免散落
