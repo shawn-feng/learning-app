@@ -102,8 +102,52 @@ async function reconcileMissingSecrets(serverConfig: Record<string, unknown>): P
  * 合并写回（2026-08-30 修复「重启后模型为空」）：
  * 服务端配置只覆盖本地同名 key，**本地独有字段保留**（模型配置/API key 选择是设备本地为主，
  * server 旧快照缺字段时不再把本地 defaultModel/programmingModel/visionModel 清空）。
+ *
+ * ISSUE-053 加固：scheduler_config 是「按 childId 嵌套」结构，浅合并 `{...local,...incoming}`
+ * 会把 incoming.children 整段替换——若服务端某 child 快照缺 classTimes/archiveLimit 等非任务字段
+ * （或服务端少了本地某 child），回拉即把本地已存的课程时间段等清空（症状：设置当天正常、第二天
+ * 课程时间段消失需重设）。故对 scheduler_config 做**按 childId 字段级深合并**：
+ *   顶层 `{...local,...incoming}`（parent/backup/eventPoll 本地独有保留）；
+ *   children 按 childId 逐个 `{...本地 child, ...服务端 child}`——服务端缺的字段保留本地，
+ *   服务端不认识的本地 child 也整体保留。
+ * 其余 key（app_settings/auth）维持原浅合并。
+ *
+ * 额外防丢失：服务端某 child 的 classTimes 若「缺键或空数组」而本地非空，视为服务端快照过期/未同步到
+ * （classTimes 是家长设备本地配置、非任务驱动，见 server task-runs 注释「客户端据此合并 classTimes 推回」），
+ * 保留本地，避免回拉把已配课程表清空。其余字段（recording/todo/autoNewSession/archiveLimit/classAlertMode）
+ * 一律以服务端为准。
  */
-function mergeJsonFile(p: string, value: unknown): void {
+const CLASS_FIELD = "classTimes" as const;
+
+function hasContent(v: unknown): boolean {
+  return Array.isArray(v) ? v.length > 0 : !!v;
+}
+
+function mergeChildConfigs(
+  localChildren: Record<string, unknown>,
+  incomingChildren: Record<string, unknown>
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+  // 先把本地全部 child 铺底，保证服务端缺的本地 child 不丢
+  for (const [cid, c] of Object.entries(localChildren)) {
+    merged[cid] = c && typeof c === "object" ? { ...(c as Record<string, unknown>) } : c;
+  }
+  // 服务端有该 child → 字段级覆盖（保留本地有、服务端缺的字段）
+  for (const [cid, c] of Object.entries(incomingChildren)) {
+    const localChild =
+      merged[cid] && typeof merged[cid] === "object" ? (merged[cid] as Record<string, unknown>) : {};
+    const incomingChild = c && typeof c === "object" ? (c as Record<string, unknown>) : {};
+    const next = { ...localChild, ...incomingChild };
+    // 服务端 classTimes 空/缺而本地非空 → 保留本地课程表（防 ISSUE-053 数据丢失）
+    if (hasContent(localChild[CLASS_FIELD]) && !hasContent(incomingChild[CLASS_FIELD])) {
+      next[CLASS_FIELD] = localChild[CLASS_FIELD];
+    }
+    merged[cid] = next;
+  }
+  return merged;
+}
+
+function mergeJsonFile(key: string, p: string, value: unknown): void {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   let local: Record<string, unknown> = {};
   try {
@@ -112,7 +156,21 @@ function mergeJsonFile(p: string, value: unknown): void {
     local = {};
   }
   const incoming = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
-  const merged = { ...local, ...incoming };
+  let merged: Record<string, unknown>;
+  if (key === "scheduler_config") {
+    merged = { ...local, ...incoming };
+    // children 必须按 childId 深合并，绝不能整段替换（否则服务端缺 child / 缺字段会清本地 classTimes）
+    const localChildren = (local.children && typeof local.children === "object" ? local.children : {}) as Record<
+      string,
+      unknown
+    >;
+    const incomingChildren = (incoming.children && typeof incoming.children === "object"
+      ? incoming.children
+      : {}) as Record<string, unknown>;
+    merged.children = mergeChildConfigs(localChildren, incomingChildren);
+  } else {
+    merged = { ...local, ...incoming };
+  }
   fs.writeFileSync(p, JSON.stringify(merged, null, 2), "utf-8");
 }
 
@@ -136,7 +194,7 @@ export async function syncOnce(force = false): Promise<{ changed: boolean }> {
     });
     for (const [key, value] of Object.entries(full.config ?? {})) {
       const file = fileForKey(key);
-      if (file) mergeJsonFile(file, value);
+      if (file) mergeJsonFile(key, file, value);
     }
     writeLocalRevision(full.revision);
     // 密钥/模型补齐：本地有、服务端缺 → 补传（worker agent 与服务端同源，见 reconcileMissingSecrets）
