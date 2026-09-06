@@ -3,7 +3,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
 import path from "path";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
-import { appendActivityLog, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse, rewriteMaterialHtmlForRender, followHtmlRedirectRemote, DEFAULT_PARENT_ID } from "./parent-library";
+import { appendActivityLog, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse, rewriteMaterialHtmlForRender, followHtmlRedirectRemote, uploadMaterialToServer, DEFAULT_PARENT_ID } from "./parent-library";
 import { getChildrenDir } from "./config";
 import { fetchMaterialContent } from "./media-protocol";
 import { getTokenSummary, readTokenLog } from "./token-stats";
@@ -742,6 +742,68 @@ export const parentUpsertCourseTool = defineTool({
         {
           type: "text" as const,
           text: `已保存家长库课程：${params.topic}「${params.title}」`,
+        },
+      ],
+    };
+  },
+});
+
+/**
+ * 上传资料到 server 指定目录（ISSUE-055）：家长 agent 用 write 写好本地文件后，
+ * 推到服务端材料真源 `materials/<topic>/<subDir>/...`（SPLIT 方案 A 下客户端本地 materials 只是旧残留，真源在服务端）。
+ * 返回服务端相对路径（无 materials/ 前缀），供 parent_course_save 登记为 htmlPath。
+ */
+export const parentUploadMaterialTool = defineTool({
+  name: "parent_upload_material",
+  label: "上传资料到服务端",
+  description:
+    "把本地写好的学习资料文件（html/md/音频/视频/图片）上传到**服务端**材料目录（`<topic>/<subDir>/...`），并返回服务端相对路径。\n\n" +
+    "**何时调用**：用 write/edit 写好资料文件后调用本工具把文件推上服务端（SPLIT 下真源在服务端，本地写不入服务端孩子读不到）。\n\n" +
+    "**参数**：`localPath`（本地文件路径，必填，即刚 write 出来的文件）、`topic`（主题目录名，如 lunyu，仅允许字母/数字/_/-）、可选 `subDir`（子目录，媒体文件传 media 或 media/xx）。\n\n" +
+    "**返回**：服务端相对路径（无 materials/ 前缀，如 lunyu/xxx.html 或 english/media/yyy.mp3）。\n\n" +
+    "**闭环**：先 write 写好本地文件 → 调本工具上传 → 用 parent_course_save 把返回的 path 登记为 htmlPath；若课程已存在只补 htmlPath，仅传 topic+title+htmlPath 即可。\n\n" +
+    "**⚠️ 视频编码规范（孩子端 Linux 播放要求）**：上传的视频文件**必须是 H.264 编码**（h264/avc1），**严禁 HEVC/H.265**（hevc/hvc1）——孩子端 Electron 的 Chromium 不内置 HEVC 解码器，HEVC 视频会「有声无画」（黑屏）；音频用 AAC。若素材是 HEVC，先用 ffmpeg 转码成 H.264 再上传：ffmpeg -i 源.mp4 -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -profile:v main -movflags +faststart -c:a aac -b:a 128k 输出.mp4。含视频的 mp4 必须加 +faststart（moov 前置）才能正常拖动播放。",
+  parameters: Type.Object({
+    localPath: Type.String({ description: "要上传的本地文件路径（必填，write 出来的文件）" }),
+    topic: Type.String({ description: "主题目录名（如 lunyu，仅允许字母/数字/_/-）" }),
+    subDir: Type.Optional(Type.String({ description: "可选子目录（如 media / media/xx）；音频/视频等媒体传 media" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const localPath = (params.localPath || "").trim();
+    const topic = (params.topic || "").trim();
+    if (!localPath || !topic) {
+      throw new Error("parent_upload_material 需要 localPath + topic");
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(topic)) {
+      throw new Error(`topic「${topic}」仅允许字母/数字/_/-（如 lunyu），请修正后再传`);
+    }
+    if (!fs.existsSync(localPath)) {
+      throw new Error(`本地文件不存在：${localPath}（请先用 write/edit 写好再上传）`);
+    }
+    if (fs.statSync(localPath).isDirectory()) {
+      throw new Error(`localPath 是目录不是文件：${localPath}（请逐个文件上传）`);
+    }
+    const subDir = (params.subDir || "").trim() || undefined;
+    if (subDir && (subDir.includes("..") || subDir.startsWith("/") || subDir.startsWith("\\") || /[\\]/.test(subDir))) {
+      throw new Error(`subDir「${subDir}」含非法字符（不得含 .. 或 \\ 或绝对路径），请用 topic 下相对子目录如 media`);
+    }
+    let rel = "";
+    try {
+      rel = await uploadMaterialToServer(topic, subDir, localPath);
+    } catch (e) {
+      throw new Error(`上传失败：${(e as Error).message}`);
+    }
+    if (!rel) throw new Error("上传未返回服务端路径，请重试");
+    try {
+      appendActivityLog("default", `上传资料 ${path.basename(localPath)} 到服务端 <${topic}${subDir ? `/${subDir}` : ""}>（${rel}）`);
+    } catch (e) {
+      console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `已上传 ${path.basename(localPath)} 到服务端 <${topic}${subDir ? `/${subDir}` : ""}>，返回路径：${rel}。请用 parent_course_save 把该路径登记为 htmlPath（媒体文件的 html 引用用 media:// 协议）。`,
         },
       ],
     };

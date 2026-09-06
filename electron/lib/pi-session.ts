@@ -11,7 +11,7 @@ import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { parseCourseKey } from "./kb-sqlite";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool } from "./custom-tools";
 import { getTodayPlan, fetchTodayPlanRemote, fetchCourseLessonRemote, getCourseLessonCached, type CourseLessonCache } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
@@ -280,6 +280,16 @@ function buildChildPrompt(
     if (copy) seg += `\n\n- 本课教学文案与词表：\n${truncateForPrompt(copy, 2500)}`;
     seg += `\n\n- 本课结束前，按课程状态自然收尾并鼓励孩子；学习进度由系统记录，你无需读写进度文件。`;
     prompt += seg;
+  } else {
+    // ISSUE-029 任务2 增强（用户拍板）：主会话「举手切换」——agent 不切会话（它无法在自身
+    // 执行栈里重建会话），只在孩子明确要开始学英语课时于回复末尾附内部标记；前端剥除标记并
+    // 自动切到英语子会话。确定性由「标记 → 基础设施切换」保证，不靠 agent 执行切换动作。
+    prompt +=
+      `\n\n## 英语课切换约定\n` +
+      `- 当孩子明确表示要开始学英语课（如「我要学英语」「开始上英语课」），且你能确定课程名（来自今天的学习计划或孩子说出的课程名）时，在回复的**最末尾**单独一行加上内部标记：[进入英语课:课程名]。\n` +
+      `- 课程名必须用真实课程名（与学习计划/课程库一致，如 12·Yellow-Unit1-hello-story）。标记会被系统剥离、孩子看不到，系统会自动切换到英语课专用会话并自动开始教学。\n` +
+      `- 无法确定课程名时**不要**加标记，改为引导孩子打开「今日计划」点「进入课程」。\n` +
+      `- 平时的英语问答、作业辅导（不是开始上英语课）不加标记。`;
   }
   // ISSUE-033：AGENTS 行为规范不以「文件」形式由 SDK 附加为 <project_context>（无任何磁盘 AGENTS
   // 文件，孩子不可写），改为在此内联注入——内容来自 data/agents.sqlite 用户版本 / 代码默认
@@ -666,8 +676,8 @@ export async function getParentSession(): Promise<AgentSession> {
     //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录；
     //  study_plan_* 学习计划——家长对话制定「每天学什么」的逐日排期（ISSUE-033，服务端 study_plans 真源）；
     //  parent_library_topics/courses 家长库只读查询——起草排期前读权威主题/课程名册）。
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool],
   });
 
   cachedParentSession = session;
@@ -712,8 +722,8 @@ export async function getParentContentSession(): Promise<AgentSession> {
     model,
     sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool],
   });
 
   cachedParentContentSession = session;
