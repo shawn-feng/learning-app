@@ -124,6 +124,47 @@ export const queryHandlers: Record<string, QueryHandler> = {
       db.close();
     }
   },
+  // ISSUE-049：家长端孩子「每日记录」标签页 —— 按日期范围倒序取 daily 条目，支持分类/标签/标题筛选。
+  // 日期存 YYYY-MM-DD 文本，字典序即时间序，`date BETWEEN` 即可范围查询（对齐 idx_daily_date）。
+  // 可选筛选：block=分类(学习/生活/问答/任务)；tag=标签(逗号分隔 tags 列模糊匹配)；title=标题模糊 LIKE。
+  "kb.daily_entries.queryByRange": (ctx, args) => {
+    const childId = requireChildId(ctx, args);
+    const from = str(args.from, "");
+    const to = str(args.to, "");
+    if (!from || !to) throw new ApiError(400, "queryByRange 需要 from/to 日期（YYYY-MM-DD）");
+    const conds: string[] = ["date >= ?", "date <= ?"];
+    const vals: string[] = [from, to];
+    const block = str(args.block, "");
+    const tag = str(args.tag, "");
+    const title = str(args.title, "");
+    if (block) {
+      conds.push("block = ?");
+      vals.push(block);
+    }
+    if (tag) {
+      // 逗号包裹匹配，避免「学习」误中「复习」等部分匹配（与 query 同语义）
+      conds.push("(',' || tags || ',') LIKE ?");
+      vals.push(`%,${tag},%`);
+    }
+    if (title) {
+      // 标题模糊查询：ESCAPE 转义 % / _，防通配符注入
+      const esc = title.replace(/[\\%_]/g, (c) => `\\${c}`);
+      conds.push("title LIKE ? ESCAPE '\\'");
+      vals.push(`%${esc}%`);
+    }
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      // 倒序：最新日期在前；同日期按 block 分组顺序 + title 升序，便于左列按天折叠展示。
+      return db
+        .prepare(
+          "SELECT date, block, title, raw, tags FROM daily_entries " +
+            `WHERE ${conds.join(" AND ")} ORDER BY date DESC, block, title`
+        )
+        .all(...vals);
+    } finally {
+      db.close();
+    }
+  },
   "kb.daily_entries.query": (ctx, args) => {
     // 对齐客户端 queryDaily：date（精确）/ month（YYYY-MM 前缀）+ block/title/tag 过滤
     const childId = requireChildId(ctx, args);

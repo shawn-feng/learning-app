@@ -7,6 +7,7 @@ import { ChildTopicsContent } from "./ChildTopicsModal";
 import { AgentPromptContent } from "./AgentPromptEditor";
 import SessionReview from "./SessionReview";
 import ExamRecords from "./ExamRecords";
+import ChildDailyPanel from "./ChildDailyPanel";
 
 interface Props {
   child: any;
@@ -18,6 +19,7 @@ interface Props {
 const TABS = [
   { key: "progress", label: "📊 学习进度" },
   { key: "plan", label: "🗓 学习计划" },
+  { key: "daily", label: "📅 每日记录" },
   { key: "topics", label: "📚 学习主题" },
   { key: "prompt", label: "🤖 AI 提示词" },
   { key: "exam", label: "🎯 考核记录" },
@@ -117,6 +119,13 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
       {tab === "plan" && (
         <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
           <StudyPlanPanel children={[child]} />
+        </div>
+      )}
+
+      {/* ISSUE-049：每日记录（左列条目 / 右显内容，默认最近 7 天 + 日期范围选择器） */}
+      {tab === "daily" && (
+        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+          <ChildDailyPanel childId={child.childId} />
         </div>
       )}
 

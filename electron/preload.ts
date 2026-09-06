@@ -104,6 +104,13 @@ const api = {
   piListSessions: (childId: string) => ipcRenderer.invoke("pi:listSessions", childId),
   piGetSessionMessages: (childId: string, file: string) =>
     ipcRenderer.invoke("pi:getSessionMessages", childId, file),
+  // ISSUE-049：家长端孩子「每日记录」——按日期范围查 child daily 条目（倒序）；可选 filters{block,tag,title}
+  parentChildDaily: (
+    childId: string,
+    from: string,
+    to: string,
+    filters?: { block?: string; tag?: string; title?: string }
+  ) => ipcRenderer.invoke("parent:childDaily", childId, from, to, filters),
   // 方案B 阶段①：家长「对话回顾」（读服务端同步上云的会话）
   sessionReviewDates: (childId: string) => ipcRenderer.invoke("sessions:reviewDates", childId),
   sessionReviewMessages: (childId: string, date: string) =>

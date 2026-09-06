@@ -56,6 +56,15 @@ import {
   takePendingPageEvents,
 } from "./page-bridge";
 
+/** ISSUE-049：孩子 daily 条目精简结构（对齐 kb.sqlite daily_entries 行，供渲染端左列/右栏展示）。 */
+interface DailyEntryLite {
+  date: string; // YYYY-MM-DD
+  block: string; // 学习/生活/问答/任务
+  title: string;
+  raw: string; // markdown 风格原文（右栏渲染）
+  tags: string;
+}
+
 export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // iframe 学习资料 ↔ agent 双向通讯（page-bridge）：
   // 下行指令经主窗口 webContents 下发到渲染层；上行事件注入用 getActiveSession 拿会话。
@@ -371,6 +380,34 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     async (_e, childId: string, topicName: string, title: string) => {
       try {
         return { success: true, data: await getCourseDailySummary(childId, topicName, title) };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  // ISSUE-049：家长端孩子「每日记录」标签页 —— 按日期范围取 daily 条目（服务端 child kb，倒序）。
+  // from/to 形如 YYYY-MM-DD；可选 filters：block(分类)/tag(标签)/title(标题模糊)。
+  // 返回 {success, entries}；entries 供渲染端左列展示、右栏显 raw 原文。
+  ipcMain.handle(
+    "parent:childDaily",
+    async (
+      _e: IpcMainInvokeEvent,
+      childId: string,
+      from: string,
+      to: string,
+      filters?: { block?: string; tag?: string; title?: string }
+    ): Promise<{ success: boolean; entries?: DailyEntryLite[]; error?: string }> => {
+      try {
+        const entries = await dbQuery<DailyEntryLite[]>("kb.daily_entries.queryByRange", {
+          child_id: childId,
+          from,
+          to,
+          ...(filters?.block ? { block: filters.block } : {}),
+          ...(filters?.tag ? { tag: filters.tag } : {}),
+          ...(filters?.title ? { title: filters.title } : {}),
+        });
+        return { success: true, entries: entries ?? [] };
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
