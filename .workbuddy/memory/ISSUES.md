@@ -977,6 +977,13 @@
   6. **隐私/体积**：**绝不记 prompt/消息正文、auth token、密钥**（现有 sync-logger 已不记内容，保持）；文本只记长度/摘要；轮转上限（如 5000 行 / 20MB）防膨胀；日志文件本身不入 git（`linux-016.zip` 等已列永不上库清单，沿用）。
 - **优先级**：中（ISSUE-043 现场已靠手工 `server-connection.json`+`curl` 取证，但通用化后所有"某平台某孩子异常"都能自助定位，省去反复登机/上 Mac）。
 - **记录时间**：2026-09-03
+- **✅ 已实施（2026-09-06，v1 骨架 + 关键记录点；未提交/未部署）**：
+  - **客户端 `electron/lib/app-logger.ts`（新增）**：统一 JSONL 落盘 `data/client-log.jsonl`，字段 `{ts,level,scope:"client",component,msg,...meta}`；`log/logInfo/logWarn/logError/getClientLog/readClientLogFile`；行数(5000)+体积(20MB)双上限轮转（复制 sync-logger 的 append+prune+吞异常范式）。`installConsoleRedirect()`（monkey-patch console.log/warn/error → 写文件+仍回显 stdout，捕获原始 error 供崩溃回显）；`installCrashHandlers(exitOnUncaught)`（uncaughtException 记 ERROR 后按 Node 默认退出；unhandledRejection 仅记 ERROR 不退出）。
+  - **客户端接入**：`main.ts` 模块体最前 `installConsoleRedirect()+installCrashHandlers(true)`；`whenReady` 记「app ready」生命周期（cwd/packaged/dataDir/appVersion/platform/arch）；`before-quit` 记「app quitting」。原 71 处散落 console.* 经重定向自动捕获，无需逐处改。
+  - **导出链路**：`ipc-handlers.ts` 新增 `app:exportLog`（dialog.showSaveDialog 导出 client-log.jsonl，照抄 sessions:exportLog 范式）+ `app:getLogTail`（读最近 N 条）；`preload.ts` 暴露 `appExportLog/appGetLogTail`；`GeneralSettings.tsx` 软件更新下方加「诊断 → 导出应用日志」区块（FileText 按钮 + 结果提示）。
+  - **服务端 `server/src/log.ts`（新增）**：落盘 `SERVER_DATA_DIR/logs/server-log.jsonl`（未 init 兜底 cwd/data/logs），字段 `{ts,level,scope:"server",component,...}`；`initServerLog(dataDir)`、`log/logInfo/logWarn/logError/getServerLog`、`installServerConsoleRedirect()`（对称客户端，worker/routes 裸 console 统一落盘）。**不用 pino transport**（worker 线程在 esbuild 单文件+pkg 部署易断），直接 appendFileSync，与客户端对称。
+  - **服务端接入**：`index.ts` loadConfig 后 `initServerLog(dataDir)+installServerConsoleRedirect()`；加 Fastify `onResponse` hook 记访问日志（method/path/status/durMs/reqId/ip）；boot 成功/DB 健康失败/监听失败均 logInfo/logError。
+  - **验证**：客户端 tsc 0 业务错（仅 5 环境噪音）+ electron-vite build 全过（main/preload/renderer）；服务端 tsc 0 错 + esbuild build 过；冒烟 spawn dist/server.cjs → `server-log.jsonl` 实测含 worker 启动 / boot / GET health 200 / GET version 200 / GET 404 访问行。遗留：token-stats/parent-library 各自 appendFileSync 未并入；「诊断面板可视化查看日志」未做（仅导出+IPC tail，够用）。
 
 ## [ISSUE-045] 孩子 agent 会话注入：去掉「学习进度概览」，改为注入当天学习计划（无 todolist 则不注入）
 
@@ -1291,4 +1298,3 @@
   - 生产修复留存脚本：`tmp/deploy/transcode_yunlv.py` + `replace_yunlv.py`（HEVC→H.264 覆盖同路径 + 刷新索引）；`fix_yunlv_index.js`（磁盘有文件但索引缺时补索引）；诊断 `probe_mp4_codec.py`。
 - **优先级**：高（若不约束，agent 自动制作含 HEVC 视频或绕道上传的资料，孩子端会持续出现黑屏/404，用户观感差）
 - **记录时间**：2026-09-06
-

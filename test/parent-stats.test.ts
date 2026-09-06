@@ -142,8 +142,12 @@ describe("parent_stats 只读统计工具（统一家长提示词配套）", () 
     expect(text).toContain("帮妈妈洗碗");
   });
 
-  it("daily / progress 缺 childId 时报错（提示参数），不静默", async () => {
-    await expect(run({ type: "progress" })).rejects.toThrow(/childId/);
+  it("progress 缺 childId = 全部孩子对比；daily 缺 childId 时报错", async () => {
+    // progress：childId 缺省=全部孩子对比（块 3），不再抛错
+    const cmpText = await run({ type: "progress" });
+    expect(cmpText).toContain("全部孩子学习进度对比");
+    expect(cmpText).toContain("该孩子尚未分配任何学习主题");
+    // daily：仍强制 childId
     await expect(run({ type: "daily" })).rejects.toThrow(/childId/);
   });
 });

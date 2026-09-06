@@ -3,7 +3,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
 import path from "path";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
-import { appendActivityLog, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse, rewriteMaterialHtmlForRender, followHtmlRedirectRemote, uploadMaterialToServer, DEFAULT_PARENT_ID } from "./parent-library";
+import { logActivity, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse, upsertParentTopic, allocateTopicToChild, rewriteMaterialHtmlForRender, followHtmlRedirectRemote, uploadMaterialToServer, DEFAULT_PARENT_ID } from "./parent-library";
 import { getChildrenDir } from "./config";
 import { fetchMaterialContent } from "./media-protocol";
 import { getTokenSummary, readTokenLog } from "./token-stats";
@@ -12,6 +12,7 @@ import {
   insertCourse,
   insertDailyEntries,
   insertDailyEntry,
+  normalizeTopicKey,
   progressToMarkdown,
   queryDaily,
   queryTags,
@@ -733,7 +734,7 @@ export const parentUpsertCourseTool = defineTool({
       if (params.sendMaterial) fields.push("学习材料");
       if (params.material) fields.push("资料说明");
       if (params.tags) fields.push(`tags=${params.tags}`);
-      appendActivityLog("default", `保存家长库课程 ${params.topic}「${params.title}」${fields.length ? `（${fields.join("，")}）` : ""}`);
+      logActivity(`保存家长库课程 ${params.topic}「${params.title}」${fields.length ? `（${fields.join("，")}）` : ""}`);
     } catch (e) {
       console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
     }
@@ -795,7 +796,7 @@ export const parentUploadMaterialTool = defineTool({
     }
     if (!rel) throw new Error("上传未返回服务端路径，请重试");
     try {
-      appendActivityLog("default", `上传资料 ${path.basename(localPath)} 到服务端 <${topic}${subDir ? `/${subDir}` : ""}>（${rel}）`);
+      logActivity(`上传资料 ${path.basename(localPath)} 到服务端 <${topic}${subDir ? `/${subDir}` : ""}>（${rel}）`);
     } catch (e) {
       console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
     }
@@ -879,7 +880,7 @@ export const parentDeleteCourseTool = defineTool({
     const ok = await deleteParentCourse(undefined, params.topic, params.title);
     // 2026-08-24：删除课程也自动记录到 activity-log.md
     try {
-      appendActivityLog("default", ok ? `删除家长库课程 ${params.topic}「${params.title}」` : `尝试删除不存在的课程 ${params.topic}「${params.title}」`);
+      logActivity(ok ? `删除家长库课程 ${params.topic}「${params.title}」` : `尝试删除不存在的课程 ${params.topic}「${params.title}」`);
     } catch (e) {
       console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
     }
@@ -980,7 +981,7 @@ export const moveFileTool = defineTool({
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.renameSync(src, dest);
     try {
-      appendActivityLog("default", `移动/重命名 ${params.source} → ${params.dest}`);
+      logActivity(`移动/重命名 ${params.source} → ${params.dest}`);
     } catch (e) {
       console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
     }
@@ -1013,12 +1014,117 @@ export const copyFileTool = defineTool({
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.cpSync(src, dest, { recursive: true });
     try {
-      appendActivityLog("default", `复制 ${params.source} → ${params.dest}`);
+      logActivity(`复制 ${params.source} → ${params.dest}`);
     } catch (e) {
       console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
     }
     return {
       content: [{ type: "text" as const, text: `已复制：${params.source} → ${params.dest}` }],
+    };
+  },
+});
+
+/**
+ * parent_topic_save：新建/更新主题（家长库真源）并把可选项分配给孩子。
+ * 只覆盖调用方传入的非空字段（读旧值合并），不抹掉未传的 method/courses；
+ * 分配 = allocateTopicToChild 快照拷贝（孩子已有进度不覆盖、幂等）。
+ * 自动记录 activity-log。删除主题不做工具（影响大，引导家长在页面确认）。
+ */
+export const parentTopicSaveTool = defineTool({
+  name: "parent_topic_save",
+  label: "新建/更新学习主题（含批量建课 + 分配给孩子）",
+  description:
+    "在家长库**新建或更新一个学习主题**（可一并建课程、可一并**分配给孩子**）。\n\n" +
+    "**参数**：\n" +
+    "- `topic`：主题目录名（英文小写，如 tangshi / lunyu，仅字母/数字/_/-），必填；\n" +
+    "- `name`：主题中文名（如「唐诗」），可选（更新时省略=保留原名）；\n" +
+    "- `method`：教学方法全文（引导孩子怎么学，markdown），可选（更新时省略=保留原教法）；\n" +
+    "- `courses`：课程清单数组，每项 `{ title(必填), lessonMethod?, material?, sendMaterial?, tags?, htmlPath?, teachingCopy? }`，可选（更新时省略=保留原课程；想删课用 parent_course_delete）；\n" +
+    "- `assignToChildren`：逗号分隔的**孩子姓名**（如「闻闻,珊珊」），可选——填了就把本主题分配/重新分配给这些孩子（快照拷贝课程骨架，孩子已有进度不丢、幂等）。\n\n" +
+    "**只覆盖传入的非空字段**；给孩子的「每天学什么」不在这里设，排课请用 study_plan_*（学习计划）。删除主题请引导家长在「课程管理」页操作。新建/大改主题（含分配孩子）属于影响面较大的操作，**落库前先向家长复述拟保存内容并征得同意**。",
+  parameters: Type.Object({
+    topic: Type.String({ description: "主题目录名（英文小写，仅字母/数字/_/-，如 tangshi）" }),
+    name: Type.Optional(Type.String({ description: "主题中文名（如 唐诗）" })),
+    method: Type.Optional(Type.String({ description: "教学方法全文（markdown）" })),
+    courses: Type.Optional(
+      Type.Array(
+        Type.Object({
+          title: Type.String({ description: "课程名（必填）" }),
+          lessonMethod: Type.Optional(Type.String({ description: "本课教学方法（覆盖主题教法的差异说明）" })),
+          material: Type.Optional(Type.String({ description: "教学资料说明文本" })),
+          sendMaterial: Type.Optional(Type.String({ description: "要发送给孩子的学习资料说明" })),
+          tags: Type.Optional(Type.String({ description: "课程标签（逗号分隔）" })),
+          htmlPath: Type.Optional(Type.String({ description: "资料 html 相对服务端路径，如 materials/tangshi/x.html" })),
+          teachingCopy: Type.Optional(Type.String({ description: "本课教学文案全文" })),
+        }),
+        { description: "课程清单（可选；省略=保留原课程）" }
+      )
+    ),
+    assignToChildren: Type.Optional(Type.String({ description: "逗号分隔的孩子姓名（可选；填了则分配给孩子）" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const topicKey = normalizeTopicKey((params.topic || "").trim());
+    if (!topicKey) throw new Error("parent_topic_save 需要 topic（主题目录名）");
+    if (!/^[a-zA-Z0-9_-]+$/.test(topicKey)) {
+      throw new Error(`主题目录名只能含字母/数字/_/-：${topicKey}`);
+    }
+    // 读旧值合并（只覆盖非空字段）
+    const existing = await dbQuery<Array<{ name: string; topic_key: string; method: string; assess_method: string; progress: string; rules_json: string }>>(
+      "parent_lib.topics.list",
+      {}
+    ).catch(() => []);
+    const old = (existing ?? []).find((t) => t.topic_key === topicKey || String(t.topic_key).includes(topicKey));
+    const mergedName = (params.name ?? "").trim() || old?.name || topicKey;
+    const mergedMethod = (params.method ?? "").trim() !== "" ? params.method!.trim() : (old?.method ?? "");
+    const mergedCourses = params.courses && params.courses.length
+      ? params.courses.map((c) => ({
+          title: c.title,
+          lessonMethod: c.lessonMethod,
+          material: c.material,
+          sendMaterial: c.sendMaterial,
+          tags: c.tags,
+          htmlPath: c.htmlPath,
+          teachingCopy: c.teachingCopy,
+        }))
+      : undefined;
+
+    await upsertParentTopic(undefined, {
+      name: mergedName,
+      topicKey,
+      method: mergedMethod,
+      assessMethod: old?.assess_method,
+      progress: old?.progress,
+      rules: safeParseRules(old?.rules_json ?? "{}"),
+    }, mergedCourses ?? []);
+
+    // 分配给孩子
+    let assignNote = "";
+    if ((params.assignToChildren ?? "").trim()) {
+      const names = (params.assignToChildren as string)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const done: string[] = [];
+      for (const n of names) {
+        const { childId, name } = await resolvePlanChild(n);
+        const r = await allocateTopicToChild(undefined, childId, topicKey);
+        done.push(`${name}（新拷 ${r.copied} 课，保留已有 ${r.existing} 课进度）`);
+      }
+      assignNote = `\n已分配给：${done.join("；")}`;
+    }
+
+    try {
+      logActivity(
+        `parent_topic_save ${topicKey}「${mergedName}」${params.method ? "（更新教法）" : ""}${mergedCourses ? `（建/更新 ${mergedCourses.length} 课）` : ""}${assignNote ? "，分配给孩子" : ""}`
+      );
+    } catch (e) {
+      console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
+    }
+    return {
+      content: [{
+        type: "text" as const,
+        text: `已保存主题「${mergedName}」（目录 ${topicKey}），家长库真源已更新。${mergedMethod ? "已写入/更新教学方法。\n" : ""}${mergedCourses ? `课程数现为 ${mergedCourses.length} 门（本次传入）。\n` : ""}${assignNote || ""}\n资料 html 若已生成，记得用 parent_upload_material 上传到服务端、用 parent_course_save/htmlPath 登记，孩子端才能读到。`,
+      }],
     };
   },
 });
@@ -1035,13 +1141,15 @@ export const parentStatsTool = defineTool({
   description:
     "**只读**查询家长工作台统计信息（数据库是二进制 SQLite，read 工具读不了，查统计一律用本工具，不要尝试用 read 读 .sqlite 文件）：\n\n" +
     "- `type`=`tokens`：token 消耗汇总（总 token / 成本 / 按模型分组）+ 最近明细。传 `childId` 只看该孩子，缺省=全部（家长+孩子）；\n" +
-    "- `type`=`progress`：孩子学习进度，**必填 `childId`**：各主题 learned/total/next + 每课状态/首次学习/最近复习；\n" +
+    "- `type`=`progress`：孩子学习进度。传 `childId`=单孩子（各主题 learned/total/next + 每课状态/首次学习/最近复习）；`childId` 缺省=**全部孩子对比**（每孩子一行 learned/total/next + 最近 updated）；\n" +
+    "- `type`=`mastery`：孩子某主题的**逐课掌握度分布**，**必填 `childId`**，`topic` 缺省=该孩子全部主题（已掌握=status ✅ / 学习中=已开首次学习未掌握 / 未开始，附 mastery 掌握度字段）；\n" +
     "- `type`=`daily`：孩子每日学习记录，**必填 `childId`**，`date`=YYYY-MM-DD 查某一天（缺省=最近 7 天）。",
   parameters: Type.Object({
-    type: Type.Union([Type.Literal("tokens"), Type.Literal("progress"), Type.Literal("daily")], {
-      description: "tokens=token 统计 | progress=学习进度 | daily=每日学习记录",
+    type: Type.Union([Type.Literal("tokens"), Type.Literal("progress"), Type.Literal("mastery"), Type.Literal("daily")], {
+      description: "tokens=token 统计 | progress=学习进度(单孩子或全孩子对比) | mastery=逐课掌握度 | daily=每日学习记录",
     }),
-    childId: Type.Optional(Type.String({ description: "孩子 childId（progress / daily 必填；tokens 缺省=全部）" })),
+    childId: Type.Optional(Type.String({ description: "孩子 childId（progress 缺省=全部孩子对比；mastery/daily 必填；tokens 缺省=全部）" })),
+    topic: Type.Optional(Type.String({ description: "mastery 专用：主题目录名/中文名，缺省=该孩子全部主题" })),
     date: Type.Optional(Type.String({ description: "daily 专用：YYYY-MM-DD 查某一天，缺省=最近 7 天" })),
   }),
   execute: async (_toolCallId, params) => {
@@ -1071,49 +1179,112 @@ export const parentStatsTool = defineTool({
       };
     }
     if (params.type === "progress") {
-      if (!params.childId) throw new Error("parent_stats 的 progress 需要 childId 参数");
       // SPLIT：服务端 kb.progress.list 只回聚合行（learned/total/next/updated），
       // 明细需按主题再查 kb.courses.list 组装成 progressToMarkdown 期望的 items（2026-08-30 修复）
-      const agg = await dbQuery<
-        Array<{ topic: string; learned: number; total: number; next: string; updated: string }>
-      >("kb.progress.list", { child_id: params.childId }).catch(() => []);
-      if (!agg.length) {
+      // childId 缺省 = 全部孩子对比（每孩子循环同样链路）
+      const targets = params.childId
+        ? [{ childId: params.childId, name: params.childId }]
+        : (await listChildren().catch(() => [])).map((c) => ({
+            childId: c.childId,
+            name: c.name || c.childId,
+          }));
+      if (!targets.length) {
+        return { content: [{ type: "text" as const, text: "尚未配置任何孩子" }] };
+      }
+      const perChild: string[] = [];
+      for (const t of targets) {
+        const agg = await dbQuery<
+          Array<{ topic: string; learned: number; total: number; next: string; updated: string }>
+        >("kb.progress.list", { child_id: t.childId }).catch(() => []);
+        if (!agg.length) {
+          perChild.push(`### ${t.name}\n该孩子尚未分配任何学习主题`);
+          continue;
+        }
+        const list = [];
+        for (const r of agg) {
+          const courses = await dbQuery<Array<Record<string, unknown>>>("kb.courses.list", {
+            child_id: t.childId,
+            topic: r.topic,
+          }).catch(() => []);
+          list.push({
+            topic: r.topic,
+            learned: Number(r.learned) || 0,
+            total: Number(r.total) || 0,
+            next: r.next ?? "",
+            updated: r.updated ?? "",
+            items: (courses ?? []).map((c) => ({
+              topic: String(c.topic),
+              title: String(c.title),
+              sortOrder: Number(c.sort_order) || 0,
+              status: String(c.status ?? "⬜"),
+              mastery: String(c.mastery ?? ""),
+              firstLearned: String(c.first_learned ?? ""),
+              lastReview: String(c.last_review ?? ""),
+              reviewCount: Number(c.review_count) || 0,
+              material: String(c.material ?? ""),
+              sendMaterial: String(c.send_material ?? ""),
+              tags: String(c.tags ?? ""),
+              lessonMethod: String(c.lesson_method ?? ""),
+              htmlPath: String(c.html_path ?? ""),
+              teachingCopy: String(c.teaching_copy ?? ""),
+            })),
+          });
+        }
+        const heading = params.childId
+          ? `## 孩子 ${t.name} 学习进度`
+          : `### ${t.name}（childId ${t.childId}）`;
+        perChild.push(heading + "\n\n" + progressToMarkdown(list));
+      }
+      const text = params.childId ? perChild.join("\n\n") : `## 全部孩子学习进度对比\n\n${perChild.join("\n\n")}`;
+      return { content: [{ type: "text" as const, text }] };
+    }
+    if (params.type === "mastery") {
+      if (!params.childId) throw new Error("parent_stats 的 mastery 需要 childId 参数");
+      const courses = await dbQuery<Array<Record<string, unknown>>>("kb.courses.list", {
+        child_id: params.childId,
+        ...(params.topic ? { topic: params.topic } : {}),
+      }).catch(() => []);
+      if (!courses.length) {
         return {
-          content: [{ type: "text" as const, text: `孩子 ${params.childId} 尚未分配任何学习主题` }],
+          content: [{ type: "text" as const, text: `孩子 ${params.childId}${params.topic ? ` 在主题 ${params.topic}` : ""}暂无课程（或未分配主题）` }],
         };
       }
-      const list = [];
-      for (const r of agg) {
-        const courses = await dbQuery<Array<Record<string, unknown>>>("kb.courses.list", {
-          child_id: params.childId,
-          topic: r.topic,
-        }).catch(() => []);
-        list.push({
-          topic: r.topic,
-          learned: Number(r.learned) || 0,
-          total: Number(r.total) || 0,
-          next: r.next ?? "",
-          updated: r.updated ?? "",
-          items: (courses ?? []).map((c) => ({
-            topic: String(c.topic),
-            title: String(c.title),
-            sortOrder: Number(c.sort_order) || 0,
-            status: String(c.status ?? "⬜"),
-            mastery: String(c.mastery ?? ""),
-            firstLearned: String(c.first_learned ?? ""),
-            lastReview: String(c.last_review ?? ""),
-            reviewCount: Number(c.review_count) || 0,
-            material: String(c.material ?? ""),
-            sendMaterial: String(c.send_material ?? ""),
-            tags: String(c.tags ?? ""),
-            lessonMethod: String(c.lesson_method ?? ""),
-            htmlPath: String(c.html_path ?? ""),
-            teachingCopy: String(c.teaching_copy ?? ""),
-          })),
-        });
+      const byTopic = new Map<string, Array<Record<string, unknown>>>();
+      for (const c of courses) {
+        const key = String(c.topic ?? "");
+        if (!byTopic.has(key)) byTopic.set(key, []);
+        byTopic.get(key)!.push(c);
+      }
+      const parts: string[] = [];
+      for (const [topic, rows] of byTopic) {
+        const mastered = rows.filter((r) => String(r.status ?? "") === "✅");
+        const learning = rows.filter((r) => String(r.status ?? "") !== "✅" && String(r.first_learned ?? "") !== "");
+        const notStarted = rows.filter((r) => String(r.status ?? "") !== "✅" && String(r.first_learned ?? "") === "");
+        const lines = rows
+          .slice()
+          .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
+          .map((c) => {
+            const st = String(c.status ?? "⬜");
+            const m = String(c.mastery ?? "");
+            const em = String(c.exam_mastery ?? "");
+            const fl = String(c.first_learned ?? "").slice(0, 10);
+            const lr = String(c.last_review ?? "").slice(0, 10);
+            const tag = st === "✅" ? "已掌握" : fl ? "学习中" : "未开始";
+            return `- ${String(c.title)}（${tag}${m ? `，掌握度 ${m}` : ""}${em ? `，考核 ${em}` : ""}${fl ? `，首学 ${fl}` : ""}${lr ? `，最近复习 ${lr}` : ""}）`;
+          })
+          .join("\n");
+        parts.push(
+          `### 主题 ${topic}\n` +
+            `- 已掌握 ${mastered.length} / 学习中 ${learning.length} / 未开始 ${notStarted.length}（共 ${rows.length} 课）\n\n${lines}`
+        );
       }
       return {
-        content: [{ type: "text" as const, text: `## 孩子 ${params.childId} 学习进度\n\n` + progressToMarkdown(list) }],
+        content: [
+          {
+            type: "text" as const,
+            text: `## 孩子 ${params.childId} 逐课掌握度${params.topic ? `（主题 ${params.topic}）` : ""}\n\n${parts.join("\n\n")}`,
+          },
+        ],
       };
     }
     // daily
@@ -1142,13 +1313,13 @@ export const parentStatsTool = defineTool({
 /**
  * log_activity：家长操作记录工具（2026-08-24）。
  * 家长 agent 用 write/edit 改资料文件、调整内容等（parent_course_save/delete 已自动记录）后，
- * 调用本工具把这次改动追加记录到 parents/default/activity-log.md，供家长回看。
+ * 调用本工具把这次改动追加记录到当前家长的 activity-log.md，供家长回看。
  */
 export const logActivityTool = defineTool({
   name: "log_activity",
   label: "记录家长操作（activity-log）",
   description:
-    "把家长工作台的一次改动追加记录到 `parents/default/activity-log.md`（纯文本 markdown，追加不覆盖）。\n\n" +
+    "把家长工作台的一次改动追加记录到 activity-log.md（纯文本 markdown，追加不覆盖）。\n\n" +
     "**何时调用**：用 write/edit 写了或改了资料文件（html/md）、调整了内容之后调用一次；新建/删除课程（parent_course_save / parent_course_delete）**已自动记录**，无需再调。\n\n" +
     "**参数**：`entry` 一句话简述做了什么（如「更新 论语学而篇第一章 的资料为 新版.html」）。",
   parameters: Type.Object({
@@ -1158,7 +1329,7 @@ export const logActivityTool = defineTool({
     if (!params.entry || !params.entry.trim()) {
       throw new Error("log_activity 需要 entry 参数（一句话描述做了什么改动）");
     }
-    appendActivityLog("default", params.entry);
+    logActivity(params.entry);
     return {
       content: [
         {
@@ -1578,7 +1749,7 @@ export const studyPlanCreateTool = defineTool({
   description:
     "为某孩子创建**学习计划排期**（「每天学什么」的逐日安排，服务端真源）。一次调用可排**多天**，也可一天多课。\n\n" +
     "**参数**：`childName`（孩子姓名，必填）、`days`（必填：日期数组，每项 = `date`（YYYY-MM-DD）+ `content`（当天课程名数组，一项一课，如 [\"论语先进篇第二章\"]））。\n\n" +
-    "**新学 / 复习**：若该课孩子**已学过**（status=✅，用 study_plan_sources 确认），家长想安排重学巩固，就在内容前加「复习：」前缀（如 \"复习：论语学而篇第一章\"）——工具会把它识别为复习项存库；默认按新学。\n\n" +
+    "**新学 / 复习**：库里每行排期带专门 **mode 字段**（new=新学 / review=复习），课程名存干净的课名。安排某课为复习时：内容前加「复习：」前缀（如 \"复习：论语学而篇第一章\"，会被识别为 mode=review 存库），或先用本工具建为新学再用 study_plan_update 的 setmode 改成 review；默认按新学。已学过的课（status=✅，用 study_plan_sources 确认）要重学巩固就走复习。\n\n" +
     "**用前先查**：排前先用 `study_plan_sources` 查该孩子主题/课程结构，按**真实存在的课程名**安排；不确定日期/内容先问家长。\n\n" +
     "**语义**：空天 = 不要求学，只排「有内容的那些天」；同一天想追加再调一次（同课程自动去重）。未学完次日自动顺延。",
   parameters: Type.Object({
@@ -1586,7 +1757,7 @@ export const studyPlanCreateTool = defineTool({
     days: Type.Array(
       Type.Object({
         date: Type.String({ description: "哪天学，YYYY-MM-DD（如 2026-09-05）；家长说「周五」等口语先换算成日期" }),
-        content: Type.Array(Type.String({ description: "当天要学的课程/章节名，一项一课；复习已学课用「复习：<课程名>」前缀" })),
+        content: Type.Array(Type.String({ description: "当天要学的课程/章节名（干净课名），一项一课；要排复习用「复习：<课程名>」前缀（拆成库内 mode=review），或用 study_plan_update setmode" })),
       }),
       { description: "排期日期数组（必填）：每项 = 某天的学习安排" }
     ),

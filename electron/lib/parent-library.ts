@@ -16,7 +16,7 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "fs";
 import path from "path";
-import { getDataDir, getChildrenDir, getServerUrl } from "./config";
+import { getDataDir, getChildrenDir, getCurrentParentId, getServerUrl } from "./config";
 import { normalizeTopicKey } from "./kb-sqlite";
 import { buildAssetUrl, fetchMaterialContent } from "./media-protocol";
 import { openKbDb, type CourseItem } from "./kb-sqlite";
@@ -121,6 +121,15 @@ export function appendActivityLog(parentId: string, entry: string): void {
     );
   }
   fs.appendFileSync(p, `- ${ts}：${entry.trim()}\n`, "utf-8");
+}
+
+/**
+ * 追加当前家长的操作记录。parentId 取「当前登录家长」，未登录回退 DEFAULT_PARENT_ID 兜底（不崩）。
+ * SPLIT 后家长库数据真源在服务端，activity-log.md 是**纯本地** markdown（本机回看历史用），
+ * 故用本地会话记录的家长 id 落目录，而非工具内部硬编码 "default"（default 目录已废弃）。
+ */
+export function logActivity(entry: string): void {
+  appendActivityLog(getCurrentParentId() || DEFAULT_PARENT_ID, entry);
 }
 
 // ==================== schema（父库 v1） ====================
