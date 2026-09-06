@@ -845,7 +845,7 @@
   3. **无新增逻辑**：`childList()` 拉取（`:38`）、`refresh()`、`AddChildModal` 全部复用，不新增接口/状态。
   4. **边界 / 设计点**：① 侧边栏去掉孩子列表后，家长「选定当前操作孩子」的入口变为「孩子管理 → 点卡片进详情」或各功能面板内部选择器——确认这满足用户预期（用户未要求保留侧边栏选中态，视为有意简化）；② 若某些未来视图需复用 `selectedChild`，需改从「孩子管理」详情或对应面板取值，本次不在范围内。
   5. **回归**：侧边栏只剩「菜单」区（孩子管理/课程管理/学习计划/学习考核/定时任务/Token 消耗/设置），更清爽；「孩子管理」视图可正常查看孩子网格、进详情、点「添加孩子」新增；学习计划/考核/定时任务面板照常可操作（内部选孩子不受影响）；ISSUE-032 加载占位仍在「孩子管理」视图与主页保留（仅侧边栏那段删除）。
-- **优先级**：待定（本会话仅记录，未实施）
+- **优先级**：✅ 已完成（2026-09-06，代码核实落地）：`src/pages/Dashboard.tsx:67-165` 左侧 `dashboard-sidebar` 现为纯菜单（孩子管理/课程管理/学习计划/学习考核/定时任务/Token消耗/会话同步/设置），**已无独立「孩子列表」区块**；「添加孩子」入口收进「孩子管理」视图主区（`:168-212` view==="children" 网格上方「+ 添加孩子」按钮复用 showAddChild/AddChildModal，空态文案已改「点击下方"添加孩子"开始」）。设计目标（侧栏去列表+添加入口平移孩子管理）达成。未提交、未部署（代码在工作树）。
 - **记录时间**：2026-09-02
 
 ## [ISSUE-042] 家长 agent 也要支持 /reset、新建会话等会话管理命令（对齐孩子端）
@@ -1047,7 +1047,7 @@
   2. **服务端任务模型扩展**：`routes/scheduler.ts` 任务结构加 `frequency`/`voice`/`owner` 字段；`worker/scheduler.ts` 执行调度按 `frequency` 判定是否到点（daily/weekly/interval/once），到点且 `voice` 的任务通过"提醒事件"下发（沿用 `class:reminder` 事件或新增 `child:reminder`），由客户端语音播报 `text`。
   3. **客户端播报**：扩展 `class:reminder` 事件（或新增监听）支持自定义 `text` 语音播报（现 `class:reminder` 的 label 已是文本，主要把"上课/下课"替换为任务 `text` 即可语音读出）；需保证 app 在前台/通知中心能播（参考 ISSUE-019 的铃声+语音播报）。
   4. **边界**：孩子自建任务**是否需家长审核/可见**？建议家长端「任务管理页」也能看到孩子自建任务（只读或可调），避免孩子被 agent 误建一堆任务；取消/修改走 `schedule_task` 工具或家长页。
-- **优先级**：待定（建议中——语音提醒是孩子端高频诉求；但需先定"孩子自建任务归属/家长可见性/频率模型"三处设计，且与 ISSUE-038 服务端模型、ISSUE-019 语音链路强耦合，建议和 ISSUE-038 一起规划）
+- **优先级**：✅ 已完成（2026-09-06，代码核实落地）：`electron/lib/custom-tools.ts:1339` 新增 `scheduleTaskTool`（name=`schedule_task`，action=create/list/cancel，frequency 支持 once/daily/weekly/interval，voice 默认 true，payload `owner:"child"` → POST `/scheduler/reminders`）；`electron/lib/pi-session.ts:55-56` LEARNING_NAV_INSTRUCTIONS 加「定时提醒（schedule_task，ISSUE-047）」段，`:612-613` 孩子 agent 双数组（tools 白名单 + customTools）均已注册 `schedule_task`/scheduleTaskTool；到点播报复用 ISSUE-019 的 `class:reminder` 语音链路（自定义 text）。三处设计疑点（归属/家长可见/频率模型）已按 issue 述默认落定（child 归属、家长端任务页可看、频率模型齐全）。未提交、未部署（与 049/050/052/053/055 同在工作树，提交时分开）。
 - **记录时间**：2026-09-04
 - **✅ 已实现（2026-09-04，v1）**：
   - **设计定案**：家长只读可见（孩子说建即生效，家长任务管理页可见/可关闭删除，不经审核）；全频率 once/daily/weekly/interval；孩子「我的提醒」独立弹框（不放今日计划）。
@@ -1073,3 +1073,222 @@
 - **版本**：客户端 0.1.11 → **0.1.12**（纯客户端；服务端不变）。
 - **优先级**：P0（两平台已复现；0.1.12 需出 linux deb + mac dmg + win nsis）
 - **记录时间**：2026-09-05
+
+## [ISSUE-049] 家长端孩子管理：新增「每日记录(Daily)」标签页，左列条目 / 右显内容，默认最近 7 天 + 日期范围选择器
+
+- **类型**：需求 / UI（家长端孩子详情页新增一个只读浏览 daily 的标签页）
+- **描述**：
+  1. 在「孩子详情页」（`ChildDetailPage.tsx` 的 tabs）新增一个 **「📅 每日记录」** 标签页，供家长浏览该孩子的 `daily_entries`（学习/生活/问答/任务四类记录）。
+  2. **布局**：左侧一列显示 daily 条目（按日期倒序，同日期可再按 block 分组 / 按条 target 出），点击某条 → 右侧显示**该条完整内容**（raw 原文；raw 是 markdown 风格，可复用现有 markdown 渲染器，与聊天气泡一致）。
+  3. **默认范围**：进入页面默认显示**最近 7 天**；顶部提供**日期范围选择器**（起止两个日期，native `<input type="date">` 即可），选定范围后重查并在左列刷新；范围外/无记录显示空态。
+- **影响范围**：家长端孩子详情页（新增 tab + 新组件）；需一条「按 childId + 日期范围查 daily_entries」的渲染端可用查询链路（当前渲染端无此 IPC）。
+- **现状 / 排查入口**：
+  - **Tab 接入点**：`src/components/ChildDetailPage.tsx:18-26` `TABS` 数组（现含 学习进度/学习计划/学习主题/AI 提示词/考核记录/账号密码/对话回顾）+ `:110-` 各 tab 渲染分支。新增 `{ key: "daily", label: "📅 每日记录" }` 并加 `{tab === "daily" && <ChildDailyPanel childId={child.childId} />}`。
+  - **数据真源**：孩子库 `kb.sqlite` 的 `daily_entries(date, block, title, raw, tags)`（`electron/lib/kb-sqlite.ts:8,86`）。查询函数 `queryDaily(childDir, q)`（`:673`，返回 `DailyEntry{date,block,title,raw,tags}`）——但 **`DailyQuery` 只支持精确 `date` / `month`(YYYY-MM) / `block` / `title` / `tag`，没有「日期范围」参数**（`:664-671`）。日期存 `YYYY-MM-DD` 文本（`:94` 有 `idx_daily_date`），范围查询需 `date >= ? AND date <= ?`（字典序即时间序，可直接用）。
+  - **当前可用查询不足以支撑 UI**：
+    - 家长 agent 工具 `parent_stats` 的 `daily` 分支（`electron/lib/custom-tools.ts:1057-1076`）：`date` 给定走 `kb.daily_entries.queryByDate`；**缺省"最近 7 天"是空 stub（`:1064-1068` 直接 return 空数组）**，且返回 markdown 文本而非结构化条目，**不适合直接喂 UI**。
+    - 渲染端（renderer）**没有**查 child daily 的 IPC（grep preload 仅 `parent:setChildTopicDaily` 且是 ISSUE-033 前的旧设置接口，无关）。
+  - **需新增渲染端查询链路（建议）**：新增 IPC `parent:childDaily`（或 `kb:dailyRange`），参数 `{ childId, from, to }` → 服务端/本地查 `daily_entries WHERE child_id=? AND date BETWEEN ? AND ? ORDER BY date DESC, block, title`，返回结构化条目数组 `[{date,block,title,raw,tags}]`。SPLIT 下 child kb 在服务端，链路走 `dbQuery`（与 `parent_stats` 同源），需在 `kb.daily_entries.*` 注册一个 `queryByRange` op（`kb-sqlite.ts` 补 range 支持或新函数）。
+  - **markdown 渲染复用**：daily `raw` 为 markdown 风格文本，右栏可直接复用现有聊天气泡 markdown 渲染组件（参考 `src/components/CourseDetail.tsx:93` 单课"每一次学习/复习记录"时间线渲染 `daily_entries` 的现有做法，或 `LearningDashboard` 用的渲染器），保持样式统一；无现成"单条 daily 详情"组件，需新建 `ChildDailyPanel.tsx`。
+  - **日期选择器**：项目内暂无现成"日期范围选择器"组件；最轻量 = 两个 `<input type="date">`（from/to）+ 一个"最近 7 天"按钮重置；如需更好体验可后续引入日历库，本 issue 不强制。
+- **优先级**：待定（建议中——家长看孩子每日记录是高频诉求，且数据已有；主要工作量在「渲染端 range 查询 IPC + 左列/右栏组件」，不碰数据模型）
+- **记录时间**：2026-09-05
+- **✅ 修复落地（2026-09-05，改动集中在 server op + 渲染端查询链路 + 新组件；本地 tsc 0 错 + electron-vite build 过 + server.cjs 重建成功，未部署 201）**：
+  - **数据查询（服务端）**：`server/src/routes/db.ts` `queryHandlers` 新增 `kb.daily_entries.queryByRange` op —— `requireChildId` 归属校验后 `WHERE date >= ? AND date <= ? ORDER BY date DESC, block, title`（对齐 idx_daily_date，字典序即时间序）；from/to 缺失抛 `ApiError(400)`。
+  - **渲染端查询链路**：`electron/lib/ipc-handlers.ts` 新增 `parent:childDaily`（childId, from, to）→ `dbQuery("kb.daily_entries.queryByRange",{child_id,from,to})` 返回 `{success, entries}`（定义 `DailyEntryLite` 精简类型）；`electron/preload.ts` 暴露 `window.api.parentChildDaily`。SPLIT 下 child kb 真源在服务端，链路与 `learning:courseSummary` 同源。
+  - **UI（新组件 + tab）**：新建 `src/components/ChildDailyPanel.tsx`——顶部日期范围选择器（from/to `<input type=date>` + 「查询」+「最近 7 天」重置，自动防 from>to 交换）+ 左列条目（服务端已按日期倒序，同日期按 block/title，4 区块 学习/生活/问答/任务 徽章配色，空态「该范围暂无每日记录」）+ 右栏选中条目 raw 原文（复用全局 `.markdown-body` + `react-markdown`+`remarkGfm`，与聊天气泡一致）。`src/components/ChildDetailPage.tsx` TABS 数组加 `{key:"daily",label:"📅 每日记录"}`（插在学习计划后）+ 渲染分支 `{tab==="daily" && <ChildDailyPanel childId={child.childId} />}`。
+  - **验证**：根 tsc 仅 5 条已知环境 lib 告警（无业务错）；server tsc 0 错；electron-vite build 主/preload/渲染全过；server.cjs 重建成功；对本地真实 child kb（珊珊 `86a84278…/1f050a7f…`，737 条至 2026-09-04）实测 queryByRange SQL：2026-08-29~09-04 返回 6 条、日期倒序、block/title 归组正确、raw 可 markdown 渲染。
+  - ⚠️ 与并行会话 ISSUE-049 前工作区（pi-session.ts/ChatWindow/Learn.tsx=ISSUE-050、db/sessions.ts=ISSUE-051、study-plans.ts、MEMORY.md 等）改动**尚未混提交**；本 issue 改动文件 = `server/src/routes/db.ts` + `electron/lib/ipc-handlers.ts` + `electron/preload.ts` + `src/components/ChildDetailPage.tsx` + 新 `src/components/ChildDailyPanel.tsx`。
+  - **⚠️ 运行时修复（22:07）**：本地 dev 测试报 `未知查询操作: kb.daily_entries.queryByRange` —— **非代码 bug**（op 已注册 queryHandlers），是**本地 dev server（tsx src/index.ts 无 watch）在改动前已启动跑旧代码**。重启 dev server 即恢复；后台重启勿加 `| head`（SIGPIPE 风险）。已用 license token 直连 `/api/v1/db/query` 实测该 op 返回正常。
+  - **➕ 增强（22:30）**：按用户要求给每日记录加**分类/标签/标题筛选**。queryByRange 增加可选 `block`(分类)/`tag`(标签，逗号包裹匹配防误中)/`title`(标题模糊 LIKE，ESCAPE 转义 %/_)；IPC `parent:childDaily` 与 preload 透传 `filters{block,tag,title}`；ChildDailyPanel 顶部筛选栏=日期范围+分类下拉(即时查询)+标签 input(datalist 联想自当前数据 tags)+标题 input(Enter/查询键应用)+「最近 7 天」重置全筛选。HTTP 实测：block=学习+title 含论语=283 条全匹配、block=生活+tag=亲情 组合精确命中。
+
+## [ISSUE-050] 考核出题改异步流式：首门课就绪即开考，其余课程后台生成并增量加入答题流
+- **类型**：需求 / 交互优化（考核多门课不再阻塞等全部出完）
+- **现象/诉求**：原 ExamView 等 `examGenerate` 一次性出完所有课程题目才渲染考试页；课程多时出题等待很久。
+- **设计/实现（2026-09-05）**：
+  - 出卷引擎本已逐课独立 LLM session（exam-engine `generateForCourse`），瓶颈只在「渲染时机」。
+  - 主进程新增 `exam:generateCourse` IPC（exam-engine 新导出 `generateCourseQuestions`）；preload 暴露 `window.api.examGenerateCourse`。
+  - `ExamView.startExam`：不再 await 全量出题 → 渲染空考试壳（`buildExamHtml([], title, subject, courses.length)`，模板 `pendingCourses` 传入总课程数），iframe onLoad（幂等 guard `streamStartedRef`）后 `beginStreaming` 并发池(≤3)逐门生成，**按课程顺序 flush** 用 postMessage `exam:addQuestions`（带剩余数）增量送达；单门失败跳过（空数组占位），全部失败 → error 退出。
+  - `exam-template.ts` 支持：初始空题渲染"📥 正在生成第 1 门课的题目…"空态（`streamEmpty`）；监听 `exam:addQuestions` → `appendCourseQuestions` 全局重编号追加题流 + 刷新 nav/progress/done；`streamBanner` 显示"已就绪 X/N 门"；提交门槛：仍有课程未送达（remaining>0）禁止提交。
+- **兼容**：非流式调用 `buildExamHtml(questions,...,0)`/`examGenerate` 保留原样。
+- **状态**：本地 tsc 0 错 + electron-vite build 通过；asar 打包部署 201 实测中（待用户验证：多课场景首门即显示、后续逐门加入、全部就绪可提交）。
+
+## [ISSUE-051] 会话同步：珊珊（本地环境）持续报 500 internal server error
+- **类型**：Bug（服务端同步接口抛未捕获异常 → 500）｜**状态：已修复并部署（2026-09-06，server 0.3.3 上线 201）**
+- **现象**：本地环境会话同步面板里，珊珊这个孩子**一直**报同步错误，错误类型为 `http:500`（internal server error）；其他孩子正常或偶尔失败。客户端侧代码本身不会抛 500，500 必然是服务端 `POST /api/v1/sessions/:childId/sync` 在处理 珊珊 的某一文件时抛了**非 ApiError 的异常**（fastify 自动转 500）。
+- **最强根因假设（高度关联 珊珊 在用英语课程子会话）**：
+  - 客户端自 ISSUE-029 起，会话 jsonl 走子目录（`sessions/<childId>/.pi/agent/sessions/english-<title>/xxx.jsonl`），`walkJsonlFiles` 上传时 `name` 用**带 `/` 的相对路径**（如 `english-12-yellow-01/xxx.jsonl`）以区分同名文件、避免游标冲突（`electron/lib/session-sync.ts:81,97-113`）。
+  - 服务端 `sanitizeSessionFile(name)`（`server/src/db/sessions.ts:19-25`）用 `path.basename(name)` 校验：`base !== name`（带斜杠即不相等）→ **直接 `throw new Error("非法会话文件名")`**。
+  - 该 `throw` 不是 `ApiError`，在 `routes/sessions.ts:93-96` 的 `appendAndIndexSession` 调用里被 `handleAuthError` 放行（返回 false）→ `throw err` → fastify 兜底成 **500**。珊珊用英语子会话 → 名字带 `/` → 必 500。
+- **次要根因假设（需排查时顺手排除）**：
+  - `server.sqlite` 缺 `session_messages` / `session_files` 表（迁移未跑）→ `appendAndIndexSession` 内 `db.prepare/insert.run` 抛 SQL 错 → 500（但会**所有**孩子同步都失败，与"仅珊珊"矛盾，概率低）。
+  - 磁盘/权限：`fs.appendFileSync` / `fs.statSync` 写 `data/sessions/<parent>/<child>/` 失败 → 500（局部性，可能只命中珊珊目录）。
+  - 单行超 `bodyLimit`（8MB，`routes/sessions.ts:51`）被 fastify 拒 → 但那是 413 不是 500，排除。
+- **排查/确认步骤**：
+  1. 看客户端 `data/sync-log.jsonl` 里 珊珊 的 `errType` 是否 `http:500`（确认是服务端拒）。
+  2. 看本地服务端日志（ISSUE-044 统一日志；或 server 进程 stdout）搜 `非法会话文件名` 或 500 的 stack —— 若有 `非法会话文件名: english-.../xxx.jsonl` 即坐实根因①。
+  3. 核对服务端 db 是否含 `session_messages`/`session_files`（`sqlite3 server/data/server.sqlite ".tables"`）。
+- **修改入口**：
+  - **主修**：`server/src/db/sessions.ts:19-25` `sanitizeSessionFile` 需允许路径分隔符——逐段 `path.basename` 校验每段、拒绝绝对路径/`.`前缀段/超长，再用 `path.posix.join` 归一；或直接改为"扁平化"把 `/` 换成 `_`（但会丢子目录隔离，治标）。**更稳的做法**：校验每段合法后保留相对路径，`getSessionsDir`/`appendAndIndexSession` 的 `path.join(dir, file)` 自然重建子目录，且 `session_messages.file`/游标键用相对路径保持与客户端一致。
+  - **加固**：`routes/sessions.ts` 的 `appendAndIndexSession` 调用应把非 `ApiError` 异常也转成明确 400/422（非法文件名）而非 500，避免任何异常被静默升级成 500 掩盖真实错误。
+  - 客户端 `collectDeltas`（`session-sync.ts:91`）可加：同名文件冲突检测日志（辅助确认是否还有碰撞）。
+- **优先级**：高（珊珊会话数据持续无法上云，家长回看/每日汇总会漏 → 与 ISSUE-043 同源问题；本地环境即可复现，建议先于 043 收尾修复）。
+- **记录时间**：2026-09-05
+- **✅ 修复落地（2026-09-05，改动全在 `server/src/db/sessions.ts`，本地验证通过，未部署）**：
+  - **主修① sanitizeSessionFile 允许子目录相对路径**：改为逐段校验（归一反斜杠→posix、拒绝对路径/盘符/`.`/`..`/隐藏段/空段/末段非`.jsonl`/段>96/总长>512），返回保留子目录的相对路径（如 `english-论语-第三课/abc.jsonl`）。客户端 english 子会话相对路径不再被 `path.basename` 误判非法。
+  - **主修② appendAndIndexSession 补 mkdir**：`path.join(dir, file)` 落盘前 `fs.mkdirSync(path.dirname(full),{recursive:true})`，子目录文件可新建（原 appendFileSync 遇不存在子目录会 ENOENT）。
+  - **加固③ 非法文件名 → ApiError(400)**：sanitizer 的 throw 由普通 `Error` 改为 `ApiError(400,"非法会话文件名: …")`（import `../auth/proxy.js`，无环），经 `routes/sessions.ts` 既有 `handleAuthError` 走 400 干净返回，不再被 fastify 兜底成 500 掩盖。真实磁盘/sqlite 异常仍 rethrow → 500 + fastify logger 记 stack（正确）。
+  - **连带④ readServerDailyConversation 递归**：worker recording 读当天对话改为递归收集 `dir` 下全部 `.jsonl`（english 子会话在子目录），否则嵌套会话文本漏进每日汇总。
+  - **验证**：`tsc --noEmit` 0 错；esbuild `dist/server.cjs` 重建成功；tsx 自测 17/17 sanitizer 边界通过（含 `a\..\evil.jsonl` 反斜杠穿越拒、中文课程名相对路径过）+ 端到端 sqlite/mkdir/幂等/递归读 PASS（子目录文件落盘、session_messages.file 存相对路径、session_files 幂等、daily 读到嵌套文本）。
+  - ⚠️ 未提交（并行会话 ISSUE-049/050 有未提交改动，勿混入本提交）；本地改动文件仅 `server/src/db/sessions.ts`，dist 已重建但 gitignored。
+- **✅ 部署落地（2026-09-06）**：commit `c7d6edb`（单文件 sessions.ts）本地提交；版本 0.3.2→0.3.3（version.ts+package.json，commit `91f9151`）；`node scripts/build.mjs` 重建；本地 `smoke-sessions.mjs` 全过；paramiko 部署到 201（备份 `server.cjs.bak-20260906-0913`）→ systemctl restart → **验证 version=0.3.3、health ok、码点 sanitizeSessionFile/readServerDailyConversation=2 在位**。ISSUE-052/053 为 electron 客户端改动，未含在本 server 部署内。
+
+## [ISSUE-052] 本地语音 ASR：默认千问 token-plan 报「千问识别失败：未返回识别文本」
+- **类型**：Bug（语音识别 token-plan 通道响应字段读取错误 + 错误文案掩盖真因）｜**状态：已修复（2026-09-06，真实端点实测通过，未提交）**
+- **现象**：本地环境（家长/孩子语音输入）语音识别一直失败，报错 `千问识别失败: 未返回识别文本`。本机 `data/shared/voice-config.json` 已确认 **默认 `provider: "qwen-tokenplan"`**（即默认走 token-plan 套餐通道）。
+- **根因（已实测定位，本 issue 之前的"token-plan 套餐不含 ASR 模型"分析已证伪）**：
+  - **重要订正**：截图（百炼个人版 Token Plan 支持模型清单）显示 `qwen-audio-3.0-asr-flash` **在** token-plan 套餐内（语音识别项）。我之前从 `server/src/worker/providers.ts:132` 的 `QWEN_TOKENPLAN_PROVIDER.models`（仅列 LLM 文本模型）推导"token-plan 不含 ASR"是错的——LLM 模型列表 ≠ 语音模型可用性。
+  - **真正的根因是 token-plan 端点响应结构与按量 DashScope 不同**，`qwen.ts:86` 写死了按量字段路径：
+    - 按量 DashScope ASR 响应：`output.output.sentence[0].text`（output 包 output、sentence 是数组）
+    - **token-plan ASR 实测响应**（用本机 `qwen-tokenplan` key 真实请求）：
+      ```json
+      {"sentence":{"sentence_id":0,"begin_time":0,"end_time":null,"text":"","channel_id":0,"speaker_id":null,"sentence_end":false,"words":[]},
+       "text":"","request_id":"b2d...","output":{"sentence":{"...同对象...":"","words":[],"sentence_end":false,"..."},"text":"","request_id":"b2d..."}}
+      ```
+      **只有一层 `output`、`sentence` 是单对象（不是数组）、且顶层还有同名 `sentence`/`text`/`request_id`。**
+  - 代码读 `json?.output?.output?.sentence?.text`（`qwen.ts:86`）→ `output.output` 在 token-plan 响应里是 undefined → text 取到空 → **`throw new Error("千问识别失败: 未返回识别文本")`**。
+  - 即"未返回识别文本"是**字段路径写死的掩盖结果**：请求实际成功（HTTP 200+真实响应），但代码不会读 token-plan 的字段，所以用户看不到识别文本。
+  - **凭据配置是正确的**：voice-config.json 的 `qwen-tokenplan.apiKey=""`，但 `qwen.ts:42` 回退到 `loadQwenKeyFromAuth(true)` 读 `data/parents/86a84278-c8ae-415e-8fbc-6140b1b7c88e/auth.json` 的 `qwen-tokenplan.key`（已确认存在，`sk-sp-...` 前缀）。
+- **次要问题**：
+  1. 错误文案误导：`res.ok` 但无文本时未检查 `json.code`/`json.message`/`json.output?.code`，直接报"未返回识别文本"，排障时看不到真实响应结构差异。
+  2. 回退失效：本机只配了 token-plan（qwen/mimo/mimo-tokenplan 的 apiKey 全空），"未返回识别文本"不命中"没有识别到语音"正则 → 进 errors 继续下一个候选，但其余候选也都"配置不完整" → 最终"所有语音服务均识别失败"，无可用通道。
+- **排查/确认步骤**：
+  1. ✅ 用真实 token-plan key + 真实请求体直连 `https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`，确认响应只有一层 `output` 且 `sentence` 是单对象（已做）。
+  2. 同样用按量 dashscope key + 同样请求体直连 `https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`，对比响应——应得到双层 `output.output` + `sentence` 数组。
+  3. 也可确认 `getAuthPath()` 指向 `data/parents/<id>/auth.json`、其中 token-plan key 存在（已做）。
+- **修改入口**：
+  - **主修（兼容 token-plan 响应结构）**：`electron/lib/voice/providers/qwen.ts:86` —— 文本提取按多路径兼容：
+    ```ts
+    // 兼容按量 DashScope（双层 output.output.sentence[].text）
+    // 与 token-plan MaaS（单层 output.sentence.text，sentence 是对象）/ 顶层 text
+    const text: unknown =
+      (Array.isArray(json?.output?.output?.sentence) && json.output.output.sentence[0]?.text) ||
+      (typeof json?.output?.sentence?.text === "string" ? json.output.sentence.text : undefined) ||
+      (typeof json?.output?.text === "string" ? json.output.text : undefined) ||
+      (typeof json?.text === "string" ? json.text : undefined);
+    ```
+    并在 `text` 为空时再读 `json.code`/`json.message`/`json.output?.code` 真因，避免再报"未返回识别文本"。
+  - **错误透出**：`qwen.ts:76-90` 整体重写——`res.ok` 但 text 取不到时优先抛 `千问识别失败: [json.code] [json.message]` 或 `千问识别失败: HTTP {status} {message}`；保留"没有识别到语音"语义短路（不发起 fallback）。
+  - **设置页验证**：调用 `transcribeAudio(wav, onlyProvider)` 时若响应字段路径命中 token-plan 单层结构，UI 应提示"识别成功"——已有 `onlyProvider` 流程，复测即可验证。
+- **回归验证**：
+  1. 本地默认 `qwen-tokenplan`、发 1 秒语音 → 不再"未返回识别文本"，能拿到识别文本。
+  2. 把默认 provider 切 `qwen`（按量）→ 仍正常（按量字段路径在主修里保留兼容）。
+  3. 故意发静音/超短音频 → 仍报"没有识别到语音"，不发起 fallback（语义短路保留）。
+- **优先级**：高（本地语音输入完全不可用；修复面极小，仅 qwen.ts:86 一行+错误透出，不动配置/不依赖服务端）。
+- **记录时间**：2026-09-05
+- **✅ 修复落地（2026-09-06，改动全在 `electron/lib/voice/providers/qwen.ts`，本地单测+真实端点实测通过，未提交/未部署）**：
+  - **主修 pickText 多路径**：兼容按量（`output.output.sentence[]`，sentence 数组）与 token-plan（`output.sentence` 单对象 / `output.text` / 顶层 `text` / `result.text`）。原 `json.output.output.sentence.text` 在 token-plan 单层响应里 undefined → 误报「未返回识别文本」。
+  - **错误透出 pickError + isNoSpeech**：`!res.ok` 与「ok 但空文本」两分支都透出 `[code] message` 真因（不再笼统「未返回识别文本」）；静音短路判定 `isNoSpeech` 统一兼容 `NO_WORDS`/`no words`(空格)/`no speech`/中文提示。
+  - **验证**：tsc 0 业务错；electron-vite build 过；新增 `test/qwen-asr.test.ts`（vitest mock fetch）6/6 PASS（按量双层、token-plan 单层 sentence 对象、token-plan 仅 output.text、ok 空文本带真因、ok 全空兜底 HTTP、静音 NO_WORDS 短路）；**真实 token-plan 端点 + 真实 key + 真实 16k 语音 wav 实测 20s 返回中文识别文本**（此前必报「未返回识别文本」）。
+  - ⚠️ 未提交（并行会话 ISSUE-049/050 改动仍在工作树，勿与其混提交）。
+
+## [ISSUE-053] 定时任务·课程时间段：当天设置当天触发，过一天就丢失需重设
+- **类型**：Bug（配置持久化/同步被浅合并覆盖，classTimes 字段丢失）
+- **状态**：✅ 已修复（config-sync 深合并；详见本条目底部「修复落地」）
+- **现象**：家长在「设置 → 定时任务 → ⏰ 课程时间段（上课/下课提醒）」里给孩子配好上课/下课时间，设置当天提醒正常触发（孩子端顶部横幅+铃声/语音）；但**第二天课程时间段就没了**，重新打开设置页字段为空，必须再设一次。
+- **已定位的链路与根因（读代码确认）**：
+  - 课程时间段存 `classTimes: ClassTime[]`（`{start,end,label?}`）于 `scheduler-config.json`（按 parent 存，`parents/<id>/scheduler-config.json`），见 `electron/lib/scheduler.ts:47-63` 模型 + `:202-286` `getChildSchedulerConfig`/`setChildSchedulerConfig`。
+  - **触发逻辑不是元凶**：cron 每分钟 `getChildSchedulerConfig(child.childId)` **实时重读文件**（`electron/lib/scheduler.ts:460`），`classTimes` 只要还在文件里就每天触发（`class-reminder` lastKey 含日期、跨天自动失效只是防重，不丢配置）。所以"过一天没了"=配置从文件被清掉，不是触发逻辑退化。
+  - **本地保存均保留 classTimes**：
+    - `src/components/SchedulerSettings.tsx:102` `save(childId)` 发整份 `cfg`（含 classTimes）→ `scheduler:config:set` → `setChildSchedulerConfig`（落盘+pushConfig）。
+    - `src/components/SchedulerTasksPanel.tsx:109-129` `pushEffectiveConfig`（定时任务页 mount 时跑）`merged = {...base, recording, todo, autoNewSession}`，`base` 来自 `schedulerConfigGet`（含 classTimes）故 `...base` 保留 classTimes（**注释 line 85「保留 classTimes/archiveLimit」即指此处**：说明旧版 `pushEffectiveConfig` 曾掉过 classTimes）。
+  - **最强嫌疑 = SPLIT 配置同步的浅合并覆盖**（`electron/lib/config-sync.ts`）：
+    - `syncOnce`（:126-150）每 2 分钟 + 登录时 force 拉全量，对每个 config key 调 `mergeJsonFile`（:106-117）。
+    - `mergeJsonFile` 是**顶层 `{...local, ...incoming}` 浅合并**：对 `scheduler-config.json`，`merged.children = incoming.children`（整体替换为服务端快照）。
+    - **若服务端 `scheduler_config` 快照的 `children[childId]` 不含 `classTimes`**（被新 `scheduler:task:*` 模型的有效配置写回时遗漏、或某次 push 只带 recording/todo/autoNewSession 未带 classTimes），则下次 2 分钟轮询/登录拉取会把本地已存的 `classTimes` 整体覆盖空 → 第二天消失。
+    - 服务端有效配置本就不含 classTimes（`server/src/db/task-runs.ts:6` 明文「客户端据此合并 classTimes/archiveLimit 推回」），而服务端 `/config` 真源快照若由有效配置派生则会缺 classTimes → 回拉即清本地。
+- **排查/确认步骤**：
+  1. 复现后立刻看 `data/parents/<id>/scheduler-config.json` 的 `children[childId].classTimes` 是否空 —— 空即坐实「被写空」。
+  2. 看 `data/cache/config-revision.json` 与控制台 `[config-sync]` 日志，确认 `scheduler_config` 最近一次 merge 前后 children 是否丢了 classTimes。
+  3. 比对登录时 `syncOnce(true)` 拉到的服务端 `scheduler_config.children[childId]` 是否含 classTimes。
+  4. 确认当前部署客户端构建的 `pushEffectiveConfig` 是否仍是「`...base` 保留 classTimes」版（旧版会直接丢）。
+- **修改入口**：
+  - **主修（深合并 children，避免回拉覆盖丢字段）**：`electron/lib/config-sync.ts:106` `mergeJsonFile` 对 `scheduler_config` 改为**按 childId 深合并**——`merged.children[childId] = {...local.children[childId], ...incoming.children[childId]}`（字段级合并，服务端缺 classTimes 也保留本地），其余 key 维持现浅合并。
+  - **加固（服务端真源补齐）**：`server/src/routes/scheduler.ts` 的有效配置下发 / `/config/set` 存 `scheduler_config` 时，把 `classTimes`/`archiveLimit` 这类"非任务驱动"字段从旧快照原样保留（或把 classTimes 也纳入任务模型由服务端真源持有），杜绝服务端快照缺字段。
+  - **回退保护**：`SchedulerSettings`/`SchedulerTasksPanel` 保存前若发现 `classTimes` 将被丢弃应告警，而非静默清空。
+- **优先级**：高（课程时间段配置无法跨天保留，家长每天重设；与 ISSUE-019 课程提醒、ISSUE-038 定时任务新模型、SPLIT M8-C 配置同步强耦合）。
+- **记录时间**：2026-09-06
+- **✅ 修复落地（2026-09-06）**：
+  - **根因确证**：服务端 `/config/set` 是**哑存储**（routes/config.ts:92-98 原样存客户端 push 的 value_json，绝不派生/改写 scheduler_config）；worker 也仅**读** legacy scheduler_config 做提醒（worker/scheduler.ts resolveChildConfig `...base` 已含 classTimes）。故服务端侧**无需改动**——真凶在客户端 config-sync 拉取合并：`mergeJsonFile` 旧逻辑对 scheduler_config 顶层浅合并 `{...local,...incoming}` → `children` 整段被服务端快照替换 → 服务端某 child 缺 classTimes（或显式 `[]`）时回拉即清本地。
+  - **改动（单文件 `electron/lib/config-sync.ts`）**：
+    1. `mergeJsonFile` 增加 `key` 参数；对 `scheduler_config` 改**按 childId 深合并**（`mergeChildConfigs`）：顶层 `{...local,...incoming}` 保留 parent/backup/eventPoll；children 先铺本地全量（服务端缺的本地 child 不丢）、再逐 child 字段级覆盖。
+    2. **classTimes 空/缺防丢**：incoming 该 child `classTimes` 缺键或空数组而本地非空 → 保留本地（服务端快照视为过期，防真实数据模式 `classTimes:[]` 覆盖本地已配课程表）；其余字段（recording/todo/autoNewSession/archiveLimit/classAlertMode）一律以服务端为准。
+  - **验证**：tsc 0 业务错；electron-vite build 过；merge 算法 15 场景全 PASS（缺键保留/空`[]`保留/服务端非空正常覆盖/本地空用服务端/服务端少 child 不丢/双方空保持空/任务字段正常覆盖）。
+  - **未提交、未部署**（并行会话 ISSUE-049/050 有未提交改动，提交时分开）。
+
+## [ISSUE-054] 设计讨论：每个学习主题用独立会话+独立 system prompt（当天所有课程在该会话完成）——对省 token / 防主题串味是否有用？
+- **类型**：设计讨论（提案评估，未决定落地）
+- **提案**：把「孩子粒度的一个大会话」拆成「每个学习主题一个会话」，各主题单独 system prompt；当天该主题下所有课程的学习都在这一个主题会话里完成。目标=省 token + 避免不同学习主题互相串上下文。
+- **⚠️ 关键对照（先对齐现状，否则结论失真）**：当前架构（ISSUE-029）**已经是按课程隔离子会话**，粒度比"按主题"更细：
+  - `getChildSession(childId, courseKey)`（pi-session.ts:348）：主会话 key=`childId`；课程子会话 key=`childId|courseKey`（`<topic>:<title>`）。
+  - 课程子会话落盘 `sessions/<topic>-<title>/`（:578-580），**每次进入 `mgr.newSession()` 全新干净窗口**（:583-587）——主会话中文/其他科目/上次本课残留都不进本课。
+  - `buildChildPrompt`(:247) 已按 `courseKey` 注入「## 当前课程」段（本课 lesson_method + teaching_copy，truncate 1500+2500），英语课再叠加全程英文指令。**即"独立 system prompt"已实现到课程级**。
+  - 共享前缀（身份+AGENTS 行为规范，约数百~2k 字）是 system prompt 公共前缀，**前缀缓存命中**，切课不重复付费。
+  - 结论：**"跨主题互不串味"当前按课程隔离早已做到，且比按主题更彻底**（课程级隔离，主题级反而会在同主题多课间串）。
+- **收益分析（以现状=按课程为基线）**：
+  1. **省 token——基本不成立，反而更费**：token 大头是**对话历史上下文**，不是 system prompt。
+     - 按课程干净窗口：每课独立上下文，单课只装本课对话，历史最小。
+     - 按主题合一：当天该主题所有课程对话**累积进同一上下文** → 越往后课历史越长、越费 token；且第 N 课能看到 1..N-1 课全文（串味，见下）。
+     - system prompt 段：共享前缀前缀缓存免费；可变段（lesson_method/teaching_copy）按课程只装本课，按主题若想"装全部课程教法"会更长，若仍按课装则与现状等价。→ **按主题不省、大概率更费**。
+  2. **防主题串味——已被现状超越**：按课程已在文件系统+窗口级隔离；按主题只在主题间隔离、主题内多课仍串，是退步。
+  3. **按主题唯一真实收益=同主题跨课程连续性**：如英语 12·Yellow-Unit1→Unit2 连续上，主题会话能"记住"Unit1 教过的词/错点，第 2 课自然衔接；按课程干净窗口每课清零会丢掉这种衔接。这是**教学性收益，非 token 收益**，且只对"顺序强相关"的主题（英语分级读物、数学章节）明显，对"互不相关"的主题（论语 vs 科普）无意义。
+- **结论建议**：
+  - **不要整体切到按主题**——相对现状（按课程）在"省 token + 防串味"两个目标上都是退步，达不到提案预期。
+  - 若想要的是"同主题跨课连续性"，更优解是**保持按课程干净窗口（现状），仅在进入新课时把上一课摘要注入**（如「上节课学了 X 词、易错 Y」），既保隔离又补衔接，且不累积长上下文（ISSUE-018 的"每课压缩会话"同思路）。
+  - 若坚持试验"按主题会话"，应作为**可开关选项**且仅对英语类顺序主题默认开，主会话/其他主题维持按课程，避免全局 token 膨胀。
+- **若采纳的修改入口（供后续评估，暂不落地）**：
+  - `pi-session.ts:320-323` `sessionKey` / `:326-333` `courseSessionsSubdir`：key 由 `courseKey` 改为 `topicKey`（`<topic>`），落盘 `sessions/<topic>/`。
+  - `:247` `buildChildPrompt`：去掉 `courseKey` 课程级注入，改 `topicKey` 注入主题级 method（topics.method 全文，不经课程截断）+ 当天该主题待学课程清单。
+  - `:519-526` 课程抓取：`fetchCourseLessonRemote`/`getCourseLessonCached` 改为按 topic 取 topics.method + 当天计划里该主题课程（learning-summary.ts 加 `getTopicMethod`）。
+  - 前端入口（`pi:start_child` 带 courseKey 处）：区分"进主题会话"vs"进课程"——主题会话不 newSession 清窗（保留连续性），课程子会话保持清窗。
+  - 风险：主题会话跨天需 `shouldAutoNewSession` 同口径清窗（防隔日历史污染）；会话同步游标键(:597 后 `sessionKey`)需随 key 改；ISSUE-051 的 `sanitizeSessionFile` 已支持 `/` 子目录，落盘路径改 `<topic>/` 兼容。
+- **优先级**：待定（纯设计讨论，未决定；建议结论=不整体采纳，仅评估"跨课连续性摘要注入"作为替代）。
+- **记录时间**：2026-09-06
+
+## [ISSUE-055] 家长 agent 缺「上传资料到 server 指定目录」工具：自动制作课程资料后无法推上服务端真源
+- **类型**：新功能（家长 agent 工具缺口，闭环断点）
+- **现象/需求**：家长 agent 自动制作课程资料（用 `write` 写好 html/md/媒体后），需要把文件传到 server 端对应目录（`materials/<parentId>/<topic>/...`），目前**缺这个工具**——资料只落本地，server 真源没有文件，孩子经 `asset://` 远程代理读不到（404）。
+- **现状链路（已读代码，缺口已确证）**：
+  - **服务端上传路由已就绪**：`server/src/routes/materials.ts:170` `POST /api/v1/materials/upload`（multipart：`topic` + 可选 `subDir` + `file`）→ 落 `materialsRoot(dataDir,parentId)/<topic>/<subDir>/<filename>` 并 `upsertMaterialFile` 写 `materials` 表，返回 `{id,path,type,size,updated_at}`；`parentId` 由 JWT（Bearer）取（`authParent`，:28）。`topic` 仅字母/数字/_/-（`:48` `TOPIC_KEY_RE`）；`subDir` 防穿越（`:211`）。
+  - **客户端封装已存在**：`electron/lib/parent-library.ts:46` `uploadMaterialToServer(topicDir, subDir, filePath)`（FormData POST，token 取自 `currentSessionToken()`，base 取自 `getServerUrl()`）→ 返回服务端相对 path；已被 `copyMaterialIntoParent`（:901）复用。
+  - **家长 IPC `parent:uploadMaterial`（ipc-handlers.ts:559）已用 `copyMaterialIntoParent`**，但**依赖 `dialog.showOpenDialog` 弹窗选文件（交互式，agent 无法在无头执行栈里调用）**——这是 UI 上传通道，不是 agent 工具。
+  - **家长 agent 工具列表（pi-session.ts:679 主家长会话 / :725 家长内容会话）有 `write`/`edit`/`ls`/`parent_course_save`/`parent_course_delete`/`move_file`/`copy_file`，但无"上传到 server"工具**。agent 用 `write` 写到本地 cwd 的 `parents/<id>/materials/<topic>/`，而 SPLIT 方案 A 下该本地目录=**旧残留（真源在服务端 `materials/<parentId>/<topic>/`）**（memory 已记）；`parent_course_save` 登记的 `htmlPath` 是相对服务端根的路径 → 文件不在服务端即 404，child 渲染经 `asset://`→`/api/v1/materials/content/{id}` 读不到。
+- **根因**：家长 agent 工具集缺一个"把本地文件推到 server 指定目录"的动作；上传能力只活在交互式 IPC（`parent:uploadMaterial` 弹窗）里，未暴露成 agent 可调用的 customTool。`write` 只写本地，不触达服务端真源。
+- **修改入口（复用既有 `uploadMaterialToServer`，改动小）**：
+  - **新增工具 `parent_upload_material`**（`electron/lib/custom-tools.ts`，仿 `parent_course_save` 风格）：入参 `{localPath, topic, subDir?}`；实现 `const rel = await uploadMaterialToServer(topic, subDir, localPath)`（`parent-library.ts:46`），返回服务端相对 path（如 `lunyu/xxx.html` / `english/media/yyy.mp3`）；失败抛 `上传失败 (HTTP ${status}): ${detail}`。
+  - **注册到家长双会话**：`pi-session.ts:679` + `:725` 两个 `tools` 数组与 `customTools` 数组都加 `parent_upload_material`（name 须同时进白名单，见 :603 注释 `customTools 的 name 必须同时出现在 tools 白名单`）。
+  - **工具 description 写清闭环**：「先 `write` 写好本地文件 → 调本工具上传到 server `<topic>/<subDir>/` → 用 `parent_course_save` 把返回的 path 登记为 `htmlPath`；媒体文件 `subDir` 传 `media`」。
+  - **边界**：`topic` 仅 `[a-zA-Z0-9_-]`（服务端会 400，工具需先本地校验并给友好提示）；`subDir` 不得含 `..`/`\`/绝对路径；大视频注意 busboy 默认体积限制（必要时服务端放宽）；批量首版循环调用即可。
+  - **关联**：`parent_course_save`（htmlPath 登记）、ISSUE-021（资料重发必须重显）、SPLIT 方案 A（资料真源=服务端）、`parent:uploadMaterial`（UI 通道可保留，agent 走新工具）。
+- **优先级**：中（家长 agent 自动生产资料的闭环断点：不影响手动 UI 上传，但 agent 自动做完资料后无法上云，孩子端看不到）；建议与 ISSUE-021 资料流程一并验证。
+- **记录时间**：2026-09-06
+- **✅ 已实现（2026-09-06）**：`electron/lib/custom-tools.ts` 新增 `parentUploadMaterialTool`（name=`parent_upload_material`，入参 `{localPath,topic,subDir?}`），复用 `uploadMaterialToServer`，本地预校验 topic 仅 `[a-zA-Z0-9_-]` / localPath 存在且为文件 / subDir 无 `..\` 或绝对路径；成功后 appendActivityLog 并返回服务端相对 path（无 materials/ 前缀，如 `lunyu/xxx.html`），description 写清「write→上传→parent_course_save 登记 htmlPath」闭环。已在 `electron/lib/pi-session.ts` 双家长会话（主家长 + parent-content）的 `tools` 白名单与 `customTools` 数组各注册一处。tsc 0 业务错（仅 5 环境噪音）+ electron-vite build 全过。未提交、未部署；勿与并行 ISSUE-049/050 等改动混入本提交（本改动仅 custom-tools.ts + pi-session.ts 两文件）。
+
+## [ISSUE-056] 家长端 agent 制作学习资料注意事项：视频必须 H.264（禁用 HEVC/H.265）+ 必须走 upload 接口上服务端
+- **类型**：运维规范 / 资料制作约束（bug 根因沉淀，孩子端 Linux 播放异常）
+- **现象/根因（2026-09-06 线上实证，`other/韵律操` 主题）**：
+  1. **视频「有声无画」= HEVC/H.265**：`media/yunlvcao.mp4` 视频轨是 **HEVC（`hvc1`/`hevc`）** + AAC 音频。Linux 上 Electron 内嵌 Chromium 的 `<video>` **不内置 HEVC 解码器**（Ubuntu 亦无硬解）→ 只能解出 AAC 出声音、视频画面黑屏。孩子端闻闻会话播放该视频即此症状。
+  2. **磁盘有文件但课程详情 404**：若把文件手工丢（scp/拷贝）进 201 的 `materials/<pid>/<topic>/` 而未走 upload 接口，服务端 `server.sqlite.materials` 索引表无该行 → `/api/v1/materials/content/:id` 只查索引不扫磁盘 → 404「材料不存在」（文件实际存在）。此点 ISSUE-055 已提及，此处一并作为家长端 agent 纪律强调。
+- **对家长端 agent 制作学习资料的要求（写进 `parent_upload_material` 工具 description / 制作流程规范）**：
+  - **视频媒体必须为 H.264**（`h264`/`avc1`），**禁止 HEVC/H.265（`hevc`/`hvc1`）**，并 `+faststart`（moov 前置，Range 分段播放依赖）；音频 AAC。若有 HEVC 源，需先用 ffmpeg 转码（命令见下）再上传。
+  - **上传一律走 `parent_upload_material` / `/api/v1/materials/upload`**，不得绕道直接写服务端磁盘目录。
+- **判定/转码方法**：
+  - 判定编码：`ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1 <file>`（201 有 `/usr/bin/ffprobe`）；`codec_name=hevc|hvc1` 即不合格。
+  - 转码：`ffmpeg -y -i in.mp4 -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -profile:v main -movflags +faststart -c:a aac -b:a 128k out.mp4`。
+- **排查/修改入口**：
+  - 服务端材料读取链：`server/src/routes/materials.ts`（content 只查索引表）、`server/src/db/materials.ts`（`materialsRoot`、`scanMaterials`/`upsertMaterialFile` 维护索引）。
+  - 家长工具：`electron/lib/custom-tools.ts` `parent_upload_material`、`electron/lib/parent-library.ts` `uploadMaterialToServer`/`copyMaterialIntoParent`。
+  - 生产修复留存脚本：`tmp/deploy/transcode_yunlv.py` + `replace_yunlv.py`（HEVC→H.264 覆盖同路径 + 刷新索引）；`fix_yunlv_index.js`（磁盘有文件但索引缺时补索引）；诊断 `probe_mp4_codec.py`。
+- **优先级**：高（若不约束，agent 自动制作含 HEVC 视频或绕道上传的资料，孩子端会持续出现黑屏/404，用户观感差）
+- **记录时间**：2026-09-06
+
