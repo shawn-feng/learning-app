@@ -23,6 +23,7 @@ import { formatLocalDate } from "./daily-summary";
 import { syncChildSessions } from "./session-sync";
 import { listChildren } from "./child-auth";
 import { getSyncStatus, getSyncLog, readSyncLogFile } from "./sync-logger";
+import { readClientLogFile, getClientLog } from "./app-logger";
 import {
   allocateTopicToChild,
   copyMaterialIntoParent,
@@ -154,6 +155,33 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       if (res.canceled || !res.filePath) return { success: true, canceled: true };
       fs.writeFileSync(res.filePath, content, "utf-8");
       return { success: true, filePath: res.filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 导出统一应用日志（client-log.jsonl）到本机（主进程弹保存对话框）——ISSUE-044
+  ipcMain.handle("app:exportLog", async (e: IpcMainInvokeEvent) => {
+    try {
+      const content = readClientLogFile();
+      if (!content) return { success: false, error: "暂无应用日志（应用尚未写入 client-log）" };
+      const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
+      const res = await dialog.showSaveDialog(win!, {
+        title: "导出应用日志",
+        defaultPath: `client-log-${new Date().toISOString().slice(0, 10)}.jsonl`,
+        filters: [{ name: "JSON Lines", extensions: ["jsonl", "log", "txt"] }],
+      });
+      if (res.canceled || !res.filePath) return { success: true, canceled: true };
+      fs.writeFileSync(res.filePath, content, "utf-8");
+      return { success: true, filePath: res.filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 读取最近 limit 条统一应用日志（供诊断面板展示，可选增强）——ISSUE-044
+  ipcMain.handle("app:getLogTail", async (_e, limit?: number) => {
+    try {
+      return { success: true, entries: getClientLog(limit ?? 200) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

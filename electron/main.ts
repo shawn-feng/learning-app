@@ -4,6 +4,9 @@ delete process.env.ELECTRON_RUN_AS_NODE;
 
 import { app, BrowserWindow, session, systemPreferences } from "electron";
 import path from "path";
+// ISSUE-044: 统一应用日志（console 重定向 + 崩溃捕获 + client-log.jsonl 落盘）。
+// 必须在进程早期、其它模块开始打印前初始化（幂等）。
+import { installConsoleRedirect, installCrashHandlers, logInfo } from "./lib/app-logger";
 import { getDataDir } from "./lib/config";
 import { initSharedSkills } from "./lib/user-init";
 import { registerIpcHandlers } from "./lib/ipc-handlers";
@@ -16,6 +19,13 @@ import { registerCustomSchemes, registerMediaProtocol, registerAssetProtocol, re
 import { initUpdater, silentCheckForUpdates } from "./lib/updater";
 
 let mainWindow: BrowserWindow | null = null;
+
+// ISSUE-044: 进程早期启用统一日志——重定向 console.*（仍回显 stdout）+ 捕获未处理异常，
+// 使崩溃/散落 console 均落盘 data/client-log.jsonl。先装 console 重定向再装 crash handler，
+// 保证崩溃回显走原始 stderr。uncaughtException 记日志后按 Node 默认语义退出（崩溃不再无声，
+// 但仍保持原有 crash 行为）；unhandledRejection 仅记日志不退出。
+installConsoleRedirect();
+installCrashHandlers(true);
 
 // 必须在 app ready 之前注册自定义 scheme（media:// 播放本地音视频；asset:// 加载共享资料 css/js/图片），一次调用合并注册
 registerCustomSchemes();
@@ -105,6 +115,15 @@ app.whenReady().then(() => {
   console.log("app.isPackaged:", app.isPackaged);
   console.log("dataDir:", getDataDir());
   getDataDir();
+  // ISSUE-044: 启动生命周期结构化日志（version 从 package.json 或 app.getVersion() 取）
+  logInfo("main", "app ready", {
+    cwd: process.cwd(),
+    packaged: app.isPackaged,
+    dataDir: getDataDir(),
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+  });
   try {
     initSharedSkills();
     console.log("Shared skills initialized at:", path.join(getDataDir(), "shared", "skills"));
@@ -217,6 +236,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  logInfo("main", "app quitting");
   flushSessionSync(); // 退出前兜底同步一次（fire-and-forget）
   disposeAllSessions().catch(() => {});
 });

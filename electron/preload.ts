@@ -120,6 +120,9 @@ const api = {
   sessionSyncLog: (limit?: number) => ipcRenderer.invoke("sessions:syncLog", limit),
   sessionForceSync: () => ipcRenderer.invoke("sessions:forceSync"),
   sessionExportLog: () => ipcRenderer.invoke("sessions:exportLog"),
+  // ISSUE-044: 统一应用日志导出 / 尾部读取（诊断用）
+  appExportLog: () => ipcRenderer.invoke("app:exportLog"),
+  appGetLogTail: (limit?: number) => ipcRenderer.invoke("app:getLogTail", limit),
   piGetModels: () => ipcRenderer.invoke("pi:get_models"),
   piSwitchModel: (childId: string, provider: string, modelId: string) =>
     ipcRenderer.invoke("pi:switch_model", childId, provider, modelId),

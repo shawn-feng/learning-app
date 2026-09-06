@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import IconButton from "./IconButton";
-import { Download, Power, RefreshCw, Save } from "lucide-react";
+import { Download, FileText, Power, RefreshCw, Save } from "lucide-react";
 
 // ISSUE-040: 通用设置页新增「软件更新」区块（手动检查 / 下载进度 / 重启安装）。
 // 状态机来自主进程 updater.ts，经 window.api.onUpdateStatus / onUpdateProgress 事件驱动；
@@ -22,6 +22,9 @@ export default function GeneralSettings() {
   const [updProgress, setUpdProgress] = useState<number | null>(null);
   const [updSpeed, setUpdSpeed] = useState(0);
   const [checking, setChecking] = useState(false);
+
+  // ---- 诊断：统一应用日志导出（ISSUE-044） ----
+  const [exportMsg, setExportMsg] = useState("");
 
   useEffect(() => {
     window.api.materialsLimitGet().then((r: any) => {
@@ -85,6 +88,23 @@ export default function GeneralSettings() {
         setMsg(r.error || "保存失败");
       }
     });
+  }
+
+  // ISSUE-044: 导出统一应用日志（client-log.jsonl），用于远程问题排查
+  async function exportClientLog() {
+    setExportMsg("");
+    try {
+      const r: any = await window.api.appExportLog();
+      if (r?.success && r?.canceled) {
+        setExportMsg("已取消导出");
+      } else if (r?.success && r?.filePath) {
+        setExportMsg(`已导出：${r.filePath}`);
+      } else {
+        setExportMsg(r?.error || "导出失败");
+      }
+    } catch (e) {
+      setExportMsg("导出失败：" + String((e as Error)?.message ?? e));
+    }
   }
 
   const downloading = updStatus === "downloading";
@@ -247,6 +267,27 @@ export default function GeneralSettings() {
         {updStatus === "disabled" && (
           <p style={{ fontSize: 13, color: "#888", marginTop: 8 }}>当前环境（开发模式）不支持自动更新。</p>
         )}
+      </div>
+
+      {/* ISSUE-044: 诊断——导出统一应用日志（client-log.jsonl），供问题排查上报 */}
+      <div style={{ paddingTop: 16, borderTop: "1px solid #eee" }}>
+        <h4 style={{ fontSize: 15, marginBottom: 4 }}>诊断</h4>
+        <p style={{ fontSize: 13, color: "#888", margin: "0 0 8px", lineHeight: 1.6 }}>
+          导出本机运行日志（client-log.jsonl）。日志含启动/会话/同步/异常记录，不含对话内容与密钥；用于问题排查时提交给技术支持。
+        </p>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <IconButton
+            icon={FileText}
+            title="导出应用日志"
+            onClick={exportClientLog}
+            style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
+          />
+          {exportMsg && (
+            <span style={{ fontSize: 13, color: exportMsg.startsWith("已导出") ? "#48bb78" : "#cc7b00" }}>
+              {exportMsg}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
