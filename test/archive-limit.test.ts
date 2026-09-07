@@ -109,26 +109,37 @@ describe("归档保留上限（archive limit）", () => {
     expect(got2.autoNewSession.hour).toBe(21); // 缺省补全（默认 21:00）
   });
 
-  it("ISSUE-019：classTimes / classAlertMode 读写（默认空数组 + both；label 空串归一为 undefined）", () => {
+  it("ISSUE-059：classTemplates / classWeek 读写 + getEffectiveClassTimes（按星期解析生效模板）", () => {
     const kid = "class-kid-1";
     scheduler.setChildSchedulerConfig(kid, {
       recording: { enabled: false, times: ["21:00"], onNewSession: false },
       autoNewSession: { enabled: false, hour: 22, minute: 0 },
       archiveLimit: 20,
-      classTimes: [
-        { start: "08:00", end: "09:30", label: "语文" },
-        { start: "10:00", end: "11:00", label: "" },
+      classTemplates: [
+        { id: "schoolday", name: "上学日", times: [{ start: "08:00", end: "09:30", label: "语文" }, { start: "10:00", end: "11:00" }] },
+        { id: "weekend", name: "周末", times: [] },
       ],
+      classWeek: { 1: "schoolday", 2: "schoolday", 3: "schoolday", 4: "schoolday", 5: "schoolday", 0: "weekend", 6: "weekend" },
       classAlertMode: "chime",
-    });
+    } as any);
     const got = scheduler.getChildSchedulerConfig(kid);
-    expect(got.classTimes).toHaveLength(2);
-    expect(got.classTimes[0]).toEqual({ start: "08:00", end: "09:30", label: "语文" });
-    expect(got.classTimes[1]).toEqual({ start: "10:00", end: "11:00", label: undefined });
+    expect(got.classTemplates).toHaveLength(2);
+    expect(got.classTemplates[0].times[0]).toEqual({ start: "08:00", end: "09:30", label: "语文" });
+    expect(got.classTemplates[0].times[1].label).toBeUndefined(); // label 空串归一为 undefined
+    expect(got.classWeek[1]).toBe("schoolday");
+    expect(got.classWeek[0]).toBe("weekend");
     expect(got.classAlertMode).toBe("chime");
+    // 周一(day=1)生效 = 上学日模板（2 段）；周日(day=0)生效 = 周末模板（空）
+    const monday = new Date(2026, 0, 5); // 2026-01-05 是周一
+    expect(monday.getDay()).toBe(1);
+    expect(scheduler.getEffectiveClassTimes(got, monday)).toHaveLength(2);
+    const sunday = new Date(2026, 0, 4); // 2026-01-04 是周日
+    expect(sunday.getDay()).toBe(0);
+    expect(scheduler.getEffectiveClassTimes(got, sunday)).toHaveLength(0);
   });
 
-  it("ISSUE-019：classTimes 缺省/非法值兜底（默认空数组 + both；过滤空起止时间段）", () => {
+  it("ISSUE-059：旧扁平 classTimes 向后兼容迁移 + 缺省兜底（默认上学日/周末种子）", () => {
+    // 旧数据：仅 classTimes（无 classTemplates）
     const kid = "class-kid-2";
     scheduler.setChildSchedulerConfig(kid, {
       classTimes: [
@@ -137,10 +148,23 @@ describe("归档保留上限（archive limit）", () => {
       ],
     } as any);
     const got = scheduler.getChildSchedulerConfig(kid);
-    expect(got.classTimes).toHaveLength(1);
-    expect(got.classTimes[0].start).toBe("13:00");
-    expect(got.classTimes[0].end).toBe("14:00");
+    // 空起止被过滤，剩 1 段，迁移为「自定义」模板
+    expect(got.classTemplates).toHaveLength(1);
+    expect(got.classTemplates[0].id).toBe("custom");
+    expect(got.classTemplates[0].times).toHaveLength(1);
+    expect(got.classTemplates[0].times[0].start).toBe("13:00");
+    expect(got.classTemplates[0].times[0].end).toBe("14:00");
+    // 全 7 天指向「自定义」模板（行为不变：升级不丢表）
+    for (let d = 0; d <= 6; d++) expect(got.classWeek[d]).toBe("custom");
     expect(got.classAlertMode).toBe("both"); // 非法 mode 兜底默认
+
+    // 完全缺省 → 默认种子（上学日/周末，均空表）
+    const kid3 = "class-kid-3";
+    scheduler.setChildSchedulerConfig(kid3, {} as any);
+    const got3 = scheduler.getChildSchedulerConfig(kid3);
+    expect(got3.classTemplates.map((t) => t.name)).toEqual(["上学日", "周末"]);
+    expect(got3.classWeek[1]).toBe("schoolday");
+    expect(got3.classWeek[0]).toBe("weekend");
   });
 
   it("resetChildSession（冷路径）按 archiveLimit 清理归档（官方流程：不新建活跃文件）", async () => {

@@ -24,6 +24,9 @@ export interface WorkerSchedulerChildConfig {
   archiveLimit?: number;
   classTimes?: Array<{ start?: string; end?: string; label?: string }>;
   classAlertMode?: string;
+  // ISSUE-059：课程时间表升级为「模板 + 星期映射」（客户端本地用于上课/下课提醒，服务端仅结构对齐、不参与调度）
+  classTemplates?: Array<{ id?: string; name?: string; times?: Array<{ start?: string; end?: string; label?: string }> }>;
+  classWeek?: { [day: number]: string | null };
   todo?: { enabled?: boolean; genTime?: string; statTime?: string };
 }
 

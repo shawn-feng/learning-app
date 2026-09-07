@@ -2,12 +2,19 @@ import { useEffect, useState } from "react";
 import IconButton from "./IconButton";
 import { Plus, Save, Trash2 } from "lucide-react";
 
+interface ClassTimeTemplate {
+  id: string;
+  name: string;
+  times: { start: string; end: string; label?: string }[];
+}
+
 interface SchedulerChildConfig {
   recording: { enabled: boolean; times: string[]; onNewSession: boolean };
   autoNewSession: { enabled: boolean; hour: number; minute: number };
   archiveLimit: number;
-  // ISSUE-019：课程时间段（上课/下课提醒）+ 提醒方式
-  classTimes: { start: string; end: string; label?: string }[];
+  // ISSUE-059：课程时间表模板库 + 星期映射（替代旧扁平 classTimes）
+  classTemplates: ClassTimeTemplate[];
+  classWeek: { [day: number]: string | null };
   classAlertMode: "both" | "chime" | "voice";
   // ISSUE-025：孩子 Todolist（今日计划）——生成时间 / 统计时间
   todo: { enabled: boolean; genTime: string; statTime: string };
@@ -41,11 +48,31 @@ function defaultConfig(): SchedulerChildConfig {
     recording: { enabled: false, times: ["21:00"], onNewSession: false },
     autoNewSession: { enabled: false, hour: 21, minute: 0 },
     archiveLimit: 20,
-    classTimes: [],
+    classTemplates: [
+      { id: "schoolday", name: "上学日", times: [] },
+      { id: "weekend", name: "周末", times: [] },
+    ],
+    classWeek: { 1: "schoolday", 2: "schoolday", 3: "schoolday", 4: "schoolday", 5: "schoolday", 0: "weekend", 6: "weekend" },
     classAlertMode: "both",
     todo: { enabled: false, genTime: "08:00", statTime: "21:00" },
   };
 }
+
+// ISSUE-059：生成模板唯一 id
+function newTemplateId(): string {
+  return "tpl-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+// ISSUE-059：星期顺序（day 取值与 Date.getDay() 一致：0=周日..6=周六）
+const WEEKDAYS: { day: number; name: string }[] = [
+  { day: 1, name: "周一" },
+  { day: 2, name: "周二" },
+  { day: 3, name: "周三" },
+  { day: 4, name: "周四" },
+  { day: 5, name: "周五" },
+  { day: 6, name: "周六" },
+  { day: 0, name: "周日" },
+];
 
 export default function SchedulerSettings() {
   const [children, setChildren] = useState<ChildItem[]>([]);
@@ -81,8 +108,22 @@ export default function SchedulerSettings() {
         setEventPoll({ ...defaultEventPollConfig(), ...ep });
       }
       for (const c of childrenList) {
+        const loaded = (map[c.childId] || {}) as any;
+        // ISSUE-059 向后兼容：旧扁平 classTimes → 单「自定义」模板 + 全 7 天指向它
+        let migrated: any = loaded;
+        const legacy = Array.isArray(loaded.classTimes)
+          ? loaded.classTimes.filter((t: any) => t && t.start && t.end)
+          : [];
+        const hasTemplates = Array.isArray(loaded.classTemplates) && loaded.classTemplates.length > 0;
+        if (!hasTemplates && legacy.length > 0) {
+          migrated = {
+            ...loaded,
+            classTemplates: [{ id: "custom", name: "自定义", times: legacy }],
+            classWeek: { 0: "custom", 1: "custom", 2: "custom", 3: "custom", 4: "custom", 5: "custom", 6: "custom" },
+          };
+        }
         // 用 defaultConfig 兜底，确保旧配置（缺 autoNewSession 等字段）也能正常渲染
-        map[c.childId] = { ...defaultConfig(), ...(map[c.childId] || {}) };
+        map[c.childId] = { ...defaultConfig(), ...migrated };
       }
       setConfigs(map);
       setLoaded(true);
@@ -96,6 +137,85 @@ export default function SchedulerSettings() {
     setConfigs((prev) => ({
       ...prev,
       [childId]: updater(prev[childId] || defaultConfig()),
+    }));
+  }
+
+  // ---- ISSUE-059：课程时间表（模板 + 星期映射）更新辅助 ----
+
+  function updateTemplate(
+    childId: string,
+    tplId: string,
+    updater: (tpl: ClassTimeTemplate) => ClassTimeTemplate
+  ) {
+    updateConfig(childId, (p) => ({
+      ...p,
+      classTemplates: (p.classTemplates || []).map((t) =>
+        t.id === tplId ? updater(t) : t
+      ),
+    }));
+  }
+
+  function addTemplate(childId: string) {
+    updateConfig(childId, (p) => ({
+      ...p,
+      classTemplates: [
+        ...(p.classTemplates || []),
+        { id: newTemplateId(), name: "新模板", times: [] },
+      ],
+    }));
+  }
+
+  function removeTemplate(childId: string, tplId: string) {
+    updateConfig(childId, (p) => {
+      const classWeek = { ...(p.classWeek || {}) };
+      for (const d of Object.keys(classWeek)) {
+        if (classWeek[Number(d)] === tplId) classWeek[Number(d)] = null;
+      }
+      return {
+        ...p,
+        classTemplates: (p.classTemplates || []).filter((t) => t.id !== tplId),
+        classWeek,
+      };
+    });
+  }
+
+  function setTemplateName(childId: string, tplId: string, name: string) {
+    updateTemplate(childId, tplId, (t) => ({ ...t, name }));
+  }
+
+  function addTimeRow(childId: string, tplId: string) {
+    updateTemplate(childId, tplId, (t) => ({
+      ...t,
+      times: [...(t.times || []), { start: "08:00", end: "09:00", label: "" }],
+    }));
+  }
+
+  function updateTimeRow(
+    childId: string,
+    tplId: string,
+    idx: number,
+    field: "start" | "end" | "label",
+    value: string
+  ) {
+    updateTemplate(childId, tplId, (t) => ({
+      ...t,
+      times: (t.times || []).map((x, i) =>
+        i === idx ? { ...x, [field]: value } : x
+      ),
+    }));
+  }
+
+  function removeTimeRow(childId: string, tplId: string, idx: number) {
+    updateTemplate(childId, tplId, (t) => ({
+      ...t,
+      times: (t.times || []).filter((_, i) => i !== idx),
+    }));
+  }
+
+  function setWeekDay(childId: string, day: number, tplId: string | null) {
+    updateConfig(childId, (p) => ({
+      ...p,
+      classWeek: { ...(p.classWeek || {}), [day]: tplId },
     }));
   }
 
@@ -388,107 +508,118 @@ export default function SchedulerSettings() {
                   </span>
                 </div>
 
-                {/* ISSUE-019：课程时间段（上课/下课提醒，孩子端顶部横幅 + 铃声/语音） */}
-                <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>
-                    ⏰ 课程时间段（上课 / 下课提醒）
+                {/* ISSUE-059：课程时间表（模板 + 星期映射） */}
+                <details open style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                  <summary style={{ fontSize: 13, fontWeight: 600, color: "#444", cursor: "pointer", userSelect: "none" }}>
+                    ⏰ 课程时间表（模板）
+                  </summary>
+                  <div style={{ fontSize: 12, color: "#888", margin: "8px 0", lineHeight: 1.6 }}>
+                    到上课 / 下课时间，孩子界面顶部三分之一区域会弹出醒目提示，并伴随铃声 / 语音播报。
+                    可定义多个「时间表模板」（如「上学日」「周末」），再把周一到周日分别映射到某个模板——
+                    周末不固定可单独设置或选「不提醒」。改模板内容即时生效，不必改星期映射。
                   </div>
-                  <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
-                    到上课 / 下课时间，孩子界面顶部三分之一区域会弹出醒目提示，并伴随铃声 / 语音播报。可设置多段（如 08:00-09:30 语文、10:00-11:00 数学）。
-                  </div>
-                  {(cfg.classTimes || []).map((ct, idx) => (
-                    <div
-                      key={idx}
-                      style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, marginLeft: 26, flexWrap: "wrap" }}
-                    >                      <input
-                        type="time"
-                        value={ct.start}
-                        onChange={(e) =>
-                          updateConfig(child.childId, (p) => ({
-                            ...p,
-                            classTimes: (p.classTimes || []).map((v, i) =>
-                              i === idx ? { ...v, start: e.target.value } : v
-                            ),
-                          }))
-                        }
-                        style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
-                      />
-                      <span style={{ fontSize: 13, color: "#888" }}>至</span>
-                      <input
-                        type="time"
-                        value={ct.end}
-                        onChange={(e) =>
-                          updateConfig(child.childId, (p) => ({
-                            ...p,
-                            classTimes: (p.classTimes || []).map((v, i) =>
-                              i === idx ? { ...v, end: e.target.value } : v
-                            ),
-                          }))
-                        }
-                        style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
-                      />
-                      <input
-                        type="text"
-                        placeholder="课程名（可选）"
-                        value={ct.label || ""}
-                        onChange={(e) =>
-                          updateConfig(child.childId, (p) => ({
-                            ...p,
-                            classTimes: (p.classTimes || []).map((v, i) =>
-                              i === idx ? { ...v, label: e.target.value } : v
-                            ),
-                          }))
-                        }
-                        style={{ width: 110, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
-                      />
-                      <IconButton
-                        icon={Trash2}
-                        title="删除该时间段"
-                        danger
-                        onClick={() =>
-                          updateConfig(child.childId, (p) => ({
-                            ...p,
-                            classTimes: (p.classTimes || []).filter((_, i) => i !== idx),
-                          }))
-                        }
-                        style={{
-                          padding: "4px 10px",
-                          border: "1px solid #ddd",
-                          borderRadius: 6,
-                          background: "white",
-                          fontSize: 13,
-                          cursor: "pointer",
-                        }}
-                      />
+
+                  {/* ① 模板管理区 */}
+                  {(cfg.classTemplates || []).map((tpl) => (
+                    <div key={tpl.id} style={{ marginLeft: 4, marginTop: 10, border: "1px solid #eef0ff", borderRadius: 8, padding: 10, background: "#fcfcff" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <input
+                          type="text"
+                          value={tpl.name}
+                          onChange={(e) => setTemplateName(child.childId, tpl.id, e.target.value)}
+                          style={{ width: 130, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, fontWeight: 600 }}
+                        />
+                        <span style={{ fontSize: 12, color: "#999" }}>时间表模板</span>
+                        {(cfg.classTemplates || []).length > 1 && (
+                          <IconButton
+                            icon={Trash2}
+                            title="删除该模板"
+                            danger
+                            onClick={() => removeTemplate(child.childId, tpl.id)}
+                            style={{ marginLeft: "auto", padding: "4px 10px", border: "1px solid #ddd", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
+                          />
+                        )}
+                      </div>
+                      {(tpl.times || []).map((ct, idx) => (
+                        <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                          <input
+                            type="time"
+                            value={ct.start}
+                            onChange={(e) => updateTimeRow(child.childId, tpl.id, idx, "start", e.target.value)}
+                            style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                          />
+                          <span style={{ fontSize: 13, color: "#888" }}>至</span>
+                          <input
+                            type="time"
+                            value={ct.end}
+                            onChange={(e) => updateTimeRow(child.childId, tpl.id, idx, "end", e.target.value)}
+                            style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                          />
+                          <input
+                            type="text"
+                            placeholder="课程名（可选）"
+                            value={ct.label || ""}
+                            onChange={(e) => updateTimeRow(child.childId, tpl.id, idx, "label", e.target.value)}
+                            style={{ width: 110, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                          />
+                          <IconButton
+                            icon={Trash2}
+                            title="删除该时间段"
+                            danger
+                            onClick={() => removeTimeRow(child.childId, tpl.id, idx)}
+                            style={{ padding: "4px 10px", border: "1px solid #ddd", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
+                          />
+                        </div>
+                      ))}
+                      {(tpl.times || []).length === 0 && (
+                        <div style={{ marginBottom: 6, fontSize: 12, color: "#aaa" }}>尚未设置时间段，点下方按钮添加</div>
+                      )}
+                      <div>
+                        <IconButton
+                          icon={Plus}
+                          title="添加时间段"
+                          onClick={() => addTimeRow(child.childId, tpl.id)}
+                          style={{ padding: "4px 10px", border: "1px solid #ddd", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
+                        />
+                      </div>
                     </div>
                   ))}
-                  {(cfg.classTimes || []).length === 0 && (
-                    <div style={{ marginLeft: 26, marginBottom: 8, fontSize: 12, color: "#aaa" }}>
-                      尚未设置课程时间段，点下方按钮添加
-                    </div>
-                  )}
-                  <div style={{ marginLeft: 26, marginBottom: 8 }}>
+                  <div style={{ marginLeft: 4, marginTop: 8 }}>
                     <IconButton
                       icon={Plus}
-                      title="添加时间段"
-                      onClick={() =>
-                        updateConfig(child.childId, (p) => ({
-                          ...p,
-                          classTimes: [...(p.classTimes || []), { start: "08:00", end: "09:00", label: "" }],
-                        }))
-                      }
-                      style={{
-                        padding: "4px 10px",
-                        border: "1px solid #ddd",
-                        borderRadius: 6,
-                        background: "white",
-                        fontSize: 13,
-                        cursor: "pointer",
-                      }}
+                      title="添加模板"
+                      onClick={() => addTemplate(child.childId)}
+                      style={{ padding: "4px 10px", border: "1px solid #ddd", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
                     />
+                    <span style={{ marginLeft: 8, fontSize: 12, color: "#999" }}>添加时间表模板</span>
                   </div>
-                  {(cfg.classTimes || []).length > 0 && (
-                    <div style={{ marginLeft: 26, fontSize: 13, color: "#666", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+
+                  {/* ② 星期 → 模板映射 */}
+                  <div style={{ marginLeft: 4, marginTop: 14 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>星期 → 模板映射</div>
+                    {WEEKDAYS.map((wd) => {
+                      const selected = cfg.classWeek?.[wd.day] ?? "";
+                      return (
+                        <div key={wd.day} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 5 }}>
+                          <span style={{ width: 42, fontSize: 13, color: "#555" }}>{wd.name}</span>
+                          <select
+                            value={selected}
+                            onChange={(e) => setWeekDay(child.childId, wd.day, e.target.value || null)}
+                            style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, minWidth: 150 }}
+                          >
+                            <option value="">不提醒</option>
+                            {(cfg.classTemplates || []).map((t) => (
+                              <option key={t.id} value={t.id}>{t.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* 提醒方式（任一模板有时间段时展示） */}
+                  {(cfg.classTemplates || []).some((t) => (t.times || []).length > 0) && (
+                    <div style={{ marginLeft: 4, marginTop: 14, fontSize: 13, color: "#666", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
                       <span>提醒方式：</span>
                       {(
                         [
@@ -502,17 +633,14 @@ export default function SchedulerSettings() {
                             type="radio"
                             name={`class-alert-${child.childId}`}
                             checked={cfg.classAlertMode === opt.value}
-                            onChange={() =>
-                              updateConfig(child.childId, (p) => ({ ...p, classAlertMode: opt.value }))
-                            }
+                            onChange={() => updateConfig(child.childId, (p) => ({ ...p, classAlertMode: opt.value }))}
                           />
                           {opt.label}
                         </label>
                       ))}
                     </div>
                   )}
-                </div>
-
+                </details>
                 {status[child.childId] && (
                   <p
                     style={{

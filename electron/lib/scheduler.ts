@@ -42,9 +42,13 @@ export interface SchedulerChildConfig {
   // 历史会话归档保留上限：每次会话重置后只保留最近 N 个旧会话文件，更早的清理，避免无限膨胀。
   // 家长可在「定时任务」设置页配置；设置为 0 表示不保留历史归档（仅当前会话）。
   archiveLimit: number;
-  // ISSUE-019：课程时间段（可多段，每段 上课时间 start + 下课时间 end + 可选课程名 label）。
-  // 到上课/下课时间点，孩子端 app 顶部 1/3 区域弹出提示 + 铃声/语音播报。
-  classTimes: ClassTime[];
+  // ISSUE-059：课程时间表模板库（每个模板 = 一组时间段，可命名「上学日」「周末」「假期」等）。
+  // 运行时按「今天星期几」查 classWeek 取对应模板的时间段做上课/下课提醒。
+  classTemplates: ClassTimeTemplate[];
+  // ISSUE-059：星期 → 模板映射（day 0=周日..6=周六，值为 templateId；null=当天不提醒）。
+  classWeek: { [day: number]: string | null };
+  // （已废弃）旧扁平 classTimes 仅用于向后兼容迁移：新代码一律走 classTemplates/classWeek。
+  classTimes?: ClassTime[];
   // ISSUE-019：课程提醒方式：both=铃声+语音播报 / chime=仅铃声 / voice=仅语音播报
   classAlertMode: "both" | "chime" | "voice";
   // ISSUE-025：孩子 Todolist（今日计划）。genTime=每天生成时间，statTime=每天统计完成度时间。
@@ -60,6 +64,16 @@ export interface ClassTime {
   end: string;
   /** 课程名/标签（可选，如「语文课」；提醒时展示） */
   label?: string;
+}
+
+/** ISSUE-059：课程时间表模板——一组时间段（可命名，如「上学日」「周末」）。 */
+export interface ClassTimeTemplate {
+  /** 模板唯一 id（渲染端据此映射星期，须稳定） */
+  id: string;
+  /** 模板名称（如「上学日」「周末」「假期」） */
+  name: string;
+  /** 该模板包含的课程时间段 */
+  times: ClassTime[];
 }
 
 interface SchedulerConfig {
@@ -115,7 +129,11 @@ export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
   recording: { enabled: false, times: ["21:00"], onNewSession: false },
   autoNewSession: { enabled: false, hour: 21, minute: 0 },
   archiveLimit: 20,
-  classTimes: [],
+  classTemplates: [
+    { id: "schoolday", name: "上学日", times: [] },
+    { id: "weekend", name: "周末", times: [] },
+  ],
+  classWeek: { 1: "schoolday", 2: "schoolday", 3: "schoolday", 4: "schoolday", 5: "schoolday", 0: "weekend", 6: "weekend" },
   classAlertMode: "both",
   todo: { enabled: false, genTime: "08:00", statTime: "21:00" },
 };
@@ -123,6 +141,103 @@ export const DEFAULT_CHILD_CONFIG: SchedulerChildConfig = {
 // 旧配置（intervalHours 间隔模式）已废弃：读配置时把缺省 times 补成默认时间点。
 export function defaultRecordingTimes(): string[] {
   return [...DEFAULT_CHILD_CONFIG.recording.times];
+}
+
+// ---- ISSUE-059：课程时间表（模板 + 星期映射）归一与运行时解析 ----
+
+const DEFAULT_SCHOOLDAY_ID = "schoolday";
+const DEFAULT_WEEKEND_ID = "weekend";
+
+function seedClassTemplates(): ClassTimeTemplate[] {
+  return [
+    { id: DEFAULT_SCHOOLDAY_ID, name: "上学日", times: [] },
+    { id: DEFAULT_WEEKEND_ID, name: "周末", times: [] },
+  ];
+}
+
+function seedClassWeek(): { [day: number]: string | null } {
+  return {
+    1: DEFAULT_SCHOOLDAY_ID,
+    2: DEFAULT_SCHOOLDAY_ID,
+    3: DEFAULT_SCHOOLDAY_ID,
+    4: DEFAULT_SCHOOLDAY_ID,
+    5: DEFAULT_SCHOOLDAY_ID,
+    0: DEFAULT_WEEKEND_ID,
+    6: DEFAULT_WEEKEND_ID,
+  };
+}
+
+function cleanTimes(arr: unknown): ClassTime[] {
+  if (!Array.isArray(arr)) return [];
+  return (arr as any[])
+    .map((t) => ({
+      start: String(t?.start ?? ""),
+      end: String(t?.end ?? ""),
+      label: t?.label ? String(t.label) : undefined,
+    }))
+    .filter((t) => t.start && t.end);
+}
+
+/**
+ * 把任意（可能旧的/缺字段的）配置归一为「模板库 + 星期映射」结构：
+ * - 已有 classTemplates 且非空 → 直接采用，并校验 classWeek（缺省/非法值按缺省规则补齐）；
+ * - 仅旧扁平 classTimes → 迁移为一个「自定义」模板 + 全 7 天指向它（行为不变，避免升级即丢表）；
+ * - 两者皆无 → 默认种子（上学日/周末，均空表）。
+ */
+export function normalizeClassSchedule(c: any): {
+  classTemplates: ClassTimeTemplate[];
+  classWeek: { [day: number]: string | null };
+} {
+  const legacy = cleanTimes(c?.classTimes);
+  let templates: ClassTimeTemplate[];
+  let source: "templates" | "legacy" | "seed";
+
+  if (Array.isArray(c?.classTemplates) && c.classTemplates.length > 0) {
+    templates = (c.classTemplates as any[]).map((t, i) => ({
+      id: typeof t?.id === "string" && t.id ? t.id : `tpl-${i}-${Date.now()}`,
+      name: typeof t?.name === "string" && t.name ? t.name : `模板${i + 1}`,
+      times: cleanTimes(t?.times),
+    }));
+    source = "templates";
+  } else if (legacy.length > 0) {
+    templates = [{ id: "custom", name: "自定义", times: legacy }];
+    source = "legacy";
+  } else {
+    templates = seedClassTemplates();
+    source = "seed";
+  }
+
+  const ids = new Set(templates.map((t) => t.id));
+  const week: { [day: number]: string | null } = {};
+  const fw = c?.classWeek;
+  if (source === "legacy") {
+    // 旧 classTimes 迁移：全 7 天指向唯一模板
+    for (let d = 0; d <= 6; d++) week[d] = templates[0].id;
+  } else if (source === "seed") {
+    Object.assign(week, seedClassWeek());
+  } else if (fw && typeof fw === "object") {
+    // 已配置模板：以存储的映射为准；仅当 classWeek 缺省（对象缺失）时给第一个模板兜底
+    for (let d = 0; d <= 6; d++) {
+      const v = fw[d];
+      week[d] = typeof v === "string" && ids.has(v) ? v : null;
+    }
+  } else {
+    for (let d = 0; d <= 6; d++) week[d] = templates[0].id;
+  }
+  return { classTemplates: templates, classWeek: week };
+}
+
+/**
+ * ISSUE-059：按「今天星期几」解析当前生效的课程时间段（先查 classWeek → 取对应模板的 times）。
+ * 运行时提醒（scheduler.ts 每分钟轮询）与前端「今日课程」展示共用。
+ */
+export function getEffectiveClassTimes(cfg: SchedulerChildConfig, now: Date): ClassTime[] {
+  const day = now.getDay(); // 0=周日..6=周六
+  const tplId = cfg.classWeek?.[day] ?? null;
+  if (!tplId) return [];
+  const tpl = (cfg.classTemplates || []).find((t) => t.id === tplId);
+  if (!tpl) return [];
+  return cleanTimes(tpl.times);
 }
 
 /** HH:mm（本地时区，两位补零），用于时间点匹配。 */
@@ -214,15 +329,7 @@ export function getChildSchedulerConfig(childId: string): SchedulerChildConfig {
     },
     autoNewSession: { ...DEFAULT_CHILD_CONFIG.autoNewSession, ...(c.autoNewSession || {}) },
     archiveLimit: c.archiveLimit ?? DEFAULT_CHILD_CONFIG.archiveLimit,
-    classTimes: Array.isArray(c.classTimes)
-      ? c.classTimes
-          .map((t) => ({
-            start: String(t?.start ?? ""),
-            end: String(t?.end ?? ""),
-            label: t?.label ? String(t.label) : undefined,
-          }))
-          .filter((t) => t.start && t.end)
-      : [],
+    ...normalizeClassSchedule(c),
     classAlertMode:
       c.classAlertMode === "chime" || c.classAlertMode === "voice"
         ? c.classAlertMode
@@ -258,15 +365,7 @@ export function setChildSchedulerConfig(
       typeof childConfig.archiveLimit === "number"
         ? childConfig.archiveLimit
         : DEFAULT_CHILD_CONFIG.archiveLimit,
-    classTimes: Array.isArray(childConfig.classTimes)
-      ? childConfig.classTimes
-          .map((t) => ({
-            start: String(t?.start ?? ""),
-            end: String(t?.end ?? ""),
-            label: t?.label ? String(t.label) : undefined,
-          }))
-          .filter((t) => t.start && t.end)
-      : [],
+    ...normalizeClassSchedule(childConfig),
     classAlertMode:
       childConfig.classAlertMode === "chime" || childConfig.classAlertMode === "voice"
         ? childConfig.classAlertMode
@@ -502,11 +601,12 @@ export function startScheduler(): void {
         }
       }
 
-      // ISSUE-019：课程时间段提醒（上课/下课）——到点广播给孩子端（前端显示顶部 1/3 横幅
-      // + 铃声/语音播报）。start/end 各自每天只触发一次（lastKey 防重；key 含日期，跨天自动失效）。
-      if (cc.classTimes && cc.classTimes.length > 0) {
+      // ISSUE-059：先按「今天星期几」解析生效模板的时间段，再遍历提醒（改动仅这一处消费点）。
+      // 周末若 classWeek 指向 null/空模板则不提醒；改模板内容即时生效，不必改星期映射。
+      const effectiveClassTimes = getEffectiveClassTimes(cc, now);
+      if (effectiveClassTimes.length > 0) {
         const nowMin = hhmm(now);
-        for (const ct of cc.classTimes) {
+        for (const ct of effectiveClassTimes) {
           if (!ct.start || !ct.end) continue;
           const fire = (type: "start" | "end") => {
             const key = `${now.toDateString()}:${type}:${type === "start" ? ct.start : ct.end}:${ct.label || ""}`;

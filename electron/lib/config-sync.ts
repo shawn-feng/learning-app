@@ -112,12 +112,13 @@ async function reconcileMissingSecrets(serverConfig: Record<string, unknown>): P
  *   服务端不认识的本地 child 也整体保留。
  * 其余 key（app_settings/auth）维持原浅合并。
  *
- * 额外防丢失：服务端某 child 的 classTimes 若「缺键或空数组」而本地非空，视为服务端快照过期/未同步到
- * （classTimes 是家长设备本地配置、非任务驱动，见 server task-runs 注释「客户端据此合并 classTimes 推回」），
- * 保留本地，避免回拉把已配课程表清空。其余字段（recording/todo/autoNewSession/archiveLimit/classAlertMode）
+ * 额外防丢失：服务端某 child 的课程表字段（classTimes / classTemplates / classWeek）若「缺键或空」
+ * 而本地非空，视为服务端快照过期/未同步到（课程表是家长设备本地配置、非任务驱动），
+ * 保留本地，避免回拉把已配课程表/星期映射清空。ISSUE-059 起课程表升级为「模板 + 星期映射」，
+ * 故此处同时保护 classTemplates 与 classWeek。其余字段（recording/todo/autoNewSession/archiveLimit/classAlertMode）
  * 一律以服务端为准。
  */
-const CLASS_FIELD = "classTimes" as const;
+const CLASS_FIELDS = ["classTimes", "classTemplates", "classWeek"] as const;
 
 function hasContent(v: unknown): boolean {
   return Array.isArray(v) ? v.length > 0 : !!v;
@@ -138,9 +139,11 @@ function mergeChildConfigs(
       merged[cid] && typeof merged[cid] === "object" ? (merged[cid] as Record<string, unknown>) : {};
     const incomingChild = c && typeof c === "object" ? (c as Record<string, unknown>) : {};
     const next = { ...localChild, ...incomingChild };
-    // 服务端 classTimes 空/缺而本地非空 → 保留本地课程表（防 ISSUE-053 数据丢失）
-    if (hasContent(localChild[CLASS_FIELD]) && !hasContent(incomingChild[CLASS_FIELD])) {
-      next[CLASS_FIELD] = localChild[CLASS_FIELD];
+    // 服务端课程表字段（classTimes/classTemplates/classWeek）空/缺而本地非空 → 保留本地（防 ISSUE-053 / ISSUE-059 数据丢失）
+    for (const field of CLASS_FIELDS) {
+      if (hasContent(localChild[field]) && !hasContent(incomingChild[field])) {
+        next[field] = localChild[field];
+      }
     }
     merged[cid] = next;
   }

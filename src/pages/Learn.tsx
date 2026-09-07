@@ -193,9 +193,9 @@ function playReminderAlert(mode: "both" | "chime" | "voice", type: "start" | "en
   }
 }
 
-/** ISSUE-019/026：今日课程——实时时钟 + 当天课程时间段（上课-下课）。
+/** ISSUE-019/026/059：今日课程——实时时钟 + 当天课程时间段（按星期映射取生效模板）。
  *  ISSUE-026 起弹框内全量展示（不再有折叠分支）；独立组件每秒时钟只重渲染自身；
- *  配置经 scheduler:config:get 取当前孩子的 classTimes（家长在定时任务里配置）。 */
+ *  配置经 scheduler:config:get 取当前孩子的 classTemplates/classWeek，按今天星期解析生效模板的时间段。 */
 function SidebarClassSchedule({ childId }: { childId: string }) {
   const [classTimes, setClassTimes] = useState<{ start: string; end: string; label?: string }[]>([]);
   const [now, setNow] = useState(() => new Date());
@@ -207,7 +207,12 @@ function SidebarClassSchedule({ childId }: { childId: string }) {
       .then((res: any) => {
         if (!alive || !res?.success) return;
         const cfg = res.configs?.[childId];
-        setClassTimes(Array.isArray(cfg?.classTimes) ? cfg.classTimes : []);
+        // ISSUE-059：按今天星期几取生效模板的时间段（周末可指向不同模板或「不提醒」）
+        const week = (cfg?.classWeek || {}) as { [d: number]: string | null };
+        const day = new Date().getDay();
+        const tplId = week[day] ?? null;
+        const tpl = (cfg?.classTemplates || []).find((t: any) => t.id === tplId);
+        setClassTimes(tpl ? (tpl.times || []) : []);
       })
       .catch(() => {
         /* 取配置失败保持空 */

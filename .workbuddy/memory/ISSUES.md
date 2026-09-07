@@ -1298,3 +1298,143 @@
   - 生产修复留存脚本：`tmp/deploy/transcode_yunlv.py` + `replace_yunlv.py`（HEVC→H.264 覆盖同路径 + 刷新索引）；`fix_yunlv_index.js`（磁盘有文件但索引缺时补索引）；诊断 `probe_mp4_codec.py`。
 - **优先级**：高（若不约束，agent 自动制作含 HEVC 视频或绕道上传的资料，孩子端会持续出现黑屏/404，用户观感差）
 - **记录时间**：2026-09-06
+
+## [ISSUE-057] 家长端删除孩子：该孩子 uuid 目录（本地 + 服务端真源）未清理
+- **类型**：Bug（删除不彻底 / 孤儿数据残留）
+- **现象**：家长界面删除一个孩子后，`data` 目录里以该孩子 `uuid` 命名的文件夹没有被删除（本地 `data/children/<uuid>` 残留；SPLIT 下服务端真源的孩子数据也残留）。
+- **当前删除链路（已读代码）**：
+  - 前端：`src/components/ChildDetailPage.tsx:60-71` `handleDeleteChild` → `window.api.childDelete(child.childId)`。
+  - IPC：`electron/lib/ipc-handlers.ts:269-272` `child:delete` → `deleteChild(childId)`。
+  - 客户端删目录：`electron/lib/child-auth.ts:323-337` `deleteChild` —— `fs.rmSync(getChildDir(childId), {recursive,force})`（`getChildDir`=`data/children/<uuid>`，见 `electron/lib/config.ts:73`），随后调服务端 `DELETE /children/:id`（失败仅跳过）。
+  - 服务端删行：`server/src/routes/children.ts:169-179` `DELETE /children/:id` —— **仅 `DELETE FROM children WHERE id=?` 删 DB 行**，注释明示「kb 文件本期保留（防误删学习数据）」，**不做物理删除**。
+- **根因（两处缺口）**：
+  1. **本地竞态（client）**：`deleteChild` 删目录前**未 dispose 内存会话**——`pi-session.ts` 的 `activeSessions` 里该孩子的主会话 + 各课程子会话（`key=childId` / `childId|courseKey`）仍驻留；若删除时孩子会话活跃或删除后任何代码路径触碰 `getChildSession/createChildSession`/`SessionManager` 落盘，会**重建 `data/children/<uuid>/.pi/agent/sessions/...`**，表现为「删了又回来/删不干净」。
+  2. **服务端真源不清理（SPLIT 主因）**：服务端按 `childId` 散存多处真源数据，但 `DELETE /children/:id` 一个都不删：
+     - kb：`server/src/db/kb.ts:3` `<dataDir>/kb/<parentId>/<childId>.sqlite`（`openKb`，backup.ts:216/260 同路径）。
+     - 会话：`server/src/db/sessions.ts:13-14` `<dataDir>/sessions/<parentId>/<childId>/`（`getSessionsDir`）。
+     - 资料：`server/src/db/materials.ts:38` `<dataDir>/materials/<parentId>/<topic>/...`（该孩子名下资料文件）。
+     - 此外 `courses`/`daily_entries`/`todo_items`/`study_plan_items`/`exam_*` 等表里的孩子行也残留。SPLIT 下服务端是真源，这些 uuid 关联产物全部变成孤儿。
+- **修改入口 / 修复方向**：
+  - **客户端（防竞态）**：`electron/lib/child-auth.ts:323` `deleteChild` 在 `fs.rmSync` **之前**，先 `disposeChildSession`/清空 `activeSessions` 中所有 `key` 以 `childId` 开头（主+`childId|*` 课程子会话）的条目并 `await` flush，杜绝重建。
+  - **服务端（清真源）**：`server/src/routes/children.ts:169` `DELETE /children/:id` 删行后，物理清理：
+    - `fs.rmSync(path.join(dataDir,"kb",parentId,\`${id}.sqlite\`),{force:true})`；
+    - `fs.rmSync(path.join(dataDir,"sessions",parentId,id),{recursive,force:true})`；
+    - 该孩子 `materials` 子树（先查 `materials` 表取其 `rel_path` 逐个 `unlink`，再删表行），参考 `materials.ts:160-163` 的单条删法；
+    - 联动删 `courses/daily_entries/todo_items/study_plan_items/exam_*` 中 `child_id=id` 的行（或保留表行仅标孤儿——但目录与 kb 必须物理删）。
+  - 删前可加二次确认已在 `ChildDetailPage.tsx:61` 的 `confirmDialog` 层（文案已写「不可撤销」），无需再加。
+- **优先级**：高（删除不彻底 → 本地/服务端累积 uuid 孤儿目录与 kb，既占空间又可能在重新建同名 uuid 时串数据；SPLIT 下服务端真源残留是主因）
+- **记录时间**：2026-09-06
+
+## [ISSUE-058] 201 生产环境：21:00 recording 任务在同一孩子会话里当天执行多次（珊珊 3 次 / 闻闻 2 次）
+- **类型**：Bug（服务端无头 worker 调度去重非原子 / 并发重叠 → recording 多点触发）
+- **现象**：201 生成环境上，配置 21:00 的 recording（每日对话总结写 daily）任务，在一个孩子维度当天被跑了多次。例：2026-09-06 珊珊执行 3 次、闻闻执行 2 次（次数随孩子不同，非全环境一致）。
+- **调度去重机制（已读代码 `server/src/worker/scheduler.ts` + `db/sessions.ts`）**：
+  - cron `*/2 * * * *` 每 2 分钟跑 `runWorkerTick`（scheduler.ts:71/256）。
+  - 桶匹配：`pointInBucket`（:110）把配置点（如 21:00）映射到 5 分钟桶 [21:00,21:05)，覆盖本桶内所有 2 分钟 tick（21:00/21:02/21:04 共 3 跳）。
+  - 去重：`alreadyRanToday`（:166）读 `worker_state.last_key`（children+task="recording"）的「当天已跑点集合」；跑完才在 `runTaskAtPoint`（:238-252）`setWorkerState` 把该 point 写进集合（跨天自动失效）。
+  - `worker_state` 读写（`db/sessions.ts:282-302`）是**普通 `SELECT last_key` + `INSERT...ON CONFLICT DO UPDATE`**，**非事务原子 claim，无行锁**。
+- **根因（按可能性排序，均为「去重游标检查→异步 LLM 跑批→才写去重」之间无锁」的变体）**：
+  1. **【主因·同进程跨 tick 重叠】node-cron 不防同一回调重叠执行**：recording 实际是 `createWorkerEphemeralSession` + LLM 提取 + 写 daily（tasks.ts:199-225），对话多/慢的孩子一次要数十秒到 >2 分钟。21:00 那跳刚启动、还没写完 `worker_state` 时，21:02 / 21:04 的 tick 已触发，`alreadyRanToday` 仍读 false → **再次启动 recording**。重叠 tick 数 ≈ 一次 recording 耗时 / 2 分钟；珊珊更话唠→summary 更久→叠 3 跳，闻闻较短→叠 2 跳。**单进程即可解释 3 vs 2**。
+  2. **【次因·多进程并发竞态】201 上若有 >1 个 learning-server 进程**（systemd 重启动留孤儿 / `node server.cjs` 手动多开 / PM2 cluster），各进程独立 `startWorkerScheduler` 共享同一 `server.sqlite`，但 `worker_state` 的 read→write 非原子（无 `BEGIN IMMEDIATE`/无 SELECT FOR UPDATE）→ 并发进程都读到「未跑」→ 各跑一次。N 进程最坏 N 次，且因错误重试（status==="error" 不写去重，下一跳再跑）会更多。
+  3. **【待查·多任务行】** `buildEffectiveChildConfig`（task-runs.ts:206-209）把一个孩子分配的**所有 recording 任务行的 `time`  Collect 成 `times` 数组**，去重键是 `(childId,"recording",point)`，`point` 取各自 `time`。若某孩子被建了多条 recording 任务且 `time` 不同（如 21:00/21:01/21:02，UI 可重复添加且分配无去重），则同一桶内每个不同 point 各跑一次 → 珊珊 3 条/闻闻 2 条也会直接成立。需查 `scheduler_tasks` 实际行数。
+  4. **【次要·客户端双跑】** 客户端本地 recording 已用 `!hasServerFeature("worker")` 守卫（electron/lib/scheduler.ts:466/602），201 服务端 `SERVER_FEATURES` 含 `worker`（version.ts:12，v0.3.3）→ 正常情况下客户端不跑。但**旧客户端 / feature 协商失败的客户端仍会本地跑 recording** → 叠加服务端，次数+1。属兜底排查项。
+- **副作用**：多次执行时各自独立 `readServerDailyConversation` + 并发 `kb_insert`，因首跑尚未写 daily 故后续并发跑都判「无 existing」→ **同一天 daily 出现重复条目**（也可反向佐证本 issue）。
+- **201 上确认步骤（取证据定主因）**：
+  1. `ps aux | grep -E "server.cjs|learning-server" | grep -v grep` —— 看是否 >1 进程（验证假设 2）。
+  2. `sqlite3 /opt/learning-server/data/server.sqlite "SELECT id,type,time,extra_json FROM scheduler_tasks WHERE parent_id='<pid>' AND type='recording';"` 及 `... assignments` —— 看珊珊/闻闻各被分了几条 recording、time 分别是什么（验证假设 3）。
+  3. `sqlite3 ... "SELECT child_id,point,status,startedAt,finishedAt FROM task_runs WHERE date='2026-09-06' AND taskType='recording' ORDER BY child_id,startedAt;"` —— 直接数每人几次、各 point、耗时（若单进程且耗时>2min 即印证假设 1）。
+  4. `sqlite3 ... "SELECT child_id,last_key FROM worker_state WHERE task='recording';"` —— 看去重集合是否真写了（若为空说明写入失效）。
+- **修复入口 / 方向**：
+  - **同进程锁（最小、必做）**：在 `runWorkerTick`（:263-276）启动 `runTaskAtPoint` 前，用进程内 `Set<string>`/`Map` 做 `childId|taskType|point` 的 in-flight 锁——`alreadyRanToday` 与「加锁」原子判定，跑完（含成功/失败/skip）再释放；彻底消除 node-cron 重叠。可与 `runWorkerCatchUp`（:287）共用同一把锁。
+  - **多进程原子 claim（若确认多进程）**：把 `worker_state` 去重改为原子占有——新增 `worker_locks(child_id,task,point,date)` 唯一键，`runTaskAtPoint` 开头 `INSERT ... ON CONFLICT DO NOTHING`：插入成功=抢占执行，失败=跳过；或用 `BEGIN IMMEDIATE` 事务包住「查+写」。`setWorkerState` 现有 `last_key` 写法保留作可见游标。
+  - **单实例保证**：201 部署确保只有 1 个 `node /opt/learning-server/server.cjs`（systemd `Type=simple` 单实例 + `Restart=on-failure`，勿手动多开；必要时加 PID/文件锁防双启）。
+  - **recording 任务去重建模**：`buildEffectiveChildConfig` 对同类型任务按 `time` 去重（同 time 多条合并为一条），根绝假设 3 的「多行多 time 各跑一次」。
+- **优先级**：高（每日总结重复写 daily、浪费 LLM token、且重复条目污染家长「每日记录」回看；201 生产可复现）
+- **记录时间**：2026-09-06
+
+## [ISSUE-059] 课程时间表优化：按「模板 + 星期」分配（上学日 / 周末分别设置，周末可不固定）
+- **类型**：需求 / 功能增强（在 ISSUE-019 课程时间段基础上增加「按星期套用不同时间表」能力）
+- **场景（用户原话）**：周一到周五正常上学的课程时间，和周六日不一样；周六日往往不固定，需要单独设置。希望有类似模板的功能——先定义好几个时间表模板，再指定「哪些天用哪个模板」。
+- **当前实现（已读代码，确认无星期维度）**：
+  - 数据结构：`SchedulerChildConfig.classTimes: { start: string; end: string; label?: string }[]`（src/components/SchedulerSettings.tsx:10），**每个孩子一份扁平数组，不区分星期**。electron 侧 `ClassTime`/`DEFAULT_CHILD_CONFIG.classTimes: []`（electron/lib/scheduler.ts:47/118）同源。
+  - 消费点（提醒触发）：`electron/lib/scheduler.ts:507-524` 每分钟轮询，对 `cc.classTimes` 每个段比较 `nowMin === ct.start/ct.end` 即广播 `broadcastClassReminder`（孩子端顶部 1/3 横幅 + 铃声/语音）。**触发只看「时刻」不看「星期」**——所以当前所有天用的是同一份表，无法满足「周末另设」。
+  - 配置落盘 + 同步：`schedulerConfigSet` → `scheduler_config.children[childId].classTimes`；`config-sync.ts:106-145` 已对 `classTimes` 做按 childId 深合并 + 「服务端空/缺时保留本地」防丢失（ISSUE-053 加固）。新增模板字段需同等保护，否则换设备/同步会丢表。
+  - 只读展示：`electron/lib/app-config.ts:179-186` `scheduler.classTimes` 把每个孩子的 times 拼成 `08:00-09:30(语文), ...` 文本，新增模板后此处需改为「按星期展示模板归属」。
+- **需求拆解**：
+  1. 支持定义多个「时间表模板」（每个模板 = 一组 `{start,end,label}` 段，可命名如「上学日」「周末」「假期」）。
+  2. 支持把每个星期（周一~周日）映射到某个模板（默认建议：周一~周五→「上学日」，周六~周日→「周末」）。
+  3. 运行时按「今天星期几」选模板 → 取该模板的段做提醒（替代当前无差别全量）。
+  4. 周末「不固定」：模板可留空（该天不提醒），或随时改模板内容立即生效，不必改星期映射。
+- **设计建议（推荐方案 A，已在思考中权衡）**：
+  - **数据模型**：把扁平 `classTimes` 升级为
+    ```
+    classTemplates: { id: string; name: string; times: ClassTime[] }[]   // 模板库
+    classWeek: { [day: number]: string | null }   // day 0=周日..6=周六，值为 templateId；null=当天不提醒
+    ```
+    默认种子：`classTemplates=[{上学日,times:[]},{周末,times:[]}]`，`classWeek={1..5:上学日id, 0:周末id, 6:周末id}`。
+  - **向后兼容**：旧 `classTimes` 非空的孩子，迁移为「一个『自定义』模板 + classWeek 全 7 天指向它」，行为不变（避免升级即丢表）。
+  - **运行时解析**：新增 `getEffectiveClassTimes(childConfig, now)`：按 `now.getDay()` 查 `classWeek` → 取对应 `classTemplates` 的 `times`，返回给 scheduler.ts:507 处原逻辑（改动仅 1 处消费点，其余复用）。
+  - **UI（SchedulerSettings.tsx:391-514 重构）**：① 模板管理区（增/删/改名 + 每个模板内独立的多段 time 编辑，复用现有时间段行组件）；② 7 行「星期 → 模板下拉」映射表（含「不提醒」选项）。两区用一个「课程时间表（模板）」折叠块包裹。
+  - **为什么不用「仅上学日/周末两个固定预设」**：用户明确说「类似模板的功能，哪些天用什么模板」→ 通用模板更贴合，且能扩展「假期」「考试周」等；固定双预设是方案 B（更简单但扩展性差），可作 MVP。
+- **修改入口 / 方向**：
+  - `src/components/SchedulerSettings.tsx:10,39-48,391-514`：接口加 `classTemplates/classWeek` + 默认；UI 重构为模板管理 + 星期映射。
+  - `electron/lib/scheduler.ts:47,118,217-229,261-273,507-524`：类型扩展；新增 `getEffectiveClassTimes`；:507 改为先解析今日模板再遍历。
+  - `electron/lib/config-sync.ts:120-145`：把 `CLASS_FIELD` 保护从单一 `classTimes` 扩展到 `classTemplates`/`classWeek`（含旧表迁移兼容，防 ISSUE-053 式丢失）。
+  - `electron/lib/app-config.ts:179-186`：只读展示改为「周一~周五：上学日(…) / 周六~周日：周末(…)」式按星期呈现。
+  - 服务端若也有 classTimes 引用（task-runs 注释提到「客户端据此合并 classTimes 推回」），一并同步字段。
+- **处理状态（2026-09-07 已实现）**：按推荐方案 A 落地。
+  - `electron/lib/scheduler.ts`：`SchedulerChildConfig` 增 `classTemplates`/`classWeek`；新增 `normalizeClassSchedule`（旧扁平 classTimes 迁移为「自定义」模板 + 全 7 天指向它，行为不变）与 `getEffectiveClassTimes(cfg, now)`；`get/setChildSchedulerConfig` 走归一；:507 提醒循环改为先按今天星期解析生效模板再遍历（仅 1 处消费点）。
+  - `src/components/SchedulerSettings.tsx`：折叠块「课程时间表（模板）」= ① 模板管理区（增/删/改名 + 每模板独立多段时间段编辑，复用行组件）+ ② 7 行「星期→模板下拉」（含「不提醒」）；`classAlertMode` 任一模板有段时显示；加载时旧 classTimes 就地迁移。
+  - `electron/lib/config-sync.ts`：`CLASS_FIELDS` 保护从单一 `classTimes` 扩展到 `classTemplates`/`classWeek`，防 ISSUE-053 式丢表。
+  - `electron/lib/app-config.ts`：`scheduler.classTimes` 只读展示改为按星期逐日呈现（周一~周日：模板名(时间段) / 不提醒）。
+  - `src/pages/Learn.tsx`：今日课程按今天星期取生效模板时间段。
+  - `server/src/worker/tasks.ts`：`WorkerSchedulerChildConfig` 增可选 `classTemplates`/`classWeek`（结构对齐，服务端不参与调度）。
+  - 测试：`test/archive-limit.test.ts` 两个旧 classTimes 用例改为模板模型用例（迁移 + getEffectiveClassTimes 验证），7/7 通过；`tsc --noEmit` 与 esbuild 转译均通过。
+- **优先级**：中（不影响现有提醒，属增强；但周末场景当前完全无法满足，家长痛点明确）
+- **记录时间**：2026-09-07
+
+## [ISSUE-060] 学习资料 iframe ↔ 主页面通讯：开放「作者可控」协议（特定操作才通讯 + 接口契约）
+- **类型**：需求 / 架构增强（在学习资料桥 `page-bridge` 现有「自动全量采集」之外，增加「作者按协议主动通讯」能力）
+- **需求（用户原话）**：左侧 iframe 与主页面的通讯能否定制——iframe 里执行了「特定操作」才有通讯；能否采用一种接口协议，制作 html 时即可按协议设计「要传递的数据 + 时机」。
+- **现状（已读代码，确认当前是「自动、全量、不可控」）**：
+  - 桥脚本 `BRIDGE_SCRIPT`（`src/lib/page-bridge.ts:98-438`）被 `injectBridge`（`page-bridge.ts:447`）**无条件注入每一份资料 html**，运行在 `sandbox="allow-scripts"` 不透明源 iframe 内。
+  - 它**自动**挂 `click/scroll/change/submit/pagehide/mouseup/dblclick + speechSynthesis` 监听，把 `page:event`（kind∈open|click|scroll|input|submit|pagehide|tts|tts-cancel|lookup）经 `postMessage` 上抛（`page-bridge.ts:226-310`）。**采集时机与数据形状完全由桥写死，资料作者无法干预**——即「不特定操作也一直在通讯」。
+  - 父页面 `src/components/MaterialsPanel.tsx:182-246` 的 `message` handler 只认 `page:*` 前缀：tts→edge-tts、lookup→查词浮层、其余→节流后 `onPageEvent` 上抛给 Learn→注入 agent。**没有「作者自定义事件 / 请求-响应」的任何通道**。
+  - `PageEventKind` 是封闭 union（`page-bridge.ts:18`），无自定义类型；`onPageEvent` 回调（`MaterialsPanel.tsx:37`）只转发固定 `PageEvent`，资料作者没法带任意 payload。
+- **需求拆解**：
+  1. **可控触发**：资料作者能决定「什么操作才通讯」——而非桥全量自动抓。默认保留现状（兼容旧资料），但允许资料声明「手动模式」关掉 blanket 采集。
+  2. **接口协议（契约）**：给作者一份稳定协议——规定消息信封、上行（自定义事件）、下行（宿主能力）的类型与字段；作者据此在 html 里 `emit('动作', {数据})` 并在「想要的时机」调用。
+  3. **数据可设计**：作者能带任意结构化 payload（如 `emit('submit-answer',{qid,answer,correct})`），父页面透明上抛给 agent，让孩子/家长 agent 知道「资料里发生了 X 并带了 Y」。
+  4. **（进阶）请求-响应**：资料可向宿主「调用」能力并拿回结果（如 `request('goto-course',{topic})`、`request('get-progress',{})`），形成真正的「接口」。
+- **设计建议（推荐方案：开放 PiBridge SDK + 信封协议）**：
+  - **信封**：所有自定义消息走统一信封 `{ __pi: 1, kind: "app"|"app-req"|"app-res", ... }`，与现有 `page:*` 自动事件区分，互不干扰。
+  - **上行（iframe→主）**：`kind:"app"` = 作者自定义事件 `{ action: string, payload?: any, ts }`。父 handler 收到后，转成 `PageEvent` 新 kind `"app"`（`detail={action,payload}`）走原 `onPageEvent` 通道，agent 即知「资料触发了某动作」。
+  - **请求（可选 v2）**：`kind:"app-req"` 带 `requestId` + `action` + `payload`；父页面经新增 prop `onAppRequest(action,payload):Promise<result>` 交给 Learn/agent 处理（跳转课程、取进度等），回执 `kind:"app-res"` + `requestId`。
+  - **SDK（让作者不必手搓 postMessage）**：在 `BRIDGE_SCRIPT` 里暴露稳定全局 `window.PiBridge = { emit(action,payload), request(action,payload):Promise }`（request 内部生成 requestId 并挂一次性 `message` 监听收 `app-res`）。这就是「协议」官方客户端，作者只需 `PiBridge.emit(...)`。
+  - **手动模式（满足「只有特定操作才通讯」）**：注入前识别资料是否声明 `<meta name="pi-bridge" content="capture=manual">` 或 `window.__PI_CAPTURE_MANUAL=1` → 桥**不挂** click/scroll/lookup 等 blanket 监听，仅保留 `page:ready` 握手 + `PiBridge` 出口 + speechSynthesis 接管。默认仍为 auto（向后兼容）。
+  - **协议文档**：新增 `docs/MATERIAL-BRIDGE-PROTOCOL.md`，枚举信封、上行/下行消息类型、`PiBridge` API、字段约束与示例（含「随堂测验资料 emit('submit-answer')」「绘本 request('goto-course')」），`page-bridge.ts` 顶部注释引用。
+- **修改入口 / 方向**：
+  - `src/lib/page-bridge.ts`：① `PageEventKind` 加 `"app"`（:18）；② 新增 `PiAppEvent`/`PiAppRequest`/`PiAppResponse` 类型与 `PI_APP_MSG_*` 常量；③ `BRIDGE_SCRIPT` 内：a) 暴露 `window.PiBridge.emit/request`，b) 识别 `capture=manual` 跳过 blanket 监听（:226-310），c) 监听 `app-res` 兑现 request Promise；④ `injectBridge`（:447）支持把 manual 标志前置注入。
+  - `src/components/MaterialsPanel.tsx`：handler（:182-246）识别 `__pi` 信封——`app`→转 `PageEvent{kind:"app"}` 走 `onPageEvent`；`app-req`→调新 prop `onAppRequest` 并 `postMessage(app-res)`；`window.PiBridge` 存在性兼容。
+  - 类型导出：`MaterialsPanelHandle`/Props 增加 `onAppRequest?`；`Learn.tsx` 实现该 prop，把 app 事件/请求接入 agent 上下文（让 agent 感知资料内动作）。
+  - `docs/MATERIAL-BRIDGE-PROTOCOL.md`（新建）：协议规范 + 示例。
+  - `electron/lib/programming-agent.ts`：**制作侧主入口**——`buildProgrammingPrompt`（:28）内嵌协议默认约定（默认用 `PiBridge` 上报互动 + 可用 request 调宿主），使所有经 `generateHtmlLesson` 产出的网页自动合规；无需改动各学习 agent 的 prompt。
+- **附：agent 如何「知道」协议、又如何「用它做网页」（家长 agent + 孩子 agent 双视角，仅讨论）**
+  - **⚠️ 两个 page-bridge.ts 别混淆（已读代码确认）**：
+    - 渲染层 `src/lib/page-bridge.ts`：定义 `PageEventKind` 联合、`PageEvent`、`BRIDGE_SCRIPT`（注入资料 html 的桥）、`injectBridge`、渲染层类型。协议**类型 + SDK(`window.PiBridge`)** 落这里。
+    - 主进程 `electron/lib/page-bridge.ts`：定义 `PageBridgeEvent`、`queuePageEvent`(130)、`formatPageEvent`(59)、`executePageAction`、`recentInteractions`。**运行时把事件转成文注入 agent** 落这里。两处都要改，且互相通过 IPC（`pi:page:event`，ipc-handlers.ts:83）衔接。
+  - **A. 孩子 agent 怎么「感知」资料里发生的自定义动作（运行时消费侧）**：
+    - 现有链路（已读 `Learn.tsx:643` + `ipc-handlers.ts:83` + `electron/lib/page-bridge.ts:130/59`）：资料事件 → `MaterialsPanel.onPageEvent` → `Learn.handlePageEvent` → `window.api.pageEvent` → IPC `pi:page:event` → `queuePageEvent` → `formatPageEvent` 转自然语言 → 经 `session.steer`/`followUp`（或 `takePendingPageEvents` 附到下一轮消息）注入孩子 agent 上下文。即孩子 agent “看到”的是一段中文描述。
+    - **当前缺口（必须补）**：`formatPageEvent` 的 `default` 分支只输出 `有互动事件（${kind}）`——自定义 `app` 事件会变成「有互动事件（app）」，**action 与 payload 全丢**，agent 不知发生了啥。需加 `case "app"`：`在资料「${title}」中触发了动作「${detail.action}」，数据：${JSON(detail.payload)}`（`detail` 须携带 action+payload，渲染层 `PageEvent` 的 `detail` 已留 `action?` 字段可复用）。
+    - **行为规范（让 agent 会“用”这些事件）**：孩子 agent 的行为规范在 `LEARNING_NAV_INSTRUCTIONS`（pi-session.ts，经 `buildAgentsMd` 生成）里要新增一段：「学习资料可能通过桥协议上报自定义互动（动作 action + 任意数据 payload）；你要据此知情并适当回应/记录（如孩子提交答案后给予反馈、把对错记入学习记录）。」否则模型只收到一句描述却不知道该怎么处理。
+  - **B. 「做网页的 agent」怎么「知道协议、从而做出合规网页」（制作侧，已读代码修正）**：
+    - **⚠️ 关键架构事实（已读 `programming-agent.ts`）**：实际**动手写 HTML 的不是家长/孩子学习 agent，而是专门的「编程 agent」**。`generateHtmlLesson`（programming-agent.ts:178）由「调用方学习 agent（家长/孩子）」触发，学习 agent 只提供 `requirement`（需求描述，含结构/内容/交互要求），**真正把需求落成 HTML 代码的是编程 agent**（`buildProgrammingPrompt`，programming-agent.ts:28）。即链路：`学习 agent(家长/孩子)` → 提供 `requirement` → `编程 agent` → 写 HTML 落盘。
+    - **结论（用户 9/7 提问点）**：协议**主要只需告诉「编程 agent」这一处**即可——因为它是 HTML 的唯一作者；家长/孩子学习 agent 只是调用方，**不必**深懂 `PiBridge` API。
+    - **主入口（必改）**：在 `buildProgrammingPrompt`（programming-agent.ts:28）内嵌「协议默认约定」——「生成交互式学习资料时，默认用 `window.PiBridge.emit(action, payload)` 上报关键互动（如提交答案、完成小节）；可用 `PiBridge.request(action,payload)` 调用宿主能力；信封与标准 action 见 `MATERIAL-BRIDGE-PROTOCOL.md`」。把它做成**默认行为**，则无论哪个学习 agent 来调用，产出的网页都自动合规。
+    - **调用方学习 agent（家长/孩子，选改，非必须）**：因编程 agent 已默认用协议，学习 agent 只需在 `requirement` 里**用自然语言描述交互意图**（如「学生提交答案后把结果上报」），不必写具体 API。仅在需要「请求-响应」等进阶能力时，才建议学习 agent 的 prompt（`buildParentPrompt` / `buildAgentsMd`）轻量提示「可要求编程 agent 用 PiBridge 请求宿主能力」。即：**协议知识集中在编程 agent，调用方零/低耦合**。
+    - **唯一真源**：`docs/MATERIAL-BRIDGE-PROTOCOL.md`（信封、`PiBridge.emit/request` API、标准 action 目录、示例）。编程 agent 的 prompt 内嵌「简短契约 + 2 配方（随堂测验 `emit('submit-answer',{qid,answer,correct})`、绘本 `request('goto-course',{topic})`）」；完整文档留作人工参考 / 或给编程 agent 加 `get_material_protocol` 工具按需拉取（避免常驻 token）。
+  - **C. 共享 action 词表（跨 agent 一致性的关键）**：家长 agent 制作时“发明” `action` 字符串，孩子 agent 运行时“解释”它——二者必须对齐。协议文档须定义**标准 action 目录**（种子：`submit-answer`/`complete-section`/`request-help`/`self-check`/`goto-course`…）并约定「自定义 action 须在 payload 自带语义说明」；两 agent 加载同一目录。否则自由命名无法被消费侧理解。
+  - **D. 请求-响应（app-req/app-res）归谁 fulfil**：资料 `PiBridge.request('goto-course',{topic})` 上行后，宿主侧 `onAppRequest`（Learn 实现）可把请求转成「资料请求：goto-course {topic}」观察喂给孩子 agent 由其决策（如切课），或由专用工具直接处理。两边 prompt 都需说明「资料可能向你发请求、你如何响应」。
+  - **E. 版本与兼容**：信封 `__pi` 建议带 `v:1`；旧资料（仅 `page:*`）仍走原通道，新协议默认降级为忽略，避免 breaking。
+- **优先级**：中（增强，向后兼容；但「作者可编程资料」是英语/随堂测验类高质量资料的关键能力，当前完全不具备）
+- **记录时间**：2026-09-07

@@ -179,11 +179,27 @@ export function readConfigValue(key: string, childId?: string): string | null {
       case "scheduler.classTimes": {
         const kids = localChildren();
         if (!kids.length) return "（无孩子配置）";
-        return kids.map((k) => {
-          const c = getChildSchedulerConfig(k.childId);
-          const times = (c.classTimes ?? []).map((t) => `${t.start}-${t.end}${t.label ? `(${t.label})` : ""}`).join(", ");
-          return `- ${k.name}：${times || "（未设置课程时间段）"}`;
-        }).join("\n");
+        const weekNames = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+        return kids
+          .map((k) => {
+            const c = getChildSchedulerConfig(k.childId);
+            const tplById = new Map((c.classTemplates || []).map((t) => [t.id, t]));
+            const line = [1, 2, 3, 4, 5, 6, 0]
+              .map((d) => {
+                const tplId = c.classWeek?.[d] ?? null;
+                const tpl = tplId ? tplById.get(tplId) : null;
+                const times = tpl
+                  ? (tpl.times || [])
+                      .map((x) => `${x.start}-${x.end}${x.label ? `(${x.label})` : ""}`)
+                      .join("、")
+                  : "";
+                const desc = tpl ? `${tpl.name}${times ? `（${times}）` : "（未排课）"}` : "不提醒";
+                return `  ${weekNames[d]}：${desc}`;
+              })
+              .join("\n");
+            return `- ${k.name}\n${line}`;
+          })
+          .join("\n");
       }
       case "profile.name":
       case "profile.age":
