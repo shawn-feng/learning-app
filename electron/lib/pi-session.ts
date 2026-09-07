@@ -11,7 +11,7 @@ import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { parseCourseKey } from "./kb-sqlite";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool } from "./custom-tools";
 import { appConfigTool } from "./app-config";
 import { getTodayPlan, fetchTodayPlanRemote, fetchCourseLessonRemote, getCourseLessonCached, type CourseLessonCache } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
@@ -187,6 +187,7 @@ function buildParentPrompt(): string {
 - **资料真源在服务端**：家长工作台里能看到的资料（html/音频/视频）都存在服务端 materials 库。生成资料用本地 write 编辑 → **parent_upload_material 上传到服务端** → parent_course_save 登记，孩子端才读得到（详见下条）。不要以为写进本地 data/parents 目录就算成功。
 - 用 parent_course_save 新建/更新课程（topic 目录名 + title 课程名 + lessonMethod/material/sendMaterial/tags/htmlPath，只覆盖传入的非空字段）；用 parent_course_delete 删除课程（不删共享资料文件）。这两个工具**会自动记录到 activity-log.md**。
 - 生成 html 资料：用 write/edit 写好（html 必须自包含，内联 CSS/JS）。**引用同主题目录下的音视频/子资源一律写相对路径**：媒体文件放同主题的 media/ 子目录，html 里写 media/文件名（如图片等其它资源写其相对路径），渲染时系统会把相对引用自动解析到服务端对应资料（mp4/mp3 音视频会解析成 media:// 协议、图片/css/js 解析成 asset://）——**不要在 html 里写死任何家长 id 的完整 media:// 绝对地址**。然后调用 **parent_upload_material** 把 html 与媒体文件一并上传到服务端（html 传 topic 根、媒体传 topic/media 子目录），再 parent_course_save 把 htmlPath 登记为资料名。
+- **内容对准真实资料（P3）**：起草某课教学文案/思考题/讲解关键点前，若该课有配套音/视频资料，先调 **parent_transcribe_media** 把旁白/讲解语音转成文字再据此起草；若资料是图片型（教材扫描页/截图/图示），先调 **parent_read_image** 读图识别文字与内容。不要只靠文件名猜「方向性」内容、也不要编造片中没有的信息。
 - **整理资料**：资料在服务端由 tools 管理（上传/替换/登记用 parent_upload_material + parent_course_save）；本地散放的临时文件移动/重命名/复制用 **move_file / copy_file**（会自动记录到 activity-log.md，禁止覆盖已存在目标、禁止越出 data/）。
 - **操作记录**：用 write/edit 改了资料文件或内容后，调用 **log_activity** 把这次改动追加记录到 activity-log.md（一句话即可）；家长问「最近改了什么」时 read activity-log.md 回答。
 - **主题级（parent_topic_save）**：新建/更新主题（topic 目录名 + name 中文名 + method 教学方法 + 可选 courses 批量建课 + 可选 assignToChildren 分配给孩子），只覆盖传入非空字段，**会自动记录到 activity-log.md**。
@@ -680,8 +681,8 @@ export async function getParentSession(): Promise<AgentSession> {
     //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录；
     //  study_plan_* 学习计划——家长对话制定「每天学什么」的逐日排期（ISSUE-033，服务端 study_plans 真源）；
     //  parent_library_topics/courses 家长库只读查询——起草排期前读权威主题/课程名册）。
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config", "parent_transcribe_media", "parent_read_image"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool],
   });
 
   cachedParentSession = session;
@@ -726,8 +727,8 @@ export async function getParentContentSession(): Promise<AgentSession> {
     model,
     sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config", "parent_transcribe_media", "parent_read_image"],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool],
   });
 
   cachedParentContentSession = session;

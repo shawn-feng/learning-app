@@ -4,7 +4,9 @@ import fs from "fs";
 import path from "path";
 import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
 import { logActivity, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse, upsertParentTopic, allocateTopicToChild, rewriteMaterialHtmlForRender, followHtmlRedirectRemote, uploadMaterialToServer, DEFAULT_PARENT_ID } from "./parent-library";
-import { getChildrenDir } from "./config";
+import { getChildrenDir, getDataDir } from "./config";
+import { transcribeAudio } from "./voice";
+import { describeImageViaVision, imageMimeFromExt } from "./parent-vision";
 import { fetchMaterialContent } from "./media-protocol";
 import { getTokenSummary, readTokenLog } from "./token-stats";
 import {
@@ -808,6 +810,137 @@ export const parentUploadMaterialTool = defineTool({
         {
           type: "text" as const,
           text: `已上传 ${path.basename(localPath)} 到服务端 <${topic}${subDir ? `/${subDir}` : ""}>，返回路径：${rel}。请用 parent_course_save 把该路径登记为 htmlPath（html 里对音视频/图片用相对路径引用即可，渲染时会自动解析成 media:// / asset:// 协议）。`,
+        },
+      ],
+    };
+  },
+});
+
+/**
+ * P3-1 parent_transcribe_media：家长 agent 转录本地音/视频文件的语音为文字（P3，2026-09-07）。
+ * 用途：家长 agent 起草教学文案/思考题时，能听懂教材配套音频/视频里的旁白/讲解说了什么，
+ * 而不是只靠文件名猜「方向性」内容。复用现有语音 ASR（transcribeAudio，ffmpeg 抽 16k wav →
+ * 千问/MiMo 转写）；与录音通道同一套语音配置（需家长在设置里已开启语音输入并填 ASR 凭证）。
+ */
+export const parentTranscribeMediaTool = defineTool({
+  name: "parent_transcribe_media",
+  label: "转录音频/视频里的语音为文字",
+  description:
+    "把一段本地音频(mp3/m4a/wav/ogg/webm)或视频(mp4)文件里的**人声语音**转成文字返回。\n\n" +
+    "**何时调用**：家长 agent 需要知道某份音/视频资料（教材配套音频、讲解视频等）里到底讲了什么，以便起草对准真实内容的教学文案/思考题/讲解关键点时。转写结果只是纯文字转录，不含时间轴。\n\n" +
+    "**参数**：`localPath`（本地音/视频文件路径，必填；绝对或相对会话工作目录，家长刚上传到 uploads/ 或刚 write 出来的文件）。\n\n" +
+    "**前置**：依赖家长已在「设置 → 语音输入」开启并配置语音识别服务；未配置会报错，请如实告诉家长去设置里开启后重试。较长文件转写可能耗时，请耐心等待结果。\n\n" +
+    "**闭环**：拿到转录文字后，据此起草该课的教学文案/思考问题；若文件尚在本地未上传，起草完成后用 parent_upload_material 上传、parent_course_save 登记。",
+  parameters: Type.Object({
+    localPath: Type.String({
+      description: "要转录的本地音频/视频文件路径（必填；支持绝对或相对会话工作目录的路径，如 parents/default/uploads/xxx.mp3 或 parents/default/materials/lunyu/media/讲解.mp4）",
+    }),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    let localPath = (params.localPath || "").trim();
+    if (!localPath) throw new Error("parent_transcribe_media 需要 localPath 参数");
+    localPath = guardCwd(ctx.cwd, localPath);
+    if (!fs.existsSync(localPath)) {
+      throw new Error(`本地文件不存在：${localPath}（请确认路径后重试）`);
+    }
+    if (fs.statSync(localPath).isDirectory()) {
+      throw new Error(`localPath 是目录不是音频/视频文件：${localPath}`);
+    }
+    const ext = path.extname(localPath).toLowerCase();
+    const AUDIO_VIDEO = [".mp3", ".mp4", ".m4a", ".wav", ".ogg", ".webm", ".flac", ".aac"];
+    if (!AUDIO_VIDEO.includes(ext)) {
+      throw new Error(`不支持的转录格式「${ext}」（支持：${AUDIO_VIDEO.join(" / ")}）`);
+    }
+    let text = "";
+    try {
+      const buf = fs.readFileSync(localPath);
+      text = await transcribeAudio(buf);
+    } catch (e) {
+      const msg = (e as Error).message;
+      // 常见的「未配置/未启用」直接透传并提醒设置入口
+      throw new Error(
+        /未启用|未配置|尚未配置/.test(msg)
+          ? `语音识别未就绪：${msg}（请家长在「设置 → 语音输入」开启并配置语音识别服务后重试）`
+          : `转录失败：${msg}`
+      );
+    }
+    if (!text.trim()) throw new Error("转录结果为空（音频里可能没有人声或过短），请检查文件");
+    try {
+      logActivity(`转录 ${path.basename(localPath)}（${Math.round(text.length / 100) * 100} 字左右）`);
+    } catch (e) {
+      console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
+    }
+    return {
+      content: [
+        { type: "text" as const, text: `已转录「${path.basename(localPath)}」的语音内容如下：\n\n${text.trim()}` },
+      ],
+    };
+  },
+});
+
+/**
+ * P3-2 parent_read_image：家长 agent 用视觉模型读一张本地图片（教材页/截图/图示）的文字与内容。
+ * 一次性旁路会话（不污染家长主对话），visionModel（默认 qwen3-vl-flash）。
+ */
+export const parentReadImageTool = defineTool({
+  name: "parent_read_image",
+  label: "读图（视觉模型识别图片内容/文字）",
+  description:
+    "把一张本地图片（png/jpg/jpeg/gif/webp/bmp）交给视觉模型，返回图中内容描述与识别的文字。\n\n" +
+    "**何时调用**：家长 agent 需要读懂一份图片型资料（教材扫描页、截图、思维导图、图示）里写了什么，以便起草对准真实内容的教学文案/思考题/讲解要点，而不是靠文件名猜。\n\n" +
+    "**参数**：`localPath`（本地图片路径，必填；绝对或相对会话工作目录）；可选 `question`（具体想问/想让模型识别什么，缺省为「描述图片并识别其中全部文字」）。\n\n" +
+    "**前置**：走视觉模型（app-settings 的 visionModel，默认通义千问 qwen3-vl-flash）；若该模型不可用/无凭证会报错，请如实告诉家长到设置 → 模型里配置视觉模型后重试。\n\n" +
+    "**闭环**：拿到图片文字后，据此起草该课教学文案/内容；图片文件本地即可，无需上传服务端。",
+  parameters: Type.Object({
+    localPath: Type.String({
+      description: "要识别的本地图片路径（必填；支持绝对或相对会话工作目录的路径，如 parents/default/uploads/教材页.png）",
+    }),
+    question: Type.Optional(
+      Type.String({ description: "可选：想让模型回答/识别的内容，缺省为描述图片并识别图中全部文字" })
+    ),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    let localPath = (params.localPath || "").trim();
+    if (!localPath) throw new Error("parent_read_image 需要 localPath 参数");
+    localPath = guardCwd(ctx.cwd, localPath);
+    if (!fs.existsSync(localPath)) {
+      throw new Error(`本地文件不存在：${localPath}（请确认路径后重试）`);
+    }
+    if (fs.statSync(localPath).isDirectory()) {
+      throw new Error(`localPath 是目录不是图片文件：${localPath}`);
+    }
+    const ext = path.extname(localPath).toLowerCase();
+    if (![".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].includes(ext)) {
+      throw new Error(`不支持的图片格式「${ext}」（支持：png/jpg/jpeg/gif/webp/bmp）`);
+    }
+    // 图片过大先拒（base64 后进多模态上下文有 token/尺寸限制）
+    const size = fs.statSync(localPath).size;
+    if (size > 15 * 1024 * 1024) {
+      throw new Error(`图片过大（${Math.round(size / 1024 / 1024)}MB，上限 15MB），请压缩后再识别`);
+    }
+    const buf = fs.readFileSync(localPath);
+    const image = {
+      type: "image" as const,
+      mimeType: imageMimeFromExt(localPath),
+      data: buf.toString("base64"),
+    };
+    let text = "";
+    try {
+      text = await describeImageViaVision(getDataDir(), image, params.question);
+    } catch (e) {
+      const msg = (e as Error).message;
+      throw new Error(/未找到可用的 ffmpeg|网络|API key|凭证|401|403/.test(msg) ? `识图失败：${msg}` : `识图失败：${msg}`);
+    }
+    try {
+      logActivity(`识图 ${path.basename(localPath)}`);
+    } catch (e) {
+      console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `「${path.basename(localPath)}」识别结果：\n\n${text}`,
         },
       ],
     };
