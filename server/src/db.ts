@@ -170,6 +170,25 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_exam_schedules_child ON exam_schedules(child_id, scheduled_at);
+    -- 口语评测结果（SSECP 声希引擎）：考核内口语/听说题的维度分存档，供家长端在考核结果内回放/审计。
+    CREATE TABLE IF NOT EXISTS speech_assessments (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      child_id TEXT NOT NULL,
+      topic_key TEXT NOT NULL DEFAULT '',
+      course_name TEXT NOT NULL DEFAULT '',
+      question_type TEXT NOT NULL DEFAULT '',
+      ref_text TEXT NOT NULL DEFAULT '',
+      audio_file_id TEXT NOT NULL DEFAULT '',
+      overall REAL NOT NULL DEFAULT 0,
+      pron REAL NOT NULL DEFAULT 0,
+      dimensions_json TEXT NOT NULL DEFAULT '{}',
+      detail_json TEXT NOT NULL DEFAULT '{}',
+      is_exam INTEGER NOT NULL DEFAULT 0,
+      exam_attempt_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_speech_child ON speech_assessments(child_id, created_at);
     -- 学习计划（ISSUE-033 重构 2026-09-04）：家长对话制定 → 「每天学什么」排期（服务端为数据真源）。
     -- 每行 = 一门课的排期（不再 content JSON 数组塞多课）。mode 区分 学/复习；status/done_at 由 stat 在孩子当天
     -- 实际学/复习完对应课程后写入（家长面板与 carry 都直接读这两列，精确匹配，不靠文本前缀）。

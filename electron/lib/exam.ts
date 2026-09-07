@@ -359,6 +359,44 @@ export async function getExamAudioDataUrl(fileId: string): Promise<string> {
   return `data:audio/webm;base64,${btoa(binary)}`;
 }
 
+// ==================== 口语评测（考核内口语/听说题判分，SSECP 声希引擎） ====================
+
+/** 服务端口语评测结果（与服务端 SpeechAssessment 对应，字段为展示所需子集）。 */
+export interface SpeechAssessment {
+  provider: "aliyun-ssecp";
+  overall: number;
+  pron: number;
+  accuracy?: number;
+  integrity?: number;
+  fluency?: { overall: number; pause?: number; speed?: number };
+  prosody?: { overall: number; sense?: number; stress?: number; tone?: number };
+  words?: { word: string; score: number; dpType?: number; phones?: { phone: string; score: number }[] }[];
+  cnSyllables?: { char: string; score: number; stress?: number }[];
+  audioQuality?: { tipId?: number; snr?: number; clip?: number; volume?: number };
+  raw?: unknown;
+}
+
+/** 调用服务端 SSECP 口语评测（考核内口语/听说题判分）。录音需先经 uploadExamVoice 拿 audioFileId。 */
+export async function assessSpeech(
+  childId: string,
+  audioFileId: string,
+  questionType: string,
+  refText: string,
+  opts?: { topic?: string; course?: string; isExam?: boolean; examAttemptId?: string }
+): Promise<{ assessmentId: string; result: SpeechAssessment }> {
+  return serverFetch<{ assessmentId: string; result: SpeechAssessment }>("/assessment/speech", {
+    method: "POST",
+    body: { childId, audioFileId, questionType, refText, ...opts },
+    token: currentSessionToken(),
+    timeoutMs: 35000,
+  });
+}
+
+/** 口语题默认算分：pron(0-100) 线性映射到 pointMax；rubric 精细映射后续扩展。 */
+export function speechPronToPoint(speech: SpeechAssessment, pointMax: number): number {
+  return Math.round((speech.pron / 100) * (pointMax || 10));
+}
+
 // ==================== 待考核（v2：排期到期未完成 = 待考核角标） ====================
 
 export interface ExamPendingTopic {
