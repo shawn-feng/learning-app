@@ -11,9 +11,9 @@ import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { parseCourseKey } from "./kb-sqlite";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool } from "./custom-tools";
 import { appConfigTool } from "./app-config";
-import { getTodayPlan, fetchTodayPlanRemote, fetchCourseLessonRemote, getCourseLessonCached, type CourseLessonCache } from "./learning-summary";
+import { getTodayPlan, fetchTodayPlanRemote, fetchCourseLessonRemote, getCourseLessonCached, isCourseLessonCacheStale, type CourseLessonCache, type CourseLessonFetchStatus } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
 import { getAgentPrompt, fetchAgentPromptRemote } from "./agent-prompts";
 import {
@@ -79,6 +79,18 @@ const LEARNING_NAV_INSTRUCTIONS = `
 - 学习资料在**沙盒页面**中展示；孩子对资料页的轻量互动（打开/点击/滚动/输入/提交）会以「[页面事件]」形式**自动注入**给你，据此判断孩子的阅读进度、是否卡住、是否需要帮助。
 - 需要查看资料页当前内容或定位元素时，调用 page_inspect（返回文本式 DOM 快照 + 最近互动摘要）；要在页面上操作（点「下一步」、滚动、填写）时调用 page_action（click/scroll/input/read，元素用快照里的「i 索引」定位）。
 - 只使用上述受控操作；**不存在、也不要请求任何在页面上执行任意代码的能力**（桥脚本无 execute_javascript）。
+
+### 场景角色扮演（scene_command，ISSUE-061）
+- 展示的资料是**场景页**（如「场景英语」主题的资料：页面里有场景、角色和可点击物品）时，你就是该场景的**游戏主持人**：按该课教学内容（parent_content 取 method 与本课教学文案）了解背景与目标，扮演场景里的全部角色，用 scene_command 驱动演出并**与孩子像朋友一样用英语自由交流**——孩子主导、你配合。
+- scene_command 指令：say（角色说话：character + text 英文台词 + zh 中文对照，app 自动朗读并显示双语字幕）；move（角色移动：character + x = 舞台横坐标 10~1120 可到任意位置，**或目标名** window=窗前/sofa=沙发前/table=茶几旁/plant=绿植旁/lamp=台灯边/tv=电视机前/picture=挂画下/rug=地毯中央，+ duration 秒）；act（角色动作：character + act：turn-on-lamp 开台灯 / turn-off-lamp 关台灯 / turn-on-tv 开电视 / turn-off-tv 关电视 / open-window 开窗 / close-window 关窗 / sit-sofa 坐到沙发 / stand 站起 / jump 跳 / dance 跳舞 / watch-tv 走到沙发坐下看电视 / **drink-water 走到茶几旁用杯子喝水** / **picture-fall 墙上的画掉下来** / **picture-hang 把画挂回去**）；show（隐藏角色登场）；highlight（高亮物品：target）；update（任务进度：task + progress + total）。**没有 end 指令**——场景页不存在结束，见下方「任务达成」。**注意：一次只下发 1~2 条指令**（say 之后通常等孩子开口，别连续塞多条）。
+- **孩子主导，剧本只是背景**：开场用一段小剧把角色和情境带出来（一段即可，别演完整课），之后把主动权完全交给孩子——他说什么、角色就接什么，动作跟着他的话语走（说请坐就 sit-sofa、说打开电视就 turn-on-tv、问颜色就回答并指认）。主线任务只是背景：孩子自然走到哪算哪，**不做任务 checklist 追问**，不说「下一关 / 考考你 / 来挑战」，不为推进剧情打断孩子当下的话题。
+- **不评价、不抢话、不代答（重要）**：孩子正常说话时，角色自然接话即可。**不要**每次都先夸「说得太棒 / 满分 / 太厉害了」，**不要**点评对错、打分、评掌握度，**不要**给孩子塞答案模板或「跟我读」，**不要**在每轮结尾做小总结或复述他学了什么。你只做两件事：① 用 say 让在场角色用英语自然回应孩子的话；② 用 move / act / show 把角色动作与场景变化配出来（这是你的主要工作）。孩子闲聊、问物品、请角色做事、开玩笑、自创新句子，都接得住、顺着聊。
+- **卡住才提醒，顺畅就不打扰**：孩子冷场、卡壳或明显接不上话时，才由角色**轻声示范一句**帮他把话接上（示范后立刻退回去、不再展开教学）；孩子对话顺畅时，就安静当对话伙伴——不纠错、不重复正确说法、不提醒。
+- 孩子点场景物品时，事件会带物品的英文与中文（如「sofa（沙发）」），角色自然跟一句即可（如 "Oh, the sofa!"），**不要**借此展开提问或测验。孩子聊到的物品或话题可能在场景里也可能在生活里，都自然回应。
+- **场景感知**：场景页就绪时会注入一次「场景就绪」事件（列出可点物品、角色及可观察属性）——孩子问「电视是什么颜色」这类问题时，以该清单为准回答，清单里没有的不要编造；需要角色去某物品旁或操作某物品时，用 move 的目标名 / act 的对应动作。
+- 场景页未展示时 scene_command 会失败——先用 display_content 展示场景资料，再开演；孩子说不想玩场景时尊重他，退回普通聊天辅导。
+- **任务达成＝聊天里的一句话，不是页面事件（重要）**：场景页没有结束横幅、没有 end 指令。主线任务（本课句型单词自然都用过、孩子聊尽兴了）达成时——只让角色在对话里**随口祝贺一句**（如 Steve: "Great job, Shanshan!"）并问孩子「还想做什么——继续聊还是去干别的」，不总结、不布置下一步、不主动道别。孩子继续说就继续陪；孩子明确说「结束 / 退出 / 去学别的」才自然道别。
+- **不主动记学习记录（覆盖「完成一课后 kb_update」等一般记录规则，场景课一律如此）**：场景互动进行中**绝不**自行调用 kb_update / kb_insert / summarize_conversation 写课程状态或学习总结，也**不要**在对话里说「我帮你记下来 / 已经记好啦」。课程完成状态与学习记录，**推迟到孩子明确结束本课**（说「结束 / 退出 / 去学别的 / 今天就到这」）或主动要求（「记一下 / 总结今天」）时才做：那时用 kb_update 更新课程状态即可，孩子要回顾再调 summarize_conversation。
 
 ### 进度查询（省上下文，务必遵守）
 孩子的**当天学习计划（Todolist）已由系统在会话开头注入**到系统提示顶部的「孩子今天的学习计划」段——孩子一开会话就知道自己今天该学什么（含家长安排项与孩子自规划项）。确定「今天学哪课」直接看该段即可；中途想刷新当天计划或查各主题进度时：
@@ -254,7 +266,10 @@ function buildChildPrompt(
   profile: ChildProfile,
   planContext?: string,
   courseKey?: string,
-  courseLesson?: CourseLessonCache | null
+  courseLesson?: CourseLessonCache | null,
+  /** ISSUE-063：会话创建时数据同步状态的提示（离线降级/课程找不到等），非空则注入 prompt 末尾，
+   * 让 agent 知道自己正以「降级/可能非最新」状态工作，避免把「无教法/旧计划」当成事实。 */
+  dataNotice?: string
 ): string {
   const emoji = profile.aiEmoji || "🌟";
   let prompt = `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，陪伴和引导${profile.name}学习、生活和成长。`;
@@ -300,6 +315,10 @@ function buildChildPrompt(
   // 文件，孩子不可写），改为在此内联注入——内容来自 data/agents.sqlite 用户版本 / 代码默认
   // （resolveChildAgents），孩子只读、管理者=家长（家长页面 AgentPromptEditor 编辑）。
   prompt += `\n\n# 行为规范（必须遵守）\n\n${resolveChildAgents(childId, profile)}`;
+  // ISSUE-063：会话开始时数据同步状态提示（放在 prompt 最末、最不易被忽略的位置）。
+  if (dataNotice && dataNotice.trim()) {
+    prompt += `\n\n## 数据状态提示（重要，请据此判断信息可靠性）\n${dataNotice.trim()}`;
+  }
   return prompt;
 }
 
@@ -308,6 +327,44 @@ function truncateForPrompt(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max) + "\n…（内容过长已截断）";
 }
+
+/* ==================== ISSUE-061：场景对话会话（scene session） ====================
+ * 孩子用场景页「语音球」发起的对话走**独立场景会话**：专职扮演场景角色、快速回应，
+ * 与孩子课程会话解耦——scene 会话不知道「课程怎么获取、怎么记录」（无 parent_content /
+ * kb_* 工具），只持有 scene_command 驱动演出。课程会话在孩子离开场景后接收转交总结。
+ */
+function buildScenePrompt(
+  profile: ChildProfile,
+  course: { topic: string; title: string },
+  courseLesson?: CourseLessonCache | null,
+  /** ISSUE-063：场景会话数据同步提示（如本课背景为旧缓存/未取到），非空则注入，避免角色瞎编背景。 */
+  dataNotice?: string
+): string {
+  const name = profile.name || "小朋友";
+  let p =
+    `你是「场景互动」里的角色与对话伙伴（游戏主持人）：为 ${name} 扮演《${course.title}》场景里的全部角色` +
+    `（如 Steve 老师、Maggie 小老鼠），孩子正看着这个场景页面，用英语和你自由交流。` +
+    `孩子主导、你配合；你的主要工作是**扮演 + 用 scene_command 驱动演出**，而不是教学。\n\n`;
+  const method = (courseLesson?.lessonMethod || "").trim();
+  const copy = (courseLesson?.teachingCopy || "").trim();
+  if (method) p += `## 本课背景（教学方法摘录）\n${truncateForPrompt(method, 800)}\n\n`;
+  if (copy) p += `## 本课内容（对话脚本/词表，可作扮演素材）\n${truncateForPrompt(copy, 1500)}\n\n`;
+  if (dataNotice && dataNotice.trim()) {
+    p += `## 数据状态提示（内部参考，不要念给孩子）\n${dataNotice.trim()}\n\n`;
+  }
+  p += `## 你的职责与边界（重要）
+- 你**只负责场景内对话与演出**。你只有 scene_command 一个工具：say（让某角色说话，character+text 英文台词+zh 中文）、move（角色走到 x 坐标或目标名）、act（动作：turn-on-lamp/turn-on-tv/sit-sofa/stand/jump/dance/open-window/close-window/drink-water/picture-fall/picture-hang/watch-tv 等）、show/highlight/update。**没有 end 指令**。
+- **不知道也不关心**课程如何获取、学习如何记录——那是课程学习 agent 的事。孩子若问课程安排/进度/要不要记录，简短回应后把话题带回场景即可（如 "We can ask later. Look, the TV is on!"）。
+- **你的每一条回复正文＝角色对 ${name} 说的话**，会被朗读并显示给孩子：用英语、简短自然（1~3 句）、儿童口吻、不要 Markdown/emoji/思考过程。全程英文；孩子明显听不懂时允许一句简短中文解释再转英文。
+- **台词提到物品就让它可见**：正文里提到台灯/TV/沙发/窗/画等物品时，先调 scene_command highlight(target) 再说话（也可 move 角色到它旁边），让孩子能在页面找到它；需要角色做动作就 act。
+- 孩子点物品时，事件文本会附在你的下一轮输入里（如「孩子点击了 sofa（沙发）」），自然回应一句即可（"Oh, the sofa! It's soft."），**不要**借机测验。
+- **不评价、不抢话、不代答**：孩子正常说话，角色自然接话即可；不夸"说得太棒/满分"、不点评纠错、不塞模板、不做小结。孩子卡壳/冷场时才轻声示范一句帮他把话接上，示范完就退。
+- **自由对话优先**：孩子说什么都接得住——问候、问颜色、请角色做事、开玩笑、自创新句子都行；不强行推主线、不做任务清单追问、不说"下一关/考考你"。
+- **不主动结束**：不说"再见/下课/明天见"，不劝退。孩子明确说「结束/退出/去学别的」时才自然道别（学习总结由课程 agent 负责，你不用管）。
+- 场景页未展示时 scene_command 会失败：若发现页面还没就绪，就只简短说话并提示孩子稍等场景出现。`;
+  return p;
+}
+
 
 /** 「允许中文」双语兜底开关（ISSUE-029）：scheduler-config.json 的 children.<id>.english.allowChinese，默认开。 */
 function getEnglishAllowChinese(childId: string): boolean {
@@ -335,6 +392,16 @@ function courseSessionsSubdir(info: { topic: string; title: string }): string {
       .replace(/^_+|_+$/g, "")
       .slice(0, 80) || "course";
   return `${info.topic}-${safe}`;
+}
+
+// ---- ISSUE-061：场景对话会话 key / 目录（与课程会话并存，孩子主会话 / 课程会话互不影响）----
+/** 场景会话缓存 key：childId|scene|<courseKey>（与 sessionKey 的 childId|courseKey 不冲突）。 */
+function sceneSessionKey(childId: string, courseKey: string): string {
+  return `${childId}|scene|${courseKey}`;
+}
+/** 场景会话目录名：scene-<topic>-<title>（独立于课程会话，jsonl 即「对话记录真源」，防丢）。 */
+function sceneSessionsSubdir(info: { topic: string; title: string }): string {
+  return `scene-${courseSessionsSubdir(info)}`;
 }
 
 interface SessionEntry {
@@ -515,24 +582,62 @@ async function createChildSession(
 ): Promise<AgentSession> {
   const childDir = getChildDir(childId);
   const profile = getProfile(childId);
-  if (!profile) throw new Error("Child profile not found");
+  if (!profile) throw new Error(`未找到孩子档案（childId=${childId}），请确认孩子仍存在`);
 
   // ISSUE-029 任务2：courseKey（格式 <topic>:<title>，如 english:12·Yellow-Unit1-hello-story）
   // → 按课隔离子会话（sessions/english-<title>/，每次进入干净窗口，复用主 agent 身份）。
   // 教学内容经服务端远程预取（SPLIT：孩子 kb 真源在服务端，本地库 courses/topics 可能为空壳），
-  // 同步读走本地缓存（getCourseLessonCached，miss 回退本地库直读兜底）；查不到降级「无教法注入」。
+  // 同步读走本地缓存（getCourseLessonCached，miss 回退本地库直读兜底）。
+  // ISSUE-063：不再静默吞错——fetchCourseLessonRemote 返回状态，区分「真无此课（课程名可能错，
+  // 应建议 agent 先列课程核对）」vs「拉取失败（网络/服务端不可达，教法可能缺失或旧缓存）」，
+  // 并以 dataNotice 注入 prompt，让 agent 知道自己处于降级状态，不得当作「真无教法」开讲。
   const course = courseKey ? parseCourseKey(courseKey) : null;
+  const dataNotices: string[] = [];
+  let courseLessonStatus: CourseLessonFetchStatus | null = null;
   if (course) {
-    await fetchCourseLessonRemote(childId, course.topic, course.title).catch(() => null);
-  }
-  const courseLesson = course ? getCourseLessonCached(childId, course.topic, course.title) : null;
-  if (course && !courseLesson) {
-    console.warn(`[pi-session] course lesson not found: ${courseKey}（降级为无教法注入）`);
+    courseLessonStatus = await fetchCourseLessonRemote(childId, course.topic, course.title);
+    const lesson = getCourseLessonCached(childId, course.topic, course.title);
+    if (!lesson) {
+      // 服务端可达但无此课（可能课名不准确）→ 给 agent 明确的自纠路径；服务端不可达 → 明确降级。
+      if (courseLessonStatus === "not-found") {
+        dataNotices.push(
+          `进入课程会话时，服务端未找到课程「${course.title}」（主题 ${course.topic}）。` +
+            `可能是课程名不准确。请先用 kb_query（query=progress，topic=${course.topic}，listOnly=true）` +
+            `列出该主题的全部课程标题，核对后用完整标题重试；不要凭猜测继续教学。`
+        );
+      } else if (courseLessonStatus === "network") {
+        dataNotices.push(
+          `进入课程会话时，课程「${course.title}」的教学方法未能从服务端取到（当前可能离线或服务端不可达），` +
+            `且本地无该课缓存。请勿把「无教法」当成课程不存在——可先确认网络/服务端后重进本课，` +
+            `期间如孩子坚持学习，可先按通用引导方式开始，但内容可能不完整。`
+        );
+      } else {
+        // "ok" 但本地直读仍 miss：服务端返回了课程行但内容为空（很少见），照实告知即可。
+        dataNotices.push(
+          `课程「${course.title}」已存在但服务端未返回教学方法内容（可能尚未填写教法/教学文案）。` +
+            `如需要完整教法，可提醒家长在课程管理中补充。`
+        );
+      }
+      console.warn(`[pi-session] course lesson not found: ${courseKey}（status=${courseLessonStatus}）`);
+    } else if (courseLessonStatus === "not-found") {
+      // 服务端可达并明确「无此课」，但本地旧快照/缓存还有 → 本地可能过期，同样显式提示。
+      dataNotices.push(
+        `进入课程会话时，服务端未找到课程「${course.title}」（主题 ${course.topic}），` +
+          `当前注入的教学方法来自本地旧快照，可能已过期。请先用 kb_query（query=progress，topic=${course.topic}，listOnly=true）` +
+          `核对课程名；若课程确实已不在服务端，请勿继续按旧教法教学。`
+      );
+    } else if (courseLessonStatus === "network" || isCourseLessonCacheStale(childId)) {
+      // 有缓存但本次拉取失败 → 用的是旧缓存，须告知 agent 内容可能非最新（禁止静默当成最新）。
+      dataNotices.push(
+        `进入课程会话时，课程「${course.title}」的教学方法来自最近一次同步的本地缓存` +
+          `（当前服务端暂不可达，可能非最新；若家长近期改过该课教法，本次可能未生效）。`
+      );
+    }
   }
 
   // ISSUE-045：当天学习计划（Todolist）注入——与 AGENTS 同一「会话前远程预取 → 本地缓存 → 同步读」模式。
   // systemPromptOverride 是 SDK 同步回调，无法 await，故先预取当天 Todolist 到本地缓存，
-  // 再经 getTodayPlan 同步读；当天无 Todolist 则 planContext 为空串，buildChildPrompt 不注入任何段落。
+  // 再同步读；当天无 Todolist 则 planContext 为空串，buildChildPrompt 不注入任何段落。
   // 日期用 todoLocalDate()（本地时区 YYYY-MM-DD），与 todo_list 工具保持同一「今天」口径。
   // ISSUE-029 任务2：课程子会话（英语课等）跳过 Todolist 注入——当天计划属于主会话语境，
   // 子会话只教本课内容，避免噪声与语言污染。
@@ -543,16 +648,34 @@ async function createChildSession(
   // 管理者=家长（家长页面 AgentPromptEditor 编辑）。
   // SPLIT M8-B：AGENTS 唯一真源在服务端；systemPromptOverride 是 SDK 同步回调，故在创建会话前
   // 先远程预取该孩子的用户版本写入本地缓存（buildChildPrompt 同步读缓存即取到服务端最新版）；
-  // 服务端不可达时回退本地缓存/代码默认。
-  await fetchAgentPromptRemote("child", childId).catch(() => null);
-  // ISSUE-045：当天 Todolist 同样「会话前远程预取 → 本地缓存 → getTodayPlan 同步读缓存」
+  // 服务端不可达时回退本地缓存/代码默认——ISSUE-063：拉取失败返回 network，agent 须知行为规范可能非最新。
+  const agentPromptStatus = await fetchAgentPromptRemote("child", childId);
+  if (agentPromptStatus.status === "network") {
+    dataNotices.push(
+      `孩子行为规范未能从服务端刷新（当前可能离线或服务端不可达），本次使用本地缓存或默认版本；` +
+        `若家长近期编辑过行为规范，本次可能未生效。`
+    );
+  }
+  // ISSUE-045：当天 Todolist 同样「会话前远程预取 → 本地缓存 → 同步读缓存」
   // （服务端不可达时降级为旧缓存/空，不阻断会话创建）。
   let planContext = "";
+  let planFresh = true;
   if (!course) {
-    await fetchTodayPlanRemote(childId, today).catch(() => null);
+    const planStatus = await fetchTodayPlanRemote(childId, today);
     // 同步读取当天计划（已从缓存取，无 Todolist 返回空串 → 不注入）。
-    planContext = getTodayPlan(childId);
+    const plan = getTodayPlan(childId, today);
+    planContext = plan.text;
+    planFresh = plan.fresh;
+    if (planStatus === "network" && !planFresh) {
+      dataNotices.push(
+        `今天的学习计划未能从服务端刷新（当前可能离线或服务端不可达），` +
+          `「无计划/旧计划」不代表今天真的没安排——请勿仅凭计划为空就推断「今天不要求学」，` +
+          `可与孩子或家长确认，或待网络恢复后重进会话。`
+      );
+    }
   }
+  const courseLesson = course ? getCourseLessonCached(childId, course.topic, course.title) : null;
+  const dataNotice = dataNotices.length ? dataNotices.map((n) => `- ${n}`).join("\n") : "";
 
   const modelRuntime = await getSharedRuntime();
   const model = await getDefaultModel();
@@ -562,7 +685,7 @@ async function createChildSession(
     agentDir: path.join(childDir, ".pi", "agent"),
     // 替换 SDK 默认 base：去掉 "expert coding assistant" 身份与 Pi 自身文档索引（对孩子是噪声），
     // 换成孩子专属的学习伙伴身份。AGENTS / 技能段 / cwd / 时间注入由 SDK 在 customPrompt 模式下自动附加。
-    systemPromptOverride: () => buildChildPrompt(childId, profile, planContext, courseKey, courseLesson),
+    systemPromptOverride: () => buildChildPrompt(childId, profile, planContext, courseKey, courseLesson, dataNotice),
     // shared/skills 已无教学技能（recording / study-tracker 均已移除，目录为空），
     // 该扫描路径仅作兜底，未来若再加技能无需改加载逻辑。
     // 注意：noSkills 必须为 true —— SDK 的 packageManager 会自动发现并启用 ~/.agents/skills
@@ -614,8 +737,8 @@ async function createChildSession(
     // 仅需列在 tools 白名单即启用、无需 customTools 条目——让孩子能列自己 cwd 下的目录
     // （outputs/ 已生成 html、uploads/ 上传资料、materials/ 学习资料）以复用/展示/清理；
     // 越界防护由 learning-guard 统一拦截（ISSUE-049）。
-    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "todo_list", "schedule_task"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, todoListTool, scheduleTaskTool],
+    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "scene_command", "todo_list", "schedule_task"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, sceneCommandTool, todoListTool, scheduleTaskTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，
@@ -630,6 +753,240 @@ async function createChildSession(
   return session;
 }
 
+/* ==================== ISSUE-061：场景对话会话（scene session）实现 ==================== */
+
+/** scene 会话落盘目录：childDir/.pi/agent/sessions/scene-<topic>-<title>/（jsonl=对话记录真源）。 */
+function getSceneSessionsDir(childId: string, courseKey: string): string {
+  const course = parseCourseKey(courseKey);
+  return path.join(getChildDir(childId), ".pi", "agent", "sessions", sceneSessionsSubdir(course));
+}
+
+function isSameLocalDay(ts: number): boolean {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` === todoLocalDate()
+  );
+}
+
+/**
+ * 创建场景会话：专职角色扮演，与课程会话解耦。
+ * - system prompt=buildScenePrompt（无课程获取/记录职责）；tools 白名单只开 scene_command。
+ * - 目录独立（scene-<topic>-<title>）；同日续接上次上下文（孩子中途退出又回来接着聊不丢），跨天开新窗口。
+ */
+async function createSceneSession(childId: string, courseKey: string): Promise<AgentSession> {
+  const childDir = getChildDir(childId);
+  const profile = getProfile(childId);
+  if (!profile) throw new Error(`未找到孩子档案（childId=${childId}），请确认孩子仍存在`);
+  const course = parseCourseKey(courseKey);
+  // 扮演背景：预取本课教学文案到本地缓存供 buildScenePrompt 同步读（失败不阻断）。
+  // ISSUE-063：拉取状态不再静默吞——场景 agent 须知道背景可能缺失/旧缓存，避免瞎编剧情。
+  const sceneNotices: string[] = [];
+  const lessonStatus = await fetchCourseLessonRemote(childId, course.topic, course.title);
+  const courseLesson = getCourseLessonCached(childId, course.topic, course.title);
+  if (!courseLesson) {
+    // 无任何缓存/本地快照 → 区分服务端真无 vs 离线取不到
+    if (lessonStatus === "not-found") {
+      sceneNotices.push(
+        `场景课程「${course.title}」服务端无记录（可能课程名不准确）。本场景无官方背景资料，` +
+          `请围绕场景页实际展示的内容自由扮演，不要编造课程里没有的角色/台词。`
+      );
+    } else if (lessonStatus === "network") {
+      sceneNotices.push(
+        `场景课程「${course.title}」的背景资料未能从服务端取到（当前可能离线），且本地无缓存。` +
+          `请围绕场景页实际展示的内容扮演，若信息不足就自然回应，不要瞎编。`
+      );
+    } else {
+      sceneNotices.push(
+        `场景课程「${course.title}」已存在但未取到背景内容（可能尚未填写）。请围绕场景页实际内容扮演。`
+      );
+    }
+  } else if (lessonStatus === "not-found") {
+    sceneNotices.push(
+      `场景课程「${course.title}」服务端无记录，当前背景来自本地旧快照，可能已过期。` +
+        `请以场景页实际展示内容为准，不要沿用可能过期的旧脚本。`
+    );
+  } else if (lessonStatus === "network" || isCourseLessonCacheStale(childId)) {
+    sceneNotices.push(
+      `场景课程「${course.title}」的背景来自最近一次同步的本地缓存（当前服务端暂不可达，可能非最新）。`
+    );
+  }
+  const sceneDataNotice = sceneNotices.length ? sceneNotices.map((n) => `- ${n}`).join("\n") : "";
+
+  const modelRuntime = await getSharedRuntime();
+  const model = await getDefaultModel();
+
+  const loader = new DefaultResourceLoader({
+    cwd: childDir,
+    agentDir: path.join(childDir, ".pi", "agent"),
+    systemPromptOverride: () => buildScenePrompt(profile, course, courseLesson, sceneDataNotice),
+    noSkills: true,
+    additionalSkillPaths: [getSkillsDir()],
+    extensionFactories: [learningGuardExtension],
+  });
+  await loader.reload();
+
+  const sessionsDir = getSceneSessionsDir(childId, courseKey);
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const mgr = SessionManager.continueRecent(childDir, sessionsDir);
+  const lastTs = lastMessageTimestampInDir(sessionsDir);
+  if (lastTs === null || !isSameLocalDay(lastTs)) mgr.newSession();
+
+  const { session } = await createAgentSession({
+    cwd: childDir,
+    modelRuntime,
+    model,
+    sessionManager: mgr,
+    resourceLoader: loader,
+    tools: ["scene_command"], // scene 会话只驱动演出，不接触课程/记录工具
+    customTools: [sceneCommandTool],
+  });
+  if (session.thinkingLevel === "off") {
+    session.setThinkingLevel("high");
+  }
+  activeSessions.set(sceneSessionKey(childId, courseKey), { session, childId, courseKey });
+  return session;
+}
+
+/** 取（或懒创建）场景会话。 */
+export async function getSceneSession(childId: string, courseKey: string): Promise<AgentSession> {
+  const key = sceneSessionKey(childId, courseKey);
+  const existing = activeSessions.get(key);
+  if (existing) return existing.session;
+  const inflight = sessionPromises.get(key);
+  if (inflight) return inflight;
+  const promise = createSceneSession(childId, courseKey).finally(() => {
+    sessionPromises.delete(key);
+  });
+  sessionPromises.set(key, promise);
+  return promise;
+}
+
+/** 丢弃场景会话（退出场景课程时调用；历史 jsonl 保留供转交总结/回看）。 */
+export function disposeSceneSession(childId: string, courseKey: string): void {
+  const key = sceneSessionKey(childId, courseKey);
+  const entry = activeSessions.get(key);
+  if (entry) {
+    try {
+      entry.session.dispose();
+    } catch {
+      /* 忽略 */
+    }
+    activeSessions.delete(key);
+  }
+  sessionPromises.delete(key);
+}
+
+/** 该孩子是否有进行中的场景会话。 */
+export function hasActiveSceneSession(childId: string, courseKey: string): boolean {
+  return activeSessions.has(sceneSessionKey(childId, courseKey));
+}
+
+/** 清空某孩子全部会话（含场景会话）——退出登录/切换孩子时调用。 */
+function disposeChildSceneSessions(childId: string): void {
+  const prefix = `${childId}|scene|`;
+  for (const [key, entry] of activeSessions) {
+    if (!key.startsWith(prefix)) continue;
+    try {
+      entry.session.dispose();
+    } catch {
+      /* 忽略 */
+    }
+    activeSessions.delete(key);
+    sessionPromises.delete(key);
+  }
+}
+
+interface SceneTurn {
+  role: "user" | "assistant";
+  text: string;
+  audioPath?: string; // user 语音落盘路径（voice/scene/...）
+}
+
+/** 读场景会话对话记录（jsonl 真源），按时间序抽取「孩子说的 / 角色说的」与语音文件清单。 */
+export function readSceneTranscript(
+  childId: string,
+  courseKey: string
+): { turns: SceneTurn[]; voiceFiles: string[]; ranges: string } {
+  const turns: SceneTurn[] = [];
+  const voiceFiles: string[] = [];
+  const dir = getSceneSessionsDir(childId, courseKey);
+  const files: string[] = [];
+  if (fs.existsSync(dir)) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isFile() && e.name.endsWith(".jsonl")) files.push(path.join(dir, e.name));
+    }
+  }
+  files.sort();
+  for (const f of files) {
+    for (const entry of loadJsonlEntries(f)) {
+      if (entry.type !== "message" || !entry.message) continue;
+      const m = entry.message;
+      if (m.role !== "user" && m.role !== "assistant") continue;
+      let text = extractText(m.content).trim();
+      if (!text) continue;
+      if (m.role === "user") {
+        // 剥离系统注脚行：[语音识别输入…] 前缀；提取【附件音频】里的录音路径（场景语音=voice/scene/…）
+        text = text.replace(/^\[语音识别输入[^\]]*\][\s\n]*/, "");
+        const am = text.match(/【附件音频：[^\n]*\|([^\]]+)】/);
+        if (am) {
+          const rel = am[1].trim().replace(/^children\/[^/]+\//, ""); // 归一为孩子 cwd 相对路径
+          if (rel.startsWith("voice/scene") || rel.startsWith("voice/")) voiceFiles.push(rel);
+        }
+        // 再去掉所有【】标记行与 [页面操作] 段，剩孩子的话
+        text = text
+          .split("\n")
+          .filter((l) => !l.startsWith("[页面操作]") && !l.startsWith("【"))
+          .join("\n")
+          .trim();
+      } else {
+        // assistant：工具调用轮无正文会空；仅保留角色说的话
+        const toolText = (m.tool_calls || [])
+          .map((tc: any) => tc?.function?.name || "")
+          .filter(Boolean)
+          .join(",");
+        if (!text && toolText) continue; // 纯工具轮（动作），不进记录文本
+      }
+      if (!text) continue;
+      turns.push({ role: m.role, text, audioPath: m.role === "user" ? voiceFiles[voiceFiles.length - 1] : undefined });
+    }
+  }
+  return {
+    turns,
+    voiceFiles: Array.from(new Set(voiceFiles)),
+    ranges: `${files.length} 个会话文件`,
+  };
+}
+
+/** 把场景对话记录整理成给课程 agent 的转交文本（孩子原话保留 + 语音文件清单）。 */
+export function buildSceneSummaryForCourse(childId: string, courseKey: string): string {
+  const { turns, voiceFiles } = readSceneTranscript(childId, courseKey);
+  const course = parseCourseKey(courseKey);
+  if (!turns.length) {
+    return `（《${course.title}》场景会话没有可转交的对话内容）`;
+  }
+  const kids = turns
+    .filter((t) => t.role === "user")
+    .map((t, i) => `${i + 1}) ${t.text}`)
+    .join("\n");
+  const roles = turns
+    .filter((t) => t.role === "assistant")
+    .slice(-12)
+    .map((t) => `- ${t.text.split("\n")[0]}`)
+    .join("\n");
+  let s =
+    `# 场景对话转交记录（《${course.title}》，孩子说 / 角色回的完整记录，供你了解孩子本次表现）\n\n` +
+    `## 孩子说的话（原样，${turns.filter((t) => t.role === "user").length} 条）\n${kids || "（无）"}\n\n` +
+    `## 角色回应节选（最近 12 条开头）\n${roles || "（无）"}\n`;
+  if (voiceFiles.length) {
+    s +=
+      `\n## 孩子的语音录音（可挑选分析/评测）\n${voiceFiles.map((v) => `- ${v}`).join("\n")}\n` +
+      `（这些路径相对该孩子目录（voice/scene/…），在你的工作区里可直接 read 回听）\n`;
+  }
+  return s;
+}
+
+
 // 家长会话的磁盘会话目录（2026-08-24 起家长会话落盘，与孩子一致可保存/续接历史）。
 // parent 与 parent-content 是两个独立会话，各自独立子目录，避免 continueRecent 互相选中对方历史。
 function getParentSessionsDir(sub: string): string {
@@ -640,7 +997,11 @@ export async function getParentSession(): Promise<AgentSession> {
   if (cachedParentSession) return cachedParentSession;
 
   // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存（按家长隔离）
-  await fetchAgentPromptRemote("parent", getCurrentParentId()).catch(() => null);
+  // ISSUE-063：拉取失败返回 "network"，buildParentPrompt 内部读缓存/默认兜底（家长提示词用户版非最新时影响有限，仅记日志）。
+  const parentAgentStatus = await fetchAgentPromptRemote("parent", getCurrentParentId());
+  if (parentAgentStatus.status === "network") {
+    console.warn("[pi-session] 家长行为规范未能从服务端刷新（离线/服务端不可达），使用本地缓存或默认版本");
+  }
 
   const dataDir = getDataDir();
   const modelRuntime = await getSharedRuntime();
@@ -698,7 +1059,10 @@ export async function getParentContentSession(): Promise<AgentSession> {
   if (cachedParentContentSession) return cachedParentContentSession;
 
   // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存（按家长隔离）
-  await fetchAgentPromptRemote("parent", getCurrentParentId()).catch(() => null);
+  const parentContentAgentStatus = await fetchAgentPromptRemote("parent", getCurrentParentId());
+  if (parentContentAgentStatus.status === "network") {
+    console.warn("[pi-session] 家长（content）行为规范未能从服务端刷新（离线/服务端不可达），使用本地缓存或默认版本");
+  }
 
   const dataDir = getDataDir();
   const modelRuntime = await getSharedRuntime();
@@ -741,6 +1105,7 @@ export async function disposeChildSession(childId: string): Promise<void> {
     entry.session.dispose();
     activeSessions.delete(childId);
   }
+  disposeChildSceneSessions(childId);
 }
 
 /**

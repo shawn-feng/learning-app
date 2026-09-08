@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import fs from "fs";
 import path from "path";
-import { getLearningSummary, progressSummaryToMarkdown } from "./learning-summary";
+import { getLearningSummary, getProgressSyncMeta, progressSummaryToMarkdown } from "./learning-summary";
 import { logActivity, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse, upsertParentTopic, allocateTopicToChild, rewriteMaterialHtmlForRender, followHtmlRedirectRemote, uploadMaterialToServer, DEFAULT_PARENT_ID } from "./parent-library";
 import { getChildrenDir, getDataDir } from "./config";
 import { transcribeAudio } from "./voice";
@@ -107,7 +107,15 @@ export const displayContentTool = defineTool({
       try {
         raw = (await fetchMaterialContent(rel)).toString("utf-8");
       } catch (err) {
-        throw new Error(`资料拉取失败: ${params.path}（${(err as Error).message}）`);
+        const msg = (err as Error).message || String(err);
+        // ISSUE-063：拉取失败不再笼统透传底层 msg——区分「路径可能不准/资料未上传」vs「网络/服务端问题」，
+        // 分别给可执行的下一步，避免 agent 瞎猜。
+        const isNetwork = /timeout|timed out|abort|ECONN|fetch failed|无法连接|ETIMEDOUT|网络|network/i.test(msg);
+        const hint = isNetwork
+          ? `（当前疑似服务端不可达/网络问题，非路径错误：${msg}）。请确认服务端已启动且网络正常后重试；若持续失败可稍后再试。`
+          : `（${msg}）。该路径可能不准确或资料尚未上传到服务端——请先用 parent_content（type=htmlPath + topic + course）` +
+            `取该课程的准确 html 路径，确认资料已上传后再展示，不要凭记忆拼接路径。`;
+        throw new Error(`资料拉取失败: ${params.path}${hint}`);
       }
       // 与家长端 readParentMaterial 一致的渲染处理：
       // 1) 跟随 <meta http-equiv=refresh> 占位页（英语 01-11/45-50 等 index.html 是跳转占位页，不跟随会空白）；
@@ -229,11 +237,17 @@ export const getProgressTool = defineTool({
     const text = summary.topics.length
       ? progressSummaryToMarkdown(summary)
       : "暂无学习主题进度。";
+    // ISSUE-063：数据来自会话前预取的本地缓存；若上次预取失败（离线降级），显式提示可能非最新，
+    // 避免 agent 把「旧/空进度」当成事实（与「真无进度」区分）。
+    const meta = getProgressSyncMeta(childId);
+    const staleNote = meta && !meta.lastFetchOk
+      ? `\n（⚠️ 进度数据来自本地缓存，上次与服务端同步失败（离线/服务端不可达，${new Date(meta.lastFetchAt).toLocaleString()}），可能不是最新；如需准确进度可待网络恢复后重查。）`
+      : "";
     return {
       content: [
         {
           type: "text" as const,
-          text,
+          text: text + staleNote,
         },
       ],
     };
@@ -356,7 +370,18 @@ export const kbQueryTool = defineTool({
         }));
         if (params.tag) courses = courses.filter((c) => c.tags.includes(params.tag!));
         if (courses.length === 0 && !agg) {
-          return { content: [{ type: "text" as const, text: `主题「${params.topic}」暂无进度记录。` }] };
+          // ISSUE-063：区分「主题拼错/不存在」vs「确实还没学」——空结果带自纠线索，避免 agent 误判
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `主题「${params.topic}」暂无进度记录（可能该主题尚未分配给孩子，或主题名不准确）。` +
+                  `请先用 kb_query（query=topics）列出孩子已分配的全部主题，核对主题名后用正确主题重查；` +
+                  `确属刚分配的新主题时，课程进度会在学习后出现。`,
+              },
+            ],
+          };
         }
         const tp: TopicProgress = {
           topic: topicKey,
@@ -606,7 +631,13 @@ export const kbUpdateTool = defineTool({
           title: params.item,
           fields,
         });
-        if (!r.ok) throw new Error(`进度更新失败：主题「${params.topic}」课程「${params.item}」不存在`);
+        if (!r.ok) {
+          throw new Error(
+            `进度更新失败：主题「${params.topic}」课程「${params.item}」不存在。` +
+              `可能是课程名不准确——请先用 kb_query（query=progress + topic=${params.topic} + listOnly=true）` +
+              `列出该主题的准确课程标题，核对后用完整标题重试`
+          );
+        }
         return {
           content: [
             {
@@ -623,7 +654,13 @@ export const kbUpdateTool = defineTool({
         field: params.field,
         value: params.value,
       });
-      if (!r.ok) throw new Error(`进度更新失败：主题「${params.topic}」课程「${params.item}」不存在`);
+      if (!r.ok) {
+        throw new Error(
+          `进度更新失败：主题「${params.topic}」课程「${params.item}」不存在。` +
+            `可能是课程名不准确——请先用 kb_query（query=progress + topic=${params.topic} + listOnly=true）` +
+            `列出该主题的准确课程标题，核对后用完整标题重试`
+        );
+      }
       return {
         content: [
           {
@@ -799,7 +836,13 @@ export const parentUploadMaterialTool = defineTool({
     } catch (e) {
       throw new Error(`上传失败：${(e as Error).message}`);
     }
-    if (!rel) throw new Error("上传未返回服务端路径，请重试");
+    if (!rel) {
+      // ISSUE-063：补 why+next——空路径通常是服务端/网络瞬时问题而非路径本身
+      throw new Error(
+        `上传未返回服务端路径（本地文件已读取但服务端未确认落盘）。可能为网络中断或服务端异常——` +
+          `请稍后重试；若反复出现，检查服务端是否可达、磁盘是否正常，不要重复上传同一文件（可先不传，确认问题后再试）`
+      );
+    }
     try {
       logActivity(`上传资料 ${path.basename(localPath)} 到服务端 <${topic}${subDir ? `/${subDir}` : ""}>（${rel}）`);
     } catch (e) {
@@ -928,8 +971,22 @@ export const parentReadImageTool = defineTool({
     try {
       text = await describeImageViaVision(getDataDir(), image, params.question);
     } catch (e) {
-      const msg = (e as Error).message;
-      throw new Error(/未找到可用的 ffmpeg|网络|API key|凭证|401|403/.test(msg) ? `识图失败：${msg}` : `识图失败：${msg}`);
+      const msg = (e as Error).message || String(e);
+      // ISSUE-063：修复三元恒等——按失败类别给不同 next，避免 agent 面对同一句「识图失败」瞎猜。
+      // 类别① ffmpeg 缺失（本机解码/预处理缺依赖）
+      if (/未找到可用的 ffmpeg|ffmpeg/.test(msg)) {
+        throw new Error(`识图失败（本机缺 ffmpeg）：${msg}。请安装 ffmpeg 或设置 FFMPEG_BIN 环境变量指向有效可执行文件后重试`);
+      }
+      // 类别② 配置/凭证问题（视觉模型未配置 / API Key 无效 / 401/403）
+      if (/未配置|未启用|尚未配置|API key|凭证|401|403|InvalidApiKey|Unauthorized|密钥/.test(msg)) {
+        throw new Error(`识图失败（视觉模型未就绪）：${msg}。请家长到「设置 → 模型」确认已配置可用的视觉模型与 API Key 后重试`);
+      }
+      // 类别③ 网络/服务端不可达
+      if (/无法连接|fetch failed|timeout|超时|ECONN|ENOTFOUND|网络|ETIMEDOUT|abort/i.test(msg)) {
+        throw new Error(`识图失败（网络/服务端问题）：${msg}。请确认网络正常、模型服务可达后重试`);
+      }
+      // 类别④ 其余（模型未返回文字/被限流等）——照实给出原文 + 通用重试路径
+      throw new Error(`识图失败：${msg}。可换一张更清晰的图片重试；若反复失败，检查视觉模型配额或换用其它多模态模型`);
     }
     try {
       logActivity(`识图 ${path.basename(localPath)}`);
@@ -1020,13 +1077,19 @@ export const parentDeleteCourseTool = defineTool({
     } catch (e) {
       console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
     }
+    if (!ok) {
+      // ISSUE-063：删除失败要可自纠——提示「未删成功」而非弱化成一句陈述，并给候选核对路径。
+      throw new Error(
+        `家长库中未找到课程「${params.title}」（主题 ${params.topic}），未执行删除。` +
+          `请先用 parent_library_courses（topic=${params.topic}）查看该主题的真实课程名册，` +
+          `确认课程名后用完整标题重试`
+      );
+    }
     return {
       content: [
         {
           type: "text" as const,
-          text: ok
-            ? `已删除家长库课程：${params.topic}「${params.title}」`
-            : `课程不存在：${params.topic}「${params.title}」`,
+          text: `已删除家长库课程：${params.topic}「${params.title}」`,
         },
       ],
     };
@@ -1063,15 +1126,28 @@ export const parentContentTool = defineTool({
     }
     const r = await getParentContentForChild(childId, params.topic, params.type, params.course);
     if (!r.found) {
-      const what =
+      const typeLabel =
         params.type === "method"
-          ? `主题「${params.topic}」的教学方法`
+          ? "教学方法"
           : params.type === "teachingCopy"
-            ? `课程「${params.course}」的教学文案`
+            ? "教学文案"
             : params.type === "assessRubric"
-              ? `课程「${params.course}」的考核要点`
-              : `课程「${params.course}」的 html 资料`;
-      throw new Error(`家长库中未找到${what}（或该主题未分配给孩子）`);
+              ? "考核要点"
+              : "html 资料路径";
+      // 2026-09-08：按失败原因给出准确报错，杜绝把「没登记路径/课程名写错/文件验证抖动」混为一谈
+      const why =
+        r.reason === "not-allocated"
+          ? `主题「${params.topic}」未分配给孩子，无法读取家长库内容（请先在家长端分配该主题）`
+          : r.reason === "no-course"
+            ? `家长库中未找到课程「${params.course}」。请先用 kb_query（query=progress + topic + listOnly）列出该主题的准确课程标题，再用完整标题查询`
+            : r.reason === "no-method"
+              ? `主题「${params.topic}」在家长库尚未填写教学方法`
+              : r.reason === "no-content"
+                ? `课程「${params.course}」尚未填写${typeLabel}`
+                : r.reason === "no-html-path"
+                  ? `课程「${params.course}」已存在，但尚未登记 html 学习资料（html_path 为空）——不是路径找不到，是还没有关联资料文件`
+                  : `家长库中未找到${typeLabel}（或该主题未分配给孩子）`;
+      throw new Error(why);
     }
     return {
       content: [
@@ -1518,7 +1594,8 @@ export const pageActionTool = defineTool({
       ? r.data
         ? "；" + JSON.stringify(r.data).slice(0, 300)
         : ""
-      : `：${r.error ?? "无响应"}`;
+      // ISSUE-063：失败给可执行 next——最常见的失败原因是「资料页还没展示」
+      : `：${r.error ?? "无响应"}（请确认已先用 display_content 展示该资料页、页面在左侧面板已打开，再重试）`;
     return {
       content: [{ type: "text" as const, text: `${head}（${action}${params.index !== undefined ? `, index=${params.index}` : ""}${params.text ? `, text=${params.text}` : ""}）${extra}` }],
     };
@@ -1552,10 +1629,66 @@ export const pageInspectTool = defineTool({
           (data.truncated ? "\n（快照已截断，可减小 maxNodes 或加大范围再查）" : "")
       );
     } else {
-      parts.push(`快照获取失败：${snap.error ?? "无响应"}`);
+      // ISSUE-063：给可执行 next——快照失败多为资料页未展示/未打开
+      parts.push(`快照获取失败：${snap.error ?? "无响应"}（请确认已先用 display_content 展示该资料页并让页面处于打开状态，再重试）`);
     }
     return {
       content: [{ type: "text" as const, text: parts.join("\n\n") }],
+    };
+  },
+});
+
+// ==================== ISSUE-061：场景角色扮演（scene_command） ====================
+// 场景页（资料 html 内含 pi-scenario 标记、自带 scene:* 消息监听）的下行驱动工具。
+// 复用 page_action 的下行链（executePageAction → 主窗口 IPC → 渲染层），action="scene" 时
+// 渲染层面板不走桥脚本 DOM 白名单，而是把 {type:"scene:"+command, ...} 原样 postMessage 给场景页。
+
+/** scene_command：驱动场景页演出（角色说话/移动/动作/任务进度）——无结束指令，完成由对话收束 */
+export const sceneCommandTool = defineTool({
+  name: "scene_command",
+  label: "驱动场景演出",
+  description:
+    "驱动**场景页**（学习资料面板中带角色扮演的场景资料，如场景英语的客厅场景）的演出。你就是场景的「游戏主持人」：用本工具让角色说话、移动、做动作、更新任务进度。\n\n" +
+    "**command**：\n" +
+    "- `say`：角色说话。`character`（角色 id）+ `text`（英文台词）+ `zh`（中文对照，可选）。app 会自动朗读并显示双语字幕；\n" +
+    "- `move`：角色移动。`character` + `x`：**舞台横坐标 10~1120 可到场景任意位置**，或**目标名**：window=窗前 / sofa=沙发前 / table=茶几旁 / plant=绿植旁 / lamp=台灯边 / tv=电视机前 / picture=挂画下 / rug=地毯中央。`duration`（秒，可选）；\n" +
+    "- `act`：角色做动作。`character` + `act`：turn-on-lamp 开台灯 / turn-off-lamp 关台灯 / turn-on-tv 开电视 / turn-off-tv 关电视 / open-window 开窗 / close-window 关窗 / sit-sofa 坐到沙发 / stand 站起 / jump 跳 / dance 跳舞 / watch-tv 走到沙发坐下看电视 / drink-water 走到茶几旁用杯子喝水 / picture-fall 墙上的画掉下来 / picture-hang 把画挂回去；\n" +
+    "- `show`：让隐藏角色登场（`character`）；\n" +
+    "- `highlight`：高亮某物品或角色（`target`，如 lamp / sofa / steve）；\n" +
+    "- `update`：任务进度。`task`（任务 id）+ `progress`（已完成数）+ `total`（总数）。\n\n" +
+    "**任务达成＝对话收束，不是页面事件**：场景页没有结束横幅、没有 end 指令。当主线任务完成时，只用你的对话回复让角色祝贺孩子并询问是否继续，不要调用任何结束类指令，也不要在对话里说「再见/下课」——除非孩子明确表示结束。\n\n" +
+    "**注意**：一次只下发 1~2 条指令，等孩子回应再继续；场景页未展示时会失败（先用 display_content 展示场景资料）。",
+  parameters: Type.Object({
+    command: Type.Union([
+      Type.Literal("say"),
+      Type.Literal("move"),
+      Type.Literal("act"),
+      Type.Literal("show"),
+      Type.Literal("highlight"),
+      Type.Literal("update"),
+    ], { description: "场景指令类型（无 end——场景没有结束）" }),
+    character: Type.Optional(Type.String({ description: "角色 id（如 steve / maggie）" })),
+    text: Type.Optional(Type.String({ description: "say：角色台词（英文）" })),
+    zh: Type.Optional(Type.String({ description: "say：台词中文对照" })),
+    x: Type.Optional(Type.Union([Type.Number(), Type.String()], { description: "move：目标横坐标 10~1120，或目标名 window/sofa/table/plant/lamp/tv/picture/rug" })),
+    duration: Type.Optional(Type.Number({ description: "move：移动时长秒数" })),
+    act: Type.Optional(Type.String({ description: "act：动作名（turn-on-lamp 等，见工具说明）" })),
+    target: Type.Optional(Type.String({ description: "highlight：目标物品/角色 id" })),
+    task: Type.Optional(Type.String({ description: "update：任务 id" })),
+    progress: Type.Optional(Type.Number({ description: "update：已完成任务数" })),
+    total: Type.Optional(Type.Number({ description: "update：任务总数" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const childId = childIdFromCwd(ctx.cwd);
+    const { command, ...rest } = params;
+    const r = await executePageAction(childId, { action: "scene", command, ...rest } as any);
+    const head = r.ok ? `场景指令已执行（${command}）` : `场景指令失败（${command}）`;
+    const extra = r.ok
+      ? ""
+      // ISSUE-063：场景指令失败多为场景资料未展示——给可执行 next
+      : `：${r.error ?? "无响应"}（请确认已先用 display_content 展示带场景标记的资料、场景页已在左侧面板打开，再重试）`;
+    return {
+      content: [{ type: "text" as const, text: `${head}${extra}` }],
     };
   },
 });
@@ -1736,12 +1869,25 @@ export const scheduleTaskTool = defineTool({
       } else if (frequency !== "daily") {
         throw new Error("frequency 仅支持 once / daily / weekly / interval");
       }
-      const res = await serverFetch<{ ok: boolean; id?: string }>("/scheduler/reminders", {
-        method: "POST",
-        token,
-        body: payload,
-      });
-      if (!res?.ok) throw new Error("创建提醒失败");
+      let res: { ok: boolean; id?: string };
+      try {
+        res = await serverFetch<{ ok: boolean; id?: string }>("/scheduler/reminders", {
+          method: "POST",
+          token,
+          body: payload,
+        });
+      } catch (e) {
+        // ISSUE-063：带原因与下一步，避免「创建提醒失败」六字空报错让 agent 无从判断
+        const cause = (e as Error).message || "服务端无响应";
+        throw new Error(
+          `创建提醒失败（服务端调用出错：${cause}）。请稍后重试；若服务端不可达，提醒可能未创建成功，可用 action=list 确认现有提醒，避免孩子以为已设置`
+        );
+      }
+      if (!res?.ok) {
+        throw new Error(
+          `创建提醒失败（服务端未确认创建成功）。可先用 action=list 查看该提醒是否已存在，再决定重试或改用其它时间`
+        );
+      }
       const wdName = ["日", "一", "二", "三", "四", "五", "六"];
       const whenText =
         frequency === "once"

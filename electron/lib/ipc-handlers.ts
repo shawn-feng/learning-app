@@ -3,13 +3,13 @@ import {
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
-import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, disposeChildCourseSession, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, resetParentSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
+import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, disposeChildCourseSession, getSceneSession, disposeSceneSession, buildSceneSummaryForCourse, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, resetParentSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, getVisionModel } from "./pi-runtime";
 import fs from "fs";
 import path from "path";
-import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
+import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, prewarmTexts, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
 import {
   assessAudio,
   getMaskedAssessmentConfig,
@@ -47,7 +47,7 @@ import {
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
-import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
+import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus, assessSpeech } from "./exam";
 import { generateExamQuestions, generateCourseQuestions, scoreExamAttempt, selectCoursesForSchedule } from "./exam-engine";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
@@ -324,9 +324,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("child:getAgentsMd", async (_e, childId: string) => {
     // ISSUE-033 + SPLIT M8-B：AGENTS 用户版本唯一真源在服务端（本地缓存为离线降级）。
     // 编辑器实时读：先远程取，无用户版本返回代码默认（buildAgentsMd）。
-    const userVer = await fetchAgentPromptRemote("child", childId);
-    if (userVer !== null) return { content: userVer };
-    return { content: getDefaultPrompt("child", childId) };
+    const { content: userVer, status } = await fetchAgentPromptRemote("child", childId);
+    return { content: userVer !== null ? userVer : getDefaultPrompt("child", childId), network: status === "network" };
   });
 
   ipcMain.handle("child:saveAgentsMd", async (_e, childId: string, content: string) => {
@@ -344,11 +343,11 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
     if (scope === "parent") ref = getCurrentParentId();
     // SPLIT M8-B：编辑器实时读服务端（远程取 + 缓存兜底）
-    const userVer = await fetchAgentPromptRemote(scope, ref);
-    if (userVer !== null) return { content: userVer, customized: true };
+    const { content: userVer, status } = await fetchAgentPromptRemote(scope, ref);
+    if (userVer !== null) return { content: userVer, customized: true, network: status === "network" };
     // 无用户版本：区分 scope——家长默认提示词不可整体改，编辑器显示空、只填「追加补充」
     // （buildParentPrompt 会把它追加在默认后）；孩子 AGENTS 可整体定制，返回代码默认当编辑底稿。
-    return { content: scope === "parent" ? "" : getDefaultPrompt(scope, ref), customized: false };
+    return { content: scope === "parent" ? "" : getDefaultPrompt(scope, ref), customized: false, network: status === "network" };
   });
 
   ipcMain.handle("agents:save", async (_e, scope: string, ref: string, content: string) => {
@@ -1300,6 +1299,128 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // ISSUE-061：场景对话会话 prompt —— 语音球/场景键盘输入走独立 scene agent（专职扮演，与课程会话解耦）
+  let scenePromptAbort: { stopped: boolean; abort: () => void } | null = null;
+  // 场景对话常用台词预热（首次进入场景会话时后台合成落盘，正式播放命中磁盘缓存零等待）
+  const scenePrewarmDone = new Set<string>();
+  const SCENE_PREWARM_TEXT = [
+    "Hello! Hi!", "I'm Steve.", "What's your name?", "My name is ...", "How are you?", "I'm fine, thank you!",
+    "Nice to meet you!", "Welcome to my home!", "Look! This is my living room.",
+    "What is this?", "This is a sofa.", "This is a table.", "This is a lamp.", "This is a TV.", "This is a window.", "This is a plant.",
+    "What color is it?", "It's black.", "It's red.", "It's yellow.", "It's green.", "It's blue.",
+    "Can you say it?", "Say it with me.", "Let's play together!", "Great job!", "Sit down, please.", "Stand up!",
+    "Goodbye! See you next time!",
+    "sofa", "table", "lamp", "TV", "window", "plant", "picture", "cup",
+  ];
+  ipcMain.handle("scene:prompt", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string, text: string) => {
+    try {
+      const session = await getSceneSession(childId, courseKey);
+      const pwKey = `${childId}|${courseKey}`;
+      if (!scenePrewarmDone.has(pwKey)) {
+        scenePrewarmDone.add(pwKey);
+        // 预热不阻塞对话：失败静默（下次真实合成兜底）
+        void prewarmTexts(SCENE_PREWARM_TEXT, { provider: "edge-tts" }).catch(() => {});
+      }
+      const beforeCount = (session as any).messages?.length ?? 0;
+      scenePromptAbort = { stopped: false, abort: () => session.abort() };
+      await session.prompt(text);
+      if (scenePromptAbort?.stopped) {
+        _e.sender.send("scene:reply_end", { childId, courseKey });
+        return { success: true, stopped: true };
+      }
+      const messages: any[] = session.messages || [];
+      const lastAssistant = findLastAssistant(messages);
+      const errMsg = assistantError(lastAssistant);
+      if (errMsg) {
+        const friendly = friendlyError(errMsg);
+        console.error(`[scene:prompt] LLM 调用失败:`, errMsg);
+        _e.sender.send("scene:reply_error", { childId, courseKey, error: friendly });
+        _e.sender.send("scene:reply_end", { childId, courseKey });
+        return { success: false, error: friendly };
+      }
+      // 回发本轮新增的 assistant 正文（角色说的话）——scene_command 纯工具轮无正文则跳过
+      const texts: string[] = [];
+      for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
+        const m = messages[i];
+        if (m.role !== "assistant") continue;
+        let t = "";
+        for (const c of m.content || []) {
+          if (c.type === "text") t += c.text;
+        }
+        if (t.trim()) texts.push(t.trim());
+      }
+      if (texts.length) {
+        for (const t of texts) {
+          _e.sender.send("scene:reply", { childId, courseKey, text: t });
+        }
+      }
+      // 纯工具轮（只有动作演出、无正文）静默结束，不发「没有回复」——表演本身就是回复
+      _e.sender.send("scene:reply_end", { childId, courseKey });
+      return { success: true };
+    } catch (err) {
+      if (scenePromptAbort?.stopped) {
+        _e.sender.send("scene:reply_end", { childId, courseKey });
+        return { success: true, stopped: true };
+      }
+      console.error(`[scene:prompt] error:`, (err as Error).message);
+      _e.sender.send("scene:reply_error", { childId, courseKey, error: friendlyError((err as Error).message) });
+      return { success: false, error: (err as Error).message };
+    } finally {
+      scenePromptAbort = null;
+    }
+  });
+
+  // ISSUE-061：结束场景对话（退出场景课程/切走时），丢弃 scene 会话内存实例（jsonl 保留为记录真源）
+  ipcMain.handle("scene:stop", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
+    disposeSceneSession(childId, courseKey);
+    return { success: true };
+  });
+
+  // ISSUE-061：把场景对话记录转交给课程会话（孩子离开场景时触发）——转交文本作为一条
+  // user 消息注入课程会话让其收尾总结；回复经 pi:reply 正常回到 UI。
+  ipcMain.handle("scene:transfer", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
+    try {
+      const summary = buildSceneSummaryForCourse(childId, courseKey);
+      const session = await getChildSession(childId, courseKey);
+      const beforeCount = (session as any).messages?.length ?? 0;
+      const inject =
+        `[系统] 孩子刚刚结束了场景英语的场景互动。以下是本次场景对话的完整转交记录，` +
+        `请你通读后了解孩子的真实表现（说了什么、用了哪些句型单词、互动是否顺畅、有没有卡壳）。` +
+        `然后用在场角色的口吻给孩子一句简短收尾（英文为主、可带一句中文，不要总结式说教），` +
+        `视孩子此前是否明示来决定要不要更新本课状态（没明示就不记，记录规则照常）。\n\n` +
+        summary;
+      await session.prompt(inject);
+      const messages: any[] = session.messages || [];
+      const lastAssistant = findLastAssistant(messages);
+      const errMsg = assistantError(lastAssistant);
+      if (errMsg) {
+        const friendly = friendlyError(errMsg);
+        _e.sender.send("pi:reply_error", { childId, error: friendly });
+        _e.sender.send("pi:reply_end", { childId });
+        return { success: false, error: friendly };
+      }
+      const texts: string[] = [];
+      for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
+        const m = messages[i];
+        if (m.role !== "assistant") continue;
+        let t = "";
+        for (const c of m.content || []) {
+          if (c.type === "text") t += c.text;
+        }
+        if (t.trim()) texts.push(t.trim());
+      }
+      for (const t of texts) {
+        _e.sender.send("pi:reply", { childId, text: t });
+      }
+      _e.sender.send("pi:reply_end", { childId });
+      return { success: true };
+    } catch (err) {
+      console.error(`[scene:transfer] error:`, (err as Error).message);
+      _e.sender.send("pi:reply_error", { childId, error: friendlyError((err as Error).message) });
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ISSUE-037：家长发送支持 images（对齐 pi:prompt）
   ipcMain.handle("pi:prompt_parent", async (_e: IpcMainInvokeEvent, text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) => {
     try {
@@ -1478,10 +1599,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("pi:switch_model", async (_e: IpcMainInvokeEvent, childId: string, provider: string, modelId: string) => {
     try {
       const session = getActiveSession(childId);
-      if (!session) throw new Error("No active session");
+      if (!session) throw new Error(`当前没有进行中的会话（childId=${childId}），请先开始对话再切换模型`);
       const runtime = await getSharedRuntime();
       const model = runtime.getModel(provider, modelId);
-      if (!model) throw new Error("Model not found");
+      if (!model) throw new Error(`未找到模型 ${provider}/${modelId}，请刷新模型列表后重试`);
       await session.setModel(model);
       return { success: true };
     } catch (err) {
@@ -1639,6 +1760,28 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // ISSUE-041 层 C：云端事件轮询配置（设备级，默认开启 2 分钟）
   ipcMain.handle("eventpoll:config:get", () => getEventPollConfig());
   ipcMain.handle("eventpoll:config:set", (_e, cfg: any) => setEventPollConfig(cfg));
+
+  // ISSUE-061：场景对话的孩子语音落盘 → data/children/<childId>/voice/scene/<日期>/<时间>.webm
+  // （独立于 uploads/，便于后续挑选分析/发音评测；path=相对 data/，rel=相对该孩子 cwd）
+  ipcMain.handle("voice:scene_save", async (_e: IpcMainInvokeEvent, childId: string, data: ArrayBuffer | Buffer) => {
+    try {
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const dateDir = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const dir = path.join(getChildDir(childId), "voice", "scene", dateDir);
+      fs.mkdirSync(dir, { recursive: true });
+      const name = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${Date.now().toString(36)}.webm`;
+      const full = path.join(dir, name);
+      fs.writeFileSync(full, Buffer.from(data));
+      return {
+        success: true,
+        path: path.join("children", childId, "voice", "scene", dateDir, name).replace(/\\/g, "/"),
+        rel: path.join("voice", "scene", dateDir, name).replace(/\\/g, "/"),
+      };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
 
   // 文件上传落盘（ISSUE-008）：保存到 data/children/<childId>/uploads/，按 childId 隔离
   ipcMain.handle(
@@ -2029,6 +2172,27 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         }
         const r = await submitExamAttempt(payload);
         return { success: true, data: r };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+  // 口语/听说题判分（考核内）：上传语音（经 voiceMerge 已为 16k wav）→ 调 SSECP 发音评测 → 返回维度分 + audioFileId
+  ipcMain.handle(
+    "exam:assessSpeech",
+    async (
+      _e,
+      childId: string,
+      name: string,
+      buffer: ArrayBuffer,
+      questionType: string,
+      refText: string,
+      opts?: { topic?: string; course?: string; isExam?: boolean; examAttemptId?: string }
+    ) => {
+      try {
+        const fileId = await uploadExamVoice(childId, name, buffer);
+        const r = await assessSpeech(childId, fileId, questionType, refText, opts);
+        return { success: true, data: { audioFileId: fileId, assessmentId: r.assessmentId, result: r.result } };
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
