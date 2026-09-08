@@ -4,6 +4,7 @@
  * - 最近考核明细：逐题得分 + AI 评语 + ASR 转写 + ▶ 听原音（原始录音，家长可核对判分）。
  */
 import { useEffect, useState } from "react";
+import type { SpeechAssessment } from "../../electron/lib/exam";
 
 interface CourseRecord {
   course: string;
@@ -29,6 +30,11 @@ interface AttemptPerQuestion {
   pointMax: number;
   correct: boolean;
   aiComment: string;
+  /** 口语/听说题附加字段 */
+  assessMethod?: "speech";
+  questionType?: string;
+  refText?: string;
+  speech?: SpeechAssessment;
 }
 
 interface Attempt {
@@ -51,6 +57,61 @@ interface ScheduleItem {
   title: string;
   scope: Record<string, unknown>;
   pending: boolean;
+}
+
+/** 口语/听说题评测明细：维度分 + 逐字/逐词高亮（绿=好，红=需改进）。 */
+function speechColor(s: number): string {
+  return s >= 80 ? "#2f8a52" : s >= 60 ? "#b9770a" : "#c0392b";
+}
+
+function SpeechDetail({ speech, questionType, refText }: { speech: SpeechAssessment; questionType?: string; refText?: string }) {
+  const dims: Array<[string, number | undefined]> = [
+    ["发音", speech.pron],
+    ["完整度", speech.integrity],
+    ["准确度", speech.accuracy],
+    ["流利度", speech.fluency?.overall],
+    ["韵律", speech.prosody?.overall],
+  ];
+  const isCn = (questionType || "").startsWith("cn");
+  return (
+    <div style={{ marginTop: 6, background: "#f7f9ff", border: "1px solid #e6ecff", borderRadius: 8, padding: "8px 10px" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#3b4cca", marginBottom: 6 }}>🎤 发音评测维度</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+        {dims
+          .filter(([, v]) => v != null)
+          .map(([label, v]) => (
+            <div key={label} style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+              <span style={{ fontSize: 11, color: "#888" }}>{label}</span>
+              <span style={{ fontSize: 14, fontWeight: 700, color: speechColor(v!) }}>{Math.round(v!)}</span>
+            </div>
+          ))}
+      </div>
+      {speech.cnSyllables?.length ? (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>逐字评分（绿=好，红=需改进）</div>
+          <div style={{ lineHeight: 1.9, fontSize: 18, letterSpacing: 2 }}>
+            {speech.cnSyllables.map((sy, k) => (
+              <span key={k} title={`${sy.char} ${Math.round(sy.score)}分`} style={{ color: speechColor(sy.score), fontWeight: 600 }}>
+                {sy.char}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : speech.words?.length ? (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>逐词评分</div>
+          <div style={{ lineHeight: 1.9, fontSize: 14 }}>
+            {speech.words.map((w, k) => (
+              <span key={k} title={`${w.word} ${Math.round(w.score)}分`} style={{ color: speechColor(w.score), marginRight: 8 }}>
+                {w.word}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {isCn && refText ? <div style={{ marginTop: 8, fontSize: 12, color: "#666" }}>原文：{refText}</div> : null}
+    </div>
+  );
 }
 
 export default function ExamRecords({ childId }: { childId: string }) {
@@ -212,6 +273,9 @@ export default function ExamRecords({ childId }: { childId: string }) {
                     <span style={{ color: q.correct ? "#2f8a52" : "#c0392b", fontWeight: 700 }}>
                       {q.correct ? "✓" : "✗"} {q.pointGot}/{q.pointMax}
                     </span>
+                    {q.assessMethod === "speech" && (
+                      <span style={{ fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>背诵/口语</span>
+                    )}
                     {q.audioFileId && (
                       <button
                         onClick={() => playAudio(q.audioFileId!, q.qid)}
@@ -239,6 +303,9 @@ export default function ExamRecords({ childId }: { childId: string }) {
                     </div>
                   )}
                   {q.aiComment && <div style={{ color: "#888", marginTop: 2 }}>评语：{q.aiComment}</div>}
+                  {q.assessMethod === "speech" && q.speech && (
+                    <SpeechDetail speech={q.speech} questionType={q.questionType} refText={q.refText} />
+                  )}
                   {audioSrc[q.qid] && playing === q.qid && (
                     <audio controls autoPlay src={audioSrc[q.qid]} style={{ width: "100%", marginTop: 6 }} />
                   )}

@@ -22,9 +22,36 @@ export interface GeneratedQuestion {
   course: string;
   stem: string;
   pointMax: number;
+  /** 口语/听说题判分标记：speech = 走 SSECP 发音评测（而非 LLM 读 ASR 文本判分） */
+  assessMethod?: "speech";
+  /** SSECP 题型（cn_recitation / en_word / en_sentence ...），见 server/src/assessment/question-types.ts */
+  questionType?: string;
+  /** 标准原文（背诵/跟读参照），结构化来自语料，不靠 LLM 生成 */
+  refText?: string;
 }
 
 const GENERATION_SYSTEM_PROMPT = `你是儿童学习考核的出题老师。你只做一件事：根据家长写的考核方法说明与每课考核要点，为孩子出「主观题」（口述题，孩子用语音回答）。你只输出 JSON，不输出任何其它文字。`;
+
+/**
+ * 背诵题 POC 种子（结构化 refText，供 SSECP 逐字发音评测参照）。
+ * 由语料直给、不靠 LLM 生成，避免错字漏字让逐字评失真。
+ * 真实场景应改为从课程 material / lunyu_exam 语料抽取（见 DESIGN-ssecp-speech-assessment §14）。
+ */
+const LUNYU_RECITATION_SEED: Array<{ stem: string; refText: string }> = [
+  { stem: "背诵《论语》名句一：学而时习之", refText: "子曰：学而时习之，不亦说乎？有朋自远方来，不亦乐乎？人不知而不愠，不亦君子乎？" },
+  { stem: "背诵《论语》名句二：吾日三省吾身", refText: "吾日三省吾身：为人谋而不忠乎？与朋友交而不信乎？传不习乎？" },
+  { stem: "背诵《论语》名句三：学思结合", refText: "子曰：学而不思则罔，思而不学则殆。" },
+  { stem: "背诵《论语》名句四：温故知新", refText: "子曰：温故而知新，可以为师矣。" },
+  { stem: "背诵《论语》名句五：三人行必有我师", refText: "子曰：三人行，必有我师焉。择其善者而从之，其不善者而改之。" },
+];
+
+/** 取一门课的背诵题（结构化 refText）。优先课程自带 recitation；论语课程用 POC 种子。 */
+function recitationFor(course: ExamCourseConfig): Array<{ stem: string; refText: string }> {
+  const own = (course as any).recitation;
+  if (Array.isArray(own) && own.length) return own;
+  if (course.title.includes("论语")) return LUNYU_RECITATION_SEED;
+  return [];
+}
 
 // ==================== 选课（v3 §14.9：服务端下发选课 prompt，家长可编辑） ====================
 
@@ -185,7 +212,7 @@ async function generateForCourse(
     const parsed = extractJson(text);
     const list = Array.isArray(parsed?.questions) ? parsed.questions : [];
     if (!list.length) throw new Error("该课未返回题目：" + text.slice(0, 200));
-    return list
+    const llm = list
       .map((q: any, i: number) => ({
         qid: String(q?.qid || `q${i + 1}`),
         course: course.title, // 固定为该课标题（LLM 可能改 course 名，统一回写）
@@ -193,6 +220,18 @@ async function generateForCourse(
         pointMax: Number(q?.pointMax) || 10,
       }))
       .filter((q: GeneratedQuestion) => q.stem);
+    // 背诵题（口语/听说题）：由语料结构化注入，不走 LLM（避免错字漏字让逐字评失真）；
+    // 判分在提交时走 SSECP 发音评测（见 exam-template / ExamView.handleSubmit）。
+    const rec = recitationFor(course).map((r, ri) => ({
+      qid: `rq${ri + 1}`,
+      course: course.title,
+      stem: r.stem,
+      pointMax: 10,
+      assessMethod: "speech" as const,
+      questionType: "cn_recitation",
+      refText: r.refText,
+    }));
+    return [...llm, ...rec];
   } finally {
     session.dispose();
   }

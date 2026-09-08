@@ -17,6 +17,10 @@ export interface ExamTemplateQuestion {
   course: string;
   pointMax: number;
   stem: string;
+  /** 口语/听说题题型（cn_recitation 等）；有值即背诵/跟读题，显示参考原文、不触发 ASR */
+  questionType?: string;
+  /** 标准原文（背诵/跟读参照） */
+  refText?: string;
 }
 
 export function buildExamHtml(
@@ -56,6 +60,8 @@ export function buildExamHtml(
   .q-course{display:inline-block; font-size:20px; color:var(--brand-d); background:var(--soft); border-radius:8px; padding:4px 12px; margin-bottom:14px;}
   .q-stem{font-size:32px; font-weight:600; margin-bottom:20px}
   .q-hint{font-size:20px; color:var(--muted); margin:-10px 0 18px}
+  .q-ref{font-size:30px; line-height:1.6; background:#fff8ec; border:1px solid #f0e2c0; border-radius:12px; padding:14px 16px; margin:-6px 0 18px; color:#8a5a00; white-space:pre-wrap; font-family:"KaiTi","STKaiti",serif;}
+  .q-ref:empty{display:none}
   .answer{border-top:1px dashed var(--line); padding-top:18px; margin-top:6px}
   .mic-row{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
   .mic-btn{border:none; border-radius:14px; padding:16px 26px; font-size:24px; font-weight:600; background:var(--brand); color:#fff; cursor:pointer; display:inline-flex; align-items:center; gap:10px; user-select:none; -webkit-user-select:none; touch-action:none;}
@@ -96,23 +102,24 @@ export function buildExamHtml(
   <div class="stream-banner" id="streamBanner"></div>
   <div class="stage">
     <div class="stream-empty" id="streamEmpty"></div>
-    <div class="q-card" id="qCard">
-      <span class="q-course" id="qCourse"></span>
-      <div class="q-stem" id="qStem"></div>
-      <div class="q-hint">🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。</div>
-      <div class="answer">
-        <div class="mic-row">
-          <button class="mic-btn" id="micBtn">🎤 按住说话</button>
-          <span class="rec-time" id="recTime"></span>
+      <div class="q-card" id="qCard">
+        <span class="q-course" id="qCourse"></span>
+        <div class="q-stem" id="qStem"></div>
+        <div class="q-ref" id="qRef"></div>
+        <div class="q-hint" id="qHint">🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。</div>
+        <div class="answer">
+          <div class="mic-row">
+            <button class="mic-btn" id="micBtn">🎤 按住说话</button>
+            <span class="rec-time" id="recTime"></span>
+          </div>
+          <div class="rec-status" id="recStatus"></div>
+          <audio class="play" id="play" controls style="display:none"></audio>
+          <div class="asr-label" id="asrLabel">识别文字（可修改）：</div>
+          <textarea class="asr" id="asr" placeholder="松开后识别出的文字会出现在这里；说错了直接改这里，或再按住说一遍"></textarea>
+          <div class="lock-tag" id="lockTag"></div>
+          <div class="q-timer" id="qTimer">本题用时：0 秒</div>
         </div>
-        <div class="rec-status" id="recStatus"></div>
-        <audio class="play" id="play" controls style="display:none"></audio>
-        <div class="asr-label">识别文字（可修改）：</div>
-        <textarea class="asr" id="asr" placeholder="松开后识别出的文字会出现在这里；说错了直接改这里，或再按住说一遍"></textarea>
-        <div class="lock-tag" id="lockTag"></div>
-        <div class="q-timer" id="qTimer">本题用时：0 秒</div>
       </div>
-    </div>
   </div>
   <div class="exam-foot">
     <button class="nav" id="prevBtn">← 上一题</button>
@@ -225,7 +232,9 @@ window.EXAM_DATA = ${dataJson};
         id: "q" + (D.questions.length + 1), // 全局唯一序号（LLM 每课都从 q1 起，必须覆盖防串题）
         course: q.course || "",
         stem: q.stem || "",
-        pointMax: Number(q.pointMax) || 10
+        pointMax: Number(q.pointMax) || 10,
+        questionType: q.questionType || "",
+        refText: q.refText || ""
       });
     }
     if(wasEmpty){
@@ -250,6 +259,14 @@ window.EXAM_DATA = ${dataJson};
     answers[q.id] = a;
     $("qCourse").textContent = q.course || "";
     $("qStem").textContent = q.stem || "";
+    $("qRef").textContent = q.refText || ""; // 背诵/跟读题显示标准原文
+    // 口语/听说题：显示参考原文、隐藏文字识别框、不触发 ASR
+    var isSpeech = !!q.questionType;
+    $("qHint").textContent = isSpeech
+      ? "🎤 按住麦克风背诵，松手即停；可以分几段背，提交后自动评分。"
+      : "🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。";
+    $("asrLabel").style.display = isSpeech ? "none" : "";
+    $("asr").style.display = isSpeech ? "none" : "";
     paintState();
   }
   // 离开当前题：保存文本框；已有内容（录音/文字）→ 打答完时间并锁定（之后只读不可改）
@@ -326,11 +343,19 @@ window.EXAM_DATA = ${dataJson};
           answers[qid] = recA;
           if(qIndex(qid) === idx) updateNav(); // 录上音即可进入下一题
           if(qIndex(qid) === idx && !recA.locked){
-            // 识别中提示（防孩子以为没录上）
-            transcribing = true;
-            setBtn("🔄 识别中…", "recognizing");
-            $("recStatus").textContent = "正在识别你的回答…请稍等";
-            if(window.parent && window.parent!==window){ window.parent.postMessage({ type:"exam:asr", qid:qid, blob:blob }, "*"); }
+            if(q.questionType){
+              // 背诵/跟读题：无需 ASR，录完即存（提交时统一评测）；不打识别中状态（避免麦克风被锁）
+              if(!recA.answeredAt) recA.answeredAt = Date.now();
+              if(recA.sec) recA.durationMs = recA.sec * 1000;
+              recA.locked = true;
+              paintState();
+            } else {
+              // 识别中提示（防孩子以为没录上）
+              transcribing = true;
+              setBtn("🔄 识别中…", "recognizing");
+              $("recStatus").textContent = "正在识别你的回答…请稍等";
+              if(window.parent && window.parent!==window){ window.parent.postMessage({ type:"exam:asr", qid:qid, blob:blob }, "*"); }
+            }
           } else {            // 录音后立刻切走的题：已有内容 → 立即锁定（防漏锁导致无法提交）
             if(recA.segs.length || (recA.asr && String(recA.asr).trim())){
               if(!recA.answeredAt) recA.answeredAt = Date.now();
@@ -402,7 +427,8 @@ window.EXAM_DATA = ${dataJson};
         var a = answers[q.id] || {};
         return { qid:q.id, course:q.course, stem:q.stem, pointMax:q.pointMax || 10,
                  audioB64s: (a.segs || []).slice(), asr:(a.asr||"").trim(),
-                 startedAt:null, durationMs: a.durationMs != null ? a.durationMs : ((a.sec||0)*1000) };
+                 startedAt:null, durationMs: a.durationMs != null ? a.durationMs : ((a.sec||0)*1000),
+                 questionType: q.questionType || "", refText: q.refText || "" };
       })
     };
     if(window.parent && window.parent!==window){ window.parent.postMessage({ type:"exam:submit", payload:payload }, "*"); }

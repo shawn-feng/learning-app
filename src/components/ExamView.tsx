@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { buildExamHtml } from "../lib/exam-template";
+import type { SpeechAssessment } from "../../electron/lib/exam";
 
 type Stage = "pick" | "exam" | "scoring" | "report" | "error";
 
@@ -39,7 +40,19 @@ interface QuestionUI {
 }
 
 interface ScoredResult {
-  perQuestion: Array<{ qid: string; pointGot: number; correct: boolean; aiComment: string }>;
+  perQuestion: Array<{
+    qid: string;
+    pointGot: number;
+    correct: boolean;
+    aiComment: string;
+    /** 口语/听说题（背诵）附加字段 */
+    question?: string;
+    assessMethod?: "speech";
+    questionType?: string;
+    refText?: string;
+    audioFileId?: string;
+    speech?: SpeechAssessment;
+  }>;
   courseMastery: Record<string, { correct: number; total: number; rate: number }>;
   reinforcePlan: Record<string, { planReviewAt: string; focus: string[]; aiSuggestion?: string }>;
   score: number;
@@ -76,6 +89,8 @@ export default function ExamView({ childId, onExit }: Props) {
   const [scoringPrompt, setScoringPrompt] = useState("");
   const [report, setReport] = useState<ScoredResult | null>(null);
   const [reportTitle, setReportTitle] = useState("");
+  // 口语题报告回放：fileId → data URL（点击「听我的背诵」时按需拉取）
+  const [speechAudio, setSpeechAudio] = useState<Record<string, string>>({});
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const busyRef = useRef(false);
   // 本场考核的候选课程（含 rubric，判分锚定用；startExam 时从 config 获取）
@@ -261,38 +276,136 @@ export default function ExamView({ childId, onExit }: Props) {
       audioB64s?: string[];
       asr: string;
       durationMs: number | null;
+      /** 口语/听说题（背诵等）：提交时走 SSECP 而非 LLM 判分 */
+      assessMethod?: "speech";
+      questionType?: string;
+      refText?: string;
     }>;
   }) {
     if (!currentSchedule) return;
     setStage("scoring");
     setPrepText("老师正在批改你的回答…");
     try {
-      // 1) 客户端判分（独立内存 session，prompt 取自服务端；每题带 rubric 作判分锚定）
-      const courses = examCoursesRef.current;
-      const rubricByCourse = new Map(courses.map((c) => [c.title, c.assessRubric || ""]));
-      const answers = payload.perQuestion.map((q) => ({
-        qid: q.qid,
-        course: q.course,
-        stem: q.stem,
-        pointMax: Number(q.pointMax) || 10,
-        rubric: rubricByCourse.get(q.course) || "",
-        asrText: q.asr || "",
-        durationMs: q.durationMs ?? null,
-      }));
-      const s: any = await window.api.examScore(childId, scoringPrompt, answers);
-      if (!s?.success) throw new Error(s?.error || "判分失败");
-      const scored = s.data as ScoredResult;
+      const isSpeech = (q: (typeof payload.perQuestion)[number]) => !!q.questionType;
+      const speechQs = payload.perQuestion.filter(isSpeech);
+      const textQs = payload.perQuestion.filter((q) => !isSpeech(q));
 
-      // 2) 上传语音（files 通道），提交时携带 fileId。
-      // 每题可能有多段录音（多次按住说话，同聊天 ISSUE-021）：≥2 段先用主进程 voice:merge 拼成单个 WAV，
-      // 1 段直接用；无段则无语音（仅文字作答）。
+      // 复用：dataURL → 纯 base64 / ArrayBuffer（voiceMerge 需要纯 base64 多段）
       const plainB64 = (s: string) => {
         const i = s.indexOf(",");
-        return i >= 0 ? s.slice(i + 1) : s; // dataURL → 纯 base64（voice:merge 需要）
+        return i >= 0 ? s.slice(i + 1) : s;
       };
-      const b64ToBuf = (s: string) => Uint8Array.from(atob(plainB64(s)), (c) => c.charCodeAt(0)).buffer;
+      const b64ToBuf = (s: string) =>
+        Uint8Array.from(atob(plainB64(s)), (c) => c.charCodeAt(0)).buffer;
+
+      // 1) 口述题（文字/知识类）：客户端 LLM 判分（独立内存 session，rubric 作判分锚定）
+      let scored: ScoredResult | null = null;
+      if (textQs.length) {
+        const courses = examCoursesRef.current;
+        const rubricByCourse = new Map(courses.map((c) => [c.title, c.assessRubric || ""]));
+        const answers = textQs.map((q) => ({
+          qid: q.qid,
+          course: q.course,
+          stem: q.stem,
+          pointMax: Number(q.pointMax) || 10,
+          rubric: rubricByCourse.get(q.course) || "",
+          asrText: q.asr || "",
+          durationMs: q.durationMs ?? null,
+        }));
+        const r: any = await window.api.examScore(childId, scoringPrompt, answers);
+        if (!r?.success) throw new Error(r?.error || "判分失败");
+        scored = r.data as ScoredResult;
+      }
+
+      // 2) 口语/听说题（背诵等）：提交时「批量评」——多段录音拼成 16k wav → 上传 → SSECP 发音评测。
+      //    并行评测避免阻塞（用户要求：考核结束一次性提交，不逐题实时评）。
+      const speechResult = await Promise.all(
+        speechQs.map(async (q) => {
+          const segs: string[] = Array.isArray(q.audioB64s) ? q.audioB64s : [];
+          // 无录音的口语题：记 0 分，不调评测
+          if (!segs.length) {
+            return {
+              qid: q.qid,
+              pointGot: 0,
+              pointMax: Number(q.pointMax) || 10,
+              correct: false,
+              aiComment: "未检测到背诵录音",
+              audioFileId: undefined as string | undefined,
+              speech: undefined as SpeechAssessment | undefined,
+            };
+          }
+          // 多段录音（多次按住说话）拼成单段 WAV（voiceMerge 已是 16k 单声道 wav，SSECP 直吃）
+          let buf: ArrayBuffer;
+          if (segs.length === 1) {
+            buf = b64ToBuf(segs[0]);
+          } else {
+            const m: any = await window.api.voiceMerge(childId, segs.map(plainB64));
+            if (!m?.success || !m.data) throw new Error(`合并语音失败：${m?.error || ""}`);
+            buf = b64ToBuf(m.data);
+          }
+          const a: any = await window.api.examAssessSpeech(
+            childId,
+            `recite-${q.qid}.wav`,
+            buf,
+            q.questionType!,
+            q.refText || "",
+            { isExam: true }
+          );
+          if (!a?.success) throw new Error(a?.error || "发音评测失败");
+          const sp: SpeechAssessment = a.data.result;
+          const pointGot = Math.round((sp.pron / 100) * (Number(q.pointMax) || 10));
+          return {
+            qid: q.qid,
+            pointGot,
+            pointMax: Number(q.pointMax) || 10,
+            correct: (sp.pron ?? 0) >= 60,
+            aiComment: `发音 ${Math.round(sp.pron ?? 0)} 分（完整度 ${Math.round(sp.integrity ?? 0)} / 准确 ${Math.round(sp.accuracy ?? 0)} / 流利 ${Math.round(sp.fluency?.overall ?? 0)}）`,
+            audioFileId: a.data.audioFileId,
+            speech: sp,
+          };
+        })
+      );
+
+      // 3) 组装每题（合并 LLM 文字题 + SSECP 口语题），本地算总分
+      const textGotByQid = new Map((scored?.perQuestion ?? []).map((x) => [x.qid, x]));
+      const speechGotByQid = new Map(speechResult.map((x) => [x.qid, x]));
+      let score = 0;
+      const perQuestion: ScoredResult["perQuestion"] = payload.perQuestion.map((q) => {
+        if (isSpeech(q)) {
+          const g = speechGotByQid.get(q.qid)!;
+          score += g.pointGot;
+          return {
+            qid: q.qid,
+            pointGot: g.pointGot,
+            correct: g.correct,
+            aiComment: g.aiComment,
+            question: q.stem,
+            asrText: "",
+            assessMethod: "speech" as const,
+            questionType: q.questionType!,
+            refText: q.refText || "",
+            audioFileId: g.audioFileId,
+            speech: g.speech,
+          };
+        }
+        const g = textGotByQid.get(q.qid);
+        score += g?.pointGot ?? 0;
+        return {
+          qid: q.qid,
+          pointGot: g?.pointGot ?? 0,
+          correct: !!g?.correct,
+          aiComment: g?.aiComment || "",
+          question: q.stem,
+          asrText: q.asr || "",
+          audioFileId: undefined,
+          speech: undefined,
+        };
+      });
+      const wrongQuestions = perQuestion.filter((x) => !x.correct).map((x) => x.qid);
+
+      // 4) 上报服务端：仅文字题语音走 files 通道（口语题语音已由 examAssessSpeech 上传拿到 audioFileId）
       const voices: Array<{ qid: string; buffer: ArrayBuffer; name: string }> = [];
-      for (const q of payload.perQuestion) {
+      for (const q of textQs) {
         const segs: string[] = Array.isArray(q.audioB64s) ? q.audioB64s : [];
         if (!segs.length) continue;
         if (segs.length === 1) {
@@ -303,34 +416,16 @@ export default function ExamView({ childId, onExit }: Props) {
           voices.push({ qid: q.qid, buffer: b64ToBuf(m.data), name: `voice-${q.qid}.wav` });
         }
       }
-      const gotByQid = new Map(scored.perQuestion.map((x) => [x.qid, x]));
-      const perQuestion = payload.perQuestion.map((q) => {
-        const g = gotByQid.get(q.qid);
-        return {
-          qid: q.qid,
-          course: q.course,
-          question: q.stem,
-          asrText: q.asr || "",
-          durationMs: q.durationMs ?? undefined,
-          pointGot: g?.pointGot ?? 0,
-          pointMax: Number(q.pointMax) || 10,
-          correct: !!g?.correct,
-          aiComment: g?.aiComment || "",
-        };
-      });
-      const wrongQuestions = perQuestion.filter((x) => !x.correct).map((x) => x.qid);
-
-      // 3) 上报服务端（exam_attempts + exam_mastery 回写 + 排期完成关联）
       const attempt = {
         childId,
         topic: currentSchedule.kind === "custom" ? String(currentSchedule.scope?.note || "") : currentSchedule.freq,
         title: `${currentSchedule.title} · ${new Date().toLocaleDateString("zh-CN")}`,
         startedAt: new Date(currentSchedule.scheduledAt || Date.now()).toISOString(),
         submittedAt: payload.submittedAt || new Date().toISOString(),
-        score: Number(scored.score) || 0,
+        score,
         perQuestion,
-        courseMastery: scored.courseMastery || {},
-        reinforcePlan: scored.reinforcePlan || {},
+        courseMastery: scored?.courseMastery || {},
+        reinforcePlan: scored?.reinforcePlan || {},
         wrongQuestions,
         scheduleId: currentSchedule.id,
       };
@@ -339,7 +434,13 @@ export default function ExamView({ childId, onExit }: Props) {
       const attemptId = sub.data?.id || "";
       await window.api.examScheduleComplete(currentSchedule.id, attemptId).catch(() => undefined);
 
-      setReport(scored);
+      setReport({
+        perQuestion,
+        courseMastery: scored?.courseMastery || {},
+        reinforcePlan: scored?.reinforcePlan || {},
+        score,
+        overall: scored?.overall || "",
+      });
       setReportTitle(attempt.title);
       setStage("report");
     } catch (e: any) {
@@ -547,6 +648,36 @@ export default function ExamView({ childId, onExit }: Props) {
                     </span>
                   </div>
                   {q.aiComment && <div style={{ fontSize: 13, color: "#555", marginTop: 2 }}>{q.aiComment}</div>}
+                  {q.assessMethod === "speech" && q.audioFileId && (
+                    <div style={{ marginTop: 6 }}>
+                      <button
+                        onClick={async () => {
+                          if (!speechAudio[q.audioFileId!]) {
+                            try {
+                              const r: any = await window.api.examAudio(q.audioFileId!);
+                              if (r?.success && r.data) {
+                                setSpeechAudio((p) => ({ ...p, [q.audioFileId!]: r.data }));
+                              }
+                            } catch {
+                              /* 静默 */
+                            }
+                          }
+                        }}
+                        style={{ ...btn, padding: "4px 12px", fontSize: 13, background: "#eef2ff", color: "#3b6ef5" }}
+                      >
+                        🔊 听我的背诵
+                      </button>
+                      {speechAudio[q.audioFileId] && (
+                        <audio
+                          key={q.audioFileId}
+                          src={speechAudio[q.audioFileId]}
+                          controls
+                          autoPlay
+                          style={{ height: 32, marginTop: 6, width: "100%", maxWidth: 320 }}
+                        />
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

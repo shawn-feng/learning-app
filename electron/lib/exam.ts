@@ -18,6 +18,8 @@ export interface ExamCourseConfig {
   mastery: string;
   examMastery: string;
   assessRubric: string;
+  /** 结构化背诵题（口语/听说题）：refText 为标准原文，提交时走 SSECP 发音评测而非 LLM */
+  recitation?: Array<{ stem: string; refText: string }>;
 }
 
 export interface ExamTopicConfig {
@@ -84,6 +86,12 @@ export interface ExamPerQuestion {
   pointMax: number;
   correct: boolean;
   aiComment: string;
+  /** 口语/听说题标记与题型（提交时走 SSECP 而非 LLM） */
+  assessMethod?: "speech";
+  questionType?: string;
+  refText?: string;
+  /** SSECP 发音评测结果（维度分 + 音素级明细），仅口语题有 */
+  speech?: SpeechAssessment;
 }
 
 export interface ExamAttemptPayload {
