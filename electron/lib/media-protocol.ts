@@ -45,20 +45,32 @@ function encodeMaterialId(relPosix: string): string {
   return Buffer.from(relPosix, "utf-8").toString("base64url");
 }
 
-/** 从服务端拉取材料文件（二进制），带 session token。 */
+/** 从服务端拉取材料文件（二进制），带 session token。
+ *  2026-09-08：曾出现 30s 超时（The operation was aborted due to timeout），但同机 curl 秒回——
+ *  典型半开 keep-alive/瞬时抖动。故：超时缩短到 12s + 失败自动重试一次（新请求），抗瞬时。 */
 export async function fetchMaterialContent(relPosix: string): Promise<Buffer> {
   const base = getServerUrl();
   if (!base) throw new Error("未配置服务端地址");
   const token = currentSessionToken();
   const id = encodeMaterialId(relPosix);
-  const res = await fetch(`${base}/api/v1/materials/content/${id}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) {
-    throw new Error(`材料获取失败 (HTTP ${res.status})`);
+  const attempt = async (): Promise<Buffer> => {
+    const res = await fetch(`${base}/api/v1/materials/content/${id}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: AbortSignal.timeout(12000),
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      throw new Error(`材料获取失败 (HTTP ${res.status})`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  };
+  try {
+    return await attempt();
+  } catch (firstErr) {
+    // 重试一次：多半能绕开陈旧连接/瞬时抖动
+    console.warn(`[fetchMaterialContent] 首次拉取失败，重试一次：${relPosix} ${(firstErr as Error)?.message || firstErr}`);
+    return await attempt();
   }
-  return Buffer.from(await res.arrayBuffer());
 }
 
 /**

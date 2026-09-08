@@ -598,6 +598,35 @@ export async function deallocateChildTopic(
   });
 }
 
+/**
+ * 课程名宽松匹配：agent 传的 course 名常与家长库真实标题不一致（2026-09-07 实测：
+ * 资料页标题带主题名前缀「场景英语·第1课…」、agent 还可能只给「第1课」主体）。
+ * 匹配顺序：精确 → 归一后相同 → 剥主题名/目录名前缀后相同 → 双向包含 → 前缀。
+ */
+function courseTitleMatches(query: string, title: string, topicName: string, topicKey: string): boolean {
+  if (!query || !title) return false;
+  if (query === title) return true;
+  const norm = (s: string) => String(s || "").replace(/[\s·・\-—_（）()]/g, "").toLowerCase();
+  const q = norm(query);
+  const t = norm(title);
+  if (q === t) return true;
+  const stems: string[] = [];
+  if (topicName) stems.push(norm(topicName));
+  if (topicKey) stems.push(norm(topicKey));
+  const strip = (s: string) => {
+    for (const p of stems) {
+      if (p && s.startsWith(p)) return s.slice(p.length);
+    }
+    return s;
+  };
+  const qBody = strip(q);
+  const tBody = strip(t);
+  if (qBody && tBody && qBody === tBody) return true;
+  if (qBody && tBody && qBody.length >= 4 && tBody.length >= 4 && (qBody.includes(tBody) || tBody.includes(qBody))) return true;
+  if (qBody && tBody && qBody.length >= 3 && tBody.startsWith(qBody)) return true;
+  return false;
+}
+
 // ==================== 孩子端「从家长库取内容」（ISSUE-029 专用工具后端） ====================
 
 export type ParentContentType = "method" | "teachingCopy" | "htmlPath" | "assessRubric";
@@ -613,51 +642,52 @@ export async function getParentContentForChild(
   topicDir: string,
   type: ParentContentType,
   courseTitle?: string
-): Promise<{ found: boolean; content: string }> {
+): Promise<{ found: boolean; content: string; reason?: "not-allocated" | "no-method" | "no-course" | "no-content" | "no-html-path" }> {
   // SPLIT：分配校验读服务端孩子 kb，内容查服务端家长库；html 校验本地缓存文件
-  // 1) 校验分配
+  // 1) 校验分配 + 归一化 topic（agent 可能传主题中文名「场景英语」而非 topic_key，
+  //    分配校验/courses.list 的 topic 过滤都只认 topic_key——2026-09-07 场景英语实测暴露）
   const allocated = await listChildAllocatedTopics(childId);
-  if (!allocated.some((t) => t.topicKey === topicDir)) {
-    return { found: false, content: "" };
+  const trow = allocated.find((t) => t.topicKey === topicDir || t.name === topicDir);
+  if (!trow) {
+    return { found: false, content: "", reason: "not-allocated" };
   }
+  const topicKey = trow.topicKey;
   // 2) 从服务端家长库查内容
   if (type === "method") {
     const topics = await dbQuery<Array<{ topic_key: string; method: string }>>("parent_lib.topics.list", {}).catch(() => []);
-    const row = (topics ?? []).find((t) => t.topic_key === topicDir) || (topics ?? []).find((t) => String(t.topic_key).includes(topicDir));
+    const row = (topics ?? []).find((t) => t.topic_key === topicKey) || (topics ?? []).find((t) => String(t.topic_key).includes(topicDir));
     if (row?.method) return { found: true, content: row.method };
-    return { found: false, content: "" };
+    return { found: false, content: "", reason: "no-method" };
   }
   // teachingCopy / htmlPath / assessRubric 都按课程查
-  if (!courseTitle) return { found: false, content: "" };
+  if (!courseTitle) return { found: false, content: "", reason: "no-course" };
   const courses = await dbQuery<Array<{ title: string; teaching_copy: string; html_path: string; assess_rubric: string }>>(
     "parent_lib.courses.list",
-    { topic: topicDir }
+    { topic: topicKey }
   ).catch(() => []);
-  const row = (courses ?? []).find((c) => c.title === courseTitle);
-  if (!row) return { found: false, content: "" };
+  const row = (courses ?? []).find((c) => courseTitleMatches(courseTitle, c.title, trow.name, topicKey));
+  if (!row) return { found: false, content: "", reason: "no-course" };
   if (type === "teachingCopy") {
     if (row.teaching_copy) return { found: true, content: row.teaching_copy };
-    return { found: false, content: "" };
+    return { found: false, content: "", reason: "no-content" };
   }
   if (type === "assessRubric") {
     if (row.assess_rubric) return { found: true, content: row.assess_rubric };
-    return { found: false, content: "" };
+    return { found: false, content: "", reason: "no-content" };
   }
-  // htmlPath：返回家长库相对路径（新格式 `<topic>/<file>`，无 materials/ 前缀），
-  // 远程试拉校验文件真实存在（方案 A 无本地缓存，本地校验恒失败——2026-08-28 修复）
+  // htmlPath：返回家长库相对路径（新格式 `<topic>/<file>`，无 materials/ 前缀）。
+  // ⚠️ 2026-09-08：不再以「实时远程试拉成败」作为返回判据——试拉受本地服务端/网络瞬时抖动影响
+  // （曾偶发 HTTP 200+0 字节/连接中断），会把「路径明明正确」整条判成 not found，agent 只能瞎猜。
+  // 路径只要在家长库登记即返回；真实存在性由 display_content 展示环节兜底报错（404 更直接）。
+  // 同时保留一次后台探测用于日志诊断（不阻断）。
   if (row.html_path) {
-    try {
-      // ⚠️ 兼容两种存储格式：新写入（上传自动关联，<topic>/<file>）与旧数据/手动填写
-      // （materials/<topic>/<file>）。服务端材料 id = base64url(相对 materials 根的路径)，
-      // 必须剥掉 materials/ 前缀，否则 404 → htmlPath 恒 not found（2026-08-30 测试暴露）。
-      const rel = row.html_path.replace(/^materials\//, "");
-      await fetchMaterialContent(rel);
-      return { found: true, content: row.html_path };
-    } catch {
-      return { found: false, content: "" };
-    }
+    const rel = row.html_path.replace(/^materials\//, "");
+    void fetchMaterialContent(rel).catch((e) =>
+      console.warn(`[parent-content] html_path 后台探测失败（不阻断）：${rel} ${(e as Error)?.message || e}`)
+    );
+    return { found: true, content: row.html_path };
   }
-  return { found: false, content: "" };
+  return { found: false, content: "", reason: "no-html-path" };
 }
 
 // ==================== 课程管理（家长端增删改 + 资料上传） ====================

@@ -85,6 +85,33 @@ export function registerMaterialsRoutes(app: FastifyInstance, deps: MaterialsDep
     const row = deps.db
       .prepare("SELECT path, type, size FROM materials WHERE id = ? AND parent_id = ?")
       .get(id, parentId) as { path: string; type: string; size: number } | undefined;
+
+    // ── 观测日志（2026-09-08：诊断「display_content 30s 超时 / 偶发 200 空体」）──
+    // 记录请求开始/结束的耗时、返回状态、字节数；空体=200 但 0 字节可直接发现。
+    // fastify pino 走 stdout（可能被启动方式吞掉），故同时追加到 data/_materials-content.log 保证可见。
+    const diagFile = path.join(deps.config.dataDir, "_materials-content.log");
+    const logLine = (o: Record<string, unknown>) => {
+      try {
+        fs.appendFileSync(diagFile, JSON.stringify({ ts: new Date().toISOString(), ...o }) + "\n");
+      } catch {
+        /* 日志失败不阻断 */
+      }
+    };
+    const t0 = Date.now();
+    const base = { id, parentId, path: row?.path ?? "(未命中)", range: req.headers.range || "" };
+    req.log.info(base, "materials/content start");
+    logLine({ ev: "start", ...base });
+    let done = false;
+    const logFinish = (tag: string, extra: Record<string, unknown> = {}) => {
+      if (done) return;
+      done = true;
+      const info = { id, parentId, path: row?.path ?? "(未命中)", tag, ms: Date.now() - t0, status: reply.raw.statusCode, bytes: (reply.raw as unknown as { bytesWritten?: number }).bytesWritten ?? 0, ...extra };
+      req.log.info(info, "materials/content done");
+      logLine({ ev: "done", ...info });
+    };
+    reply.raw.once("finish", () => logFinish("finish"));
+    reply.raw.once("close", () => logFinish("close"));
+
     if (!row) return reply.code(404).send({ error: "材料不存在" });
 
     const root = materialsRoot(deps.config.dataDir, parentId);

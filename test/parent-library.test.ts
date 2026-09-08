@@ -170,8 +170,11 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配，SPLIT 服务
     expect(t.found).toBe(true);
     expect(t.content).toContain("学而时习之");
 
-    // htmlPath：文件未上传到服务端 → 远程 404 → not found（不返回失效指针）
-    expect((await getParentContentForChild(CHILD, "lunyu", "htmlPath", "论语学而篇第一章")).found).toBe(false);
+    // htmlPath：2026-09-08 政策——路径在家长库登记即返回（不再以实时远程试拉成败为判据，
+    // 试拉受网络/服务端瞬时抖动影响会误报；真实存在性由 display_content 展示环节兜底 404）
+    const hp0 = await getParentContentForChild(CHILD, "lunyu", "htmlPath", "论语学而篇第一章");
+    expect(hp0.found).toBe(true);
+    expect(hp0.content).toContain("lunyu/论语学而篇第一章.html");
     // 上传 html 后 → 返回家长库相对路径，可直接传给 display_content
     const src = path.join(mockTmpRoot, "论语学而篇第一章.html");
     fs.writeFileSync(src, "<html/>", "utf-8");
