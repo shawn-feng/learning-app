@@ -31,6 +31,14 @@ const api = {
     registerListener("pi:reply_end", callback),
   onPiReplyError: (callback: (data: { childId: string; error: string }) => void) =>
     registerListener("pi:reply_error", callback),
+
+  // ISSUE-061：场景对话会话（scene agent）事件
+  onSceneReply: (callback: (data: { childId: string; courseKey: string; text: string }) => void) =>
+    registerListener("scene:reply", callback),
+  onSceneReplyEnd: (callback: (data: { childId: string; courseKey: string }) => void) =>
+    registerListener("scene:reply_end", callback),
+  onSceneReplyError: (callback: (data: { childId: string; courseKey: string; error: string }) => void) =>
+    registerListener("scene:reply_error", callback),
   onPiSessionReset: (callback: (data: { childId: string }) => void) =>
     registerListener("pi:session_reset", callback),
   // ISSUE-019/047：课程时间段提醒（上课/下课）+ 孩子端自建定时提醒（custom，type 含 "custom"）
@@ -93,6 +101,16 @@ const api = {
   piStartParentContent: () => ipcRenderer.invoke("pi:start_parent_content"),
   piPromptParentContent: (text: string) => ipcRenderer.invoke("pi:prompt_parent_content", text),
   piAbort: (childId: string) => ipcRenderer.invoke("pi:abort", childId),
+
+  // ISSUE-061：场景对话（scene agent）调用
+  scenePrompt: (childId: string, courseKey: string, text: string) =>
+    ipcRenderer.invoke("scene:prompt", childId, courseKey, text),
+  sceneStop: (childId: string, courseKey: string) =>
+    ipcRenderer.invoke("scene:stop", childId, courseKey),
+  sceneTransfer: (childId: string, courseKey: string) =>
+    ipcRenderer.invoke("scene:transfer", childId, courseKey),
+  sceneVoiceSave: (childId: string, data: ArrayBuffer) =>
+    ipcRenderer.invoke("voice:scene_save", childId, data),
   piDispose: (childId: string) => ipcRenderer.invoke("pi:dispose", childId),
   piReset: (childId: string) => ipcRenderer.invoke("pi:reset", childId),
   // ISSUE-042：家长会话重置
@@ -355,6 +373,15 @@ const api = {
     ipcRenderer.invoke("exam:generateCourse", childId, topicName, course),
   examScore: (childId: string, scoringPrompt: string, answers: any[]) =>
     ipcRenderer.invoke("exam:score", childId, scoringPrompt, answers),
+  // 口语/听说题判分：主进程合并多段录音为 16k wav → 上传 → 调 SSECP 发音评测，返回维度分
+  examAssessSpeech: (
+    childId: string,
+    name: string,
+    buffer: ArrayBuffer,
+    questionType: string,
+    refText: string,
+    opts?: any
+  ) => ipcRenderer.invoke("exam:assessSpeech", childId, name, buffer, questionType, refText, opts),
 
   // App updates (ISSUE-040)
   getAppVersion: () => ipcRenderer.invoke("app:get_version"),

@@ -15,6 +15,9 @@
 export const PAGE_MSG_PREFIX = "page:";
 export const PAGE_MSG_TYPES = ["page:event", "page:ready", "page:exec", "page:exec:result"] as const;
 
+/** ISSUE-061：场景页标记（资料 html 含此 meta 即视为场景页，scene_command 只对该类页面生效） */
+export const SCENE_PAGE_MARKER = 'meta name="pi-scenario" content="1"';
+
 export type PageEventKind = "open" | "click" | "scroll" | "input" | "submit" | "pagehide" | "tts" | "tts-cancel" | "lookup";
 
 /** iframe → 父页面：互动事件上报 */
@@ -86,6 +89,17 @@ export interface PageExecDownlink {
 /** 渲染层暴露给 Learn 的命令式句柄 */
 export interface MaterialsPanelHandle {
   exec(action: PageAction, params?: PageExecParams): Promise<PageExecResultUplink>;
+  /**
+   * ISSUE-061：场景页下行指令（scene_command 工具）。
+   * 不走桥脚本 DOM 白名单，直接把 {type:"scene:"+command, ...params} postMessage 给场景页
+   * （场景页自带监听）。command ∈ say/move/act/show/highlight/update/end。
+   */
+  scene(command: string, params?: Record<string, unknown>): Promise<PageExecResultUplink>;
+  /**
+   * ISSUE-061：场景 agent 忙闲状态 → 场景页顶部「角色回应中…」提示。
+   * busy=true 在孩子消息已发给场景 agent、等回复期间调用；回复/出错后 busy=false。
+   */
+  sceneAgentBusy(on: boolean): void;
 }
 
 /**

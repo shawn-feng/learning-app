@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="bIFuzP4n62O1aikfUe4RIF">
+<head data-page-node-id="GYVnnylHK6MIIWBo7wnJG9">
+<meta charset="UTF-8" data-page-node-id="d3Csuyak8y8fodHzjITVNH">
+<title>场景演示驱动（开发预览用 · 模拟宿主下发 scene 指令）</title>
+<!--
+  本文件只是开发/预览用的「宿主模拟器」：通过 postMessage 向正式场景页（index.html）下发
+  scene:* 指令来演示演出。正式场景页（放入 app materials 的那份）不含本文件、不含任何按钮。
+-->
+<style>
+  body{ margin:0; font-family:system-ui,"Segoe UI","Microsoft YaHei",sans-serif; background:#2a2738; color:#eee; }
+  #bar{ display:flex; flex-wrap:wrap; gap:6px; padding:10px 12px; background:#211e30; align-items:center; }
+  #bar b{ color:#ffd95e; font-size:13px; margin-right:4px; }
+  #bar .sep{ width:1px; align-self:stretch; background:#4a4466; margin:0 6px; }
+  button{ border:1px solid #6a62c9; background:#372f5e; color:#fff; border-radius:8px; padding:5px 10px;
+    font-size:12px; cursor:pointer; }
+  button:hover{ background:#534ab7; }
+  button.pri{ background:#534ab7; border-color:#7f77dd; font-weight:600; }
+  #stage{ width:1120px; height:640px; margin:16px auto; border:0; border-radius:18px; display:block;
+    box-shadow:0 10px 40px rgba(0,0,0,.5); background:#f3e6cd; }
+  #tip{ text-align:center; font-size:12px; color:#9d97bd; margin-top:2px; }
+  #log{ max-width:1120px; margin:4px auto 24px; font-size:12px; color:#b9b2da; white-space:pre-wrap; line-height:1.5; }
+</style>
+</head>
+<body data-page-node-id="JA58WBxBsSoi73UFWUF6hD">
+<div id="bar" data-page-node-id="0MOrpcuc1kVschNn4Jh8B5">
+  <b data-page-node-id="nCHeX1Cd002jnGorZczuLD">🎬 场景演示驱动（模拟 agent 指令 → 正式场景页）</b>
+  <button class="pri" onclick="playScript()" data-page-node-id="BxDPWjZoLfJg7Y0XO7s7Fk">▶ 演示剧本（Steve 问候→Maggie→任务完成）</button>
+  <span class="sep" data-page-node-id="5dhw2kaXF3QWeDXcicFGmE"></span>
+  <button onclick="say('steve','Hello! I am Steve.','你好！我是 Steve。')" data-page-node-id="4SuzZY4kfjLCCbf5Dp0KTN">Steve 问候</button>
+  <button onclick="say('steve','What is your name?','你叫什么名字？')" data-page-node-id="xfZ1oHkev1aag78lRXLVSD">Steve 问名字</button>
+  <button onclick="say('maggie','Hi! I am Maggie.','嗨！我是 Maggie。')" data-page-node-id="me5YpYSEu8GMGACUYMOTIJ">Maggie 问候</button>
+  <button onclick="say('steve','Look! This is the sofa.','看！这是沙发。')" data-page-node-id="hVzCx5agIImcysEed0OAIN">Steve 指沙发</button>
+  <button onclick="say('steve','What color is the TV?','电视是什么颜色？')" data-page-node-id="Jk82f4tsf4Kft1QipRFEmb">Steve 问电视色</button>
+  <span class="sep" data-page-node-id="kag3RrcOWKHyshgfJvbUNM"></span>
+  <button onclick="act('steve','turn-on-lamp')" data-page-node-id="0YhyizWv9R7WZjUzw2ZF4V">开台灯</button>
+  <button onclick="act('steve','turn-off-lamp')" data-page-node-id="5wzGAC8f1v6NuzHq3kGuE7">关台灯</button>
+  <button onclick="act('steve','turn-on-tv')" data-page-node-id="oyg3B4U4DqKYjA4uZw30wW">开电视</button>
+  <button onclick="act('steve','turn-off-tv')" data-page-node-id="rLnvZtbgZ9LeG5Jv0DqWgN">关电视</button>
+  <button onclick="act('steve','open-window')" data-page-node-id="AwDHBH22d0g5nYC0crJboz">开窗</button>
+  <button onclick="act('steve','close-window')" data-page-node-id="MORRRrfyHEBqhA9w3qyS6r">关窗</button>
+  <button onclick="act('steve','sit-sofa')" data-page-node-id="v6wttpUdgBO2BGKETMrRvf">Steve 坐沙发</button>
+  <button onclick="act('steve','stand')" data-page-node-id="L1EjrXV9U9zTF8Z4SJq04p">站起</button>
+  <button onclick="act('steve','watch-tv')" data-page-node-id="sDk1cW8pwjdRfolO4W009w">坐沙发看电视</button>
+  <button onclick="act('steve','drink-water')" data-page-node-id="8VK2dkZOuUOIYzvFliEHsz">喝水</button>
+  <button onclick="act('steve','picture-fall')" data-page-node-id="44w9YAD8EBxMHJb31C7qiV">画掉落</button>
+  <button onclick="act('steve','picture-hang')" data-page-node-id="4CBU4Sso5mRNAAeKBL6YaV">画挂回</button>
+  <button onclick="act('steve','dance')" data-page-node-id="7Rqecxsl2cup44BlidVyRi">Steve 跳舞</button>
+  <button onclick="act('maggie','jump')" data-page-node-id="DPfp3rm6w6P597gXJRHspQ">Maggie 跳</button>
+  <span class="sep" data-page-node-id="GGsllLSvHl9nY0Tz1so35t"></span>
+  <button onclick="showMaggie()" data-page-node-id="b5vAwdPyMv7zZVk95SanIv">Maggie 登场</button>
+  <button onclick="hideMaggie()" data-page-node-id="ToPRQb2dTawnqPjZ1Fh5iO">Maggie 躲藏</button>
+  <button onclick="move('steve','sofa')" data-page-node-id="EgAGbchufkmsyPIviBw4Dd">Steve→沙发</button>
+  <button onclick="move('steve','window')" data-page-node-id="mR6xhvJCCGsCBb6nY4eNOq">Steve→窗前</button>
+  <button onclick="move('steve','table')" data-page-node-id="WwCilyE5JnsR2BJ1E3HOsh">Steve→茶几</button>
+  <button onclick="move('steve','tv')" data-page-node-id="tMZtS4D0frnNzxiEI8X2s8">Steve→电视</button>
+  <button onclick="move('maggie','table')" data-page-node-id="JDT5ML1oULNnpAt9fliUnt">Maggie→茶几</button>
+  <button onclick="upd(2)" data-page-node-id="FxkaHM0hCO8gv6qvEL35oj">任务2/3</button>
+  <button onclick="upd(3)" data-page-node-id="WjyN8jSxrUL1oJCRg1kCKO">任务3/3</button>
+</div>
+<iframe id="stage" src="index.html" data-page-node-id="NItKeuAG4ZB4GyJk9QGLIG"></iframe>
+<div id="tip" data-page-node-id="UAVvNaHtRbG0dAjgxR3icg">上方按钮 = 开发预览用的「宿主模拟器」；正式学习资料页没有这些按钮，动作只由孩子 agent 的 scene_command 实时驱动</div>
+<div id="log" data-page-node-id="DTAsCvYYeQt7Pov2As7w2E">· 点按钮向下发 scene: 指令观察演出；台词命中物品会自动高亮（mentionScan）；点场景里物品/角色会发声。</div>
+<script>
+  var frame = document.getElementById("stage");
+  function send(msg){ frame.contentWindow.postMessage(msg, "*"); log(JSON.stringify(msg)); }
+  function say(c, text, zh){ send({ type:"scene:say", character:c, text:text, zh:zh }); }
+  function act(c, a){ send({ type:"scene:act", character:c, act:a }); }
+  function move(c, x){ send({ type:"scene:move", character:c, x:x }); }
+  function showMaggie(){ send({ type:"scene:show", character:"maggie" }); }
+  function hideMaggie(){ send({ type:"scene:hide", character:"maggie" }); }
+  function upd(n){ send({ type:"scene:update", state:{ task:"hello", progress:n, total:3 } }); }
+  function log(t){ var el=document.getElementById("log"); el.textContent = "· " + t + "\n" + el.textContent; }
+
+  // 宿主模拟：场景内 speak 走 page:tts → 此处用浏览器语音朗读
+  window.addEventListener("message", function(e){
+    if (e.source !== frame.contentWindow) return;
+    if (e.data && e.data.type === "page:tts" && window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance(String(e.data.text || ""));
+        var vs = window.speechSynthesis.getVoices().filter(function(v){ return /^en/i.test(v.lang); });
+        u.lang="en-US"; u.rate=0.92; if(vs.length) u.voice=vs[0];
+        window.speechSynthesis.speak(u);
+      } catch(err){}
+    }
+  });
+
+  var timers = [];
+  function later(fn, ms){ timers.push(setTimeout(fn, ms)); }
+  function playScript(){
+    timers.forEach(clearTimeout); timers = [];
+    // 复位
+    act("steve","stand"); act("steve","turn-off-tv"); act("steve","turn-off-lamp");
+    act("steve","close-window"); act("steve","picture-hang"); hideMaggie();
+    move("steve","window");
+    upd(0);
+    later(function(){ act("steve","open-window"); say("steve","Look, it is a sunny morning in my living room!","看，我客厅的早晨阳光明媚！"); }, 800);
+    later(function(){ act("steve","turn-on-lamp"); act("steve","turn-on-tv"); say("steve","Hello! I am Steve. What is your name?","你好！我是 Steve。你叫什么名字？"); }, 4200);
+    later(function(){ showMaggie(); move("maggie","table"); act("maggie","jump"); say("maggie","Hi! I am Maggie.","嗨！我是 Maggie。"); }, 9000);
+    later(function(){ say("steve","Hello, Maggie! How are you?","你好，Maggie！你好吗？"); }, 13000);
+    later(function(){ say("maggie","I am fine, thank you!","我很好，谢谢！"); upd(1); }, 15800);
+    later(function(){ move("steve","sofa"); act("steve","sit-sofa"); say("steve","This is my sofa. Can you say sofa?","这是我的沙发。你会说 sofa 吗？"); }, 18000);
+    later(function(){ say("steve","What color is the TV? It is black.","电视是什么颜色？它是黑色的。"); act("steve","stand"); upd(2); }, 21400);
+    later(function(){ say("steve","Great job! Do you want to keep playing with me?","太棒了！还想继续跟我玩吗？"); upd(3); }, 25000);
+  }
+</script>
+</body>
+</html>

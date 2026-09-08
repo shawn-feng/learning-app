@@ -1,0 +1,60 @@
+{
+  "$comment": "ISSUE-061 场景剧本契约样例 · 英语第12课 Yellow-Unit1-hello-story · 由编程 agent 生成、场景会话（游戏主持人 agent）逐轮消费",
+  "version": 1,
+  "course": "12·Yellow-Unit1-hello-story",
+  "scene": {
+    "id": "living-room",
+    "name": "客厅",
+    "canvas": { "width": 1280, "height": 720, "floorY": 452 },
+    "props": [
+      { "id": "sofa",   "word": "sofa",   "zh": "沙发",   "phon": "/ˈsəʊfə/",   "actions": ["sit"] },
+      { "id": "table",  "word": "table",  "zh": "桌子",   "phon": "/ˈteɪbl/",   "actions": ["put-on", "jump-on"] },
+      { "id": "lamp",   "word": "lamp",   "zh": "台灯",   "phon": "/ˈlæmp/",    "actions": ["turn-on", "turn-off"] },
+      { "id": "TV",     "word": "TV",     "zh": "电视机", "phon": "/ˌtiːˈviː/", "actions": ["turn-on", "turn-off"] },
+      { "id": "window", "word": "window", "zh": "窗户",   "phon": "/ˈwɪndəʊ/",  "actions": [] },
+      { "id": "plant",  "word": "plant",  "zh": "植物",   "phon": "/ˈplɑːnt/",  "actions": [] }
+    ],
+    "extras": "在课文道具（沙发/桌子/台灯/电视机）之外补充了窗户、绿植、挂画，供孩子自由点选扩展词汇"
+  },
+  "characters": [
+    {
+      "id": "steve", "name": "Steve", "zh": "英语老师 Steve", "role": "npc",
+      "persona": "热情的英语老师，语速慢、句子短，喜欢用动作演示单词，总是鼓励孩子开口",
+      "voice": "en-US-SteveNeural",
+      "start": { "x": 60 }
+    },
+    {
+      "id": "maggie", "name": "Maggie", "zh": "小老鼠 Maggie", "role": "npc",
+      "persona": "调皮的小老鼠，喜欢躲在沙发后、跳上桌子，说话简短，爱模仿 Steve 的句型",
+      "voice": "en-US-MaggieNeural",
+      "start": { "hidden": true, "behind": "sofa" }
+    },
+    {
+      "id": "child", "name": "You", "zh": "孩子（本人）", "role": "child",
+      "persona": "孩子扮演自己：走进客厅和 Steve、Maggie 用英语打招呼",
+      "voice": null
+    }
+  ],
+  "knowledge_goals": [
+    "能用 Hello / Hi 与人打招呼",
+    "能用 I'm ... 介绍自己",
+    "能听懂并回答 What's your name?",
+    "认识客厅物品单词：sofa, table, lamp, TV"
+  ],
+  "quests": [
+    { "id": "greet", "desc": "用英语和场景中的角色打招呼", "win_condition": "孩子对任一角色说出 Hello/Hi + I'm ..." },
+    { "id": "ask-name", "desc": "问出对方的名字", "win_condition": "孩子说出 What's your name?" },
+    { "id": "find-things", "desc": "在客厅里找出 2 个课文中提到的物品并用英语说出来", "win_condition": "点选 prop 并说出单词" }
+  ],
+  "opening": {
+    "stage_directions": [
+      { "cmd": "scene:move",  "args": { "character": "steve", "x": 300, "duration": 2 } },
+      { "cmd": "scene:act",   "args": { "character": "steve", "action": "turn-on-lamp" } },
+      { "cmd": "scene:say",   "args": { "character": "steve", "text": "Hello! I'm Steve. What's your name?", "zh": "你好！我是 Steve。你叫什么名字？" } }
+    ]
+  },
+  "win_condition": "greet + ask-name 两个任务都完成",
+  "downlink_commands": ["scene:say", "scene:move", "scene:act", "scene:show", "scene:highlight", "scene:update", "scene:end"],
+  "uplink_events": ["scene:child-click", "scene:mic-press", "scene:mic-release"],
+  "tts": { "uplink": "page:tts", "done": "page:tts:done", "fallback": "speechSynthesis(en-US)" }
+}

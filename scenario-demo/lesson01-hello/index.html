@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="pi-scenario" content="1">
+<title>第1课·客厅打招呼 Hello</title>
+<!--
+  场景资料标准（SCENARIO-HTML-SPEC / ISSUE-061 v2）
+  ─────────────────────────────────────────────────────────
+  本页 = 场景「舞台」。只做演出：展示客厅场景、角色、可点物品；播放台词/单词；执行动作动画。
+  语音识别 / TTS / agent 会话都不在本页（在 app 壳/宿主）。本页只有上行/下行两类消息。
+
+  ◆ 场景页标记：<meta name="pi-scenario"> 宿主据此放行 scene_command 指令。
+
+  ◆ 下行指令（宿主经桥 postMessage，或演示壳经 iframe.postMessage；window.Scene 仅供调试直调）
+    { type:"scene:say",       character:"steve", text:"Hello! I'm Steve.", zh:"你好！我是 Steve。" }
+    { type:"scene:move",      character:"steve", x:320 }            // x=舞台横坐标，或目标名 window/sofa/table/plant/lamp/tv/picture/rug
+    { type:"scene:act",       character:"steve", act:"turn-on-lamp" } // 动作表见 Scene.act
+    { type:"scene:show"|"scene:hide", character:"maggie" }
+    { type:"scene:highlight", target:"sofa" }
+    { type:"scene:update",    task:"hello", progress:1, total:3 }
+    场景页没有「结束」：不下发 end 类指令；完成提示在宿主聊天区。
+
+  ◆ 上行事件（页面 postMessage 给宿主）
+    { type:"scene:ready", manifest }                    // 就绪后自动上报一次（含物品/角色/地标清单）
+    { type:"scene:child-click", target:"sofa", word:"sofa", zh:"沙发" }  // 点物品/角色
+    { type:"scene:mic-press" } / { type:"scene:mic-release" }            // 按住语音球说话（宿主录音+ASR）
+
+  ◆ 台词自动高亮：任何 say 台词提到物品的 id/英文/中文即自动高亮该物品（Scene.mentionScan）。
+  ◆ 物品朗读：点击弹单词卡并朗读 data-word；TTS 上行复用 page:tts（宿主 edge-tts），独立预览 fallback speechSynthesis。
+  ◆ 红线：本页不含任何手动控制/演示 UI。动作只能由 agent 指令驱动。
+-->
+<style>
+  :root{
+    --floor:#c8a176; --wall:#f3e6cd; --wood:#b98a4e; --ink:#3a3240;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+  #stage{ position:relative; width:1120px; height:640px; margin:0 auto; background:var(--wall);
+    overflow:hidden; border-radius:18px; box-shadow:0 10px 34px rgba(0,0,0,.25); user-select:none; }
+
+  /* ── 房间结构 ── */
+  #floor{ position:absolute; left:0; right:0; bottom:0; height:250px; background:
+    linear-gradient(180deg, #d8b384 0%, var(--floor) 26%, #b98f63 100%); }
+  #floor::before{ content:""; position:absolute; left:0; right:0; top:0; height:10px;
+    background:#a97f52; }
+  .wall-band{ position:absolute; top:52px; left:0; right:0; height:8px; background:
+    repeating-linear-gradient(90deg,#d9c49b 0 46px,#c7ae7f 46px 92px); opacity:.5; }
+
+  /* 地毯 */
+  #rug{ position:absolute; left:330px; bottom:40px; width:460px; height:170px; border-radius:60px;
+    background:#7d6bc0; opacity:.82; box-shadow:inset 0 0 0 14px #6c5ab1, inset 0 0 0 18px #8a7bd0; }
+
+  /* ── 窗户（含窗帘开合） ── */
+  #p-window{ position:absolute; left:60px; top:66px; width:250px; height:196px; cursor:pointer; }
+  #p-window .frame{ position:absolute; inset:0; background:#bfe4f4; border:16px solid #fff;
+    border-radius:6px; box-shadow:0 5px 14px rgba(0,0,0,.12); overflow:hidden; }
+  #p-window .frame::before{ content:""; position:absolute; left:50%; top:0; bottom:0; width:8px;
+    background:#fff; transform:translateX(-50%); }
+  #p-window .frame::after{ content:""; position:absolute; top:44%; left:0; right:0; height:8px; background:#fff; }
+  .sun{ position:absolute; left:42px; top:28px; width:52px; height:52px; border-radius:50%;
+    background:#ffd95e; box-shadow:0 0 26px #ffe28a; }
+  .cloud{ position:absolute; width:64px; height:20px; background:#fff; border-radius:20px; opacity:.9;
+    animation:drift 26s linear infinite; }
+  .cloud::before,.cloud::after{ content:""; position:absolute; background:#fff; border-radius:50%; }
+  .cloud::before{ width:28px; height:28px; top:-14px; left:8px; }
+  .cloud::after{ width:20px; height:20px; top:-8px; right:6px; }
+  @keyframes drift{ from{ transform:translateX(-90px);} to{ transform:translateX(1120px);} }
+  #p-window .curtain{ position:absolute; top:-6px; width:58px; height:214px; background:linear-gradient(180deg,#f7c9a8,#e8a878);
+    border-radius:0 0 12px 12px; transition:transform 1.1s ease; z-index:3; }
+  #p-window .curtain.l{ left:-22px; }
+  #p-window .curtain.r{ right:-22px; }
+  #p-window.open .curtain.l{ transform:translateX(-96%); }
+  #p-window.open .curtain.r{ transform:translateX(96%); }
+
+  /* 挂画（可掉落/挂回） */
+  #p-picture{ position:absolute; left:432px; top:118px; width:140px; height:102px; cursor:pointer;
+    transition:transform .9s cubic-bezier(.4,.1,.6,1); transform-origin:center top; }
+  #p-picture .art{ position:absolute; inset:0; border:9px solid var(--wood); border-radius:4px;
+    background:linear-gradient(#bfe3f5 52%,#8fce7e 52%); box-shadow:0 4px 9px rgba(0,0,0,.16); }
+  #p-picture .art::after{ content:""; position:absolute; left:22px; top:22px; width:32px; height:32px;
+    border-radius:50%; background:#ffd95e; box-shadow:0 0 12px #ffe28a; }
+  #p-picture .wire{ position:absolute; top:-14px; left:50%; width:2px; height:14px; background:#7a6a5c;
+    transform:translateX(-50%); }
+  #p-picture.fallen{ transform:translateY(296px) rotate(78deg); }
+  #p-picture.fallen .wire{ display:none; }
+
+  /* 沙发 */
+  #p-sofa{ position:absolute; left:120px; bottom:102px; width:250px; height:150px; cursor:pointer;
+    z-index:4; }
+  #p-sofa .seat{ position:absolute; inset:0; border-radius:26px 26px 14px 14px;
+    background:linear-gradient(160deg,#5f6fbf,#46549d); box-shadow:inset -14px -18px 30px rgba(0,0,0,.22), 0 6px 14px rgba(0,0,0,.2); }
+  #p-sofa .back{ position:absolute; left:14px; right:14px; top:6px; height:76px; border-radius:18px;
+    background:linear-gradient(180deg,#6b7ac9,#5160ab); }
+  #p-sofa .arm{ position:absolute; top:36px; width:34px; height:100px; border-radius:16px;
+    background:linear-gradient(90deg,#6575c4,#4a58a0); }
+  #p-sofa .arm.l{ left:2px; } #p-sofa .arm.r{ right:2px; }
+  #p-sofa .cushion{ position:absolute; left:44px; right:44px; top:64px; height:56px; border-radius:14px;
+    background:linear-gradient(180deg,#7c8ad6,#5b69b6); }
+  #p-sofa .cushion.s2{ top:86px; height:44px; opacity:.75; }
+
+  /* 台灯（可开关发光） */
+  #p-lamp{ position:absolute; left:352px; bottom:136px; width:56px; height:150px; cursor:pointer; z-index:5; }
+  #p-lamp .pole{ position:absolute; left:25px; top:54px; width:6px; height:96px; background:#7c6646; }
+  #p-lamp .base{ position:absolute; left:8px; bottom:0; width:40px; height:12px; border-radius:8px;
+    background:#6b5638; }
+  #p-lamp .shade{ position:absolute; left:4px; top:10px; width:48px; height:46px; border-radius:50% 50% 42% 42%;
+    background:linear-gradient(180deg,#ffd9a0,#e8b267); }
+  #p-lamp.on .shade{ box-shadow:0 0 26px 8px rgba(255,214,130,.75); }
+  #lamp-light{ position:absolute; left:-34px; top:44px; width:124px; height:64px;
+    background:radial-gradient(ellipse at top,#ffe9b8,rgba(255,233,184,0)); opacity:0; pointer-events:none;
+    transition:opacity .5s; }
+  #p-lamp.on #lamp-light{ opacity:.9; }
+
+  /* 茶几（桌上苹果与杯子；喝水动画用） */
+  #p-table{ position:absolute; left:520px; bottom:120px; width:210px; height:86px; cursor:pointer; z-index:5; }
+  #p-table .top{ position:absolute; inset:0; border-radius:12px;
+    background:linear-gradient(160deg,#c2955c,#a3763f); box-shadow:0 5px 12px rgba(0,0,0,.22); }
+  #p-table .top::after{ content:""; position:absolute; inset:0; border-radius:12px;
+    background:repeating-linear-gradient(90deg,transparent 0 26px,rgba(255,255,255,.16) 26px 28px); }
+  #p-table .leg{ position:absolute; bottom:-22px; width:16px; height:24px; background:#8a633a; border-radius:0 0 6px 6px; }
+  #p-table .leg.l1{ left:14px; } #p-table .leg.l2{ right:14px; }
+  #p-apple{ position:absolute; left:26px; top:-22px; width:22px; height:24px; border-radius:50%;
+    background:#e74c3c; box-shadow:inset -4px -3px 6px rgba(0,0,0,.18); }
+  #p-apple::before{ content:""; position:absolute; top:-7px; left:8px; width:7px; height:9px; background:#4e7a3a; border-radius:2px; transform:rotate(18deg); }
+  #p-cup{ position:absolute; right:22px; top:14px; width:30px; height:26px; cursor:pointer;
+    transition:transform .8s cubic-bezier(.4,-.1,.6,1.3); z-index:6; }
+  #p-cup .body{ position:absolute; inset:0 4px; border-radius:4px 4px 9px 9px; background:#fff;
+    box-shadow:inset 0 0 0 3px #dbe6f0; }
+  #p-cup .handle{ position:absolute; right:0; top:6px; width:9px; height:12px; border:3px solid #c8d7e4;
+    border-left:none; border-radius:0 8px 8px 0; }
+  #p-cup .steam{ position:absolute; top:-10px; left:8px; width:4px; height:8px; border-radius:4px;
+    background:#cfe3f2; opacity:0; }
+  #p-cup.drinking{ transform:translate(-58px,-96px) rotate(-14deg); }
+  #p-cup.drinking .steam{ opacity:.9; animation:rise .8s ease-out infinite; }
+  @keyframes rise{ 0%{ transform:translateY(6px); opacity:0;} 40%{opacity:.9;} 100%{ transform:translateY(-12px); opacity:0;} }
+
+  /* 电视 */
+  #p-tv{ position:absolute; left:868px; bottom:150px; width:200px; height:150px; cursor:pointer; z-index:3; }
+  #p-tv .screen{ position:absolute; inset:0 0 22px 0; border-radius:10px; background:#18202e;
+    border:14px solid #3a3f4b; box-shadow:0 6px 16px rgba(0,0,0,.26); overflow:hidden; }
+  #p-tv .screen .face{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; opacity:0; transition:opacity .4s; color:#eaf3ff; font-size:12px; letter-spacing:2px;
+    text-shadow:0 0 8px rgba(140,200,255,.9); }
+  #p-tv .screen .face .eyes{ font-size:30px; }
+  #p-tv .stand{ position:absolute; left:50%; bottom:0; width:26px; height:22px; background:#3a3f4b;
+    transform:translateX(-50%); clip-path:polygon(10% 0,90% 0,100% 100%,0 100%); }
+  #p-tv.on .screen{ background:#0c1420; }
+  #p-tv.on .face{ opacity:1; animation:flicker 3.4s steps(1) infinite; }
+  @keyframes flicker{ 0%,92%,100%{opacity:1} 94%{opacity:.55} 96%{opacity:1} }
+  #p-tv .screen .scan{ position:absolute; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(180deg,transparent 0 3px,rgba(255,255,255,.03) 3px 4px); }
+
+  /* 绿植 */
+  #p-plant{ position:absolute; left:1016px; bottom:112px; width:76px; height:150px; cursor:pointer; z-index:4; }
+  #p-plant .pot{ position:absolute; left:14px; bottom:0; width:48px; height:40px; border-radius:4px 4px 14px 14px;
+    background:linear-gradient(180deg,#c86b4a,#a04f33); }
+  #p-plant .leaf{ position:absolute; bottom:52px; width:40px; height:58px; border-radius:60% 20% 60% 30%;
+    background:linear-gradient(150deg,#7cbd6a,#4f9150); }
+  #p-plant .leaf:nth-child(1){ left:2px; transform:rotate(-24deg); }
+  #p-plant .leaf:nth-child(2){ right:0; bottom:70px; transform:rotate(22deg) scale(1.15); background:#6db35d; }
+  #p-plant .leaf:nth-child(3){ left:20px; bottom:86px; transform:rotate(2deg) scale(1.3); background:#8acb74; }
+
+  /* 单词卡 */
+  #wordcard{ position:absolute; left:26px; top:20px; z-index:70; display:none; background:#fff; border-radius:16px;
+    padding:12px 18px; box-shadow:0 10px 30px rgba(0,0,0,.3); min-width:150px; }
+  #wordcard.show{ display:block; }
+  #wordcard .w{ font-size:26px; font-weight:700; color:#534AB7; }
+  #wordcard .ph{ font-size:14px; color:#999; }
+  #wordcard .z{ font-size:16px; color:#555; margin-top:4px; }
+
+  /* 角色（舞台演员） */
+  .character{ position:absolute; bottom:104px; width:150px; height:252px; z-index:20;
+    transition:left 1.8s cubic-bezier(.35,.1,.25,1); }
+  .character .body{ width:100%; height:100%; transition:transform .4s; transform-origin:center; }
+  .character svg{ width:100%; height:100%; overflow:visible; display:block; }
+  .character .halo{ position:absolute; left:50%; top:-4px; width:70px; height:70px; transform:translateX(-50%);
+    border-radius:50%; background:radial-gradient(circle,rgba(255,255,255,.85),transparent 70%); opacity:0; }
+  .character.speaking .halo{ opacity:1; }
+  .character .bubble{ position:absolute; left:50%; bottom:100%; transform:translateX(-50%);
+    background:#fff; border-radius:14px; padding:6px 12px; min-width:120px; max-width:320px; text-align:center;
+    box-shadow:0 6px 16px rgba(0,0,0,.18); opacity:0; pointer-events:none; transition:opacity .25s; z-index:60; }
+  .character .bubble::after{ content:""; position:absolute; left:50%; bottom:-7px; transform:translateX(-50%);
+    border:7px solid transparent; border-top-color:#fff; }
+  .character.speaking .bubble{ opacity:1; }
+  .character .bubble .en{ display:block; font-size:16px; font-weight:700; color:#333; }
+  .character .bubble .zh{ display:block; font-size:12px; color:#888; margin-top:2px; }
+  .character.small{ width:110px; height:186px; bottom:96px; }
+  .character.glow{ filter:drop-shadow(0 0 10px rgba(255,209,84,.95)); }
+  .hidden{ display:none; }
+
+  /* 角色动作动画 */
+  .character.sit{ transform:translateY(30px) scaleY(.9); }
+  .character.sit svg{ transform:translateY(8px); }
+  .character.jump .body{ animation:jump .85s cubic-bezier(.2,1.4,.4,1); }
+  @keyframes jump{ 0%{transform:translateY(0)} 45%{transform:translateY(-120px)} 100%{transform:translateY(0)} }
+  .character.dance .body{ animation:wiggle .28s ease-in-out infinite alternate; }
+  @keyframes wiggle{ from{ transform:rotate(-7deg)} to{ transform:rotate(7deg)} }
+  .character.idle .body svg{ animation:bob 2.4s ease-in-out infinite; }
+  @keyframes bob{ 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+
+  /* 高亮道具（被 agent 提到 / 被孩子点到） */
+  .prop{ transition:filter .2s; }
+  .glow{ filter:drop-shadow(0 0 12px rgba(255,205,60,.95)); animation:pulse 1s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{filter:drop-shadow(0 0 6px rgba(255,205,60,.7))} 50%{filter:drop-shadow(0 0 18px rgba(255,205,60,1))} }
+
+  /* 底部双语字幕 */
+  #subtitle{ position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:65;
+    background:rgba(20,26,44,.82); color:#fff; border-radius:14px; padding:8px 20px; max-width:820px;
+    display:none; align-items:baseline; gap:12px; box-shadow:0 6px 20px rgba(0,0,0,.3); }
+  #subtitle.show{ display:flex; }
+  #subtitle .speaker{ font-weight:700; color:#ffd95e; }
+  #subtitle .en{ font-size:19px; }
+  #subtitle .zh{ font-size:14px; color:#bcd0f0; }
+
+  /* 小任务进度点（右上角，仅提示不阻塞） */
+  #tasks{ position:absolute; right:18px; top:14px; z-index:50; background:rgba(255,255,255,.82);
+    border-radius:999px; padding:7px 14px; font-size:13px; color:#534AB7; display:flex; align-items:center; gap:8px; }
+  #tasks .dots{ display:inline-flex; gap:6px; }
+  #tasks .dot{ width:12px; height:12px; border-radius:50%; background:#d6d3ee; transition:background .3s; }
+  #tasks .dot.done{ background:#58b36a; box-shadow:0 0 6px rgba(88,179,106,.6); }
+
+  /* 语音球（按住说话）——录音由宿主完成；本按钮只负责上抛 press/release */
+  #mic-btn{ position:absolute; right:24px; bottom:26px; z-index:75; width:72px; height:72px; border-radius:50%;
+    border:none; background:linear-gradient(160deg,#6a62c9,#4a41a8); color:#fff; cursor:pointer;
+    box-shadow:0 8px 20px rgba(74,65,168,.5); transition:transform .15s; font-size:30px; line-height:1; }
+  #mic-btn:active, #mic-btn.recording{ transform:scale(.92); background:linear-gradient(160deg,#e25c5c,#b04040);
+    box-shadow:0 0 0 8px rgba(226,92,92,.22); }
+  #mic-btn.transcribing{ animation:spin-pulse 1s ease-in-out infinite; }
+  @keyframes spin-pulse{ 0%,100%{ box-shadow:0 0 0 4px rgba(255,170,60,.35);} 50%{ box-shadow:0 0 0 14px rgba(255,170,60,.12);} }
+  #mic-hint{ position:absolute; right:24px; bottom:108px; z-index:74; font-size:12px; max-width:340px;
+    text-align:right; background:rgba(255,255,255,.94); border-radius:12px; padding:5px 12px; color:#534AB7;
+    opacity:0; transition:opacity .18s; box-shadow:0 4px 12px rgba(0,0,0,.14); }
+  #mic-hint.on{ opacity:1; }
+  #mic-hint.ok{ color:#1d8a4c; }
+  #mic-hint.err{ color:#c03b3b; }
+  #mic-hint.busy{ color:#b25d0a; }
+  /* 场景伙伴回应中（agent 处理中提示）——紧贴语音球上方，孩子能一眼看到 */
+  #agent-thinking{ position:absolute; right:24px; bottom:158px; z-index:76;
+    background:rgba(46,42,88,.9); color:#ffd95e; font-size:13px; border-radius:12px; padding:6px 14px;
+    display:none; box-shadow:0 6px 16px rgba(0,0,0,.28); max-width:280px; }
+  #agent-thinking.show{ display:flex; align-items:center; gap:2px; }
+  #agent-thinking .dot{ display:inline-block; width:5px; height:5px; margin:0 2px; border-radius:50%;
+    background:#ffd95e; animation:dot 1.1s infinite; }
+  #agent-thinking .dot:nth-child(2){ animation-delay:.18s; }
+  #agent-thinking .dot:nth-child(3){ animation-delay:.36s; }
+  @keyframes dot{ 0%,80%,100%{ transform:translateY(0); opacity:.5;} 40%{ transform:translateY(-4px); opacity:1;} }
+
+  /* 顶部标题 */
+  #title-tag{ position:absolute; left:18px; top:14px; z-index:50; background:rgba(255,255,255,.82);
+    border-radius:999px; padding:7px 14px; font-size:13px; color:#7a6a5c; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="floor"></div>
+  <div class="wall-band" style="top:44px"></div>
+  <div id="rug"></div>
+
+  <div id="title-tag">🏠 Living Room · 客厅</div>
+  <div id="tasks">任务 <span class="dots" id="task-dots"><span class="dot" id="d1"></span><span class="dot" id="d2"></span><span class="dot" id="d3"></span></span></div>
+
+  <!-- ===== 可点道具（.prop = 可互动 + manifest 自动采集） ===== -->
+  <div class="prop" id="p-window" data-word="window" data-zh="窗户" data-phon="/ˈwɪndəʊ/" data-attr-color="sky blue">
+    <div class="frame">
+      <div class="sun"></div>
+      <div class="cloud" style="top:74px; animation-delay:-9s"></div>
+      <div class="cloud" style="top:132px; left:150px; animation-delay:-18s"></div>
+    </div>
+    <div class="curtain l"></div><div class="curtain r"></div>
+  </div>
+
+  <div class="prop" id="p-picture" data-word="picture" data-zh="挂画" data-phon="/ˈpɪktʃə/">
+    <div class="wire"></div><div class="art"></div>
+  </div>
+
+  <div class="prop" id="p-sofa" data-word="sofa" data-zh="沙发" data-phon="/ˈsəʊfə/" data-attr-color="blue">
+    <div class="back"></div>
+    <div class="arm l"></div><div class="arm r"></div>
+    <div class="cushion"></div><div class="cushion s2"></div>
+    <div class="seat" style="opacity:0"></div>
+  </div>
+
+  <div class="prop" id="p-lamp" data-word="lamp" data-zh="台灯" data-phon="/ˈlæmp/" data-attr-color="orange">
+    <div class="shade"></div><div class="pole"></div><div class="base"></div>
+    <div id="lamp-light"></div>
+  </div>
+
+  <div class="prop" id="p-table" data-word="table" data-zh="茶几" data-phon="/ˈteɪbl/" data-attr-color="brown">
+    <div class="top"></div><div class="leg l1"></div><div class="leg l2"></div>
+    <div id="p-apple" class="prop" data-word="apple" data-zh="苹果" data-phon="/ˈæpl/" data-attr-color="red"></div>
+    <div id="p-cup" class="prop" data-word="cup" data-zh="杯子" data-phon="/kʌp/" data-attr-color="white"></div>
+  </div>
+
+  <div class="prop" id="p-tv" data-word="TV" data-zh="电视机" data-phon="/ˌtiːˈviː/" data-attr-color="black">
+    <div class="screen"><div class="face"><span class="eyes">☺</span><span>HELLO</span></div><div class="scan"></div></div>
+    <div class="stand"></div>
+  </div>
+
+  <div class="prop" id="p-plant" data-word="plant" data-zh="植物" data-phon="/ˈplɑːnt/" data-attr-color="green">
+    <div class="leaf"></div><div class="leaf"></div><div class="leaf"></div>
+    <div class="pot"></div>
+  </div>
+
+  <!-- ===== 角色：Steve 老师 ===== -->
+  <div class="character idle" id="ch-steve" data-role-name="Steve" data-role-zh="老师 Steve" style="left:300px">
+    <div class="halo"></div>
+    <div class="bubble"><span class="en"></span><span class="zh"></span></div>
+    <div class="body">
+      <svg viewBox="0 0 100 180" width="150" height="252">
+        <ellipse cx="50" cy="178" rx="26" ry="5" fill="rgba(0,0,0,.12)"/>
+        <!-- 腿 -->
+        <rect x="32" y="126" width="14" height="48" rx="6" fill="#3f4a63"/>
+        <rect x="54" y="126" width="14" height="48" rx="6" fill="#37415a"/>
+        <rect x="30" y="166" width="18" height="12" rx="5" fill="#5d5348"/>
+        <rect x="52" y="166" width="18" height="12" rx="5" fill="#5d5348"/>
+        <!-- 身体（衬衫+领带） -->
+        <rect x="27" y="68" width="46" height="62" rx="12" fill="#5b8def"/>
+        <rect x="27" y="120" width="46" height="12" rx="6" fill="#4c7cd8"/>
+        <polygon points="42,70 50,92 58,70" fill="#e0483e"/>
+        <circle cx="42" cy="102" r="2.6" fill="#fff"/><circle cx="58" cy="102" r="2.6" fill="#fff"/>
+        <!-- 手臂 -->
+        <rect x="13" y="76" width="13" height="40" rx="6" fill="#5b8def" transform="rotate(6 20 90)"/>
+        <rect x="74" y="76" width="13" height="40" rx="6" fill="#4c7cd8" transform="rotate(-6 80 90)"/>
+        <circle cx="18" cy="120" r="7" fill="#f2c9a3"/>
+        <circle cx="82" cy="120" r="7" fill="#e6b88f"/>
+        <!-- 头 -->
+        <circle cx="50" cy="44" r="26" fill="#f6d3ab"/>
+        <rect x="26" y="30" width="48" height="8" rx="4" fill="#c8ccd6"/>
+        <rect x="28" y="14" width="12" height="26" rx="6" fill="#aeb4c0"/>
+        <rect x="60" y="14" width="12" height="26" rx="6" fill="#aeb4c0"/>
+        <path d="M26 34 q24 -14 48 0" fill="none" stroke="#c8ccd6" stroke-width="6"/>
+        <!-- 眼镜 -->
+        <rect x="34" y="42" width="14" height="11" rx="3" fill="none" stroke="#59637a" stroke-width="2.4"/>
+        <rect x="52" y="42" width="14" height="11" rx="3" fill="none" stroke="#59637a" stroke-width="2.4"/>
+        <line x1="48" y1="46" x2="52" y2="46" stroke="#59637a" stroke-width="2"/>
+        <!-- 脸 -->
+        <circle cx="41" cy="46" r="2.2" fill="#333"/><circle cx="59" cy="46" r="2.2" fill="#333"/>
+        <path d="M43 56 q7 6 14 0" stroke="#b3816a" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+        <path d="M40 34 q10 -5 20 0" stroke="#d4a87c" stroke-width="2.4" fill="none"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ===== 角色：Maggie 小老鼠（初始躲藏） ===== -->
+  <div class="character small hidden" id="ch-maggie" data-role-name="Maggie" data-role-zh="小老鼠 Maggie" style="left:150px">
+    <div class="halo"></div>
+    <div class="bubble"><span class="en"></span><span class="zh"></span></div>
+    <div class="body">
+      <svg viewBox="0 0 100 180" width="150" height="186">
+        <ellipse cx="50" cy="176" rx="22" ry="4" fill="rgba(0,0,0,.10)"/>
+        <!-- 尾巴 -->
+        <path d="M62 130 q24 6 12 26 q-10 14 -26 4" fill="none" stroke="#e8a0a8" stroke-width="5" stroke-linecap="round"/>
+        <!-- 腿 -->
+        <rect x="36" y="142" width="11" height="30" rx="5" fill="#ef8e9e"/>
+        <rect x="54" y="142" width="11" height="30" rx="5" fill="#e67f91"/>
+        <!-- 身体（裙） -->
+        <path d="M34 96 q16 -18 32 0 l-4 48 h-24 z" fill="#ff9fb0"/>
+        <circle cx="42" cy="104" r="2" fill="#fff" opacity=".8"/><circle cx="58" cy="104" r="2" fill="#fff" opacity=".8"/>
+        <!-- 手臂 -->
+        <rect x="22" y="96" width="11" height="26" rx="5" fill="#f7a9b6" transform="rotate(10 28 108)"/>
+        <rect x="68" y="96" width="11" height="26" rx="5" fill="#ef94a4" transform="rotate(-10 73 108)"/>
+        <!-- 头 -->
+        <circle cx="50" cy="66" r="26" fill="#f4b6be"/>
+        <!-- 大耳朵 -->
+        <ellipse cx="24" cy="46" rx="13" ry="17" fill="#f4b6be" transform="rotate(-16 24 46)"/>
+        <ellipse cx="24" cy="46" rx="7" ry="10" fill="#ffd7dd" transform="rotate(-16 24 46)"/>
+        <ellipse cx="76" cy="46" rx="13" ry="17" fill="#f4b6be" transform="rotate(16 76 46)"/>
+        <ellipse cx="76" cy="46" rx="7" ry="10" fill="#ffd7dd" transform="rotate(16 76 46)"/>
+        <!-- 脸 -->
+        <circle cx="42" cy="66" r="2.6" fill="#333"/><circle cx="58" cy="66" r="2.6" fill="#333"/>
+        <circle cx="50" cy="75" r="5" fill="#e58b98"/>
+        <path d="M31 72 q7 -5 10 -1 q4 -5 10 1" stroke="#8a4b58" stroke-width="2" fill="none" stroke-linecap="round"/>
+        <path d="M40 56 q10 -6 20 0" stroke="#d98796" stroke-width="2.4" fill="none"/>
+        <!-- 胡须 -->
+        <line x1="18" y1="62" x2="30" y2="66" stroke="#e0aeb6" stroke-width="1.6"/>
+        <line x1="18" y1="72" x2="30" y2="70" stroke="#e0aeb6" stroke-width="1.6"/>
+        <line x1="82" y1="62" x2="70" y2="66" stroke="#e0aeb6" stroke-width="1.6"/>
+        <line x1="82" y1="72" x2="70" y2="70" stroke="#e0aeb6" stroke-width="1.6"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- 单词卡 / 字幕 / 语音球 -->
+  <div id="wordcard"><span class="w"></span> <span class="ph"></span><span class="z"></span></div>
+  <div id="subtitle"><span class="speaker"></span><span class="en"></span><span class="zh"></span></div>
+  <div id="agent-thinking">💭 场景伙伴正在回应<span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+  <button id="mic-btn" title="按住说话">🎤</button>
+  <div id="mic-hint">松开结束</div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var stage = $("stage");
+  var inIframe = window.parent !== window;
+
+  /* ============ 语音朗读：优先宿主 page:tts（app 内 edge-tts），独立预览 fallback 浏览器语音 ============ */
+  var ttsBusy = false;
+  function speak(text) {
+    if (!text) return;
+    if (inIframe) {
+      ttsBusy = true;
+      window.parent.postMessage({ type: "page:tts", text: text }, "*");
+      clearTimeout(speak._t);
+      speak._t = setTimeout(function () { ttsBusy = false; }, 9000);
+      window.addEventListener("message", function onDone(e) {
+        if (e.data && e.data.type === "page:tts:done") {
+          ttsBusy = false;
+          clearTimeout(speak._t);
+          window.removeEventListener("message", onDone);
+        }
+      });
+    } else if (window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance(text);
+        var vs = window.speechSynthesis.getVoices().filter(function (v) { return /^en/i.test(v.lang); });
+        u.lang = "en-US"; u.rate = 0.92;
+        if (vs.length) u.voice = vs[0];
+        window.speechSynthesis.speak(u);
+      } catch (err) { /* 无声环境忽略 */ }
+    }
+  }
+
+  /* ============ 场景角色 / 道具表 ============ */
+  var roleMeta = {
+    steve: { name: "Steve", zh: "老师 Steve", small: false, sub: "Steve:" },
+    maggie: { name: "Maggie", zh: "小老鼠 Maggie", small: true, sub: "Maggie:" }
+  };
+  var chars = { steve: $("ch-steve"), maggie: $("ch-maggie") };
+
+  // 地标（角色可移动到的目标点 x 坐标）
+  var standSpots = {
+    window: 150, sofa: 300, table: 600, plant: 1000, lamp: 380, tv: 900, picture: 470, rug: 560
+  };
+
+  // 物品音标（单词卡用）
+  var propPhon = {
+    window: "/ˈwɪndəʊ/", picture: "/ˈpɪktʃə/", sofa: "/ˈsəʊfə/", lamp: "/ˈlæmp/",
+    table: "/ˈteɪbl/", apple: "/ˈæpl/", cup: "/kʌp/", TV: "/ˌtiːˈviː/", plant: "/ˈplɑːnt/"
+  };
+  var propZh = {
+    window: "窗户", picture: "挂画", sofa: "沙发", lamp: "台灯", table: "茶几",
+    apple: "苹果", cup: "杯子", TV: "电视机", plant: "植物"
+  };
+
+  /* ============ 舞台演出 API（宿主经 scene: 下行指令驱动） ============ */
+  var Scene = {
+    say: function (cid, text, zh) {
+      var ch = chars[cid]; if (!ch) return;
+      Object.keys(chars).forEach(function (k) { chars[k].classList.remove("speaking"); });
+      ch.classList.add("speaking");
+      ch.querySelector(".bubble .en").textContent = text || "";
+      ch.querySelector(".bubble .zh").textContent = zh || "";
+      var st = $("subtitle");
+      var meta = roleMeta[cid];
+      st.querySelector(".speaker").textContent = meta ? meta.sub : (cid + ":");
+      st.querySelector(".en").textContent = text || "";
+      st.querySelector(".zh").textContent = zh || "";
+      st.classList.add("show");
+      speak(text);
+      // 台词自动高亮提及的物品（无需 agent 额外发 highlight）
+      Scene.mentionScan(text);
+      Scene.mentionScan(zh);
+      clearTimeout(Scene.say._t);
+      Scene.say._t = setTimeout(function () {
+        ch.classList.remove("speaking");
+        st.classList.remove("show");
+      }, Math.max(3200, (text || "").length * 240));
+    },
+
+    move: function (cid, x, duration) {
+      var ch = chars[cid]; if (!ch) return;
+      if (typeof x === "string") {
+        var sx = standSpots[x];
+        if (sx == null) return;
+        x = sx;
+      }
+      if (typeof x !== "number") return;
+      // 面向移动方向
+      var cur = parseFloat(ch.style.left) || 0;
+      var dir = (x >= cur) ? 1 : -1;
+      ch.querySelector(".body").style.transform = "scaleX(" + dir + ")";
+      ch.style.transitionDuration = (duration || 1.8) + "s";
+      ch.style.left = Math.max(8, Math.min(1080, x)) + "px";
+      setTimeout(function () { ch.style.transitionDuration = ""; }, (duration || 1.8) * 1000 + 60);
+    },
+
+    act: function (cid, action) {
+      var ch = chars[cid]; if (!ch) return;
+      var tv = $("p-tv"), lamp = $("p-lamp");
+      switch (action) {
+        case "turn-on-lamp":  lamp.classList.add("on"); break;
+        case "turn-off-lamp": lamp.classList.remove("on"); break;
+        case "turn-on-tv":    tv.classList.add("on"); break;
+        case "turn-off-tv":   tv.classList.remove("on"); break;
+        case "open-window":   $("p-window").classList.add("open"); break;
+        case "close-window":  $("p-window").classList.remove("open"); break;
+        case "sit-sofa":
+          Scene.move(cid, standSpots.sofa, 1.6);
+          setTimeout(function () { ch.classList.add("sit"); }, 1650);
+          break;
+        case "stand":
+          ch.classList.remove("sit");
+          break;
+        case "jump":
+          ch.classList.remove("sit");
+          ch.classList.remove("jump");
+          void ch.offsetWidth;
+          ch.classList.add("jump");
+          setTimeout(function () { ch.classList.remove("jump"); }, 900);
+          break;
+        case "dance":
+          ch.classList.add("dance");
+          setTimeout(function () { ch.classList.remove("dance"); }, 3600);
+          break;
+        case "watch-tv": // 组合：走到沙发坐下 + 开电视 + 面向电视
+          Scene.move(cid, 300, 1.7);
+          setTimeout(function () {
+            ch.classList.add("sit");
+            ch.querySelector(".body").style.transform = "scaleX(1)";
+            tv.classList.add("on");
+          }, 1750);
+          break;
+        case "drink-water": // 走到茶几旁，杯子飘到嘴边喝一口再放回
+          Scene.move(cid, 500, 1.6);
+          setTimeout(function () {
+            ch.classList.remove("sit");
+            var cup = $("p-cup");
+            cup.classList.add("drinking");
+            setTimeout(function () { cup.classList.remove("drinking"); }, 2600);
+          }, 1650);
+          break;
+        case "picture-fall":
+          $("p-picture").classList.add("fallen");
+          break;
+        case "picture-hang":
+          $("p-picture").classList.remove("fallen");
+          break;
+        case "greet-wave": // 招手：轻跳两下示意（可复用 dance 短拍）
+          ch.classList.remove("jump"); void ch.offsetWidth;
+          ch.classList.add("jump");
+          setTimeout(function () { ch.classList.remove("jump"); }, 900);
+          break;
+      }
+    },
+
+    show: function (cid) { var ch = chars[cid]; if (ch) { ch.classList.remove("hidden"); ch.classList.add("idle"); } },
+    hide: function (cid) { var ch = chars[cid]; if (ch) { ch.classList.remove("speaking"); ch.classList.add("hidden"); } },
+
+    highlightTarget: function (t) {
+      var el = $("p-" + t) || chars[t];
+      if (el) {
+        el.classList.add("glow");
+        setTimeout(function () { el.classList.remove("glow"); }, 2400);
+      }
+    },
+
+    // 台词自动高亮：命中物品 id / 英文 / 中文任一
+    mentionScan: function (t) {
+      if (!t || !Scene._manifest || !Scene._manifest.props) return;
+      for (var i = 0; i < Scene._manifest.props.length; i++) {
+        var it = Scene._manifest.props[i];
+        if (!it) continue;
+        var words = [it.id, it.word, it.zh];
+        for (var w = 0; w < words.length; w++) {
+          if (words[w] && t.indexOf(String(words[w])) >= 0) {
+            Scene.highlightTarget(it.id);
+            break;
+          }
+        }
+      }
+    },
+
+    update: function (state) {
+      var t = (state && state.task) || "";
+      var prog = state && state.progress; var total = state && state.total;
+      if (typeof prog !== "number") return;
+      for (var i = 1; i <= (total || 3); i++) {
+        var d = $("d" + i);
+        if (d) d.classList.toggle("done", i <= prog);
+      }
+      var label = { hello: "打招呼", askname: "问名字", find: "找物品" }[t];
+      if (label) $("tasks").childNodes[0].textContent = "任务·" + label + " ";
+    }
+  };
+  window.ScenarioAPI = Scene;
+  window.Scene = Scene; // 仅供宿主/控制台调试直调；页面无任何手动 UI
+
+  /* ============ 物品自动挂载点击（单词卡 + 发音 + 上行） ============ */
+  function showWordCard(el) {
+    var card = $("wordcard");
+    var word = el.dataset.word || "";
+    card.querySelector(".w").textContent = word;
+    card.querySelector(".ph").textContent = el.dataset.phon || propPhon[word] || "";
+    card.querySelector(".z").textContent = el.dataset.zh || propZh[word] || "";
+    card.classList.add("show");
+    clearTimeout(showWordCard._t);
+    showWordCard._t = setTimeout(function () { card.classList.remove("show"); }, 3800);
+  }
+  function up(msg) { if (inIframe) window.parent.postMessage(msg, "*"); }
+  function wordOf(el) { return el.dataset.word || (el.id ? el.id.replace("p-", "") : ""); }
+  function zhOf(el) { return el.dataset.zh || propZh[wordOf(el)] || ""; }
+
+  var clickables = document.querySelectorAll(".prop");
+  Array.prototype.forEach.call(clickables, function (el) {
+    el.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      if (el.id === "p-window") $("p-window").classList.toggle("open");
+      Scene.highlightTarget(el.id.replace("p-", ""));
+      showWordCard(el);
+      var word = wordOf(el);
+      speak(word);
+      up({ type: "scene:child-click", target: el.id.replace("p-", ""), word: word, zh: zhOf(el) });
+    });
+  });
+  // 点角色：角色名单词卡 + 上行
+  Object.keys(chars).forEach(function (cid) {
+    chars[cid].addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      var meta = roleMeta[cid];
+      Scene.highlightTarget(cid);
+      showWordCard({ dataset: { word: meta.name, zh: meta.zh, phon: "" } });
+      speak(meta.name);
+      up({ type: "scene:child-click", target: cid, word: meta.name, zh: meta.zh });
+    });
+  });
+  // 点场景空白：收起单词卡
+  stage.addEventListener("click", function (e) {
+    if (e.target === stage || e.target === $("floor") || e.target === $("rug")) {
+      $("wordcard").classList.remove("show");
+    }
+  });
+
+  /* ============ 语音球状态机：按住听 → 松开识别 → 成功回显 / 失败报错；宿主经下行驱动 ============ */
+  var micBtn = $("mic-btn"), micHint = $("mic-hint");
+  var micDown = false, micDownAt = 0, micHintTimer = null;
+  function micHintShow(msg, cls, ms) {
+    micHint.textContent = msg;
+    micHint.className = cls ? "on " + cls : "on";
+    clearTimeout(micHintTimer);
+    if (ms) micHintTimer = setTimeout(function () { micHint.className = ""; }, ms);
+  }
+  function micStart(ev) {
+    ev.preventDefault();
+    if (micDown) return;
+    micDown = true; micDownAt = Date.now();
+    micBtn.classList.add("recording");
+    micBtn.classList.remove("transcribing");
+    micHintShow("🎤 正在听…说完后松开", "busy", 0);
+    up({ type: "scene:mic-press" });
+  }
+  function micEnd(ev) {
+    if (!micDown) return;
+    micDown = false;
+    var dur = Date.now() - micDownAt;
+    micBtn.classList.remove("recording");
+    if (dur < 450) {
+      // 按住太短：本地即时提示（宿主对该录音也判定太短，会再给聊天提示，这里先给孩子看）
+      micHintShow("太快啦，按住说完一整句再松手", "err", 2000);
+      up({ type: "scene:mic-release" });
+      return;
+    }
+    micBtn.classList.add("transcribing");
+    micHintShow("识别中…", "busy", 0);
+    up({ type: "scene:mic-release" });
+  }
+  // 宿主下行：ASR 进行中 / 结果
+  function onMicStatus(st) {
+    if (st !== "transcribing") return;
+    micBtn.classList.remove("recording");
+    micBtn.classList.add("transcribing");
+    micHintShow("识别中…", "busy", 0);
+  }
+  function onMicResult(ok, payload) {
+    micBtn.classList.remove("recording", "transcribing");
+    if (ok) {
+      micHintShow("✅ 我说：“" + payload + "”", "ok", 2600);
+    } else {
+      micHintShow("❌ " + (payload || "没听清，再说一次"), "err", 2800);
+    }
+  }
+  // 宿主下行：场景 agent 正在处理（角色要回应了）
+  function onAgentBusy(b) { $("agent-thinking").classList.toggle("show", !!b); }
+
+  micBtn.addEventListener("pointerdown", micStart);
+  micBtn.addEventListener("pointerup", micEnd);
+  micBtn.addEventListener("pointerleave", micEnd);
+  micBtn.addEventListener("pointercancel", micEnd);
+
+  /* ============ Manifest（场景属性清单）——采集 .prop 与角色，供 agent 感知与问答 ============ */
+  var props = [];
+  Array.prototype.forEach.call(clickables, function (el) {
+    var p = { id: el.id.replace("p-", ""), word: el.dataset.word || "", zh: el.dataset.zh || "", phon: el.dataset.phon || "" };
+    var attrs = {};
+    Array.prototype.forEach.call(el.attributes, function (a) {
+      if (a.name.indexOf("data-attr-") === 0) attrs[a.name.slice(10)] = a.value;
+    });
+    if (Object.keys(attrs).length) p.attrs = attrs;
+    props.push(p);
+  });
+  var characters = Object.keys(roleMeta).map(function (cid) {
+    return { id: cid, name: roleMeta[cid].name, zh: roleMeta[cid].zh };
+  });
+  var SCENE_MANIFEST = {
+    v: 1,
+    title: "客厅 Living Room · 打招呼 Hello",
+    props: props,
+    characters: characters,
+    landmarks: { window: 150, sofa: 300, table: 600, plant: 1000, lamp: 380, tv: 900, picture: 470, rug: 560 }
+  };
+  Scene._manifest = SCENE_MANIFEST;
+  window.__PI_SCENE__ = SCENE_MANIFEST;
+
+  /* ============ 下行：接收宿主 / 桥转发的 scene: 指令 ============ */
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!d || typeof d.type !== "string" || d.type.indexOf("scene:") !== 0) return;
+    switch (d.type) {
+      case "scene:say":       Scene.say(d.character, d.text, d.zh); break;
+      case "scene:move":      Scene.move(d.character, d.x, d.duration); break;
+      case "scene:act":       Scene.act(d.character, d.act || d.action); break;
+      case "scene:show":      Scene.show(d.character); break;
+      case "scene:hide":      Scene.hide(d.character); break;
+      case "scene:highlight": Scene.highlightTarget(d.target); break;
+      case "scene:update":    Scene.update(d.state || { task: d.task, progress: d.progress, total: d.total }); break;
+      // 语音球状态 / agent 处理中（宿主下行控制消息，非演出指令）
+      case "scene:mic-status": onMicStatus(d.status); break;
+      case "scene:mic-result": onMicResult(d.ok === true, d.ok === true ? d.text : d.error); break;
+      case "scene:agent-busy": onAgentBusy(d.busy === true); break;
+      // scene:end / 其它一律忽略——场景页没有「结束」
+    }
+    // 指令回执：宿主（MaterialsPanel.scene）带 _rq 等待本页确认，避免「页面没反应却以为成功」
+    if (d._rq && inIframe) {
+      up({ type: "scene:ack", _rq: d._rq });
+    }
+  });
+
+  // 场景就绪后向宿主上报一次 manifest
+  setTimeout(function () {
+    if (inIframe) up({ type: "scene:ready", manifest: SCENE_MANIFEST });
+  }, 350);
+})();
+</script>
+</body>
+</html>

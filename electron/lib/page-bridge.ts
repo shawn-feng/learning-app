@@ -77,6 +77,11 @@ export function formatPageEvent(evt: PageBridgeEvent): string {
       return "提交了表单";
     case "pagehide":
       return "离开了资料页面";
+    case "scene-ready": {
+      // ISSUE-061：场景页就绪时上报的属性清单（渲染层已拼好中文摘要）
+      const text = d.text ? shortText(d.text, 500) : "场景已就绪";
+      return text;
+    }
     default:
       return `有互动事件（${evt.kind}）`;
   }

@@ -71,4 +71,4 @@ export async function transcribeAudio(webmBuffer: Buffer, onlyProvider?: string)
 
 export { loadVoiceConfig, saveVoiceConfig, getMaskedConfig, applyVoiceConfigPatch, getTranscribeCandidates, isProviderConfigured } from "./voice-config";
 export { loadTtsConfig, saveTtsConfig, getMaskedTtsConfig, applyTtsConfigPatch, TTS_PROVIDER_ORDER } from "./tts-config";
-export { synthesize, TTS_VOICES } from "./tts";
+export { synthesize, prewarmTexts, TTS_VOICES } from "./tts";

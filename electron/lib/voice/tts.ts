@@ -1,8 +1,11 @@
 import { EdgeTTS } from "@andresaya/edge-tts";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import { synthesizeQwenTts, QWEN_TTS_VOICES } from "./providers/qwen-tts";
 import { synthesizeMimoTts, MIMO_TTS_VOICES } from "./providers/mimo-tts";
 import { loadTtsConfig, type TtsProviderId } from "./tts-config";
+import { getDataDir } from "../config";
 
 export interface TtsOptions {
   /** 合成 provider（edge-tts | qwen | qwen-tokenplan | mimo | mimo-tokenplan）；缺省读设置页配置，再缺省 edge-tts */
@@ -52,6 +55,39 @@ export const TTS_VOICES: Array<{ provider: string; voiceId: string; name: string
 // 内存 LRU 缓存：命中即秒回，避免重复请求在线合成服务
 const CACHE_MAX = 100;
 const cache = new Map<string, Buffer>();
+
+// 磁盘持久缓存（data/tts-cache/<hash>.mp3）：跨会话复用合成结果。
+// ISSUE-061：场景对话要快——开场白/高频台词预合成落盘后首次播放即命中，无在线合成等待。
+function getTtsCacheDir(): string {
+  return path.join(getDataDir(), "tts-cache");
+}
+function diskCachePath(key: string): string {
+  return path.join(getTtsCacheDir(), `${key}.mp3`);
+}
+function tryReadDiskCache(key: string): Buffer | null {
+  try {
+    return fs.readFileSync(diskCachePath(key));
+  } catch {
+    return null;
+  }
+}
+function writeDiskCache(key: string, buf: Buffer): void {
+  try {
+    fs.mkdirSync(getTtsCacheDir(), { recursive: true });
+    fs.writeFileSync(diskCachePath(key), buf);
+  } catch {
+    /* 写盘失败不影响播放 */
+  }
+}
+// 磁盘缓存里没有 key 时才返回 true（避免每次读盘判断写盘的路径已存在）
+function diskCacheHas(key: string): boolean {
+  try {
+    fs.accessSync(diskCachePath(key), fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // 缓存 key 必须包含 provider + voice + rate + volume + text，否则不同 provider/音色会读到错音频
 function cacheKey(
@@ -126,12 +162,22 @@ export async function synthesize(text: string, opts: TtsOptions = {}): Promise<B
   const volume = opts.volume ?? "100%";
   const key = cacheKey(provider, clean, voice, rate, volume);
 
-  // 命中缓存：移到队尾（LRU）后直接返回
+  // 命中内存缓存：移到队尾（LRU）后直接返回
   const hit = cache.get(key);
   if (hit) {
     cache.delete(key);
     cache.set(key, hit);
     return hit;
+  }
+  // 命中磁盘持久缓存：读入内存后返回（零在线合成等待——预生成语音的收益点）
+  const fromDisk = tryReadDiskCache(key);
+  if (fromDisk) {
+    cache.set(key, fromDisk);
+    if (cache.size > CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    return fromDisk;
   }
 
   let buf: Buffer;
@@ -150,11 +196,36 @@ export async function synthesize(text: string, opts: TtsOptions = {}): Promise<B
       break;
   }
 
-  // 写入缓存，超上限淘汰最旧一条
+  // 写入内存 + 磁盘缓存（失败不影响播放）；磁盘写是异步不阻塞（避免首播多等一次 IO）
   cache.set(key, buf);
   if (cache.size > CACHE_MAX) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
+  setImmediate(() => writeDiskCache(key, buf));
   return buf;
+}
+
+/**
+ * ISSUE-061：批量预合成（预热）——把高频台词/单词在对话前合成好落盘，正式播放命中磁盘缓存零等待。
+ * 并发上限 3 防止瞬时打爆在线合成服务；失败静默（预热是优化不是必需）。
+ */
+export async function prewarmTexts(texts: string[], opts: TtsOptions = {}): Promise<void> {
+  const queue = [...new Set((texts || []).map((t) => String(t).trim()).filter(Boolean))];
+  const pool: Array<Promise<void>> = [];
+  let i = 0;
+  const worker = async () => {
+    while (i < queue.length) {
+      const text = queue[i++];
+      try {
+        const clean = cleanTtsText(text);
+        if (!clean) continue;
+        await synthesize(clean, opts);
+      } catch {
+        /* 预热失败静默 */
+      }
+    }
+  };
+  for (let w = 0; w < 3; w++) pool.push(worker());
+  await Promise.all(pool);
 }
