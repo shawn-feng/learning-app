@@ -50,6 +50,13 @@ rm -rf dist && unset NODE_OPTIONS && npm run dist:win
 ```
 > 若 Defender 锁 `dist/win-unpacked` 导致打包失败，把 `package.json` 的 `build.directories.output` 临时改成全新目录（如 `dist-release-019`）再打，打完改回 `dist`。
 
+> 🔴 **本机打 Windows 包稳定配方（0.1.13 六败一成实证，须全部满足）**：
+> 1. 沙箱外执行（`dangerouslyDisableSandbox`）；
+> 2. electron-builder 缓存用 **默认 AppData 缓存**（工作区缓存会 EPERM rename）；
+> 3. 设 `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`（GitHub 直连超时）；
+> 4. output 换**全新目录**（`dist-release-0NN` 递增惯例，改 `package.json` build.output）；
+> 5. `unset NODE_OPTIONS`。
+
 ### 2.2 Linux / macOS（GitHub Actions，本机无法打）
 - 触发：把打好 tag 的 commit **push 到 `github`**（`v*`，如 `v0.1.9`）即自动构建。
 - `build-linux.yml` → 产物 `dist/*.deb` + `dist/*.AppImage`（x64）。
@@ -91,7 +98,7 @@ cd server && node scripts/build.mjs
 #    echo "<201-sudo密码>" | sudo -S systemctl restart learning-server
 # 3) 验证：
 #    curl -s http://127.0.0.1:8788/api/v1/version   # 应含 version=0.3.x
-#    curl -s http://127.0.0.1:8788/health           # ok
+#    curl -s http://127.0.0.1:8788/api/v1/health    # ⚠️ 健康路由是 /api/v1/health；/health 是 404
 ```
 > ⚠️ `server/scripts/learning-server.service` 仍写 `ExecStart=/opt/learning-server/learning-server`（旧 pkg 路径），**需改为** `ExecStart=/usr/bin/node /opt/learning-server/server.cjs`，否则服务起不来。
 > 服务端数据目录：`SERVER_DATA_DIR=/opt/learning-server/data`（service 的 Environment 已设）。
@@ -182,13 +189,26 @@ git tag v<ver> && git push origin v<ver> && git push github v<ver>
 7. **GitHub Actions**：`npm ci --legacy-peer-deps`；mac 必须按 arch rebuild `ffmpeg-static`；mac YAML matrix 两 arch → 两次运行（x64/arm64 dmg）。
 8. **服务端 pkg 废弃**：用 `node /opt/learning-server/server.cjs`；`learning-server.service` 的 ExecStart 需从 pkg 路径改回 `node`。
 9. **服务端 import_meta.url 补丁**：`build.mjs` 已自动打，勿删。
-10. **201 客户端 GUI 无法 SSH 重启**：`dpkg -i` 后须在 201 **本地**手动重启客户端。
+10. **201 客户端 GUI 重启**：可 SSH 重启（见 §4.2 命令），成功标志 = 日志出现 `Update for version ... is not available`。
 11. **ADMIN_TOKEN 现取现用**，不硬编码。
 12. **两服务名易混**：`learning-server`（业务，201）vs `learning-cloud`（公网源，ECS）。
+13. **材料 content 404 运维坑（9/6 实证）**：`/materials/content/:id` 只查 `server.sqlite.materials` 索引表不扫磁盘（scanMaterials 仅 /materials/list/upload 触发）。绕过 upload 手工丢文件到磁盘 → 索引缺 → 404。修复 = 幂等补索引（VACUUM INTO 备份 + INSERT..ON CONFLICT，模板 `tmp/deploy/fix_yunlv_index.js`）。**教训：往 201 放资料务必走 /materials/upload**。
+14. **材料视频「有声无画」= HEVC/H.265（9/6 实证）**：Linux Electron 的 Chromium `<video>` 不支持 H.265 解码（AAC 有声、视频黑屏）。判定：201 上 `ffprobe` 看 `codec_name=hevc|hvc1`。修复 = ffmpeg 转 H.264：`-c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -profile:v main -movflags +faststart -c:a aac -b:a 128k`；先 `cp` 备份原文件到 data/backups，转临时文件 → 验证 codec → 覆盖同路径（html/src 不变）→ node 刷新索引 size。含 moov 的都需 faststart（Range 播放）。模板 `tmp/deploy/transcode_yunlv.py` + `replace_yunlv.py`。
+15. **aliyun-run.py RunCommand 带引号/空格命令通用解法 = base64**：`echo <b64> | base64 -d | bash`（规避转义剥引号问题），模板 `tmp/deploy/copy_win_to_ecs.py`。
+16. **Actions 构件下载需 API token**：`gh auth token`；大文件下载用 run_in_background（首跑可能 SIGTERM）。
 
 ---
 
-## 9. 发布后待办
+## 9. 开发期构建与验证速查
+
+- 沙箱内禁 `git stash`；用 `git diff` / `git show HEAD:<file>`。`rm -rf out` 被拦 → 直接 `npm run build`（自清）。
+- `tsc --noEmit` 先滤 5 条环境噪音再看业务错。
+- vitest：残留 setInterval 会致 exit 1（spy setImmediate + restore）；Windows 盘符 bug(#10692)：先 `cd "C:/Users/79734/Documents/pi"`（大写盘符）。
+- 跑真实 LLM 的 vitest：`PI_TEST_DATA_DIR` → Temp，拷真实 `auth.json` + `app-settings.json`，`setCurrentParentId`，删 `globalThis.__learningAppModelRuntime`。
+
+---
+
+## 10. 发布后待办
 
 - 已装旧版 Windows 客户端启动即弹升级（electron-updater 走 `/download/latest.yml` 差量）。
 - 201 上需人工重启 GUI 客户端；服务端自动 migrate 新表（如 `study_plan_items`），无需手工建表。

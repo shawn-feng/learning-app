@@ -24,7 +24,7 @@
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
     "directories": {
-      "output": "dist"
+      "output": "dist-release-019"
     },
     "asar": true,
     "asarUnpack": [

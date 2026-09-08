@@ -77,7 +77,7 @@
 | 字词朗读 | `cn_word` | 中文字词 | 总体/声韵母/声调判断 | 20s |
 | 句子朗读 | `cn_sentence` | 中文句子 | 流利/完整/发音/漏复读 | 40s |
 | 段落朗读 | `cn_paragraph` | 中文段落 | 流利/完整/发音/漏复读 | 300s |
-| 古诗文背诵 | `cn_recitation` | 中文背诵（实时逐字） | 流利/发音/完整 | 300s |
+| 古诗文背诵 | `cn_recitation` | 中文背诵（逐字发音评分） | 流利/发音/完整 | 300s |
 | 诗歌朗读 | `cn_poem` | 中文诗歌 | 流利/完整/发音/漏复读 | 300s |
 
 ### 3.2 英语听说
@@ -162,7 +162,7 @@ CREATE TABLE speech_assessments (
    - 维度卡：完整度 / 准确度 / 流利度 / 韵律度（韵律需标注才有）。
    - **音素级高亮**：英文按 `words[].phones[].score` 红(低)/绿(高)着色每个音素；中文按 `cnSyllables` 声韵母/声调着色。
    - **A/B 对比**：原声（TTS 或素材音频）vs 孩子录音，逐句/逐字回放。
-   - 背诵题：实时逐字滚动打分（用 `cn_recitation` 实时返回）。
+   - 背诵题：逐字发音评分（用 `cn_recitation`，**考核提交时统一打分**，不打断答题）。
 4. 反馈文案：低分音素给「再来一次 / 慢放 / 示范」按钮。
 
 ---
@@ -279,3 +279,76 @@ CREATE TABLE speech_assessments (
 - **coreType 实测**：标注 ⚠️ 的题型（`en_sent_kid`/`en_qa`/`en_oral`/`cn_pinyin` 映射）首次联调需确认。
 
 > 服务端引擎已落地并通过类型检查；下一步接 T5（EXAM 判分分支）与 T6（家长端维度分+回放 UI）。
+
+---
+
+## 十四、中文背诵集成设计（论语场景 · 2026-09-07 调研）
+
+> 用户场景：考核《论语》时出「背诵题」，孩子点击语音按钮开始背诵，**考核结束后一次性提交，服务端对背诵音频批量自动评分**（逐字发音分 + 维度分），家长端在考核结果里看维度分与录音回放。不打断答题实时评分（避免阻塞）。
+> 本节基于通读真实代码给出**精确接线点**（非空想）。改动只涉及「出题扩展 + 类型 + 客户端分支 + UI + 家长端渲染」，服务端 `/assessment/speech` 与 `speech_assessments` 表已在 §13 落地。
+
+### 14.1 现有考核全链路（实测，文件:行）
+
+| 阶段 | 真实代码 | 行为 |
+|---|---|---|
+| **出题** | `src/components/ExamView.tsx:172` `beginStreaming` → `examGenerateCourse`(:199) → `electron/lib/exam-engine.ts:131` `generateCourseQuestions` → `:148` `generateForCourse` | LLM 读课程 `assessRubric`，输出 `{"questions":[{"qid","course","stem","pointMax":10}]}`。**全是口述题**（无题型/refText 概念）。流式逐门追加（`exam-template.ts:218` `appendCourseQuestions`）。 |
+| **答题录音** | `src/lib/exam-template.ts`（iframe）`startRec`(:293)/`onStopRecording`(:305) | 每题一个 🎤「按住说话」按钮（push-to-talk）→ `MediaRecorder` → blob→base64 存 `answers[qid].segs` → `postMessage({type:"exam:asr",qid,blob})`(:333)。 |
+| **转写** | `ExamView.tsx:229` `onMessage` `exam:asr` → `window.api.voiceTranscribe` → `postMessage({type:"exam:asr:done",qid,text})` | ASR 文本回填文本框（当前所有题都走这条）。 |
+| **判分** | `ExamView.tsx:251` `handleSubmit` → `examScore`(:282) → `electron/lib/exam-engine.ts:236` `scoreExamAttempt` | LLM 按 rubric 给每题 `pointGot/correct/aiComment`（基于 ASR 文本）。 |
+| **上传+提交** | `ExamView.tsx:286-337` → `window.api.examSubmit` → `ipc-handlers.ts:2147` `exam:submit`（合并多段语音→`uploadExamVoice`→`audioFileId`→`submitExamAttempt`） | 录音在**提交时**才上传，写 `exam_attempts.per_question.audioFileId`。 |
+| **家长端** | `src/components/ExamRecords.tsx` `AttemptPerQuestion`(:21) + `playAudio`(:101 `examAudio`) | 逐题得分 + ASR + ▶听原音。**无维度分/音素高亮字段**。 |
+
+### 14.2 现状与背诵需求的 Gap
+
+1. **语料无「背诵」题型**：`lunyu_exam/*考核内容.json` 只有 `题目类别:选择题/问答题`，评分标准里一句「若只背原文未用自己的话解释则少给分」——背诵是被 LLM 贬低的弱答案，**没有 refText、没有逐字评**。
+2. **出题只输出 stem**：`GeneratedQuestion`（`exam-engine.ts:20`）无 `assessMethod/questionType/refText`，背什么完全靠 LLM 即兴，易错字漏字。
+3. **录音→ASR→LLM 链路对背诵不适用**：背诵是 refText 已知的，应走「录音→SSECP 发音评测→逐字分」，不该绕 ASR+LLM。
+4. **preload 未暴露 `assessSpeech`**：`electron/preload.ts` 有 `saveUpload`(:81)/`voiceTranscribe`(:317)/`assessmentTest`(:326)，但**没有生产级 `assessSpeech` 桥**——host 渲染层不能直接调 SSECP（客户端助手 `exam.ts:380` 走 `serverFetch`，渲染层无法 import 主进程 lib）。**必须新增桥**。
+5. **评测时机定为「提交时批量」**：背诵**不打断答题实时评分**（避免阻塞）。沿用现有「提交时上传音频」架构，在 `handleSubmit` 的 `scoring` 阶段对背诵题并行调 SSECP（与口述题 LLM 判分同处一个「老师正在批改」等待屏）。
+
+### 14.3 集成方案（论语背诵端到端）
+
+**A. 语料层** — 给《论语》每章补 `题目类别:"背诵"` + `refText`（原文，如「学而时习之，不亦说乎」）。refText 由语料**结构化直给**，不靠 LLM 转写（避免错字）。可放在 `必考题` 或新增 `背诵题` 块。
+
+**B. 出题层** — `exam-engine.ts generateForCourse`：
+- 识别 rubric 里的「背诵」题，输出扩展结构（扩展 `GeneratedQuestion`）：`{qid,course,stem,pointMax,assessMethod:"speech",questionType:"cn_recitation",refText}`。
+- 理解/应用题仍走原 LLM 口述题（维持现状）。
+- 扩展类型：`electron/lib/exam.ts` `ExamCourseConfig`/`ExamTopicConfig` 不变；`GeneratedQuestion`(:20)、`ExamPerQuestion`(:73) 加 `assessMethod?/questionType?/refText?/speech?:SpeechAssessment`。
+- iframe `appendCourseQuestions`(:218) 把 `questionType/refText` 透传到题对象。
+
+**C. 答题 UI（iframe `exam-template.ts`）** — 背诵题**复用现有「按住说话」录制交互**（按压录音、松手即停，避免长录忘关），与口述题一致；支持**多段录音**，提交时由现有 `voiceMerge` 拼接为单段音频（拼接逻辑已有，无需新写）。仅两处差异：
+- `cn_recitation` 显示参考原文；`onStopRecording` 后**不发 `exam:asr`**（背诵不需要 ASR 文本），多段录音照存 `answers[qid].segs`，待提交时统一上传+拼接+打分。
+- 口述题维持原样（发 `exam:asr` → LLM 判分）。
+- 答题过程不回填分数（避免阻塞），维度分/红绿高亮在提交后的结果页展示。
+
+**D. 判分/提交时批量评（host `ExamView.tsx.handleSubmit`）** — 复用现有「提交时上传」架构，评测放在 `scoring` 阶段（与口述题 LLM 判分同处一个等待屏，不阻塞答题）：
+1. `handleSubmit`(:251) 先把口述题交给 `examScore`(:282)（LLM，基于 ASR 文本），**背诵题从送判答案中剔除**（不送 LLM）。
+2. 原有上传步骤(:286-337)对每题合成音频；**背诵题额外取 `audioFileId`**（服务端统一转 16k wav 再送 SSECP）。
+3. 对背诵题 `Promise.all` 并行调 `window.api.examAssessSpeech(childId,audioFileId,questionType,refText)`（**新增 preload 桥** → `exam.ts assessSpeech` → `/assessment/speech`），获 `speech` 维度分；并行降低总等待。
+4. `speechPronToPoint(speech,pointMax)`（v1 用 `pron`；背诵后续加权 `0.5*integrity+0.5*pron`）得 `pointGot`，回填 `perQuestion`。
+5. `perQuestion` 写 `audioFileId` + `speech`（维度分/音素明细），随 `examSubmit` 入库。
+
+**E. 家长端（`ExamRecords.tsx`）** — `AttemptPerQuestion` 增 `speech?` 字段；该题渲染：维度分（完整/准确/流利/韵律+pron）+ ▶回放（`examAudio(audioFileId)`）+ 音素红绿高亮（折叠加 `speech.cnSyllables`/`words`）。与 §7 一致。
+
+### 14.4 接线点清单（实现时按此改，本节为设计不打码）
+
+| 改动 | 文件:位置 | 说明 |
+|---|---|---|
+| 语料加背诵题+refText | `lunyu_exam/*.json` | 每章 1 道必背，refText=原文 |
+| 扩展题型类型 | `exam-engine.ts:20` `GeneratedQuestion`；`exam.ts:73` `ExamPerQuestion` | + assessMethod/questionType/refText/speech |
+| 出题识别背诵 | `exam-engine.ts:148` `generateForCourse` | rubric 含背诵→输出 speech 题 |
+| 新增 preload 桥 | `preload.ts`（仿 `:326` `assessmentTest`）+ `ipc-handlers.ts` | `examAssessSpeech` → `exam.ts assessSpeech` |
+| iframe 背诵交互 | `exam-template.ts:293/333` | 背诵题沿用「按住说话」+多段拼接(`voiceMerge`)，不发 `exam:asr` |
+| 提交时批量评 | `ExamView.tsx:251/282` | 背诵题跳过 LLM，改并行 `examAssessSpeech` |
+| 家长端渲染 | `ExamRecords.tsx:21/101` | 维度分+回放+高亮 |
+| 服务端（已完） | `routes/assessment.ts` + `ssecp.ts` + `speech_assessments` | §13 已落地 |
+
+### 14.5 关键设计决策与风险
+
+- **refText 来源**：必须语料结构化给，**不要**让 LLM 重写原文（错字漏字会让逐字评失真）。
+- **评测时机（已定）**：背诵**提交时批量评**，不打断答题实时评分（避免阻塞考核）。沿用现有「提交时上传音频」架构，在 `handleSubmit` 的 `scoring` 阶段并行调 SSECP。口述题维持 LLM 判分现状。
+- **coreType**：中文背诵用 `cn_recitation`（声希 `cn.pred.score` 族，§12 已记录 ⚠️ 待首测确认映射）。
+- **年龄分支**：≥10 岁用成人题型；论语通常 ≥6 岁，按 child profile 年龄选 coreType（§12-3）。
+- **背诵算分权重**：v1 用 `pron`（=speechPronToPoint）；背诵更应重「完整度 integrity」（考记忆），后续可加权 `0.5*integrity+0.5*pron`。
+- **语料规模**：`lunyu_exam/` 有 100+ 章 json，批量补 `refText` 可用脚本；建议先挑 3~5 章做 POC。
+- **缺口修复优先级**：preload `examAssessSpeech` 桥仍是拦路项（否则 host 在提交时调不到 SSECP），在 `handleSubmit` 提交阶段调用即可；iframe 背诵交互只需改「点击录制」且无需发实时消息。

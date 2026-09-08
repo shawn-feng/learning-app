@@ -1438,3 +1438,102 @@
   - **E. 版本与兼容**：信封 `__pi` 建议带 `v:1`；旧资料（仅 `page:*`）仍走原通道，新协议默认降级为忽略，避免 breaking。
 - **优先级**：中（增强，向后兼容；但「作者可编程资料」是英语/随堂测验类高质量资料的关键能力，当前完全不具备）
 - **记录时间**：2026-09-07
+
+## [ISSUE-061] 场景化角色扮演学习：网页模拟真实场景，孩子在场景中扮演角色，用语音与场景内多个 agent 角色互动（v1 样例已实现并实测，持续迭代）
+- **状态（9/7 晚）**：设计 → 落地 P1 样例（客厅 Hello 场景 + scene_command 全链路）→ 两轮交互优化（无结束横幅 / 自由对话优先 / 复杂动作与物品互动 / 孩子主导不评价不主动记录）→ 场景 HTML 标准规范文档。待：语音球接真 ASR、多角色音色、模板化制作链。各主题 method 是当前该课的 agent 行为权威源（改了 method 即时生效）。
+- **需求（用户 9/7 原话）**：用网页模拟真实场景，让孩子在场景中扮演角色，通过语音与场景中的 agent 进行互动交流；场景里可以有多个 agent 扮演不同角色；目的是让孩子用学习的知识解决问题。
+- **定性**：这不是 ISSUE-060 的「资料通讯协议」增强，而是新的产品形态——**场景角色扮演引擎**（scenario role-play）。学习资料=可阅读/可操作的内容；场景=可对话的世界。ISSUE-060 的 action 词表/协议语义被本场景吸收复用。
+- **核心架构判断（讨论结论）**：
+  1. **多角色 ≠ 多 agent 会话（游戏主持人模式）**：一个场景会话=一个「游戏主持人」agent，system prompt 携带完整剧本（characters[]/场景设定/任务链/知识目标/胜负条件），逐轮扮演所有 NPC。优点：世界状态天然一致、1 次 LLM 调用/轮、孩子上下文复用现有孩子会话机制。仅当角色需真正独立记忆时才拆多会话（不建议 v1）。
+  2. **语音回环不进页面，页面只是「舞台」**：mic/ASR（腾讯，已有按住说话）、TTS（edge-tts 多音色，按角色分配 voice）、agent 会话全在 app 壳/主进程；页面只负责演出——接收下行指令高亮说话角色、放字幕、变场景、展示任务进度。孩子点场景物件 → 上行事件。这是低频消息，**iframe 现有架构扛得住**，无 iframe（WebContentsView 上课模式）是更沉浸的长期形态但非 v1 阻塞项。
+  3. **agent→场景下行用 custom tools（关键设计）**：注册场景专用 custom tools `scene_say({character, line, emotion})` / `scene_update({...})` / `scene_end({result})`（复用 Pi customTools 机制，参考 kb 三件套写法；name 须进 createAgentSession tools 白名单）。agent 每轮调工具驱动舞台 → 主进程按角色音色 TTS → 下发页面演出。比解析 LLM 自由文本 JSON 稳得多。
+  4. **剧本=结构化契约**：`scenario.json`（characters[{id,name,voice,persona}], scene, quests[], knowledge_goals, opening, win_condition）+ 舞台 HTML（agent 生成，监听 scene:* 下行、发 child-action 上行）。制作链：家长 agent 对话出需求（含本课知识目标）→ 编程 agent 生成剧本+舞台 → 落 materials。编程 agent prompt 加「场景模板配方」。
+  5. **回合制推/按住说话起步**：barge-in（打断）难，v1 按住说话+播报期间禁麦；字幕常显（孩子识字练习本身是学习目标）。SSECP 语音评测（DESIGN-ssecp）后续可挂进场景完成条件（如「正确朗读店名」）。
+  6. **学习记录**：场景完成经现有 daily/child_kb 机制落库；场景会话本身上云供家长回看（现有机制）。
+- **v1 分期建议**：P1 场景会话+游戏主持 prompt+scene_say/scene_update 工具+TTS 多音色+字幕（iframe 舞台可先静态图+角色立绘）；P2 编程 agent 生成剧本+舞台模板化；P3 任务链/胜负/多场景；P4 接 SSECP 口语评测+学习记录结构化。
+- **开放问题**：场景由家长 agent 现场生成还是模板库挑选？学科范围（语文对话场景优先?）；角色数量上限（3~4 个 token/注意力合适）；舞台美术由编程 agent 生成的质量下限。
+- **记录时间**：2026-09-07（讨论，未开工）
+
+### 阶段小结（2026-09-07 晚，P1 样例端到端跑通后）
+**已实现**（代码 + 数据均已落，见今日日志）：①「场景英语」主题与第1课（家长库 + 孩子 kb 双库）+ 客厅场景资料 HTML（materials 真源 + 索引）；②`scene_command` custom tool（say/move/act/show/highlight/update，复用 page_action 下行链，零新增 IPC）+ 宿主 MaterialsPanel 白名单转发 + 场景页自身监听；③场景 HTML 动画/资产（开窗/跳舞/喝水/画掉落/地标移动/点物朗读）与「无结束」语义（删 banner/end）；④行为规范场景段 + 教学法 v2（孩子主导、不评价、卡住才提醒、不主动结束/记录）；⑤场景标准规范文档 `SCENARIO-HTML-SPEC.md` + 场景就绪清单注入（manifest→agent）。
+**实测证据（珊珊 9/7 会话，07-29 文件）**：agent 全链路可跑（display_content→scene_command×51 驱动→孩子语音回应），但暴露三个问题，已在第 3 轮迭代修复：①每句都夸/给模板/「掌握度优秀」式评价与打分、设轮次挑战 → 改为自然接话不评价；②三次主线完成即 self-收场（Bye bye/Good night/明天见）共 ~8 次主动道别 → 改为只有孩子明确结束才道别；③自主 kb_insert×5/kb_update×3 记课程与 daily 并宣称「我帮你记下来」→ 改为只在孩子结束本课/要求记录时写。
+**验证结论**：页面=舞台、agent=主持、自定义工具下行的架构成立；「多角色=一个会话逐轮扮演」成立（单 agent 扮演 Steve/Maggie 与孩子对话顺畅）；iframe 现有通道扛得住场景互动（低频消息）。
+**遗留开放项**：①~~场景内语音球 mic-press/release 宿主未接~~ → **v2 已接**（见下）；②多角色差异化音色未做（manifest.voice 已预留，TTS 链路需按角色选 voice）；③场景 HTML 制作仍靠手工/编程 agent 一次性生成，无模板库与自动校验；④行为规范/教学法/HTML 动作表三处一致性靠人工，出错时 scene_command 会静默失败（动作表应集中在规范一处引用）。
+
+### v2 迭代（2026-09-07 晚，用户三项调整：语音球真对话 / 预生成语音 / 台词提及自动高亮）
+用户拍板：场景对话用**独立 scene 会话**专职扮演（课程会话挂起待命、接收转交总结）；场景回复**进聊天记录**；孩子语音存**独立 voice 目录**。已落地：
+- **独立场景会话**（pi-session.ts）：key=`childId|scene|<courseKey>`、目录 `scene-<topic>-<title>`（jsonl=对话真源防丢）、`buildScenePrompt` 独立扮演规范（正文=台词会被朗读；**不知道课程获取/记录**；tools 白名单仅 scene_command；同日续接/跨天新窗）；disposeChildSession 一并清理。
+- **IPC**（ipc-handlers/preload）：`scene:prompt`（回复走独立 `scene:reply/end/error` 事件，防与课程会话 pi:reply 混淆；纯工具轮静默不发「没回复」）、`scene:stop`、`scene:transfer`（读 scene jsonl → 转交文本注入课程会话收尾总结，`buildSceneSummaryForCourse`）、`voice:scene_save`（→ `data/children/<id>/voice/scene/<日期>/`，供挑选评测）。
+- **渲染**（MaterialsPanel/Learn）：场景语音球 `scene:mic-press/release` → 宿主 useAudioRecorder 录音 → ASR → Learn 发 `scenePrompt`（录音落 voice/scene 并随 prompt 附【附件音频】标记）；`scene:ready` → Learn 场景模式（横条「🎭 场景对话中 / 结束场景对话✕」）；场景模式下聊天键盘输入同样路由 scenePrompt；「结束场景」= `sceneTransfer`+`sceneStop` 回课程会话。
+- **预生成语音**（voice/tts.ts）：synthesize 加**磁盘持久缓存** `data/tts-cache/<hash>.mp3`（内存 LRU→磁盘→在线三级）；`prewarmTexts()` 批量预热（并发3，失败静默）；scene:prompt 首轮后台预热 34 条高频台词/单词。
+- **台词自动高亮**（HTML）：`Scene.say` 内 `mentionScan` 自动扫台词中的物品 id/英文/中文并高亮（无需 agent 记得发 highlight）。
+- tsc/build 通过。**遗留**：scene abort 未接独立通道；场景语音气泡回放 v1 不做；voice/scene 挑选分析待接 ssecp 发音评测；scene 会话仍默认模型（可给 fast 档）；多角色 voice 参数待做。
+
+## [ISSUE-062] 设计讨论：用「会话树分支」让一个课程/主题成为 pi 会话树的一支，以节省 token 缓存消耗（prompt cache）
+- **类型**：设计讨论（与 ISSUE-054 同类，属架构权衡，非 bug）
+- **需求（用户 9/7 原话）**：讨论 pi 的会话树的应用——为了节省 token 的缓存消耗，能否一个学习课程或一个主题是一个 pi 的会话树的分支。
+- **现状（已读代码，确认会话模型）**：
+  - 当前**每个课程是独立 `.jsonl` 文件 + `newSession()`**，不是树分支。`createChildSession`（pi-session.ts:567）按 `sessionKey=childId|courseKey` 建会话；课程会话落 `sessions/<topic>-<title>/` 独立子目录（:638-640），进入即 `mgr.newSession()` 开干净窗口（:647），**不复用上次本课对话**。主会话在 `sessions/` 根。
+  - SDK 两种原语（pi-session.ts:1010-1015 注释明确）：`newSession()`=另开**独立文件**、旧文件归档、前缀不共享；`resetLeaf()`=**同文件内分叉**，从当前 leaf 开兄弟分支，**共享祖先前缀**（即对话树/分支语义，是「尝试多种可能性」原语，会在一个文件里堆叠分支）。
+  - 用量已可观测：`token-stats.ts` 已追踪 `cacheRead`/`cacheWrite`（:49-50/:137-138），可按 child/course 看前缀缓存命中率。
+- **核心讨论点（关键反直觉结论）**：
+  1. **独立文件 ≠ 不能共享前缀缓存**：主流 provider 的 prompt cache 按「前缀内容哈希」**全局去重**（跨会话、跨文件）。当前各课程文件的 system prompt 前缀（`buildChildPrompt` 的 身份+profile+AGENTS 行为规范+技能索引）文本完全相同 → **已经跨文件命中 cacheRead**，未必需要改造成树。树的收益主要在「共享不止 system prompt、还要共享对话历史前缀」，而 ISSUE-029/054 恰恰**刻意不共享**跨课程对话历史（防串味/污染）。所以树能省的「额外」缓存 = 共享课程对话历史，正是被设计排除的。
+  2. **当前实现反而挡住了共享**：`courseLesson`（教法）作为第 5 参数注入 `systemPromptOverride`（buildChildPrompt，pi-session.ts:620）→ 每个课程的 **system prompt 前缀都不同** → 跨课程无法共享前缀缓存。这是比「是否用树」更前置的问题：先让稳定前缀（身份+profile+AGENTS）在所有课程间一致，才能谈省缓存。
+  3. **缓存收益受三因素钳制**：① **模型/provider 是否支持 prefix caching**（child 默认模型 + qwen token-plan 是否支持需实测确认；不支持则树零收益）；② **TTL 通常分钟级**（跨天基本失效，真实收益只在「一天内连上几门课」的窗口）；③ **前缀稳定性**（日期注入/动态内容变前缀即失效——learning-guard 每轮注入当前时间，若落在前缀区会破坏缓存）。
+- **设计建议（收敛结论，讨论向）**：
+  - **不急于改造成树**。先验证再决定：①读 `token-stats` 的 cacheRead/cacheWrite 占比，确认当前稳定前缀是否已在复用；②把 `courseLesson` 从「缓存前缀」移出（改为第一条 user message 注入、或置于 cache breakpoint 之后），使 identity+profile+AGENTS 这一稳定前缀跨课程一致。这两步零结构风险，且若 provider 全局去重成立，独立文件已能拿到前缀缓存收益。
+  - **若数据证明「一天内多门课」场景 cacheWrite 高、cacheRead 低**，再考虑树。方案：每个孩子的「主会话管理器」作**树根**（稳定前缀=identity+profile+AGENTS，日期注入放前缀之后），每个课程/主题 = `resetLeaf()` 从根分叉；需解决：①**分支累积**（resetLeaf 堆叠，须「每课一个分支、续接复用而非每次分叉」+ 归档清理，参考 resetChildSession 的 pruneArchivedSessions 思路）；②**分支导航/历史浏览 UI**（当前 UI 按文件读消息，需分支列表 API）；③**resetChildSession 语义**（不能误删所有课程分支）；④确认 SDK `continueRecent` 能否定位到指定课程分支续接；⑤provider 缓存支持。
+  - **权衡**：树牺牲了「每课独立文件」的简洁隔离与易清理/易回看，换来「共享前缀缓存」；但若共享的仅是 system prompt，独立文件靠全局前缀去重已得同等收益。故树的**净收益有限、风险不小** → 当前标记为「待数据验证的优化项」，不建议立即实施。
+- **修改入口 / 方向（若未来实施）**：
+  - `electron/lib/pi-session.ts`：`createChildSession`（:642 的 `mgr.newSession()` 改为从树根 `resetLeaf()` 分叉；`courseSessionsSubdir` 逻辑改为「孩子单树 + 分支命名」）、`resetChildSession`（:1032 分支语义调整，避免误清所有分支）、`disposeChildCourseSession`（分支清理而非删文件）。
+  - `electron/lib/pi-session.ts` `buildChildPrompt`（:620）：将 `courseLesson` 移出 `systemPromptOverride` 缓存前缀。
+  - `electron/lib/token-stats.ts`（:49）：加「按 child/course 维度」的 cacheRead/cacheWrite 占比报表，作为改造决策依据。
+  - SDK 侧需确认：`resetLeaf` / `continueRecent` 的分支导航 API、分支列表读取。
+- **优先级**：低（优化项，待数据验证；与 ISSUE-054 的「按课程隔离」目标存在张力——隔离靠独立文件、省缓存靠共享前缀，二者需取舍）
+- **记录时间**：2026-09-07（讨论，未开工）
+
+## [ISSUE-063] 审计所有工具的报错信息：是否详细、准确、能指导 agent 下一步（含「查课程找不到→建议先列全部课程名核对」）
+- **类型**：审计 + 规范（检查所有 customTools / 内部调用的报错是否「说清 what + 给原因 why + 给下一步 next」，帮助 agent 自纠）
+- **需求（用户 9/8 原话）**：检查所有工具的报错信息是否详细、是否准确。好的报错信息能够帮助 agent 知道下一步做什么。例如查询课程资料时，如果找不到课程，是不是能报错「找不到记录，可能是课程名错误，建议先列出所有课程名，确认课程名是否正确」。
+- **现状审计（已读 `electron/lib/custom-tools.ts` / `pi-session.ts` / `parent-library.ts` / `child-auth.ts` / `ipc-handlers.ts` / 各 voice provider）**：
+
+  ### A. 已做得好（可作为范本，保留）
+  - `parent_content`（custom-tools.ts:1079）：课程找不到时 →「家长库中未找到课程「X」。请先用 kb_query（query=progress + topic + listOnly）列出该主题的准确课程标题，再用完整标题查询」——**正是用户要的范式（what+next+列候选）**。
+  - `parent_library_courses`（:2330）：主题找不到 → 附「现有主题：A/B/C」。
+  - `exam_schedule_create`（:986）/ `course_status`（:2381）：孩子找不到 → 附「现有孩子：…」。
+  - `study_plan` 定位（:1925）：id 找不到 → 建议 `study_plan_list` 并给最近行作锚点。
+  - `kb_update course`（:609）：课程不存在 → 带 topic+item。
+  - voice 类（qwen.ts:133/149、audio.ts:66）：识别失败带「请靠近麦克风再说一次」等下一步。
+  - `parent_upload_material`（:778-800）：路径/格式/目录校验清晰，提示「先 write 再上传」。
+
+  ### B. 问题点（需改进）
+  1. **【核心反例，对应用户例子】孩子会话查课程教法「静默降级」，agent 完全不知课程找不到**：`createChildSession`（pi-session.ts:581）`fetchCourseLessonRemote(...).catch(() => null)` 吞掉错误；:584-585 当 `courseLesson` 为 null 仅 `console.warn("[pi-session] course lesson not found …（降级为无教法注入）")`，**agent 收不到任何信号**，直接「无教法」开讲。应改为：进入课程会话前若 courseLesson 缺失，向 agent 明确报告「课程《X》未取到教法（可能课程名不准确，或服务端暂不可达），可用 kb_query progress + topic 列出全部课程标题核对后用完整标题重试」，并区分「真无此课」vs「拉取失败（网络）」。
+  2. **离线/服务端不可达统一静默吞**（与 B1 同源）：`fetchAgentPromptRemote`/`fetchTodayPlanRemote`/`fetchCourseLessonRemote` 失败均 `.catch(() => null)` 降级，agent 不知道「当前是离线降级、内容可能非最新」。须区分「数据确实不存在」vs「拉取失败」——后者应提示内容可能陈旧，而非当作「无此法」。注：`parent-library.ts:770` 已立「本地无文件且拉取失败时返回 error（网络/服务端问题显式暴露，**禁止静默降级**）」政策，应推广到孩子会话教法拉取。
+  3. **`parent_read_image`（:932）三元恒等**：`/未找到可用的 ffmpeg|网络|API key|凭证|401|403/.test(msg) ? A : A` 两分支文本完全相同，条件无意义，应区分「ffmpeg 缺失」vs「网络/凭证错误」给出不同下一步。
+  4. **泛化报错缺下一步**：`schedule_task create`（:1809）「创建提醒失败」无原因无下一步；`parent_upload_material`（:802）「上传未返回服务端路径，请重试」缺上下文；`programming-agent.ts:233`「未能成功写入（文件不存在或为空），请重试」可附「检查 requirement/输出路径」。
+  5. **报错语言不一致**：部分中文（好），部分英文——`child-auth.ts:276/303`「Child not found」、`ipc-handlers.ts:1603`「No active session」、`:1606`「Model not found」、`exam.ts` 等。中文 agent 环境，英文报错增加理解成本，应统一中文（专有名词/命令名保留英文）。
+  6. **缺「可恢复性」分类**：未区分「参数错（改了再调）/ 数据不存在（先列出再确认）/ 环境错（重试或查网络）/ 配置缺（去设置开启）」。好报错应带该分类，让 agent 知道动作类型。
+  - 附：`parent-library.ts:680` 注释记录过「HTTP 200+0 字节偶发会把正确路径整条判成 not found，agent 只能瞎猜」——说明模糊/误报报错已实际造成 agent 瞎猜，正是本 issue 要根治的。
+
+- **建议的「好报错」规范（可落地 checklist，写入新增 `docs/TOOL-ERROR-CONVENTIONS.md` 或 ARCHITECTURE.md「工具报错规范」段）**：每条工具报错应满足——
+  1. **what**：明确对象 + 失败点（如「家长库中未找到课程《X》」）。
+  2. **why**：区分 参数错 / 数据不存在 / 网络·服务端 / 配置缺失。
+  3. **next**：给下一步动作——可自愈的给命令（「先用 kb_query progress + topic 列出全部课程标题，核对后用完整标题重试」）；环境类「检查网络后重试」；配置类「去设置页开启 X」。
+  4. **候选**：找不到 X 时附「现有 X：A/B/C」让 agent 直接选，避免再猜（范本见 A 段）。
+  5. **语言**：面向中文 agent，报错中文为主（命令名/专有名词保留英文）。
+  6. **不静默降级**：真无 vs 拉取失败必须区分；降级须显式告知 agent（沿用 parent-library:770 政策）。
+  7. **（可选）错误类型枚举**：`ParamError | DataError | NetworkError | ConfigError`，便于 agent 与日志区分、也方便测试断言。
+- **修改入口 / 方向**：
+  - `electron/lib/pi-session.ts:581,584-585` `createChildSession`：**核心**。courseLesson 缺失区分网络失败 vs 真无课，向 agent 报告并建议 kb_query 列课程核对。
+  - `electron/lib/custom-tools.ts`：①:932 parent_read_image 三元恒等修复（区分 ffmpeg/网络）；②:1809 schedule_task 补原因；③:802 upload 补上下文；④ programming-agent.ts:233 写失败补建议。
+  - `electron/lib/child-auth.ts:276/303`、`ipc-handlers.ts:1603/1606`、`exam.ts` 等英文报错统一中文化。
+  - 新增规范文档 `docs/TOOL-ERROR-CONVENTIONS.md`（或并入 ARCHITECTURE.md）；加一个轻量复核：扫描 custom-tools.ts 所有 `throw new Error` 人工核对是否含 next 动作，新工具按 checklist 写。
+- **优先级**：中（直接影响 agent 自纠能力、减少「瞎猜/重复调用/多耗轮次」；与 ISSUE-054/062 的 token 利用也相关——报错不清会多耗轮次）
+- **阶段进度（2026-09-08）**：✅ **第一阶段审计交付完成**（`AUDIT-tools-error-messages-2026-09-08.md`，3 组 39 项工具逐条评分 + P0/P1/P2 分级）。✅ **第二阶段修复实施完成**（见下「修复明细」）。✅ **验证通过**：electron-vite build 通过；vitest 全量 **340/340 通过**（此前全量偶现 3 个 parent-stats activity-log 失败，单独跑与复跑均通过，确认是既有 flaky 测试间共享状态污染，与本次改动无关）。**部署 201/公网未做**。
+- **修复明细（2026-09-08 实施）**：
+  - **P0 不静默降级**：`learning-summary.ts` 三个 fetch* 返回状态（`ok|network`，课程另有 `not-found`）并写缓存 meta（lastFetchOk/lastFetchAt/cachedAt）；新增 `getProgressSyncMeta`/`isCourseLessonCacheStale`/`getTodayPlan{date 校验,fresh}`/`getTodayPlanText`；`agent-prompts.ts fetchAgentPromptRemote` 返回 `{content,status:ok|network}`；`pi-session.ts` createChildSession/createSceneSession 教法缺失/旧缓存/计划拉取失败 → dataNotice 注入 buildChildPrompt/buildScenePrompt（区分 not-found vs network，附 kb_query 列课程核对 next）。
+  - **P1**：kb_update 找不到课附 kb_query 列课程命令；display_content 拉取失败区分网络 vs 路径；parent_read_image 恒等三元拆 ffmpeg/凭证/网络/其它四类；schedule_task create 失败补原因+list 自检 next；programming-agent 写空补三原因+next。
+  - **P2**：parent_course_delete 未删成改抛错+候选；page_action/page_inspect/scene_command 失败附「先 display_content」next；kb_query progress 空结果区分未分配/主题名不准；parent_upload_material 空路径补 why；child-auth/pi-session/ipc-handlers 英文报错中文化。
+  - **规范**：新增 `docs/TOOL-ERROR-CONVENTIONS.md`（7 条 checklist + 三段式模板 + 不静默降级政策 + 范本索引 + 已改位置清单）。
+  - **测试**：`parent-library.test.ts` 一条过时断言（htmlPath「未上传=not found」）随 9/8 政策更新为「登记即返回」。
+- **记录时间**：2026-09-08
