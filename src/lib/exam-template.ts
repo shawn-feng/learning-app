@@ -259,11 +259,17 @@ window.EXAM_DATA = ${dataJson};
     answers[q.id] = a;
     $("qCourse").textContent = q.course || "";
     $("qStem").textContent = q.stem || "";
-    $("qRef").textContent = q.refText || ""; // 背诵/跟读题显示标准原文
-    // 口语/听说题：显示参考原文、隐藏文字识别框、不触发 ASR
+    // 背诵/默写记忆类题型（cn_recitation 背诵、cn_poem 古诗文背诵）：考的是记忆，**不给看原文**
+    // （原文只用于提交后 SSECP 判分对照与家长端回显）——显示原文会变成"看文朗读"（ISSUE-050 反馈，2026-09-08）。
+    // 跟读/朗读/听说类（cn_sentence/cn_paragraph/en_*）才显示参考原文。
+    var isReciteBlind = q.questionType === "cn_recitation" || q.questionType === "cn_poem";
+    $("qRef").textContent = isReciteBlind ? "" : (q.refText || "");
+    // 口语/听说题：隐藏文字识别框、不触发 ASR
     var isSpeech = !!q.questionType;
     $("qHint").textContent = isSpeech
-      ? "🎤 按住麦克风背诵，松手即停；可以分几段背，提交后自动评分。"
+      ? (isReciteBlind
+          ? "🧠 这是一道背诵题：先在脑子里回忆本章原文，再按住麦克风背诵，松手即停；可以分几段背，提交后自动评分。"
+          : "🎤 按住麦克风朗读/跟读下面的原文，松手即停；可以分几段读，提交后自动评分。")
       : "🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。";
     $("asrLabel").style.display = isSpeech ? "none" : "";
     $("asr").style.display = isSpeech ? "none" : "";

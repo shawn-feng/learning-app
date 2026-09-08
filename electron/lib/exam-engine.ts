@@ -33,24 +33,29 @@ export interface GeneratedQuestion {
 const GENERATION_SYSTEM_PROMPT = `你是儿童学习考核的出题老师。你只做一件事：根据家长写的考核方法说明与每课考核要点，为孩子出「主观题」（口述题，孩子用语音回答）。你只输出 JSON，不输出任何其它文字。`;
 
 /**
- * 背诵题 POC 种子（结构化 refText，供 SSECP 逐字发音评测参照）。
- * 由语料直给、不靠 LLM 生成，避免错字漏字让逐字评失真。
- * 真实场景应改为从课程 material / lunyu_exam 语料抽取（见 DESIGN-ssecp-speech-assessment §14）。
+ * 背诵题 refText 来源（问题 1 修复，2026-09-08）：从**本课 rubric 的「原文背诵」行**提取
+ * 该章原文（如「- 原文背诵：能正确流利背诵“子曰：'学而时习之…'”」），结构化直给、不靠 LLM 生成，
+ * 避免错字漏字让逐字评失真。⚠️ 只取本课原文——**不再注入跨章 POC 种子**（旧实现凡「论语」课
+ * 都塞 5 句固定名句，含为政/述而篇，导致"只考第一章却考了别的章"）。取不到本课背诵内容则不注入。
  */
-const LUNYU_RECITATION_SEED: Array<{ stem: string; refText: string }> = [
-  { stem: "背诵《论语》名句一：学而时习之", refText: "子曰：学而时习之，不亦说乎？有朋自远方来，不亦乐乎？人不知而不愠，不亦君子乎？" },
-  { stem: "背诵《论语》名句二：吾日三省吾身", refText: "吾日三省吾身：为人谋而不忠乎？与朋友交而不信乎？传不习乎？" },
-  { stem: "背诵《论语》名句三：学思结合", refText: "子曰：学而不思则罔，思而不学则殆。" },
-  { stem: "背诵《论语》名句四：温故知新", refText: "子曰：温故而知新，可以为师矣。" },
-  { stem: "背诵《论语》名句五：三人行必有我师", refText: "子曰：三人行，必有我师焉。择其善者而从之，其不善者而改之。" },
-];
+const RECITATION_MARK_RE = /原文背诵[^“”"\n]*?[：:][^\n]*?[“"]([^”"\n]+)[”"]/g;
 
-/** 取一门课的背诵题（结构化 refText）。优先课程自带 recitation；论语课程用 POC 种子。 */
+/** 取一门课的背诵题（结构化 refText）。优先课程自带 recitation；否则从本课 rubric「原文背诵」行提取。 */
 function recitationFor(course: ExamCourseConfig): Array<{ stem: string; refText: string }> {
   const own = (course as any).recitation;
   if (Array.isArray(own) && own.length) return own;
-  if (course.title.includes("论语")) return LUNYU_RECITATION_SEED;
-  return [];
+  const rubric = String((course as any).assessRubric || "");
+  const out: Array<{ stem: string; refText: string }> = [];
+  const re = new RegExp(RECITATION_MARK_RE.source, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(rubric)) && out.length < 3) {
+    const ref = (m[1] || "").replace(/[“”"'']/g, "").trim();
+    if (!ref) continue;
+    // 同一段重复出现的「背诵」提示可能指同一原文，按内容去重
+    if (out.some((x) => x.refText === ref)) continue;
+    out.push({ stem: "请完整背诵本章原文（不看书，背完整、背流利）", refText: ref });
+  }
+  return out;
 }
 
 // ==================== 选课（v3 §14.9：服务端下发选课 prompt，家长可编辑） ====================
