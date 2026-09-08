@@ -105,37 +105,68 @@ function progressCachePath(childId: string): string {
   return path.join(getDataDir(), "cache", `progress-${childId}.json`);
 }
 
-/** 会话创建前远程预取学习进度到本地缓存（同步读链路的真源）。 */
-export async function fetchProgressRemote(childId: string): Promise<void> {
+/** 进度缓存带同步元信息（ISSUE-063）：meta.lastFetchOk=false 表示上次预取失败（离线降级），
+ * 读取方应提示「数据可能非最新」，不得当作「真无进度」。 */
+export interface ProgressCacheMeta {
+  lastFetchOk: boolean;
+  lastFetchAt: number;
+}
+
+interface ProgressCacheFile {
+  topics?: TopicsRow[];
+  progress?: ProgressRow[];
+  ts?: number;
+  meta?: ProgressCacheMeta;
+}
+
+/** 远程预取学习进度：成功返回 "ok"；失败（离线/未登录）保留旧缓存并返回 "network"（可区分真无 vs 拉取失败）。 */
+export async function fetchProgressRemote(childId: string): Promise<"ok" | "network"> {
   try {
     const [topics, progress] = await Promise.all([
       dbQuery<TopicsRow[]>("kb.topics.list", { child_id: childId }),
       dbQuery<ProgressRow[]>("kb.progress.list", { child_id: childId }),
     ]);
+    const data: ProgressCacheFile = {
+      topics: topics ?? [],
+      progress: progress ?? [],
+      ts: Date.now(),
+      meta: { lastFetchOk: true, lastFetchAt: Date.now() },
+    };
     fs.mkdirSync(path.dirname(progressCachePath(childId)), { recursive: true });
-    fs.writeFileSync(
-      progressCachePath(childId),
-      JSON.stringify({ topics: topics ?? [], progress: progress ?? [], ts: Date.now() }),
-      "utf-8"
-    );
+    fs.writeFileSync(progressCachePath(childId), JSON.stringify(data), "utf-8");
+    return "ok";
   } catch {
-    /* 离线/未登录：保留旧缓存或留空，getLearningSummary 降级 */
+    /* 离线/未登录：保留旧缓存，但写入 lastFetchOk=false 供读取方识别陈旧 */
+    try {
+      const prev = readProgressCache(childId);
+      prev.meta = { lastFetchOk: false, lastFetchAt: Date.now() };
+      fs.mkdirSync(path.dirname(progressCachePath(childId)), { recursive: true });
+      fs.writeFileSync(progressCachePath(childId), JSON.stringify(prev), "utf-8");
+    } catch {
+      /* 写失败不影响降级语义 */
+    }
+    return "network";
   }
 }
 
-export function getLearningSummary(childId: string): LearningSummary {
-  let topics: TopicsRow[] = [];
-  let progress: ProgressRow[] = [];
+function readProgressCache(childId: string): ProgressCacheFile {
   try {
-    const cached = JSON.parse(fs.readFileSync(progressCachePath(childId), "utf-8")) as {
-      topics: TopicsRow[];
-      progress: ProgressRow[];
-    };
-    topics = cached.topics ?? [];
-    progress = cached.progress ?? [];
+    return JSON.parse(fs.readFileSync(progressCachePath(childId), "utf-8")) as ProgressCacheFile;
   } catch {
-    /* 无缓存：返回空 */
+    return {};
   }
+}
+
+/** 读取进度缓存的同步元信息（供调用方判断数据是否离线降级/陈旧）；无缓存返回 null。 */
+export function getProgressSyncMeta(childId: string): ProgressCacheMeta | null {
+  const meta = readProgressCache(childId).meta;
+  return meta ? { lastFetchOk: !!meta.lastFetchOk, lastFetchAt: Number(meta.lastFetchAt) || 0 } : null;
+}
+
+export function getLearningSummary(childId: string): LearningSummary {
+  const cached = readProgressCache(childId);
+  const topics = cached.topics ?? [];
+  const progress = cached.progress ?? [];
 
   const list: TopicSummary[] = topics.map((t) => {
     // 关联键：topics.topic_key 即拼音目录名（如 "lunyu"），直接等于 courses.topic
@@ -267,14 +298,81 @@ export function progressSummaryToMarkdown(summary: LearningSummary): string {
 //
 // 与进度概览同一「会话前远程预取 → 本地缓存 → 同步读」模式（systemPromptOverride 是同步链，
 // 没法在回调里 await）：createChildSession 在创建会话前调用 fetchTodayPlanRemote(childId, date)
-// 把当天 Todolist 预取到本地缓存，buildChildPrompt 经 getTodayPlan(childId) 同步读缓存注入系统提示。
-// 缓存缺失 / 当天无 Todolist 时返回空串，buildChildPrompt 据此「不注入任何段落」，保持 prompt 精简。
+// 把当天 Todolist 预取到本地缓存，buildChildPrompt 经 getTodayPlan(childId, today) 同步读缓存注入系统提示。
+// 缓存缺失 / 当天无 Todolist 时 text 为空串，buildChildPrompt 据此「不注入任何段落」，保持 prompt 精简。
+// ISSUE-063：getTodayPlan 带 date 校验 + 返回 fresh——离线时旧缓存可能是昨天内容，禁止把「昨天的计划/
+// 拉取失败」当作「今天没安排」注入；由调用方据 fresh=false 显式提示 agent。
 //
 // 数据来源：kb.todo.list（服务端孩子 kb todo_items 表，一事一行，多设备共享），与 todo_list 工具 read
 // 分支同一真源、同一「今天」口径（本地时区 YYYY-MM-DD）。序列化为纯文本注入（不再是 md checkbox）。
 
 function todayPlanCachePath(childId: string): string {
   return path.join(getDataDir(), "cache", `today-plan-${childId}.json`);
+}
+
+interface TodayPlanCacheFile {
+  itemsMd: string;
+  date: string; // 缓存的「哪一天」的计划；读取方须校验是否仍是目标日期
+  ts?: number;
+  /** ISSUE-063：false = 上次预取失败（离线），itemsMd 可能为旧日期/空，读取方须提示非最新 */
+  lastFetchOk?: boolean;
+}
+
+/** 会话创建前远程预取孩子当天 Todolist 到本地缓存（同步读链路的真源）。
+ * 返回 "ok"（已拿到当天计划，可能为空）| "network"（离线/失败，缓存保留旧值或为空）。 */
+export async function fetchTodayPlanRemote(childId: string, date: string): Promise<"ok" | "network"> {
+  try {
+    const rows = (await dbQuery<Array<Record<string, unknown>>>("kb.todo.list", {
+      child_id: childId,
+      date,
+    })) ?? [];
+    // 与 todo_list 工具 read 分支口径一致：无行即「今天还没有 todolist」。
+    const text = rows.length ? todoRowsToText(rows) : "";
+    const data: TodayPlanCacheFile = { itemsMd: text, date, ts: Date.now(), lastFetchOk: true };
+    fs.mkdirSync(path.dirname(todayPlanCachePath(childId)), { recursive: true });
+    fs.writeFileSync(todayPlanCachePath(childId), JSON.stringify(data), "utf-8");
+    return "ok";
+  } catch {
+    /* 离线/未登录：保留旧缓存，仅标记本次拉取失败（读取方据此提示可能非最新） */
+    try {
+      const prev = readTodayPlanCache(childId);
+      prev.lastFetchOk = false;
+      prev.ts = Date.now();
+      fs.mkdirSync(path.dirname(todayPlanCachePath(childId)), { recursive: true });
+      fs.writeFileSync(todayPlanCachePath(childId), JSON.stringify(prev), "utf-8");
+    } catch {
+      /* 写失败不影响降级语义 */
+    }
+    return "network";
+  }
+}
+
+function readTodayPlanCache(childId: string): TodayPlanCacheFile {
+  try {
+    return JSON.parse(fs.readFileSync(todayPlanCachePath(childId), "utf-8")) as TodayPlanCacheFile;
+  } catch {
+    return { itemsMd: "", date: "" };
+  }
+}
+
+/** 同步读取某天学习计划（Todolist 文本）。
+ * ISSUE-063：必须校验缓存 date 是否等于目标 date——离线时旧缓存可能是「昨天」的计划，
+ * 直接返回会把昨天内容当成今天注入；date 不匹配一律视为无（并可通过 lastFetchOk=false 提示陈旧）。
+ * @returns { text, fresh } fresh=false 表示读取到的是旧/降级数据（离线、非目标日期或从未同步过）。
+ */
+export function getTodayPlan(
+  childId: string,
+  date: string
+): { text: string; fresh: boolean } {
+  const cached = readTodayPlanCache(childId);
+  const dateMatch = cached.date === date;
+  const ok = cached.lastFetchOk !== false;
+  return { text: dateMatch ? cached.itemsMd ?? "" : "", fresh: dateMatch && ok };
+}
+
+/** 仅取当天计划文本（旧调用形态；日期不匹配返回空串）。 */
+export function getTodayPlanText(childId: string, date: string): string {
+  return getTodayPlan(childId, date).text;
 }
 
 /** 把 todo_items 行渲染成可读文本（家长项带来源前缀，孩子项标注）。 */
@@ -288,39 +386,14 @@ function todoRowsToText(rows: Array<Record<string, unknown>>): string {
   return lines.join("\n");
 }
 
-/** 会话创建前远程预取孩子当天 Todolist 到本地缓存（同步读链路的真源）。 */
-export async function fetchTodayPlanRemote(childId: string, date: string): Promise<void> {
-  try {
-    const rows = (await dbQuery<Array<Record<string, unknown>>>("kb.todo.list", {
-      child_id: childId,
-      date,
-    })) ?? [];
-    // 与 todo_list 工具 read 分支口径一致：无行即「今天还没有 todolist」。
-    const text = rows.length ? todoRowsToText(rows) : "";
-    fs.mkdirSync(path.dirname(todayPlanCachePath(childId)), { recursive: true });
-    fs.writeFileSync(todayPlanCachePath(childId), JSON.stringify({ itemsMd: text, date, ts: Date.now() }), "utf-8");
-  } catch {
-    /* 离线/未登录：保留旧缓存或留空，getTodayPlan 降级为不注入 */
-  }
-}
-
-/** 同步读取当天学习计划（Todolist 文本）；无缓存 / 当天无 Todolist 返回空串（不注入）。 */
-export function getTodayPlan(childId: string): string {
-  try {
-    const cached = JSON.parse(fs.readFileSync(todayPlanCachePath(childId), "utf-8")) as {
-      itemsMd: string;
-    };
-    return cached.itemsMd ?? "";
-  } catch {
-    /* 无缓存：返回空 */
-    return "";
-  }
-}
-
 // ==================== 课程教学内容远程预取（ISSUE-029 任务2：英语课子会话注入用） ====================
 // 与 fetchTodayPlanRemote 同一「会话前远程预取 → 本地缓存 → 同步读」模式：
 // SPLIT 架构下孩子 kb 真源在服务端（本地 kb.sqlite 的 topics/courses 可能为空壳），
 // 课程教学方法/文案必须经服务端 RPC 取。离线/失败保留旧缓存，降级不阻断会话创建。
+//
+// ISSUE-063：fetchCourseLessonRemote 不再静默吞错——返回状态供 createChildSession 区分
+// 「真无此课（not-found，可能课程名错，应列课程核对）」vs「拉取失败（network，可能离线/服务端不可达，
+// 教法缺失或为旧缓存，须显式告知 agent，禁止当作『真无教法』静默开讲）」；缓存带 cachedAt 供判断新旧。
 
 export interface CourseLessonCache {
   topic: string;
@@ -330,33 +403,52 @@ export interface CourseLessonCache {
   htmlPath: string; // 学习资料 html 地址
   material: string;
   sendMaterial: string;
+  /** 本地缓存写入时间（ms）；「是否最新」的判断依据之一（ISSUE-063）。 */
+  cachedAt?: number;
+}
+
+/** 课程教法远程预取结果（ISSUE-063）：
+ * "ok" = 服务端可达且课程存在，缓存已刷新；"not-found" = 服务端可达但该课程不存在（可能课名错）；
+ * "network" = 服务端不可达/超时/未登录（教法可能缺失或旧缓存，须告知 agent 降级）。 */
+export type CourseLessonFetchStatus = "ok" | "not-found" | "network";
+
+interface CourseLessonCacheFile {
+  lessons: Record<string, CourseLessonCache>;
+  /** 最近一次拉取状态（ISSUE-063：区分「正常同步」vs「离线降级」，供读取方判断陈旧） */
+  meta?: { lastFetchOk: boolean; lastFetchAt: number };
 }
 
 function courseLessonCachePath(childId: string): string {
   return path.join(getDataDir(), "cache", `course-lesson-${childId}.json`);
 }
 
-function loadCourseLessonCache(childId: string): Record<string, CourseLessonCache> {
+function loadCourseLessonCacheFile(childId: string): CourseLessonCacheFile {
   try {
-    const parsed = JSON.parse(fs.readFileSync(courseLessonCachePath(childId), "utf-8")) as {
-      lessons?: Record<string, CourseLessonCache>;
-    };
-    return parsed.lessons ?? {};
+    return JSON.parse(fs.readFileSync(courseLessonCachePath(childId), "utf-8")) as CourseLessonCacheFile;
   } catch {
-    return {};
+    return { lessons: {} };
   }
 }
 
+function loadCourseLessonCache(childId: string): Record<string, CourseLessonCache> {
+  return loadCourseLessonCacheFile(childId).lessons ?? {};
+}
+
 /** 会话创建前远程预取某课教学内容（kb.courses.get）→ 写本地缓存（按 topic:title 多课共存）。
- * 服务端已把课程级 lesson_method 为空时回退主题级 topics.method。 */
-export async function fetchCourseLessonRemote(childId: string, topic: string, title: string): Promise<void> {
+ * 服务端已把课程级 lesson_method 为空时回退主题级 topics.method。
+ * @returns 拉取状态（见 CourseLessonFetchStatus）；课程行存在但内容全空也算 "ok"（课在，只是没写教法）。 */
+export async function fetchCourseLessonRemote(
+  childId: string,
+  topic: string,
+  title: string
+): Promise<CourseLessonFetchStatus> {
   try {
     const row = await dbQuery<Record<string, unknown> | null>("kb.courses.get", {
       child_id: childId,
       topic,
       title,
     });
-    if (!row) return;
+    if (!row) return "not-found"; // 服务端明确无此课 → 真「无」（可能是课程名错）
     const cache = loadCourseLessonCache(childId);
     cache[`${topic}:${title}`] = {
       topic: String(row.topic ?? topic),
@@ -366,12 +458,27 @@ export async function fetchCourseLessonRemote(childId: string, topic: string, ti
       htmlPath: String(row.html_path ?? ""),
       material: String(row.material ?? ""),
       sendMaterial: String(row.send_material ?? ""),
+      cachedAt: Date.now(),
     };
+    const file = loadCourseLessonCacheFile(childId);
+    file.lessons = cache;
+    file.meta = { lastFetchOk: true, lastFetchAt: Date.now() };
     const p = courseLessonCachePath(childId);
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify({ lessons: cache }, null, 2), "utf-8");
+    fs.writeFileSync(p, JSON.stringify(file, null, 2), "utf-8");
+    return "ok";
   } catch {
-    /* 离线/未登录：保留旧缓存，getCourseLessonCached 降级 */
+    /* 离线/未登录：保留旧缓存，但标记 lastFetchOk=false（读取方据此识别陈旧/降级） */
+    try {
+      const file = loadCourseLessonCacheFile(childId);
+      file.meta = { lastFetchOk: false, lastFetchAt: Date.now() };
+      const p = courseLessonCachePath(childId);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, JSON.stringify(file, null, 2), "utf-8");
+    } catch {
+      /* 写失败不影响降级语义 */
+    }
+    return "network";
   }
 }
 
@@ -381,3 +488,10 @@ export function getCourseLessonCached(childId: string, topic: string, title: str
   if (hit) return hit;
   return getCourseLessonSync(getChildDir(childId), topic, title);
 }
+
+/** 该孩子课程缓存最近一次拉取是否成功（ISSUE-063）：false = 上次离线降级，缓存内容可能非最新。 */
+export function isCourseLessonCacheStale(childId: string): boolean {
+  const meta = loadCourseLessonCacheFile(childId).meta;
+  return meta ? meta.lastFetchOk === false : false;
+}
+

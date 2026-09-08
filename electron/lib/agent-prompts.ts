@@ -48,24 +48,34 @@ export function getAgentPrompt(scope: string, ref: string): string | null {
   return v && v.content.trim() ? v.content : null;
 }
 
+export interface AgentPromptFetchResult {
+  /** 用户版本内容（服务端最新；离线时=本地缓存或 null=无用户版本回默认） */
+  content: string | null;
+  /** "ok" = 服务端可达（content 即服务端最新）；"network" = 服务端不可达，content 为缓存/默认（降级） */
+  status: "ok" | "network";
+}
+
 /**
  * 远程取用户版本（会话创建前预取 / 编辑器实时读）：先调服务端 agents.get，
- * 成功则更新本地缓存并返回内容；服务端不可达/未登录回退本地缓存（离线降级）。
+ * 成功则更新本地缓存并返回 { content, status:"ok" }；服务端不可达/未登录回退本地缓存（离线降级）
+ * 并返回 status:"network"（ISSUE-063：调用方据此知晓「当前用的是缓存/默认，可能非服务端最新」，
+ * 不得当作已同步）。
  */
-export async function fetchAgentPromptRemote(scope: string, ref: string): Promise<string | null> {
+export async function fetchAgentPromptRemote(scope: string, ref: string): Promise<AgentPromptFetchResult> {
   try {
     const data = await dbQuery<{ content: string | null }>("agents.get", { scope, ref });
     const cache = readCache();
     if (data.content && data.content.trim()) {
       cache[cacheKey(scope, ref)] = { content: data.content, updated: new Date().toISOString() };
       writeCache(cache);
-      return data.content;
+      return { content: data.content, status: "ok" };
     }
     delete cache[cacheKey(scope, ref)];
     writeCache(cache);
-    return null;
+    return { content: null, status: "ok" };
   } catch {
-    return getAgentPrompt(scope, ref);
+    // 离线/未登录：回退本地缓存（可能为 null=代码默认）——返回 status:"network" 供调用方提示降级。
+    return { content: getAgentPrompt(scope, ref), status: "network" };
   }
 }
 
