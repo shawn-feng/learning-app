@@ -14,6 +14,7 @@ import {
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { getChildDir } from "./config";
 import type { ExamTopicConfig, ExamCourseConfig } from "./exam";
+import { auditExamEvent } from "./exam-audit";
 
 // ==================== 出卷 ====================
 
@@ -99,6 +100,7 @@ export async function selectCoursesForSchedule(selectionPrompt: string, childId:
     customTools: [],
   });
   try {
+    const t0 = Date.now();
     await session.prompt(prompt);
     const text = lastAssistantText(session);
     const parsed = extractJson(text);
@@ -106,8 +108,12 @@ export async function selectCoursesForSchedule(selectionPrompt: string, childId:
     // LLM 可能把清单行的「序号. [主题] 」前缀也复制进课程名（实测 mimo 会带 "[论语] "），统一清理
     const clean = (t: any) => String(t ?? "").replace(/^(?:\d+\.\s*)?\[[^\]]*\]\s*/, "").trim();
     const titles = list.map(clean).filter(Boolean);
+    auditExamEvent(childId, "select", { kind: "ok", prompt, reply: text, parsed, titles, costMs: Date.now() - t0 });
     if (!titles.length) throw new Error("选课未返回课程：\n" + text.slice(0, 800));
     return titles;
+  } catch (e) {
+    auditExamEvent(childId, "select", { kind: "error", prompt, error: String((e as Error).message || e) });
+    throw e;
   } finally {
     session.dispose();
   }
@@ -140,7 +146,7 @@ export async function generateExamQuestions(topicConfig: ExamTopicConfig, childI
     while (idx < courses.length) {
       const i = idx++;
       try {
-        results[i] = await generateForCourse(courses[i], topicConfig.name, childDir, runtime, model);
+        results[i] = await generateForCourse(courses[i], topicConfig.name, childId, childDir, runtime, model);
       } catch (e) {
         failed++;
         console.error(`[exam] 出题失败：${courses[i].title}`, e);
@@ -168,7 +174,7 @@ export async function generateCourseQuestions(
   const runtime = await getSharedRuntime();
   const model = await getDefaultModel();
   const childDir = getChildDir(childId || "default");
-  return generateForCourse(course, topicName, childDir, runtime, model);
+  return generateForCourse(course, topicName, childId, childDir, runtime, model);
 }
 
 const GENERATION_PER_COURSE_RULES =
@@ -181,6 +187,7 @@ const GENERATION_PER_COURSE_RULES =
 async function generateForCourse(
   course: ExamCourseConfig,
   topicName: string,
+  childId: string,
   childDir: string,
   runtime: unknown,
   model: unknown
@@ -212,6 +219,7 @@ async function generateForCourse(
     customTools: [],
   });
   try {
+    const t0 = Date.now();
     await session.prompt(prompt);
     const text = lastAssistantText(session);
     const parsed = extractJson(text);
@@ -236,7 +244,29 @@ async function generateForCourse(
       questionType: "cn_recitation",
       refText: r.refText,
     }));
+    auditExamEvent(childId, "generate", {
+      kind: "ok",
+      course: course.title,
+      topic: topicName,
+      rubric: String((course as any).assessRubric || ""),
+      prompt,
+      reply: text,
+      parsed,
+      llmCount: llm.length,
+      recCount: rec.length,
+      refTexts: rec.map((r) => r.refText),
+      costMs: Date.now() - t0,
+    });
     return [...llm, ...rec];
+  } catch (e) {
+    auditExamEvent(childId, "generate", {
+      kind: "error",
+      course: course.title,
+      topic: topicName,
+      prompt,
+      error: String((e as Error).message || e),
+    });
+    throw e;
   } finally {
     session.dispose();
   }
@@ -319,6 +349,7 @@ export async function scoreExamAttempt(
     customTools: [],
   });
   try {
+    const t0 = Date.now();
     await session.prompt(prompt);
     const text = lastAssistantText(session);
     const parsed = extractJson(text);
@@ -331,6 +362,14 @@ export async function scoreExamAttempt(
       correct: Boolean(q?.correct),
       aiComment: String(q?.aiComment ?? ""),
     }));
+    auditExamEvent(childId, "score", {
+      kind: "ok",
+      scoringPrompt,
+      answers: answers.map((a) => ({ qid: a.qid, course: a.course, stem: a.stem, asrText: a.asrText })),
+      reply: text,
+      parsed,
+      costMs: Date.now() - t0,
+    });
     return {
       perQuestion,
       courseMastery: parsed.courseMastery ?? {},
@@ -338,6 +377,14 @@ export async function scoreExamAttempt(
       score: Number(parsed.score) || 0,
       overall: String(parsed.overall ?? ""),
     };
+  } catch (e) {
+    auditExamEvent(childId, "score", {
+      kind: "error",
+      scoringPrompt,
+      answers: answers.map((a) => ({ qid: a.qid, course: a.course, stem: a.stem, asrText: a.asrText })),
+      error: String((e as Error).message || e),
+    });
+    throw e;
   } finally {
     session.dispose();
   }
