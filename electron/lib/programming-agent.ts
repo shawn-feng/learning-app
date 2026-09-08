@@ -230,7 +230,12 @@ export async function generateHtmlLesson(
 
   // 校验落盘：文件必须存在且非空（阈值 100 字节，防空壳/半截写入）
   if (!fs.existsSync(resolved) || fs.statSync(resolved).size < 100) {
-    throw new Error(`编程 agent 未能成功写入 ${outputPath}（文件不存在或为空），请重试`);
+    // ISSUE-063：补 why+next——写空通常是编程 agent 没按绝对路径落盘 / 需求导致半截退出
+    throw new Error(
+      `编程 agent 未能成功写入 ${outputPath}（文件不存在或为空）。常见原因与处理：` +
+        `① 编程 agent 未按要求的绝对路径落盘——可换更明确的需求重试（强调「把完整 HTML 写到 ${resolved}」）；` +
+        `② 生成中途出错/内容被截断——可重试；若反复失败，检查「编程 agent 模型」是否可用或换模型再试`
+    );
   }
   const t3 = Date.now();
   console.log(

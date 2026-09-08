@@ -273,7 +273,7 @@ export async function resetChildPassword(
   newPassword: string
 ): Promise<void> {
   const profile = getProfile(childId);
-  if (!profile) throw new Error("Child not found");
+  if (!profile) throw new Error(`未找到孩子档案（childId=${childId}），请确认孩子仍存在`);
   profile.passwordHash = await bcrypt.hash(newPassword, 10);
   fs.writeFileSync(
     path.join(getChildDir(childId), "profile.json"),
@@ -300,7 +300,7 @@ export function updateChildProfile(
   updates: Partial<Pick<ChildProfile, "aiName" | "aiEmoji" | "aiPersonality">>
 ): ChildProfile {
   const profile = getProfile(childId);
-  if (!profile) throw new Error("Child not found");
+  if (!profile) throw new Error(`未找到孩子档案（childId=${childId}），请确认孩子仍存在`);
 
   if (updates.aiName !== undefined) profile.aiName = updates.aiName;
   if (updates.aiEmoji !== undefined) profile.aiEmoji = updates.aiEmoji;
