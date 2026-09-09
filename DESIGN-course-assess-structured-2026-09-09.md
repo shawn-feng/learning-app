@@ -1,243 +1,147 @@
-# 考核内容结构化（类型块 + 内嵌评分）设计定案 — 2026-09-09
+# 考核内容结构化（题库 / 主题类别 / 课-类-题）设计定案 v2 — 2026-09-09
 
-> 状态：**设计已与用户定案，待实施**（ISSUE-067）。本文是实施唯一依据；改动前先读此文档与
+> 状态：**设计已与用户定案（v2 三表归一），待实施**（ISSUE-067）。本文是实施唯一依据；改动前先读本文与
 > `electron/lib/assess-guide.ts`（ISSUE-066 产物，写作规范，后续需与本设计对齐改写）。
+> **v2 变化（20:00）**：废弃 v1「每课一块表 course_assess_blocks + type_catalog JSON」方案，改为用户拍板的
+> **三表归一**：题库独立成表 + 主题考核类别表 + 课程考题关系表；课程加 uuid。
 
 ## 0. 背景与目标
 
-- 现状：每课考核内容（rubric）为**一整段 markdown 自由文本**（家长库 `courses.assess_rubric`，
-  论语 489 课 avg 5,153 字 / max 8,685），且将随「收集例题」持续增长。
-- 出题/判分当前**整文喂给 LLM** → 慢（实测出题 40-90s / 判分 60-100s）、费 token，且例题越多越贵。
-- 目标（用户 2026-09-09 拍板）：
-  1. 考核方法决定「考什么类型」→ 出题只取对应**类型块**，不必读整份内容；
-  2. 评分标准**随题内嵌** → 判分只带抽中那题的评分，与整份课程内容解耦；
-  3. 例题/题量增长不影响单场读取量（每类型多题 = 池内抽题，不是全文变大）；
-  4. 背诵原文结构化（refText 字段），不再靠正则从全文抓引号。
+- 现状：每课考核内容为**一整段 markdown 自由文本**（家长库 `courses.assess_rubric`，论语 489 课
+  avg 5,153 字 / max 8,685），且将随「收集例题」持续增长；出题/判分整文喂 LLM → 慢、费 token。
+- 目标（用户拍板）：
+  1. 考核方法决定「考哪些类别」→ 出题只取相关题，不读整份内容；
+  2. 评分标准**随题独立** → 判分只带抽中那题的题干+评分+答案；
+  3. 例题/题量增长不影响单场读取量；
+  4. 背诵原文结构化（answer=原文 refText），不再正则抓引号；
+  5. **无选择题，全主观口述题**；同课同类别多题 = 例题池，默认随机抽 1。
 
-## 1. 三层模型
+## 1. 设计决策一览（含 v2 新增）
 
-| 层 | 职责 | 存放 | 谁维护 |
-|---|---|---|---|
-| **题型目录**（主题级） | 定义该主题有哪些「类型」：类型名 + 别名归组 + 引擎行为 | 主题（`topics`） | 家长 agent / 后台脚本（低频） |
-| **课程考核内容**（每课） | 每课的「类型 → 概述 → 若干主观题（题干+评分一体）」 | 家长库块表 `course_assess_blocks` | 家长 agent / UI / 后台脚本 |
-| **考核方法 methodSpec**（主题级·每孩子） | 每孩子考哪些类型（数量）、排除哪些、特殊口径（背诵通过线） | 主题（`topics`） | 家长 agent / 配置界面 |
+| # | 决策点 | 结论 |
+|---|---|---|
+| D1 | 类别粒度 | 主题级定义考核类别表；课程通过关系表**选 UUID 挂类别**（不再靠文本匹配 → 无需别名归组，天然避免「字词读音/字词理解」漏匹配） |
+| D2 | 存储 | **DB 为真源**，三表归一（题库 / 主题类别 / 课类题关系）；旧 `assess_rubric` 仅兼容/预览 |
+| D3 | 方法 | 主题级·每孩子 `topics.method_spec`（key=childId；require/exclude/rules.recitePass）；`default` 回退 |
+| D4 | 课程标识 | **courses 加 uuid 并一次性回填**（稳定 id，改名不断链） |
+| D5 | 类别行为 | 类别表带 `behavior` 列：speech_recite / speech_read / generic |
+| D6 | 同类别多题 | 关系表 `seq` 记课内顺序；出题同 (课,类别) 多题**默认随机抽 1**；背诵类置首题 |
+| D7 | 概述 | **关系表加 `overview` 列**（该课该类别的一句话说明，如"该章侧重典故"） |
+| D8 | 缺题 | 方法选中但课程该类别无题 → **跳过该类型**（不做 LLM 临时命题） |
+| D9 | 判分 | 逐题小 prompt = 总则 + 该题{题干, ASR回答, scoring, answer}，可并行；speech 走发音评测 |
 
-读取规则：**方法 → 目录（别名归组）→ 逐类型取题/取 refText → 题自带评分 → 判分随题走**。
+## 2. 数据模型 v2（家长库 `parent.sqlite`，全孩子共享内容、仅方法按孩子）
 
-## 2. 数据模型（DB 为真源，工具直写块）
+### 2.0 `courses` 加 uuid（关系表引用）
 
-### 2.1 题型目录 —— `topics.type_catalog`（JSON）
-
-```jsonc
-{
-  "catalog": [
-    { "name": "背诵",      "aliases": ["原文背诵", "背诵原文"],        "behavior": "speech_recite" },
-    { "name": "朗读",      "aliases": ["朗读", "跟读"],                "behavior": "speech_read" },
-    { "name": "句意白话",  "aliases": ["句子意思", "白话翻译", "句意理解", "翻译"], "behavior": "generic" },
-    { "name": "道理",      "aliases": ["道理应用", "情景应用", "生活应用"], "behavior": "generic" },
-    { "name": "字词",      "aliases": ["字词读音", "字词理解", "字词含义", "字词读音与含义", "重点字词"], "behavior": "generic" },
-    { "name": "典故",      "aliases": ["典故理解", "相关典故"],        "behavior": "generic" }
-  ]
-}
+```sql
+ALTER TABLE courses ADD COLUMN uuid TEXT;                 -- 一次性回填：UPDATE … SET uuid=lower(hex(randomblob(16))) WHERE uuid IS NULL
+CREATE UNIQUE INDEX IF NOT EXISTS idx_courses_uuid ON courses(uuid);
 ```
 
-- `name` 为规范类型名（块表与 methodSpec 都用它）；`aliases` 负责旧文本/口语归组（解决
-  「字词读音/字词理解/字词含义」同词多写漏匹配问题）。
-- 引擎只认 `behavior`：`speech_recite`（发音评测：refText、不显原文、置首题、通过线见 method）、
-  `speech_read`（同链路但显示原文，可扩展）、`generic`（口述主观题：LLM 判分）。**引擎不需要为每个学科加特例。**
+（`courses` 仍按 (topic,title) 唯一；uuid 是稳定业务 id，供 ③关系/考试归档/未来引用。）
 
-### 2.2 考核方法 —— `topics.method_spec`（JSON，key 用 childId 不用显示名）
+### 2.1 题库表 `question_bank`（题目独立，可跨课复用）
+
+```sql
+CREATE TABLE IF NOT EXISTS question_bank (
+  id         TEXT PRIMARY KEY,      -- 题目 UUID
+  stem       TEXT NOT NULL,         -- 题目（题干）
+  answer     TEXT NOT NULL,         -- 答案：口述题=参考答案要点；背诵/朗读题=标准原文 refText（评测逐字对照）
+  scoring    TEXT,                  -- 评分标准 JSON {dims:[{dim,points,score,note}], special:[]}；speech 类可为空/忽略
+  point_max  INTEGER NOT NULL DEFAULT 10,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+- 题目本身**无类型、无主题、无课程**——语义由「挂到哪个 (课,类别)」决定；同题可被多课引用（默认允许，防重复维护）。
+- 背诵/朗读题的引擎行为由所挂**类别**的 `behavior` 决定，题库行不存类型（背诵题行：stem="背诵本章原文"、answer=原文、scoring 空）。
+
+### 2.2 主题考核类别表 `topic_categories`
+
+```sql
+CREATE TABLE IF NOT EXISTS topic_categories (
+  id        TEXT PRIMARY KEY,       -- 类别 UUID
+  topic_id  TEXT NOT NULL,          -- 主题 topic_key
+  name      TEXT NOT NULL,          -- 考核类别名：背诵 / 朗读 / 句意白话 / 道理 / 字词 / 典故…
+  behavior  TEXT NOT NULL DEFAULT 'generic',   -- speech_recite | speech_read | generic
+  UNIQUE (topic_id, name)
+);
+```
+
+- 主题先建好类别集（如论语：背诵/句意白话/道理/字词/典故），课程从这里**选**，不自由造名。
+- `behavior`：speech_recite（发音评测：answer=refText、不显原文、置首题、≥recitePass 通过）| speech_read（显示原文跟读，可扩展）| generic（口述主观题，判分走 LLM 小 prompt）。
+
+### 2.3 课程考题关系表 `course_category_questions`
+
+```sql
+CREATE TABLE IF NOT EXISTS course_category_questions (
+  course_id    TEXT NOT NULL,       -- courses.uuid
+  category_id  TEXT NOT NULL,       -- topic_categories.id（须与 course 同主题）
+  question_id  TEXT NOT NULL,       -- question_bank.id
+  seq          INTEGER NOT NULL DEFAULT 0,   -- 课内同类别题的顺序（出题随机抽 1，seq 作稳定序/回溯）
+  overview     TEXT,                -- 该课该类别的一句话说明（D7；同 (course,category) 各行冗余一致，写入层维护）
+  PRIMARY KEY (course_id, category_id, question_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ccq_course   ON course_category_questions(course_id);
+CREATE INDEX IF NOT EXISTS idx_ccq_category ON course_category_questions(category_id);
+```
+
+- **一课多类 / 一类多题 / 各课类别不同**：均由本表表达（某课出现类别 C ⇔ 挂了 ≥1 道 C 的题）。
+- 一致性校验（写入工具负责）：类别归属与课程主题一致；speech_recite 类别只挂 answer=原文 的题；不重复挂同一题。
+
+### 2.4 考核方法 —— `topics` 加 `method_spec`（JSON；v1 的 type_catalog 列废弃不再建）
 
 ```jsonc
 {
   "perChild": {
-    "<child_uuid>": {
-      "require": { "背诵": 1, "句意白话": 1, "道理": 1 },
-      "exclude": ["字词", "典故"],
+    "<childId>": {
+      "require": { "<category_uuid_背诵>": 1, "<category_uuid_句意白话>": 1, "<category_uuid_道理>": 1 },
+      "exclude": ["<category_uuid_字词>", "<category_uuid_典故>"],
       "rules": { "recitePass": 90 }
     }
-  }
-}
-```
-
-- 每主题默认一套「未声明孩子」回退（如 `default` 节点），保证新孩子也有方法可用。
-- 旧 `assess_method` 散文保留给人看/迁移期对照（真源是 methodSpec）；孩子改名不断链（uuid key）。
-
-### 2.3 课程考核内容 —— 家长库新表 `course_assess_blocks`
-
-```sql
-CREATE TABLE IF NOT EXISTS course_assess_blocks (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  topic       TEXT NOT NULL,            -- topic_key
-  course      TEXT NOT NULL,            -- 课程标题（与 courses.title 对应）
-  type        TEXT NOT NULL,            -- 规范类型名（取自该主题 catalog）
-  seq         INTEGER NOT NULL DEFAULT 0, -- 块内/作者展示顺序
-  kind        TEXT NOT NULL,            -- 'summary' | 'question'
-  payload     TEXT NOT NULL,            -- JSON，见下
-  created_at  TEXT, updated_at TEXT,
-  UNIQUE(topic, course, type, kind, seq)
-);
-CREATE INDEX IF NOT EXISTS idx_cab_course ON course_assess_blocks(topic, course);
-CREATE INDEX IF NOT EXISTS idx_cab_type    ON course_assess_blocks(topic, type);
-```
-
-payload：
-
-```jsonc
-// kind='summary'：类型概述
-{ "overview": "能用自己的话把三句话意思讲清楚，允许生活小例子；背诵逐字发音评测、90 分通过。" }
-
-// kind='question'：一道主观题（题干 + 评分一体）。背诵/朗读类额外带 recite。
-{
-  "stem": "请你当小老师，用自己的话讲讲孔子三句话的意思。三句话是“学而时习之…”…",
-  "pointMax": 10,
-  "scoring": {
-    "dims":  [ { "dim": "句子意思解释", "points": "第一句：复习+快乐", "score": 2, "note": "两个要点各1分" } ],
-    "special": [ "若只背原文不用自己的话，表达项不得分，可酌情给 1-2 分" ],
-    "answerRef": "参考要点文本（判分锚定，可空）"
   },
-  "recite": { "refText": "子曰：学而时习之，不亦说乎？…君子乎？" }   // 仅背诵/朗读类
+  "default": { "require": {}, "exclude": [], "rules": { "recitePass": 90 } }
 }
 ```
 
-约定：
-- **无选择题**：全部主观问答题（用户明确）。旧库选择题在迁移时转主观（去选项、题干口述化、按标准答案转评分要点）。
-- 同 `(type, kind='question')` 可多条 = **例题池**（收集例题的落点）；出题时按池抽题，读取量与池大小无关。
-- 抽题顺序/轮换策略见 §5 未决；首版可用「随机抽 1」或「必考标记 + 轮换」。
+- key 全部用 UUID（childId / category uuid），不用显示名（改名不断链）。
+- `default` 回退：require 为空 → 取该课关系表里**实际挂的类别各 1 题**，防止新孩子整场空。
+- 旧 `topics.assess_method` 散文保留给人看/迁移对照；`type_catalog` 方案作废（别名归组需求已消失）。
 
-### 2.4 与旧 `assess_rubric` 的关系（兼容红线）
+## 3. 读取（出题/判分）链路
 
-- `assess_rubric` 保留：`courses` 无块记录（未迁移课）→ 走**旧整文路径**（LLM 全文出题/判分），行为不回退；
-- 已建块的课 → 只读块表；`assess_rubric` 可用生成器渲染出 markdown 供人审阅/导出（预览，非真源）。
+1. config：取该课关系行（join 类别/题库）+ 主题 method_spec；
+2. 按孩子：`exclude` 过滤 → 依 `require` 逐类别找题池（同课同类别多题=池）；
+3. 每类别随机抽 1；**该类别无题 → 跳过**（D8）；
+4. 题序：speech_recite 置该课最前（背诵真实检测），其余按 require 顺序；
+5. 组装：`{qid, course, category, behavior, stem, pointMax, answer/refText?, scoring?}` 下发；
+6. 判分：generic → 逐题小 prompt（题干+ASR+scoring+answer）；speech → 发音评测（refText=answer），≥recitePass 通过。
 
-## 3. 写入 / 读取链路
+## 4. 存量与兼容红线
 
-### 写入（DB 为真源）
-- 建课/改课：工具（家长 agent）/ UI 结构化编辑器 以**整课事务替换**写入块（types→summary→questions）；
-- 积累例题：追加某 `(course,type)` 的 question 行（不动其它块）；
-- 工具保存时同步维护 `type_catalog`/`method_spec`（主题级）。
-
-### 读取（考核）
-1. 服务端 config：取课程 blocks（按课整取）+ 主题 `methodSpec`；
-2. 按孩子：`exclude` 过滤 → 依 `require` 逐类型找题池；
-3. 每类型抽 1 题；**该类型无题 → 跳过该类型**（用户已定，不做 LLM 临时命题）；
-4. 题序：`speech_recite` 置该课最前（背诵检测真实性），其余按 require 顺序；
-5. 组装题：`{qid, course, type, behavior, stem, pointMax, refText?, scoring?}` → 下发答题页。
-
-### 判分
-- 文字口述题：**逐题小 prompt** = 总则 + 该题 `{题干, 孩子ASR回答, scoring.dims/special/answerRef}` → 分/评语；可并行。
-- 背诵/朗读：发音评测（refText），≥ `recitePass` 通过。
-
-## 4. 存量迁移（未决，后置）
-
-- 489 课 `assess_rubric` markdown 一次性迁移为块：
-  1. 解析「一、考核知识点 / 二、题目（必考+可选题×3）」；
-  2. 选择题 → 主观题（去选项 + 按标准答案生成评分要点）；
-  3. 类型标注（规则 + LLM 辅助 + 人工抽检）。
-- 标注方式（自动归类+抽检 / 只迁部分 / 全人工）用户明确**先不定**，等结构方案落地后再选。
+- `courses.assess_rubric` 保留不动；**无关系行/无 method_spec 的课与主题 → 走旧整文路径**（行为不回退）。
+- 存量迁移（489 课，未决后置）：解析 rubric → 建 category/question/relation + 选择题转主观（去选项、按标准答案转评分要点）+ 类型标注；标注方式（自动+抽检 / 部分 / 全人工）待定。
+- courses.uuid 回填为迁移前置步骤。
 
 ## 5. 验收标准
 
-- 珊珊（论语主题）：出 背诵 + 句意白话 + 道理 各 1 题，无字词/典故；闻闻：背诵 + 句意白话。
-- 已结构化课程出题 **0 次 LLM 调用**（纯代码抽题），判分每题 prompt < 1KB 级（现 rubric 5KB+ 整课带）。
-- 例题池加题不影响该课其它类型与单场读取量；背诵题 refText 来自块字段（无正则）。
-- 未建块课程行为与今天一致（兼容红线）。
+- 珊珊：背诵 + 句意白话 + 道理 各 1（无字词/典故）；闻闻：背诵 + 句意白话。
+- 已结构化课程出题 **0 次 LLM 调用**；判分每题 prompt < 1KB 级。
+- 例题池加题不影响单场读取；背诵 refText=answer（无正则）；未结构化课程行为与今天一致。
 
 ## 6. 未决清单（实施时逐项确认）
 
-1. 例题池抽题策略：随机 / 最近未用轮换 / 「必考」标记优先。
-2. `type_catalog` / `method_spec` / `course_assess_blocks` 三方可写工具与校验（写时警告：方法声明的类型在课程无题池 → 该类型本场会被跳过）。
-3. 判分评语：LLM 按题评分时生成 vs 纯维度模板（影响判分是否仍需 LLM）。
-4. 旧 `assess_method` 散文与 methodSpec 并存期的同步/展示。
-5. `assess-guide.ts`（ISSUE-066）写作规范与本设计对齐改写（新写作入口 = 结构化块，不再是 rubric 三段 markdown）。
-6. 家长端考核内容编辑器改结构化表单（目录选类型、题+评分行列编辑、例题追加）。
+1. 抽题：同 (课,类别) 多题随机抽 1（已定）是否需要「必考/轮换组」升级（v1 遗留，暂不做）。
+2. 关系表 `overview` 与多题冗余：同 (course,category) 多行冗余一致由写入层保证；若后续编辑按"对"操作再考虑收敛。
+3. 判分评语：LLM 生成 vs 维度模板（决定 generic 题判分是否仍需 LLM）。
+4. method_spec / topic_categories / question_bank / relation 的可写工具与一致性校验。
+5. `assess-guide.ts`（066）与本设计对齐（写作入口 = 题库题 + 挂课，不再是 rubric 三段 markdown）。
+6. 家长端考核内容编辑器（类别管理、题+评分表单、挂课、例题追加）；存量 courses.uuid 回填脚本。
 
-## 7. 关联
+## 7. 关联与版本记录
 
-- ISSUE-067（本设计，待实施）；ISSUE-065（选课机制，已实施）；ISSUE-066（agent 写 rubric 能力，已实施，待对齐）。
-- 数据真源：家长库 `server/data/parents/<parent>/parent.sqlite`（topics / course_assess_blocks）。
-
-## 8. 附录：完整表结构 DDL（实施基线，2026-09-09 用户确认 DB 存储方案）
-
-数据落点：家长库 `parent.sqlite`。**内容块 (topic,course) 归属、全孩子共享；只有 method_spec 按孩子区分**。
-
-### 8.1 `topics` 扩展两列（JSON 文本）
-
-```sql
-ALTER TABLE topics ADD COLUMN type_catalog TEXT;  -- NULL/未配置=回退旧整文行为
-ALTER TABLE topics ADD COLUMN method_spec  TEXT;
-```
-
-- `type_catalog`：`{ "catalog": [ { "name":"背诵", "aliases":["原文背诵","背诵原文"], "behavior":"speech_recite" }, … ] }`
-  - `behavior`: `speech_recite`（发音评测：refText/不显原文/置首题/通过线取 method.rules）| `speech_read` | `generic`（口述主观题）
-- `method_spec`：`{ "perChild": { "<childId>": { "require": {"背诵":1,"句意白话":1,"道理":1}, "exclude":["字词","典故"], "rules":{"recitePass":90} } }, "default": { "require": {}, "exclude": [], "rules": {"recitePass":90} } }`
-  - key 用 childId（uuid），不用显示名（改名不断链）；`default` 回退 = require 为空时取该课实际存在的类型各 1 题，防止新孩子整场空。
-  - 旧 `assess_method` 散文保留给人看/迁移对照，真源是 method_spec。
-
-### 8.2 新表 `course_assess_blocks`（核心）
-
-```sql
-CREATE TABLE IF NOT EXISTS course_assess_blocks (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  topic      TEXT    NOT NULL,                -- topic_key，对应 courses.topic
-  course     TEXT    NOT NULL,                -- 课程标题，对应 courses.title
-  type       TEXT    NOT NULL,                -- 规范类型名 = type_catalog[].name
-  kind       TEXT    NOT NULL CHECK (kind IN ('summary', 'question')),
-  seq        INTEGER NOT NULL DEFAULT 0,      -- 同类型内顺序；例题追加 = max(seq)+1
-  payload    TEXT    NOT NULL,                -- JSON（见 8.3）
-  created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (topic, course, type, kind, seq)
-);
-CREATE INDEX IF NOT EXISTS idx_cab_course ON course_assess_blocks(topic, course);
-CREATE INDEX IF NOT EXISTS idx_cab_type    ON course_assess_blocks(topic, type);
-```
-
-设计取舍：**不拆题库表+评分表**。每题（题干+评分）为一条 payload JSON——评分维度随题而异且字段会演进（难度/来源/轮换标记），JSON 行免迁移；同 `(course,type,kind='question')` 多行即例题池。读整课一次、内存切片，行数小无需 SQL 聚合。抽题策略（随机/轮换/必考）未决，见 §6。
-
-### 8.3 payload 规范
-
-```jsonc
-// kind='summary'（每类型至多一条）
-{ "overview": "能用自己的话把三句话意思讲清楚，允许生活小例子…" }
-
-// kind='question'（通用口述主观题，generic 行为）
-{
-  "stem": "…", "pointMax": 10,
-  "scoring": {
-    "dims":      [ { "dim": "句子意思解释", "points": "第一句：复习+快乐", "score": 2, "note": "要点各1分" } ],
-    "special":   [ "若只背原文不用自己的话，表达项不得分…" ],
-    "answerRef": "参考要点…（可空）"
-  }
-}
-
-// kind='question'（背诵/朗读，speech_recite/speech_read：无 dims）
-{
-  "stem": "背诵本章原文", "pointMax": 10,
-  "recite": { "refText": "子曰：…" }
-}
-```
-
-### 8.4 常用读写
-
-```sql
--- ① 整课事务替换（工具/agent 写完整课）
-BEGIN;
-DELETE FROM course_assess_blocks WHERE topic=? AND course=?;
--- INSERT 若干 summary/question 行…
-COMMIT;
-
--- ② 某类型追加例题
-INSERT INTO course_assess_blocks (topic, course, type, kind, seq, payload)
-VALUES (?, ?, '句意白话', 'question',
-        (SELECT COALESCE(MAX(seq),0)+1 FROM course_assess_blocks
-          WHERE topic=? AND course=? AND type='句意白话' AND kind='question'), ?);
-
--- ③ 出题/判分读取：按课整取，内存按类型切片
-SELECT type, kind, seq, payload FROM course_assess_blocks
-WHERE topic=? AND course=? ORDER BY type, kind DESC, seq;
-```
-
-### 8.5 兼容红线（重申）
-
-`courses.assess_rubric` 保留不动：无块记录的课走旧整文路径；`type_catalog`/`method_spec` 未配置的主题同样回退旧行为，不回退不报错。存量迁移（§4）后置。
+- ISSUE-067（本设计，待实施）；ISSUE-065/066（已实施，066 写作规范待对齐）。
+- 数据真源：家长库 `server/data/parents/<parent>/parent.sqlite`（courses/topics + 三张新表）。
+- v1（同日早前，已作废）：course_assess_blocks 块表 + type_catalog JSON + rubric 三部分解析——仅存历史参考，勿按 v1 实施。
