@@ -101,10 +101,16 @@ const api = {
   piStartParentContent: () => ipcRenderer.invoke("pi:start_parent_content"),
   piPromptParentContent: (text: string) => ipcRenderer.invoke("pi:prompt_parent_content", text),
   piAbort: (childId: string) => ipcRenderer.invoke("pi:abort", childId),
+  // MATERIAL 保鲜：恢复展示的服务端共享 html 内容刷新（filePath → 最新 content）
+  materialsRefresh: (filePath: string) => ipcRenderer.invoke("materials:refresh", filePath),
 
   // ISSUE-061：场景对话（scene agent）调用
   scenePrompt: (childId: string, courseKey: string, text: string) =>
     ipcRenderer.invoke("scene:prompt", childId, courseKey, text),
+  sceneHistory: (childId: string, courseKey: string) =>
+    ipcRenderer.invoke("scene:history", childId, courseKey),
+  scenePrepare: (childId: string, courseKey: string) =>
+    ipcRenderer.invoke("scene:prepare", childId, courseKey),
   sceneStop: (childId: string, courseKey: string) =>
     ipcRenderer.invoke("scene:stop", childId, courseKey),
   sceneTransfer: (childId: string, courseKey: string) =>
@@ -369,8 +375,8 @@ const api = {
   courseStatus: (childId: string) => ipcRenderer.invoke("course:status", childId),
   examAudio: (fileId: string) => ipcRenderer.invoke("exam:audio", fileId),
   examGenerate: (childId: string, topicConfig: any) => ipcRenderer.invoke("exam:generate", childId, topicConfig),
-  examGenerateCourse: (childId: string, topicName: string, course: any) =>
-    ipcRenderer.invoke("exam:generateCourse", childId, topicName, course),
+  examGenerateCourse: (childId: string, topicName: string, course: any, childName: string) =>
+    ipcRenderer.invoke("exam:generateCourse", childId, topicName, course, childName),
   examScore: (childId: string, scoringPrompt: string, answers: any[]) =>
     ipcRenderer.invoke("exam:score", childId, scoringPrompt, answers),
   // 口语/听说题判分：主进程合并多段录音为 16k wav → 上传 → 调 SSECP 发音评测，返回维度分

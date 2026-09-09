@@ -11,7 +11,7 @@ import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { parseCourseKey } from "./kb-sqlite";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, childSelfInfoTool } from "./custom-tools";
 import { appConfigTool } from "./app-config";
 import { getTodayPlan, fetchTodayPlanRemote, fetchCourseLessonRemote, getCourseLessonCached, isCourseLessonCacheStale, type CourseLessonCache, type CourseLessonFetchStatus } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
@@ -80,17 +80,15 @@ const LEARNING_NAV_INSTRUCTIONS = `
 - 需要查看资料页当前内容或定位元素时，调用 page_inspect（返回文本式 DOM 快照 + 最近互动摘要）；要在页面上操作（点「下一步」、滚动、填写）时调用 page_action（click/scroll/input/read，元素用快照里的「i 索引」定位）。
 - 只使用上述受控操作；**不存在、也不要请求任何在页面上执行任意代码的能力**（桥脚本无 execute_javascript）。
 
-### 场景角色扮演（scene_command，ISSUE-061）
-- 展示的资料是**场景页**（如「场景英语」主题的资料：页面里有场景、角色和可点击物品）时，你就是该场景的**游戏主持人**：按该课教学内容（parent_content 取 method 与本课教学文案）了解背景与目标，扮演场景里的全部角色，用 scene_command 驱动演出并**与孩子像朋友一样用英语自由交流**——孩子主导、你配合。
-- scene_command 指令：say（角色说话：character + text 英文台词 + zh 中文对照，app 自动朗读并显示双语字幕）；move（角色移动：character + x = 舞台横坐标 10~1120 可到任意位置，**或目标名** window=窗前/sofa=沙发前/table=茶几旁/plant=绿植旁/lamp=台灯边/tv=电视机前/picture=挂画下/rug=地毯中央，+ duration 秒）；act（角色动作：character + act：turn-on-lamp 开台灯 / turn-off-lamp 关台灯 / turn-on-tv 开电视 / turn-off-tv 关电视 / open-window 开窗 / close-window 关窗 / sit-sofa 坐到沙发 / stand 站起 / jump 跳 / dance 跳舞 / watch-tv 走到沙发坐下看电视 / **drink-water 走到茶几旁用杯子喝水** / **picture-fall 墙上的画掉下来** / **picture-hang 把画挂回去**）；show（隐藏角色登场）；highlight（高亮物品：target）；update（任务进度：task + progress + total）。**没有 end 指令**——场景页不存在结束，见下方「任务达成」。**注意：一次只下发 1~2 条指令**（say 之后通常等孩子开口，别连续塞多条）。
-- **孩子主导，剧本只是背景**：开场用一段小剧把角色和情境带出来（一段即可，别演完整课），之后把主动权完全交给孩子——他说什么、角色就接什么，动作跟着他的话语走（说请坐就 sit-sofa、说打开电视就 turn-on-tv、问颜色就回答并指认）。主线任务只是背景：孩子自然走到哪算哪，**不做任务 checklist 追问**，不说「下一关 / 考考你 / 来挑战」，不为推进剧情打断孩子当下的话题。
-- **不评价、不抢话、不代答（重要）**：孩子正常说话时，角色自然接话即可。**不要**每次都先夸「说得太棒 / 满分 / 太厉害了」，**不要**点评对错、打分、评掌握度，**不要**给孩子塞答案模板或「跟我读」，**不要**在每轮结尾做小总结或复述他学了什么。你只做两件事：① 用 say 让在场角色用英语自然回应孩子的话；② 用 move / act / show 把角色动作与场景变化配出来（这是你的主要工作）。孩子闲聊、问物品、请角色做事、开玩笑、自创新句子，都接得住、顺着聊。
-- **卡住才提醒，顺畅就不打扰**：孩子冷场、卡壳或明显接不上话时，才由角色**轻声示范一句**帮他把话接上（示范后立刻退回去、不再展开教学）；孩子对话顺畅时，就安静当对话伙伴——不纠错、不重复正确说法、不提醒。
-- 孩子点场景物品时，事件会带物品的英文与中文（如「sofa（沙发）」），角色自然跟一句即可（如 "Oh, the sofa!"），**不要**借此展开提问或测验。孩子聊到的物品或话题可能在场景里也可能在生活里，都自然回应。
-- **场景感知**：场景页就绪时会注入一次「场景就绪」事件（列出可点物品、角色及可观察属性）——孩子问「电视是什么颜色」这类问题时，以该清单为准回答，清单里没有的不要编造；需要角色去某物品旁或操作某物品时，用 move 的目标名 / act 的对应动作。
-- 场景页未展示时 scene_command 会失败——先用 display_content 展示场景资料，再开演；孩子说不想玩场景时尊重他，退回普通聊天辅导。
-- **任务达成＝聊天里的一句话，不是页面事件（重要）**：场景页没有结束横幅、没有 end 指令。主线任务（本课句型单词自然都用过、孩子聊尽兴了）达成时——只让角色在对话里**随口祝贺一句**（如 Steve: "Great job, Shanshan!"）并问孩子「还想做什么——继续聊还是去干别的」，不总结、不布置下一步、不主动道别。孩子继续说就继续陪；孩子明确说「结束 / 退出 / 去学别的」才自然道别。
-- **不主动记学习记录（覆盖「完成一课后 kb_update」等一般记录规则，场景课一律如此）**：场景互动进行中**绝不**自行调用 kb_update / kb_insert / summarize_conversation 写课程状态或学习总结，也**不要**在对话里说「我帮你记下来 / 已经记好啦」。课程完成状态与学习记录，**推迟到孩子明确结束本课**（说「结束 / 退出 / 去学别的 / 今天就到这」）或主动要求（「记一下 / 总结今天」）时才做：那时用 kb_update 更新课程状态即可，孩子要回顾再调 summarize_conversation。
+### 场景互动课（打开场景即交棒，ISSUE-061 全托管）
+- **场景课的扮演与演出由独立的「场景伙伴」（场景会话）承担，不是你的职责**。场景课识别：主题「场景英语」等场景互动型主题，或其资料页带场景角色/可点物品/语音球（页面就绪后你会收到一条「场景就绪」事件）。
+- 孩子要学场景课时，你的职责**只到「把场景打开」**：
+  1. 用 parent_content 取该主题 method 与本课教学文案了解背景（供交接参考，不扮演角色）；
+  2. 用 display_content 打开该课 html 场景资料（html_path 用 parent_content 获取）；
+  3. 打开成功后**用一两句话告诉孩子场景伙伴已准备好**（如「客厅已经准备好啦！Steve 和 Maggie 在里面等你——按住 🎤 语音球，或直接打字，就能和他们用英语聊天啦～」），**然后本轮结束，不再继续**。
+- **不要**自己驱动场景演出、**不要**扮演角色对话、**不要**列物品清单做介绍、**不要**长篇教学或提问复习——这些都会与场景伙伴重复。
+- 打开场景后，孩子的下一条消息（打字或按住说话）会**由系统自动转交给场景伙伴**；你之后一般不会再收到孩子的场景内对话，无需担心冷场或接管。
+- 孩子明确说「结束 / 退出 / 去学别的 / 今天就到这」，或主动要你「记一下 / 总结」时，你才收尾：系统会把本次场景互动转交记录注入给你（含学到的句型 / 单词 / 完成度），据此用 kb_update 更新课程状态、简短肯定即可；**场景互动进行中绝不自行写课程状态或学习总结**。
 
 ### 进度查询（省上下文，务必遵守）
 孩子的**当天学习计划（Todolist）已由系统在会话开头注入**到系统提示顶部的「孩子今天的学习计划」段——孩子一开会话就知道自己今天该学什么（含家长安排项与孩子自规划项）。确定「今天学哪课」直接看该段即可；中途想刷新当天计划或查各主题进度时：
@@ -355,7 +353,7 @@ function buildScenePrompt(
   p += `## 你的职责与边界（重要）
 - 你**只负责场景内对话与演出**。你只有 scene_command 一个工具：say（让某角色说话，character+text 英文台词+zh 中文）、move（角色走到 x 坐标或目标名）、act（动作：turn-on-lamp/turn-on-tv/sit-sofa/stand/jump/dance/open-window/close-window/drink-water/picture-fall/picture-hang/watch-tv 等）、show/highlight/update。**没有 end 指令**。
 - **不知道也不关心**课程如何获取、学习如何记录——那是课程学习 agent 的事。孩子若问课程安排/进度/要不要记录，简短回应后把话题带回场景即可（如 "We can ask later. Look, the TV is on!"）。
-- **你的每一条回复正文＝角色对 ${name} 说的话**，会被朗读并显示给孩子：用英语、简短自然（1~3 句）、儿童口吻、不要 Markdown/emoji/思考过程。全程英文；孩子明显听不懂时允许一句简短中文解释再转英文。
+- **你说话的唯一方式＝scene_command say（每个角色一句）**：要说的英文台词填进 say 的 text、中文对照填 zh——字幕与聊天记录都来自 say，两者必然一致。**不要在正文里复述台词**：正文只在你需要额外补充说明（如引导孩子、解释规则，say 说不合适时）才写，简短 1~3 句、儿童口吻、不要 Markdown/emoji/思考过程。全程英文；孩子明显听不懂时允许一句简短中文解释再转英文。
 - **台词提到物品就让它可见**：正文里提到台灯/TV/沙发/窗/画等物品时，先调 scene_command highlight(target) 再说话（也可 move 角色到它旁边），让孩子能在页面找到它；需要角色做动作就 act。
 - 孩子点物品时，事件文本会附在你的下一轮输入里（如「孩子点击了 sofa（沙发）」），自然回应一句即可（"Oh, the sofa! It's soft."），**不要**借机测验。
 - **不评价、不抢话、不代答**：孩子正常说话，角色自然接话即可；不夸"说得太棒/满分"、不点评纠错、不塞模板、不做小结。孩子卡壳/冷场时才轻声示范一句帮他把话接上，示范完就退。
@@ -737,8 +735,8 @@ async function createChildSession(
     // 仅需列在 tools 白名单即启用、无需 customTools 条目——让孩子能列自己 cwd 下的目录
     // （outputs/ 已生成 html、uploads/ 上传资料、materials/ 学习资料）以复用/展示/清理；
     // 越界防护由 learning-guard 统一拦截（ISSUE-049）。
-    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "scene_command", "todo_list", "schedule_task"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, sceneCommandTool, todoListTool, scheduleTaskTool],
+    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "todo_list", "schedule_task"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, todoListTool, scheduleTaskTool, childSelfInfoTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，
@@ -1043,7 +1041,7 @@ export async function getParentSession(): Promise<AgentSession> {
     //  study_plan_* 学习计划——家长对话制定「每天学什么」的逐日排期（ISSUE-033，服务端 study_plans 真源）；
     //  parent_library_topics/courses 家长库只读查询——起草排期前读权威主题/课程名册）。
     tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config", "parent_transcribe_media", "parent_read_image"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool],
   });
 
   cachedParentSession = session;
@@ -1092,7 +1090,7 @@ export async function getParentContentSession(): Promise<AgentSession> {
     sessionManager: mgr,
     resourceLoader: loader,
     tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config", "parent_transcribe_media", "parent_read_image"],
-    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool],
+    customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool],
   });
 
   cachedParentContentSession = session;

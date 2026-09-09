@@ -685,7 +685,7 @@ function fetchCoursesWithRubric(
   parentId: string,
   childId: string,
   titles: string[]
-): Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string }> {
+): Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string; assessMethod: string }> {
   const kb = openKb(dataDir, parentId, childId);
   const parent = openParentLib(dataDir, parentId);
   try {
@@ -693,20 +693,29 @@ function fetchCoursesWithRubric(
       .prepare("SELECT topic, title, assess_rubric FROM courses WHERE assess_rubric != ''")
       .all() as Array<{ topic: string; title: string; assess_rubric: string }>;
     const rubricMap = new Map(rubrics.map((r) => [r.topic + "::" + r.title, r.assess_rubric]));
-    const out: Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string }> = [];
+    // 主题考核方法说明（家长可编辑，按孩子区分题目构成与不考范围）——出题 prompt 必须读到它，
+    // 否则模型只会按 rubric「全部知识点」出题，家长在方法里写的“考什么/不考什么”全部落空（2026-09-09）。
+    const methodMap = new Map(
+      (parent.prepare("SELECT topic_key, assess_method FROM topics").all() as Array<{ topic_key: string; assess_method: string }>)
+        .map((r) => [r.topic_key, String(r.assess_method || "")] as [string, string])
+        .filter(([, v]) => !!v)
+    );
+    const out: Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string; assessMethod: string }> = [];
     for (const t of titles) {
       const kbRow = kb
         .prepare("SELECT topic, mastery, exam_mastery, first_learned, last_review FROM courses WHERE title = ?")
         .get(t) as { topic?: string; mastery?: string; exam_mastery?: string; first_learned?: string; last_review?: string } | undefined;
       if (!kbRow) continue; // 孩子库无此课 → 跳过
+      const topic = String(kbRow.topic ?? "");
       out.push({
         title: t,
-        topic: String(kbRow.topic ?? ""),
+        topic,
         firstLearned: String(kbRow.first_learned ?? ""),
         lastReview: String(kbRow.last_review ?? ""),
         mastery: String(kbRow.mastery ?? ""),
         examMastery: String(kbRow.exam_mastery ?? ""),
-        assessRubric: rubricMap.get(String(kbRow.topic) + "::" + t) ?? "",
+        assessRubric: rubricMap.get(topic + "::" + t) ?? "",
+        assessMethod: methodMap.get(topic) ?? "",
       });
     }
     return out;
@@ -889,6 +898,9 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         status: String(sch.status),
         scope,
       };
+      // 孩子显示名（考核方法 assess_method 常按孩子名分段，出题 prompt 需要点名当前孩子）
+      const childRow = deps.db.prepare("SELECT name FROM children WHERE id = ?").get(childId) as { name?: string } | undefined;
+      const childName = String(childRow?.name ?? "");
       // 第二段（兼容旧客户端/二次请求）：带 courses= 参数 → 直接按课程名返回 rubric + 判分 prompt
       if (coursesParam) {
         const titles = coursesParam
@@ -897,6 +909,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           .filter(Boolean);
         return {
           schedule,
+          childName,
           courses: fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, titles),
           scoringPrompt: buildScoringPrompt(),
         };
@@ -914,6 +927,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         }
         return {
           schedule,
+          childName,
           courses: fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, scopeCourses),
           scoringPrompt: buildScoringPrompt(),
         };
@@ -951,6 +965,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         }
         return {
           schedule,
+          childName,
           courses: fetchCoursesWithRubric(
             deps.config.dataDir,
             parentId,

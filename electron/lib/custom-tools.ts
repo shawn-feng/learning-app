@@ -2547,3 +2547,72 @@ export const courseStatusTool = defineTool({
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   },
 });
+
+/**
+ * 家长：列出全部孩子账户（昵称/uuid 等），供核实身份、选择考核/计划对象。
+ * 2026-09-09 新增（多处需要先核实孩子信息：安排考核前对昵称/归属，做统计/计划等）。
+ */
+export const parentListChildrenTool = defineTool({
+  name: "parent_list_children",
+  label: "查看孩子账户列表",
+  description:
+    "返回**全部孩子账户**的简要信息（显示名 name、账户 id/uuid、年龄、年级、AI 伙伴名、兴趣、学习进度摘要），" +
+    "用于核实/挑选孩子（家长说昵称时确认与哪个孩子对应）。**参数**：`keyword`（可选，只返回显示名包含该词的孩子）。" +
+    "多数按孩子的工具直接接受 childName（显示名）；需要精确 uuid 时用本工具返回的 id。",
+  parameters: Type.Object({
+    keyword: Type.Optional(Type.String({ description: "只返回显示名包含该词的孩子（可选）" })),
+  }),
+  execute: async (_toolCallId, params) => {
+    const kw = String(params?.keyword || "").trim();
+    const children = await listChildren().catch(() => []);
+    const rows = children
+      .filter((c) => !kw || String(c.name || "").includes(kw))
+      .map((c) => {
+        const pg = (c.progress || {}) as { topics?: number; learned?: number; total?: number };
+        const fields: string[] = [];
+        fields.push("id=" + c.childId);
+        if (c.age) fields.push(String(c.age) + "岁");
+        if (c.grade) fields.push(String(c.grade));
+        if (c.aiName) fields.push("AI伙伴「" + c.aiName + "」");
+        if (pg.learned || pg.total) fields.push("已学 " + (pg.learned ?? 0) + "/" + (pg.total ?? 0) + " 课");
+        if (c.interests) fields.push("兴趣：" + String(c.interests).slice(0, 50));
+        return "- " + c.name + "（" + fields.join("，") + "）";
+      });
+    const text = rows.length
+      ? rows.join("\n")
+      : kw ? ("没有显示名包含「" + kw + "」的孩子。") : "还没有孩子账户。请先在「孩子管理」里添加孩子。";
+    return { content: [{ type: "text" as const, text }] };
+  },
+});
+
+/**
+ * 孩子：返回当前孩子自己的账户信息（昵称/uuid/年龄/年级/AI伙伴），供自我认知/精确 id 使用。
+ * 2026-09-09 新增。孩子 agent 只能拿到自己（执行上下文即当前孩子），不给跨孩子能力。
+ */
+export const childSelfInfoTool = defineTool({
+  name: "child_self_info",
+  label: "查看我的账户信息",
+  description:
+    "返回**当前孩子自己**的账户信息：显示名（昵称）、账户 id（uuid）、年龄、年级、AI 伙伴名与 emoji。" +
+    "当需要确认自己的名字/称呼、或向工具/家长提及自己的精确身份时使用。",
+  parameters: Type.Object({}),
+  execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
+    const childId = path.basename(ctx.cwd);
+    let name = "", age = "", grade = "", aiName = "", aiEmoji = "";
+    try {
+      const pf = JSON.parse(fs.readFileSync(path.join(getChildrenDir(), childId, "profile.json"), "utf-8"));
+      name = String(pf.name || "");
+      age = String(pf.age || "");
+      grade = String(pf.grade || "");
+      aiName = String(pf.aiName || "");
+      aiEmoji = String(pf.aiEmoji || "");
+    } catch {
+      if (!name) name = childId.slice(0, 8);
+    }
+    const parts: string[] = ["名字：" + name, "id：" + childId];
+    if (age) parts.push("年龄：" + age + " 岁");
+    if (grade) parts.push("年级：" + grade);
+    if (aiName) parts.push("AI 伙伴：" + aiEmoji + aiName);
+    return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+  },
+});

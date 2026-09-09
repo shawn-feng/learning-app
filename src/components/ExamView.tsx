@@ -97,7 +97,7 @@ export default function ExamView({ childId, onExit }: Props) {
   const examCoursesRef = useRef<CourseConfig[]>([]);
   // 流式出题（ISSUE-049）：exam iframe 就绪后由 beginStreaming 逐门后台生成、按序增量送达。
   // runId 防重复进入/卸载后仍往已卸载 iframe 发送。
-  const streamPlanRef = useRef<{ childId: string; topicName: string; courses: CourseConfig[] } | null>(null);
+  const streamPlanRef = useRef<{ childId: string; topicName: string; childName: string; courses: CourseConfig[] } | null>(null);
   const streamRunRef = useRef(0);
   // 幂等：同一场考试只启动一次流式出题（iframe 因 srcDoc 变化重载会再次触发 onLoad）
   const streamStartedRef = useRef(false);
@@ -170,7 +170,7 @@ export default function ExamView({ childId, onExit }: Props) {
         // 流式出题（ISSUE-049）：不再等全部课程出完才显示。先渲染「空考试壳」（提示总课程数），
         // iframe 加载就绪后 beginStreaming 逐门并发出题，每出好一门就 postMessage 把题目追加进答题流。
         const topicName = data.schedule?.title || sch.title;
-        streamPlanRef.current = { childId, topicName, courses };
+        streamPlanRef.current = { childId, topicName, childName: String((data as any).childName || ""), courses };
         streamRunRef.current++; // 使上一场（若有）的生成循环失效
         streamStartedRef.current = false; // 新一场重新允许 onLoad 启动
         setExamHtml(buildExamHtml([], topicName, `${topicName} · 学习考核`, courses.length));
@@ -211,7 +211,7 @@ export default function ExamView({ childId, onExit }: Props) {
         const i = next++;
         const course = plan.courses[i];
         try {
-          const g: any = await window.api.examGenerateCourse(plan.childId, plan.topicName, course);
+          const g: any = await window.api.examGenerateCourse(plan.childId, plan.topicName, course, plan.childName);
           if (runId !== streamRunRef.current) return; // 已切场/退出
           if (g?.success && Array.isArray(g.data)) {
             ready[i] = g.data;

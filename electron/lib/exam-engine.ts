@@ -146,7 +146,7 @@ export async function generateExamQuestions(topicConfig: ExamTopicConfig, childI
     while (idx < courses.length) {
       const i = idx++;
       try {
-        results[i] = await generateForCourse(courses[i], topicConfig.name, childId, childDir, runtime, model);
+        results[i] = await generateForCourse(courses[i], topicConfig.name, "", childId, childDir, runtime, model);
       } catch (e) {
         failed++;
         console.error(`[exam] 出题失败：${courses[i].title}`, e);
@@ -169,12 +169,13 @@ export async function generateExamQuestions(topicConfig: ExamTopicConfig, childI
 export async function generateCourseQuestions(
   topicName: string,
   course: ExamCourseConfig,
+  childName: string,
   childId: string
 ): Promise<GeneratedQuestion[]> {
   const runtime = await getSharedRuntime();
   const model = await getDefaultModel();
   const childDir = getChildDir(childId || "default");
-  return generateForCourse(course, topicName, childId, childDir, runtime, model);
+  return generateForCourse(course, topicName, childName, childId, childDir, runtime, model);
 }
 
 const GENERATION_PER_COURSE_RULES =
@@ -187,6 +188,7 @@ const GENERATION_PER_COURSE_RULES =
 async function generateForCourse(
   course: ExamCourseConfig,
   topicName: string,
+  childName: string,
   childId: string,
   childDir: string,
   runtime: unknown,
@@ -201,8 +203,17 @@ async function generateForCourse(
   });
   await loader.reload();
 
+  // 主题考核方法（家长设定，按孩子区分题目构成与不考范围，2026-09-09）：
+  // 方法优先于通用出题规则；方法含多孩子段落时只按「当前孩子」的段落出题。
+  const method = String((course as any).assessMethod || "").trim();
+  const methodBlock = method
+    ? `\n【本主题考核方法（家长设定，按孩子区分题目构成与考核范围；方法优先于下面的通用规则）】\n${method}\n\n` +
+      (childName ? `本次考核孩子是「${childName}」。请只按方法说明中**针对 ${childName}** 的要求出题，忽略针对其它孩子的段落；方法明确不考的（如“不考核字词读音/解释”）一律不要出。\n` : "")
+    : "";
+
   const prompt =
     `考核科目：${topicName}\n` +
+    methodBlock +
     `课程「${course.title}」的考核内容（知识点 + 现成题目 + 评分标准）：\n${course.assessRubric || "（未写考核内容，按题意出基础理解题）"}\n\n` +
     `请为这一门课程完整出题：${GENERATION_PER_COURSE_RULES}\n\n` +
     `只输出 JSON（不要 markdown 代码块围栏），格式：\n` +

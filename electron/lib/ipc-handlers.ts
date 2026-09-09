@@ -7,6 +7,7 @@ import { getChildSession, getParentSession, getParentContentSession, disposeChil
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
 import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, getVisionModel } from "./pi-runtime";
+import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, prewarmTexts, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
@@ -1312,15 +1313,30 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     "Goodbye! See you next time!",
     "sofa", "table", "lamp", "TV", "window", "plant", "picture", "cup",
   ];
+  // 每个场景课程只预热一次（首次会话准备 / 首条 prompt 都会触发）
+  const sceneTryPrewarm = (childId: string, courseKey: string) => {
+    const k = `${childId}|${courseKey}`;
+    if (scenePrewarmDone.has(k)) return;
+    scenePrewarmDone.add(k);
+    // 预热不阻塞对话：失败静默（下次真实合成兜底）
+    void prewarmTexts(SCENE_PREWARM_TEXT, { provider: "edge-tts" }).catch(() => {});
+  };
+  // ISSUE-061：场景「准备」（场景页就绪后由 Learn 调用）——预建 scene 会话/取课文 + 后台预热 TTS，
+  // 让第一次说话不必等会话初始化；无任何 LLM 对话产出。
+  ipcMain.handle("scene:prepare", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
+    try {
+      await getSceneSession(childId, courseKey);
+      sceneTryPrewarm(childId, courseKey);
+      return { success: true };
+    } catch (err: any) {
+      console.error("[scene:prepare] 失败:", err?.message || err);
+      return { success: false, error: String(err?.message || err) };
+    }
+  });
   ipcMain.handle("scene:prompt", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string, text: string) => {
     try {
       const session = await getSceneSession(childId, courseKey);
-      const pwKey = `${childId}|${courseKey}`;
-      if (!scenePrewarmDone.has(pwKey)) {
-        scenePrewarmDone.add(pwKey);
-        // 预热不阻塞对话：失败静默（下次真实合成兜底）
-        void prewarmTexts(SCENE_PREWARM_TEXT, { provider: "edge-tts" }).catch(() => {});
-      }
+      sceneTryPrewarm(childId, courseKey);
       const beforeCount = (session as any).messages?.length ?? 0;
       scenePromptAbort = { stopped: false, abort: () => session.abort() };
       await session.prompt(text);
@@ -1338,7 +1354,11 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         _e.sender.send("scene:reply_end", { childId, courseKey });
         return { success: false, error: friendly };
       }
-      // 回发本轮新增的 assistant 正文（角色说的话）——scene_command 纯工具轮无正文则跳过
+      // 回发本轮「角色实际说的话」。⚠️ 2026-09-08：字幕=scene_command say 的逐句台词，若把 assistant
+      // 正文也上屏会出现两套文字（模型把台词再总结一遍，与字幕不一致且重复）。规则：
+      //   - 本轮有 say 台词 → 聊天只显示台词（与 HTML 字幕同文，前缀角色名同 roleMeta.sub 规则）；
+      //   - 本轮无 say（agent 纯文字解释/提示）→ 才显示 assistant 正文兜底。
+      const lines: Array<{ speaker: string; text: string }> = [];
       const texts: string[] = [];
       for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
         const m = messages[i];
@@ -1348,13 +1368,32 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
           if (c.type === "text") t += c.text;
         }
         if (t.trim()) texts.push(t.trim());
+        // toolCall：scene_command say → 台词（character id 首字母大写作说话人，与字幕 speaker 一致）
+        for (const c of m.content || []) {
+          if (c.type === "toolCall" && c.name === "scene_command") {
+            const args = typeof c.arguments === "string" ? safeJsonParse(c.arguments) : c.arguments;
+            const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+            if (a.command === "say" && typeof a.text === "string" && a.text.trim()) {
+              const cid = String(a.character || "").trim();
+              const speaker = cid ? cid.charAt(0).toUpperCase() + cid.slice(1) + ":" : "";
+              lines.push({ speaker, text: a.text.trim() });
+            }
+          }
+        }
       }
-      if (texts.length) {
+      // 台词逐句成行：Steve: Hello! I'm Steve. 换行 Maggie: Hi! ...（工作气泡多行显示）
+      if (lines.length) {
+        _e.sender.send("scene:reply", {
+          childId,
+          courseKey,
+          text: lines.map((l) => `${l.speaker} ${l.text}`.trim()).join("\n"),
+        });
+      } else if (texts.length) {
         for (const t of texts) {
           _e.sender.send("scene:reply", { childId, courseKey, text: t });
         }
       }
-      // 纯工具轮（只有动作演出、无正文）静默结束，不发「没有回复」——表演本身就是回复
+      // 纯工具轮（只有动作演出、无台词无正文）静默结束，不发「没有回复」——表演本身就是回复
       _e.sender.send("scene:reply_end", { childId, courseKey });
       return { success: true };
     } catch (err) {
@@ -1367,6 +1406,20 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       return { success: false, error: (err as Error).message };
     } finally {
       scenePromptAbort = null;
+    }
+  });
+
+  // scene 会话历史 → 聊天展示记录：场景对话独立持久于 scene jsonl（不在主/课程会话），
+  // 重进孩子模式时 piStartChild 只回填主会话 history → 场景对话在 UI「消失」。
+  // 渲染层激活场景模式后调用本接口回填聊天框（清洗规则与 scene:prompt 实时回发一致）。
+  ipcMain.handle("scene:history", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
+    try {
+      const session = await getSceneSession(childId, courseKey);
+      const msgs: any[] = (session as any).messages || [];
+      const history = composeSceneHistoryDisplay(msgs);
+      return { success: true, history: history.slice(-80) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
   });
 
@@ -1760,6 +1813,23 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // ISSUE-041 层 C：云端事件轮询配置（设备级，默认开启 2 分钟）
   ipcMain.handle("eventpoll:config:get", () => getEventPollConfig());
   ipcMain.handle("eventpoll:config:set", (_e, cfg: any) => setEventPollConfig(cfg));
+
+  // MATERIAL 保鲜：恢复会话展示的资料内容可能滞后于服务端文件更新（尤其场景/课程 html 改版后）。
+  // 渲染层在恢复资料后对“服务端共享 html”（filePath 形如 {topic}/...html，非 outputs/）调用本通道，
+  // 拉最新内容就地替换 → 资料面板自动载入新版本（不需要 agent 重新 display）。
+  ipcMain.handle("materials:refresh", async (_e: IpcMainInvokeEvent, filePath: string) => {
+    const rel = String(filePath || "").replace(/^materials\//, "");
+    if (!/^[A-Za-z0-9_\-\u4e00-\u9fa5]+\/.+\.(html|htm)$/i.test(rel) || rel.startsWith("outputs/")) {
+      return { success: false, error: "非服务端共享资料，跳过刷新" };
+    }
+    try {
+      const buf = await fetchMaterialContent(rel);
+      const content = buf.toString("utf-8");
+      return { success: true, content };
+    } catch (err: any) {
+      return { success: false, error: String(err?.message || err) };
+    }
+  });
 
   // ISSUE-061：场景对话的孩子语音落盘 → data/children/<childId>/voice/scene/<日期>/<时间>.webm
   // （独立于 uploads/，便于后续挑选分析/发音评测；path=相对 data/，rel=相对该孩子 cwd）
@@ -2238,9 +2308,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
   // 流式出题（ISSUE-049）：单门课程出题一次（首门就绪即可开考，其余课程后台逐门生成后增量追加）
-  ipcMain.handle("exam:generateCourse", async (_e, childId: string, topicName: string, course: any) => {
+  ipcMain.handle("exam:generateCourse", async (_e, childId: string, topicName: string, course: any, childName: string) => {
     try {
-      const questions = await generateCourseQuestions(topicName, course, childId);
+      const questions = await generateCourseQuestions(topicName, course, childName || "", childId);
       return { success: true, data: questions };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -2303,6 +2373,113 @@ function flushThinking(childId: string, win: () => BrowserWindow | null) {
       w.webContents.send("pi:thinking", { childId, delta: chunk });
     }
   }
+}
+
+/** JSON 解析兜底：toolCall arguments 可能为字符串或对象；解析失败返回 null。 */
+function safeJsonParse(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+// ════════════ 场景会话历史 → 聊天展示记录（scene:history）════════════
+// scene 会话的 jsonl 是对话真源，但 UI 聊天框从不回填——重进孩子模式场景对话「消失」。
+// 恢复时不能原样展示 messages：user 侧混有语音识别前缀/页面事件尾巴/开场指令，
+// assistant 侧混有模型的总结正文（与字幕不一致）。以下按与 scene:prompt 实时回发
+// 完全相同的规则清洗：user 只留孩子的话；assistant 有 say 台词就用台词、无才用正文。
+
+function sceneContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  const parts: string[] = [];
+  if (Array.isArray(content)) {
+    for (const c of content) {
+      if (c && typeof c === "object" && (c as any).type === "text" && typeof (c as any).text === "string") {
+        parts.push((c as any).text);
+      }
+    }
+  }
+  return parts.join("");
+}
+
+/** 清洗 scene 会话的 user 文本为「孩子实际说的话」；系统注入/无孩子话语返回空串。 */
+function cleanSceneUserText(raw: string): string {
+  if (!raw) return "";
+  let t = raw.replace(/\s+/g, " ").trim();
+  // 系统注入消息（页面就绪清单 / 开场指令 / 课程进入）整体不显示为孩子气泡
+  if (/^\[(页面操作|场景就绪|开场|进入|课堂|系统)[^\]]*\]/.test(t)) return "";
+  // 语音输入格式：「[语音识别输入…] / 文本 / 【附件音频：…】」→ 取中间段
+  const vm = /^\[[^\]]*\]\s*\/\s*([\s\S]*?)(?:\s*\/\s*【附件音频[\s\S]*)?$/.exec(t);
+  if (vm) {
+    t = vm[1].trim();
+  } else {
+    // 剥掉可能残留的 [xxx] 前缀
+    t = t.replace(/^\[[^\]]*\]\s*/, "");
+    // 截断「[页面操作]…」尾巴（可能是「 / [页面操作]」分隔、直接跟在文本后、或换行后）
+    const pi = t.indexOf("[页面操作]");
+    if (pi > 0) t = t.slice(0, pi).replace(/\s*\/?\s*$/, "");
+    t = t.replace(/【附件音频：[\s\S]*?】/g, "");
+    t = t.replace(/\s*\/\s*$/, "").trim();
+  }
+  if (!t || t.startsWith("[") || t.startsWith("【")) return "";
+  return t;
+}
+
+/** 按「轮」把 scene 会话 messages 组装成聊天展示记录（规则同 scene:prompt 实时回发）。 */
+function composeSceneHistoryDisplay(messages: any[]): Array<{ role: "user" | "ai"; text: string; time: string }> {
+  const out: Array<{ role: "user" | "ai"; text: string; time: string }> = [];
+  const fmtClock = (msStr: string) => {
+    const n = Number(msStr);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    const d = new Date(n);
+    const p = (x: number) => String(x).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+  let say: string[] = [];
+  let texts: string[] = [];
+  let lastTs = "";
+  const flush = () => {
+    if (say.length) {
+      out.push({ role: "ai", text: say.join("\n"), time: fmtClock(lastTs) });
+    } else if (texts.length) {
+      out.push({ role: "ai", text: texts.join("\n"), time: fmtClock(lastTs) });
+    }
+    say = [];
+    texts = [];
+  };
+  for (const m of messages || []) {
+    const role = m?.role;
+    const ts = m?.timestamp ? String(m.timestamp) : "";
+    if (role === "user") {
+      flush();
+      const t = cleanSceneUserText(sceneContentText(m.content));
+      if (t) {
+        out.push({ role: "user", text: t, time: fmtClock(ts) });
+      }
+      if (ts) lastTs = ts;
+    } else if (role === "assistant") {
+      if (ts) lastTs = ts;
+      const cs = m.content || [];
+      for (const c of cs) {
+        if (!c || typeof c !== "object") continue;
+        if (c.type === "text" && typeof c.text === "string" && c.text.trim()) {
+          texts.push(c.text.trim());
+        }
+        if (c.type === "toolCall" && c.name === "scene_command") {
+          const args = typeof c.arguments === "string" ? safeJsonParse(c.arguments) : c.arguments;
+          const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+          if (a.command === "say" && typeof a.text === "string" && a.text.trim()) {
+            const cid = String(a.character || "").trim();
+            const sp = cid ? cid.charAt(0).toUpperCase() + cid.slice(1) + ":" : "";
+            say.push(`${sp} ${a.text.trim()}`.trim());
+          }
+        }
+      }
+    }
+  }
+  flush();
+  return out;
 }
 
 function previewArgs(toolName: string, args: any): string {
