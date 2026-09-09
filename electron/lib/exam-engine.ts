@@ -336,18 +336,33 @@ export async function scoreExamAttempt(
   });
   await loader.reload();
 
-  const answersLines = answers
-    .map(
-      (a, i) =>
-        `【第${i + 1}题】qid=${a.qid}，课程=${a.course}，pointMax=${a.pointMax}\n` +
-        `考核要点(rubric，家长写，判分锚定)：${a.rubric || "（未提供）"}\n` +
-        `题干：${a.stem}\n` +
-        `孩子回答（ASR 转写，可能有识别误差）：${a.asrText || "（未作答/仅语音）"}\n` +
-        `本题用时：${a.durationMs != null ? Math.round(a.durationMs / 1000) + "秒" : "未知"}`
-    )
-    .join("\n\n");
+  // 判分 prompt：rubric 按「课程」只放一次（同课多题共享同一份考核要点），
+  // 避免逐题重复粘贴把 prompt 撑大（2026-09-09：4 题曾把同一份 rubric 贴 4 次 → 20KB+）。
+  // 判分只按 rubric 的知识点/评分标准给分，不需要主题考核方法(assess_method)。
+  const byCourse = new Map<string, ExamAnswerIn[]>();
+  for (const a of answers) {
+    const k = a.course || "（未分课程）";
+    const list = byCourse.get(k);
+    if (list) list.push(a);
+    else byCourse.set(k, [a]);
+  }
+  const answersLines: string[] = [];
+  let n = 0;
+  for (const [course, qs] of byCourse) {
+    const rubric = qs.find((q) => q.rubric)?.rubric || "（未提供考核要点）";
+    answersLines.push(`【课程：${course}】\n考核要点(rubric，家长写，判分锚定，本课各题共用)：${rubric}`);
+    for (const a of qs) {
+      n++;
+      answersLines.push(
+        `【第${n}题】qid=${a.qid}，pointMax=${a.pointMax}\n` +
+          `题干：${a.stem}\n` +
+          `孩子回答（ASR 转写，可能有识别误差）：${a.asrText || "（未作答/仅语音）"}\n` +
+          `本题用时：${a.durationMs != null ? Math.round(a.durationMs / 1000) + "秒" : "未知"}`
+      );
+    }
+  }
 
-  const prompt = `${scoringPrompt}\n\n—— 本场考核题目与孩子回答 ——\n${answersLines}\n\n请按评分标准输出 JSON。`;
+  const prompt = `${scoringPrompt}\n\n—— 本场考核题目与孩子回答 ——\n${answersLines.join("\n\n")}\n\n请按评分标准输出 JSON。`;
 
   const { session } = await createAgentSession({
     cwd: childDir,
@@ -381,11 +396,13 @@ export async function scoreExamAttempt(
       parsed,
       costMs: Date.now() - t0,
     });
+    // 2026-09-09：判分只输出每题评分 + 一句总评；courseMastery 由客户端按每题 course 本地聚合，
+    // reinforcePlan 已从判分移除（复习建议改由家长 agent 按需提供），这里返回空以兼容调用方。
     return {
       perQuestion,
-      courseMastery: parsed.courseMastery ?? {},
-      reinforcePlan: parsed.reinforcePlan ?? {},
-      score: Number(parsed.score) || 0,
+      courseMastery: {},
+      reinforcePlan: {},
+      score: 0,
       overall: String(parsed.overall ?? ""),
     };
   } catch (e) {

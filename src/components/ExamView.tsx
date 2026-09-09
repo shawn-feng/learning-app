@@ -42,9 +42,11 @@ interface QuestionUI {
 interface ScoredResult {
   perQuestion: Array<{
     qid: string;
+    course?: string;
     pointGot: number;
     correct: boolean;
     aiComment: string;
+    asrText?: string;
     /** 口语/听说题（背诵）附加字段 */
     question?: string;
     assessMethod?: "speech";
@@ -366,7 +368,7 @@ export default function ExamView({ childId, onExit }: Props) {
         })
       );
 
-      // 3) 组装每题（合并 LLM 文字题 + SSECP 口语题），本地算总分
+      // 3) 组装每题（合并 LLM 文字题 + SSECP 口语题），本地算总分与每课掌握度（判分不再产出掌握度/复习计划）
       const textGotByQid = new Map((scored?.perQuestion ?? []).map((x) => [x.qid, x]));
       const speechGotByQid = new Map(speechResult.map((x) => [x.qid, x]));
       let score = 0;
@@ -376,6 +378,7 @@ export default function ExamView({ childId, onExit }: Props) {
           score += g.pointGot;
           return {
             qid: q.qid,
+            course: q.course,
             pointGot: g.pointGot,
             correct: g.correct,
             aiComment: g.aiComment,
@@ -392,6 +395,7 @@ export default function ExamView({ childId, onExit }: Props) {
         score += g?.pointGot ?? 0;
         return {
           qid: q.qid,
+          course: q.course,
           pointGot: g?.pointGot ?? 0,
           correct: !!g?.correct,
           aiComment: g?.aiComment || "",
@@ -402,6 +406,21 @@ export default function ExamView({ childId, onExit }: Props) {
         };
       });
       const wrongQuestions = perQuestion.filter((x) => !x.correct).map((x) => x.qid);
+      // 每课掌握度：按每题 course 本地汇总（correct = 得分≥该题 60%）
+      const courseMastery = (() => {
+        const m: Record<string, { correct: number; total: number; rate: number }> = {};
+        for (const x of perQuestion) {
+          const k = x.course || "（未分课程）";
+          const e = m[k] || (m[k] = { correct: 0, total: 0, rate: 0 });
+          e.total++;
+          if (x.correct) e.correct++;
+        }
+        for (const k of Object.keys(m)) {
+          const e = m[k];
+          e.rate = Math.round((e.total ? e.correct / e.total : 0) * 100) / 100;
+        }
+        return m;
+      })();
 
       // 4) 上报服务端：仅文字题语音走 files 通道（口语题语音已由 examAssessSpeech 上传拿到 audioFileId）
       const voices: Array<{ qid: string; buffer: ArrayBuffer; name: string }> = [];
@@ -424,8 +443,8 @@ export default function ExamView({ childId, onExit }: Props) {
         submittedAt: payload.submittedAt || new Date().toISOString(),
         score,
         perQuestion,
-        courseMastery: scored?.courseMastery || {},
-        reinforcePlan: scored?.reinforcePlan || {},
+        courseMastery,
+        reinforcePlan: {}, // 2026-09-09：判分不再生成复习计划（家长询问时由家长 agent 按掌握度提供）
         wrongQuestions,
         scheduleId: currentSchedule.id,
       };
@@ -436,8 +455,8 @@ export default function ExamView({ childId, onExit }: Props) {
 
       setReport({
         perQuestion,
-        courseMastery: scored?.courseMastery || {},
-        reinforcePlan: scored?.reinforcePlan || {},
+        courseMastery,
+        reinforcePlan: {},
         score,
         overall: scored?.overall || "",
       });

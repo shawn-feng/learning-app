@@ -49,8 +49,8 @@ function handleAuthError(err: unknown, reply: any): boolean {
  * ⚠️ `{{TODAY}}` 占位符在下发时被替换为服务器当天日期（YYYY-MM-DD）——不注入日期，
  * LLM 会瞎猜复习日期（实测产出 2025-03-24 之类的错误年份）。
  */
-export const SCORING_PROMPT = `你是孩子的学习考核评估老师。今天是 {{TODAY}}。下面给你：1) 每道主观题的考核要点(rubric)；2) 孩子对每道题的口头回答(ASR 转写文本，可能有语音识别误差，请结合题意合理理解)；3) 每题用时。
-请逐题评估并输出严格的 JSON（不要输出其它文字），格式：
+export const SCORING_PROMPT = `你是孩子的学习考核评估老师。今天是 {{TODAY}}。下面按课程给出：1) 该课考核要点(rubric，含知识点与评分标准)；2) 该课每道主观题 + 孩子的口头回答(ASR 转写文本，可能有语音识别误差，请结合题意合理理解)；3) 每题用时。
+请逐题评估并只输出严格的 JSON（不要输出其它文字、不要生成复习计划/课程掌握度），格式：
 {
   "perQuestion": [
     {
@@ -60,18 +60,9 @@ export const SCORING_PROMPT = `你是孩子的学习考核评估老师。今天�
       "aiComment": "评语：答到了哪些要点、遗漏或理解错误在哪，30~60字"
     }
   ],
-  "courseMastery": { "<课程名>": { "correct": 答对题数, "total": 该课程题数, "rate": 正确率(0~1, 两位小数) } },
-  "reinforcePlan": {
-    "<课程名>": {
-      "planReviewAt": "建议复习日期 YYYY-MM-DD（严格按今天 {{TODAY}} 推算：薄弱1-2天后、良好3-5天后、熟练可7-10天后）",
-      "focus": ["考核发现的问题1", "问题2"],
-      "aiSuggestion": "一句复习建议"
-    }
-  },
-  "score": 总分(0~100 一位小数),
   "overall": "整体评估一句话"
 }
-评分标准：按 rubric 逐要点给分；pointMax 由题目给定，答到要点得分、明显错误或答非所问给低分；正确率=得分达到该题 60% 以上视为 correct。请客观、对低龄孩子语气温和、鼓励为主。`;
+评分标准：严格按 rubric 的评分标准逐要点给分；pointMax 由题目给定，答到要点得分、明显错误或答非所问给低分；正确率=得分达到该题 60% 以上视为 correct。请客观、对低龄孩子语气温和、鼓励为主。`;
 
 /** 下发判分 prompt：把 {{TODAY}} 占位符替换为服务器当天日期（判分口径仍服务端单一真源）。 */
 export function buildScoringPrompt(): string {
