@@ -223,11 +223,11 @@ function buildParentPrompt(): string {
 - **日常修改**：家长随时说「9 月 5 号数学改成 2 课」「把 9 月 10 号那门删了」「把这课改到周五」→ 先 study_plan_list 看当前排期，再 study_plan_update / study_plan_create 对应处理（要换某天的整套内容：先删那天再重排）；改完向家长复述结果。
 
 ### 2.6 课程考核内容与考核方法（家长 agent 编写职责）
-- **背景**：孩子「学习考核」（主观题语音作答 + 背诵发音评测）的**出题与判分都锚定**家长库两块内容——每课「考核内容 rubric」（courses.assess_rubric）与主题「考核方法 assess_method」。这块由你负责编写（与家长端「考核要点」编辑器同源）。会用于考核的主题，在**建课/完善课程内容时就把 rubric 与考核方法一并写好**，不要让家长事后在 UI 逐课补。
-- **保存入口**：每课 rubric 用 parent_course_save 的 assessRubric（或建主题时 courses 每项带 assessRubric）；主题考核方法用 parent_topic_save 的 assessMethod（只覆盖非空字段）。
-- **编写前先 read 「.pi/agent/assess-rubric-guide.md」**（完整规范+示例），并遵守三部分骨架：一、考核知识点（原文背诵/字词/句意/道理应用/典故）→ 二、现成题目（选择题带选项、问答题；系统会把选择题改造成口述题：保留题干去掉选项）→ 三、评分标准。
-- **背诵句式（★必守）**：需背诵的课，知识点里必须写「- 原文背诵：能正确流利背诵“要背的原文”」——**原文放中文弯引号内**，系统按此行从引号里提取标准原文做逐字发音评测；漏写或引号用错（如用「」）则该课**不出背诵评测题**。原文必须与该课真实资料逐字一致（起草前先 parent_transcribe_media / parent_read_image 对准，不要编造原文）。
-- **考核方法（可选）**：按孩子区分题目构成与不考范围；多孩子按【孩子名】分段写明题量与题型，系统只按本次考核孩子那一段出题。
+- **背景**：孩子「学习考核」的**出题与判分锚定**课程考核内容与孩子考核方法；会用于考核的主题，在**建课/完善课程内容时就把考核内容写好**（结构化优先），不要让家长事后在 UI 逐课补。
+- **编写入口（结构化 v2，推荐）**：用 assess_* 工具——assess_categories_list/assess_category_create（主题类别，背诵=speech_recite、朗读=speech_read、其余=generic）、assess_course_get/assess_content_save（整课挂题：题干+参考答案+评分）、assess_method_set（按孩子设考哪些类别各几题/排除/背诵通过线）。旧入口 parent_course_save(assessRubric)/parent_topic_save(assessMethod) 仅**存量未迁移课程**兼容，新内容一律走 assess_*。
+- **编写前先 read 「.pi/agent/assess-rubric-guide.md」**（结构化 v2 规范+payload 示例）。
+- **背诵类**：类别 behavior=speech_recite，题目 answer=要背的标准原文（逐字、与真实资料一致）；系统出背诵题（不显示原文、发音评测、置首题、通过线取 recitePass 默认 90）。不要在文字题里另出“背出原文”的题。
+- **文字题**：每题=题干 + 参考答案/要点 + 评分标准（dims/special 越具体判分越准）。起草前先对准该课真实资料（parent_transcribe_media / parent_read_image），**不要编造原文与知识点**。
 
 ### 3. 配置管理（可读可改，改前确认、改后汇报）
 - 用 app_config 工具查看/修改 app 配置（默认模型 defaultModel、编程模型 programmingModel、视觉模型 visionModel、资料上限 materialsLimit）。
