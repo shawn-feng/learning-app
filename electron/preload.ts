@@ -378,6 +378,7 @@ const api = {
   examGenerateCourse: (childId: string, topicName: string, course: any, childName: string) =>
     ipcRenderer.invoke("exam:generateCourse", childId, topicName, course, childName),
   assessCourseContent: (topic: string, title: string) => ipcRenderer.invoke("assess:courseContent", topic, title),
+  assessQuestionList: () => ipcRenderer.invoke("assess:questionList"),
   assessQuestionRecords: (questionId: string) => ipcRenderer.invoke("assess:questionRecords", questionId),
   examScore: (childId: string, scoringPrompt: string, answers: any[]) =>
     ipcRenderer.invoke("exam:score", childId, scoringPrompt, answers),

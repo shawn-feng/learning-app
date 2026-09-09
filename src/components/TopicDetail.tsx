@@ -685,7 +685,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                                     <div style={{ fontSize: 14, lineHeight: 1.5, color: "#222", fontWeight: 600, marginBottom: 6 }}>{selQ.stem}</div>
                                     {activeCat && (
                                       <div style={{ fontSize: 11, color: "#667eea", marginBottom: 8 }}>
-                                        {activeCat.categoryName} · {BEHAVIOR_LABEL[activeCat.behavior] || activeCat.behavior} · {selQ.pointMax || 10} 分
+                                        {activeCat.categoryName} · {BEHAVIOR_LABEL[selQ.behavior || activeCat.behavior] || selQ.behavior || activeCat.behavior} · {selQ.pointMax || 10} 分
                                       </div>
                                     )}
                                     {selQ.answer ? (

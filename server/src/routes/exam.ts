@@ -24,6 +24,7 @@ import {
   listCategories,
   getMethodSpec,
   saveMethodSpec,
+  listAllBankQuestions,
 } from "../db/assess-content.js";
 
 interface ExamDeps {
@@ -1478,22 +1479,22 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
 
   // ===== 考核内容结构化 v2（ISSUE-067 步骤2：家长 agent 读写新表；权威库 = 服务端 parent.sqlite） =====
   const openParentFor = (parentId: string) => openParentLib(deps.config.dataDir, parentId);
-  /** item 里给 categoryId 或 categoryName(+behavior)：返回该主题下类别 uuid；两者都给优先 id。 */
+  /** item 里给 categoryId 或 categoryName(+behavior)：返回该主题下类别 uuid 与行为；两者都给优先 id。 */
   const resolveCategory = (
     db: DatabaseSync,
     topic: string,
     p: Record<string, unknown>
-  ): { id: string } => {
+  ): { id: string; behavior: string } => {
     if (typeof p.categoryId === "string" && p.categoryId) {
-      const row = db.prepare("SELECT id FROM topic_categories WHERE id = ? AND topic_id = ?").get(p.categoryId, topic) as
-        | { id: string }
-        | undefined;
+      const row = db
+        .prepare("SELECT id, behavior FROM topic_categories WHERE id = ? AND topic_id = ?")
+        .get(p.categoryId, topic) as { id: string; behavior?: string } | undefined;
       if (!row) throw new Error(`类别 ${p.categoryId} 不属于主题 ${topic}（或不存在）`);
-      return { id: row.id };
+      return { id: row.id, behavior: String(row.behavior || "generic") };
     }
     if (typeof p.categoryName === "string" && p.categoryName.trim()) {
       const c = getOrCreateCategory(db, topic, p.categoryName.trim(), String(p.behavior || "generic"));
-      return { id: c.id };
+      return { id: c.id, behavior: c.behavior };
     }
     throw new Error("每项需要 categoryId 或 categoryName");
   };
@@ -1561,7 +1562,16 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const b = (req.body || {}) as { questionId?: string; stem?: string; answer?: string; scoring?: string | null; pointMax?: number };
+    const b = (req.body || {}) as {
+      questionId?: string;
+      stem?: string;
+      answer?: string;
+      scoring?: string | null;
+      pointMax?: number;
+      behavior?: string;
+      note?: string;
+      knowledgeSummary?: string;
+    };
     if (!b.stem || !b.answer) return reply.code(400).send({ error: "题目需要 stem + answer" });
     const db = openParentFor(parentId);
     try {
@@ -1571,6 +1581,9 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         answer: String(b.answer).trim(),
         scoring: b.scoring ?? null,
         pointMax: Number(b.pointMax) || 10,
+        behavior: String(b.behavior || "generic"),
+        note: String(b.note ?? ""),
+        knowledgeSummary: String(b.knowledgeSummary ?? ""),
       });
       return { id };
     } finally {
@@ -1599,7 +1612,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       let created = 0;
       let linked = 0;
       for (const it of b.items) {
-        const { id: categoryId } = resolveCategory(db, String(b.topic), it);
+        const cat = resolveCategory(db, String(b.topic), it);
         const qs = (Array.isArray(it.questions) ? it.questions : []) as Array<Record<string, unknown>>;
         const qids: string[] = [];
         for (const qo of qs) {
@@ -1617,12 +1630,16 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
               answer,
               scoring: qo.scoring != null ? String(qo.scoring) : null,
               pointMax: Number(qo.pointMax) || 10,
+              // 行为以题级为准；题目没写时继承该类别行为（兼容存量写法）
+              behavior: String(qo.behavior || cat.behavior || "generic"),
+              note: qo.note != null ? String(qo.note) : "",
+              knowledgeSummary: qo.knowledgeSummary != null ? String(qo.knowledgeSummary) : "",
             });
             qids.push(id);
             created++;
           }
         }
-        replaceItems.push({ categoryId, overview: String(it.overview ?? ""), questionIds: qids });
+        replaceItems.push({ categoryId: cat.id, overview: String(it.overview ?? ""), questionIds: qids });
       }
       replaceCourseContent(db, uuid, replaceItems);
       return { ok: true, courseUuid: uuid, categories: replaceItems.length, questionsCreated: created, questionsLinked: linked };
@@ -1707,7 +1724,24 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }
   });
 
-  /** 某道题库题的考核结果记录（该家长全部孩子历次考核里用到这道题的作答与得分）。 */
+  /** 全量题库列表（家长「题库」菜单）：每题带所属主题/课程/类别上下文。 */
+  app.get("/api/v1/assess/questions/list", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const db = openParentFor(parentId);
+    try {
+      return { questions: listAllBankQuestions(db) };
+    } finally {
+      db.close();
+    }
+  });
+
+  /** 某道题库题的考核结果记录（该家长全部孩子，各自返回最近一次）。 */
   app.get("/api/v1/assess/questions/:questionId/records", async (req, reply) => {
     let parentId: string;
     try {
@@ -1751,6 +1785,28 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       }
     }
     records.sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)));
-    return { records: records.slice(0, 50) };
+    // 区分孩子：各自返回最近一次（未考过的孩子给空占位）
+    const latestByChild = new Map<string, (typeof records)[number]>();
+    for (const r of records) {
+      const cid = String(r.childId);
+      if (!latestByChild.has(cid)) latestByChild.set(cid, r);
+    }
+    const grouped = children.map((c) => {
+      const latest = latestByChild.get(c.id);
+      return (
+        latest ?? {
+          childId: c.id,
+          childName: c.name,
+          attemptId: null,
+          submittedAt: null,
+          pointGot: null,
+          pointMax: null,
+          correct: false,
+          aiComment: "",
+          neverAssessed: true,
+        }
+      );
+    });
+    return { records: grouped };
   });
 }

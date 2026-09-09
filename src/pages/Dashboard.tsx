@@ -6,6 +6,7 @@ import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
 import SessionSyncPanel from "../components/SessionSyncPanel";
 import CourseManager from "../components/CourseManager";
+import QuestionBankPanel from "../components/QuestionBankPanel";
 import ParentChatPanel from "../components/ParentChatPanel";
 import ExamAdminPanel from "../components/ExamAdminPanel";
 import SchedulerTasksPanel from "../components/SchedulerTasksPanel";
@@ -27,7 +28,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [children, setChildren] = useState<any[]>([]);
   const [childrenLoading, setChildrenLoading] = useState(true);
   const [showAddChild, setShowAddChild] = useState(false);
-  const [view, setView] = useState<"children" | "courses" | "plan" | "exam" | "scheduler" | "tokens" | "sync" | "settings">("children");
+  const [view, setView] = useState<"children" | "courses" | "plan" | "exam" | "scheduler" | "tokens" | "sync" | "settings" | "bank">("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
   // 家长「AI 提示词」弹窗（scope=parent，ref 由主进程归一化为当前家长 id）
@@ -90,6 +91,19 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             <div className="child-avatar">📚</div>
             <div className="child-info">
               <div className="name">课程管理</div>
+            </div>
+          </div>
+          <div
+            className="child-card"
+            style={{ border: "none" }}
+            onClick={() => {
+              setView("bank");
+              setDetailChild(null);
+            }}
+          >
+            <div className="child-avatar">📖</div>
+            <div className="child-info">
+              <div className="name">题库</div>
             </div>
           </div>
           <div
@@ -267,6 +281,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           )}
 
           {view === "courses" && !detailChild && <CourseManager />}
+          {view === "bank" && !detailChild && <QuestionBankPanel />}
 
           {/* ISSUE-033 P4：学习计划只读面板（编辑走右侧家长对话） */}
           {view === "plan" && !detailChild && (

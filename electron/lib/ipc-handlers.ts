@@ -2322,6 +2322,15 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
   // 流式出题（ISSUE-049）：单门课程出题一次（首门就绪即可开考，其余课程后台逐门生成后增量追加）
   // 考核内容结构化：课程内容 / 该题考核记录（家长端课程详情浏览）
+  ipcMain.handle("assess:questionList", async () => {
+    try {
+      const { listAssessQuestions } = await import("./assess-admin");
+      const data = await listAssessQuestions();
+      return { success: true, data: data.questions || [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
   ipcMain.handle("assess:courseContent", async (_e, topic: string, title: string) => {
     try {
       const { getCourseAssess } = await import("./assess-admin");

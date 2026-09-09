@@ -56,6 +56,13 @@ export function ensureAssessContentSchema(db: DatabaseSync): void {
   if (!tCols.includes("method_spec")) db.exec("ALTER TABLE topics ADD COLUMN method_spec TEXT NOT NULL DEFAULT '{}'");
 
   db.exec(ASSESS_CONTENT_TABLES);
+
+  // 题库题级扩展（2026-09-10）：behavior 从「类别」下移到「题目」（同类别可有口述/背诵多种题）；
+  // note=备注、knowledge_summary=知识点概要（可空，供向量检索）。
+  const qCols = (db.prepare("PRAGMA table_info(question_bank)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!qCols.includes("behavior")) db.exec("ALTER TABLE question_bank ADD COLUMN behavior TEXT NOT NULL DEFAULT 'generic'");
+  if (!qCols.includes("note")) db.exec("ALTER TABLE question_bank ADD COLUMN note TEXT NOT NULL DEFAULT ''");
+  if (!qCols.includes("knowledge_summary")) db.exec("ALTER TABLE question_bank ADD COLUMN knowledge_summary TEXT NOT NULL DEFAULT ''");
 }
 
 // ==================== 类型 ====================
@@ -72,13 +79,27 @@ export interface QuestionRow {
   answer: string;
   scoring: string | null; // JSON 字符串（dims/special），背诵朗读类为 null
   pointMax: number;
+  /** 题级行为（2026-09-10 起真源）：speech_recite / speech_read / generic */
+  behavior: string;
+  note: string;
+  knowledgeSummary: string;
 }
 export interface CourseContentItem {
   categoryId: string;
   categoryName: string;
-  behavior: string;
+  behavior: string; // 类别行为（兼容保留；判题以题级 q.behavior 为准）
   overview: string;
-  questions: Array<{ id: string; stem: string; answer: string; scoring: string | null; pointMax: number; seq: number }>;
+  questions: Array<{
+    id: string;
+    stem: string;
+    answer: string;
+    scoring: string | null;
+    pointMax: number;
+    seq: number;
+    behavior: string;
+    note: string;
+    knowledgeSummary: string;
+  }>;
 }
 export interface CourseContent {
   courseId: string;
@@ -112,31 +133,45 @@ export function getOrCreateCategory(db: DatabaseSync, topicId: string, name: str
 
 // ==================== 题库 ====================
 
-/** 新增或整题更新（id 存在则覆盖题干/答案/评分/分值）。返回题目 id。 */
+/** 新增或整题更新（id 存在则覆盖题干/答案/评分/分值/行为/备注/知识点概要）。返回题目 id。 */
 export function saveQuestion(
   db: DatabaseSync,
-  q: { id?: string; stem: string; answer: string; scoring?: string | null; pointMax?: number }
+  q: {
+    id?: string;
+    stem: string;
+    answer: string;
+    scoring?: string | null;
+    pointMax?: number;
+    behavior?: string;
+    note?: string;
+    knowledgeSummary?: string;
+  }
 ): string {
   const id = q.id ?? randomUUID();
   const pointMax = q.pointMax ?? 10;
   const scoring = q.scoring ?? null;
+  const behavior = q.behavior ?? "generic";
+  const note = q.note ?? "";
+  const knowledgeSummary = q.knowledgeSummary ?? "";
   const exists = db.prepare("SELECT id FROM question_bank WHERE id = ?").get(id);
   if (exists) {
     db.prepare(
-      "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(q.stem, q.answer, scoring, pointMax, id);
+      "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, behavior = ?, note = ?, knowledge_summary = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary, id);
   } else {
     db.prepare(
-      "INSERT INTO question_bank (id, stem, answer, scoring, point_max) VALUES (?, ?, ?, ?, ?)"
-    ).run(id, q.stem, q.answer, scoring, pointMax);
+      "INSERT INTO question_bank (id, stem, answer, scoring, point_max, behavior, note, knowledge_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary);
   }
   return id;
 }
 
 export function getQuestion(db: DatabaseSync, id: string): QuestionRow | undefined {
-  const r = db.prepare("SELECT id, stem, answer, scoring, point_max AS pointMax FROM question_bank WHERE id = ?").get(id) as
-    | QuestionRow
-    | undefined;
+  const r = db
+    .prepare(
+      "SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary FROM question_bank WHERE id = ?"
+    )
+    .get(id) as QuestionRow | undefined;
   return r ? { ...r } : undefined;
 }
 
@@ -177,7 +212,8 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
     .prepare(
       `SELECT ccq.category_id AS cid, tc.name AS cname, tc.behavior AS behavior, ccq.overview AS overview,
               ccq.question_id AS qid, ccq.seq AS seq,
-              qb.stem AS stem, qb.answer AS answer, qb.scoring AS scoring, qb.point_max AS pointMax
+              qb.stem AS stem, qb.answer AS answer, qb.scoring AS scoring, qb.point_max AS pointMax,
+              qb.behavior AS qbehavior, qb.note AS qnote, qb.knowledge_summary AS qks
        FROM course_category_questions ccq
        JOIN topic_categories tc ON tc.id = ccq.category_id
        JOIN question_bank qb    ON qb.id = ccq.question_id
@@ -195,6 +231,9 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
     answer: string;
     scoring: string | null;
     pointMax: number;
+    qbehavior: string;
+    qnote: string;
+    qks: string;
   }>;
   const items: CourseContentItem[] = [];
   const byCat = new Map<string, CourseContentItem>();
@@ -205,9 +244,63 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
       byCat.set(r.cid, item);
       items.push(item);
     }
-    item.questions.push({ id: r.qid, stem: r.stem, answer: r.answer, scoring: r.scoring, pointMax: r.pointMax, seq: r.seq });
+    item.questions.push({
+      id: r.qid,
+      stem: r.stem,
+      answer: r.answer,
+      scoring: r.scoring,
+      pointMax: r.pointMax,
+      seq: r.seq,
+      behavior: r.qbehavior || r.behavior || "generic",
+      note: r.qnote ?? "",
+      knowledgeSummary: r.qks ?? "",
+    });
   }
   return { courseId: courseUuid, items };
+}
+
+/** 全量题目列表（家长「题库」浏览）：带所属 主题/课程/类别 上下文与行为。 */
+export function listAllBankQuestions(db: DatabaseSync): Array<{
+  id: string;
+  stem: string;
+  answer: string;
+  scoring: string | null;
+  pointMax: number;
+  behavior: string;
+  note: string;
+  knowledgeSummary: string;
+  contexts: Array<{ topic: string; course: string; category: string }>;
+}> {
+  const qs = db
+    .prepare(
+      `SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary FROM question_bank ORDER BY rowid DESC LIMIT 2000`
+    )
+    .all() as Array<{
+    id: string;
+    stem: string;
+    answer: string;
+    scoring: string | null;
+    pointMax: number;
+    behavior: string;
+    note: string;
+    knowledgeSummary: string;
+  }>;
+  const ctx = db
+    .prepare(
+      `SELECT ccq.question_id AS qid, c.topic AS topic, c.title AS course, tc.name AS category
+       FROM course_category_questions ccq
+       JOIN courses c ON c.uuid = ccq.course_id
+       JOIN topic_categories tc ON tc.id = ccq.category_id
+       ORDER BY ccq.rowid`
+    )
+    .all() as Array<{ qid: string; topic: string; course: string; category: string }>;
+  const ctxMap = new Map<string, Array<{ topic: string; course: string; category: string }>>();
+  for (const c of ctx) {
+    const arr = ctxMap.get(c.qid) || [];
+    arr.push({ topic: c.topic, course: c.course, category: c.category });
+    ctxMap.set(c.qid, arr);
+  }
+  return qs.map((q) => ({ ...q, contexts: ctxMap.get(q.id) || [] }));
 }
 
 // ==================== 考核方法 method_spec ====================

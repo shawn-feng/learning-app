@@ -36,7 +36,7 @@ export const COURSE_ASSESS_GUIDE_MD = `# 课程考核内容编写规范（家长
 
 主题决定「有哪些类别」（背诵/句意白话/道理/字词/典故…）；课程决定「挂了哪些类别的哪些题」；同类别多题=例题池，考核时随机抽 1。
 
-类别 behavior 决定引擎行为：speech_recite/speech_read 走**发音评测**，其余 generic 走**口述主观题判分**。
+类别 behavior 决定引擎行为：speech_recite/speech_read 走**发音评测**，其余 generic 走**口述主观题判分**。（2026-09-10：behavior 为**题级字段**（题库表 question_bank.behavior），判题以题目为准——同一类别下可同时有背诵题与口述题；类别 behavior 仅作创建题时的默认继承。）
 
 ## 2. 背诵/朗读类（★）
 

@@ -143,7 +143,13 @@ if (withLLM) {
       const items = (payload.items as Array<any>).map((it: any) => {
         const cat = getOrCreateCategory(db, TOPIC, String(it.categoryName), it.categoryName === "背诵" ? "speech_recite" : "generic");
         const qids = (it.questions || []).map((q: any) =>
-          saveQuestion(db, { stem: String(q.stem), answer: String(q.answer || ""), scoring: String(q.scoring || "") || null, pointMax: 10 })
+          saveQuestion(db, {
+            stem: String(q.stem),
+            answer: String(q.answer || ""),
+            scoring: String(q.scoring || "") || null,
+            pointMax: 10,
+            behavior: cat.behavior,
+          })
         );
         return { categoryId: cat.id, overview: "（LLM 辅助补录，建议人工核对）", questionIds: qids };
       });

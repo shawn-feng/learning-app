@@ -230,6 +230,22 @@ export function parseCourseRubric(md: string): MigrateResult {
   return { ok: items.length > 0, reason: items.length ? undefined : "未解析出题目", items, refTexts: refTexts.length };
 }
 
+/** 存量回填：将挂载在 speech 类别下的题，behavior 从默认 generic 更新为该题所属类别的行为（幂等）。 */
+export function backfillQuestionBehavior(db: DatabaseSync): number {
+  const res = db
+    .prepare(
+      `UPDATE question_bank SET behavior = (
+         SELECT tc.behavior FROM course_category_questions ccq JOIN topic_categories tc ON tc.id = ccq.category_id
+         WHERE ccq.question_id = question_bank.id AND tc.behavior LIKE 'speech%' ORDER BY ccq.rowid LIMIT 1
+       ) WHERE behavior = 'generic' AND EXISTS (
+         SELECT 1 FROM course_category_questions ccq2 JOIN topic_categories tc2 ON tc2.id = ccq2.category_id
+         WHERE ccq2.question_id = question_bank.id AND tc2.behavior LIKE 'speech%'
+       )`
+    )
+    .run();
+  return Number(res.changes) || 0;
+}
+
 export function migrateTopicRubrics(
   db: DatabaseSync,
   topic: string,
@@ -262,7 +278,15 @@ export function migrateTopicRubrics(
     }
     const items = res.items.map((it) => {
       const cat = getOrCreateCategory(db, topic, it.categoryName, BEHAVIOR[it.categoryName] ?? "generic");
-      const qids = it.questions.map((q) => saveQuestion(db, { stem: q.stem, answer: q.answer, scoring: q.scoring, pointMax: 10 }));
+      const qids = it.questions.map((q) =>
+        saveQuestion(db, {
+          stem: q.stem,
+          answer: q.answer,
+          scoring: q.scoring,
+          pointMax: 10,
+          behavior: cat.behavior, // 题级行为（2026-09-10）：迁移出的题随其所属类别行为落库
+        })
+      );
       return { categoryId: cat.id, overview: "（存量 rubric 迁移生成，建议家长抽查完善）", questionIds: qids };
     });
     replaceCourseContent(db, uuid, items);

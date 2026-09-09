@@ -55,7 +55,7 @@ export function attachStructuredQuestions(db: DatabaseSync, childId: string, cou
         pool[k] = pool[j]!;
         pool[j] = qi!;
         picked.push({
-          behavior: item.behavior,
+          behavior: pool[k]!.behavior || item.behavior || "generic", // 题级行为为准（同类别可混口述/背诵）
           categoryId: item.categoryId,
           categoryName: item.categoryName,
           overview: item.overview,
