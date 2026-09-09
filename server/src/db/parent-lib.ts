@@ -5,6 +5,7 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { ensureAssessContentSchema } from "./assess-content.js";
 
 export const PARENT_SCHEMA_TABLES = `
 CREATE TABLE IF NOT EXISTS topics (
@@ -75,6 +76,7 @@ export function openParentLib(dataDir: string, parentId: string): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(PARENT_SCHEMA_TABLES);
   ensureParentColumns(db);
+  ensureAssessContentSchema(db); // 考核内容结构化 v2：courses.uuid/topics.method_spec/三张新表（幂等）
   db.exec(PARENT_SCHEMA_VIEWS);
   return db;
 }

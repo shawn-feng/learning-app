@@ -145,3 +145,50 @@ CREATE INDEX IF NOT EXISTS idx_ccq_category ON course_category_questions(categor
 - ISSUE-067（本设计，待实施）；ISSUE-065/066（已实施，066 写作规范待对齐）。
 - 数据真源：家长库 `server/data/parents/<parent>/parent.sqlite`（courses/topics + 三张新表）。
 - v1（同日早前，已作废）：course_assess_blocks 块表 + type_catalog JSON + rubric 三部分解析——仅存历史参考，勿按 v1 实施。
+
+## 8. 流程改造分析（步骤 1 输出，2026-09-09 21:00）
+
+改造原则：结构化课程**纯代码出题（0 LLM）**；判分按题小 prompt；旧课双路径兼容。锚点代码随现状注释。
+
+### 8.1 现状链路（改造前）
+
+```
+ExamView: examConfig → cfg.courses[] 带 assessRubric(整文) → examGenerateCourse 逐课 LLM 出题(流式≤3)
+         → 答题(文字 ASR / speech 录音) → 提交: examScore(scoringPrompt,answers) 主进程 scoreExamAttempt
+           (prompt 按课 rubric 一次 + 各题) + speech 走 examAssessSpeech(发音评测)
+         → examSubmit 落 attempt/per_question → examScheduleComplete
+```
+
+### 8.2 改造后（结构化课程分支；未结构化课程走 8.1 旧路径不变）
+
+| 环节 | 改造 |
+|---|---|
+| 范围+方法 | 不变：排期定课程（ISSUE-065）；服务端读 method_spec(按 childId) 得每孩子 require/exclude |
+| 取题（答①） | 服务端 exam config 内：course_category_questions ⋈ question_bank ⋈ topic_categories → exclude 过滤 → require 逐类别池内**随机抽 1**（缺题跳过）→ speech_recite 置该课最前 → 下发 `{qid,questionId,course,category,questionType,stem,pointMax,refText?(答题端不显示)}`。**不触发 examGenerateCourse** |
+| 评分标准（答②） | 判分所需 `scoring+answer` 随 questions 下发至主进程（沿用 rubric 现状边界，答题 UI 不展示答案/原文）；speech 类取 answer=refText |
+| 判分 prompt（答③） | `scoreExamAttempt` 改**逐题迷你 prompt** = 总则 + `{题干 stem, 孩子ASR回答, 本题评分标准 scoring, 参考答案 answer}`（可并发）；SCORING_PROMPT 不再含整课 rubric；speech 走发音评测(refText + rules.recitePass) |
+| 结果记录（答④） | `examSubmit` per_question 每项补 `questionId`/`category`（供轮换排除与按类统计）；courseMastery 维持客户端按课程聚合 |
+
+### 8.3 模块改动清单
+
+| 模块 | 改动 |
+|---|---|
+| `server/src/routes/exam.ts` config | courses 改为携带结构化 questions（读三表抽题）或维持 rubric（无关系行的课/未配置主题回退） |
+| 新 `server/src/db/assess-content.ts` | ✅ 已落地：schema ensure + 类别/题库/关系/方法 访问层（见 §9） |
+| `electron/lib/exam-engine.ts` | 结构化课不走 generate/recitationFor；旧路径保留给 legacy |
+| `src/components/ExamView.tsx` | cfg 带 questions 直接开考（无流式等待）；legacy 保留流式分支 |
+| IPC/preload 类型 | CourseConfig 增 `questions?/structured?` 字段透传 |
+| 判分 | engine.scoreExamAttempt 按题取 scoring+answer 构造 prompt |
+| 落库 | per_question 加 questionId/category |
+
+## 9. 实施状态（步骤 3 进行中，2026-09-09 21:00）
+
+已完成：
+- `server/src/db/assess-content.ts`（新）：幂等 schema（courses.uuid 回填/唯一索引、topics.method_spec、question_bank/topic_categories/course_category_questions + 索引）+ 访问层
+  （listCategories/getOrCreateCategory/saveQuestion/getQuestion/getCourseUuid/replaceCourseContent/listCourseContent/getMethodSpec/saveMethodSpec）。
+- `server/src/db/parent-lib.ts`：openParentLib 每次调用自动 ensureAssessContentSchema。
+- 全量家长库已 ensure（186 个，uuid 缺失 0）。
+- 学而篇第一章已造样例块（5 类别各 1 题 + method_spec 珊珊），读取链路验证通过：
+  背诵(speech 置首)+句意白话+道理，字词/典故被 exclude。
+待办：exam config 读取接入（§8.2 取题）、判分按题小 prompt、ExamView 分流、每课 per_question 补 id；
+家长 agent 工具（步骤 2）；存量迁移（步骤 4）。
