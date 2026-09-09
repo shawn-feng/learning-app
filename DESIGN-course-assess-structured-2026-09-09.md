@@ -198,3 +198,8 @@ ExamView: examConfig → cfg.courses[] 带 assessRubric(整文) → examGenerate
   rq1 背诵(refText=原文) → q1 句意白话 → q2 道理（各带参考答案+评分维度）。
 待办：结构化场次端到端本地考核验证（点考核→直出 3 题→答题→判分/评测→落库）；
 家长 agent 工具（步骤 2）；存量迁移（步骤 4）。
+
+> **步骤 2 前置结论（21:50 核实）**：客户端 `data/parents/<parent>/parent.sqlite` 是 0 字节占位，
+> **权威家长库只有服务端 `server/data/parents/<parent>/parent.sqlite`**（exam config 即读它）。
+> 因此家长 agent 新工具必须走 `serverFetch → /api/v1/assess/*` REST（与 /exam/*、/materials/* 同款，
+> authParent 解析 parentId），**不能**在 electron 侧直开 SQLite。先加服务端端点，再加 client 工具。
