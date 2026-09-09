@@ -20,7 +20,7 @@ export const assessCategoriesListTool = defineTool({
   name: "assess_categories_list",
   label: "查看主题考核类别",
   description:
-    "返回某主题（topicKey 如 lunyu）的考核类别清单（类别名/类别id/behavior：speech_recite 背诵评测、speech_read 朗读、generic 口述题）。写考核内容前先看该主题有哪些类别。",
+    "返回某主题（topicKey 如 lunyu）的考核类别清单（类别名/类别id/默认behavior）。注意：判题以**题目级 behavior**为准（2026-09-10），类别 behavior 只是该类别下新建题目未指定时的默认继承。写考核内容前先看该主题有哪些类别。",
   parameters: Type.Object({
     topicKey: Type.String({ description: "主题 topic_key，如 lunyu / english" }),
   }),
@@ -38,7 +38,7 @@ export const assessCategoryCreateTool = defineTool({
   name: "assess_category_create",
   label: "添加/确保考核类别",
   description:
-    "在主题下添加一个考核类别（幂等：同名已存在则直接返回）。behavior 可选：speech_recite（背诵：整句发音评测、不显示原文、置首题）、speech_read（朗读跟读）、generic（口述主观题，默认）。",
+    "在主题下添加一个考核类别（幂等：同名已存在则直接返回）。behavior 只是该类下新题未指定时的默认继承——判题以题目级 behavior 为准：speech_recite（背诵：整句发音评测、不显示原文、置首题）、speech_read（朗读跟读）、generic（口述主观题，默认）。",
   parameters: Type.Object({
     topicKey: Type.String({ description: "主题 topic_key" }),
     name: Type.String({ description: "类别名，如 背诵 / 句意白话 / 道理 / 字词" }),
@@ -73,11 +73,14 @@ export const assessCourseGetTool = defineTool({
     }
     const lines = [`课程「${course.title}」（topic=${course.topic}）结构化考核内容：`];
     for (const it of course.items) {
-      lines.push(`\n【${it.categoryName}】（behavior=${it.behavior}${it.overview ? `，概述：${it.overview}` : ""}）`);
+      lines.push(`\n【${it.categoryName}】${it.overview ? `（概述：${it.overview}）` : ""}`);
       for (const q of it.questions) {
-        lines.push(`- 题(${q.pointMax}分): ${q.stem}`);
+        const tag = q.behavior && q.behavior !== "generic" ? `[${q.behavior}]` : "";
+        lines.push(`- 题${tag}(${q.pointMax}分): ${q.stem}`);
         if (q.answer) lines.push(`  答案：${q.answer}`);
         if (q.scoring) lines.push(`  评分标准：${String(q.scoring).slice(0, 300)}`);
+        if (q.note) lines.push(`  备注：${q.note}`);
+        if (q.knowledgeSummary) lines.push(`  知识点概要：${q.knowledgeSummary}`);
       }
     }
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
@@ -88,10 +91,10 @@ export const assessContentSaveTool = defineTool({
   name: "assess_content_save",
   label: "保存课程考核内容",
   description:
-    "整课保存某门课的考核内容（事务替换旧挂载）。payloadJson 为 JSON：{\"items\":[{ \"categoryName\":\"句意白话\", \"overview\":\"该课该类别说明(可选)\", \"questions\":[ {\"stem\":\"...\",\"answer\":\"参考答案/背诵类=标准原文\",\"scoring\":\"评分标准文本或 JSON\"} ] }]}。\n" +
-    "规则：类别用名称（不存在会自动建，behavior 默认 generic；背诵类请在 categoryName=背诵 处给 behavior 已存在即可）；每题必填 stem+answer；" +
-    "文字题 scoring 用 JSON：{\"dims\":[{\"dim\":\"维度\",\"points\":\"得分点\",\"score\":分,\"note\":\"说明\"}],\"special\":[\"特殊情况\"]}；" +
-    "背诵/朗读题 answer=要背/读的标准原文（逐字发音评测），scoring 可省略；引用已有题库题可给 {\"questionId\":\"...\"}。\n" +
+    "整课保存某门课的考核内容（事务替换旧挂载）。payloadJson 为 JSON：{\"items\":[{ \"categoryName\":\"背诵\", \"overview\":\"该课该类别说明(可选)\", \"questions\":[ {\"stem\":\"背诵本章原文\",\"answer\":\"<标准原文>\",\"behavior\":\"speech_recite\",\"note\":\"备注(可选)\",\"knowledgeSummary\":\"知识点概要(可选)\"} ] }]}。\n" +
+    "每道题可带 behavior（题级判定，2026-09-10 起）——speech_recite 背诵评测（answer=标准原文、不显示原文、置首题）、speech_read 朗读跟读、generic 口述主观题；不写则默认继承该类别的 behavior。" +
+    "文字题每题必填 stem+answer（参考答案/得分要点），scoring 建议 JSON：{\"dims\":[{\"dim\":\"维度\",\"points\":\"得分点\",\"score\":分,\"note\":\"说明\"}],\"special\":[\"特殊情况\"]}，也可写人话；" +
+    "note=备注、knowledgeSummary=知识点概要均可空（供向量检索）。引用已有题库题给 {\"questionId\":\"...\"}。\n" +
     "内容要对应真实课程材料（不编造原文）；写前先 assess_course_get / parent_library_courses 核对。",
   parameters: Type.Object({
     topicKey: Type.String({ description: "主题 topic_key" }),

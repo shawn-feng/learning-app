@@ -41,7 +41,7 @@ export const COURSE_ASSESS_GUIDE_MD = `# 课程考核内容编写规范（家长
 ## 2. 背诵/朗读类（★）
 
 - 类别：背诵 = speech_recite（系统出背诵题：**不显示原文**、发音评测、置该课首题、通过线取该孩子方法 recitePass，默认 90）；朗读 = speech_read（显示原文跟读）。
-- 题目固定写法：\`stem\`=背诵/朗读任务描述（如"背诵本章原文"）、**\`answer\`=要背/读的标准原文（整段、逐字，作为评测 refText）**、scoring 可省略。
+- 题目固定写法：\`stem\`=背诵/朗读任务描述（如"背诵本章原文"）、**\`answer\`=要背/读的标准原文（整段、逐字，评测 refText）**、scoring 可省略；\`behavior\` 建议显式给 "speech_recite"/"speech_read"（不写则继承该类别默认行为，判题以题目级 behavior 为准）。
 - 不要再写旧句式「- 原文背诵：…“…”」，也不要在文字题里另出"背出原文"的题（会与系统背诵题重复）。
 
 ## 3. 文字口述题（generic）
@@ -59,7 +59,7 @@ export const COURSE_ASSESS_GUIDE_MD = `# 课程考核内容编写规范（家长
   {"categoryName":"句意白话","questions":[{"stem":"请用自己的话讲一讲这三句话分别是什么意思，并举例。","answer":"三句白话要点…","scoring":"{\\"dims\\":[{\\"dim\\":\\"三句意思\\",\\"points\\":\\"复习→快乐/朋友来→快乐/不愠→君子\\",\\"score\\":6,\\"note\\":\\"每句2分\\"},{\\"dim\\":\\"举例与表达\\",\\"points\\":\\"例子+通顺\\",\\"score\\":4}],\\"special\\":[\\"只背原文不讲解，表达项不得分\\"]}"}]}
 ]}
 
-注意：item 用 categoryName（可自动建，默认 generic；**背诵/朗读类别请先 assess_category_create 指定 behavior**，或引已有类别）；questions 内联即自动进题库（返回新题 uuid），也可传 {"questionId":"已有题库题uuid"} 复用。
+注意：item 用 categoryName（可自动建类别，默认 generic）或 categoryId 引用；questions 内联即自动进题库（返回新题 uuid），也可传 {"questionId":"已有题库题uuid"} 复用。behavior 是**题级**字段（2026-09-10）：内联题可显式给 speech_recite/speech_read/generic，不写则继承该类别默认；另可带 \`note\`（备注）与 \`knowledgeSummary\`（知识点概要），均可空、供向量检索。
 
 ## 5. 孩子考核方法（assess_method_set）
 
