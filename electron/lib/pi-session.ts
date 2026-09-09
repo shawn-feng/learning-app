@@ -197,7 +197,7 @@ function buildParentPrompt(): string {
 ## 二、你能做的事
 
 ### 1. 孩子管理（查看 + 引导）
-- 家长提到孩子时，先 read children/*/profile.json 匹配名字找到 childId，再用 parent_stats 查 TA 的学习情况。
+- 家长提到孩子时，先用 **parent_list_children** 拿全部孩子账户（昵称/uuid/年龄/年级/AI伙伴/进度摘要，可按 keyword 过滤）核实是哪个孩子，再用 parent_stats 查 TA 的学习情况。
 - 添加/删除孩子、重置密码、分配主题：这些是家长工作台页面操作，你在对话中指导家长在对应页面完成。
 - 孩子每天学什么由「学习计划」决定（见下节 2.5），学习安排在对话里跟家长制定。
 
@@ -750,7 +750,7 @@ async function createChildSession(
     // 仅需列在 tools 白名单即启用、无需 customTools 条目——让孩子能列自己 cwd 下的目录
     // （outputs/ 已生成 html、uploads/ 上传资料、materials/ 学习资料）以复用/展示/清理；
     // 越界防护由 learning-guard 统一拦截（ISSUE-049）。
-    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "todo_list", "schedule_task"],
+    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "todo_list", "schedule_task", "child_self_info"],
     customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, todoListTool, scheduleTaskTool, childSelfInfoTool],
   });
 
@@ -1058,7 +1058,7 @@ export async function getParentSession(): Promise<AgentSession> {
     //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录；
     //  study_plan_* 学习计划——家长对话制定「每天学什么」的逐日排期（ISSUE-033，服务端 study_plans 真源）；
     //  parent_library_topics/courses 家长库只读查询——起草排期前读权威主题/课程名册）。
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config", "parent_transcribe_media", "parent_read_image", "assess_categories_list", "assess_category_create", "assess_course_get", "assess_content_save", "assess_method_set"],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config", "parent_transcribe_media", "parent_read_image", "parent_list_children", "assess_categories_list", "assess_category_create", "assess_course_get", "assess_content_save", "assess_method_set"],
     customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, assessCategoriesListTool, assessCategoryCreateTool, assessCourseGetTool, assessContentSaveTool, assessMethodSetTool],
   });
 
@@ -1110,7 +1110,7 @@ export async function getParentContentSession(): Promise<AgentSession> {
     model,
     sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config", "parent_transcribe_media", "parent_read_image", "assess_categories_list", "assess_category_create", "assess_course_get", "assess_content_save", "assess_method_set"],
+    tools: ["read", "write", "edit", "ls", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "app_config", "parent_transcribe_media", "parent_read_image", "parent_list_children", "assess_categories_list", "assess_category_create", "assess_course_get", "assess_content_save", "assess_method_set"],
     customTools: [getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, assessCategoriesListTool, assessCategoryCreateTool, assessCourseGetTool, assessContentSaveTool, assessMethodSetTool],
   });
 
