@@ -36,6 +36,7 @@ export function attachStructuredQuestions(db: DatabaseSync, childId: string, cou
 
     const picked: Array<{
       behavior: string;
+      categoryId: string;
       categoryName: string;
       overview: string;
       item: { id: string; stem: string; answer: string; scoring: string | null; pointMax: number };
@@ -53,7 +54,13 @@ export function attachStructuredQuestions(db: DatabaseSync, childId: string, cou
         const qi = pool[k];
         pool[k] = pool[j]!;
         pool[j] = qi!;
-        picked.push({ behavior: item.behavior, categoryName: item.categoryName, overview: item.overview, item: pool[k]! });
+        picked.push({
+          behavior: item.behavior,
+          categoryId: item.categoryId,
+          categoryName: item.categoryName,
+          overview: item.overview,
+          item: pool[k]!,
+        });
       }
     }
     if (!picked.length) {
@@ -65,7 +72,13 @@ export function attachStructuredQuestions(db: DatabaseSync, childId: string, cou
       (a, b) => Number(b.behavior.startsWith("speech")) - Number(a.behavior.startsWith("speech"))
     );
     course.questions = picked.map((p) => {
-      const base = { course: course.title, stem: p.item.stem, pointMax: p.item.pointMax || 10 };
+      const base = {
+        course: course.title,
+        stem: p.item.stem,
+        pointMax: p.item.pointMax || 10,
+        questionId: p.item.id, // 题库题目 uuid（落库溯源/轮换排除）
+        categoryId: p.categoryId, // 类别 uuid
+      };
       if (p.behavior.startsWith("speech")) {
         return {
           ...base,

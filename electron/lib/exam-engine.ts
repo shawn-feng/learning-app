@@ -342,91 +342,106 @@ export async function scoreExamAttempt(
   });
   await loader.reload();
 
-  // 判分 prompt：rubric 按「课程」只放一次（同课多题共享同一份考核要点），
-  // 避免逐题重复粘贴把 prompt 撑大（2026-09-09：4 题曾把同一份 rubric 贴 4 次 → 20KB+）。
-  // 判分只按 rubric 的知识点/评分标准给分，不需要主题考核方法(assess_method)。
-  const byCourse = new Map<string, ExamAnswerIn[]>();
-  for (const a of answers) {
-    const k = a.course || "（未分课程）";
-    const list = byCourse.get(k);
-    if (list) list.push(a);
-    else byCourse.set(k, [a]);
+  // 逐题并发判分（2026-09-09）：每题一个迷你 prompt = 总则 + {题干 + 孩子回答 + 本题评分标准/参考答案}，
+  // 并发上限 3（与出题一致）。结构化题带逐题 scoring 不再贴整课 rubric；旧题无 scoring 时带所属课程 rubric。
+  // 判分只按 rubric/scoring 给分，不需要主题考核方法(assess_method)。
+  const t0 = Date.now();
+  if (!answers.length) {
+    return { perQuestion: [], courseMastery: {}, reinforcePlan: {}, score: 0, overall: "" };
   }
-  const answersLines: string[] = [];
-  let n = 0;
-  for (const [course, qs] of byCourse) {
-    // 结构化题带逐题评分标准时，不再重复贴整课 rubric（判分锚定 = 本题标准）
-    const anyRubric = qs.some((q) => q.rubric);
-    if (anyRubric) {
-      const rubric = qs.find((q) => q.rubric)?.rubric || "（未提供考核要点）";
-      answersLines.push(`【课程：${course}】\n考核要点(rubric，家长写，判分锚定，本课各题共用)：${rubric}`);
+  const CONCURRENCY = 3;
+  const results: Array<{
+    per: { qid: string; pointGot: number; correct: boolean; aiComment: string };
+    overall: string;
+    reply: string;
+  } | null> = new Array(answers.length).fill(null);
+  let idx = 0;
+  const scoreOne = async () => {
+    while (idx < answers.length) {
+      const i = idx++;
+      const a = answers[i]!;
+      const questionText =
+        `【本场第 ${i + 1} 题】qid=${a.qid}，pointMax=${a.pointMax}\n` +
+        (a.rubric ? `课程考核要点(rubric)：${a.rubric}\n` : "") +
+        `题干：${a.stem}\n` +
+        (a.scoring ? `本题评分标准（家长设定，按此给分）：\n${a.scoring}\n` : "") +
+        `孩子回答（ASR 转写，可能有识别误差）：${a.asrText || "（未作答/仅语音）"}\n` +
+        `本题用时：${a.durationMs != null ? Math.round(a.durationMs / 1000) + "秒" : "未知"}`;
+      const prompt =
+        `${scoringPrompt}\n\n—— 本题（只评这一题，不要评其它题） ——\n${questionText}\n\n` +
+        `请只针对本题输出 JSON：{"perQuestion":[{"qid":"${a.qid}","pointGot":分数,"correct":true|false,"aiComment":"评语"}],"overall":"整场一句总评"}`;
+      try {
+        const { session } = await createAgentSession({
+          cwd: childDir,
+          agentDir: path.join(childDir, ".pi", "agent"),
+          modelRuntime: runtime,
+          model,
+          sessionManager: SessionManager.inMemory(),
+          resourceLoader: loader,
+          tools: [],
+          customTools: [],
+        });
+        try {
+          await session.prompt(prompt);
+          const text = lastAssistantText(session);
+          const parsed = extractJson(text);
+          const list = (Array.isArray(parsed?.perQuestion) ? parsed.perQuestion : []) as any[];
+          const mine = list.find((x) => x && String(x.qid) === a.qid) ?? list[0];
+          if (!mine) throw new Error("该题判分未返回有效结果：" + text.slice(0, 200));
+          results[i] = {
+            per: {
+              qid: a.qid,
+              pointGot: Math.max(0, Number(mine.pointGot) || 0),
+              correct: Boolean(mine.correct),
+              aiComment: String(mine.aiComment ?? ""),
+            },
+            overall: String(parsed?.overall ?? ""),
+            reply: text,
+          };
+        } finally {
+          session.dispose();
+        }
+      } catch (e) {
+        console.error(`[exam] 判分失败 qid=${a.qid}`, e);
+        results[i] = null; // 留空，最后统一判断
+      }
     }
-    for (const a of qs) {
-      n++;
-      answersLines.push(
-        `【第${n}题】qid=${a.qid}，pointMax=${a.pointMax}\n` +
-          `题干：${a.stem}\n` +
-          `孩子回答（ASR 转写，可能有识别误差）：${a.asrText || "（未作答/仅语音）"}\n` +
-          (a.scoring ? `本题评分标准（家长设定，按此给分）：\n${a.scoring}\n` : "") +
-          `本题用时：${a.durationMs != null ? Math.round(a.durationMs / 1000) + "秒" : "未知"}`
-      );
-    }
-  }
-
-  const prompt = `${scoringPrompt}\n\n—— 本场考核题目与孩子回答 ——\n${answersLines.join("\n\n")}\n\n请按评分标准输出 JSON。`;
-
-  const { session } = await createAgentSession({
-    cwd: childDir,
-    agentDir: path.join(childDir, ".pi", "agent"),
-    modelRuntime: runtime,
-    model,
-    sessionManager: SessionManager.inMemory(),
-    resourceLoader: loader,
-    tools: [],
-    customTools: [],
-  });
-  try {
-    const t0 = Date.now();
-    await session.prompt(prompt);
-    const text = lastAssistantText(session);
-    const parsed = extractJson(text);
-    if (!parsed || !Array.isArray(parsed.perQuestion)) {
-      throw new Error("判分未返回有效结果：" + text.slice(0, 300));
-    }
-    const perQuestion = parsed.perQuestion.map((q: any) => ({
-      qid: String(q?.qid ?? ""),
-      pointGot: Math.max(0, Number(q?.pointGot) || 0),
-      correct: Boolean(q?.correct),
-      aiComment: String(q?.aiComment ?? ""),
-    }));
-    auditExamEvent(childId, "score", {
-      kind: "ok",
-      scoringPrompt,
-      answers: answers.map((a) => ({ qid: a.qid, course: a.course, stem: a.stem, asrText: a.asrText })),
-      reply: text,
-      parsed,
-      costMs: Date.now() - t0,
-    });
-    // 2026-09-09：判分只输出每题评分 + 一句总评；courseMastery 由客户端按每题 course 本地聚合，
-    // reinforcePlan 已从判分移除（复习建议改由家长 agent 按需提供），这里返回空以兼容调用方。
-    return {
-      perQuestion,
-      courseMastery: {},
-      reinforcePlan: {},
-      score: 0,
-      overall: String(parsed.overall ?? ""),
-    };
-  } catch (e) {
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, answers.length) }, scoreOne));
+  const failedIdx = results.map((r, i) => (r ? -1 : i)).filter((i) => i >= 0);
+  if (failedIdx.length) {
+    const msg = `判分失败：${failedIdx.length}/${answers.length} 题判分出错（qid=${failedIdx
+      .map((i) => answers[i]!.qid)
+      .join(",")}），请重试提交`;
     auditExamEvent(childId, "score", {
       kind: "error",
       scoringPrompt,
       answers: answers.map((a) => ({ qid: a.qid, course: a.course, stem: a.stem, asrText: a.asrText })),
-      error: String((e as Error).message || e),
+      error: msg,
+      costMs: Date.now() - t0,
     });
-    throw e;
-  } finally {
-    session.dispose();
+    throw new Error(msg);
   }
+  const perQuestion = results.map((r) => r!.per);
+  const overall = results.map((r) => r!.overall).find(Boolean) ?? "";
+  auditExamEvent(childId, "score", {
+    kind: "ok",
+    scoringPrompt,
+    concurrency: true,
+    answers: answers.map((a) => ({ qid: a.qid, course: a.course, stem: a.stem, asrText: a.asrText })),
+    reply: results.map((r) => r!.reply).join("\n---\n"),
+    parsed: { perQuestion },
+    costMs: Date.now() - t0,
+  });
+  // 2026-09-09：判分只输出每题评分 + 一句总评；courseMastery 由客户端按每题 course 本地聚合，
+  // reinforcePlan 已从判分移除（复习建议改由家长 agent 按需提供），这里返回空以兼容调用方。
+  return {
+    perQuestion,
+    courseMastery: {},
+    reinforcePlan: {},
+    score: 0,
+    overall,
+  };
 }
 
 // ==================== 辅助 ====================

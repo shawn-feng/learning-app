@@ -56,6 +56,10 @@ interface ScoredResult {
     refText?: string;
     audioFileId?: string;
     speech?: SpeechAssessment;
+    /** 结构化 v2 溯源（题库题目 uuid / 类别 uuid / 本题满分） */
+    questionId?: string;
+    categoryId?: string;
+    pointMax?: number;
   }>;
   courseMastery: Record<string, { correct: number; total: number; rate: number }>;
   reinforcePlan: Record<string, { planReviewAt: string; focus: string[]; aiSuggestion?: string }>;
@@ -109,9 +113,11 @@ export default function ExamView({ childId, onExit }: Props) {
   const streamRunRef = useRef(0);
   // 幂等：同一场考试只启动一次流式出题（iframe 因 srcDoc 变化重载会再次触发 onLoad）
   const streamStartedRef = useRef(false);
-  // 题流元数据（结构化 v2）：与 iframe D.questions 完全同序，记录每题评分标准文本；
-  // iframe 会重排 qid 且丢弃未知字段，判分标准只能由宿主按送达顺序在提交时回填。
-  const questionMetaRef = useRef<Array<{ course: string; stem: string; scoringText: string }>>([]);
+  // 题流元数据（结构化 v2）：与 iframe D.questions 完全同序，记录每题评分标准文本与溯源 id；
+  // iframe 会重排 qid 且丢弃未知字段，判分标准/题目溯源只能由宿主按送达顺序在提交时回填。
+  const questionMetaRef = useRef<
+    Array<{ course: string; stem: string; scoringText: string; questionId: string; categoryId: string }>
+  >([]);
   // 准备阶段提示文案（选课/出题/判分共用「批改中」遮罩）
   const [prepText, setPrepText] = useState("");
 
@@ -206,6 +212,8 @@ export default function ExamView({ childId, onExit }: Props) {
           course: String(q?.course || ""),
           stem: String(q?.stem || ""),
           scoringText: String(q?.scoringText || ""),
+          questionId: String(q?.questionId || ""),
+          categoryId: String(q?.categoryId || ""),
         });
       }
       try {
@@ -309,10 +317,14 @@ export default function ExamView({ childId, onExit }: Props) {
     setStage("scoring");
     setPrepText("老师正在批改你的回答…");
     try {
-      // 结构化题：按送达顺序把每题评分标准回填到提交项（iframe 重排 qid 且丢弃未知字段）
+      // 结构化题：按送达顺序把每题评分标准/溯源 id 回填到提交项（iframe 重排 qid 且丢弃未知字段）
       const metas = questionMetaRef.current;
       payload.perQuestion.forEach((q, i) => {
-        if (i < metas.length) (q as any).scoringText = metas[i]!.scoringText || "";
+        if (i < metas.length) {
+          (q as any).scoringText = metas[i]!.scoringText || "";
+          (q as any).questionId = metas[i]!.questionId || "";
+          (q as any).categoryId = metas[i]!.categoryId || "";
+        }
       });
       const isSpeech = (q: (typeof payload.perQuestion)[number]) => !!q.questionType;
       const speechQs = payload.perQuestion.filter(isSpeech);
@@ -419,6 +431,11 @@ export default function ExamView({ childId, onExit }: Props) {
       const speechGotByQid = new Map(speechResult.map((x) => [x.qid, x]));
       let score = 0;
       const perQuestion: ScoredResult["perQuestion"] = payload.perQuestion.map((q) => {
+        const origin = (q: (typeof payload.perQuestion)[number]) => ({
+          pointMax: Number(q.pointMax) || 10,
+          questionId: String((q as any).questionId || ""), // 题库题目 uuid（结构化 v2，溯源/轮换）
+          categoryId: String((q as any).categoryId || ""), // 类别 uuid
+        });
         if (isSpeech(q)) {
           const g = speechGotByQid.get(q.qid)!;
           score += g.pointGot;
@@ -435,6 +452,7 @@ export default function ExamView({ childId, onExit }: Props) {
             refText: q.refText || "",
             audioFileId: g.audioFileId,
             speech: g.speech,
+            ...origin(q),
           };
         }
         const g = textGotByQid.get(q.qid);
@@ -449,6 +467,7 @@ export default function ExamView({ childId, onExit }: Props) {
           asrText: q.asr || "",
           audioFileId: undefined,
           speech: undefined,
+          ...origin(q),
         };
       });
       const wrongQuestions = perQuestion.filter((x) => !x.correct).map((x) => x.qid);
