@@ -14,6 +14,17 @@ import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { attachStructuredQuestions } from "../assess-selection.js";
+import {
+  getOrCreateCategory,
+  saveQuestion,
+  getQuestion,
+  getCourseUuid,
+  replaceCourseContent,
+  listCourseContent,
+  listCategories,
+  getMethodSpec,
+  saveMethodSpec,
+} from "../db/assess-content.js";
 
 interface ExamDeps {
   config: ServerConfig;
@@ -1463,5 +1474,236 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }
     const records = listCourseStatus(deps.db, deps.config.dataDir, parentId, childId);
     return { records };
+  });
+
+  // ===== 考核内容结构化 v2（ISSUE-067 步骤2：家长 agent 读写新表；权威库 = 服务端 parent.sqlite） =====
+  const openParentFor = (parentId: string) => openParentLib(deps.config.dataDir, parentId);
+  /** item 里给 categoryId 或 categoryName(+behavior)：返回该主题下类别 uuid；两者都给优先 id。 */
+  const resolveCategory = (
+    db: DatabaseSync,
+    topic: string,
+    p: Record<string, unknown>
+  ): { id: string } => {
+    if (typeof p.categoryId === "string" && p.categoryId) {
+      const row = db.prepare("SELECT id FROM topic_categories WHERE id = ? AND topic_id = ?").get(p.categoryId, topic) as
+        | { id: string }
+        | undefined;
+      if (!row) throw new Error(`类别 ${p.categoryId} 不属于主题 ${topic}（或不存在）`);
+      return { id: row.id };
+    }
+    if (typeof p.categoryName === "string" && p.categoryName.trim()) {
+      const c = getOrCreateCategory(db, topic, p.categoryName.trim(), String(p.behavior || "generic"));
+      return { id: c.id };
+    }
+    throw new Error("每项需要 categoryId 或 categoryName");
+  };
+
+  app.get("/api/v1/assess/topics/:topic/categories", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const topic = String((req.params as { topic?: string }).topic || "");
+    if (!topic) return reply.code(400).send({ error: "缺少 topic" });
+    const db = openParentFor(parentId);
+    try {
+      return { topic, categories: listCategories(db, topic) };
+    } finally {
+      db.close();
+    }
+  });
+
+  app.get("/api/v1/assess/topics/:topic/method-spec", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const topic = String((req.params as { topic?: string }).topic || "");
+    if (!topic) return reply.code(400).send({ error: "缺少 topic" });
+    const db = openParentFor(parentId);
+    try {
+      return { topic, spec: getMethodSpec(db, topic) };
+    } finally {
+      db.close();
+    }
+  });
+
+  app.post("/api/v1/assess/categories", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const b = (req.body || {}) as { topicId?: string; name?: string; behavior?: string };
+    if (!b.topicId || !b.name) return reply.code(400).send({ error: "需要 topicId + name" });
+    const db = openParentFor(parentId);
+    try {
+      const category = getOrCreateCategory(db, String(b.topicId), String(b.name).trim(), String(b.behavior || "generic"));
+      return { category };
+    } finally {
+      db.close();
+    }
+  });
+
+  app.post("/api/v1/assess/questions", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const b = (req.body || {}) as { questionId?: string; stem?: string; answer?: string; scoring?: string | null; pointMax?: number };
+    if (!b.stem || !b.answer) return reply.code(400).send({ error: "题目需要 stem + answer" });
+    const db = openParentFor(parentId);
+    try {
+      const id = saveQuestion(db, {
+        id: b.questionId,
+        stem: String(b.stem).trim(),
+        answer: String(b.answer).trim(),
+        scoring: b.scoring ?? null,
+        pointMax: Number(b.pointMax) || 10,
+      });
+      return { id };
+    } finally {
+      db.close();
+    }
+  });
+
+  /** 整课保存考试内容：topic+title 定位课程；每项挂类别+若干题（可引用题库题或内联新建）。事务替换旧挂载。 */
+  app.post("/api/v1/assess/courses/save", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const b = (req.body || {}) as { topic?: string; title?: string; items?: Array<Record<string, unknown>> };
+    if (!b.topic || !b.title || !Array.isArray(b.items)) {
+      return reply.code(400).send({ error: "需要 topic + title + items[]" });
+    }
+    const db = openParentFor(parentId);
+    try {
+      const uuid = getCourseUuid(db, String(b.topic), String(b.title));
+      if (!uuid) return reply.code(400).send({ error: `课程不存在：${b.topic}/${b.title}（请先在课程库创建该课）` });
+      const replaceItems: Array<{ categoryId: string; overview: string; questionIds: string[] }> = [];
+      let created = 0;
+      let linked = 0;
+      for (const it of b.items) {
+        const { id: categoryId } = resolveCategory(db, String(b.topic), it);
+        const qs = (Array.isArray(it.questions) ? it.questions : []) as Array<Record<string, unknown>>;
+        const qids: string[] = [];
+        for (const qo of qs) {
+          if (typeof qo.questionId === "string" && qo.questionId) {
+            const exists = getQuestion(db, qo.questionId);
+            if (!exists) return reply.code(400).send({ error: `题库题不存在：${qo.questionId}` });
+            qids.push(qo.questionId);
+            linked++;
+          } else {
+            const stem = String(qo.stem ?? "").trim();
+            const answer = String(qo.answer ?? "").trim();
+            if (!stem || !answer) return reply.code(400).send({ error: `类别「${String(it.categoryName || it.categoryId || "")}」下内联题目需要 stem + answer` });
+            const id = saveQuestion(db, {
+              stem,
+              answer,
+              scoring: qo.scoring != null ? String(qo.scoring) : null,
+              pointMax: Number(qo.pointMax) || 10,
+            });
+            qids.push(id);
+            created++;
+          }
+        }
+        replaceItems.push({ categoryId, overview: String(it.overview ?? ""), questionIds: qids });
+      }
+      replaceCourseContent(db, uuid, replaceItems);
+      return { ok: true, courseUuid: uuid, categories: replaceItems.length, questionsCreated: created, questionsLinked: linked };
+    } catch (e) {
+      if (reply.sent) return;
+      return reply.code(400).send({ error: String((e as Error).message || e) });
+    } finally {
+      db.close();
+    }
+  });
+
+  /** 查看某课结构化内容（类别→题，含题库原文/评分；供 agent 校验与阅读）。 */
+  app.get("/api/v1/assess/courses/:topic/:title", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { topic, title } = req.params as { topic: string; title: string };
+    const db = openParentFor(parentId);
+    try {
+      const uuid = getCourseUuid(db, topic, title);
+      if (!uuid) return reply.code(404).send({ error: "课程不存在" });
+      const content = listCourseContent(db, uuid);
+      return { course: { topic, title, courseId: uuid, structured: content.items.length > 0, items: content.items } };
+    } finally {
+      db.close();
+    }
+  });
+
+  /** 更新某孩子的方法（主题级 method_spec 内合并该孩子条目）。require/exclude 可用类别名或 uuid。 */
+  app.post("/api/v1/assess/method-spec", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const b = (req.body || {}) as {
+      topicId?: string;
+      childId?: string;
+      require?: Record<string, number>;
+      exclude?: string[];
+      recitePass?: number;
+    };
+    if (!b.topicId || !b.childId) return reply.code(400).send({ error: "需要 topicId + childId" });
+    const db = openParentFor(parentId);
+    try {
+      const spec = (getMethodSpec(db, String(b.topicId)) as { perChild?: Record<string, unknown>; default?: unknown }) ?? {};
+      const per: Record<string, any> = (spec.perChild as Record<string, any>) ?? {};
+      const cur: any = per[String(b.childId)] ?? { require: {}, exclude: [], rules: { recitePass: 90 } };
+      if (b.require) {
+        const reqIds: Record<string, number> = {};
+        const cats = listCategories(db, String(b.topicId));
+        const byName = new Map(cats.map((c) => [c.name, c.id]));
+        const byId = new Set(cats.map((c) => c.id));
+        for (const [k, v] of Object.entries(b.require)) {
+          const id = byName.get(k) ?? (byId.has(k) ? k : undefined);
+          if (!id) return reply.code(400).send({ error: `类别「${k}」不属于主题 ${b.topicId}` });
+          reqIds[id] = Math.max(1, Number(v) || 1);
+        }
+        cur.require = reqIds;
+      }
+      if (Array.isArray(b.exclude)) {
+        const cats = listCategories(db, String(b.topicId));
+        const byName = new Map(cats.map((c) => [c.name, c.id]));
+        cur.exclude = b.exclude
+          .map((k) => byName.get(k) ?? (cats.some((c) => c.id === k) ? k : null))
+          .filter((x): x is string => !!x);
+      }
+      if (b.recitePass != null) cur.rules = { ...(cur.rules || {}), recitePass: Math.max(0, Number(b.recitePass) || 90) };
+      per[String(b.childId)] = cur;
+      spec.perChild = per;
+      if (spec.default == null) spec.default = { require: {}, exclude: [], rules: { recitePass: 90 } };
+      saveMethodSpec(db, String(b.topicId), spec);
+      return { ok: true, spec };
+    } finally {
+      db.close();
+    }
   });
 }

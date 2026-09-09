@@ -196,10 +196,17 @@ ExamView: examConfig → cfg.courses[] 带 assessRubric(整文) → examGenerate
 - `electron/lib/exam-engine.ts` + `src/components/ExamView.tsx`：判分支持逐题 scoringText（不贴整课 rubric）；
   流式 worker 优先用预生成题；宿主按送达顺序维护元数据，提交回填 scoringText。实测输出：
   rq1 背诵(refText=原文) → q1 句意白话 → q2 道理（各带参考答案+评分维度）。
-待办：结构化场次端到端本地考核验证（点考核→直出 3 题→答题→判分/评测→落库）；
-家长 agent 工具（步骤 2）；存量迁移（步骤 4）。
+待办：结构化场次端到端本地考核验证（点考核→直出 3 题→答题→判分/评测→落库）；存量迁移（步骤 4）。
 
 > **步骤 2 前置结论（21:50 核实）**：客户端 `data/parents/<parent>/parent.sqlite` 是 0 字节占位，
 > **权威家长库只有服务端 `server/data/parents/<parent>/parent.sqlite`**（exam config 即读它）。
 > 因此家长 agent 新工具必须走 `serverFetch → /api/v1/assess/*` REST（与 /exam/*、/materials/* 同款，
 > authParent 解析 parentId），**不能**在 electron 侧直开 SQLite。先加服务端端点，再加 client 工具。
+
+> **步骤 2 进度（22:30）**：
+> - 服务端 `routes/exam.ts` 内新增 `/api/v1/assess/*`：topics/:topic/categories(GET)、categories(POST 幂等)、
+>   questions(POST)、courses/save(POST 整课事务替换，类别可 id/名、题目可复用/内联新建)、courses/:topic/:title(GET)、
+>   method-spec(GET/POST 合并某孩子条目，require/exclude 支持类别名或 uuid)。
+> - electron 新 `assess-admin.ts`（serverFetch 封装）+ `assess-tools.ts`（5 个工具：类别列表/类别创建/
+>   课程内容查看/课程内容保存(payloadJson)/孩子考核方法设置），已注册进家长会话两处工具列表。
+> - 仍待：写作规范 assess-guide 对齐新入口、家长端结构化编辑器(UI)、本地会话实测工具。
