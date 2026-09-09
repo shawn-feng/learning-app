@@ -116,7 +116,7 @@ function masteryLevel(rate: number): string {
 // ==================== 考核 v2：固定频率配置 / 排期生成（EXAM-REQUIREMENTS §14） ====================
 
 interface FixedExamConfig {
-  /** 固定考核频率档：daily | weekly（UI 标签管理）；monthly/halfyear/yearly 保留兼容（旧数据/旧排期） */
+  /** 固定考核频率档：daily | weekly（UI 标签管理；monthly/halfyear/yearly 2026-09-09 起下线，历史排期不可再考） */
   frequencies: string[];
   /** 每轮考核的课程数 N（§14.3，默认 3；v3 起数量由选课 prompt 规则决定，此字段仅兼容保留） */
   courseCount: number;
@@ -124,11 +124,10 @@ interface FixedExamConfig {
   time: string;
   /** 每周考核：周几几点（weekday 1=周一…7=周日；time HH:mm；缺省用 time） */
   weekly: { weekday: number; time: string };
-  /** 首次生成锚点（ISO）；仅 monthly+ 档步进用，daily/weekly 按各自时刻实时定位 */
+  /** 首次生成锚点（ISO）；仅 legacy 步进用，daily/weekly 按各自时刻实时定位 */
   anchorAt: string;
-  /** 各频率档「选课 prompt」（家长可编辑；缺省用 DEFAULT_SELECTION_PROMPTS）——
-   *  选课由客户端 LLM 按本 prompt 执行（§14.9，取代代码打分选课）。模板占位符由服务端注入：
-   *  {{TODAY}} 今天日期 / {{RANGE}} 本周期范围 / {{STATS}} 周期内课程统计 / {{CLIST}} 候选课程清单 */
+  /** ⚠️ 遗留：2026-09-09 起 daily/weekly 不再用选课 prompt / 选课 LLM——固定档=计划周期内必学课全部考核（内置规则）；
+   * 该字段仅为旧版本保存的数据兼容保留，新逻辑不读取。 */
   selectionPrompts: Record<string, string>;
 }
 
@@ -141,39 +140,13 @@ const DEFAULT_FIXED_CONFIG: FixedExamConfig = {
   selectionPrompts: {},
 };
 
-/** 五档频率的默认选课 prompt（家长可在「学习考核」编辑，缺省回退到这些默认值）。
- *  只描述「考哪些课/知识点、怎么选」——**不出现 JSON/输出格式说明**（那些由客户端引擎自动附加，
- *  家长不需要知道）。每档包含：如何获取本周期学习/复习的课程 + 选择原则 + 如何考核。 */
+/** ⚠️ 遗留常量：2026-09-09 起固定档不再用选课 prompt（内置=计划必学课全考），该表只保留供旧配置数据兼容展示。
+ *  monthly/halfyear/yearly 档已下线（对应模板删除）。 */
 export const DEFAULT_SELECTION_PROMPTS: Record<string, string> = {
   daily:
-    "本次是每日考核。\n" +
-    "【如何获取本周期课程】候选清单就是**今天（{{TODAY}}）学习计划**里安排的全部课程（每门标有「计划日期:{{TODAY}}」）。计划内的课程**无论是否完成**都要考核。\n" +
-    "【选择原则】候选清单中的课程**全部选入**，不挑选、不遗漏。\n" +
-    "【如何考核】每门选中的课程按它的考核内容完整出题（出题阶段会提供）。",
+    "【内置规则 · 每日考核】本周期学习计划里的**必学主题**课程全部考核（选学主题课程不纳入，除非自定义考核点名）。",
   weekly:
-    "本次是每周考核。\n" +
-    "【如何获取本周期课程】候选清单就是**近 7 天（{{RANGE}}）学习计划**里安排的全部课程（每门标有「计划日期」，含今天）。计划内的课程**无论是否完成**都要考核。\n" +
-    "【选择原则】候选清单中的课程**全部选入**，不挑选、不遗漏。\n" +
-    "【如何考核】每门选中的课程按它的考核内容完整出题（出题阶段会提供）。",
-  monthly:
-    "本次是每月考核，分两部分选课。\n" +
-    "【如何获取本周期课程】课程清单里每门课标注了「首次学习」和「最近复习」日期，并已用标记标出归属：\n" +
-    "「★ 本月」= 学习或复习落在本月（{{RANGE}}）；「◐ 本月前」= 首次学习早于本月（含已学但日期未知的课程）。\n" +
-    "【选择原则】\n" +
-    "第一部分（本月课程）：**每个主题**从「★ 本月」标记的课程里挑选 50%（数量向上取整，见下方【各主题选课数量】）；\n" +
-    "第二部分（本月前课程）：**每个主题**再从「◐ 本月前」标记的课程里挑选，数量 = 该主题本月课程数的 25%（向上取整，见下方【各主题选课数量】）。\n" +
-    "挑选时优先选：考核掌握度薄弱/学习中、复习计划到期的、最久没考核的课程。\n" +
-    "【如何考核】每门选中的课程按它的考核内容完整出题（出题阶段会提供）。",
-  halfyear:
-    "本次是半年考核，课程覆盖面大，按比例抽取。\n" +
-    "【如何获取本周期课程】课程清单里每门课标注了「首次学习」和「最近复习」日期，两者任一落在本周期 {{RANGE}} 内即为本周期学习/复习过的课程（清单中已用「★ 本周期」标出）。\n" +
-    "【选择原则】**每个主题**从「★ 本周期」标记的课程里挑选 40%（数量向上取整，见下方【各主题选课数量】），优先选：考核掌握度薄弱/学习中、复习计划到期、最久没考核的课程；尽量覆盖不同学习时间的课程（别只选最近学的）。\n" +
-    "【如何考核】每门选中的课程按它的考核内容完整出题（出题阶段会提供）。",
-  yearly:
-    "本次是年度考核，覆盖面最大，按比例抽取且需覆盖全部主题。\n" +
-    "【如何获取本周期课程】课程清单里每门课标注了「首次学习」和「最近复习」日期，两者任一落在本周期 {{RANGE}} 内即为本周期学习/复习过的课程（清单中已用「★ 本周期」标出）。\n" +
-    "【选择原则】**每个主题**从「★ 本周期」标记的课程里挑选 60%（数量向上取整，见下方【各主题选课数量】），优先选：考核掌握度薄弱/学习中、复习计划到期、最久没考核的课程；要求主题间尽量均衡、时间上分散。\n" +
-    "【如何考核】每门选中的课程按它的考核内容完整出题（出题阶段会提供）。",
+    "【内置规则 · 每周考核】本周期学习计划里的**必学主题**课程全部考核（选学主题课程不纳入，除非自定义考核点名）。",
 };
 
 function getFixedConfig(db: DatabaseSync, parentId: string): FixedExamConfig {
@@ -916,45 +889,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         status: String(sch.status),
         scope,
       };
-      // 自定义排期：scope 指定范围
-      if (scope.topics || scope.courses) {
-        // 第二段优先：客户端选课完成 → 按选中 title 返回 rubric + 判分 prompt（自定义与固定统一）
-        if (coursesParam) {
-          const titles = coursesParam
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-          return {
-            schedule,
-            courses: fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, titles),
-            scoringPrompt: buildScoringPrompt(),
-          };
-        }
-        const customPrompt = String(scope.prompt || "");
-        if (customPrompt) {
-          // 自定义考核带「考核 prompt」→ 走选课两段式：LLM 按家长写的规则从候选（scope 限定或全部）里挑
-          const all = listLearnedCourseMeta(deps.db, deps.config.dataDir, parentId, childId);
-          const topics = Array.isArray(scope.topics) ? scope.topics : [];
-          const courses = Array.isArray(scope.courses) ? scope.courses : [];
-          const candidates = all.filter(
-            (c) => (!topics.length || topics.includes(c.topic)) && (!courses.length || courses.includes(c.title))
-          );
-          const selectionPrompt = buildSelectionPrompt(
-            customPrompt,
-            candidates,
-            "custom",
-            new Date(String(sch.scheduled_at)).getTime()
-          );
-          return { schedule, selectionPrompt, candidates };
-        }
-        // 无 prompt（旧行为）：直接返回范围课程（带 rubric），跳过选课 LLM
-        return {
-          schedule,
-          courses: selectScopeCourses(deps.config.dataDir, parentId, childId, scope),
-          scoringPrompt: buildScoringPrompt(),
-        };
-      }
-      // 第二段：客户端选课完成 → 按选中 title 返回 rubric + 判分 prompt
+      // 第二段（兼容旧客户端/二次请求）：带 courses= 参数 → 直接按课程名返回 rubric + 判分 prompt
       if (coursesParam) {
         const titles = coursesParam
           .split(",")
@@ -966,28 +901,67 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           scoringPrompt: buildScoringPrompt(),
         };
       }
-      // 第一段：选课 prompt（家长可编辑模板 + 注入周期范围/统计/候选清单）+ 候选课程元数据（无 rubric）
-      // v2026-09-03：daily/weekly 固定档候选改为「家长学习计划」（study_plan_items，计划内无论是否完成都考核）；
-      // 其余（custom 走上面分支；monthly+ 为历史兼容排期）仍用「学习/复习痕迹」候选。
-      const cfg = getFixedConfig(deps.db, parentId);
-      const freq = String(sch.freq || "weekly");
-      const ts = new Date(String(sch.scheduled_at)).getTime();
-      const template = cfg.selectionPrompts[freq] || DEFAULT_SELECTION_PROMPTS[freq] || DEFAULT_SELECTION_PROMPTS.weekly;
-      if (freq === "daily" || freq === "weekly") {
-        const win = planWindowFor(freq, ts);
-        const { courses: planCourses, unmatched } = listPlanCourseMeta(deps.db, deps.config.dataDir, parentId, childId, win.start, win.end);
-        const selectionPrompt = buildSelectionPrompt(template, planCourses, freq, ts, "plan");
+      // 自定义考核（2026-09-09 起）：范围由排期 scope.courses **精确决定**（家长 agent 解析确定课程名），
+      // 不再走「规则文本 → 选课 LLM」（旧的选课 prompt 两段式已废弃，见 ISSUE-054）。
+      if (sch.kind === "custom") {
+        const scopeCourses = (Array.isArray(scope.courses) ? scope.courses : [])
+          .map((x: unknown) => String(x ?? "").trim())
+          .filter(Boolean);
+        if (!scopeCourses.length) {
+          return reply.code(400).send({
+            error: "该自定义考核没有确定要考的课程。2026-09-09 起自定义考核需由家长通过对话（家长助手）安排并明确课程；请让家长重新安排这次考核。",
+          });
+        }
         return {
           schedule,
-          selectionPrompt,
-          candidates: planCourses,
-          // 匹配不到孩子库课程的计划文本（供调试/提示；正常情况家长计划与课程标题一致）
+          courses: fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, scopeCourses),
+          scoringPrompt: buildScoringPrompt(),
+        };
+      }
+      // 固定档：仅保留 daily | weekly（monthly/halfyear/yearly 已下线，历史排期不可再考）
+      const freq = String(sch.freq || "weekly");
+      if (freq === "monthly" || freq === "halfyear" || freq === "yearly") {
+        return reply.code(400).send({
+          error: "每月/每半年/每年考核已下线（2026-09-09）。这类考核请改为「自定义考核」：通过和家长助手对话说明要考的内容即可。",
+        });
+      }
+      // daily/weekly：内置规则 = 本周期学习计划里的「必学主题」课程全部考核（不再走选课 LLM）。
+      // 「必学」判定 = 该课主题考核类型为必学；**未标注类型**的历史主题按默认必学纳入考核
+      // （否则旧数据无类型标注会导致固定考核永远无课）；明确标了「选学」的主题课程排除。
+      // 想自定义范围（含选学/指定章节）→ 一律用自定义考核（家长 agent 定课程）。
+      {
+        const ts = new Date(String(sch.scheduled_at)).getTime();
+        const win = planWindowFor(freq, ts);
+        const { courses: planCourses, unmatched } = listPlanCourseMeta(
+          deps.db,
+          deps.config.dataDir,
+          parentId,
+          childId,
+          win.start,
+          win.end
+        );
+        const must = planCourses.filter((c) => c.topicType !== "选学");
+        if (!must.length) {
+          const hasOnlyOptional = planCourses.length > 0;
+          return reply.code(400).send({
+            error: hasOnlyOptional
+              ? `本次固定考核窗口（${win.start} ~ ${win.end}）的学习计划里只有「选学」课程，没有默认纳入考核的「必学」课程。如需考选学内容，请用自定义考核安排。`
+              : `本次固定考核窗口（${win.start} ~ ${win.end}）的学习计划里还没有安排「必学」课程。可以让家长先在学习计划里排课，或改用自定义考核安排本次内容。`,
+          });
+        }
+        return {
+          schedule,
+          courses: fetchCoursesWithRubric(
+            deps.config.dataDir,
+            parentId,
+            childId,
+            must.map((c) => c.title)
+          ),
+          scoringPrompt: buildScoringPrompt(),
+          // 计划里匹配不到孩子库课程的文本（供调试/提示）
           unmatched,
         };
       }
-      const candidates = listLearnedCourseMeta(deps.db, deps.config.dataDir, parentId, childId);
-      const selectionPrompt = buildSelectionPrompt(template, candidates, freq, ts);
-      return { schedule, selectionPrompt, candidates };
     }
     const kb = openKb(deps.config.dataDir, parentId, childId);
     const parent = openParentLib(deps.config.dataDir, parentId);

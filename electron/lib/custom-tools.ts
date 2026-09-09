@@ -59,6 +59,25 @@ export interface PanelContent {
   title?: string;
   /** 资料文件路径（相对学习目录），用于前端去重与回看 */
   filePath: string;
+  /**
+   * 场景课判定（MATERIAL-BRIDGE / ISSUE-061 全托管）：主进程在展示内容时静态判定
+   * 「这是场景页」——HTML 含 pi-scenario 场景标记，或资料主题在场景主题名单内。
+   * 渲染层据此在 display_content 工具结果返回时即激活场景会话，**不再依赖 iframe
+   * 页面就绪事件**（app 内沙箱 iframe 正文脚本存在不执行的怪癖，曾导致永不跳转）。
+   */
+  isScene?: boolean;
+}
+
+/** 场景课主题名单：命中即按「场景课」对待（会话转入 scene agent 等）。新增场景主题时在此登记。 */
+const SCENE_TOPIC_KEYS = new Set(["changjingyingyu", "scenario-english"]);
+/** 场景页 HTML 标记：内容含该标记即视为场景页（与渲染层 SCENE_PAGE_MARKER 一致）。 */
+const SCENE_HTML_MARKER = "pi-scenario";
+
+/** display_content 结果是否属于场景课：内容标记 或 filePath 首段 topic 在名单内。 */
+function isScenePanel(content: string, filePath: string | undefined): boolean {
+  if (content.includes(SCENE_HTML_MARKER)) return true;
+  const seg = String(filePath || "").replace(/^materials\//, "").split("/")[0];
+  return SCENE_TOPIC_KEYS.has(seg);
 }
 
 export const displayContentTool = defineTool({
@@ -181,7 +200,15 @@ export const displayContentTool = defineTool({
           text: `已展示内容: ${title}`,
         },
       ],
-      details: { panelContent: { format: "html", content: raw, title, filePath: params.path } },
+      details: {
+        panelContent: {
+          format: "html",
+          content: raw,
+          title,
+          filePath: params.path,
+          isScene: isScenePanel(raw, params.path),
+        },
+      },
     };
   },
 });
@@ -1005,22 +1032,23 @@ export const parentReadImageTool = defineTool({
 });
 
 /**
- * 自定义考核排期（EXAM-REQUIREMENTS §14.2）：家长对话「什么时间考什么内容」→ 生成一次性考核排期。
- * ⚠️ 信息不全（缺孩子/缺时间/缺内容范围）时**必须 throw 提示向家长确认齐全**，不要猜着创建。
+ * 自定义考核排期（EXAM-REQUIREMENTS §14.2 + 2026-09-09 规则调整）：家长对话「什么时间考什么内容」→ 生成一次性考核排期。
+ * ⚠️ 2026-09-09 起自定义考核**不再做运行时选课**：必须由本工具把家长描述解析成**精确课程名**填入 courses
+ * （不确定时先查孩子课程/学习记录再确定），scope 不再接受「规则文本」让考核时另选。信息不全必须 throw 向家长确认。
  */
 export const examScheduleCreateTool = defineTool({
   name: "exam_schedule_create",
   label: "创建自定义考核排期",
   description:
     "为某个孩子创建一次**自定义考核排期**（家长通过对话预约：某天考什么内容，到该天孩子就可在考核页点击开始——考核只按日期、不约定具体时刻）。\n\n" +
-    "**参数**：`childName`（孩子姓名，必填）、`scheduledAt`（考核日期，必填，给 **日期** 而非时刻，如 2026-09-05 或 \"2026-09-05T08:00:00\"——把家长的「本周五」「9 月 5 号」等说法换算成日期，当天 0 点起全天可考）、`topics`（可选，考核的主题目录名数组，如 [\"lunyu\"]）、`courses`（可选，限定课程名数组，如 [\"论语为政篇第一章\"]，不填则考该主题全部已学课）、`note`（可选，给孩子的说明，如「复习为政篇前两章」）。\n\n" +
-    "**信息不全时（缺少 childName / scheduledAt / 考核内容范围之一）必须向家长确认清楚再创建**，不要自行猜测日期或范围。",
+    "**参数**：`childName`（孩子姓名，必填）、`scheduledAt`（考核日期，必填，给 **日期** 而非时刻，如 2026-09-05 或 \"2026-09-05T08:00:00\"——把家长的「本周五」「9 月 5 号」等说法换算成日期，当天 0 点起全天可考）、`courses`（**必填**，要考核的精确课程名数组，如 [\"论语为政篇第一章\"]；必须把家长说的「考乡党篇最近学的 3 课」等内容描述**解析成确定的课程名**——可先查孩子课程/学习记录确定具体考哪几门，不要留模糊范围）、`topics`（可选，辅助的主题目录名，如 [\"lunyu\"]，仅为备注）、`note`（可选，给孩子的说明）。\n\n" +
+    "**约束（2026-09-09 起）**：自定义考核的课程必须在创建时就确定（courses 必填且为精确课程名）——考核开始后不再用文字规则挑选课程。无法确定具体课程名时必须向家长确认清楚再创建，**不要自行猜测**。",
   parameters: Type.Object({
     childName: Type.String({ description: "孩子姓名（必填）" }),
     scheduledAt: Type.String({ description: "考核日期（必填），如 2026-09-05 或 2026-09-05T08:00:00，当天 0 点起可考" }),
-    topics: Type.Optional(Type.Array(Type.String({ description: "主题目录名，如 lunyu" }))),
-    courses: Type.Optional(Type.Array(Type.String({ description: "课程名，如 论语为政篇第一章" }))),
-    note: Type.Optional(Type.String({ description: "考核内容说明（给孩子的提示）" })),
+    courses: Type.Array(Type.String({ description: "要考核的精确课程名（必填），如 论语学而篇第一章" })),
+    topics: Type.Optional(Type.Array(Type.String({ description: "辅助主题目录名（仅备注），如 lunyu" }))),
+    note: Type.Optional(Type.String({ description: "考核内容说明（给孩子的提示，可空）" })),
   }),
   execute: async (_toolCallId, params) => {
     const childName = (params.childName || "").trim();
@@ -1028,9 +1056,11 @@ export const examScheduleCreateTool = defineTool({
     if (!childName || !scheduledAt) {
       throw new Error("exam_schedule_create 需要 childName + scheduledAt（请向家长确认考核日期与考核对象）");
     }
-    const hasScope = (params.topics?.length ?? 0) > 0 || (params.courses?.length ?? 0) > 0 || !!params.note;
-    if (!hasScope) {
-      throw new Error("请确认这次要考的内容：主题（topics）或课程（courses）至少填一个，或写一句说明（note）");
+    const courses = (params.courses || []).map((c: string) => String(c).trim()).filter(Boolean);
+    if (!courses.length) {
+      throw new Error(
+        "请先确定这次要考核的**具体课程**（courses）再创建：把家长说的内容范围（如“考乡党篇最近学的 3 课”）解析成课程名（可先查询孩子的课程/学习记录确定是哪几门），或向家长确认。2026-09-09 起自定义考核不再支持用文字规则在考核时选课。"
+      );
     }
     if (Number.isNaN(new Date(scheduledAt).getTime())) {
       throw new Error(`考核日期无法解析：${scheduledAt}，请用明确的日期（如 本周五 / 2026-09-05）`);
@@ -1046,13 +1076,13 @@ export const examScheduleCreateTool = defineTool({
     const r = await createExamSchedule(
       childId,
       scheduledAt,
-      { topics: params.topics ?? [], courses: params.courses ?? [], note: params.note ?? "" }
+      { topics: params.topics ?? [], courses, note: params.note ?? "" }
     );
     return {
       content: [
         {
           type: "text" as const,
-          text: `已为孩子「${childName}」创建自定义考核排期（${scheduledAt}），${params.note ? `内容：${params.note}；` : ""}到达当天孩子即可在考核页参加。`,
+          text: `已为孩子「${childName}」创建自定义考核排期（${scheduledAt}，考核课程：${courses.join("、")}）${params.note ? `，说明：${params.note}` : ""}。到达当天孩子即可在考核页参加。`,
         },
       ],
     };

@@ -167,10 +167,11 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
         frequencies,
         time: dailyTime,
         weekly: { weekday: weeklyWeekday, time: weeklyTime },
-        selectionPrompts: { daily: prompts.daily ?? "", weekly: prompts.weekly ?? "" },
+        // 2026-09-09：固定档不再使用选课规则 prompt（内置：计划周期内必学课全考）——清空历史值防旧模板残留
+        selectionPrompts: { daily: "", weekly: "" },
       });
       if (r?.success) {
-        setMsg({ ok: true, text: frequencies.length ? "✓ 固定考核配置已保存（选课规则即时生效）" : "✓ 已保存（固定考核全部关闭，孩子只会有自定义考核）" });
+        setMsg({ ok: true, text: frequencies.length ? "✓ 固定考核配置已保存（每天/每周自动考学习计划里的必学课程）" : "✓ 已保存（固定考核全部关闭，孩子只会有自定义考核）" });
         window.api.examFixedConfig().then((rr: any) => {
           if (rr?.success && rr.data?.config?.selectionPrompts) setPrompts(rr.data.config.selectionPrompts);
         });
@@ -353,18 +354,13 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
           <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 6 }}>
             📅 每天考核一次：到达当天（0 点起）孩子就可在「学习考核」里参加，不限具体时刻。
           </p>
-          <div style={label}>选课规则 prompt（AI 按规则从今天学习计划安排的课程中挑选）</div>
-          <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 6 }}>{DEFAULT_HINTS.daily}。清空保存 = 恢复系统默认。</p>
-          <textarea
-            value={prompts.daily ?? ""}
-            placeholder={`（未设置，使用默认规则：${DEFAULT_HINTS.daily}）`}
-            onChange={(e) => setPrompts((p) => ({ ...p, daily: e.target.value }))}
-            style={ta}
-          />
+          <div style={label}>考核范围（固定规则）</div>
+          <p style={{ color: "#6b7686", fontSize: 12, margin: 0, lineHeight: 1.7 }}>
+            每天自动考核当天学习计划里的<strong>「必学」课程</strong>（全部考核）；明确标注「选学」的课程不纳入。
+            固定档的考核规则不可更改——想调整范围、或考核选学/指定内容，请改用「自定义考核」，直接对家长助手说（例如
+            "周三给珊珊安排一次考核，考论语的乡党篇最近学的 3 课"）。
+          </p>
           <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <button onClick={() => setPrompts((p) => ({ ...p, daily: "" }))} style={{ fontSize: 11, padding: "3px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", color: "#6b7686", cursor: "pointer", marginRight: 8 }}>
-              恢复默认
-            </button>
             <button onClick={saveFixed} disabled={saving} style={saveBtn}>
               {saving ? "保存中…" : "保存固定配置"}
             </button>
@@ -392,18 +388,12 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
             </select>
             <span style={{ fontSize: 12, color: "#6b7686" }}>（到达该日 0 点起，孩子当天即可考核，不限时刻）</span>
           </div>
-          <div style={label}>选课规则 prompt（AI 按规则从近 7 天学习计划安排的课程中挑选）</div>
-          <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 6 }}>{DEFAULT_HINTS.weekly}。清空保存 = 恢复系统默认。</p>
-          <textarea
-            value={prompts.weekly ?? ""}
-            placeholder={`（未设置，使用默认规则：${DEFAULT_HINTS.weekly}）`}
-            onChange={(e) => setPrompts((p) => ({ ...p, weekly: e.target.value }))}
-            style={ta}
-          />
+          <div style={label}>考核范围（固定规则）</div>
+          <p style={{ color: "#6b7686", fontSize: 12, margin: 0, lineHeight: 1.7 }}>
+            每周自动考核近 7 天学习计划里的<strong>「必学」课程</strong>（全部考核）；明确标注「选学」的课程不纳入。
+            固定档的考核规则不可更改——想调整范围、或考核选学/指定内容，请改用「自定义考核」，直接对家长助手说。
+          </p>
           <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <button onClick={() => setPrompts((p) => ({ ...p, weekly: "" }))} style={{ fontSize: 11, padding: "3px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", color: "#6b7686", cursor: "pointer", marginRight: 8 }}>
-              恢复默认
-            </button>
             <button onClick={saveFixed} disabled={saving} style={saveBtn}>
               {saving ? "保存中…" : "保存固定配置"}
             </button>
@@ -412,133 +402,49 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
         </div>
       )}
 
-      {/* ===== 自定义考核（左列表 + 右编辑表单） ===== */}
+      {/* ===== 自定义考核（由家长助手按对话安排，此处只读展示） ===== */}
       {tab === "custom" && (
-        <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-          {/* 左列：考核列表 */}
-          <div style={{ width: 236, flexShrink: 0 }}>
-            <button
-              onClick={startCreate}
-              style={{
-                width: "100%",
-                padding: "9px 0",
-                borderRadius: 8,
-                border: "none",
-                background: "#f2994a",
-                color: "#fff",
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
-                marginBottom: 10,
-              }}
-            >
-              ＋ 新建考核
-            </button>
-            <div style={{ ...label, marginBottom: 8 }}>考核列表（{groups.length}）</div>
-            {groups.length === 0 ? (
-              <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
-                还没有自定义考核。点上方「新建考核」设置，或对家长助手说「周五考论语的乡党篇」。
-              </p>
-            ) : (
-              groups.map((g) => {
-                const doneCount = g.rows.filter((r) => r.status === "done").length;
-                const sel = selKey === g.key;
-                return (
-                  <div
-                    key={g.key}
-                    onClick={() => openGroup(g)}
-                    style={{
-                      border: sel ? "2px solid #667eea" : "1px solid #e6eaf0",
-                      borderRadius: 10,
-                      padding: "10px 12px",
-                      marginBottom: 8,
-                      background: sel ? "#f0f4ff" : "#fff",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>📅 {fmtDay(g.scheduledAt)}</div>
-                    {g.note && (
-                      <div style={{ fontSize: 12, color: "#6b7686", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {g.note}
-                      </div>
-                    )}
-                    <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 4 }}>
-                      分配给 {g.rows.length} 个孩子{doneCount ? ` · ${doneCount} 已完成` : ""}
-                    </div>
+        <div style={box}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>📝 自定义考核（由家长助手安排）</div>
+          <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 10, lineHeight: 1.7 }}>
+            自定义考核<strong>通过和家长助手对话创建</strong>：说清「哪个孩子、哪天、考哪些内容」，助手会确定要考的课程并生成考核计划
+            （例如“周五给珊珊安排一次考核，考论语的乡党篇最近学的 3 课”）。这里不再手动填写考核规则。
+          </p>
+          <div style={{ ...label, marginBottom: 8 }}>考核列表（{groups.length}）</div>
+          {groups.length === 0 ? (
+            <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
+              还没有自定义考核。对家长助手说「周五考论语的乡党篇」等，助手创建后就会出现在这里。
+            </p>
+          ) : (
+            groups.map((g) => {
+              const doneCount = g.rows.filter((r) => r.status === "done").length;
+              return (
+                <div
+                  key={g.key}
+                  style={{
+                    border: "1px solid #e6eaf0",
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    marginBottom: 8,
+                    background: "#fff",
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>📅 {fmtDay(g.scheduledAt)}</div>
+                  {g.note && (
+                    <div style={{ fontSize: 12, color: "#6b7686", marginTop: 2 }}>{g.note}</div>
+                  )}
+                  <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 4 }}>
+                    分配给 {g.rows.length} 个孩子
+                    {doneCount > 0 ? " · " + doneCount + " 已完成" : ""}
                   </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* 右列：详情/编辑表单（新建时空白，家长设置好后保存） */}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            {selKey && !editingGroup ? (
-              <div style={box}>
-                <p style={{ color: "#888", fontSize: 12, margin: 0 }}>该考核已更新或不存在，列表刷新中…</p>
-              </div>
-            ) : (
-              <div style={box}>
-                <div style={{ ...label, marginBottom: 10 }}>{selKey ? "📝 考核详情（修改后点保存生效）" : "📝 新建考核"}</div>
-                {selKey && editingGroup && editingGroup.rows.length > 0 && editingGroup.rows.every((r) => r.status === "done") ? (
-                  <p style={{ color: "#b9770a", fontSize: 12, margin: 0 }}>该考核已全部完成，属于历史记录，不可再修改。</p>
-                ) : (
-                  <>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                      <span style={{ fontSize: 13 }}>考核日期（当天即可考核）：</span>
-                      <input type="date" value={formAt} onChange={(e) => setFormAt(e.target.value)} style={inputStyle} />
-                    </div>
-                    <input
-                      type="text"
-                      value={formNote}
-                      onChange={(e) => setFormNote(e.target.value)}
-                      placeholder="内容说明（可选，给孩子端展示，如：考论语的乡党篇）"
-                      style={{ width: "100%", boxSizing: "border-box", ...inputStyle, marginBottom: 10 }}
-                    />
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>考核 prompt（说明这次考哪些内容、怎么选课）</div>
-                    <textarea
-                      value={formPrompt}
-                      onChange={(e) => setFormPrompt(e.target.value)}
-                      placeholder="例如「考论语乡党篇最近学的 5 课，每课考完整」"
-                      style={{ ...ta, minHeight: 240 }}
-                    />
-                    <div style={{ fontSize: 13, fontWeight: 600, marginTop: 12, marginBottom: 6 }}>分配给的孩子（多孩子可共用这次考核）</div>
-                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-                      {(children || []).map((c) => {
-                        const locked = !!editingGroup && editingGroup.rows.some((r) => r.childId === c.childId && r.status === "done");
-                        return (
-                          <label
-                            key={c.childId}
-                            style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 13, cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.75 : 1 }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={formAssigned.includes(c.childId) || locked}
-                              disabled={locked}
-                              onChange={(e) =>
-                                setFormAssigned((p) => (e.target.checked ? (p.includes(c.childId) ? p : [...p, c.childId]) : p.filter((x) => x !== c.childId)))
-                              }
-                            />
-                            {c.name}
-                            {locked && <span style={{ fontSize: 11, color: "#8a94a6" }}>（已完成）</span>}
-                          </label>
-                        );
-                      })}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <button onClick={saveCustom} disabled={saving} style={saveBtn}>
-                        {saving ? "保存中…" : selKey ? "保存修改" : "创建考核"}
-                      </button>
-                      {msg && <span style={{ fontSize: 12, color: msg.ok ? "#2f8a52" : "#b33" }}>{msg.text}</span>}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
+                </div>
+              );
+            })
+          )}
         </div>
       )}
 
+      
       {/* ===== 考核记录（按孩子查看历次考核成绩 / 逐题评估 / 原音回放） ===== */}
       {tab === "records" && (
         <div>
