@@ -366,13 +366,16 @@ export default function ExamView({ childId, onExit }: Props) {
             );
             if (!a?.success) throw new Error(a?.error || "发音评测失败");
             const sp: SpeechAssessment = a.data.result;
-            const pointGot = Math.round((sp.pron / 100) * (Number(q.pointMax) || 10));
+            // 背诵通过线 90 分（2026-09-09 约定）：背诵考记忆与准确，90 分以上才算通过；
+            // 总分取评测 overall，缺省回退 pron。
+            const total = sp.overall ?? sp.pron ?? 0;
+            const pointGot = Math.round((total / 100) * (Number(q.pointMax) || 10));
             return {
               qid: q.qid,
               pointGot,
               pointMax: Number(q.pointMax) || 10,
-              correct: (sp.pron ?? 0) >= 60,
-              aiComment: `发音 ${Math.round(sp.pron ?? 0)} 分（完整度 ${Math.round(sp.integrity ?? 0)} / 准确 ${Math.round(sp.accuracy ?? 0)} / 流利 ${Math.round(sp.fluency?.overall ?? 0)}）`,
+              correct: total >= 90,
+              aiComment: `背诵 ${Math.round(total)} 分（90 分以上通过；完整度 ${Math.round(sp.integrity ?? 0)} / 准确 ${Math.round(sp.accuracy ?? 0)} / 流利 ${Math.round(sp.fluency?.overall ?? 0)}）`,
               audioFileId: a.data.audioFileId,
               speech: sp,
             };

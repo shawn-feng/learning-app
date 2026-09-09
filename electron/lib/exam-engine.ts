@@ -23,9 +23,9 @@ export interface GeneratedQuestion {
   course: string;
   stem: string;
   pointMax: number;
-  /** 口语/听说题判分标记：speech = 走 SSECP 发音评测（而非 LLM 读 ASR 文本判分） */
+  /** 口语/听说题判分标记：speech = 走腾讯智聆发音评测（而非 LLM 读 ASR 文本判分） */
   assessMethod?: "speech";
-  /** SSECP 题型（cn_recitation / en_word / en_sentence ...），见 server/src/assessment/question-types.ts */
+  /** 题型（cn_recitation / cn_poem / en_word / en_sentence ...）：cn_* 用 16k_zh 引擎，其余 16k_en */
   questionType?: string;
   /** 标准原文（背诵/跟读参照），结构化来自语料，不靠 LLM 生成 */
   refText?: string;
@@ -270,7 +270,9 @@ async function generateForCourse(
       refTexts: rec.map((r) => r.refText),
       costMs: Date.now() - t0,
     });
-    return [...llm, ...rec];
+    // 题序约定（2026-09-09）：背诵题必须放在该课**第一题**——后面的文字题题干里可能带原文
+    // （如「讲一讲"学而时习之…"的意思」），若文字题在前孩子会先读到原文，背诵检测就失真了。
+    return [...rec, ...llm];
   } catch (e) {
     auditExamEvent(childId, "generate", {
       kind: "error",
