@@ -10,11 +10,13 @@ import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRunt
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, prewarmTexts, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
 import {
   assessAudio,
   getMaskedAssessmentConfig,
   applyAssessmentConfigPatch,
+  loadAssessmentConfig,
   type AssessmentProviderId,
 } from "./assessment";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
@@ -48,7 +50,7 @@ import {
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
-import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus, assessSpeech } from "./exam";
+import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus, toSpeechAssessment } from "./exam";
 import { generateExamQuestions, generateCourseQuestions, scoreExamAttempt, selectCoursesForSchedule } from "./exam-engine";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
@@ -2247,7 +2249,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       }
     }
   );
-  // 口语/听说题判分（考核内）：上传语音（经 voiceMerge 已为 16k wav）→ 调 SSECP 发音评测 → 返回维度分 + audioFileId
+  // 口语/听说题判分（考核内）：上传语音（保留回放）→ 本地发音评测（按设置页 provider 自动分流：腾讯智聆 / 阿里声希）→ 返回维度分
+  // 评测在 app 客户端完成，不经云服务端。中文题型自动走对应引擎/corType。
   ipcMain.handle(
     "exam:assessSpeech",
     async (
@@ -2260,9 +2263,19 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       opts?: { topic?: string; course?: string; isExam?: boolean; examAttemptId?: string }
     ) => {
       try {
+        const cfg = loadAssessmentConfig();
+        if (!cfg.enabled) {
+          throw new Error("发音评测未启用，请先在「设置 → 发音评测」中开启并配置评测服务");
+        }
+        // 上传语音用于家长端回放（原功能保留，使用原始录音 buffer）
         const fileId = await uploadExamVoice(childId, name, buffer);
-        const r = await assessSpeech(childId, fileId, questionType, refText, opts);
-        return { success: true, data: { audioFileId: fileId, assessmentId: r.assessmentId, result: r.result } };
+        // 评测：按配置 provider 自动分流（腾讯智聆 / 阿里声希），音频内部统一转 16k wav
+        const r = await assessAudio(Buffer.from(buffer), { refText: refText || "" });
+        const assessmentId = crypto.randomUUID();
+        return {
+          success: true,
+          data: { audioFileId: fileId, assessmentId, result: toSpeechAssessment(r) },
+        };
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
@@ -2308,6 +2321,26 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
   // 流式出题（ISSUE-049）：单门课程出题一次（首门就绪即可开考，其余课程后台逐门生成后增量追加）
+  // 考核内容结构化：课程内容 / 该题考核记录（家长端课程详情浏览）
+  ipcMain.handle("assess:courseContent", async (_e, topic: string, title: string) => {
+    try {
+      const { getCourseAssess } = await import("./assess-admin");
+      const { course } = await getCourseAssess(String(topic), String(title));
+      return { success: true, data: course };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("assess:questionRecords", async (_e, questionId: string) => {
+    try {
+      const { questionAssessRecords } = await import("./assess-admin");
+      const data = await questionAssessRecords(String(questionId));
+      return { success: true, data: data.records || [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("exam:generateCourse", async (_e, childId: string, topicName: string, course: any, childName: string) => {
     try {
       const questions = await generateCourseQuestions(topicName, course, childName || "", childId);

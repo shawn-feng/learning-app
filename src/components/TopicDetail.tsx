@@ -75,12 +75,90 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
   // 每课考核要点编辑器（courses.assess_rubric）
   const [editingRubric, setEditingRubric] = useState(false);
   const [rubricText, setRubricText] = useState("");
+  // 结构化考核内容浏览（v2：类别 → 题目；右栏显示该题考核记录）
+  const [struct, setStruct] = useState<any | null>(null);
+  const [structLoading, setStructLoading] = useState(false);
+  const [catIdx, setCatIdx] = useState(0);
+  const [qId, setQId] = useState<string | null>(null);
+  const [records, setRecords] = useState<any[] | null>(null);
+  const [recLoading, setRecLoading] = useState(false);
 
   const topicDir = topic.topicKey;
 
   useEffect(() => {
     setEditingCopy(false);
   }, [selected]);
+
+  // 进入/切换「考核要点」且选中课程 → 拉结构化内容（无结构化则沿用旧 rubric 全文展示）
+  useEffect(() => {
+    if (tab !== "assess" || !selected) return;
+    let on = true;
+    setStruct(null);
+    setStructLoading(true);
+    setCatIdx(0);
+    setQId(null);
+    setRecords(null);
+    (async () => {
+      try {
+        const r: any = await window.api.assessCourseContent(topicDir, selected.title);
+        if (on && r?.success) {
+          const c = r.data;
+          setStruct(c && c.structured && Array.isArray(c.items) ? c : null);
+        }
+      } catch {
+        /* 网络/未实现兼容：留 null 走旧版展示 */
+      } finally {
+        if (on) setStructLoading(false);
+      }
+    })();
+    return () => {
+      on = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, selected, topicDir]);
+
+  async function pickQuestion(q: { id: string }) {
+    setQId(q.id);
+    setRecords(null);
+    setRecLoading(true);
+    try {
+      const r: any = await window.api.assessQuestionRecords(q.id);
+      if (r?.success) setRecords(r.data || []);
+    } catch {
+      setRecords([]);
+    } finally {
+      setRecLoading(false);
+    }
+  }
+
+  function fmtScoreLines(scoring: string | null): string[] {
+    if (!scoring) return [];
+    try {
+      const j = JSON.parse(scoring);
+      const out: string[] = [];
+      if (Array.isArray(j?.dims)) {
+        for (const d of j.dims) {
+          out.push(`- ${d?.dim || ""}（${d?.score ?? "?"}分）：${d?.points || ""}${d?.note ? `（${d.note}）` : ""}`);
+        }
+      }
+      if (Array.isArray(j?.special) && j.special.length) out.push(`⚠ ${j.special.join("；")}`);
+      return out;
+    } catch {
+      return [scoring];
+    }
+  }
+
+  function fmtDT(iso: string): string {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+
+  const BEHAVIOR_LABEL: Record<string, string> = {
+    speech_recite: "背诵评测",
+    speech_read: "朗读跟读",
+    generic: "口述主观题",
+  };
 
   useEffect(() => {
     refreshCourses();
@@ -502,9 +580,9 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
 
           {tab === "assess" && (
             <div>
-              {/* 每课考核要点（courses.assess_rubric） */}
+              {/* 每课考核要点：v2 结构化浏览（类别→题目+该题记录）；旧版 rubric 全文可切换编辑 */}
               {!selected ? (
-                <p style={{ color: "#888", fontSize: 13 }}>请先在左侧选择一门课程，填写它的考核要点（期望孩子答到的要点，考核出题与判分都用它作锚）。</p>
+                <p style={{ color: "#888", fontSize: 13 }}>请先在左侧选择一门课程，查看/填写它的考核要点（结构化题目或旧版全文）。</p>
               ) : (
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -515,23 +593,152 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                         <button onClick={saveRubric} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>保存</button>
                       </div>
                     ) : (
-                      <IconButton icon={Pencil} title="编辑" onClick={() => { setRubricText(selected.assessRubric || ""); setEditingRubric(true); }} />
+                      <IconButton icon={Pencil} title="编辑旧版全文要点" onClick={() => { setRubricText(selected.assessRubric || ""); setEditingRubric(true); }} />
                     )}
                   </div>
+
                   {editingRubric ? (
-                    <textarea
-                      value={rubricText}
-                      onChange={(e) => setRubricText(e.target.value)}
-                      rows={8}
-                      placeholder={"期望孩子答到的要点（出题/判分锚定），如：\n- 能说出「学而时习之」的意思\n- 能结合自己的生活举例\n- 答到 1~2 个关键点即可算掌握"}
-                      style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, boxSizing: "border-box", resize: "vertical" }}
-                    />
+                    <>
+                      <p style={{ color: "#9a6b00", fontSize: 12, margin: "0 0 6px" }}>编辑的是旧版全文 rubric（结构化课程建议用 AI/对话按类别维护；保存仅写旧字段）。</p>
+                      <textarea
+                        value={rubricText}
+                        onChange={(e) => setRubricText(e.target.value)}
+                        rows={8}
+                        placeholder={"期望孩子答到的要点（出题/判分锚定），如：\n- 能说出「学而时习之」的意思\n- 能结合自己的生活举例"}
+                        style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, boxSizing: "border-box", resize: "vertical" }}
+                      />
+                    </>
+                  ) : structLoading ? (
+                    <span style={{ color: "#888", fontSize: 13 }}>正在读取结构化考核内容…</span>
+                  ) : struct && struct.items.length > 0 ? (
+                    <div>
+                      {(() => {
+                        const total = struct.items.reduce((s: number, it: any) => s + (it.questions?.length || 0), 0);
+                        const activeCat = struct.items[Math.min(catIdx, struct.items.length - 1)];
+                        const qs: any[] = activeCat?.questions || [];
+                        const selQ = qs.find((q) => q.id === qId) || null;
+                        return (
+                          <>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 12, color: "#6b7686" }}>
+                                结构化考核内容：{struct.items.length} 个类别 / 共 {total} 题（每类考核时抽 1）
+                              </span>
+                            </div>
+                            {/* 上面一行：类别选择 */}
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                              {struct.items.map((it: any, i: number) => (
+                                <button
+                                  key={it.categoryId || it.categoryName}
+                                  onClick={() => { setCatIdx(i); setQId(null); setRecords(null); }}
+                                  style={{
+                                    padding: "5px 12px",
+                                    borderRadius: 999,
+                                    border: catIdx === i ? "2px solid #667eea" : "1px solid #ddd",
+                                    background: catIdx === i ? "#eef2ff" : "#fff",
+                                    color: catIdx === i ? "#3b4cca" : "#555",
+                                    fontSize: 13,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  {it.categoryName}
+                                  <span style={{ opacity: 0.6, marginLeft: 4, fontSize: 11 }}>({it.questions?.length || 0})</span>
+                                </button>
+                              ))}
+                            </div>
+                            {/* 下左：题目列表；下右：题目详情 + 考核记录 */}
+                            <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
+                              <div style={{ width: "38%", minWidth: 260, border: "1px solid #eee", borderRadius: 8, padding: 6, maxHeight: 380, overflow: "auto", boxSizing: "border-box" }}>
+                                {qs.length === 0 ? (
+                                  <p style={{ color: "#aaa", fontSize: 12, padding: 8 }}>该类别暂无题目（方法选中时会被跳过）</p>
+                                ) : (
+                                  qs.map((q: any, qi: number) => (
+                                    <div
+                                      key={q.id}
+                                      onClick={() => pickQuestion(q)}
+                                      style={{
+                                        padding: "8px 10px",
+                                        borderRadius: 6,
+                                        cursor: "pointer",
+                                        border: qId === q.id ? "1px solid #667eea" : "1px solid transparent",
+                                        background: qId === q.id ? "#f0f4ff" : "transparent",
+                                        fontSize: 12.5,
+                                        lineHeight: 1.45,
+                                      }}
+                                    >
+                                      <div style={{ color: "#333" }}>
+                                        <b>{qi + 1}.</b> {String(q.stem || "").slice(0, 60)}
+                                        {String(q.stem || "").length > 60 ? "…" : ""}
+                                      </div>
+                                      <div style={{ display: "flex", gap: 8, marginTop: 4, fontSize: 11, color: "#9aa3b2" }}>
+                                        <span>{q.pointMax || 10} 分</span>
+                                        {q.answer ? <span style={{ color: "#2f8a52" }}>有参考答案</span> : <span style={{ color: "#c68a00" }}>无参考答案</span>}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                {!selQ ? (
+                                  <p style={{ color: "#999", fontSize: 12, paddingTop: 8 }}>← 选择左侧题目查看详情与该题考核记录</p>
+                                ) : (
+                                  <div>
+                                    <div style={{ fontSize: 14, lineHeight: 1.5, color: "#222", fontWeight: 600, marginBottom: 6 }}>{selQ.stem}</div>
+                                    {activeCat && (
+                                      <div style={{ fontSize: 11, color: "#667eea", marginBottom: 8 }}>
+                                        {activeCat.categoryName} · {BEHAVIOR_LABEL[activeCat.behavior] || activeCat.behavior} · {selQ.pointMax || 10} 分
+                                      </div>
+                                    )}
+                                    {selQ.answer ? (
+                                      <div style={{ marginBottom: 6 }}>
+                                        <div style={{ fontSize: 12, color: "#6b7686" }}>参考答案：</div>
+                                        <div style={{ fontSize: 13, color: "#2f8a52", background: "#f4faf6", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap" }}>{selQ.answer}</div>
+                                      </div>
+                                    ) : null}
+                                    {fmtScoreLines(selQ.scoring).length > 0 && (
+                                      <div style={{ marginBottom: 6 }}>
+                                        <div style={{ fontSize: 12, color: "#6b7686" }}>评分标准：</div>
+                                        <div style={{ fontSize: 12, background: "#faf8f4", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap", lineHeight: 1.7 }}>
+                                          {fmtScoreLines(selQ.scoring).join("\n")}
+                                        </div>
+                                      </div>
+                                    )}
+                                    <div style={{ marginTop: 10 }}>
+                                      <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>该题考核记录（全部孩子，按时间倒序）</div>
+                                      {recLoading ? (
+                                        <span style={{ color: "#999", fontSize: 12 }}>加载中…</span>
+                                      ) : records === null ? null : records.length === 0 ? (
+                                        <span style={{ color: "#aaa", fontSize: 12 }}>暂无记录（这道题还没被考过）</span>
+                                      ) : (
+                                        <div style={{ maxHeight: 240, overflow: "auto", borderTop: "1px solid #f0f0f0" }}>
+                                          {records.map((r: any, ri: number) => (
+                                            <div key={ri} style={{ padding: "8px 2px", borderBottom: "1px solid #f3f3f3", fontSize: 12, lineHeight: 1.55 }}>
+                                              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                                                <b>{r.childName || "孩子"}</b>
+                                                <span style={{ color: "#9aa3b2", fontSize: 11 }}>{fmtDT(r.submittedAt)}</span>
+                                                <span style={{ fontWeight: 700, color: r.correct ? "#2f8a52" : "#b33" }}>
+                                                  {r.pointGot != null ? `${r.pointGot}/${r.pointMax ?? "?"}` : "—"} {r.correct ? "✓ 对" : "✗ 错"}
+                                                </span>
+                                              </div>
+                                              {r.aiComment ? <div style={{ color: "#556", marginTop: 2 }}>{r.aiComment}</div> : null}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
                   ) : selected.assessRubric ? (
                     <div className="markdown-body">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{selected.assessRubric}</ReactMarkdown>
                     </div>
                   ) : (
-                    <span style={{ color: "#aaa" }}>（暂无考核要点；写清楚期望答到的要点后，考核出题与判分才能对准它）</span>
+                    <span style={{ color: "#aaa" }}>（暂无结构化题目，也暂无旧版全文要点；可让 AI 协助按类别建题）</span>
                   )}
                 </div>
               )}

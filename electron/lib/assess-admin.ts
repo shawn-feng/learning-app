@@ -99,3 +99,19 @@ export async function saveChildMethodSpec(
     token: TOK(),
   });
 }
+
+export interface QuestionRecord {
+  childId: string;
+  childName: string;
+  attemptId: string;
+  submittedAt: string;
+  pointGot: number | null;
+  pointMax: number | null;
+  correct: boolean;
+  aiComment: string;
+}
+
+/** 某道题的历次考核结果（该家长全部孩子）。 */
+export async function questionAssessRecords(questionId: string): Promise<{ records: QuestionRecord[] }> {
+  return serverFetch(`/assess/questions/${encodeURIComponent(questionId)}/records`, { method: "GET", token: TOK() });
+}

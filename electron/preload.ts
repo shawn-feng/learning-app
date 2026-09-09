@@ -377,6 +377,8 @@ const api = {
   examGenerate: (childId: string, topicConfig: any) => ipcRenderer.invoke("exam:generate", childId, topicConfig),
   examGenerateCourse: (childId: string, topicName: string, course: any, childName: string) =>
     ipcRenderer.invoke("exam:generateCourse", childId, topicName, course, childName),
+  assessCourseContent: (topic: string, title: string) => ipcRenderer.invoke("assess:courseContent", topic, title),
+  assessQuestionRecords: (questionId: string) => ipcRenderer.invoke("assess:questionRecords", questionId),
   examScore: (childId: string, scoringPrompt: string, answers: any[]) =>
     ipcRenderer.invoke("exam:score", childId, scoringPrompt, answers),
   // 口语/听说题判分：主进程合并多段录音为 16k wav → 上传 → 调 SSECP 发音评测，返回维度分

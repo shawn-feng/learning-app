@@ -1706,4 +1706,51 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       db.close();
     }
   });
+
+  /** 某道题库题的考核结果记录（该家长全部孩子历次考核里用到这道题的作答与得分）。 */
+  app.get("/api/v1/assess/questions/:questionId/records", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { questionId } = req.params as { questionId: string };
+    const children = deps.db.prepare("SELECT id, name FROM children WHERE parent_id = ?").all(parentId) as Array<{
+      id: string;
+      name: string;
+    }>;
+    const childName = new Map(children.map((c) => [c.id, c.name]));
+    const records: Array<Record<string, unknown>> = [];
+    for (const child of children) {
+      const attempts = deps.db
+        .prepare("SELECT id, child_id, created_at, per_question FROM exam_attempts WHERE child_id = ? ORDER BY created_at DESC LIMIT 60")
+        .all(child.id) as Array<{ id: string; child_id: string; created_at: string; per_question: string }>;
+      for (const at of attempts) {
+        let arr: any[] = [];
+        try {
+          arr = JSON.parse(at.per_question || "[]");
+        } catch {
+          continue;
+        }
+        for (const q of arr) {
+          if (q && String(q.questionId || "") === questionId) {
+            records.push({
+              childId: child.id,
+              childName: childName.get(child.id) || child.name,
+              attemptId: at.id,
+              submittedAt: at.created_at,
+              pointGot: Number(q.pointGot) ?? null,
+              pointMax: Number(q.pointMax) || null,
+              correct: Boolean(q.correct),
+              aiComment: String(q.aiComment || ""),
+            });
+          }
+        }
+      }
+    }
+    records.sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)));
+    return { records: records.slice(0, 50) };
+  });
 }
