@@ -78,6 +78,7 @@
 
 - 存储全在服务端；出卷 + 判分在客户端内存 session；判分 prompt 由服务端下发。
 - v3 固定考核只留 每天/每周（`weekly{weekday,time}`）；config 两段式（`?schedule=` 选课无 rubric；`&courses=` 带 rubric + scoring）。
+- **考核内容编写（ISSUE-066，家长 agent 职责）**：每课 `courses.assess_rubric`（考核内容：知识点/现成题目/评分标准）+ 主题 `topics.assess_method`（按孩子分段的方法）由家长 agent 经 `parent_course_save.assessRubric` / `parent_topic_save.assessMethod`（或建主题 courses 项带 `assessRubric`）写入。编写规范真源 `electron/lib/assess-guide.ts`（`COURSE_ASSESS_GUIDE_MD`），会话创建前幂等落 `data/.pi/agent/assess-rubric-guide.md` 供 agent read；buildParentPrompt §2.6 注入短版+背诵句式约定（「- 原文背诵：…“原文”」，exam-engine `RECITATION_MARK_RE` 提取标准原文做发音评测，漏写则不出背诵题）。
 - 家长端管理面板：`src/components/ExamAdminPanel.tsx`；答题端 `ExamView.tsx`；出题已改异步流式（首门课就绪即开考，其余后台增量加入，ISSUE-050）。
 
 ## 7. 定时任务（scheduler，客户端侧）

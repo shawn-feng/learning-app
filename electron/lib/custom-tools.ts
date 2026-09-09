@@ -765,7 +765,7 @@ export const parentUpsertCourseTool = defineTool({
   label: "保存家长库课程",
   description:
     "在家长主题库中新建或更新一门课程（家长库是教学内容的唯一真源，孩子端通过「分配」快照拷贝）。\n\n" +
-    "**参数**：`topic`（主题目录名，如 lunyu）、`title`（课程名，如 论语学而篇第一章）、可选 `lessonMethod`（每课教学方法）、`teachingCopy`（教学文案全文）、`material`（教学资料说明）、`sendMaterial`（发给学生的学习材料）、`tags`（逗号分隔）、`htmlPath`（学习资料 html 相对资料根路径、无 materials/ 前缀，如 lunyu/xxx.html）。\n\n" +
+    "**参数**：`topic`（主题目录名，如 lunyu）、`title`（课程名，如 论语学而篇第一章）、可选 `lessonMethod`（每课教学方法）、`teachingCopy`（教学文案全文）、`material`（教学资料说明）、`sendMaterial`（发给学生的学习材料）、`tags`（逗号分隔）、`htmlPath`（学习资料 html 相对资料根路径、无 materials/ 前缀，如 lunyu/xxx.html）、`assessRubric`（**本课考核内容全文**——孩子学习考核的出题/判分锚定；写孩子「学习考核」相关主题的课程内容时务必一并写好。markdown，按《课程考核内容编写规范》三部分骨架：一、考核知识点（原文背诵/字词/句意/道理应用/典故）→ 二、现成题目（选择题带选项/问答题，系统会把选择题改造成口述题）→ 三、评分标准。若需背诵评测，知识点里必须含固定句式「- 原文背诵：能正确流利背诵“原文”」（原文放弯引号内，系统按此行提取标准原文；漏写则不出背诵题）。起草前先 read `.pi/agent/assess-rubric-guide.md` 细读规范与示例）。\n\n" +
     "**规则**：只覆盖传入的非空字段（未传字段保留旧值）；课程进度（状态/掌握度/学习时间）属于孩子，不在这里维护。\n\n" +
     "**配合资料文件**：html/md 学习资料请先用 write/edit 写到 data/parents/<pid>/materials/<topic>/ 下（音频/视频放 media/ 子目录，html 里用 media://local/parent/<pid>/<topic>/media/文件名 引用），再把 htmlPath 通过本工具登记到课程上。",
   parameters: Type.Object({
@@ -777,6 +777,7 @@ export const parentUpsertCourseTool = defineTool({
     sendMaterial: Type.Optional(Type.String({ description: "发给学生的学习材料（文本或 html 片段）" })),
     tags: Type.Optional(Type.String({ description: "课程标签（逗号分隔）" })),
     htmlPath: Type.Optional(Type.String({ description: "学习资料 html 相对资料根路径、无 materials/ 前缀（如 lunyu/xxx.html）" })),
+    assessRubric: Type.Optional(Type.String({ description: "本课考核内容全文（markdown，三部分：考核知识点/现成题目/评分标准；背诵必须含「- 原文背诵：…“原文”」句式）" })),
   }),
   execute: async (_toolCallId, params) => {
     if (!params.topic || !params.title) {
@@ -790,6 +791,7 @@ export const parentUpsertCourseTool = defineTool({
       sendMaterial: params.sendMaterial,
       tags: params.tags,
       htmlPath: params.htmlPath,
+      assessRubric: params.assessRubric,
     });
     // 2026-08-24：改动自动记录到 activity-log.md（家长操作记录）
     try {
@@ -797,6 +799,7 @@ export const parentUpsertCourseTool = defineTool({
       if (params.lessonMethod) fields.push(`lessonMethod=${params.lessonMethod}`);
       if (params.htmlPath) fields.push(`htmlPath=${params.htmlPath}`);
       if (params.teachingCopy) fields.push("教学文案");
+      if (params.assessRubric) fields.push("考核内容");
       if (params.sendMaterial) fields.push("学习材料");
       if (params.material) fields.push("资料说明");
       if (params.tags) fields.push(`tags=${params.tags}`);
@@ -808,7 +811,7 @@ export const parentUpsertCourseTool = defineTool({
       content: [
         {
           type: "text" as const,
-          text: `已保存家长库课程：${params.topic}「${params.title}」`,
+          text: `已保存家长库课程：${params.topic}「${params.title}」${params.assessRubric ? "\n已写入本课考核内容（rubric）——若含「原文背诵」行，确认原文已用弯引号括起且与该课资料一致，背诵评测才能正常出题。" : ""}`,
         },
       ],
     };
@@ -1285,13 +1288,15 @@ export const parentTopicSaveTool = defineTool({
     "- `topic`：主题目录名（英文小写，如 tangshi / lunyu，仅字母/数字/_/-），必填；\n" +
     "- `name`：主题中文名（如「唐诗」），可选（更新时省略=保留原名）；\n" +
     "- `method`：教学方法全文（引导孩子怎么学，markdown），可选（更新时省略=保留原教法）；\n" +
-    "- `courses`：课程清单数组，每项 `{ title(必填), lessonMethod?, material?, sendMaterial?, tags?, htmlPath?, teachingCopy? }`，可选（更新时省略=保留原课程；想删课用 parent_course_delete）；\n" +
+    "- `assessMethod`：**本主题考核方法全文**（按孩子区分题目构成与不考范围；孩子学习考核出题时方法优先于通用规则），可选（更新时省略=保留原方法）。多孩子时按孩子分段（如「【闻闻】…」），系统只按本次考核孩子那一段出题。写法见 `.pi/agent/assess-rubric-guide.md`；\n" +
+    "- `courses`：课程清单数组，每项 `{ title(必填), lessonMethod?, material?, sendMaterial?, tags?, htmlPath?, teachingCopy?, assessRubric? }`，可选（更新时省略=保留原课程；想删课用 parent_course_delete）。`assessRubric`=本课考核内容全文（三部分：考核知识点/现成题目/评分标准；背诵须含「- 原文背诵：…“原文”」句式）；\n" +
     "- `assignToChildren`：逗号分隔的**孩子姓名**（如「闻闻,珊珊」），可选——填了就把本主题分配/重新分配给这些孩子（快照拷贝课程骨架，孩子已有进度不丢、幂等）。\n\n" +
     "**只覆盖传入的非空字段**；给孩子的「每天学什么」不在这里设，排课请用 study_plan_*（学习计划）。删除主题请引导家长在「课程管理」页操作。新建/大改主题（含分配孩子）属于影响面较大的操作，**落库前先向家长复述拟保存内容并征得同意**。",
   parameters: Type.Object({
     topic: Type.String({ description: "主题目录名（英文小写，仅字母/数字/_/-，如 tangshi）" }),
     name: Type.Optional(Type.String({ description: "主题中文名（如 唐诗）" })),
     method: Type.Optional(Type.String({ description: "教学方法全文（markdown）" })),
+    assessMethod: Type.Optional(Type.String({ description: "本主题考核方法全文（按孩子区分题目构成与不考范围；多孩子按【孩子名】分段，可省略保留原方法）" })),
     courses: Type.Optional(
       Type.Array(
         Type.Object({
@@ -1302,6 +1307,7 @@ export const parentTopicSaveTool = defineTool({
           tags: Type.Optional(Type.String({ description: "课程标签（逗号分隔）" })),
           htmlPath: Type.Optional(Type.String({ description: "资料 html 相对服务端路径，如 materials/tangshi/x.html" })),
           teachingCopy: Type.Optional(Type.String({ description: "本课教学文案全文" })),
+          assessRubric: Type.Optional(Type.String({ description: "本课考核内容全文（markdown 三部分；背诵须含「- 原文背诵：…“原文”」句式）" })),
         }),
         { description: "课程清单（可选；省略=保留原课程）" }
       )
@@ -1322,6 +1328,7 @@ export const parentTopicSaveTool = defineTool({
     const old = (existing ?? []).find((t) => t.topic_key === topicKey || String(t.topic_key).includes(topicKey));
     const mergedName = (params.name ?? "").trim() || old?.name || topicKey;
     const mergedMethod = (params.method ?? "").trim() !== "" ? params.method!.trim() : (old?.method ?? "");
+    const mergedAssessMethod = (params.assessMethod ?? "").trim() !== "" ? params.assessMethod!.trim() : (old?.assess_method ?? "");
     const mergedCourses = params.courses && params.courses.length
       ? params.courses.map((c) => ({
           title: c.title,
@@ -1331,6 +1338,7 @@ export const parentTopicSaveTool = defineTool({
           tags: c.tags,
           htmlPath: c.htmlPath,
           teachingCopy: c.teachingCopy,
+          assessRubric: c.assessRubric,
         }))
       : undefined;
 
@@ -1338,7 +1346,7 @@ export const parentTopicSaveTool = defineTool({
       name: mergedName,
       topicKey,
       method: mergedMethod,
-      assessMethod: old?.assess_method,
+      assessMethod: mergedAssessMethod,
       progress: old?.progress,
       rules: safeParseRules(old?.rules_json ?? "{}"),
     }, mergedCourses ?? []);
@@ -1361,7 +1369,7 @@ export const parentTopicSaveTool = defineTool({
 
     try {
       logActivity(
-        `parent_topic_save ${topicKey}「${mergedName}」${params.method ? "（更新教法）" : ""}${mergedCourses ? `（建/更新 ${mergedCourses.length} 课）` : ""}${assignNote ? "，分配给孩子" : ""}`
+        `parent_topic_save ${topicKey}「${mergedName}」${params.method ? "（更新教法）" : ""}${(params.assessMethod ?? "").trim() ? "（更新考核方法）" : ""}${mergedCourses ? `（建/更新 ${mergedCourses.length} 课${mergedCourses.some((c) => c.assessRubric) ? "，含考核内容" : ""}）` : ""}${assignNote ? "，分配给孩子" : ""}`
       );
     } catch (e) {
       console.error(`[custom-tools] appendActivityLog failed:`, (e as Error).message);
@@ -1369,7 +1377,7 @@ export const parentTopicSaveTool = defineTool({
     return {
       content: [{
         type: "text" as const,
-        text: `已保存主题「${mergedName}」（目录 ${topicKey}），家长库真源已更新。${mergedMethod ? "已写入/更新教学方法。\n" : ""}${mergedCourses ? `课程数现为 ${mergedCourses.length} 门（本次传入）。\n` : ""}${assignNote || ""}\n资料 html 若已生成，记得用 parent_upload_material 上传到服务端、用 parent_course_save/htmlPath 登记，孩子端才能读到。`,
+        text: `已保存主题「${mergedName}」（目录 ${topicKey}），家长库真源已更新。${mergedMethod ? "已写入/更新教学方法。\n" : ""}${mergedAssessMethod ? "已写入/更新本主题考核方法（assess_method）。\n" : ""}${mergedCourses ? `课程数现为 ${mergedCourses.length} 门（本次传入）。\n` : ""}${assignNote || ""}\n资料 html 若已生成，记得用 parent_upload_material 上传到服务端、用 parent_course_save/htmlPath 登记，孩子端才能读到。`,
       }],
     };
   },

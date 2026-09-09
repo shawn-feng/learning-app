@@ -12,6 +12,7 @@ import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { parseCourseKey } from "./kb-sqlite";
 import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, childSelfInfoTool } from "./custom-tools";
+import { ensureAssessGuideFile } from "./assess-guide";
 import { appConfigTool } from "./app-config";
 import { getTodayPlan, fetchTodayPlanRemote, fetchCourseLessonRemote, getCourseLessonCached, isCourseLessonCacheStale, type CourseLessonCache, type CourseLessonFetchStatus } from "./learning-summary";
 import { getProfile, type ChildProfile } from "./child-auth";
@@ -213,6 +214,13 @@ function buildParentPrompt(): string {
   3. **在聊天里列出提案请家长确认**（「计划如下：…这样可以吗？要改哪天/加多少直接说」）——家长说「可以/确认」后再用 study_plan_create 落库；家长说「改成…」就按家长说的改完再确认。
 - **工具**：study_plan_create（一次排一天或多天，一课一行）、study_plan_list（看当前全部排期，每行含课程/新学或复习/是否已学）、study_plan_get（看某天安排）、study_plan_update（删某课 / 把某课挪到别天 / 改新学复习）、parent_library_topics / parent_library_courses（家长库主题总览与课程名册，起草前查权威内容）、study_plan_sources（孩子已学/未学结构，起草前核对）、course_status（**一次性掌握全部课程的「学习时间/复习时间/考核时间/复习次数/考核次数/学习情况/复习情况/考核情况」**，制定复习计划或判断「哪些课掌握得不好」时优先调用，无需逐课查）。
 - **日常修改**：家长随时说「9 月 5 号数学改成 2 课」「把 9 月 10 号那门删了」「把这课改到周五」→ 先 study_plan_list 看当前排期，再 study_plan_update / study_plan_create 对应处理（要换某天的整套内容：先删那天再重排）；改完向家长复述结果。
+
+### 2.6 课程考核内容与考核方法（家长 agent 编写职责）
+- **背景**：孩子「学习考核」（主观题语音作答 + 背诵发音评测）的**出题与判分都锚定**家长库两块内容——每课「考核内容 rubric」（courses.assess_rubric）与主题「考核方法 assess_method」。这块由你负责编写（与家长端「考核要点」编辑器同源）。会用于考核的主题，在**建课/完善课程内容时就把 rubric 与考核方法一并写好**，不要让家长事后在 UI 逐课补。
+- **保存入口**：每课 rubric 用 parent_course_save 的 assessRubric（或建主题时 courses 每项带 assessRubric）；主题考核方法用 parent_topic_save 的 assessMethod（只覆盖非空字段）。
+- **编写前先 read 「.pi/agent/assess-rubric-guide.md」**（完整规范+示例），并遵守三部分骨架：一、考核知识点（原文背诵/字词/句意/道理应用/典故）→ 二、现成题目（选择题带选项、问答题；系统会把选择题改造成口述题：保留题干去掉选项）→ 三、评分标准。
+- **背诵句式（★必守）**：需背诵的课，知识点里必须写「- 原文背诵：能正确流利背诵“要背的原文”」——**原文放中文弯引号内**，系统按此行从引号里提取标准原文做逐字发音评测；漏写或引号用错（如用「」）则该课**不出背诵评测题**。原文必须与该课真实资料逐字一致（起草前先 parent_transcribe_media / parent_read_image 对准，不要编造原文）。
+- **考核方法（可选）**：按孩子区分题目构成与不考范围；多孩子按【孩子名】分段写明题量与题型，系统只按本次考核孩子那一段出题。
 
 ### 3. 配置管理（可读可改，改前确认、改后汇报）
 - 用 app_config 工具查看/修改 app 配置（默认模型 defaultModel、编程模型 programmingModel、视觉模型 visionModel、资料上限 materialsLimit）。
@@ -994,6 +1002,9 @@ function getParentSessionsDir(sub: string): string {
 export async function getParentSession(): Promise<AgentSession> {
   if (cachedParentSession) return cachedParentSession;
 
+  // ISSUE-066：确保考核内容编写规范文档在 agent 可读位（幂等，真源随代码版本走）
+  ensureAssessGuideFile();
+
   // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存（按家长隔离）
   // ISSUE-063：拉取失败返回 "network"，buildParentPrompt 内部读缓存/默认兜底（家长提示词用户版非最新时影响有限，仅记日志）。
   const parentAgentStatus = await fetchAgentPromptRemote("parent", getCurrentParentId());
@@ -1055,6 +1066,9 @@ export async function getParentSession(): Promise<AgentSession> {
  */
 export async function getParentContentSession(): Promise<AgentSession> {
   if (cachedParentContentSession) return cachedParentContentSession;
+
+  // ISSUE-066：确保考核内容编写规范文档在 agent 可读位（幂等，真源随代码版本走）
+  ensureAssessGuideFile();
 
   // SPLIT M8-B：创建前远程预取家长 AGENTS 用户版本到本地缓存（按家长隔离）
   const parentContentAgentStatus = await fetchAgentPromptRemote("parent", getCurrentParentId());
