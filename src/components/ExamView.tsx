@@ -321,50 +321,66 @@ export default function ExamView({ childId, onExit }: Props) {
 
       // 2) 口语/听说题（背诵等）：提交时「批量评」——多段录音拼成 16k wav → 上传 → SSECP 发音评测。
       //    并行评测避免阻塞（用户要求：考核结束一次性提交，不逐题实时评）。
+      //    ⚠️ 软失败（2026-09-09）：单题评测失败（网络/服务暂不可用）不阻断整场——该题记 0 分并注明原因，
+      //    文字题照常判分提交，避免一次评测故障毁掉整场考核；问题在家长端/评测服务侧跟进。
       const speechResult = await Promise.all(
         speechQs.map(async (q) => {
-          const segs: string[] = Array.isArray(q.audioB64s) ? q.audioB64s : [];
-          // 无录音的口语题：记 0 分，不调评测
-          if (!segs.length) {
+          const fail = (err: unknown) => ({
+            qid: q.qid,
+            pointGot: 0,
+            pointMax: Number(q.pointMax) || 10,
+            correct: false,
+            aiComment: `发音评测暂不可用（未计分）：${String((err as Error)?.message || err || "")}`.slice(0, 120),
+            audioFileId: undefined as string | undefined,
+            speech: undefined as SpeechAssessment | undefined,
+          });
+          try {
+            const segs: string[] = Array.isArray(q.audioB64s) ? q.audioB64s : [];
+            // 无录音的口语题：记 0 分，不调评测
+            if (!segs.length) {
+              return {
+                qid: q.qid,
+                pointGot: 0,
+                pointMax: Number(q.pointMax) || 10,
+                correct: false,
+                aiComment: "未检测到背诵录音",
+                audioFileId: undefined as string | undefined,
+                speech: undefined as SpeechAssessment | undefined,
+              };
+            }
+            // 多段录音（多次按住说话）拼成单段 WAV（voiceMerge 已是 16k 单声道 wav，SSECP 直吃）
+            let buf: ArrayBuffer;
+            if (segs.length === 1) {
+              buf = b64ToBuf(segs[0]);
+            } else {
+              const m: any = await window.api.voiceMerge(childId, segs.map(plainB64));
+              if (!m?.success || !m.data) throw new Error(`合并语音失败：${m?.error || ""}`);
+              buf = b64ToBuf(m.data);
+            }
+            const a: any = await window.api.examAssessSpeech(
+              childId,
+              `recite-${q.qid}.wav`,
+              buf,
+              q.questionType!,
+              q.refText || "",
+              { isExam: true }
+            );
+            if (!a?.success) throw new Error(a?.error || "发音评测失败");
+            const sp: SpeechAssessment = a.data.result;
+            const pointGot = Math.round((sp.pron / 100) * (Number(q.pointMax) || 10));
             return {
               qid: q.qid,
-              pointGot: 0,
+              pointGot,
               pointMax: Number(q.pointMax) || 10,
-              correct: false,
-              aiComment: "未检测到背诵录音",
-              audioFileId: undefined as string | undefined,
-              speech: undefined as SpeechAssessment | undefined,
+              correct: (sp.pron ?? 0) >= 60,
+              aiComment: `发音 ${Math.round(sp.pron ?? 0)} 分（完整度 ${Math.round(sp.integrity ?? 0)} / 准确 ${Math.round(sp.accuracy ?? 0)} / 流利 ${Math.round(sp.fluency?.overall ?? 0)}）`,
+              audioFileId: a.data.audioFileId,
+              speech: sp,
             };
+          } catch (e) {
+            console.error(`[exam] 背诵题 ${q.qid} 发音评测失败（软失败，记 0 分）:`, e);
+            return fail(e);
           }
-          // 多段录音（多次按住说话）拼成单段 WAV（voiceMerge 已是 16k 单声道 wav，SSECP 直吃）
-          let buf: ArrayBuffer;
-          if (segs.length === 1) {
-            buf = b64ToBuf(segs[0]);
-          } else {
-            const m: any = await window.api.voiceMerge(childId, segs.map(plainB64));
-            if (!m?.success || !m.data) throw new Error(`合并语音失败：${m?.error || ""}`);
-            buf = b64ToBuf(m.data);
-          }
-          const a: any = await window.api.examAssessSpeech(
-            childId,
-            `recite-${q.qid}.wav`,
-            buf,
-            q.questionType!,
-            q.refText || "",
-            { isExam: true }
-          );
-          if (!a?.success) throw new Error(a?.error || "发音评测失败");
-          const sp: SpeechAssessment = a.data.result;
-          const pointGot = Math.round((sp.pron / 100) * (Number(q.pointMax) || 10));
-          return {
-            qid: q.qid,
-            pointGot,
-            pointMax: Number(q.pointMax) || 10,
-            correct: (sp.pron ?? 0) >= 60,
-            aiComment: `发音 ${Math.round(sp.pron ?? 0)} 分（完整度 ${Math.round(sp.integrity ?? 0)} / 准确 ${Math.round(sp.accuracy ?? 0)} / 流利 ${Math.round(sp.fluency?.overall ?? 0)}）`,
-            audioFileId: a.data.audioFileId,
-            speech: sp,
-          };
         })
       );
 
