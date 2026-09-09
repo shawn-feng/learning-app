@@ -43,7 +43,9 @@ export function classifyStem(stem: string): string {
   if (/背诵|背出|背一背|背原文/.test(s)) return "背诵";
   if (
     /读音|读作|拼音|字义|含义|释义|词义|正确的意思/.test(s) ||
-    /“[^”]{1,8}”(?:[^，。]{0,10}?)(读音|读作|意思|含义|字义|拼音)/.test(s)
+    /“[^”]{1,8}”(?:[^，。]{0,10}?)(读音|读作|意思|含义|字义|拼音)/.test(s) ||
+    // 引号内短词 + (中/里 + 字词句式) + 意思类，且不是整句翻译讲解
+    (/“[^”]{1,8}”(?:[^。]{0,20}?)(?:意思|含义)/.test(s) && !/用自己的话|讲一讲|这句话|这段话|翻译|句子意思|用今天学到的/.test(s))
   )
     return "字词";
   if (/典故|苏轼|佛印|故事/.test(s)) return "典故";
@@ -167,11 +169,25 @@ export function parseCourseRubric(md: string): MigrateResult {
   for (const g of groups) {
     const tail = g.tail;
     const ansMap = new Map<number, string>();
-    const ansLine = tail.match(/选择题答案[：:]\s*([^\n]+)/);
-    if (ansLine) {
-      const re2 = /(\d+)\s*[.、]\s*([A-H])/g;
-      let mm: RegExpExecArray | null;
-      while ((mm = re2.exec(ansLine[1]!)) !== null) ansMap.set(Number(mm[1]), mm[2]!);
+    // 答案标签有多种写法：`一、选择题答案：1.B 2.B…` / `**一、选择题答案**`(编号分行) / `选择题标准答案`
+    const tailLines = tail.split(/\r?\n/);
+    const ansStart = tailLines.findIndex((l) => /选择题(标准)?答案/.test(l));
+    if (ansStart >= 0) {
+      const seg: string[] = [];
+      for (let li = ansStart; li < tailLines.length; li++) {
+        if (li > ansStart && /问答题评分标准/.test(tailLines[li]!)) break;
+        seg.push(tailLines[li]!);
+      }
+      const segText = seg.join("\n");
+      const tokenRe = /(\d+)\s*[.、]\s*(?:答案\s*[:：]?\s*)?([A-H])\b/g;
+      let tm: RegExpExecArray | null;
+      while ((tm = tokenRe.exec(segText)) !== null) ansMap.set(Number(tm[1]), tm[2]!);
+      // 兜底：`1. 答案 B` / `（1）B`
+      if (!ansMap.size) {
+        const re2 = /\(?(\d+)\)?\s*[.、:]?\s*答案[:：]?\s*([A-H])\b/g;
+        let mm: RegExpExecArray | null;
+        while ((mm = re2.exec(segText)) !== null) ansMap.set(Number(mm[1]), mm[2]!);
+      }
     }
     // 问答题 → 该组内第 N 道问答题；评分块「第N题评分标准」按此索引
     const openPositions: number[] = [];
