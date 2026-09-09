@@ -30,6 +30,8 @@ interface CourseConfig {
   mastery: string;
   examMastery: string;
   assessRubric: string;
+  /** 结构化考核(v2)：服务端按孩子方法预生成的本课题目（有则直接开考，不再 LLM 出题） */
+  questions?: Array<Record<string, unknown>>;
 }
 
 interface QuestionUI {
@@ -107,6 +109,9 @@ export default function ExamView({ childId, onExit }: Props) {
   const streamRunRef = useRef(0);
   // 幂等：同一场考试只启动一次流式出题（iframe 因 srcDoc 变化重载会再次触发 onLoad）
   const streamStartedRef = useRef(false);
+  // 题流元数据（结构化 v2）：与 iframe D.questions 完全同序，记录每题评分标准文本；
+  // iframe 会重排 qid 且丢弃未知字段，判分标准只能由宿主按送达顺序在提交时回填。
+  const questionMetaRef = useRef<Array<{ course: string; stem: string; scoringText: string }>>([]);
   // 准备阶段提示文案（选课/出题/判分共用「批改中」遮罩）
   const [prepText, setPrepText] = useState("");
 
@@ -174,6 +179,7 @@ export default function ExamView({ childId, onExit }: Props) {
         streamPlanRef.current = { childId, topicName, childName: String((data as any).childName || ""), courses };
         streamRunRef.current++; // 使上一场（若有）的生成循环失效
         streamStartedRef.current = false; // 新一场重新允许 onLoad 启动
+        questionMetaRef.current = []; // 新一场重置题流元数据
         setExamHtml(buildExamHtml([], topicName, `${topicName} · 学习考核`, courses.length));
         setStage("exam");
       } catch (e: any) {
@@ -194,6 +200,14 @@ export default function ExamView({ childId, onExit }: Props) {
     let delivered = 0;
     let okAny = false;
     const post = (questions: any[], remaining: number) => {
+      // 记录题流元数据（与 iframe D.questions 追加顺序一致：每个 addQuestions 追加其整组题）
+      for (const q of questions) {
+        questionMetaRef.current.push({
+          course: String(q?.course || ""),
+          stem: String(q?.stem || ""),
+          scoringText: String(q?.scoringText || ""),
+        });
+      }
       try {
         win.postMessage({ type: "exam:addQuestions", questions, remaining }, "*");
       } catch {
@@ -211,6 +225,14 @@ export default function ExamView({ childId, onExit }: Props) {
       while (runId === streamRunRef.current && next < total) {
         const i = next++;
         const course = plan.courses[i];
+        // 结构化课程（v2）：服务端已按孩子方法预生成题目，直接送达，跳过 LLM 出题
+        const pre = (course as any).questions;
+        if (Array.isArray(pre)) {
+          ready[i] = pre;
+          if (pre.length) okAny = true;
+          flush();
+          continue;
+        }
         try {
           const g: any = await window.api.examGenerateCourse(plan.childId, plan.topicName, course, plan.childName);
           if (runId !== streamRunRef.current) return; // 已切场/退出
@@ -287,6 +309,11 @@ export default function ExamView({ childId, onExit }: Props) {
     setStage("scoring");
     setPrepText("老师正在批改你的回答…");
     try {
+      // 结构化题：按送达顺序把每题评分标准回填到提交项（iframe 重排 qid 且丢弃未知字段）
+      const metas = questionMetaRef.current;
+      payload.perQuestion.forEach((q, i) => {
+        if (i < metas.length) (q as any).scoringText = metas[i]!.scoringText || "";
+      });
       const isSpeech = (q: (typeof payload.perQuestion)[number]) => !!q.questionType;
       const speechQs = payload.perQuestion.filter(isSpeech);
       const textQs = payload.perQuestion.filter((q) => !isSpeech(q));
@@ -310,6 +337,7 @@ export default function ExamView({ childId, onExit }: Props) {
           stem: q.stem,
           pointMax: Number(q.pointMax) || 10,
           rubric: rubricByCourse.get(q.course) || "",
+          scoring: String((q as any).scoringText || ""),
           asrText: q.asr || "",
           durationMs: q.durationMs ?? null,
         }));

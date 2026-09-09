@@ -13,6 +13,7 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
+import { attachStructuredQuestions } from "../assess-selection.js";
 
 interface ExamDeps {
   config: ServerConfig;
@@ -892,6 +893,19 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       // 孩子显示名（考核方法 assess_method 常按孩子名分段，出题 prompt 需要点名当前孩子）
       const childRow = deps.db.prepare("SELECT name FROM children WHERE id = ?").get(childId) as { name?: string } | undefined;
       const childName = String(childRow?.name ?? "");
+      // 结构化考核（v2）：课程有挂载内容时由服务端按孩子方法直接抽题（course.questions），不再客户端 LLM 出题；
+      // 无挂载内容(非结构化)照旧返回 rubric，客户端走旧路径。
+      const structuredCourses = (titles: string[]) => {
+        const cs = fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, titles);
+        try {
+          const pl = openParentLib(deps.config.dataDir, parentId);
+          attachStructuredQuestions(pl, childId, cs);
+          pl.close();
+        } catch (e) {
+          console.warn(`[exam] 结构化挂题失败（回退 rubric 旧路径）：${(e as Error).message}`);
+        }
+        return cs;
+      };
       // 第二段（兼容旧客户端/二次请求）：带 courses= 参数 → 直接按课程名返回 rubric + 判分 prompt
       if (coursesParam) {
         const titles = coursesParam
@@ -901,7 +915,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         return {
           schedule,
           childName,
-          courses: fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, titles),
+          courses: structuredCourses(titles),
           scoringPrompt: buildScoringPrompt(),
         };
       }
@@ -919,7 +933,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         return {
           schedule,
           childName,
-          courses: fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, scopeCourses),
+          courses: structuredCourses(scopeCourses),
           scoringPrompt: buildScoringPrompt(),
         };
       }
@@ -957,12 +971,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         return {
           schedule,
           childName,
-          courses: fetchCoursesWithRubric(
-            deps.config.dataDir,
-            parentId,
-            childId,
-            must.map((c) => c.title)
-          ),
+          courses: structuredCourses(must.map((c) => c.title)),
           scoringPrompt: buildScoringPrompt(),
           // 计划里匹配不到孩子库课程的文本（供调试/提示）
           unmatched,

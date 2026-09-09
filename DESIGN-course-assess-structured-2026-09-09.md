@@ -190,5 +190,11 @@ ExamView: examConfig → cfg.courses[] 带 assessRubric(整文) → examGenerate
 - 全量家长库已 ensure（186 个，uuid 缺失 0）。
 - 学而篇第一章已造样例块（5 类别各 1 题 + method_spec 珊珊），读取链路验证通过：
   背诵(speech 置首)+句意白话+道理，字词/典故被 exclude。
-待办：exam config 读取接入（§8.2 取题）、判分按题小 prompt、ExamView 分流、每课 per_question 补 id；
+- `server/src/assess-selection.ts`（新）：attachStructuredQuestions——按孩子 method_spec(exclude/require/default) 抽题组题；
+  speech 类置首、answer=refText；非结构化课不动（走旧 rubric 路径）。
+- `server/src/routes/exam.ts`：config 三个返回点统一经 structuredCourses 包裹（带挂载课的 course.questions）。
+- `electron/lib/exam-engine.ts` + `src/components/ExamView.tsx`：判分支持逐题 scoringText（不贴整课 rubric）；
+  流式 worker 优先用预生成题；宿主按送达顺序维护元数据，提交回填 scoringText。实测输出：
+  rq1 背诵(refText=原文) → q1 句意白话 → q2 道理（各带参考答案+评分维度）。
+待办：结构化场次端到端本地考核验证（点考核→直出 3 题→答题→判分/评测→落库）；
 家长 agent 工具（步骤 2）；存量迁移（步骤 4）。

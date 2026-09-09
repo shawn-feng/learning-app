@@ -296,6 +296,8 @@ export interface ExamAnswerIn {
   pointMax: number;
   /** 家长写的该课考核要点（服务端下发，判分锚定用——SCORING_PROMPT 声明要按 rubric 给分） */
   rubric: string;
+  /** 结构化题（v2）：本题评分标准+参考答案文本（有则按本题给分，不再依赖课程 rubric 整文） */
+  scoring?: string;
   asrText: string;
   durationMs: number | null;
 }
@@ -353,14 +355,19 @@ export async function scoreExamAttempt(
   const answersLines: string[] = [];
   let n = 0;
   for (const [course, qs] of byCourse) {
-    const rubric = qs.find((q) => q.rubric)?.rubric || "（未提供考核要点）";
-    answersLines.push(`【课程：${course}】\n考核要点(rubric，家长写，判分锚定，本课各题共用)：${rubric}`);
+    // 结构化题带逐题评分标准时，不再重复贴整课 rubric（判分锚定 = 本题标准）
+    const anyRubric = qs.some((q) => q.rubric);
+    if (anyRubric) {
+      const rubric = qs.find((q) => q.rubric)?.rubric || "（未提供考核要点）";
+      answersLines.push(`【课程：${course}】\n考核要点(rubric，家长写，判分锚定，本课各题共用)：${rubric}`);
+    }
     for (const a of qs) {
       n++;
       answersLines.push(
         `【第${n}题】qid=${a.qid}，pointMax=${a.pointMax}\n` +
           `题干：${a.stem}\n` +
           `孩子回答（ASR 转写，可能有识别误差）：${a.asrText || "（未作答/仅语音）"}\n` +
+          (a.scoring ? `本题评分标准（家长设定，按此给分）：\n${a.scoring}\n` : "") +
           `本题用时：${a.durationMs != null ? Math.round(a.durationMs / 1000) + "秒" : "未知"}`
       );
     }
