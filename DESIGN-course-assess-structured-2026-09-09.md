@@ -156,3 +156,88 @@ payload：
 
 - ISSUE-067（本设计，待实施）；ISSUE-065（选课机制，已实施）；ISSUE-066（agent 写 rubric 能力，已实施，待对齐）。
 - 数据真源：家长库 `server/data/parents/<parent>/parent.sqlite`（topics / course_assess_blocks）。
+
+## 8. 附录：完整表结构 DDL（实施基线，2026-09-09 用户确认 DB 存储方案）
+
+数据落点：家长库 `parent.sqlite`。**内容块 (topic,course) 归属、全孩子共享；只有 method_spec 按孩子区分**。
+
+### 8.1 `topics` 扩展两列（JSON 文本）
+
+```sql
+ALTER TABLE topics ADD COLUMN type_catalog TEXT;  -- NULL/未配置=回退旧整文行为
+ALTER TABLE topics ADD COLUMN method_spec  TEXT;
+```
+
+- `type_catalog`：`{ "catalog": [ { "name":"背诵", "aliases":["原文背诵","背诵原文"], "behavior":"speech_recite" }, … ] }`
+  - `behavior`: `speech_recite`（发音评测：refText/不显原文/置首题/通过线取 method.rules）| `speech_read` | `generic`（口述主观题）
+- `method_spec`：`{ "perChild": { "<childId>": { "require": {"背诵":1,"句意白话":1,"道理":1}, "exclude":["字词","典故"], "rules":{"recitePass":90} } }, "default": { "require": {}, "exclude": [], "rules": {"recitePass":90} } }`
+  - key 用 childId（uuid），不用显示名（改名不断链）；`default` 回退 = require 为空时取该课实际存在的类型各 1 题，防止新孩子整场空。
+  - 旧 `assess_method` 散文保留给人看/迁移对照，真源是 method_spec。
+
+### 8.2 新表 `course_assess_blocks`（核心）
+
+```sql
+CREATE TABLE IF NOT EXISTS course_assess_blocks (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic      TEXT    NOT NULL,                -- topic_key，对应 courses.topic
+  course     TEXT    NOT NULL,                -- 课程标题，对应 courses.title
+  type       TEXT    NOT NULL,                -- 规范类型名 = type_catalog[].name
+  kind       TEXT    NOT NULL CHECK (kind IN ('summary', 'question')),
+  seq        INTEGER NOT NULL DEFAULT 0,      -- 同类型内顺序；例题追加 = max(seq)+1
+  payload    TEXT    NOT NULL,                -- JSON（见 8.3）
+  created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (topic, course, type, kind, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_cab_course ON course_assess_blocks(topic, course);
+CREATE INDEX IF NOT EXISTS idx_cab_type    ON course_assess_blocks(topic, type);
+```
+
+设计取舍：**不拆题库表+评分表**。每题（题干+评分）为一条 payload JSON——评分维度随题而异且字段会演进（难度/来源/轮换标记），JSON 行免迁移；同 `(course,type,kind='question')` 多行即例题池。读整课一次、内存切片，行数小无需 SQL 聚合。抽题策略（随机/轮换/必考）未决，见 §6。
+
+### 8.3 payload 规范
+
+```jsonc
+// kind='summary'（每类型至多一条）
+{ "overview": "能用自己的话把三句话意思讲清楚，允许生活小例子…" }
+
+// kind='question'（通用口述主观题，generic 行为）
+{
+  "stem": "…", "pointMax": 10,
+  "scoring": {
+    "dims":      [ { "dim": "句子意思解释", "points": "第一句：复习+快乐", "score": 2, "note": "要点各1分" } ],
+    "special":   [ "若只背原文不用自己的话，表达项不得分…" ],
+    "answerRef": "参考要点…（可空）"
+  }
+}
+
+// kind='question'（背诵/朗读，speech_recite/speech_read：无 dims）
+{
+  "stem": "背诵本章原文", "pointMax": 10,
+  "recite": { "refText": "子曰：…" }
+}
+```
+
+### 8.4 常用读写
+
+```sql
+-- ① 整课事务替换（工具/agent 写完整课）
+BEGIN;
+DELETE FROM course_assess_blocks WHERE topic=? AND course=?;
+-- INSERT 若干 summary/question 行…
+COMMIT;
+
+-- ② 某类型追加例题
+INSERT INTO course_assess_blocks (topic, course, type, kind, seq, payload)
+VALUES (?, ?, '句意白话', 'question',
+        (SELECT COALESCE(MAX(seq),0)+1 FROM course_assess_blocks
+          WHERE topic=? AND course=? AND type='句意白话' AND kind='question'), ?);
+
+-- ③ 出题/判分读取：按课整取，内存按类型切片
+SELECT type, kind, seq, payload FROM course_assess_blocks
+WHERE topic=? AND course=? ORDER BY type, kind DESC, seq;
+```
+
+### 8.5 兼容红线（重申）
+
+`courses.assess_rubric` 保留不动：无块记录的课走旧整文路径；`type_catalog`/`method_spec` 未配置的主题同样回退旧行为，不回退不报错。存量迁移（§4）后置。
