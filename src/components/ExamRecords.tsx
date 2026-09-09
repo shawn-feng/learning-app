@@ -1,23 +1,10 @@
 /**
- * 家长端 · 学习考核记录（EXAM-REQUIREMENTS.md §8/§9）：
- * - 每课程考核记录表：最近考核时间 / 掌握情况（正确率）/ 错题难点 / 亮点 / 计划复习时间 / 计划复习重点；
- * - 最近考核明细：逐题得分 + AI 评语 + ASR 转写 + ▶ 听原音（原始录音，家长可核对判分）。
+ * 家长端 · 孩子考核记录（2026-09-09 改版）：
+ * 左右布局——左侧为该孩子**已完成考核**列表（不含未进行的计划，计划请看「学习考核」页）；
+ * 点击某一次考核，右侧显示该次详情（总分 / 时间 / 逐题得分与评语 / ASR / 原音回放 / 口语维度分）。
  */
 import { useEffect, useState } from "react";
 import type { SpeechAssessment } from "../../electron/lib/exam";
-
-interface CourseRecord {
-  course: string;
-  attempts: number;
-  lastAssessAt: string;
-  correct: number;
-  total: number;
-  rate: number;
-  difficulties: string[];
-  highlights: string[];
-  planReviewAt: string;
-  focus: string[];
-}
 
 interface AttemptPerQuestion {
   qid: string;
@@ -30,7 +17,6 @@ interface AttemptPerQuestion {
   pointMax: number;
   correct: boolean;
   aiComment: string;
-  /** 口语/听说题附加字段 */
   assessMethod?: "speech";
   questionType?: string;
   refText?: string;
@@ -48,22 +34,11 @@ interface Attempt {
   reinforcePlan: Record<string, { planReviewAt: string; focus: string[]; aiSuggestion?: string }>;
 }
 
-interface ScheduleItem {
-  id: string;
-  kind: "fixed" | "custom";
-  freq: string;
-  scheduledAt: string;
-  status: "pending" | "started" | "done" | "expired";
-  title: string;
-  scope: Record<string, unknown>;
-  pending: boolean;
-}
-
-/** 口语/听说题评测明细：维度分 + 逐字/逐词高亮（绿=好，红=需改进）。 */
 function speechColor(s: number): string {
   return s >= 80 ? "#2f8a52" : s >= 60 ? "#b9770a" : "#c0392b";
 }
 
+/** 口语/听说题评测明细：维度分 + 逐字/逐词高亮（绿=好，红=需改进）。 */
 function SpeechDetail({ speech, questionType, refText }: { speech: SpeechAssessment; questionType?: string; refText?: string }) {
   const dims: Array<[string, number | undefined]> = [
     ["发音", speech.pron],
@@ -114,10 +89,11 @@ function SpeechDetail({ speech, questionType, refText }: { speech: SpeechAssessm
   );
 }
 
+const fmtDate = (iso: string) => (iso ? new Date(iso).toLocaleString("zh-CN", { hour12: false }).slice(0, 16) : "—");
+
 export default function ExamRecords({ childId }: { childId: string }) {
-  const [records, setRecords] = useState<CourseRecord[]>([]);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
-  const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
+  const [selId, setSelId] = useState<string>("");
   const [msg, setMsg] = useState("");
   const [audioSrc, setAudioSrc] = useState<Record<string, string>>({});
   const [playing, setPlaying] = useState<string | null>(null);
@@ -126,38 +102,20 @@ export default function ExamRecords({ childId }: { childId: string }) {
     let alive = true;
     (async () => {
       try {
-        const [r, a, s] = await Promise.all([
-          (window.api.examCourseRecords(childId) as Promise<any>).catch(() => ({ success: false })),
-          (window.api.examAttempts(childId) as Promise<any>).catch(() => ({ success: false })),
-          (window.api.examSchedules(childId) as Promise<any>).catch(() => ({ success: false })),
-        ]);
+        const a: any = await (window.api.examAttempts(childId) as Promise<any>).catch(() => ({ success: false }));
         if (!alive) return;
-        if (r?.success) setRecords(r.data || []);
-        if (a?.success) setAttempts(a.data || []);
-        if (s?.success) setSchedules(s.data?.schedules || []);
-        if (!r?.success && !a?.success) setMsg("暂无考核记录（孩子还没参加过考核）");
+        if (a?.success && Array.isArray(a.data) && a.data.length) {
+          setAttempts(a.data);
+          setSelId((p) => p || String(a.data[0].id || ""));
+        } else {
+          setMsg("还没有完成的考核记录。");
+        }
       } catch (e: any) {
         if (alive) setMsg(String(e?.message || e));
       }
     })();
     return () => { alive = false; };
   }, [childId]);
-
-  async function cancelSchedule(id: string) {
-    const ok = window.confirm("取消这次考核安排？");
-    if (!ok) return;
-    try {
-      const r: any = await window.api.examScheduleCancel(id);
-      if (r?.success) {
-        const s: any = await window.api.examSchedules(childId);
-        setSchedules(s?.success ? (s.data?.schedules || []) : schedules);
-      } else {
-        setMsg(`取消失败：${r?.error || ""}`);
-      }
-    } catch (e: any) {
-      setMsg(`取消失败：${String(e?.message || e)}`);
-    }
-  }
 
   async function playAudio(fileId: string, qid: string) {
     if (playing === qid) { setPlaying(null); return; }
@@ -170,106 +128,88 @@ export default function ExamRecords({ childId }: { childId: string }) {
         setMsg(`语音加载失败：${r?.error || ""}`);
       }
     } catch (e: any) {
-      setMsg(`语音加载失败：${String(e?.message || e)}`);
+      setMsg(`语音加载失败：${String((e as Error)?.message || e)}`);
     }
   }
 
-  const fmtDate = (iso: string) => (iso ? new Date(iso).toLocaleString("zh-CN", { hour12: false }).slice(0, 16) : "—");
-  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const cur = attempts.find((x) => x.id === selId) || null;
+  const maxScore = cur?.perQuestion.reduce((s, q) => s + (Number(q.pointMax) || 0), 0) || cur?.score || 0;
 
   return (
     <div>
-      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>🎯 学习考核记录</div>
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>🎯 考核记录（已完成）</div>
       <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
-        每课程掌握情况来自历次考核逐题聚合；语音为原始录音（ASR 可能出错，可听原音核对判分）。数据在服务端，跨设备可见。
+        左侧为历次已完成的考核；点击查看该次得分与逐题详情。进行中的考核计划请到「学习考核」页查看。
       </p>
       {msg && <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>{msg}</div>}
 
-      {/* 考核排期（固定频率 + 家长自定义；家长可取消待考核） */}
-      {schedules.length > 0 && (
-        <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 12, padding: "14px 16px", marginBottom: 14 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📅 考核安排</div>
-          {schedules.slice(0, 8).map((sch) => (
-            <div key={sch.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0", borderBottom: "1px solid #f4f4f4" }}>
-              <div style={{ flex: 1, fontSize: 13 }}>
-                <span style={{ fontWeight: 600 }}>{sch.title}</span>
-                {sch.kind === "custom" && (
-                  <span style={{ marginLeft: 6, fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "0 6px" }}>自定义</span>
-                )}
-                <span style={{ color: "#888", marginLeft: 8 }}>{sch.scheduledAt ? new Date(sch.scheduledAt).toLocaleString("zh-CN", { hour12: false }).slice(0, 16) : ""}</span>
-                {sch.status === "done" && <span style={{ color: "#27ae60", marginLeft: 8 }}>✓ 已完成</span>}
-                {sch.pending && <span style={{ color: "#b9770a", marginLeft: 8 }}>待考核（可开始）</span>}
-              </div>
-              {sch.status === "pending" && (
+      <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+        {/* 左：已完成考核列表 */}
+        <div style={{ width: 300, flexShrink: 0, background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12, maxHeight: 560, overflowY: "auto" }}>
+          {attempts.length === 0 ? (
+            <div style={{ color: "#aaa", fontSize: 13 }}>暂无数据</div>
+          ) : (
+            attempts.map((at) => {
+              const active = at.id === selId;
+              return (
                 <button
-                  onClick={() => cancelSchedule(sch.id)}
-                  style={{ border: "1px solid #e0c4c4", background: "#fff", color: "#b33", borderRadius: 6, padding: "3px 10px", fontSize: 12, cursor: "pointer" }}
+                  key={at.id}
+                  onClick={() => { setSelId(at.id); setPlaying(null); }}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    background: active ? "#eef2ff" : "#fff",
+                    border: active ? "2px solid #667eea" : "1px solid #e6eaf0",
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    marginBottom: 8,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
                 >
-                  取消
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>{at.title}</div>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: at.score >= 60 ? "#2f8a52" : "#c0392b" }}>{at.score} 分</span>
+                    <span style={{ fontSize: 11, color: "#999" }}>{fmtDate(at.submittedAt)}</span>
+                  </div>
+                  {at.perQuestion?.length ? (
+                    <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 2 }}>
+                      {at.perQuestion.length} 题 · 对 {at.perQuestion.filter((q) => q.correct).length}
+                    </div>
+                  ) : null}
                 </button>
-              )}
-            </div>
-          ))}
+              );
+            })
+          )}
         </div>
-      )}
 
-      {/* 每课程考核记录表 */}
-      <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16, marginBottom: 16, overflowX: "auto" }}>
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📋 每课程考核记录表</div>
-        {records.length === 0 ? (
-          <div style={{ color: "#aaa", fontSize: 13 }}>暂无数据</div>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 760 }}>
-            <thead>
-              <tr style={{ textAlign: "left", color: "#888" }}>
-                <th style={{ padding: "6px 8px" }}>课程</th>
-                <th style={{ padding: "6px 8px" }}>最近考核</th>
-                <th style={{ padding: "6px 8px" }}>掌握情况</th>
-                <th style={{ padding: "6px 8px" }}>错题难点</th>
-                <th style={{ padding: "6px 8px" }}>亮点</th>
-                <th style={{ padding: "6px 8px" }}>计划复习时间</th>
-                <th style={{ padding: "6px 8px" }}>计划复习重点</th>
-              </tr>
-            </thead>
-            <tbody>
-              {records.map((r) => (
-                <tr key={r.course} style={{ borderTop: "1px solid #f0f0f0", verticalAlign: "top" }}>
-                  <td style={{ padding: "6px 8px", fontWeight: 600 }}>{r.course}</td>
-                  <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtDate(r.lastAssessAt)}</td>
-                  <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
-                    <span style={{ color: r.rate >= 0.6 ? "#2f8a52" : "#c0392b", fontWeight: 700 }}>{pct(r.rate)}</span>
-                    <span style={{ color: "#999" }}>（{r.correct}/{r.total}）</span>
-                  </td>
-                  <td style={{ padding: "6px 8px", color: "#b03a2e", maxWidth: 220 }}>{r.difficulties.join("；") || "—"}</td>
-                  <td style={{ padding: "6px 8px", color: "#2f8a52", maxWidth: 220 }}>{r.highlights.join("；") || "—"}</td>
-                  <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{r.planReviewAt || "—"}</td>
-                  <td style={{ padding: "6px 8px", maxWidth: 240 }}>{r.focus.join("；") || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {/* 最近考核明细 */}
-      <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>🕐 最近考核明细</div>
-        {attempts.length === 0 ? (
-          <div style={{ color: "#aaa", fontSize: 13 }}>暂无数据</div>
-        ) : (
-          attempts.map((at) => (
-            <div key={at.id} style={{ background: "#fff", border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 10 }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-                <span style={{ fontWeight: 700, fontSize: 13 }}>{at.title}</span>
-                <span style={{ fontSize: 14, fontWeight: 800, color: at.score >= 60 ? "#2f8a52" : "#c0392b" }}>{at.score} 分</span>
-                <span style={{ fontSize: 11, color: "#999" }}>{fmtDate(at.submittedAt)}</span>
+        {/* 右：选中考核详情 */}
+        <div style={{ flex: 1, minWidth: 0, background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+          {!cur ? (
+            <div style={{ color: "#aaa", fontSize: 13 }}>选择左侧一次考核查看详情</div>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
+                <span style={{ fontWeight: 700, fontSize: 15 }}>{cur.title}</span>
+                <span style={{ fontSize: 22, fontWeight: 800, color: cur.score >= 60 ? "#2f8a52" : "#c0392b" }}>
+                  {cur.score} / {maxScore || "—"} 分
+                </span>
+                <span style={{ fontSize: 12, color: "#999" }}>提交于 {fmtDate(cur.submittedAt)}</span>
               </div>
-              {at.perQuestion.map((q, i) => (
-                <div key={q.qid} style={{ padding: "6px 0", borderTop: "1px solid #f6f6f6", fontSize: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <span style={{ fontWeight: 600 }}>
-                      第 {i + 1} 题 · {q.course}
+              {Object.keys(cur.courseMastery || {}).length > 0 && (
+                <div style={{ margin: "6px 0 12px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {Object.entries(cur.courseMastery).map(([course, cm]) => (
+                    <span key={course} style={{ fontSize: 12, background: "#fff", border: "1px solid #e6eaf0", borderRadius: 999, padding: "2px 10px" }}>
+                      {course}：对 {cm.correct}/{cm.total}（{Math.round((cm.rate || 0) * 100)}%）
                     </span>
+                  ))}
+                </div>
+              )}
+              {cur.perQuestion.map((q, i) => (
+                <div key={q.qid} style={{ padding: "8px 0", borderTop: "1px solid #eee", fontSize: 12.5 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 600 }}>第 {i + 1} 题 · {q.course}</span>
                     <span style={{ color: q.correct ? "#2f8a52" : "#c0392b", fontWeight: 700 }}>
                       {q.correct ? "✓" : "✗"} {q.pointGot}/{q.pointMax}
                     </span>
@@ -292,17 +232,15 @@ export default function ExamRecords({ childId }: { childId: string }) {
                         {playing === q.qid ? "⏹ 停止" : "▶ 听原音"}
                       </button>
                     )}
-                    {q.durationMs != null && (
-                      <span style={{ color: "#aaa", fontSize: 11 }}>用时 {Math.round(q.durationMs / 1000)}s</span>
-                    )}
+                    {q.durationMs != null && <span style={{ color: "#aaa", fontSize: 11 }}>用时 {Math.round(q.durationMs / 1000)}s</span>}
                   </div>
-                  {q.question && <div style={{ color: "#666", marginTop: 2 }}>问：{q.question}</div>}
+                  {q.question && <div style={{ color: "#666", marginTop: 3 }}>问：{q.question}</div>}
                   {q.asrText && (
-                    <div style={{ color: "#555", marginTop: 2 }}>
+                    <div style={{ color: "#555", marginTop: 3 }}>
                       答：<span style={{ background: "#f4f7ff", padding: "1px 6px", borderRadius: 4 }}>{q.asrText}</span>
                     </div>
                   )}
-                  {q.aiComment && <div style={{ color: "#888", marginTop: 2 }}>评语：{q.aiComment}</div>}
+                  {q.aiComment && <div style={{ color: "#888", marginTop: 3 }}>评语：{q.aiComment}</div>}
                   {q.assessMethod === "speech" && q.speech && (
                     <SpeechDetail speech={q.speech} questionType={q.questionType} refText={q.refText} />
                   )}
@@ -311,9 +249,9 @@ export default function ExamRecords({ childId }: { childId: string }) {
                   )}
                 </div>
               ))}
-            </div>
-          ))
-        )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

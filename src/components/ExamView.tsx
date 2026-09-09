@@ -85,6 +85,10 @@ function fmtTime(iso: string): string {
 export default function ExamView({ childId, onExit }: Props) {
   const [stage, setStage] = useState<Stage>("pick");
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
+  // 全部已完成考核（供孩子历史查看该次成绩）
+  const [allAttempts, setAllAttempts] = useState<any[]>([]);
+  // 孩子在 pick 页点开「已完成」查看的历史记录（非 null 时 pick 区显示该次详情）
+  const [histView, setHistView] = useState<any | null>(null);
   const [error, setError] = useState("");
   const [examHtml, setExamHtml] = useState("");
   const [currentSchedule, setCurrentSchedule] = useState<ScheduleItem | null>(null);
@@ -106,21 +110,16 @@ export default function ExamView({ childId, onExit }: Props) {
   // 准备阶段提示文案（选课/出题/判分共用「批改中」遮罩）
   const [prepText, setPrepText] = useState("");
 
-  // 初始化：取考核排期列表（服务端懒生成固定排期）→ 只保留「今天」的考核
+  // 初始化：拉考核排期 + 历史成绩（孩子 pick 页分「今天可参加 / 历史（未完成可补考、已完成可查看）」）
   const loadSchedules = useCallback(async () => {
     try {
-      const r: any = await window.api.examSchedules(childId);
-      if (!r?.success) throw new Error(r?.error || "获取考核排期失败");
-      const all = r.data?.schedules || [];
-      // 排期 scheduledAt 为 UTC ISO；按本地时区取「今天」的年月日做过滤
-      const now = new Date();
-      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-      const todays = all.filter((s: any) => {
-        const d = new Date(s.scheduledAt);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-        return key === todayKey;
-      });
-      setSchedules(todays);
+      const [rS, rA] = await Promise.all([
+        window.api.examSchedules(childId) as Promise<any>,
+        (window.api.examAttempts(childId) as Promise<any>).catch(() => ({ success: false })),
+      ]);
+      if (!rS?.success) throw new Error(rS?.error || "获取考核排期失败");
+      setSchedules(rS.data?.schedules || []);
+      if (rA?.success && Array.isArray(rA.data)) setAllAttempts(rA.data);
     } catch (e: any) {
       setError(String(e?.message || e));
       setStage("error");
@@ -484,6 +483,95 @@ export default function ExamView({ childId, onExit }: Props) {
     }
   }
 
+  // —— 考核列表分组（孩子 pick 页）：今天可参加 / 历史未完成（可补考）/ 已完成（可查看）——
+  const dayKeyOf = (iso: string) => {
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const todayKey = dayKeyOf(new Date().toISOString());
+  const canStart = (s: ScheduleItem) => s.status === "pending" || s.status === "started";
+  const todayOpen = schedules.filter((s) => dayKeyOf(s.scheduledAt) === todayKey && canStart(s));
+  const pastOpen = schedules.filter((s) => dayKeyOf(s.scheduledAt) < todayKey && canStart(s));
+  const doneList = schedules.filter((s) => s.status === "done");
+  const attemptOfSchedule = (sch: ScheduleItem) =>
+    allAttempts.find((a) => a.id === sch.attemptId) ||
+    allAttempts.find((a) => String(a.title || "") === String(sch.title || ""));
+
+  // 卡片渲染（今天/补考/已完成共用样式）
+  const renderCard = (sch: ScheduleItem, o: { btnLabel: string; accent?: boolean; onBtn?: () => void }) => (
+    <div
+      key={sch.id}
+      style={{
+        background: "#fff",
+        border: o.accent ? "2px solid #f2994a" : "1px solid #e6eaf0",
+        borderRadius: 12,
+        padding: "13px 16px",
+        marginBottom: 9,
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>
+          {sch.title}
+          {sch.kind === "custom" && (
+            <span style={{ marginLeft: 8, fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
+          )}
+        </div>
+        <div style={{ color: "#6b7686", fontSize: 12, marginTop: 2 }}>
+          {fmtTime(sch.scheduledAt)}
+          {sch.freq ? ` · ${FREQ_LABEL[sch.freq] || sch.freq}考核` : ""}
+          {sch.status === "started" && " · 上次没考完" }
+        </div>
+        {sch.scope?.note ? <div style={{ color: "#888", fontSize: 12, marginTop: 2 }}>内容：{String(sch.scope.note)}</div> : null}
+      </div>
+      {o.onBtn ? (
+        <button
+          style={{ ...btn, background: o.accent ? "#f2994a" : "#3b6ef5", color: "#fff", padding: "8px 16px", whiteSpace: "nowrap" }}
+          onClick={o.onBtn}
+        >
+          {o.btnLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+
+  // 孩子查看某次已完成考核的详情（复用 attempt 数据，无编辑/录音，仅展示）
+  const renderHist = (at: any) => {
+    const qs: Array<any> = at?.perQuestion || [];
+    const maxP = qs.reduce((s, q) => s + (Number(q?.pointMax) || 0), 0);
+    return (
+      <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 14, padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
+          <span style={{ fontWeight: 800, fontSize: 16 }}>{at?.title || "历史考核"}</span>
+          <span style={{ fontSize: 26, fontWeight: 800, color: (at?.score ?? 0) >= 60 ? "#27ae60" : "#e74c3c" }}>{at?.score ?? 0} 分</span>
+          <span style={{ color: "#999", fontSize: 12 }}>{at?.submittedAt ? fmtTime(at.submittedAt) : ""}</span>
+        </div>
+        {maxP ? <div style={{ color: "#888", fontSize: 12, marginBottom: 8 }}>满分 {maxP} 分</div> : null}
+        {qs.length === 0 && <div style={{ color: "#aaa", fontSize: 13 }}>这次考核没有逐题记录。</div>}
+        {qs.map((q, i) => (
+          <div key={String(q?.qid || i)} style={{ borderTop: "1px solid #f0f0f0", padding: "9px 0", fontSize: 13 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 700 }}>第 {i + 1} 题{q?.course ? ` · ${q.course}` : ""}</span>
+              <span style={{ color: q?.correct ? "#2f8a52" : "#c0392b", fontWeight: 700 }}>
+                {q?.correct ? "✓" : "✗"} {q?.pointGot ?? 0}/{q?.pointMax ?? "—"}
+              </span>
+              {q?.questionType && <span style={{ fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>背诵/口语</span>}
+            </div>
+            {q?.question ? <div style={{ color: "#555", marginTop: 3 }}>题目：{q.question}</div> : null}
+            {q?.refText ? <div style={{ color: "#7b5b1a", marginTop: 3 }}>原文：{q.refText}</div> : null}
+            {q?.asrText ? <div style={{ color: "#444", marginTop: 3 }}>你的回答：{q.asrText}</div> : null}
+            {q?.aiComment ? <div style={{ color: "#888", marginTop: 3 }}>评语：{q.aiComment}</div> : null}
+          </div>
+        ))}
+        <button style={{ ...btn, background: "#fff", border: "1px solid #ddd", color: "#555", marginTop: 12 }} onClick={() => setHistView(null)}>
+          ← 返回考核列表
+        </button>
+      </div>
+    );
+  };
+
   return (
     <div
       style={{
@@ -550,85 +638,51 @@ export default function ExamView({ childId, onExit }: Props) {
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
         {stage === "pick" && (
           <div style={{ padding: 24, maxWidth: 720, margin: "0 auto" }}>
-            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>考核安排</div>
-            <p style={{ color: "#6b7686", fontSize: 13, marginTop: 0 }}>
-              到达考核日期就可以开始，全天可随时考。点「开始这次考核」进入锁定考核，中途不能退出。
-            </p>
-            {schedules.length === 0 && (
-              <p style={{ color: "#888", fontSize: 13 }}>
-                今天没有考核安排。固定考核会在设定的考核日期自动出现；如果想让爸爸妈妈临时安排一次，可以请他们在家长助手里说「周五考论语的乡党篇」。
-              </p>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>🎯 考核安排</div>
+              <button style={{ ...btn, background: "#fff", border: "1px solid #ddd", color: "#555", padding: "6px 16px" }} onClick={onExit}>退出</button>
+            </div>
+            {histView ? (
+              renderHist(histView)
+            ) : (
+              <>
+                {/* —— 今天可以参加的考核 —— */}
+                <div style={{ fontSize: 14, fontWeight: 700, margin: "14px 0 8px" }}>📅 今天可以参加的考核</div>
+                {todayOpen.length === 0 ? (
+                  <p style={{ color: "#888", fontSize: 13, margin: "0 0 4px" }}>今天没有待考核的安排。</p>
+                ) : (
+                  todayOpen.map((sch) => renderCard(sch, { btnLabel: sch.status === "started" ? "继续考核" : "开始考核", accent: true, onBtn: () => startExam(sch) }))
+                )}
+
+                {/* —— 历史：未完成可补考 —— */}
+                <div style={{ fontSize: 14, fontWeight: 700, margin: "18px 0 8px" }}>🗂 历史 · 没考完的（可以补考）</div>
+                {pastOpen.length === 0 ? (
+                  <p style={{ color: "#888", fontSize: 13, margin: "0 0 4px" }}>没有补考任务，全部完成啦。</p>
+                ) : (
+                  pastOpen.map((sch) => renderCard(sch, { btnLabel: sch.status === "started" ? "继续补考" : "补考", accent: true, onBtn: () => startExam(sch) }))
+                )}
+
+                {/* —— 历史 · 已完成（查看成绩） —— */}
+                <div style={{ fontSize: 14, fontWeight: 700, margin: "18px 0 8px" }}>🗂 历史 · 已完成</div>
+                {doneList.length === 0 ? (
+                  <p style={{ color: "#888", fontSize: 13, margin: "0 0 4px" }}>还没有完成过的考核。</p>
+                ) : (
+                  doneList
+                    .slice()
+                    .sort((a, b) => String(b.scheduledAt).localeCompare(String(a.scheduledAt)))
+                    .map((sch) => renderCard(sch, { btnLabel: "查看成绩", onBtn: () => { const at = attemptOfSchedule(sch); if (at) setHistView(at); } }))
+                )}
+                {schedules.length === 0 && (
+                  <p style={{ color: "#888", fontSize: 13 }}>
+                    还没有考核安排。固定考核会在设定日期自动出现；想临时安排可以请爸爸妈妈对家长助手说「周五考论语的乡党篇」。
+                  </p>
+                )}
+              </>
             )}
-            {schedules.map((sch) => {
-              // pending（已到日期）或 started（上次开始后中断/出卷失败）都可重新开始
-              const overdue = sch.pending || sch.status === "started";
-              return (
-                <div
-                  key={sch.id}
-                  style={{
-                    background: "#fff",
-                    border: overdue ? "2px solid #f2994a" : "1px solid #e6eaf0",
-                    borderRadius: 12,
-                    padding: "14px 16px",
-                    marginBottom: 10,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                  }}
-                >
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 15 }}>
-                      {sch.title}
-                      {sch.kind === "custom" && (
-                        <span
-                          style={{
-                            marginLeft: 8,
-                            fontSize: 11,
-                            background: "#eef2ff",
-                            color: "#3b4cca",
-                            borderRadius: 999,
-                            padding: "1px 8px",
-                          }}
-                        >
-                          自定义
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ color: "#6b7686", fontSize: 12, marginTop: 2 }}>
-                      {fmtTime(sch.scheduledAt)}
-                      {sch.freq ? ` · ${FREQ_LABEL[sch.freq] || sch.freq}考核` : ""}
-                      {sch.status === "done" && " · 已完成"}
-                      {overdue && (
-                        <span style={{ color: "#b9770a", fontWeight: 600 }}>
-                          {sch.status === "started" ? " · 可继续" : " · 可开始"}
-                        </span>
-                      )}
-                    </div>
-                    {sch.scope?.note && (
-                      <div style={{ color: "#888", fontSize: 12, marginTop: 2 }}>内容：{String(sch.scope.note)}</div>
-                    )}
-                  </div>
-                  {overdue ? (
-                    <button style={{ ...btn, background: "#f2994a", color: "#fff", padding: "8px 18px" }} onClick={() => startExam(sch)}>
-                      开始这次考核
-                    </button>
-                  ) : sch.status === "done" ? (
-                    <span style={{ color: "#27ae60", fontSize: 13, fontWeight: 600 }}>✓ 已完成</span>
-                  ) : (
-                    <span style={{ color: "#aaa", fontSize: 12 }}>未到时间</span>
-                  )}
-                </div>
-              );
-            })}
-            <button
-              style={{ ...btn, background: "#fff", border: "1px solid #ddd", color: "#555", marginTop: 8 }}
-              onClick={onExit}
-            >
-              返回
-            </button>
           </div>
         )}
-
+        
+        
         {stage === "exam" && examHtml && (
           <iframe
             ref={iframeRef}

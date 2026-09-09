@@ -10,8 +10,6 @@
  * 月度/半年/年度不再作为固定档（由自定义考核灵活安排）。
  */
 import { useCallback, useEffect, useState } from "react";
-import ExamRecords from "./ExamRecords";
-
 const WEEKDAYS: Array<{ v: number; label: string }> = [
   { v: 1, label: "周一" },
   { v: 2, label: "周二" },
@@ -69,10 +67,8 @@ function dateToIso(dateStr: string): string {
 }
 
 export default function ExamAdminPanel({ children }: { children: any[] }) {
-  // 标签：每天 / 每周 / 自定义考核 / 考核记录
-  const [tab, setTab] = useState<"daily" | "weekly" | "custom" | "records">("daily");
-  // 考核记录：选哪个孩子看
-  const [recordChildId, setRecordChildId] = useState("");
+  // 标签：每天 / 每周 / 自定义考核（结果记录已移到「孩子管理 → 某孩子 → 考核记录」）
+  const [tab, setTab] = useState<"daily" | "weekly" | "custom">("daily");
   // 每天
   const [enabledDaily, setEnabledDaily] = useState(true);
   const [dailyTime, setDailyTime] = useState("20:00");
@@ -96,7 +92,6 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
   // 默认分配：全选所有孩子（孩子可共用考核）
   useEffect(() => {
     if (children?.length && formAssigned.length === 0) setFormAssigned(children.map((c) => c.childId));
-    if (children?.length && !recordChildId) setRecordChildId(children[0].childId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [children]);
 
@@ -311,14 +306,13 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
     ["daily", "每天"],
     ["weekly", "每周"],
     ["custom", "自定义考核"],
-    ["records", "考核记录"],
   ];
 
   return (
     <div style={{ maxWidth: 880 }}>
       <h3 style={{ marginBottom: 4 }}>🎯 学习考核</h3>
       <p style={{ color: "#6b7686", fontSize: 13, marginTop: 0 }}>
-        固定考核按「每天 / 每周」标签管理；月度、半年、年度等由「自定义考核」灵活安排（先设置考核，再分配给孩子，多孩子可共用）。
+        这里管理考核**计划**：每天 / 每周固定考核与自定义考核都由家长助手按对话安排。历次考核**结果记录**请到「孩子管理 → 某孩子 → 考核记录」查看。
       </p>
 
       {/* 标签栏 */}
@@ -326,7 +320,7 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
         {TAB_LIST.map(([id, l]) => (
           <button
             key={id}
-            onClick={() => setTab(id as "daily" | "weekly" | "custom" | "records")}
+            onClick={() => setTab(id as "daily" | "weekly" | "custom")}
             style={{
               padding: "8px 18px",
               borderRadius: 8,
@@ -440,38 +434,6 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
                 </div>
               );
             })
-          )}
-        </div>
-      )}
-
-      
-      {/* ===== 考核记录（按孩子查看历次考核成绩 / 逐题评估 / 原音回放） ===== */}
-      {tab === "records" && (
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>查看孩子：</span>
-            {(children || []).map((c) => (
-              <button
-                key={c.childId}
-                onClick={() => setRecordChildId(c.childId)}
-                style={{
-                  padding: "6px 16px",
-                  borderRadius: 999,
-                  border: recordChildId === c.childId ? "2px solid #667eea" : "1px solid #ddd",
-                  background: recordChildId === c.childId ? "#f0f4ff" : "#fff",
-                  color: recordChildId === c.childId ? "#3b4cca" : "#555",
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
-              >
-                {c.name}
-              </button>
-            ))}
-          </div>
-          {recordChildId ? (
-            <ExamRecords childId={recordChildId} />
-          ) : (
-            <p style={{ color: "#888", fontSize: 13 }}>还没有孩子。请先在「孩子管理」里添加孩子。</p>
           )}
         </div>
       )}
