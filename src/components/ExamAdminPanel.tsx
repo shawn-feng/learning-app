@@ -80,6 +80,8 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
   const [prompts, setPrompts] = useState<Record<string, string>>({});
   // 自定义考核（所有孩子的排期，按考核聚合）
   const [customs, setCustoms] = useState<ScheduleRow[]>([]);
+  // 自定义考核列表中选中的组（右侧详情）
+  const [selCustomKey, setSelCustomKey] = useState("");
   // 编辑表单（新建/编辑共用）：selKey=null 时右侧为空白新建表单，否则为对应考核组的详情
   const [selKey, setSelKey] = useState<string | null>(null);
   const [formAt, setFormAt] = useState("");
@@ -151,6 +153,12 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
   })();
 
   const nameOf = (cid: string) => (children || []).find((c) => c.childId === cid)?.name || cid.slice(0, 8);
+
+  // 默认选中第一组（无选中时右侧展示最新安排）
+  useEffect(() => {
+    if (!selCustomKey && groups.length) setSelCustomKey(groups[0].key);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups.length]);
 
   async function saveFixed() {
     setSaving(true);
@@ -398,42 +406,93 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
 
       {/* ===== 自定义考核（由家长助手按对话安排，此处只读展示） ===== */}
       {tab === "custom" && (
-        <div style={box}>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>📝 自定义考核（由家长助手安排）</div>
-          <p style={{ color: "#6b7686", fontSize: 12, marginTop: 0, marginBottom: 10, lineHeight: 1.7 }}>
-            自定义考核<strong>通过和家长助手对话创建</strong>：说清「哪个孩子、哪天、考哪些内容」，助手会确定要考的课程并生成考核计划
-            （例如“周五给珊珊安排一次考核，考论语的乡党篇最近学的 3 课”）。这里不再手动填写考核规则。
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>📝 自定义考核（由家长助手安排）</div>
+          <p style={{ color: "#6b7686", fontSize: 12, margin: "2px 0 10px", lineHeight: 1.7 }}>
+            自定义考核<strong>通过和家长助手对话创建</strong>：说清「哪个孩子、哪天、考哪些内容」，助手会确定要考的课程并生成计划
+            （例如“周五给珊珊安排一次考核，考论语的乡党篇最近学的 3 课”）。左侧选择一次安排，右侧查看它的内容与分配的孩子。
           </p>
-          <div style={{ ...label, marginBottom: 8 }}>考核列表（{groups.length}）</div>
           {groups.length === 0 ? (
-            <p style={{ color: "#888", fontSize: 12, margin: 0 }}>
+            <p style={{ color: "#888", fontSize: 13 }}>
               还没有自定义考核。对家长助手说「周五考论语的乡党篇」等，助手创建后就会出现在这里。
             </p>
           ) : (
-            groups.map((g) => {
-              const doneCount = g.rows.filter((r) => r.status === "done").length;
-              return (
-                <div
-                  key={g.key}
-                  style={{
-                    border: "1px solid #e6eaf0",
-                    borderRadius: 10,
-                    padding: "10px 12px",
-                    marginBottom: 8,
-                    background: "#fff",
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>📅 {fmtDay(g.scheduledAt)}</div>
-                  {g.note && (
-                    <div style={{ fontSize: 12, color: "#6b7686", marginTop: 2 }}>{g.note}</div>
-                  )}
-                  <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 4 }}>
-                    分配给 {g.rows.length} 个孩子
-                    {doneCount > 0 ? " · " + doneCount + " 已完成" : ""}
-                  </div>
-                </div>
-              );
-            })
+            <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+              {/* 左：自定义考核列表 */}
+              <div style={{ width: 320, flexShrink: 0, background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12, maxHeight: 560, overflowY: "auto" }}>
+                {groups.map((g) => {
+                  const doneCount = g.rows.filter((r) => r.status === "done").length;
+                  const active = g.key === selCustomKey;
+                  return (
+                    <button
+                      key={g.key}
+                      onClick={() => setSelCustomKey(g.key)}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        background: active ? "#eef2ff" : "#fff",
+                        border: active ? "2px solid #667eea" : "1px solid #e6eaf0",
+                        borderRadius: 10,
+                        padding: "10px 12px",
+                        marginBottom: 8,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>📅 {fmtDay(g.scheduledAt)}</div>
+                      {g.note && <div style={{ fontSize: 12, color: "#6b7686", marginTop: 2 }}>{g.note}</div>}
+                      <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 4 }}>
+                        分配给 {g.rows.length} 个孩子{doneCount > 0 ? " · " + doneCount + " 已完成" : ""}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              {/* 右：选中安排的详情 */}
+              <div style={{ flex: 1, minWidth: 0, background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+                {(() => {
+                  const g = groups.find((x) => x.key === selCustomKey) || groups[0];
+                  if (!g) return <div style={{ color: "#aaa", fontSize: 13 }}>暂无数据</div>;
+                  const sc = (g.rows[0]?.scope || {}) as { note?: string; topics?: string[]; courses?: string[]; prompt?: string };
+                  const topics = Array.isArray(sc.topics) ? sc.topics : [];
+                  const courses = Array.isArray(sc.courses) ? sc.courses : [];
+                  const statusLabel = (st: string) => (st === "done" ? "✅ 已完成" : st === "started" ? "🔄 进行中（可继续/补考）" : "⏳ 待考核");
+                  return (
+                    <div>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+                        <span style={{ fontWeight: 800, fontSize: 16 }}>📅 {fmtDay(g.scheduledAt)}</span>
+                        <span style={{ fontSize: 12, color: "#8a94a6" }}>自定义考核 · 共 {g.rows.length} 个孩子</span>
+                      </div>
+                      {g.note ? <div style={{ fontSize: 13, color: "#555", marginBottom: 8 }}>说明：{g.note}</div> : null}
+                      {topics.length > 0 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: "#3b4cca" }}>主题：</span>
+                          {topics.map((t, i) => (<span key={t} style={{ fontSize: 12 }}>{t}{i < topics.length - 1 ? "、" : ""}</span>))}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 13, fontWeight: 700, margin: "10px 0 6px" }}>📚 要考核的课程</div>
+                      {courses.length === 0 ? (
+                        <p style={{ color: "#b9770a", fontSize: 12, margin: 0 }}>（这次安排没有列出具体课程，请在家长助手那边重新确认课程后生成）</p>
+                      ) : (
+                        <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 8, padding: "6px 10px" }}>
+                          {courses.map((c, i) => (<div key={c} style={{ fontSize: 13, padding: "4px 0", borderBottom: i < courses.length - 1 ? "1px solid #f4f4f4" : "none" }}>{i + 1}. {c}</div>))}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>👧 分配的孩子</div>
+                      <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 8, padding: "6px 10px" }}>
+                        {g.rows.map((r) => (
+                          <div key={r.childId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13 }}>
+                            <span style={{ fontWeight: 600 }}>{nameOf(r.childId)}</span>
+                            <span style={{ fontSize: 12 }}>{statusLabel(String(r.status || ""))}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
           )}
         </div>
       )}
