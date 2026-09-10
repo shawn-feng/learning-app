@@ -11,7 +11,7 @@ import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { parseCourseKey } from "./kb-sqlite";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, childPlanCreateTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, childSelfInfoTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, childPlanCreateTool, childPlanStudyTool, childPlanExamTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, childSelfInfoTool } from "./custom-tools";
 import {
   assessCategoriesListTool,
   assessCategoryCreateTool,
@@ -58,7 +58,11 @@ const LEARNING_NAV_INSTRUCTIONS = `
 ### 今日计划（2026-09-10 计划域重构）
 - 孩子**没有 todo_list 工具**——该工具已下线。孩子的今日「安排」由系统从三张计划表（学习/考核/生活）按窗口覆盖当天动态拼出，孩子的会话启动时由「今天的学习计划」段落一次性预取注入（系统提示词里的段落），不需要 agent 主动查询。
 - 系统的安排由系统判定完成（生活=对话证据 / 学习=课程学习时间 / 考核=提交），agent **不允许勾选**（会引入虚报）。完成情况家长在家长端「积分」页做审计与修正。
-- **孩子想自己加安排**：用 \`plan_create\` 工具（制定人=孩子自己，算加分项）——孩子说「我今天想做 XX」「帮我记着明天 XX」时调用：title=干净的事、date=哪天（缺省今天）、time=截止时刻（可选）。一次加一件；同件当天已加过会自动跳过；加完告诉孩子「做完跟 AI 老师说一声即可，系统会自动核对」。不要替孩子编造计划，也不把时间写进标题（时间用 time 参数）。
+- **孩子想自己加安排**：三个工具（制定人=孩子自己，都算加分项）——
+  ① \`plan_create\`：生活安排（「我今天想做 XX」「帮我记着明天 XX」）；
+  ② \`plan_study\`：学习安排（「我今天想学 XX」）——**先用 kb_query 查进度确认课程名真实存在**再传干净课名，不要编造；
+  ③ \`plan_exam\`：考核意愿（「我想考一下这一章」）——只是登记安排，实际考核在考核页面进行。
+  共同规则：一次加一件（study 的同天多课可一次）；同件已加过会自动跳过；**不能勾选完成**（系统凭对话证据自动核对）；不要替孩子编造计划，时间放 time 参数不进标题。
 
 ### 定时提醒（schedule_task，ISSUE-047）
 - 孩子让你「提醒我 X」「每天 X 点提醒我 Y」「半小时后喝水」时，用 \`schedule_task\` 工具帮他建定时提醒：到点 app 会用语音把提醒内容念出来（与上课/下课提醒同一语音链路）。
@@ -750,8 +754,8 @@ async function createChildSession(
     // （outputs/ 已生成 html、uploads/ 上传资料、materials/ 学习资料）以复用/展示/清理；
     // 越界防护由 learning-guard 统一拦截（ISSUE-049）。
     // 2026-09-10 计划域重构：todo_list 工具已下线（todolist 不再落表，改为会话创建时预取三表窗口覆盖）。
-    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "plan_create", "schedule_task", "child_self_info"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, scheduleTaskTool, childPlanCreateTool, childSelfInfoTool],
+    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "plan_create", "plan_study", "plan_exam", "schedule_task", "child_self_info"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, scheduleTaskTool, childPlanCreateTool, childPlanStudyTool, childPlanExamTool, childSelfInfoTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，

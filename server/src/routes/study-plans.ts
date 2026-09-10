@@ -274,7 +274,8 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     return { ok: true, date: day, items };
   });
 
-  // 创建（家长 agent study_plan_create）。body: { childId, date, items: [{topicKey?, courseName, mode?}] }
+  // 创建（家长 agent study_plan_create / 孩子端 plan_study）。body: { childId, date, items: [{topicKey?, courseName, mode?}], creator? }
+  // creator: 'parent'(默认,必须完成项) | 'child'(孩子自选,加分项 task_type=optional)。
   // 幂等合并（同日同课程已存在则跳过；模式不同则升级为 review 标注）。
   app.post("/api/v1/study-plans", async (req, reply) => {
     let parentId: string;
@@ -284,12 +285,15 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const { childId, date, items } = (req.body ?? {}) as {
+    const { childId, date, items, creator } = (req.body ?? {}) as {
       childId?: string;
       date?: string;
       items?: unknown;
+      creator?: string;
     };
     if (!childId) return reply.code(400).send({ error: "childId 必填" });
+    const planCreator = creator === "child" ? "child" : "parent";
+    const taskType = planCreator === "child" ? "optional" : "required";
     try {
       assertChildOwned(deps.db, parentId, childId);
     } catch (err) {
@@ -345,16 +349,17 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
       const courseUuid = titleToUuid.get(courseName) || "";
-      // 计划域重构：写入孩子 kb study_plans（窗口=当天 00:00:00 ~ 23:59:59；creator=parent → 必须完成项）
+      // 计划域重构：写入孩子 kb study_plans（窗口=当天 00:00:00 ~ 23:59:59；
+      // creator=parent → 必须完成项 / creator=child → 孩子自选加分项）
       const kbIns = openKb(deps.config.dataDir ?? "", parentId, childId);
       try {
         kbIns
           .prepare(
             `INSERT INTO study_plans (id,parent_id,child_id,topic_key,course_uuid,course_name,mode,creator,origin,carry_from,recurrence_id,
                start_at,due_at,status,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,'parent','conversation','','',?,?,'pending','','','required',1,0,1,?,?)`
+             VALUES (?,?,?,?,?,?,?,?,'conversation','','',?,?,'pending','','',?,1,0,1,?,?)`
           )
-          .run(id, parentId, childId, topicKey, courseUuid, courseName, mode, `${day} 00:00:00`, `${day} 23:59:59`, now, now);
+          .run(id, parentId, childId, topicKey, courseUuid, courseName, mode, planCreator, `${day} 00:00:00`, `${day} 23:59:59`, taskType, now, now);
       } finally {
         kbIns.close();
       }

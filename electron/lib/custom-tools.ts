@@ -1838,6 +1838,85 @@ export const childPlanCreateTool = defineTool({
   },
 });
 
+/**
+ * plan_study（2026-09-10：孩子自排学习计划，制定人=孩子自己，加分项）。
+ * 孩子主动说「我今天想学 XX / 帮我排一下明天学什么」时落 study_plans（creator='child'）。
+ * 课程名必须真实存在（先 kb_query progress 核对），服务端按课程名解析 course_uuid。
+ */
+export const childPlanStudyTool = defineTool({
+  name: "plan_study",
+  label: "添加学习安排（孩子自选课程）",
+  description:
+    "孩子**自己想学**某课时，用本工具把「哪天学哪课」加进学习计划（孩子自选的算加分项，区别于家长排的必须完成项）。\n\n" +
+    "**参数**：`items`（必填，当天要学的课程名数组，一项一课；复习用「复习：<课程名>」）、`date`（可选 YYYY-MM-DD，缺省=今天）。\n\n" +
+    "**用前必查**：先用 kb_query（query=progress + topic=主题目录名）确认课程名真实存在、拿到准确课名，**不要编造课程名**。一课一行，一次可排同一天多课；同天同课已排过会自动跳过。",
+  parameters: Type.Object({
+    items: Type.Array(Type.String({ description: "课程名数组（干净课名；复习用「复习：」前缀）" })),
+    date: Type.Optional(Type.String({ description: "哪天学，YYYY-MM-DD；缺省=今天" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const child_id = childIdFromCwd(ctx.cwd);
+    if (!child_id) throw new Error("无法从会话目录解析 childId");
+    const raw = Array.isArray(params.items) ? params.items.map((t) => String(t).trim()).filter(Boolean) : [];
+    if (!raw.length) throw new Error("plan_study 需要 items（至少一门课）");
+    const date = String(params.date || "").trim() || todoLocalDate();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("date 格式应为 YYYY-MM-DD");
+    const res = await serverFetch<{ ok: boolean; inserted?: string[]; skipped?: string[] }>("/study-plans", {
+      method: "POST",
+      body: { childId: child_id, date, items: raw, creator: "child" },
+      token: currentSessionToken(),
+      timeoutMs: 15000,
+    });
+    const ins = res.inserted ?? [];
+    const skip = res.skipped ?? [];
+    const lines: string[] = [];
+    if (ins.length) lines.push(`已加入 ${date} 的学习计划：${ins.join("、")}`);
+    if (skip.length) lines.push(`（当天已排过，自动跳过：${skip.join("、")}）`);
+    return {
+      content: [{ type: "text" as const, text: lines.join("\n") || "没有新增（可能都已排过）。" }],
+    };
+  },
+});
+
+/**
+ * plan_exam（2026-09-10：孩子自请考核，制定人=孩子自己，加分项）。
+ * 孩子说「我想考一下这一章 / 帮我安排个考核」时落 exam_plans（安排；实际考核在考核页发起）。
+ */
+export const childPlanExamTool = defineTool({
+  name: "plan_exam",
+  label: "申请一场考核（孩子自请）",
+  description:
+    "孩子想**考核自己**（如「我想考一下学而篇」「帮我安排个考核」）时，用本工具登记考核意愿（哪天想考什么）。\n\n" +
+    "**参数**：`title`（必填，考什么，如「论语学而篇第一章考核」）、`date`（可选 YYYY-MM-DD，缺省=今天）。\n\n" +
+    "**注意**：这只是登记考核安排（会显示在计划里）；实际考核在考核页面进行、由系统评分记分。同天同名已登记过会自动跳过。",
+  parameters: Type.Object({
+    title: Type.String({ description: "考核内容（如「论语学而篇第一章考核」）" }),
+    date: Type.Optional(Type.String({ description: "哪天考，YYYY-MM-DD；缺省=今天" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const child_id = childIdFromCwd(ctx.cwd);
+    if (!child_id) throw new Error("无法从会话目录解析 childId");
+    const title = String(params.title || "").trim();
+    if (!title) throw new Error("plan_exam 需要 title（考什么）");
+    const date = String(params.date || "").trim() || todoLocalDate();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("date 格式应为 YYYY-MM-DD");
+    const res = await serverFetch<{ ok: boolean; skipped?: boolean; message?: string }>("/plans/exam", {
+      method: "POST",
+      body: { childId: child_id, title, date },
+      token: currentSessionToken(),
+      timeoutMs: 15000,
+    });
+    if (res.skipped) {
+      return { content: [{ type: "text" as const, text: `${date} 已经登记过「${title}」了，不用重复申请。` }] };
+    }
+    return {
+      content: [
+        { type: "text" as const, text: `已登记考核安排：${title}（${date}）。到时在考核页面进行，系统会自动评分记分。` },
+      ],
+    };
+  },
+});
+
 export const scheduleTaskTool = defineTool({
   name: "schedule_task",
   label: "设置/查看/取消定时提醒",
