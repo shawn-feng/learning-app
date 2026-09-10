@@ -460,7 +460,7 @@ export const kbInsertTool = defineTool({
     "向 SQLite 知识库插入新条目，**内容不进上下文**（ISSUE-023 P2，SQLite 唯一真源）。\n\n" +
     "**table: \"daily\"**：写 daily 记录。`date`（YYYY-MM-DD）+ `block`（学习/生活/问答/任务）+ `content`（一条完整条目，`### 标题` 开头 + 字段行，**直接用已在回复中输出给孩子的学习总结原文**）。生活事件需在 content 里写 `- 标签：诚实,亲情` 字段行（标签只能从 `kb_query {query:\"tags\"}` 的定义表选）。\n" +
     "**批量（推荐）**：同一天的多条条目用 `entries: [{block, content}, ...]` 一次写入（date 统一、单事务、重复自动跳过）——**多个事件请合并到一次调用**，不要逐条插入。\n" +
-    "**table: \"course\"**：新增课程（courses 表）。`topic`（主题目录名，如 lunyu）+ `title`（课程名）；可选 `status`（⬜/✅）/ `mastery`（掌握度）/ `material`（教学资料）/ `sendMaterial`（要发送的学习资料）/ `tags`（课程标签，逗号分隔）。\n" +
+    "**table: \"course\"**：新增课程（courses 表）。`topic`（主题目录名，如 lunyu）+ `title`（课程名）；可选 `status`（⬜/✅）/ `material`（教学资料）/ `sendMaterial`（要发送的学习资料）/ `tags`（课程标签，逗号分隔）。掌握度不再存列（=最近一次考核得分率，由系统计算）。\n" +
     "**重复插入**：同主键已存在时返回 false（daily 历史不改，不覆盖）。\n" +
     "**注意**：只用于数据写入；materials/ / uploads/ 等内容文件仍用 write/edit；主题教学方法与教学文案存家长库，一律用 parent_content 获取。",
   parameters: Type.Object({
@@ -480,7 +480,6 @@ export const kbInsertTool = defineTool({
     topic: Type.Optional(Type.String({ description: "course：主题目录名（如 lunyu）" })),
     title: Type.Optional(Type.String({ description: "course：新课程名（如 论语先进篇第二十一章）" })),
     status: Type.Optional(Type.String({ description: "course：初始掌握状态（⬜/✅，缺省 ⬜）" })),
-    mastery: Type.Optional(Type.String({ description: "course：初始掌握度（method 定义语义，如 良好）" })),
     material: Type.Optional(Type.String({ description: "course：教学资料（路径指针或描述，method 决定写法）" })),
     sendMaterial: Type.Optional(Type.String({ description: "course：要发送的学习资料" })),
     tags: Type.Optional(Type.String({ description: "course：课程标签（逗号分隔，从 tags 定义表选）" })),
@@ -558,8 +557,9 @@ export const kbInsertTool = defineTool({
  * 支持两类更新（table 必填）：
  *   "daily"  —— daily 条目字段：date + block + title + field + value
  *   "course" —— 课程进度字段（操作 courses 表）：topic + item（课程名）+ field + value；
- *     field 支持：状态/掌握状态（⬜/✅）、掌握度、首次学习(时间)、最近复习/复习时间/上次复习、
+ *     field 支持：状态/掌握状态（⬜/✅）、最近复习/复习时间/上次复习、
  *     复习次数（value 传 "+1" 自动递增）、教学资料、学习资料/要发送的学习资料、tags。
+ *     （2026-09-10：掌握度/首次学习 已随列下线，掌握度=最近一次考核得分率，由 course_status 查询，不再手写。）
  *     **learned/total/next/updated 为视图自动计算，无需（也不可）手动更新。**
  *     （"progress" 是旧别名，兼容保留，新调用请用 "course"）
  *
@@ -571,10 +571,10 @@ export const kbUpdateTool = defineTool({
   description:
     "按结构定位更新 SQLite 知识库的字段值，**无需提供旧值、内容不进上下文**（替代「读全文 + edit 重写」）。\n\n" +
     "**table: \"daily\"**：`date` + `block` + `title`（定位条目）+ `field` + `value`（新值）。\n" +
-    "**table: \"course\"**：更新某门课程（courses 表）。`topic`（如 lunyu）+ `item`（**课程名必填**，如 论语先进篇第十七章）+ `field`（状态/掌握状态/掌握度/首次学习/最近复习/复习时间/上次复习/复习次数/教学资料/学习资料/tags）+ `value`。\n" +
-    "**批量更新（推荐）**：同一课程要改多个字段时，用 `fields: [{field, value}, ...]` 一次更新（如状态+掌握度+首次学习+最近复习），比多次调用省 token；`field`+`value` 单字段写法仍兼容。\n" +
+    "**table: \"course\"**：更新某门课程（courses 表）。`topic`（如 lunyu）+ `item`（**课程名必填**，如 论语先进篇第十七章）+ `field`（状态/掌握状态/最近复习/复习时间/上次复习/复习次数/教学资料/学习资料/tags）+ `value`。\n" +
+    "**批量更新（推荐）**：同一课程要改多个字段时，用 `fields: [{field, value}, ...]` 一次更新（如状态+最近复习），比多次调用省 token；`field`+`value` 单字段写法仍兼容。\n" +
     "**进度自动计算**：learned/total/next/updated 由视图实时计算，**不要**手动更新（传这些字段会被拒绝）。复习次数传 `value: \"+1\"` 自动递增。\n" +
-    "**字段缺失时自动追加**（如新学一课补「掌握度/首次学习」）。\n" +
+    "**掌握度/首次学习已下线**（掌握度=最近一次考核得分率，系统自动算；传这两个字段会被拒绝，不要再用）。\n" +
     "**只用于数据写入**；materials/ / uploads/ 等内容文件请用 write/edit；主题教学方法与教学文案存家长库，一律用 parent_content 获取。",
   parameters: Type.Object({
     table: Type.String({ description: "更新目标：daily | course（旧名 progress 兼容）" }),
@@ -583,7 +583,7 @@ export const kbUpdateTool = defineTool({
     title: Type.Optional(Type.String({ description: "daily：条目标题" })),
     topic: Type.Optional(Type.String({ description: "course：主题名（如 lunyu）" })),
     item: Type.Optional(Type.String({ description: "course：课程名（必填，如 论语先进篇第十七章）" })),
-    field: Type.Optional(Type.String({ description: "字段名（单字段写法；course：状态/掌握度/首次学习/最近复习/复习次数/教学资料/学习资料/tags）" })),
+    field: Type.Optional(Type.String({ description: "字段名（单字段写法；course：状态/掌握状态/最近复习/复习次数/教学资料/学习资料/tags）" })),
     value: Type.Optional(Type.String({ description: "新值（整字段替换；与 field 配套的单字段写法）" })),
     fields: Type.Optional(
       Type.Array(
@@ -591,7 +591,7 @@ export const kbUpdateTool = defineTool({
           field: Type.String({ description: "字段名" }),
           value: Type.String({ description: "新值" }),
         }),
-        { description: "批量字段数组（推荐）：一次更新多个字段，如 [{field:'状态',value:'✅'},{field:'掌握度',value:'熟练'}]" }
+        { description: "批量字段数组（推荐）：一次更新多个字段，如 [{field:'状态',value:'✅'},{field:'最近复习',value:'2026-09-10'}]" }
       )
     ),
   }),

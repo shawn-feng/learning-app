@@ -245,7 +245,7 @@ export function createWorkerKbTools(b: WorkerBindings) {
     label: "更新知识库字段（SQL）",
     description:
       "更新知识库已有条目字段。\n" +
-      "**table: \"course\"**：按 `topic` + `title` 更新课程，`fields: [{field, value}, ...]` 批量（状态/掌握状态/掌握度/首次学习/最近复习/复习时间/上次复习/复习次数(+1 自增)/教学资料/学习资料/tags）。learned/next/updated 为视图自动计算，勿手动更新。\n" +
+      "**table: \"course\"**：按 `topic` + `title` 更新课程，`fields: [{field, value}, ...]` 批量（状态/掌握状态/最近复习/复习时间/上次复习/复习次数(+1 自增)/教学资料/学习资料/tags）。掌握度=最近一次考核得分率由系统计算，勿手写；learned/next/updated 为视图自动计算，勿手动更新。\n" +
       "**table: \"daily\"**：按 `date` + `block` + `title` 更新，`field` + `value`（字段缺失自动追加；field=标签 时同步 tags 列）。",
     parameters: Type.Object({
       table: Type.String({ description: "更新目标：course | daily" }),

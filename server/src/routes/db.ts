@@ -391,6 +391,48 @@ type ExecHandler = (ctx: RpcContext, args: Record<string, unknown>) => unknown;
 
 // 导出供服务端无头 worker 直接调用（方案B 阶段②），语义与 /db/exec 完全一致。
 export const execHandlers: Record<string, ExecHandler> = {
+  // ⚠️ 2026-09-10 收口修复：S5 清理时误删此 op（孩子端 kb_insert daily 与 worker recording 都走它），
+  // 导致当天所有 daily 写入报「未知执行操作」。已恢复（保留 plan_id/plan_outcome 列写入）。
+  "kb.daily_entries.insertMany": (ctx, args) => {
+    // 批量、单事务、重复跳过（INSERT OR IGNORE）；title/tags 从 content 提取
+    const childId = requireChildId(ctx, args);
+    const date = str(args.date);
+    const entries = Array.isArray(args.entries)
+      ? (args.entries as Array<Record<string, unknown>>)
+      : [];
+    const db = openKb(ctx.dataDir, ctx.parentId, childId);
+    try {
+      const tx = db.prepare(
+        "INSERT OR IGNORE INTO daily_entries (date, block, title, raw, tags, plan_id, plan_outcome) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      );
+      let inserted = 0;
+      db.exec("BEGIN");
+      try {
+        for (const e of entries) {
+          const content = str(e.content);
+          const title = content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "";
+          if (!title) continue;
+          const r = tx.run(
+            date,
+            str(e.block),
+            title,
+            content,
+            extractTagsFromRaw(content),
+            str(e.planId || e.plan_id || ""),
+            str(e.planOutcome || e.plan_outcome || "")
+          );
+          if (r.changes > 0) inserted++;
+        }
+        db.exec("COMMIT");
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+      return { inserted, skipped: entries.length - inserted };
+    } finally {
+      db.close();
+    }
+  },
   "kb.daily_entries.updateField": (ctx, args) => {
     // 对齐 updateDailyField：改 raw 字段行（缺失追加）；field=标签 时同步 tags 列
     const childId = requireChildId(ctx, args);
