@@ -217,7 +217,7 @@ export const getDateTool = defineTool({
   name: "get_date",
   label: "获取当前日期时间",
   description:
-    "返回当前的准确日期和时间（YYYY-MM-DD 星期几 HH:mm:ss）。当需要写 daily 日志文件、更新学习进度文件里的日期字段（如 updated、首次学习、最近复习），或回答\"今天几号\"\"星期几\"\"现在几点\"时，必须先调用本工具获取准确日期时间，不要自行猜测或从对话历史里推断（历史里的日期可能是过期的）。",
+    "返回当前的准确日期和时间（YYYY-MM-DD 星期几 HH:mm:ss）。当需要写 daily 日志、更新课程进度字段（如最近复习），或回答\"今天几号\"\"星期几\"\"现在几点\"时，必须先调用本工具获取准确日期时间，不要自行猜测或从对话历史里推断（历史里的日期可能是过期的）。",
   promptSnippet: "get_date - 获取当前的准确日期和时间（YYYY-MM-DD 星期几 HH:mm:ss）",
   parameters: Type.Object({}),
   execute: async () => {
@@ -775,7 +775,7 @@ export const parentUpsertCourseTool = defineTool({
   description:
     "在家长主题库中新建或更新一门课程（家长库是教学内容的唯一真源，孩子端通过「分配」快照拷贝）。\n\n" +
     "**参数**：`topic`（主题目录名，如 lunyu）、`title`（课程名，如 论语学而篇第一章）、可选 `lessonMethod`（每课教学方法）、`teachingCopy`（教学文案全文）、`material`（教学资料说明）、`sendMaterial`（发给学生的学习材料）、`tags`（逗号分隔）、`htmlPath`（学习资料 html 相对资料根路径、无 materials/ 前缀，如 lunyu/xxx.html）、`assessRubric`（**本课考核内容全文**——孩子学习考核的出题/判分锚定；写孩子「学习考核」相关主题的课程内容时务必一并写好。markdown，按《课程考核内容编写规范》三部分骨架：一、考核知识点（原文背诵/字词/句意/道理应用/典故）→ 二、现成题目（选择题带选项/问答题，系统会把选择题改造成口述题）→ 三、评分标准。若需背诵评测，知识点里必须含固定句式「- 原文背诵：能正确流利背诵“原文”」（原文放弯引号内，系统按此行提取标准原文；漏写则不出背诵题）。起草前先 read `.pi/agent/assess-rubric-guide.md` 细读规范与示例）。\n\n" +
-    "**规则**：只覆盖传入的非空字段（未传字段保留旧值）；课程进度（状态/掌握度/学习时间）属于孩子，不在这里维护。\n\n" +
+    "**规则**：只覆盖传入的非空字段（未传字段保留旧值）；孩子课程进度（状态/最近复习）属于孩子库，不在这里维护（掌握度=最近一次考核得分率，由系统计算）。\n\n" +
     "**配合资料文件**：html/md 学习资料请先用 write/edit 写到 data/parents/<pid>/materials/<topic>/ 下（音频/视频放 media/ 子目录，html 里用 media://local/parent/<pid>/<topic>/media/文件名 引用），再把 htmlPath 通过本工具登记到课程上。",
   parameters: Type.Object({
     topic: Type.String({ description: "主题目录名（如 lunyu）" }),
@@ -1429,7 +1429,7 @@ export const parentStatsTool = defineTool({
   description:
     "**只读**查询家长工作台统计信息（数据库是二进制 SQLite，read 工具读不了，查统计一律用本工具，不要尝试用 read 读 .sqlite 文件）：\n\n" +
     "- `type`=`tokens`：token 消耗汇总（总 token / 成本 / 按模型分组）+ 最近明细。传 `childId` 只看该孩子，缺省=全部（家长+孩子）；\n" +
-    "- `type`=`progress`：孩子学习进度。传 `childId`=单孩子（各主题 learned/total/next + 每课状态/首次学习/最近复习）；`childId` 缺省=**全部孩子对比**（每孩子一行 learned/total/next + 最近 updated）；\n" +
+    "- `type`=`progress`：孩子学习进度。传 `childId`=单孩子（各主题 learned/total/next + 每课状态/最近复习/复习次数）；`childId` 缺省=**全部孩子对比**（每孩子一行 learned/total/next + 最近 updated）；\n" +
     "- `type`=`mastery`：孩子某主题的**逐课学习状态分布**，**必填 `childId`**，`topic` 置空=该孩子全部主题（已学=✅ / 学习中=有学习时间 / 未开始）。⚠️ 2026-09-10 起本工具不再返回掌握度——掌握度（=最近一次考核得分率）请用 **course_status** 查；\n" +
     "- `type`=`daily`：孩子每日学习记录，**必填 `childId`**，`date`=YYYY-MM-DD 查某一天（缺省=最近 7 天）。",
   parameters: Type.Object({
@@ -1569,7 +1569,7 @@ export const parentStatsTool = defineTool({
         content: [
           {
             type: "text" as const,
-            text: `## 孩子 ${params.childId} 逐课掌握度${params.topic ? `（主题 ${params.topic}）` : ""}\n\n${parts.join("\n\n")}`,
+            text: `## 孩子 ${params.childId} 逐课学习状态${params.topic ? `（主题 ${params.topic}）` : ""}\n\n${parts.join("\n\n")}`,
           },
         ],
       };

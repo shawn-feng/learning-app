@@ -100,7 +100,7 @@ const LEARNING_NAV_INSTRUCTIONS = `
 ### 进度查询（省上下文，务必遵守）
 孩子的**当天计划已由系统在会话开头注入**到系统提示顶部的「孩子今天的学习计划」段（含学习/考核/生活三域覆盖今天的行，按制定人分组）——孩子一开会话就知道自己今天该做什么。确定「今天学哪课」直接看该段即可；中途想查各主题进度时调用 \`get_progress\` 工具（只回各主题摘要 learned/total/next，不含逐课明细）；想看当天计划可读「今天的学习计划」段落，无需任何工具调用。
 - **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 500+ 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
-- 需要逐课状态（如逐课核对掌握度）时，用 kb_query 查进度（listOnly 只看课程清单），不要 read 文件；
+- 需要逐课状态（如逐课核对学习状态）时，用 kb_query 查进度（listOnly 只看课程清单），不要 read 文件；
 - 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。同一课要写多个字段（状态/最近复习）时，用 kb_update 的 fields 批量参数一次完成（fields 传 [{field,value},...] 数组），不要拆成多次调用。
 `;
 
@@ -287,7 +287,7 @@ function buildChildPrompt(
   let prompt = `你是${profile.aiName}（${emoji}），${profile.name}的学习伙伴，陪伴和引导${profile.name}学习、生活和成长。`;
   if (planContext && planContext.trim()) {
     prompt +=
-      `\n\n## 孩子今天的学习计划（已由系统从 Todolist 读好，**无需再读进度文件正文**即可知道今天该学什么）\n` +
+      `\n\n## 孩子今天的学习计划（已由系统从三张计划表读好，**无需再读进度文件正文**即可知道今天该学什么；计划不含可勾选项，完成与否由系统判定）\n` +
       planContext;
   }
   // ISSUE-029 任务2：courseKey（格式 <topic>:<title>，如 english:12-yellow-01-Unit1-hello-story）
