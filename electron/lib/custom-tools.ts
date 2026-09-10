@@ -1787,6 +1787,57 @@ export function todoLocalDate(d: Date = new Date()): string {
 // 孩子当日计划由会话创建时预取的「今日计划」段落注入提示词。
 
 // ==================== ISSUE-047：孩子端 agent 自建定时提醒（语音 + 频率） ====================
+/**
+ * plan_create（2026-09-10：孩子自建生活计划，制定人=孩子自己）。
+ * 孩子说「我今天想做 XX / 帮我记一件事」时落一条 life_plans（加分项，参与孩子组完成率统计）。
+ * 约束：单日窗口（当天或未来某天）、一次一条；完成由系统判定（对话证据），不能勾选。
+ */
+export const childPlanCreateTool = defineTool({
+  name: "plan_create",
+  label: "添加到我的计划（孩子自定安排）",
+  description:
+    "孩子想给自己安排一件事（如「我今天想读完这本书」「帮我记着明天交手工」）时，用本工具把它加进当天/某天的计划（加分项）。\n\n" +
+    "**参数**：`title`（必填，干净的事，不要把时间写进标题）、`date`（可选 YYYY-MM-DD，缺省=今天；孩子说「明天」先换算成日期）、`time`（可选 HH:mm 截止时刻，如 15:00 表示「3 点前做完」）。\n\n" +
+    "**规则**：一次加一件事（多件分多次调用）；同一件事当天已加过会提示跳过；**不能勾选完成**——完成与否由系统根据对话自动判定（孩子做完跟你说了，系统自然会记）。不要替孩子编造计划，只在他明确想做时添加。",
+  parameters: Type.Object({
+    title: Type.String({ description: "要做的事（干净表述，时间放 time 参数而不是标题里）" }),
+    date: Type.Optional(Type.String({ description: "哪天做，YYYY-MM-DD；缺省=今天" })),
+    time: Type.Optional(Type.String({ description: "截止时刻 HH:mm（可选）；如「3 点前写完」传 15:00" })),
+  }),
+  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+    const child_id = childIdFromCwd(ctx.cwd);
+    if (!child_id) throw new Error("无法从会话目录解析 childId");
+    const title = String(params.title || "").trim();
+    if (!title) throw new Error("plan_create 需要 title（要做的事）");
+    const date = String(params.date || "").trim() || todoLocalDate();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("date 格式应为 YYYY-MM-DD");
+    const time = String(params.time || "").trim();
+    const res = await serverFetch<{ ok: boolean; planId?: string; skipped?: boolean; message?: string }>(
+      "/plans/life",
+      {
+        method: "POST",
+        body: { childId: child_id, title, date, time: time || undefined },
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      }
+    );
+    if (res.skipped) {
+      return {
+        content: [{ type: "text" as const, text: `${date} 已经有「${title}」这条计划了（还没完成），不用重复添加。` }],
+      };
+    }
+    const dueText = time ? `${date} ${time} 前` : date;
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `已加进计划：${title}（${dueText}）。做完后跟我说一声就行，系统会自动核对，不用自己打勾。`,
+        },
+      ],
+    };
+  },
+});
+
 export const scheduleTaskTool = defineTool({
   name: "schedule_task",
   label: "设置/查看/取消定时提醒",

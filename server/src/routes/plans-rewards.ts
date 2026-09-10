@@ -17,7 +17,7 @@
  * 本文件的 `POST /plans/status` 是设计认可的**家长审计权**例外（§13.3：撤销虚报 / 取消计划），
  * 属于人对系统的显式修正，不是自动判定——不要把它扩展成通用的状态编辑器。
  */
-import crypto from "node:crypto";
+import crypto, { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
@@ -277,6 +277,59 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
         );
       }
       return { ok: true, status: action === "cancel" ? "cancelled" : action === "done" ? "done" : "pending" };
+    } finally {
+      kb.close();
+    }
+  });
+
+  // ==================== 孩子自建生活计划（2026-09-10：制定人=孩子自己） ====================
+  /** POST /api/v1/plans/life —— 孩子端 agent plan_create 工具的落库入口。
+   *  creator 固定 'child'（加分项，task_type=optional），单日窗口；同 title+date 已有 pending 行则跳过（防重复）。 */
+  app.post("/api/v1/plans/life", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const body = (req.body ?? {}) as { childId?: string; title?: string; date?: string; time?: string };
+    const childId = String(body.childId ?? "");
+    const title = String(body.title ?? "").trim();
+    if (!childId || !title) return reply.code(400).send({ error: "childId / title 必填" });
+    if (title.length > 200) return reply.code(400).send({ error: "title 过长（≤200 字）" });
+    const date = String(body.date ?? "") || new Date().toLocaleDateString("sv-SE");
+    if (!validDate(date)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
+    const time = String(body.time ?? "").trim();
+    if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+      return reply.code(400).send({ error: "time 格式应为 HH:mm" });
+    }
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const kb = openKb(deps.config.dataDir ?? "", parentId, childId);
+    try {
+      const dup = kb
+        .prepare(
+          `SELECT id FROM life_plans WHERE title = ? AND active = 1 AND status IN ('pending')
+             AND substr(start_at,1,10) <= ? AND substr(due_at,1,10) >= ?`
+        )
+        .get(title, date, date) as { id: string } | undefined;
+      if (dup) {
+        return { ok: true, skipped: true, planId: dup.id, message: "同名计划当天已存在（待完成），未重复创建" };
+      }
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      kb.prepare(
+        `INSERT INTO life_plans
+           (id,parent_id,child_id,title,creator,origin,carry_from,recurrence_id,start_at,due_at,status,result,done_at,
+            task_type,count_in_rate,points,active,created_at,updated_at)
+         VALUES (?,?,?,?,'child','conversation','','',?,?, 'pending','','','optional',1,0,1,?,?)`
+      ).run(id, parentId, childId, title, `${date} 00:00:00`, time ? `${date} ${time}:00` : `${date} 23:59:59`, now, now);
+      return { ok: true, planId: id, date, dueAt: time ? `${date} ${time}:00` : `${date} 23:59:59` };
     } finally {
       kb.close();
     }
