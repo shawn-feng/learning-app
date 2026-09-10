@@ -149,8 +149,7 @@ CREATE TABLE IF NOT EXISTS courses (
   title TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT '⬜',
-  mastery TEXT NOT NULL DEFAULT '',
-  first_learned TEXT NOT NULL DEFAULT '',
+  -- 2026-09-10 计划域：mastery/first_learned 已删（掌握度=最近一次考核）
   last_review TEXT NOT NULL DEFAULT '',
   review_count INTEGER NOT NULL DEFAULT 0,
   material TEXT NOT NULL DEFAULT '',
@@ -189,7 +188,6 @@ SELECT
   ) AS next,
   COALESCE(
     MAX(CASE WHEN last_review IN ('', '-') THEN NULL ELSE last_review END),
-    MAX(CASE WHEN first_learned IN ('', '-') THEN NULL ELSE first_learned END),
     ''
   ) AS updated
 FROM courses
@@ -205,6 +203,7 @@ export function openParentDb(parentId: string = DEFAULT_PARENT_ID): DatabaseSync
   ensureParentV3(db);
   ensureParentV4(db);
   ensureParentTags(db);
+  ensureParentV5(db); // 2026-09-10 计划域：mastery/first_learned 列下线
   // 视图已存在则跳过重建（避免每次打开都写锁；视图定义变更时才需要显式重建）
   const hasView = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name = 'topic_progress'")
@@ -233,6 +232,32 @@ function ensureParentV3(db: DatabaseSync): void {
   const rows = db.prepare("SELECT name, topic_key FROM topics").all() as unknown as Array<{ name: string; topic_key: string }>;
   const upd = db.prepare("UPDATE topics SET topic_key = ? WHERE name = ?");
   for (const r of rows) upd.run(normalizeTopicKey(r.topic_key), r.name);
+}
+
+/**
+ * 父库 v4 → v5 就地迁移（2026-09-10 计划域）：删 courses 的 mastery / first_learned。
+ * 幂等：列不存在则返回。先 DROP 视图（它引用 first_learned）再删列，
+ * 视图由 openParentDb 在本函数之后重建。
+ */
+function ensureParentV5(db: DatabaseSync): void {
+  let cols: string[] = [];
+  try {
+    cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  } catch {
+    return;
+  }
+  const targets = ["mastery", "first_learned"].filter((c) => cols.includes(c));
+  if (!targets.length) return;
+  db.exec("DROP VIEW IF EXISTS topic_progress");
+  for (const c of targets) {
+    try {
+      db.exec(`ALTER TABLE courses DROP COLUMN ${c}`);
+    } catch {
+      /* 不支持 DROP COLUMN 则保留（读写侧已不使用） */
+    }
+  }
+  const hasView = db.prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name = 'topic_progress'").get();
+  if (!hasView) db.exec(PARENT_SCHEMA_VIEWS);
 }
 
 /** 父库 v3 → v4 就地迁移（学习考核）：topics.assess_method（每科目考核方法说明）、
@@ -375,8 +400,8 @@ function rowToParentCourse(r: Record<string, unknown>): CourseItem {
     title: String(r.title),
     sortOrder: Number(r.sort_order) || 0,
     status: String(r.status ?? "⬜"),
-    mastery: String(r.mastery ?? ""),
-    firstLearned: String(r.first_learned ?? ""),
+    mastery: "", // 2026-09-10：掌握度已不存列（改看服务端 course_status）
+    firstLearned: "", // 已下线
     lastReview: String(r.last_review ?? ""),
     reviewCount: Number(r.review_count) || 0,
     material: String(r.material ?? ""),
@@ -397,7 +422,7 @@ export function resolveParentMaterial(parentId: string, htmlPath: string): strin
 /**
  * 家长端写入/更新主题（由家长制作教学内容后调用，或迁移导入用）。
  * upsert 语义：topics 按 name 覆盖；courses 按 (topic,title) 覆盖 content 字段、
- * 但**不覆盖** status/mastery/first_learned/last_review/review_count（进度属于孩子，家长库只存内容）。
+ * 但**不覆盖** status/last_review/review_count（进度属于孩子，家长库只存内容）。
  */
 export async function upsertParentTopic(
   parentId: string,
@@ -429,8 +454,6 @@ export async function upsertParentTopic(
       title: c.title,
       sort_order: c.sortOrder ?? 0,
       status: "⬜",
-      mastery: "",
-      first_learned: "",
       last_review: "",
       review_count: 0,
       material: c.material ?? "",
@@ -504,8 +527,6 @@ export async function allocateTopicToChild(
       await dbExec("kb.courses.upsert", {
         ...base,
         status: String(cur.status ?? "⬜"),
-        mastery: String(cur.mastery ?? ""),
-        first_learned: String(cur.first_learned ?? ""),
         last_review: String(cur.last_review ?? ""),
         review_count: Number(cur.review_count) || 0,
       });
@@ -514,8 +535,6 @@ export async function allocateTopicToChild(
       await dbExec("kb.courses.upsert", {
         ...base,
         status: "⬜",
-        mastery: "",
-        first_learned: "",
         last_review: "",
         review_count: 0,
       });
@@ -729,8 +748,6 @@ export async function upsertParentCourse(
     title: c.title,
     sort_order: c.sortOrder ?? existing?.sort_order ?? 0,
     status: String(existing?.status ?? "⬜"),
-    mastery: String(existing?.mastery ?? ""),
-    first_learned: String(existing?.first_learned ?? ""),
     last_review: String(existing?.last_review ?? ""),
     review_count: Number(existing?.review_count) || 0,
     material: c.material ?? String(existing?.material ?? ""),

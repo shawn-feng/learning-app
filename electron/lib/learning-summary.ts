@@ -1,7 +1,8 @@
 import fs from "fs";
 import path from "path";
 import { getChildDir, getDataDir } from "./config";
-import { dbQuery } from "./client-data";
+import { dbQuery, currentSessionToken } from "./client-data";
+import { serverFetch } from "./server-client";
 import { chapterKey, getCourseLessonSync, type CourseDailySummary, type CourseLessonSync } from "./kb-sqlite";
 
 /**
@@ -58,14 +59,13 @@ interface ProgressRow {
   updated: string;
 }
 
-/** 单课明细行（kb.courses.list 返回，snake_case 对齐 server courses 表）。 */
+/** 单课明细行（kb.courses.list 返回，snake_case 对齐 server courses 表）。
+ *  2026-09-10：mastery / first_learned 已下线（掌握度=course_progress 视图最近一次考核 / 学习状态=last_review） */
 interface CourseRow {
   topic: string;
   title: string;
   sort_order: number;
   status: string;
-  mastery: string;
-  first_learned: string;
   last_review: string;
   review_count: number;
   material: string;
@@ -255,8 +255,8 @@ export async function getTopicProgress(childId: string, topic: string): Promise<
       title: c.title,
       sortOrder: c.sort_order,
       status: c.status,
-      mastery: c.mastery,
-      firstLearned: c.first_learned,
+      mastery: "", // 2026-09-10：引导掌握度已下线
+      firstLearned: "", // 已下线
       lastReview: c.last_review,
       reviewCount: c.review_count,
       material: c.material,
@@ -298,13 +298,13 @@ export function progressSummaryToMarkdown(summary: LearningSummary): string {
 //
 // 与进度概览同一「会话前远程预取 → 本地缓存 → 同步读」模式（systemPromptOverride 是同步链，
 // 没法在回调里 await）：createChildSession 在创建会话前调用 fetchTodayPlanRemote(childId, date)
-// 把当天 Todolist 预取到本地缓存，buildChildPrompt 经 getTodayPlan(childId, today) 同步读缓存注入系统提示。
-// 缓存缺失 / 当天无 Todolist 时 text 为空串，buildChildPrompt 据此「不注入任何段落」，保持 prompt 精简。
+// 把当天三表覆盖计划预取到本地缓存，buildChildPrompt 经 getTodayPlan(childId, today) 同步读缓存注入系统提示。
+// 缓存缺失 / 当天无安排时 text 为空串，buildChildPrompt 据此「不注入任何段落」，保持 prompt 精简。
 // ISSUE-063：getTodayPlan 带 date 校验 + 返回 fresh——离线时旧缓存可能是昨天内容，禁止把「昨天的计划/
 // 拉取失败」当作「今天没安排」注入；由调用方据 fresh=false 显式提示 agent。
 //
-// 数据来源：kb.todo.list（服务端孩子 kb todo_items 表，一事一行，多设备共享），与 todo_list 工具 read
-// 分支同一真源、同一「今天」口径（本地时区 YYYY-MM-DD）。序列化为纯文本注入（不再是 md checkbox）。
+// 数据来源（2026-09-10 计划域重构）：/api/v1/plans/today（三张计划表里窗口覆盖当天的行）。
+// 计划不再落表；「今天」口径：本地时区 YYYY-MM-DD。序列化为纯文本注入。
 
 function todayPlanCachePath(childId: string): string {
   return path.join(getDataDir(), "cache", `today-plan-${childId}.json`);
@@ -322,11 +322,12 @@ interface TodayPlanCacheFile {
  * 返回 "ok"（已拿到当天计划，可能为空）| "network"（离线/失败，缓存保留旧值或为空）。 */
 export async function fetchTodayPlanRemote(childId: string, date: string): Promise<"ok" | "network"> {
   try {
-    const rows = (await dbQuery<Array<Record<string, unknown>>>("kb.todo.list", {
-      child_id: childId,
-      date,
-    })) ?? [];
-    // 与 todo_list 工具 read 分支口径一致：无行即「今天还没有 todolist」。
+    const res = await serverFetch<{ ok: boolean; items: Array<Record<string, unknown>> }>(
+      `/plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(date)}`,
+      { token: currentSessionToken(), timeoutMs: 15000 }
+    );
+    const rows = (res.items ?? []).filter((r) => r.status !== "cancelled");
+    // 无行即「今天还没有计划」。
     const text = rows.length ? todoRowsToText(rows) : "";
     const data: TodayPlanCacheFile = { itemsMd: text, date, ts: Date.now(), lastFetchOk: true };
     fs.mkdirSync(path.dirname(todayPlanCachePath(childId)), { recursive: true });
@@ -375,13 +376,15 @@ export function getTodayPlanText(childId: string, date: string): string {
   return getTodayPlan(childId, date).text;
 }
 
-/** 把 todo_items 行渲染成可读文本（家长项带来源前缀，孩子项标注）。 */
+/** 把计划行渲染成可读文本（家长项带来源前缀，孩子项标注）。 */
 function todoRowsToText(rows: Array<Record<string, unknown>>): string {
+  const KIND: Record<string, string> = { study: "学习", life: "生活", exam: "考核" };
   const lines = rows.map((r) => {
-    const src = r.source === "parent" ? "[家长安排] " : "[自规划] ";
-    const st = r.status === "done" ? "✅ " : "⬜ ";
-    const note = r.note ? `（${r.note}）` : "";
-    return `- ${st}${src}${r.title}${note}`;
+    const src = r.owner === "parent" ? "[必须完成项] " : "[加分项] ";
+    const st = r.status === "done" ? "✅ " : r.status === "missed" ? "❌ " : "⬜ ";
+    const kind = KIND[String(r.kind ?? "")] ?? "";
+    const due = r.dueAt ? `（截止 ${String(r.dueAt).slice(11, 16)}）` : "";
+    return `- ${st}${kind ? `[${kind}] ` : ""}${src}${r.title}${due}`;
   });
   return lines.join("\n");
 }

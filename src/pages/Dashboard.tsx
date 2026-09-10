@@ -9,6 +9,7 @@ import CourseManager from "../components/CourseManager";
 import QuestionBankPanel from "../components/QuestionBankPanel";
 import ParentChatPanel from "../components/ParentChatPanel";
 import ExamAdminPanel from "../components/ExamAdminPanel";
+import RewardPanel from "../components/RewardPanel";
 import SchedulerTasksPanel from "../components/SchedulerTasksPanel";
 import StudyPlanPanel from "../components/StudyPlanPanel";
 import Settings from "./Settings";
@@ -28,7 +29,9 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [children, setChildren] = useState<any[]>([]);
   const [childrenLoading, setChildrenLoading] = useState(true);
   const [showAddChild, setShowAddChild] = useState(false);
-  const [view, setView] = useState<"children" | "courses" | "plan" | "exam" | "scheduler" | "tokens" | "sync" | "settings" | "bank">("children");
+  const [view, setView] = useState<
+    "children" | "courses" | "plan" | "exam" | "reward" | "scheduler" | "tokens" | "sync" | "settings" | "bank"
+  >("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
   // 家长「AI 提示词」弹窗（scope=parent，ref 由主进程归一化为当前家长 id）
@@ -130,6 +133,19 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             <div className="child-avatar">🎯</div>
             <div className="child-info">
               <div className="name">学习考核</div>
+            </div>
+          </div>
+          <div
+            className="child-card"
+            style={{ border: "none" }}
+            onClick={() => {
+              setView("reward");
+              setDetailChild(null);
+            }}
+          >
+            <div className="child-avatar">✨</div>
+            <div className="child-info">
+              <div className="name">积分</div>
             </div>
           </div>
           <div
@@ -292,6 +308,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           )}
 
           {view === "exam" && !detailChild && <ExamAdminPanel children={children} />}
+          {view === "reward" && !detailChild && <RewardPanel children={children} />}
 
           {view === "scheduler" && !detailChild && <SchedulerTasksPanel children={children} />}
 

@@ -52,3 +52,22 @@ douyin-client.txt
 dist-release-0*/
 dist-ubuntu-0*/
 dist-mac-0*/
+
+# 2026-09-10 计划域重构新增：
+# 服务端 tsc 产物（不入仓，CI 跑 tsc/build 时再产出）
+server/dist/
+# 前端调试/旧 renderer 临时构建产物
+src/out/
+# 一次性冒烟/迁移脚本（不入仓，验证用）
+server/tmp-*.mts
+# 顶层调试脚本与临时目录（排查用）
+tmp/
+tmp-*.py
+scripts-decode-token.mts
+scripts-probe-material.mts
+# ASAR 调试产物 / 临时 zip
+.tmp-asar/
+linux-*.zip
+# 离线调研目录与抓包文件（不入仓）
+lunyu_exam/
+voice_*.csv

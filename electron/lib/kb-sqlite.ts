@@ -7,8 +7,9 @@
  * 表结构（v4，2026-08-21 修订）：
  *   daily_entries(date, block, title, raw, tags) —— daily 4 区块条目；raw 为唯一内容源，
  *     字段由 method.md 灵活设定；tags 列针对「生活」区块事件打标签（逗号分隔）
- *   courses(topic, title, sort_order, status, mastery, first_learned, last_review,
+ *   courses(topic, title, sort_order, status, last_review,
  *           review_count, material, send_material, tags) —— 每主题每课一行（进度明细）
+ *     （2026-09-10 计划域：mastery / exam_mastery / first_learned 已删；掌握度 = 服务端 course_progress 视图取「最近一次考核」）
  *   topic_progress —— **视图**（非表）：learned/total/next/updated 由 courses 实时计算
  *   topics(name, topic_key, method, progress, rules_json) —— 主题清单 + rules（type=必学/选学/复习 考核标注；
  *     daily 每日目标已停用 ISSUE-033，每天学什么由服务端学习计划 study_plans 决定；topic_key=纯拼音主题键=目录名）
@@ -56,8 +57,8 @@ export interface CourseItem {
   title: string; // 课程名（论语先进篇第十九章）
   sortOrder: number; // 课程顺序（进度/next 计算依据）
   status: string; // 掌握状态：⬜ 未学 / ✅ 已学
-  mastery: string; // 掌握度（method 定义语义，如 良好/熟练）
-  firstLearned: string; // 首次学习时间 YYYY-MM-DD
+  mastery: string; // 掌握度（2026-09-10 起恒为空串：掌握度=服务端 course_progress 最近一次考核）
+  firstLearned: string; // 首次学习时间（2026-09-10 起恒为空串：该字段已下线）
   lastReview: string; // 最近复习时间 YYYY-MM-DD
   reviewCount: number; // 复习次数
   material: string; // 教学资料（路径指针或描述，method 决定写法）
@@ -66,7 +67,7 @@ export interface CourseItem {
   lessonMethod: string; // 每课教学方法全文（ISSUE-029，从父库快照拷贝）
   htmlPath: string; // 学习资料 html 地址（ISSUE-029，指向父库共享目录）
   teachingCopy: string; // 教学文案全文（ISSUE-029，由 materials/*.md 等文件入库，数据库唯一真源）
-  examMastery: string; // 考核掌握度（学习考核功能，与 mastery 引导掌握度双轨）
+  examMastery: string; // 考核掌握度（2026-09-10 起恒为空串；改由服务端 lastExamRate 输出）
   assessRubric: string; // 每课考核要点（学习考核，家长写，仅家长库真源，孩子经 parent_content 取）
 }
 
@@ -99,9 +100,8 @@ CREATE TABLE IF NOT EXISTS courses (
   title TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT '⬜',
-  mastery TEXT NOT NULL DEFAULT '',
-  exam_mastery TEXT NOT NULL DEFAULT '',
-  first_learned TEXT NOT NULL DEFAULT '',
+  -- 2026-09-10 计划域：mastery/exam_mastery/first_learned 已删
+  -- （掌握度=最近一次考核；学习状态=最近学习时间 last_review）
   last_review TEXT NOT NULL DEFAULT '',
   review_count INTEGER NOT NULL DEFAULT 0,
   material TEXT NOT NULL DEFAULT '',
@@ -148,7 +148,6 @@ SELECT
   ) AS next,
   COALESCE(
     MAX(CASE WHEN last_review IN ('', '-') THEN NULL ELSE last_review END),
-    MAX(CASE WHEN first_learned IN ('', '-') THEN NULL ELSE first_learned END),
     ''
   ) AS updated
 FROM courses
@@ -179,14 +178,27 @@ function ensureV6(db: DatabaseSync): void {
 }
 
 /**
- * v6 → v7 就地迁移（学习考核）：courses 表加 `exam_mastery`（考核掌握度，与引导 mastery 双轨）。
- * 幂等：通过列存在性判断，只在缺少该列时执行一次。
+ * v7 → v8 就地迁移（2026-09-10 计划域）：删 courses 的 mastery / exam_mastery / first_learned。
+ * 掌握度改由服务端 course_progress 视图取「最近一次考核」；学习状态只报最近学习时间。
+ * 幂等：列不存在则直接返回（新库建表即无该列）。
  */
-function ensureV7(db: DatabaseSync): void {
-  const cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
-  if (cols.includes("exam_mastery")) return;
-  db.exec("ALTER TABLE courses ADD COLUMN exam_mastery TEXT NOT NULL DEFAULT ''");
-  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "7");
+function ensureV8(db: DatabaseSync): void {
+  let cols: string[] = [];
+  try {
+    cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  } catch {
+    return;
+  }
+  const targets = ["mastery", "exam_mastery", "first_learned"].filter((c) => cols.includes(c));
+  if (!targets.length) return;
+  for (const c of targets) {
+    try {
+      db.exec(`ALTER TABLE courses DROP COLUMN ${c}`);
+    } catch {
+      /* SQLite 版本不支持 DROP COLUMN 则保留（读写侧已不使用） */
+    }
+  }
+  db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run("schema_version", "8");
 }
 
 export function openKbDb(childDir: string): DatabaseSync {
@@ -198,7 +210,7 @@ export function openKbDb(childDir: string): DatabaseSync {
   ensureV4(db, childDir);
   ensureV5(db);
   ensureV6(db);
-  ensureV7(db);
+  ensureV8(db); // 2026-09-10 计划域：掌握度/首次学习列下线
   // 视图每次重建（廉价、幂等）：视图定义变更时无需迁移即可生效
   db.exec("DROP VIEW IF EXISTS topic_progress");
   db.exec(SCHEMA_VIEWS);
@@ -308,7 +320,7 @@ function ensureV3(db: DatabaseSync): void {
         .prepare("SELECT topic, items_json FROM topic_progress")
         .all() as unknown as Array<{ topic: string; items_json: string }>;
       const insert = db.prepare(
-        "INSERT OR REPLACE INTO courses (topic, title, sort_order, status, mastery, first_learned, last_review, review_count, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT OR REPLACE INTO courses (topic, title, sort_order, status, last_review, review_count, tags) VALUES (?, ?, ?, ?, ?, ?, ?)"
       );
       for (const r of rows) {
         let items: Array<{ title: string; fields: Record<string, string> }> = [];
@@ -483,8 +495,6 @@ export function parseProgressFile(topic: string, text: string): CourseItem[] {
       title: it.title,
       sortOrder: items.length,
       status: fields["状态"] || "⬜",
-      mastery: fields["掌握度"] || "",
-      firstLearned: fields["首次学习"] || "",
       lastReview: fields["最近复习"] || fields["上次复习"] || "",
       reviewCount: parseInt(fields["复习次数"] || "0", 10) || 0,
       material: fields["教学资料"] || "",
@@ -555,10 +565,10 @@ export function migrateAllToSqlite(childDir: string): {
           if (!fs.existsSync(progressFile)) continue;
           const items = parseProgressFile(topicDir.name, fs.readFileSync(progressFile, "utf-8"));
           const insert = db.prepare(
-            "INSERT OR REPLACE INTO courses (topic, title, sort_order, status, mastery, first_learned, last_review, review_count, material, send_material, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT OR REPLACE INTO courses (topic, title, sort_order, status, last_review, review_count, material, send_material, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
           );
           for (const it of items) {
-            insert.run(it.topic, it.title, it.sortOrder, it.status, it.mastery, it.firstLearned, it.lastReview, it.reviewCount, it.material, it.sendMaterial, it.tags);
+            insert.run(it.topic, it.title, it.sortOrder, it.status, it.lastReview, it.reviewCount, it.material, it.sendMaterial, it.tags);
           }
           progressCount++;
         }
@@ -798,9 +808,10 @@ function rowToCourse(r: Record<string, unknown>): CourseItem {
     title: String(r.title),
     sortOrder: Number(r.sort_order) || 0,
     status: String(r.status ?? "⬜"),
-    mastery: String(r.mastery ?? ""),
-    examMastery: String(r.exam_mastery ?? ""),
-    firstLearned: String(r.first_learned ?? ""),
+    // 2026-09-10 计划域：三列已删（掌握度/首次学习）。掌握度改由服务端 course_status（最近一次考核）输出。
+    mastery: "",
+    examMastery: "",
+    firstLearned: "",
     lastReview: String(r.last_review ?? ""),
     reviewCount: Number(r.review_count) || 0,
     material: String(r.material ?? ""),
@@ -809,7 +820,6 @@ function rowToCourse(r: Record<string, unknown>): CourseItem {
     lessonMethod: String(r.lesson_method ?? ""),
     htmlPath: String(r.html_path ?? ""),
     teachingCopy: String(r.teaching_copy ?? ""),
-    examMastery: String(r.exam_mastery ?? ""),
     assessRubric: String(r.assess_rubric ?? ""),
   };
 }
@@ -1011,9 +1021,6 @@ export function updateDailyField(childDir: string, e: { date: string; block: str
 export const COURSE_FIELD_MAP: Record<string, string> = {
   状态: "status",
   掌握状态: "status",
-  掌握度: "mastery",
-  首次学习: "first_learned",
-  首次学习时间: "first_learned",
   最近复习: "last_review",
   复习时间: "last_review",
   上次复习: "last_review",
@@ -1030,10 +1037,9 @@ export const COURSE_FIELD_MAP: Record<string, string> = {
   学习资料地址: "html_path",
   教学文案: "teaching_copy",
   teaching_copy: "teaching_copy",
-  考核掌握度: "exam_mastery",
-  考核掌握: "exam_mastery",
-  考核掌握情况: "exam_mastery",
 };
+// 2026-09-10 计划域：掌握度/首次学习/考核掌握度 字段别名已移除
+// （courses 表已无这三列；掌握度只能从服务端 course_status 取）。
 
 /** 更新课程进度字段（kb_update）。item 必填（课程名）；value="+1" 时复习次数自增。 */
 export function updateProgress(childDir: string, p: { topic: string; item: string; field: string; value: string }): boolean {
@@ -1074,8 +1080,6 @@ export function insertCourse(
     topic: string;
     title: string;
     status?: string;
-    mastery?: string;
-    examMastery?: string;
     material?: string;
     sendMaterial?: string;
     tags?: string;
@@ -1091,14 +1095,12 @@ export function insertCourse(
     if (exists) return false;
     const max = db.prepare("SELECT MAX(sort_order) AS m FROM courses WHERE topic = ?").get(c.topic) as { m: number | null };
     db.prepare(
-      "INSERT INTO courses (topic, title, sort_order, status, mastery, exam_mastery, material, send_material, tags, lesson_method, html_path, teaching_copy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO courses (topic, title, sort_order, status, material, send_material, tags, lesson_method, html_path, teaching_copy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(
       c.topic,
       c.title,
       (max.m ?? -1) + 1,
       c.status || "⬜",
-      c.mastery || "",
-      c.examMastery || "",
       c.material || "",
       c.sendMaterial || "",
       c.tags ? normalizeTags(c.tags) : "",
@@ -1170,9 +1172,7 @@ export function progressToMarkdown(progress: TopicProgress[], listOnly?: boolean
       for (const it of p.items) {
         const bits: string[] = [];
         bits.push(`- 状态：${it.status}`);
-        if (it.mastery) bits.push(`- 掌握度：${it.mastery}`);
-        if (it.firstLearned) bits.push(`- 首次学习：${it.firstLearned}`);
-        if (it.lastReview) bits.push(`- 最近复习：${it.lastReview}`);
+        if (it.lastReview) bits.push(`- 最近学习：${it.lastReview}`);
         if (it.reviewCount > 0) bits.push(`- 复习次数：${it.reviewCount}`);
         if (it.material) bits.push(`- 教学资料：${it.material}`);
         if (it.sendMaterial) bits.push(`- 要发送的学习资料：${it.sendMaterial}`);

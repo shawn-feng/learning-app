@@ -106,9 +106,6 @@ function resolveKbTopicKey(db: DatabaseSync, input: string): string {
 const COURSE_FIELD_MAP: Record<string, string> = {
   状态: "status",
   掌握状态: "status",
-  掌握度: "mastery",
-  首次学习: "first_learned",
-  首次学习时间: "first_learned",
   最近复习: "last_review",
   复习时间: "last_review",
   上次复习: "last_review",
@@ -125,10 +122,9 @@ const COURSE_FIELD_MAP: Record<string, string> = {
   学习资料地址: "html_path",
   教学文案: "teaching_copy",
   teaching_copy: "teaching_copy",
-  考核掌握度: "exam_mastery",
-  考核掌握: "exam_mastery",
-  考核掌握情况: "exam_mastery",
 };
+// 2026-09-10 计划域：掌握度已不在 courses 表（改由 course_progress 视图取「最近一次考核」得分率），
+// 故「掌握度 / 首次学习 / 考核掌握度」等字段别名一并移除——写入会直接报字段不支持（不再静默落空）。
 
 // ==================== query handlers ====================
 
@@ -245,7 +241,7 @@ export const queryHandlers: Record<string, QueryHandler> = {
     try {
       const topic = str(args.topic, "");
       const sql =
-        "SELECT topic, title, sort_order, status, mastery, exam_mastery, first_learned, last_review, " +
+        "SELECT topic, title, sort_order, status, last_review, " +
         "review_count, material, send_material, tags, lesson_method, html_path, teaching_copy " +
         "FROM courses " +
         (topic ? "WHERE topic = ? " : "") +
@@ -316,60 +312,8 @@ export const queryHandlers: Record<string, QueryHandler> = {
       db.close();
     }
   },
-  // ISSUE-025 重构（2026-09-04）：取某天 todolist（todo_items 一事一行，按 sort/created 排序）。date 缺省 = 今天。
-  // ISSUE-029 任务2：每行带出 topic_key / course_name（英语课入口判定）——plan_id 回查主库 study_plan_items；
-  // 孩子自规划项（无 plan_id）两字段为空串。
-  "kb.todo.list": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const date = str(args.date);
-    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      const rows = db
-        .prepare(
-          "SELECT id, todo_date, title, source, plan_id, status, done_at, due_time, done_time, note, sort, created_at, updated_at " +
-            "FROM todo_items WHERE todo_date = ? ORDER BY sort, created_at"
-        )
-        .all(date) as Array<Record<string, unknown>>;
-      const planIds = [
-        ...new Set(
-          rows.map((r) => r.plan_id).filter((v): v is string => typeof v === "string" && v !== "")
-        ),
-      ];
-      const byId = new Map<string, { topic_key: string; course_name: string }>();
-      if (planIds.length > 0) {
-        const placeholders = planIds.map(() => "?").join(",");
-        const planRows = ctx.mainDb
-          .prepare(`SELECT id, topic_key, course_name FROM study_plan_items WHERE id IN (${placeholders})`)
-          .all(...planIds) as Array<{ id: string; topic_key: string; course_name: string }>;
-        for (const p of planRows) byId.set(p.id, p);
-      }
-      for (const r of rows) {
-        const p = typeof r.plan_id === "string" ? byId.get(r.plan_id) : undefined;
-        r.topic_key = p?.topic_key ?? "";
-        r.course_name = p?.course_name ?? "";
-      }
-      return rows;
-    } finally {
-      db.close();
-    }
-  },
-  // ISSUE-025：取近 N 天完成统计（倒序，最新在前；range 默认 30）。供「我的执行力」趋势。
-  "kb.todo.stats.list": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const range = Math.min(365, Math.max(1, num(args.range, 30)));
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      return db
-        .prepare(
-          `SELECT date, total, done, parent_total, parent_done, self_total, self_done, rate, streak, updated
-           FROM child_todo_stats ORDER BY date DESC LIMIT ?`
-        )
-        .all(range);
-    } finally {
-      db.close();
-    }
-  },
+  // 2026-09-10 计划域重构：kb.todo.* 系列已下线（todolist 改为动态查三张计划表；统计落 reward_daily_stats）。
+  // 旧库 todo_items / child_todo_stats 表保留供迁移脚本读取，服务端不再读写。
   "agents.get": (ctx, args) => {
     const scope = str(args.scope);
     // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
@@ -406,7 +350,7 @@ export const queryHandlers: Record<string, QueryHandler> = {
     try {
       const topic = str(args.topic, "");
       const sql =
-        "SELECT topic, title, sort_order, status, mastery, first_learned, last_review, " +
+        "SELECT topic, title, sort_order, status, last_review, " +
         "review_count, material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric " +
         "FROM courses " +
         (topic ? "WHERE topic = ? " : "") +
@@ -447,219 +391,6 @@ type ExecHandler = (ctx: RpcContext, args: Record<string, unknown>) => unknown;
 
 // 导出供服务端无头 worker 直接调用（方案B 阶段②），语义与 /db/exec 完全一致。
 export const execHandlers: Record<string, ExecHandler> = {
-  // ISSUE-025 重构（2026-09-04）：新增一条 todo（孩子自规划项；家长规定项由 gen 生成，不从此写入）。
-  // due_time 可选：约定截止 HH:MM（培养孩子时间规划，见 todo_time 特性）。
-  "kb.todo.add": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const date = str(args.date);
-    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
-    const title = str(args.title);
-    if (!title.trim()) throw new ApiError(400, "缺少 title");
-    const source = str(args.source, "child");
-    if (source !== "child") throw new ApiError(400, "kb.todo.add 仅允许 source=child（家长项由 gen 生成）");
-    const dueTime = str(args.due_time, "").trim();
-    if (dueTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(dueTime)) {
-      throw new ApiError(400, "due_time 格式应为 HH:MM（如 15:00）");
-    }
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      const now = new Date().toISOString();
-      const maxSort = db
-        .prepare("SELECT COALESCE(MAX(sort), 0) AS m FROM todo_items WHERE todo_date = ?")
-        .get(date) as { m: number };
-      const id = crypto.randomUUID();
-      db.prepare(
-        "INSERT INTO todo_items (id, child_id, todo_date, title, source, plan_id, status, done_at, due_time, done_time, note, sort, created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, 'child', '', 'pending', '', ?, '', ?, ?, ?, ?)"
-      ).run(id, childId, date, title.trim(), dueTime, str(args.note), maxSort.m + 1, now, now);
-      return { ok: true, id, sort: maxSort.m + 1 };
-    } finally {
-      db.close();
-    }
-  },
-  // ISSUE-025 重构（2026-09-04）：把某条 todo 标记 done/pending（孩子打勾 / stat 回写）。
-  // done：done_at 记当天日期，done_time 记真实完成时刻 ISO（用于「是否按时」判定）；uncheck 清空两者。
-  "kb.todo.set": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const id = str(args.id);
-    if (!id) throw new ApiError(400, "缺少 id");
-    const status = str(args.status, "done");
-    if (status !== "done" && status !== "pending") throw new ApiError(400, "status 仅支持 done / pending");
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      const row = db.prepare("SELECT id FROM todo_items WHERE id = ? AND child_id = ?").get(id, childId) as
-        | { id: string }
-        | undefined;
-      if (!row) return { ok: false, error: "未找到该 todo（非该孩子）" };
-      const nowIso = new Date().toISOString();
-      db.prepare(
-        "UPDATE todo_items SET status = ?, done_at = ?, done_time = ?, updated_at = ? WHERE id = ?"
-      ).run(
-        status,
-        status === "done" ? nowIso.slice(0, 10) : "",
-        status === "done" ? nowIso : "",
-        nowIso,
-        id
-      );
-      return { ok: true };
-    } finally {
-      db.close();
-    }
-  },
-  // ISSUE-025 重构（2026-09-04）：由 gen 物化一条「家长规定项」todo（source=parent，关联 study_plan_items）。
-  // status/done_at 可选：gen 预判课程已学过（提前学等）时带 done 建行，避免已完成项先建 pending 再等 stat。
-  "kb.todo.addParent": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const date = str(args.date);
-    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
-    const title = str(args.title);
-    if (!title.trim()) throw new ApiError(400, "缺少 title");
-    const planId = str(args.plan_id);
-    const status = str(args.status, "pending");
-    if (status !== "pending" && status !== "done") throw new ApiError(400, "status 仅支持 pending / done");
-    const doneAt = status === "done" ? str(args.done_at, date) : "";
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      const now = new Date().toISOString();
-      const maxSort = db
-        .prepare("SELECT COALESCE(MAX(sort), 0) AS m FROM todo_items WHERE todo_date = ?")
-        .get(date) as { m: number };
-      const id = crypto.randomUUID();
-      db.prepare(
-        "INSERT INTO todo_items (id, child_id, todo_date, title, source, plan_id, status, done_at, due_time, done_time, note, sort, created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, 'parent', ?, ?, ?, '', '', ?, ?, ?, ?)"
-      ).run(id, childId, date, title.trim(), planId, status, doneAt, str(args.note), num(args.sort, maxSort.m + 1), now, now);
-      return { ok: true, id };
-    } finally {
-      db.close();
-    }
-  },
-  // ISSUE-025 重构（2026-09-04）：gen 删除某条「家长规定项」todo（按 id + plan_id 精确，防误删孩子项）。
-  "kb.todo.removeByPlan": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const id = str(args.id);
-    const planId = str(args.plan_id);
-    if (!id) throw new ApiError(400, "缺少 id");
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      db.prepare("DELETE FROM todo_items WHERE id = ? AND child_id = ? AND plan_id = ? AND source = 'parent'").run(
-        id,
-        childId,
-        planId
-      );
-      return { ok: true };
-    } finally {
-      db.close();
-    }
-  },
-  // ISSUE-025 重构（2026-09-04）：删除一条 todo（孩子删自己的自规划项）。
-  "kb.todo.remove": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const id = str(args.id);
-    if (!id) throw new ApiError(400, "缺少 id");
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      db.prepare("DELETE FROM todo_items WHERE id = ? AND child_id = ? AND source = 'child'").run(id, childId);
-      return { ok: true };
-    } finally {
-      db.close();
-    }
-  },
-  "kb.daily_entries.insert": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      // 计划域（2026-09-10）：可选 plan_id / plan_outcome —— 生活计划证据（recording 写，stat 据此判完成）
-      db.prepare(
-        `INSERT OR REPLACE INTO daily_entries (date, block, title, raw, tags, plan_id, plan_outcome)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        str(args.date),
-        str(args.block),
-        str(args.title),
-        str(args.raw),
-        str(args.tags),
-        str(args.plan_id || args.planId || ""),
-        str(args.plan_outcome || args.planOutcome || "")
-      );
-      return { ok: true };
-    } finally {
-      db.close();
-    }
-  },
-  "kb.daily_entries.insertMany": (ctx, args) => {
-    // 对齐 insertDailyEntries：批量、单事务、重复跳过（INSERT OR IGNORE）；title/tags 从 content 提取
-    const childId = requireChildId(ctx, args);
-    const date = str(args.date);
-    const entries = Array.isArray(args.entries)
-      ? (args.entries as Array<Record<string, unknown>>)
-      : [];
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      const tx = db.prepare(
-        "INSERT OR IGNORE INTO daily_entries (date, block, title, raw, tags, plan_id, plan_outcome) VALUES (?, ?, ?, ?, ?, ?, ?)"
-      );
-      let inserted = 0;
-      db.exec("BEGIN");
-      try {
-        for (const e of entries) {
-          const content = str(e.content);
-          const title = content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "";
-          if (!title) continue;
-          const r = tx.run(
-            date,
-            str(e.block),
-            title,
-            content,
-            extractTagsFromRaw(content),
-            str(e.planId || e.plan_id || ""),
-            str(e.planOutcome || e.plan_outcome || "")
-          );
-          if (r.changes > 0) inserted++;
-        }
-        db.exec("COMMIT");
-      } catch (err) {
-        db.exec("ROLLBACK");
-        throw err;
-      }
-      return { inserted, skipped: entries.length - inserted };
-    } finally {
-      db.close();
-    }
-  },
-  // ISSUE-025 重构：写某天完成统计（upsert）。由服务端 stat 在纯代码统计后按 todo_items 汇总落库。
-  "kb.todo.stats.upsert": (ctx, args) => {
-    const childId = requireChildId(ctx, args);
-    const date = str(args.date);
-    if (!date) throw new ApiError(400, "缺少 date（YYYY-MM-DD）");
-    const db = openKb(ctx.dataDir, ctx.parentId, childId);
-    try {
-      db.prepare(
-        `INSERT INTO child_todo_stats (
-           date, total, done, parent_total, parent_done, self_total, self_done, rate, streak, updated
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(date) DO UPDATE SET
-           total = excluded.total, done = excluded.done,
-           parent_total = excluded.parent_total, parent_done = excluded.parent_done,
-           self_total = excluded.self_total, self_done = excluded.self_done,
-           rate = excluded.rate, streak = excluded.streak, updated = excluded.updated`
-      ).run(
-        date,
-        num(args.total),
-        num(args.done),
-        num(args.parent_total),
-        num(args.parent_done),
-        num(args.self_total),
-        num(args.self_done),
-        num(args.rate, 0),
-        num(args.streak, 0),
-        str(args.updated, new Date().toISOString())
-      );
-      return { ok: true };
-    } finally {
-      db.close();
-    }
-  },
   "kb.daily_entries.updateField": (ctx, args) => {
     // 对齐 updateDailyField：改 raw 字段行（缺失追加）；field=标签 时同步 tags 列
     const childId = requireChildId(ctx, args);
@@ -745,15 +476,12 @@ export const execHandlers: Record<string, ExecHandler> = {
     try {
       db.prepare(
         `INSERT INTO courses (
-           topic, title, uuid, sort_order, status, mastery, exam_mastery, first_learned, last_review,
+           topic, title, uuid, sort_order, status, last_review,
            review_count, material, send_material, tags, lesson_method, html_path, teaching_copy
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(topic, title) DO UPDATE SET
            sort_order = excluded.sort_order,
            status = excluded.status,
-           mastery = excluded.mastery,
-           exam_mastery = excluded.exam_mastery,
-           first_learned = excluded.first_learned,
            last_review = excluded.last_review,
            review_count = excluded.review_count,
            material = excluded.material,
@@ -768,9 +496,6 @@ export const execHandlers: Record<string, ExecHandler> = {
         resolveCourseUuid(ctx.dataDir, ctx.parentId, str(args.topic), str(args.title)),
         num(args.sort_order),
         str(args.status),
-        str(args.mastery),
-        str(args.exam_mastery),
-        str(args.first_learned),
         str(args.last_review),
         num(args.review_count),
         str(args.material),
@@ -799,8 +524,8 @@ export const execHandlers: Record<string, ExecHandler> = {
       const r = db
         .prepare(
           `INSERT OR IGNORE INTO courses (
-             topic, title, uuid, sort_order, status, mastery, exam_mastery, material, send_material, tags, lesson_method, html_path, teaching_copy
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             topic, title, uuid, sort_order, status, material, send_material, tags, lesson_method, html_path, teaching_copy
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           topic,
@@ -808,8 +533,6 @@ export const execHandlers: Record<string, ExecHandler> = {
           resolveCourseUuid(ctx.dataDir, ctx.parentId, topic, str(args.title)),
           max.m + 1,
           str(args.status),
-          str(args.mastery),
-          str(args.exam_mastery),
           str(args.material),
           str(args.send_material),
           str(args.tags),
@@ -952,14 +675,12 @@ export const execHandlers: Record<string, ExecHandler> = {
     try {
       db.prepare(
         `INSERT INTO courses (
-           topic, title, sort_order, status, mastery, first_learned, last_review,
+           topic, title, sort_order, status, last_review,
            review_count, material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(topic, title) DO UPDATE SET
            sort_order = excluded.sort_order,
            status = excluded.status,
-           mastery = excluded.mastery,
-           first_learned = excluded.first_learned,
            last_review = excluded.last_review,
            review_count = excluded.review_count,
            material = excluded.material,
@@ -974,8 +695,6 @@ export const execHandlers: Record<string, ExecHandler> = {
         str(args.title),
         num(args.sort_order),
         str(args.status),
-        str(args.mastery),
-        str(args.first_learned),
         str(args.last_review),
         num(args.review_count),
         str(args.material),

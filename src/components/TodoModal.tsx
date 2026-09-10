@@ -1,72 +1,94 @@
-import { useEffect, useState } from "react";
-import { ListTodo, TrendingUp, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ListTodo, TrendingUp, X, Sparkles } from "lucide-react";
 
 /**
- * ISSUE-025 重构（2026-09-04）：孩子端「今日计划」弹框。
- * - 「今日计划」标签：只读展示当天 todolist（一事一条）。来源=家长（parent，来自学习计划）项带「家长安排」
- *   标签；来源=孩子（child）为孩子自规划项。列表只读，不提供手动勾选（完成判定由系统/agent 自动核对）。
- * - 「我的执行力」标签：近 N 天完成率趋势（柱状）+ 连续达标天数 + 家长项 vs 自规划项对比。
- *   数据源服务端 child_todo_stats（kb.todo.stats.list，经 todo:stats:list IPC 读取）。
+ * 孩子端「今日计划」弹框（2026-09-10 计划域重构版）。
+ *
+ * - **今日计划**：动态 todolist —— 三张计划表（学习/生活/考核）中「窗口覆盖当天」的行，
+ *   按**制定人**分两组展示：必须完成项（家长制定）/ 加分项（孩子自定）。
+ *   ⚠️ **不提供勾选**（设计定案）：完成与否由 LLM/系统判定（生活靠对话证据、学习靠课程学习时间、考核靠提交），
+ *   孩子勾选会造成虚报。家长可在家长端「积分」页做审计与修正。
+ * - **我的执行力**：近 N 天完成率趋势（来自 reward_daily_stats 按日汇总）。
+ * - **我的积分**：余额 + 积分流水（每一分变动都有原因）+ 门控未解锁提示。
  */
-interface TodoStatsRow {
+interface PlanItem {
+  planId: string;
+  kind: "study" | "life" | "exam";
+  title: string;
+  topicKey: string;
+  mode: string;
+  owner: string; // parent=必须完成项 / child=加分项
+  origin: string;
+  startAt: string;
+  dueAt: string;
+  status: string; // pending | done | missed | cancelled
+  doneAt: string;
+  carry: boolean;
+  taskType?: string;
+  points?: number;
+  score?: number;
+}
+
+interface StatsRow {
   date: string;
   total: number;
   done: number;
-  parent_total: number;
-  parent_done: number;
-  self_total: number;
-  self_done: number;
   rate: number;
-  streak: number;
+  points: number;
+  missed: number;
+  cancelled: number;
+  optionalDone: number;
 }
 
-interface TodoRow {
+interface LedgerRow {
   id: string;
-  title: string;
-  source: string;
-  status: string;
-  note: string;
-  due_time: string;   // 约定截止 HH:MM（孩子自规划可带）
-  done_time: string;  // 真实完成时刻 ISO（打勾时写）
-  done_at: string;    // 完成日期 YYYY-MM-DD
-  topic_key?: string; // ISSUE-029 任务2：来自学习计划的课程主题（english = 英语课，可进独立子会话）
-  course_name?: string; // 学习计划中的真实课程名（english:<course_name> 即 courseKey）
+  ts: string;
+  bizDate: string;
+  type: string;
+  amount: number;
+  balanceAfter: number;
+  reasonCode: string;
+  reason: string;
+  rate: number | null;
+  operator: string;
 }
 
-interface TodoItem {
-  done: boolean;
-  isParent: boolean;
-  text: string;
-  note: string;
-  dueTime: string;    // HH:MM 或 ""
-  doneTime: string;   // ISO 或 ""
-  topicKey: string;   // "" = 非课程计划项
-  courseName: string;
+interface RewardData {
+  balance: number;
+  totals: { earned: number; deducted: number; redeemed: number };
+  stats: Array<{
+    source: string;
+    owner: string;
+    total: number;
+    done: number;
+    missed: number;
+    rate: number;
+    tier: string;
+    gateOk: number | null;
+    pointsAwarded: number;
+  }>;
+  gateBlocked: Array<{ source: string; rate: number; tier: string }>;
+  ledger: LedgerRow[];
 }
 
-/** 约定 HH:MM 前完成 + 已完成后 → 判定按时/超时。dueTime 空或未完成不算。 */
-function isOnTime(it: { dueTime: string; doneTime: string }): boolean | undefined {
-  const due = it.dueTime || "";
-  const doneIso = it.doneTime || "";
-  if (!/^\d{2}:\d{2}$/.test(due)) return undefined;
-  if (!doneIso) return undefined; // 未完成
-  // doneIso 是 UTC ISO；取它的本地时分
-  const d = new Date(doneIso);
-  if (isNaN(d.getTime())) return undefined;
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}` <= due;
-}
+const KIND_LABEL: Record<string, string> = { study: "学习", life: "生活", exam: "考核" };
+const STATUS_ICON: Record<string, string> = { done: "✅", missed: "❌", pending: "⬜", cancelled: "🚫" };
 
 function fmtDate(date: string): string {
-  // YYYY-MM-DD → M月D日
   const [y, m, d] = date.split("-").map(Number);
   if (!y || !m || !d) return date;
   return `${m}月${d}日`;
 }
 
-const BAR_MIN = 4; // 极低完成率也保留可见高度
-const RATE_OK = 0.8; // 对齐主进程 DONE_RATE_OK
+function fmtTime(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+const BAR_MIN = 4;
+const RATE_OK = 0.8;
 
 export default function TodoModal({
   childId,
@@ -75,409 +97,360 @@ export default function TodoModal({
 }: {
   childId: string;
   onClose: () => void;
-  /** ISSUE-029 任务2：英语课项点击「进入课程」→ Learn 切到英语子会话（english:<course_name>） */
   onStartCourse?: (courseKey: string) => void;
 }) {
-  const [tab, setTab] = useState<"today" | "stats">("today");
-  const [todoRows, setTodoRows] = useState<TodoRow[]>([]);
+  const [tab, setTab] = useState<"today" | "stats" | "points">("today");
+  const [items, setItems] = useState<PlanItem[]>([]);
   const [today, setToday] = useState("");
-  const [rows, setRows] = useState<TodoStatsRow[]>([]);
+  const [rows, setRows] = useState<StatsRow[]>([]);
+  const [reward, setReward] = useState<RewardData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const [t, s] = await Promise.all([
-          window.api.todoGet(childId),
-          window.api.todoStatsList(childId, 30),
-        ]);
-        if (!alive) return;
-        if (t?.success) {
-          setToday(t.date || "");
-          setTodoRows(Array.isArray(t.rows) ? (t.rows as TodoRow[]) : []);
-        }
-        if (s?.success && Array.isArray(s.rows)) {
-          setRows(s.rows as TodoStatsRow[]);
-        }
-      } catch {
-        /* 读取失败保持空态 */
-      } finally {
-        if (alive) setLoading(false);
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [t, s, r] = await Promise.all([
+        window.api.todoGet(childId),
+        window.api.todoStatsList(childId, 30),
+        window.api.rewardGet(childId, { days: 30, limit: 60 }),
+      ]);
+      if (t?.success) {
+        setToday(t.date || "");
+        setItems(Array.isArray((t as any).items) ? ((t as any).items as PlanItem[]) : []);
       }
-    })();
-    return () => {
-      alive = false;
-    };
+      if (s?.success && Array.isArray(s.rows)) setRows(s.rows as StatsRow[]);
+      if (r?.success) setReward(r as unknown as RewardData);
+    } catch {
+      /* 读取失败保持空态 */
+    } finally {
+      setLoading(false);
+    }
   }, [childId]);
 
-  const items: TodoItem[] = todoRows.map((r) => ({
-    done: r.status === "done",
-    isParent: r.source === "parent",
-    text: r.title || "",
-    note: r.note || "",
-    dueTime: r.due_time || "",
-    doneTime: r.done_time || "",
-    topicKey: r.topic_key || "",
-    courseName: r.course_name || r.title || "",
-  }));
-  const doneCount = items.filter((i) => i.done).length;
-  const rate = items.length > 0 ? doneCount / items.length : 0;
-  // 「时间规划」汇总：设了 due 的自规划项里，按时完成的数量
-  const timedItems = items.filter((i) => /^\d{2}:\d{2}$/.test(i.dueTime));
-  const timedOnTime = timedItems.filter((i) => isOnTime(i) === true).length;
-  const timedLate = timedItems.filter((i) => isOnTime(i) === false).length;
-  // 连续达标天数取最近一条（今天的统计若已生成，即今天；否则沿用昨天）
-  const streak = rows.length > 0 ? rows[0].streak : 0;
-  const lastOk = rows.find((r) => r.rate >= RATE_OK);
-  const bestStreak = rows.reduce((mx, r) => Math.max(mx, r.streak), 0);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const active = items.filter((i) => i.status !== "cancelled");
+  const doneCount = active.filter((i) => i.status === "done").length;
+  const rate = active.length > 0 ? doneCount / active.length : 0;
+  const parentItems = active.filter((i) => i.owner === "parent");
+  const childItems = active.filter((i) => i.owner !== "parent");
+  const bestStreak = (() => {
+    let best = 0;
+    let cur = 0;
+    for (const r of [...rows].reverse()) {
+      if (r.rate >= RATE_OK) {
+        cur++;
+        best = Math.max(best, cur);
+      } else cur = 0;
+    }
+    return best;
+  })();
+  const curStreak = (() => {
+    let cur = 0;
+    for (const r of rows) {
+      if (r.rate >= RATE_OK) cur++;
+      else break;
+    }
+    return cur;
+  })();
+
+  const renderGroup = (title: string, list: PlanItem[], accent: string, bg: string, border: string) => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: accent, marginBottom: 6 }}>
+        {title}（{list.filter((i) => i.status === "done").length}/{list.length}）
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {list.map((it) => (
+          <div
+            key={it.planId}
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+              padding: "8px 10px",
+              borderRadius: 8,
+              background: bg,
+              border: `1px solid ${border}`,
+            }}
+          >
+            <span style={{ fontSize: 16, lineHeight: "22px", flexShrink: 0 }}>{STATUS_ICON[it.status] ?? "⬜"}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span
+                style={{
+                  display: "inline-block",
+                  fontSize: 11,
+                  color: "#475569",
+                  background: "#e2e8f0",
+                  borderRadius: 4,
+                  padding: "1px 6px",
+                  marginRight: 6,
+                }}
+              >
+                {KIND_LABEL[it.kind] ?? it.kind}
+              </span>
+              {it.carry && (
+                <span style={{ fontSize: 11, color: "#a32d2d", marginRight: 6 }} title="由未完成计划顺延而来">
+                  顺延
+                </span>
+              )}
+              <span
+                style={{
+                  fontSize: 14,
+                  lineHeight: 1.5,
+                  color: it.status === "done" ? "#aaa" : it.status === "missed" ? "#a32d2d" : "#333",
+                  textDecoration: it.status === "done" ? "line-through" : "none",
+                  wordBreak: "break-word",
+                }}
+              >
+                {it.title}
+              </span>
+              {it.kind === "study" && it.topicKey === "english" && it.status === "pending" && (
+                <button
+                  onClick={() => onStartCourse?.(`english:${it.title}`)}
+                  style={{
+                    display: "inline-block",
+                    marginLeft: 8,
+                    border: "none",
+                    background: "#185FA5",
+                    color: "white",
+                    padding: "3px 10px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    verticalAlign: "middle",
+                  }}
+                  title="进入英语课专用会话（全程英文教学）"
+                >
+                  🌍 进入课程
+                </button>
+              )}
+              <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+                {it.dueAt ? `截止 ${fmtTime(it.dueAt)}` : ""}
+                {it.status === "missed" ? " · 未完成" : ""}
+                {it.status === "done" && it.doneAt ? ` · 完成于 ${fmtTime(it.doneAt)}` : ""}
+                {it.status === "pending" && it.kind === "life" ? " · 完成后跟 AI 老师说一声即可" : ""}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div
-        className="modal todo-modal"
-        onClick={(e) => e.stopPropagation()}
-        style={{ width: 520, maxWidth: "92vw" }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 4,
-          }}
-        >
+      <div className="modal todo-modal" onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: "92vw" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>📋 今日计划</h2>
           <button
             onClick={onClose}
             title="关闭"
-            style={{
-              border: "none",
-              background: "transparent",
-              cursor: "pointer",
-              color: "#888",
-              padding: 4,
-            }}
+            style={{ border: "none", background: "transparent", cursor: "pointer", color: "#888", padding: 4 }}
           >
             <X size={20} />
           </button>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            marginBottom: 12,
-            borderBottom: "1px solid #eee",
-            paddingBottom: 8,
-          }}
-        >
-          <button
-            onClick={() => setTab("today")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              border: "none",
-              background: tab === "today" ? "#667eea" : "transparent",
-              color: tab === "today" ? "white" : "#666",
-              padding: "6px 14px",
-              borderRadius: 8,
-              fontSize: 13,
-              cursor: "pointer",
-            }}
-          >
-            <ListTodo size={16} /> 今日计划
-          </button>
-          <button
-            onClick={() => setTab("stats")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              border: "none",
-              background: tab === "stats" ? "#667eea" : "transparent",
-              color: tab === "stats" ? "white" : "#666",
-              padding: "6px 14px",
-              borderRadius: 8,
-              fontSize: 13,
-              cursor: "pointer",
-            }}
-          >
-            <TrendingUp size={16} /> 我的执行力
-          </button>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, borderBottom: "1px solid #eee", paddingBottom: 8 }}>
+          {(
+            [
+              ["today", <ListTodo size={16} key="a" />, "今日计划"],
+              ["stats", <TrendingUp size={16} key="b" />, "我的执行力"],
+              ["points", <Sparkles size={16} key="c" />, "我的积分"],
+            ] as const
+          ).map(([key, icon, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key as "today" | "stats" | "points")}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                border: "none",
+                background: tab === key ? "#667eea" : "transparent",
+                color: tab === key ? "white" : "#666",
+                padding: "6px 14px",
+                borderRadius: 8,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              {icon} {label}
+            </button>
+          ))}
         </div>
 
         {loading ? (
           <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>
         ) : tab === "today" ? (
-          <div style={{ maxHeight: 420, overflowY: "auto" }}>
-            {today && (
-              <div style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>
-                {fmtDate(today)} 的计划
-              </div>
-            )}
-            {items.length === 0 ? (
-              <p style={{ color: "#999", fontSize: 13, lineHeight: 1.8 }}>
-                今天还没有计划。
-                <br />
-                可以让 AI 老师帮你写一份今日计划，或等家长开启定时生成（每天自动安排）。
-              </p>
+          <div style={{ maxHeight: 430, overflowY: "auto" }}>
+            {today && <div style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>{fmtDate(today)} 要做的事</div>}
+            {active.length === 0 ? (
+              <p style={{ color: "#999", fontSize: 13, lineHeight: 1.8 }}>今天还没有安排～ 可以跟 AI 老师聊聊今天想做什么。</p>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {items.map((it, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 10,
-                      padding: "8px 10px",
-                      borderRadius: 8,
-                      background: it.isParent ? "#fff7ed" : "#f5f7ff",
-                      border: it.isParent ? "1px solid #fed7aa" : "1px solid #e2e8ff",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 16,
-                        lineHeight: "22px",
-                        color: it.done ? "#48bb78" : "#ccc",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {it.done ? "✅" : "⬜"}
-                    </span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {it.isParent && (
-                        <span
-                          style={{
-                            display: "inline-block",
-                            fontSize: 11,
-                            color: "#b45309",
-                            background: "#ffedd5",
-                            borderRadius: 4,
-                            padding: "1px 6px",
-                            marginRight: 6,
-                            marginBottom: 2,
-                          }}
-                        >
-                          家长安排
-                        </span>
-                      )}
-                      <span
-                        style={{
-                          fontSize: 14,
-                          lineHeight: 1.5,
-                          color: it.done ? "#aaa" : "#333",
-                          textDecoration: it.done ? "line-through" : "none",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {it.text}
-                      </span>
-                      {/* ISSUE-029 任务2：英语课项（家长排期、未完成）可一键进入英语子会话 */}
-                      {it.topicKey === "english" && !it.done && (
-                        <button
-                          onClick={() => onStartCourse?.(`english:${it.courseName}`)}
-                          style={{
-                            display: "inline-block",
-                            marginLeft: 8,
-                            border: "none",
-                            background: "#185FA5",
-                            color: "white",
-                            padding: "3px 10px",
-                            borderRadius: 6,
-                            fontSize: 12,
-                            fontWeight: 500,
-                            cursor: "pointer",
-                            verticalAlign: "middle",
-                          }}
-                          title="进入英语课专用会话（全程英文教学）"
-                        >
-                          🌍 进入课程
-                        </button>
-                      )}
-                      {/^\d{2}:\d{2}$/.test(it.dueTime) && (
-                        <span
-                          style={{
-                            display: "inline-block",
-                            fontSize: 11,
-                            marginLeft: 6,
-                            padding: "0 5px",
-                            borderRadius: 4,
-                            background: it.done ? (isOnTime(it) ? "#eaf3de" : "#fcebeb") : "#faeeda",
-                            color: it.done ? (isOnTime(it) ? "#3b6d11" : "#a32d2d") : "#854f0b",
-                          }}
-                        >
-                          {it.done
-                            ? isOnTime(it)
-                              ? `⏰ ${it.dueTime}前 · 按时✓`
-                              : `⏰ ${it.dueTime}前 · 超时`
-                            : `⏰ ${it.dueTime}前`}
-                        </span>
-                      )}
-                      {it.note && (
-                        <span style={{ fontSize: 11, color: "#999", marginLeft: 6 }}>（{it.note}）</span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <>
+                {parentItems.length > 0 && renderGroup("必须完成项", parentItems, "#b45309", "#fff7ed", "#fed7aa")}
+                {childItems.length > 0 && renderGroup("加分项", childItems, "#4f46e5", "#f5f7ff", "#e2e8ff")}
+              </>
             )}
-            {items.length > 0 && (
+            {active.length > 0 && (
               <div style={{ fontSize: 12, color: "#999", marginTop: 12, lineHeight: 1.6 }}>
-                {doneCount}/{items.length} 已完成（{Math.round(rate * 100)}%）
-                {streak > 0 && <> · 🔥 已连续达标 {streak} 天</>}
-                {timedItems.length > 0 && (
-                  <div style={{ marginTop: 4 }}>
-                    {timedItems.length} 项设了时间 · {timedOnTime} 项按时
-                    {timedLate > 0 ? <> · {timedLate} 项超时</> : ""}
-                  </div>
-                )}
+                {doneCount}/{active.length} 已完成（{Math.round(rate * 100)}%）
+                {curStreak > 0 && <> · 🔥 已连续达标 {curStreak} 天</>}
                 <br />
-                完成情况由 AI 老师每天自动核对，不用手动打勾～
+                完成情况由系统自动核对（不用手动打勾）；家长可以查看记录并做修正。
               </div>
             )}
           </div>
-        ) : (
-          <div style={{ maxHeight: 420, overflowY: "auto" }}>
-            {/* 概览卡片 */}
+        ) : tab === "stats" ? (
+          <div style={{ maxHeight: 430, overflowY: "auto" }}>
             <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-              <div
-                style={{
-                  flex: 1,
-                  background: "#f5f7ff",
-                  border: "1px solid #e2e8ff",
-                  borderRadius: 10,
-                  padding: "10px 12px",
-                  textAlign: "center",
-                }}
-              >
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#667eea" }}>
-                  {streak > 0 ? `🔥 ${streak}` : "—"}
+              {[
+                [`🔥 ${curStreak}`, "连续达标天数", "#667eea", "#f5f7ff", "#e2e8ff"],
+                [bestStreak > 0 ? String(bestStreak) : "—", "历史最高连续", "#22c55e", "#f0fdf4", "#bbf7d0"],
+                [
+                  rows.length ? `${Math.round(rows[0].rate * 100)}%` : "—",
+                  "最近完成率",
+                  "#f59e0b",
+                  "#fff7ed",
+                  "#fed7aa",
+                ],
+              ].map(([v, label, color, bg, border], i) => (
+                <div
+                  key={i}
+                  style={{
+                    flex: 1,
+                    background: bg as string,
+                    border: `1px solid ${border}`,
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    textAlign: "center",
+                  }}
+                >
+                  <div style={{ fontSize: 22, fontWeight: 700, color: color as string }}>{v}</div>
+                  <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{label}</div>
                 </div>
-                <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>连续达标天数</div>
-              </div>
-              <div
-                style={{
-                  flex: 1,
-                  background: "#f0fdf4",
-                  border: "1px solid #bbf7d0",
-                  borderRadius: 10,
-                  padding: "10px 12px",
-                  textAlign: "center",
-                }}
-              >
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#22c55e" }}>
-                  {bestStreak > 0 ? bestStreak : "—"}
-                </div>
-                <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>历史最高连续</div>
-              </div>
-              <div
-                style={{
-                  flex: 1,
-                  background: "#fff7ed",
-                  border: "1px solid #fed7aa",
-                  borderRadius: 10,
-                  padding: "10px 12px",
-                  textAlign: "center",
-                }}
-              >
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#f59e0b" }}>
-                  {lastOk ? `${Math.round(lastOk.rate * 100)}%` : "—"}
-                </div>
-                <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>最近完成率</div>
-              </div>
+              ))}
             </div>
-
-            {/* 近 30 天完成率柱状 */}
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>
-              近 30 天完成率
-            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>近 30 天完成率</div>
             {rows.length === 0 ? (
-              <p style={{ color: "#999", fontSize: 13, lineHeight: 1.8 }}>
-                还没有执行力数据。
-                <br />
-                开启今日计划并运行几天后，这里会显示每天的完成情况。
-              </p>
+              <p style={{ color: "#999", fontSize: 13 }}>还没有执行力数据。</p>
             ) : (
               <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 120 }}>
-                {rows.map((r, i) => {
+                {[...rows].reverse().map((r, i, arr) => {
                   const pct = Math.max(0, Math.min(1, r.rate));
                   const h = Math.max(BAR_MIN, Math.round(pct * 100));
                   const ok = pct >= RATE_OK;
                   return (
                     <div
                       key={r.date}
-                      title={`${fmtDate(r.date)}：${r.done}/${r.total}（${Math.round(pct * 100)}%）${ok ? " ✅达标" : ""}`}
+                      title={`${fmtDate(r.date)}：${r.done}/${r.total}（${Math.round(pct * 100)}%）${ok ? " ✅达标" : ""}${
+                        r.points ? ` 积分 ${r.points > 0 ? "+" : ""}${r.points}` : ""
+                      }`}
                       style={{
                         flex: 1,
                         minWidth: 4,
                         background: ok ? "#667eea" : "#cbd5e1",
                         height: `${h}px`,
                         borderRadius: "3px 3px 0 0",
-                        opacity: i === rows.length - 1 ? 1 : 0.75,
+                        opacity: i === arr.length - 1 ? 1 : 0.75,
                       }}
                     />
                   );
                 })}
               </div>
             )}
-
-            {/* 家长项 vs 自规划项 */}
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", margin: "14px 0 6px" }}>
-              家长安排 vs 自己计划
-            </div>
-            {(() => {
-              const pp = rows[rows.length - 1];
-              const showRows = rows.filter((r) => r.total > 0).slice(-7);
-              if (!pp && showRows.length === 0) {
-                return <p style={{ color: "#999", fontSize: 13 }}>暂无对比数据。</p>;
-              }
-              const cur = pp && pp.total > 0 ? pp : showRows[showRows.length - 1];
-              if (!cur) return <p style={{ color: "#999", fontSize: 13 }}>暂无对比数据。</p>;
-              const bar = (done: number, total: number) => {
-                const p = total > 0 ? done / total : 0;
-                return (
-                  <div style={{ flex: 1, height: 8, background: "#eef0f4", borderRadius: 4, overflow: "hidden" }}>
-                    <div
-                      style={{
-                        height: "100%",
-                        width: `${Math.round(p * 100)}%`,
-                        background: "#667eea",
-                        borderRadius: 4,
-                      }}
-                    />
-                  </div>
-                );
-              };
-              return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 12, color: "#b45309", width: 90, flexShrink: 0 }}>
-                      🧑‍🏫 家长安排
-                    </span>
-                    {bar(cur.parent_done, cur.parent_total)}
-                    <span style={{ fontSize: 12, color: "#666", width: 70, textAlign: "right", flexShrink: 0 }}>
-                      {cur.parent_done}/{cur.parent_total}
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 12, color: "#667eea", width: 90, flexShrink: 0 }}>
-                      🧒 自己计划
-                    </span>
-                    {bar(cur.self_done, cur.self_total)}
-                    <span style={{ fontSize: 12, color: "#666", width: 70, textAlign: "right", flexShrink: 0 }}>
-                      {cur.self_done}/{cur.self_total}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>
-                    （{fmtDate(cur.date)}，共 {cur.total} 项）
-                  </div>
+          </div>
+        ) : (
+          <div style={{ maxHeight: 430, overflowY: "auto" }}>
+            <div
+              style={{
+                background: "linear-gradient(135deg,#667eea,#764ba2)",
+                color: "white",
+                borderRadius: 12,
+                padding: "14px 16px",
+                marginBottom: 14,
+              }}
+            >
+              <div style={{ fontSize: 12, opacity: 0.85 }}>我的积分</div>
+              <div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1.2 }}>{reward?.balance ?? 0}</div>
+              {reward && (
+                <div style={{ fontSize: 11, opacity: 0.85, marginTop: 4 }}>
+                  累计获得 {reward.totals.earned} · 扣除 {reward.totals.deducted}
+                  {reward.totals.redeemed > 0 ? ` · 已兑换 ${reward.totals.redeemed}` : ""}
                 </div>
-              );
-            })()}
+              )}
+            </div>
+
+            {reward?.gateBlocked?.length ? (
+              <div
+                style={{
+                  background: "#fffbeb",
+                  border: "1px solid #fde68a",
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  color: "#92400e",
+                  marginBottom: 12,
+                  lineHeight: 1.6,
+                }}
+              >
+                本次未加分：必须完成项还没完成。
+                <br />
+                （如果必须完成项全部完成，本次就能拿到积分啦）
+              </div>
+            ) : null}
+
+            {reward?.stats?.length ? (
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>今日结算</div>
+            ) : null}
+            {reward?.stats?.map((s, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 12,
+                  color: "#555",
+                  padding: "6px 2px",
+                  borderBottom: "1px solid #f1f5f9",
+                }}
+              >
+                <span>
+                  {s.source === "exam" ? "考核" : "计划"} · {s.owner === "parent" ? "必须完成项" : "加分项"}
+                  {s.tier ? ` · ${s.tier}` : ""}
+                </span>
+                <span>
+                  {s.done}/{s.total}（{Math.round(s.rate * 100)}%）{" "}
+                  <b style={{ color: s.pointsAwarded > 0 ? "#16a34a" : s.pointsAwarded < 0 ? "#dc2626" : "#94a3b8" }}>
+                    {s.pointsAwarded > 0 ? `+${s.pointsAwarded}` : s.pointsAwarded || 0}
+                  </b>
+                </span>
+              </div>
+            ))}
+
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", margin: "14px 0 6px" }}>积分明细</div>
+            {!reward?.ledger?.length ? (
+              <p style={{ color: "#999", fontSize: 13 }}>还没有积分记录。完成计划就能拿分啦～</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {reward.ledger.map((l) => (
+                  <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#555" }}>
+                    <span style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                      {l.reason || l.reasonCode}
+                      <span style={{ color: "#b0b7c3", marginLeft: 6 }}>{fmtTime(l.ts)}</span>
+                    </span>
+                    <b style={{ color: l.type === "deduct" ? "#dc2626" : l.type === "redeem" ? "#7c3aed" : "#16a34a" }}>
+                      {l.type === "deduct" ? "-" : l.type === "redeem" ? "-" : "+"}
+                      {l.amount}
+                    </b>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

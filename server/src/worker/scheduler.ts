@@ -1,9 +1,10 @@
 /**
  * 服务端无头 worker 调度器（方案B 阶段②）。
  * 每 2 分钟 cron：遍历所有家长 → 孩子，分别跑 plan / stat / recording 三类任务。
- * - plan（carry+gen）：carry 顺延（游标=昨天）先于当日家长 todolist 同步（gen，以最新计划物化家长项）。
- * - stat（完成度统计）：事件驱动且**当天可多次**——当天有 daily 学习记录即统计（runTodoStatServer 内部
- *   自判有无 todo_items），每新增 daily 记录（孩子又学完一课）都会在 ≤2 分钟内再统计，完成情况实时反映。
+ * - plan（重复规则展开）：把 plan_recurrences 命中当天的规则展开成计划行（幂等）。
+ * - stat（三域判定 + 统计 + 积分）：每次 tick 都跑，写入全部幂等——学习/考核/生活三域判定、
+ *   到期 missed + carry 复制新行、归属日统计、积分结算（见 worker/plan-domain.ts）。
+ *   旧的事件驱动（daily 条数变化才跑）已废除——判 missed / 结算依赖时间推进，必须周期性跑。
  * - recording：仍按配置的 recording.times 时间点触发（5 分钟桶匹配，保证落点不错过）。
  * **触发源（2026-09-02 修复，勿再回退）**：优先读 scheduler_tasks + 分配（buildEffectiveChildConfig，
  * 服务端即真源，不依赖客户端推送时机）；无任务分配的孩子回退旧 settings scheduler_config（老客户端兼容）。
@@ -11,8 +12,6 @@
  */
 import cron from "node-cron";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { getServerSecret, decryptJson } from "../crypto.js";
 import { runKbQuery } from "../routes/db.js";
 import { getWorkerStateKey, setWorkerState } from "../db/sessions.js";
@@ -168,13 +167,9 @@ function alreadyRanToday(deps: WorkerSchedulerDeps, childId: string, taskType: s
   return parseRunSet(key, today).has(point);
 }
 
-/** worker 任务类型 → 任务表类型（todo 按时间点拆 gen/stat；recording 同名）。 */
-function schedulerTaskTypeFor(task: WorkerTask, cc: WorkerSchedulerChildConfig, point: string): string {
-  if (task.type === "todo") {
-    if (point === cc.todo?.genTime) return "todo_gen";
-    if (point === cc.todo?.statTime) return "todo_stat";
-    return "todo";
-  }
+/** worker 任务类型 → 任务表类型。
+ *  2026-09-10 ：todo_gen / todo_stat 已下线（计划域三表 + 动态 todolist），现在只剩 recording。 */
+function schedulerTaskTypeFor(task: WorkerTask): string {
   return task.type;
 }
 
@@ -214,7 +209,7 @@ async function runTaskAtPoint(
 
   // 执行结果写入 task_runs（家长「定时任务执行结果」查询；任务匹配 = 类型+时间点+孩子分配）
   try {
-    const matchType = schedulerTaskTypeFor(task, cc, point);
+    const matchType = schedulerTaskTypeFor(task);
     const matched = findTaskForRun(deps.db, parentId, childId, matchType, point);
     recordTaskRun(deps.db, {
       parentId,
@@ -385,15 +380,6 @@ export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
   }
 }
 
-/** 当天 daily 学习记录（stat 事件触发条件：有记录才统计；条数变化驱动重跑）。 */
-function todayDailyEntries(deps: WorkerSchedulerDeps, parentId: string, childId: string, today: string): unknown[] {
-  return (
-    runKbQuery<unknown[]>(
-      deps.dataDir, deps.db, parentId, "kb.daily_entries.queryByDate", { child_id: childId, date: today }
-    ) ?? []
-  );
-}
-
 /** 某家长的全部孩子 id。 */
 function listChildIds(db: DatabaseSync, parentId: string): string[] {
   return (db.prepare("SELECT id FROM children WHERE parent_id = ?").all(parentId) as Array<{ id: string }>).map(
@@ -401,34 +387,11 @@ function listChildIds(db: DatabaseSync, parentId: string): string[] {
   );
 }
 
-/** 孩子今天是否有活跃学习计划排期（gen 的真源触发条件：有计划才物化 todolist）。 */
-function childHasPlanToday(db: DatabaseSync, parentId: string, childId: string, today: string): boolean {
-  const r = db
-    .prepare("SELECT 1 AS x FROM study_plan_items WHERE parent_id=? AND child_id=? AND active=1 AND date=? LIMIT 1")
-    .get(parentId, childId, today);
-  return !!r;
-}
-
-/** 孩子今天是否有 todo_items（stat 的触发条件之一：有 todolist 才统计；gen 会先从计划物化）。 */
-function childHasTodosToday(dataDir: string, parentId: string, childId: string, today: string): boolean {
-  const p = join(dataDir, "kb", parentId, `${childId}.sqlite`);
-  if (!existsSync(p)) return false;
-  try {
-    const kb = new DatabaseSync(p, { readOnly: true });
-    try {
-      return !!kb.prepare("SELECT 1 AS x FROM todo_items WHERE todo_date=? LIMIT 1").get(today);
-    } finally {
-      kb.close();
-    }
-  } catch {
-    return false;
-  }
-}
+// 2026-09-10 计划域重构：childHasPlanToday / childHasTodosToday 已删（plan tick 不再物化 todolist；stat tick 每次都跑、写入幂等）。
 
 /**
- * stat tick：事件驱动，**当天可多次统计**（2026-09-04 起：runTodoStatServer 内部自判——当天有
- * todo_items 才统计，并回写计划完成态；这里用 daily 条数变化驱动重跑，孩子新学/复习完一课即在
- * ≤2 分钟内刷新）。worker_state.last_key = {date, count}，daily 新增 → 重跑。
+ * stat tick：每次 tick 都跑（计划域三表 + 积分结算每次都是幂等的；不再依赖 todo_items 是否存在的旧逻辑）。
+ * worker_state.last_key = {date, count}，daily 新增 → 触发新一轮 stat（学习/考核/生活三域 + 积分结算）。
  */
 export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
   const now = new Date();

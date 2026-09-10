@@ -11,7 +11,7 @@ import { fetchMaterialContent } from "./media-protocol";
 import { getParentMaterialsDir } from "./parent-library";
 import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { parseCourseKey } from "./kb-sqlite";
-import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, todoListTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, childSelfInfoTool } from "./custom-tools";
+import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, childSelfInfoTool } from "./custom-tools";
 import {
   assessCategoriesListTool,
   assessCategoryCreateTool,
@@ -55,11 +55,10 @@ const LEARNING_NAV_INSTRUCTIONS = `
 学习总结、生活事件等记录由**系统定时任务**统一完成（按配置的时间点从孩子当天的对话中提取，写入 daily）。**当孩子/家长希望回顾或总结某天的学习内容、生活事件时，调用 \`summarize_conversation\` 工具**（按天汇总，date 可省略，自动选最近有会话的一天；该天无会话会返回跳过说明）。各主题 method.md 的「记录」段指引照常执行。
 **孩子数据已全部存入 SQLite（kb.sqlite），数据读写一律用 kb_query / kb_insert / kb_update 结构化工具，禁止用 read/write/edit 碰数据文件**——daily/、life/、inquiries/、tasks/、tags/、learning 进度 的 markdown 只是历史归档，不要读写。**标签只能从标签定义表选**（先 kb_query 查词表与判断标准，不能自创），打在 daily 生活事件（content 里写 \`- 标签：\` 行，自动解析）与课程上。只有 materials/ / uploads/ 等内容文件才用 write/edit / read；主题教学方法与课程教学文案存家长库，一律用 parent_content 获取。
 
-### 今日计划（Todolist，ISSUE-025 一事一条）
-- 孩子的 Todolist 用 \`todo_list\` 工具读写（**一事一条**，非 markdown）。系统会从学习计划自动生成「家长安排」项并在孩子实际学完后自动核对打勾，你只需在孩子需要时协助。
-- **来源=家长（read 里标 [家长]，来自学习计划）的项绝不可删除或改标题**，只能由系统按课程实际学习核对完成；**来源=孩子（自规划）的项**孩子要求时可增删、可 check/uncheck。
-- 孩子提出「我今天想…」之类计划时：\`todo_list\`（action=add + title）新增自规划项；完成用 action=check + id；\`action=read\` 拿当天清单（每项带 id）。不要用 update/整体重写——系统只按 id 处理单条。
-- **培养时间规划**：孩子说「几点前要做完某件事」（如『我 3 点前写完数学』）时，在 \`todo_list\` action=add 里把时刻填 \`due_time\`（HH:MM，如 15:00），title 只写干净的事、**不要**把时间写进标题。之后可在 \`action=read\` 看到 ⏰ 截止；孩子到点完成、你帮他用 action=check 打勾后，系统会记真实完成时刻用于判断是否按时。
+### 今日计划（生活计划，2026-09-10 计划域重构）
+- 孩子**没有 todo_list 工具**——该工具已下线。孩子的今日「安排」由系统从三张计划表（学习/考核/生活）按窗口覆盖当天动态拼出，孩子的会话启动时由「学习总结」段落一次性预取注入（系统提示词里的「今天的学习计划」段），不需要 agent 主动查询。
+- 系统的安排由系统判定完成（生活=对话证据 / 学习=课程学习时间 / 考核=提交），agent **不允许勾选**（会引入虚报）。完成情况家长在家长端「积分」页做审计与修正。
+- 孩子当下想加新安排：转交到生活计划创建（当前无 agent 工具入口；建议话术："我跟爸妈说一声，让他们在 [积分/计划] 页加上"），不要自己生造计划项。
 
 ### 定时提醒（schedule_task，ISSUE-047）
 - 孩子让你「提醒我 X」「每天 X 点提醒我 Y」「半小时后喝水」时，用 \`schedule_task\` 工具帮他建定时提醒：到点 app 会用语音把提醒内容念出来（与上课/下课提醒同一语音链路）。
@@ -99,11 +98,10 @@ const LEARNING_NAV_INSTRUCTIONS = `
 - 孩子明确说「结束 / 退出 / 去学别的 / 今天就到这」，或主动要你「记一下 / 总结」时，你才收尾：系统会把本次场景互动转交记录注入给你（含学到的句型 / 单词 / 完成度），据此用 kb_update 更新课程状态、简短肯定即可；**场景互动进行中绝不自行写课程状态或学习总结**。
 
 ### 进度查询（省上下文，务必遵守）
-孩子的**当天学习计划（Todolist）已由系统在会话开头注入**到系统提示顶部的「孩子今天的学习计划」段——孩子一开会话就知道自己今天该学什么（含家长安排项与孩子自规划项）。确定「今天学哪课」直接看该段即可；中途想刷新当天计划或查各主题进度时：
-- 调用 \`todo_list\`（action=read，date 缺省=今天）拿到当天最新 Todolist，或调用 \`get_progress\` 工具（只回各主题摘要 learned/total/next，不含逐课明细）；
+孩子的**当天计划已由系统在会话开头注入**到系统提示顶部的「孩子今天的学习计划」段（含学习/考核/生活三域覆盖今天的行，按制定人分组）——孩子一开会话就知道自己今天该做什么。确定「今天学哪课」直接看该段即可；中途想查各主题进度时调用 \`get_progress\` 工具（只回各主题摘要 learned/total/next，不含逐课明细）；想看当天计划可读「今天的学习计划」段落，无需任何工具调用。
 - **严禁**用 read 工具去读取进度文件（\`learning/{topic}/{topic}.md\`）的正文——正文是几百行的逐课列表（如论语 500+ 课），只为取一个 \`next\` 字段而读全文会严重浪费上下文、拖慢响应；
 - 需要逐课状态（如逐课核对掌握度）时，用 kb_query 查进度（listOnly 只看课程清单），不要 read 文件；
-- 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。同一课要写多个字段（状态/掌握度/首次学习/最近复习）时，用 kb_update 的 fields 批量参数一次完成（fields 传 [{field,value},...] 数组），不要拆成多次调用。
+- 完成一课后用 kb_update 更新该课程状态即可（table 用 course），learned/total/next 自动重算——**不要手动更新这些聚合值**，也不要为了「确认 next」反复查进度。同一课要写多个字段（状态/最近复习）时，用 kb_update 的 fields 批量参数一次完成（fields 传 [{field,value},...] 数组），不要拆成多次调用。
 `;
 
 export function buildAgentsMd(profile: ChildProfile): string {
@@ -190,7 +188,7 @@ function buildParentPrompt(): string {
 
 ### 两库职责与数据流转（核心，两库都在服务端）
 1. **家长库是「教学内容」唯一真源**：主题 topics（name 中文名 / file 目录名如 lunyu / method 教学方法全文）；课程 courses（(topic,title)，含 lesson_method / material / send_material / tags / html_path / teaching_copy 教学文案全文）。
-2. **孩子库是「孩子学习数据」唯一真源**：同一套主题/课程结构，但只存「骨架 + 进度」——分配时从家长库**快照拷贝**课程（status 重置 ⬜），method 与教学文案不拷贝（孩子端需要时经 parent_content 从家长库取）；孩子学习时更新 status/mastery/first_learned/last_review，每日记录写 daily_entries。
+2. **孩子库是「孩子学习数据」唯一真源**：同一套主题/课程结构，但只存「骨架 + 进度」——分配时从家长库**快照拷贝**课程（status 重置 ⬜），method 与教学文案不拷贝（孩子端需要时经 parent_content 从家长库取）；孩子学习时更新 status/last_review（掌握度已改为「最近一次考核得分率」，由 course_status 提供，不再存列），每日记录写 daily_entries。
 3. **流转闭环**：家长建主题+课程 → 分配给孩子（快照拷贝骨架）→ 孩子学习写进度与每日记录 → 家长用 parent_stats / course_status 查统计。
 4. **边界（不要越界）**：教学内容在家长库维护；孩子进度是孩子数据、只由孩子侧写。**绝不跨库改**：不用 write/edit 改任何库（二进制读不了也写不了），读写家长库/孩子库一律走对应工具；需要读某库内容时用 parent_library_topics/courses、parent_stats、course_status，不要尝试 read .sqlite。
 
@@ -238,7 +236,7 @@ function buildParentPrompt(): string {
 - 不要手工用 write/edit 改 app-settings.json / scheduler-config.json（格式损坏会导致应用异常）——配置读写一律走 app_config。
 
 ### 4. 查看统计（只读）
-- 用 parent_stats 查：tokens（token 消耗汇总/按模型/最近记录，可只看某孩子）、progress（孩子各主题 learned/total/next + 每课状态；childId 缺省=全部孩子对比）、mastery（某主题逐课掌握度分布，需 childId，topic 缺省=全部主题）、daily（孩子每日学习记录，需 childId，可指定日期 YYYY-MM-DD）。
+- 用 parent_stats 查：tokens（token 消耗汇总/按模型/最近记录，可只看某孩子）、progress（孩子各主题 learned/total/next + 每课状态；childId 缺省=全部孩子对比）、mastery（某主题逐课学习状态分布，需 childId，topic 置空=全部主题；不含掌握度——掌握度用 course_status）、daily（孩子每日学习记录，需 childId，可指定日期 YYYY-MM-DD）。
 - 数据库是二进制，**不要用 read 读 .sqlite 文件**，查统计一律用 parent_stats。
 
 ## 三、工作方式
@@ -650,10 +648,10 @@ async function createChildSession(
   }
 
   // ISSUE-045：当天学习计划（Todolist）注入——与 AGENTS 同一「会话前远程预取 → 本地缓存 → 同步读」模式。
-  // systemPromptOverride 是 SDK 同步回调，无法 await，故先预取当天 Todolist 到本地缓存，
-  // 再同步读；当天无 Todolist 则 planContext 为空串，buildChildPrompt 不注入任何段落。
-  // 日期用 todoLocalDate()（本地时区 YYYY-MM-DD），与 todo_list 工具保持同一「今天」口径。
-  // ISSUE-029 任务2：课程子会话（英语课等）跳过 Todolist 注入——当天计划属于主会话语境，
+  // systemPromptOverride 是 SDK 同步回调，无法 await，故先预取当天计划（三表窗口覆盖当天的行）
+  // 到本地缓存，再同步读；当天无安排则 planContext 为空串，buildChildPrompt 不注入任何段落。
+  // 日期用 todoLocalDate()（本地时区 YYYY-MM-DD），与「今天」口径统一。
+  // ISSUE-029 任务2：课程子会话（英语课等）跳过当日计划注入——当天计划属于主会话语境，
   // 子会话只教本课内容，避免噪声与语言污染。
   const today = todoLocalDate();
 
@@ -751,8 +749,9 @@ async function createChildSession(
     // 仅需列在 tools 白名单即启用、无需 customTools 条目——让孩子能列自己 cwd 下的目录
     // （outputs/ 已生成 html、uploads/ 上传资料、materials/ 学习资料）以复用/展示/清理；
     // 越界防护由 learning-guard 统一拦截（ISSUE-049）。
-    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "todo_list", "schedule_task", "child_self_info"],
-    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, todoListTool, scheduleTaskTool, childSelfInfoTool],
+    // 2026-09-10 计划域重构：todo_list 工具已下线（todolist 不再落表，改为会话创建时预取三表窗口覆盖）。
+    tools: ["read", "write", "edit", "ls", "display_content", "get_date", "get_progress", "kb_query", "kb_insert", "kb_update", "create_html_lesson", "parent_content", "summarize_conversation", "page_action", "page_inspect", "schedule_task", "child_self_info"],
+    customTools: [displayContentTool, getDateTool, getProgressTool, kbQueryTool, kbInsertTool, kbUpdateTool, createHtmlLessonTool, parentContentTool, summarizeConversationTool, pageActionTool, pageInspectTool, scheduleTaskTool, childSelfInfoTool],
   });
 
   // 修复历史遗留：早期 qwen 配 reasoning:false 时，切到该模型会把会话 thinkingLevel 卡成 "off"，

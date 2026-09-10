@@ -89,8 +89,6 @@ export async function applyAllocPackage(childId: string, pkg: AllocPackage): Pro
       title: c.title,
       sort_order: c.sortOrder,
       status: "⬜",
-      mastery: "",
-      first_learned: "",
       last_review: "",
       review_count: 0,
       material: c.material,

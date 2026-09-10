@@ -11,7 +11,7 @@ interface ChildItem {
 interface SchedulerTask {
   id: string;
   name: string;
-  type: "recording" | "todo_gen" | "todo_stat" | "auto_new_session" | "reminder";
+  type: "recording" | "auto_new_session" | "reminder";
   time: string;
   extra: Record<string, unknown>;
   enabled: boolean;
@@ -43,16 +43,8 @@ const TYPE_META: Record<SchedulerTask["type"], { label: string; icon: string; hi
     icon: "📝",
     hint: "到点自动总结当天对话写入 daily（当天无对话自动跳过）",
   },
-  todo_gen: {
-    label: "今日计划 · 生成",
-    icon: "📋",
-    hint: "到点自动生成/刷新当天 Todolist（家长规定项 + 自规划项）",
-  },
-  todo_stat: {
-    label: "今日计划 · 统计",
-    icon: "✅",
-    hint: "到点核对当天 Todolist 完成度并打勾，更新「我的执行力」",
-  },
+  // 2026-09-10 计划域重构：todo_gen / todo_stat 任务已下线
+  // （todolist 不再物化；三域判定与积分结算已并入 worker 的 stat tick，每次 tick 都跑）。
   auto_new_session: {
     label: "自动新建会话",
     icon: "🔄",

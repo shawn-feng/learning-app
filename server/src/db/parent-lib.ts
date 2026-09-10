@@ -22,8 +22,7 @@ CREATE TABLE IF NOT EXISTS courses (
   title TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT '⬜',
-  mastery TEXT NOT NULL DEFAULT '',
-  first_learned TEXT NOT NULL DEFAULT '',
+  -- 2026-09-10 计划域：mastery/first_learned 已删除（掌握度=最近一次考核；学习状态=最近学习时间）
   last_review TEXT NOT NULL DEFAULT '',
   review_count INTEGER NOT NULL DEFAULT 0,
   material TEXT NOT NULL DEFAULT '',
@@ -62,7 +61,6 @@ SELECT
   ) AS next,
   COALESCE(
     MAX(CASE WHEN last_review IN ('', '-') THEN NULL ELSE last_review END),
-    MAX(CASE WHEN first_learned IN ('', '-') THEN NULL ELSE first_learned END),
     ''
   ) AS updated
 FROM courses
@@ -77,8 +75,33 @@ export function openParentLib(dataDir: string, parentId: string): DatabaseSync {
   db.exec(PARENT_SCHEMA_TABLES);
   ensureParentColumns(db);
   ensureAssessContentSchema(db); // 考核内容结构化 v2：courses.uuid/topics.method_spec/三张新表（幂等）
+  dropLegacyCourseColumns(db); // 2026-09-10：mastery/first_learned 下线（先于建视图）
   db.exec(PARENT_SCHEMA_VIEWS);
   return db;
+}
+
+/**
+ * 家长库 courses 旧列下线（幂等，2026-09-10 计划域）：删 mastery / first_learned。
+ * 先删依赖 first_learned 的 topic_progress 视图，删列后由 PARENT_SCHEMA_VIEWS 重建。
+ */
+function dropLegacyCourseColumns(db: DatabaseSync): void {
+  let cols: string[] = [];
+  try {
+    cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  } catch {
+    return;
+  }
+  const targets = ["mastery", "first_learned"].filter((c) => cols.includes(c));
+  if (!targets.length) return;
+  db.exec("DROP VIEW IF EXISTS topic_progress;");
+  for (const c of targets) {
+    try {
+      db.exec(`ALTER TABLE courses DROP COLUMN ${c}`);
+      console.log(`[parent-lib] courses 删列 ${c}（2026-09-10 计划域）`);
+    } catch {
+      /* 忽略：版本不支持则保留（读取侧已不使用） */
+    }
+  }
 }
 
 /** 家长库考核列就地迁移（幂等）：topics.assess_method（考核方法说明）、courses.assess_rubric（每课考核要点）。 */

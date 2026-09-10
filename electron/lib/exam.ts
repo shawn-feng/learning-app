@@ -2,7 +2,7 @@
  * 学习考核客户端（EXAM-REQUIREMENTS.md）——主进程侧：与服务端 /api/v1/exam/* 对接。
  * 出卷与判分在客户端（本地 LLM 独立内存 session）完成，本模块只负责：
  *   取考核配置（知识点 + assess_method/assess_rubric + 判分 prompt，判分口径服务端单一真源）
- *   上传语音（files 通道）→ 提交考核结果（写服务端 exam_attempts + 回写孩子 exam_mastery）
+ *   上传语音（files 通道）→ 提交考核结果（写服务端 exam_attempts；掌握度由服务端按最近一次考核聚合，不再回写孩子库）
  *   家长查询考核记录 / 每课程考核记录表 / 播放原音。
  */
 import { currentSessionToken } from "./client-data";
@@ -331,14 +331,21 @@ export interface CourseStatusItem {
   title: string;
   topicType: string;
   status: string;
+  /** @deprecated 2026-09-10 计划域：引导掌握度已下线，恒为空串；改看 lastExamRate */
   mastery: string;
+  /** @deprecated 首次学习时间已下线（恒为空），改看 lastLearnedAt */
   firstLearned: string;
   lastReview: string;
   reviewCount: number;
   lastExamAt: string;
   examCount: number;
+  /** @deprecated 同 mastery；改看 lastExamRate */
   examMastery: string;
   examRate: number;
+  /** **掌握度**：最近一次考核得分率 0~1（null=未考过） */
+  lastExamRate?: number | null;
+  /** **学习状态**：最近学习时间（YYYY-MM-DD） */
+  lastLearnedAt?: string;
   planReviewAt: string;
   focus: string[];
 }

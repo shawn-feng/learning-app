@@ -1,19 +1,22 @@
 /**
  * 定时任务管理（新模型）数据访问：任务定义 / 孩子分配 / 执行结果（task_runs）。
  * 语义：先创建任务（scheduler_tasks）→ 再分配给孩子（scheduler_task_assignments）→
- * 执行由 worker（recording/todo）与客户端（auto_new_session）进行，每次执行写 task_runs。
- * effective-config = 任务+分配 → 每孩子有效配置（recording/todo/autoNewSession），
+ * 执行由 worker（recording）与客户端（auto_new_session / reminder）进行，每次执行写 task_runs。
+ * effective-config = 任务+分配 → 每孩子有效配置（recording/autoNewSession），
  * 客户端据此合并 classTimes/archiveLimit 推回 scheduler_config，执行链路不变。
+ *
+ * 2026-09-10 计划域重构：todo_gen / todo_stat 已下线（计划域三表 + 动态 todolist，不再物化）；
+ * SCHEDULER_TASK_TYPES 不再列出，便于家长中心「定时任务」页不再呈现这两个类型。
+ * 旧数据库里若仍存在 todo_gen / todo_stat 任务行，仅在 effective config 旧路径中**忽略**（不影响 recording / auto_new_session）。
  */
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 export type SchedulerTaskType = "recording" | "todo_gen" | "todo_stat" | "auto_new_session" | "reminder";
 
+/** 家长中心「定时任务」页可创建的任务类型（todo_gen / todo_stat 已下线，不再创建）。 */
 export const SCHEDULER_TASK_TYPES: SchedulerTaskType[] = [
   "recording",
-  "todo_gen",
-  "todo_stat",
   "auto_new_session",
   "reminder",
 ];
@@ -40,6 +43,7 @@ export interface SchedulerTaskRow {
 }
 
 export interface EffectiveChildConfig {
+  /** 2026-09-10：todo 域（genTime/statTime）字段保留 = 兼容历史 scheduler_config 读取 / 写入；新代码不应该再读写它。 */
   recording: { enabled: boolean; times: string[]; onNewSession: boolean };
   todo: { enabled: boolean; genTime: string; statTime: string };
   autoNewSession: { enabled: boolean; hour: number; minute: number };

@@ -94,7 +94,7 @@ export function openDb(dataDir: string): DatabaseSync {
       id TEXT PRIMARY KEY,
       parent_id TEXT NOT NULL,
       name TEXT NOT NULL,
-      type TEXT NOT NULL,             -- recording | todo_gen | todo_stat | auto_new_session | reminder
+      type TEXT NOT NULL,             -- recording | auto_new_session | reminder（todo_gen / todo_stat 已下线，仅留作历史行说明）
       time TEXT NOT NULL,             -- HH:mm（daily/weekly/interval 用；once 也填目标时刻便于展示）
       extra_json TEXT NOT NULL DEFAULT '{}',
       enabled INTEGER NOT NULL DEFAULT 1,

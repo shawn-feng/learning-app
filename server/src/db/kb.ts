@@ -24,9 +24,8 @@ CREATE TABLE IF NOT EXISTS courses (
   uuid TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT '⬜',
-  mastery TEXT NOT NULL DEFAULT '',
-  exam_mastery TEXT NOT NULL DEFAULT '',
-  first_learned TEXT NOT NULL DEFAULT '',
+  -- 2026-09-10 计划域：mastery/exam_mastery/first_learned 已删除
+  -- 掌握度 = course_progress 视图（最近一次考核）；学习状态 = 最近学习时间（last_review 语义扩展）
   last_review TEXT NOT NULL DEFAULT '',
   review_count INTEGER NOT NULL DEFAULT 0,
   material TEXT NOT NULL DEFAULT '',
@@ -53,43 +52,8 @@ CREATE TABLE IF NOT EXISTS tags (
   criteria TEXT NOT NULL DEFAULT ''
 );
 
--- ISSUE-025 重构（2026-09-04）：孩子 Todolist 从「一天一行 markdown」改为「一事一行」。
--- 每行 = 一条待办：source=parent（来自学习计划，由 gen 生成/stat 打勾，孩子只读）/ child（孩子自规划，孩子可增删）。
--- plan_id 关联主库 study_plan_items.id（家长规定项），stat 据此精确回写完成态。
--- status=pending|done；done_at=完成日期(YYYY-MM-DD，stat/recording 打勾写)；due_time=约定截止 HH:MM(孩子自规划可带)；
--- done_time=真实完成时刻(ISO，打勾时写，用于「是否按时」判定)；note=备注（顺延原因/孩子说明）。
-CREATE TABLE IF NOT EXISTS todo_items (
-  id TEXT PRIMARY KEY,
-  child_id TEXT NOT NULL DEFAULT '',
-  todo_date TEXT NOT NULL,
-  title TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'child',
-  plan_id TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'pending',
-  done_at TEXT NOT NULL DEFAULT '',
-  due_time TEXT NOT NULL DEFAULT '',
-  done_time TEXT NOT NULL DEFAULT '',
-  note TEXT NOT NULL DEFAULT '',
-  sort INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_todo_child_date ON todo_items(child_id, todo_date);
-CREATE INDEX IF NOT EXISTS idx_todo_plan ON todo_items(plan_id);
-
--- ISSUE-025：每日完成统计（统计点 agent 打完勾后主进程解析落库，供「我的执行力」趋势）
-CREATE TABLE IF NOT EXISTS child_todo_stats (
-  date TEXT PRIMARY KEY,
-  total INTEGER NOT NULL DEFAULT 0,
-  done INTEGER NOT NULL DEFAULT 0,
-  parent_total INTEGER NOT NULL DEFAULT 0,
-  parent_done INTEGER NOT NULL DEFAULT 0,
-  self_total INTEGER NOT NULL DEFAULT 0,
-  self_done INTEGER NOT NULL DEFAULT 0,
-  rate REAL NOT NULL DEFAULT 0,
-  streak INTEGER NOT NULL DEFAULT 0,
-  updated TEXT NOT NULL DEFAULT ''
-);
+-- 2026-09-10 计划域重构：todo_items / child_todo_stats 已下线（todolist 动态查三张计划表；统计落 reward_daily_stats）。
+-- 旧库中的这两张表不主动删除，供 migrate-plan-domain.mts 迁移读取，迁完即弃用。
 
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -320,7 +284,6 @@ SELECT
   ) AS next,
   COALESCE(
     MAX(CASE WHEN last_review IN ('', '-') THEN NULL ELSE last_review END),
-    MAX(CASE WHEN first_learned IN ('', '-') THEN NULL ELSE first_learned END),
     ''
   ) AS updated
 FROM courses
@@ -348,7 +311,9 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   fs.mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, `${childId}.sqlite`));
   db.exec("PRAGMA journal_mode = WAL;");
-  // Todolist v2（2026-09-04）：child_todos(items_md) → todo_items(一事一行)。旧表不兼容直接 DROP。
+  // 2026-09-10 计划域重构：child_todos 是更早 v2（2026-09-04）的 Todolist 表，已被 todolist v2 → todo_items 替代，
+  // 本次再迁入 todo_items → 三张计划表（学习/考核/生活）+ reward_daily_stats 之后，child_todos 也彻底不再需要。
+  // 旧表若存在则直接 DROP（迁移幂等）。
   try {
     const oldSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='child_todos'").get() as
       | { sql?: string }
@@ -360,8 +325,7 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
     // 忽略
   }
   db.exec(KB_SCHEMA_TABLES);
-  ensureKbExamColumn(db);
-  ensureTodoTimeColumns(db);
+  dropLegacyCourseColumns(db); // mastery/exam_mastery/first_learned（必须在建视图前，视图不再引用它们）
   ensureCourseUuidColumn(db);
   db.exec(KB_PLAN_SCHEMA_TABLES); // 计划域 + 积分域（2026-09-10）
   ensureDailyPlanColumns(db);
@@ -393,26 +357,27 @@ function ensureDailyPlanColumns(db: DatabaseSync): void {
   }
 }
 
-/** 孩子库 todo_items 时间列就地迁移（幂等）：加 due_time(约定截止 HH:MM)/done_time(真实完成时刻 ISO)。 */
-function ensureTodoTimeColumns(db: DatabaseSync): void {
+/**
+ * 孩子库 courses 旧列下线（幂等，2026-09-10 计划域）：
+ * 删除 mastery / exam_mastery / first_learned —— 掌握度改由 course_progress 视图取「最近一次考核」，
+ * 学习状态只报最近学习时间（last_review）。删列前先删依赖 first_learned 的视图，删后重建。
+ */
+function dropLegacyCourseColumns(db: DatabaseSync): void {
   let cols: string[] = [];
   try {
-    cols = (db.prepare("PRAGMA table_info(todo_items)").all() as Array<{ name: string }>).map((c) => c.name);
+    cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
   } catch {
-    return; // todo_items 未建（无任何 todo 场景），忽略
+    return; // courses 不存在则忽略
   }
-  if (!cols.includes("due_time")) {
-    try { db.exec("ALTER TABLE todo_items ADD COLUMN due_time TEXT NOT NULL DEFAULT ''"); } catch { /* 忽略 */ }
-  }
-  if (!cols.includes("done_time")) {
-    try { db.exec("ALTER TABLE todo_items ADD COLUMN done_time TEXT NOT NULL DEFAULT ''"); } catch { /* 忽略 */ }
-  }
-}
-
-/** 孩子库考核列就地迁移（幂等）：courses.exam_mastery（考核掌握度，与引导 mastery 双轨）。 */
-function ensureKbExamColumn(db: DatabaseSync): void {
-  const cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
-  if (!cols.includes("exam_mastery")) {
-    db.exec("ALTER TABLE courses ADD COLUMN exam_mastery TEXT NOT NULL DEFAULT ''");
+  const targets = ["mastery", "exam_mastery", "first_learned"].filter((c) => cols.includes(c));
+  if (!targets.length) return;
+  db.exec("DROP VIEW IF EXISTS topic_progress;");
+  for (const c of targets) {
+    try {
+      db.exec(`ALTER TABLE courses DROP COLUMN ${c}`);
+      console.log(`[kb] courses 删列 ${c}（2026-09-10 计划域：掌握度口径改为最近一次考核）`);
+    } catch {
+      /* SQLite 版本不支持 DROP COLUMN 则保留（读取侧已不使用） */
+    }
   }
 }

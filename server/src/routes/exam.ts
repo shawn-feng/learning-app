@@ -110,14 +110,6 @@ function rowToAttempt(r: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-/** 考核掌握度等级（与引导 mastery 双轨；写入孩子 kb courses.exam_mastery）。 */
-function masteryLevel(rate: number): string {
-  if (rate >= 0.9) return "熟练";
-  if (rate >= 0.7) return "良好";
-  if (rate >= 0.5) return "学习中";
-  return "薄弱";
-}
-
 // ==================== 考核 v2：固定频率配置 / 排期生成（EXAM-REQUIREMENTS §14） ====================
 
 interface FixedExamConfig {
@@ -383,16 +375,19 @@ function selectScopeCourses(
         .all(t) as Array<{ title: string; assess_rubric: string }>;
       for (const r of rows) {
         if (courseList.length && !courseList.includes(r.title)) continue;
+        // 2026-09-10 计划域：mastery/exam_mastery/first_learned 列已删。
+        // firstLearned 仅作为「已学无日期」标记（status='✅'），mastery/examMastery 恒空。
         const kbRow = kb
-          .prepare("SELECT mastery, exam_mastery, first_learned, last_review FROM courses WHERE topic = ? AND title = ?")
-          .get(t, r.title) as { mastery?: string; exam_mastery?: string; first_learned?: string; last_review?: string } | undefined;
+          .prepare("SELECT status, last_review FROM courses WHERE topic = ? AND title = ?")
+          .get(t, r.title) as { status?: string; last_review?: string } | undefined;
+        const noDate = String(kbRow?.status ?? "").trim() === "✅" && !(kbRow?.last_review ?? "");
         out.push({
           title: r.title,
           topic: t,
-          firstLearned: kbRow?.first_learned ?? "",
+          firstLearned: noDate ? "✅" : "",
           lastReview: kbRow?.last_review ?? "",
-          mastery: kbRow?.mastery ?? "",
-          examMastery: kbRow?.exam_mastery ?? "",
+          mastery: "",
+          examMastery: "",
           assessRubric: r.assess_rubric,
         });
       }
@@ -433,25 +428,26 @@ function listLearnedCourseMeta(
         return [r.topic_key, type] as const;
       })
     );
+    // 2026-09-10：掌握度列已删；候选口径 = 有学习/复习时间（last_review）或已学标记（status='✅'）
     const rows = kb
       .prepare(
-        "SELECT topic, title, mastery, exam_mastery, first_learned, last_review, status FROM courses WHERE (first_learned != '' OR last_review != '' OR status = '✅') ORDER BY topic, sort_order, title"
+        "SELECT topic, title, last_review, status FROM courses WHERE (last_review != '' OR status = '✅') ORDER BY topic, sort_order, title"
       )
-      .all() as Array<{ topic: string; title: string; mastery: string; exam_mastery: string; first_learned: string; last_review: string; status: string }>;
+      .all() as Array<{ topic: string; title: string; last_review: string; status: string }>;
     const lastExam = lastExamAtByCourse(db, childId);
     const reinforce = latestReinforcePlan(db, childId);
     return rows.map((r) => {
-      const fl = r.first_learned ?? "";
-      const learnedNoDate = String(r.status ?? "").trim() === "✅" && !fl;
+      const lr = r.last_review ?? "";
+      const learnedNoDate = String(r.status ?? "").trim() === "✅" && !lr;
       return {
         topic: r.topic,
         topicName: topicNames.get(r.topic) ?? r.topic,
         title: r.title,
         topicType: childTopicTypes.get(r.topic) ?? "",
-        firstLearned: learnedNoDate ? "✅" : fl,
-        lastReview: r.last_review ?? "",
-        mastery: r.mastery ?? "",
-        examMastery: r.exam_mastery ?? "",
+        firstLearned: learnedNoDate ? "✅" : "", // 仅作「已学无日期」标记，不再表示首次学习时间
+        lastReview: lr,
+        mastery: "",
+        examMastery: "",
         lastExamAt: lastExam.get(r.title) ?? "",
         planReviewAt: reinforce[r.title]?.planReviewAt ?? "",
       };
@@ -542,27 +538,23 @@ function listCourseStatus(
     }
     const rows = kb
       .prepare(
-        "SELECT topic, title, status, mastery, exam_mastery, first_learned, last_review, review_count FROM courses ORDER BY topic, sort_order, title"
+        "SELECT topic, title, status, last_review, review_count FROM courses ORDER BY topic, sort_order, title"
       )
       .all() as Array<{
         topic: string;
         title: string;
         status: string;
-        mastery: string;
-        exam_mastery: string;
-        first_learned: string;
         last_review: string;
         review_count: number;
       }>;
     const out: Array<Record<string, unknown>> = [];
     for (const r of rows) {
-      const fl = r.first_learned ?? "";
       const lr = r.last_review ?? "";
-      const learnedNoDate = String(r.status ?? "").trim() === "✅" && !fl;
+      const learnedNoDate = String(r.status ?? "").trim() === "✅" && !lr;
       const es = examStat.get(r.title);
       const rp = reinforce[r.title];
       // 仅纳入有学习/复习/考核信号的课程（复习计划制定聚焦于已学课程）
-      if (!fl && !lr && String(r.status ?? "").trim() !== "✅" && !es) continue;
+      if (!lr && String(r.status ?? "").trim() !== "✅" && !es) continue;
       // 掌握度口径（2026-09-10 重构）：**只取最近一次考核**（progress.lastExamRate）；
       // 学习状态只报最近学习时间（progress.lastLearnedAt）。旧列 mastery/exam_mastery 不再作为口径。
       const pg = progress.get(r.title);
@@ -574,12 +566,12 @@ function listCourseStatus(
         topicType: childTopicTypes.get(r.topic) ?? "",
         status: r.status ?? "⬜",
         // ↓ 新口径
-        lastLearnedAt: pg?.lastLearnedAt || lr || fl,
+        lastLearnedAt: pg?.lastLearnedAt || lr,
         lastExamRate, // 最近一次考核得分率（0~1），null=未考过
         lastExamAtNew: pg?.lastExamAt ?? "",
-        // ↓ 兼容保留（家长端旧字段；mastery 已无口径意义，恒空）
+        // ↓ 兼容保留（家长端旧字段）：mastery 恒空（已无该列）；firstLearned 仅作「已学无日期」标记
         mastery: "",
-        firstLearned: learnedNoDate ? "✅" : fl,
+        firstLearned: learnedNoDate ? "✅" : "",
         lastReview: lr,
         reviewCount: Number(r.review_count) || 0,
         lastExamAt: pg?.lastExamAt || es?.lastAt || "",
@@ -673,13 +665,10 @@ function listPlanCourseMeta(
     const unmatched: string[] = [];
     for (const [title, planDate] of want) {
       const hit = kb
-        .prepare("SELECT topic, status, mastery, exam_mastery, first_learned, last_review FROM courses WHERE title = ?")
+        .prepare("SELECT topic, status, last_review FROM courses WHERE title = ?")
         .all(title) as Array<{
         topic: string;
         status: string;
-        mastery: string;
-        exam_mastery: string;
-        first_learned: string;
         last_review: string;
       }>;
       if (!hit.length) {
@@ -687,16 +676,16 @@ function listPlanCourseMeta(
         continue;
       }
       const r = hit[0]; // 同名跨主题歧义罕见：取首行（与 fetchCoursesWithRubric 的 title 口径一致）
-      const fl = r.first_learned ?? "";
+      const lr = r.last_review ?? "";
       courses.push({
         topic: r.topic,
         topicName: topicNames.get(r.topic) ?? r.topic,
         title,
         topicType: childTopicTypes.get(r.topic) ?? "",
-        firstLearned: String(r.status ?? "").trim() === "✅" && !fl ? "✅" : fl,
-        lastReview: r.last_review ?? "",
-        mastery: r.mastery ?? "",
-        examMastery: r.exam_mastery ?? "",
+        firstLearned: String(r.status ?? "").trim() === "✅" && !lr ? "✅" : "",
+        lastReview: lr,
+        mastery: "",
+        examMastery: "",
         lastExamAt: lastExam.get(title) ?? "",
         planReviewAt: "",
         planDate,
@@ -734,17 +723,18 @@ function fetchCoursesWithRubric(
     const out: Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string; assessMethod: string }> = [];
     for (const t of titles) {
       const kbRow = kb
-        .prepare("SELECT topic, mastery, exam_mastery, first_learned, last_review FROM courses WHERE title = ?")
-        .get(t) as { topic?: string; mastery?: string; exam_mastery?: string; first_learned?: string; last_review?: string } | undefined;
+        .prepare("SELECT topic, status, last_review FROM courses WHERE title = ?")
+        .get(t) as { topic?: string; status?: string; last_review?: string } | undefined;
       if (!kbRow) continue; // 孩子库无此课 → 跳过
       const topic = String(kbRow.topic ?? "");
+      const lr2 = String(kbRow.last_review ?? "");
       out.push({
         title: t,
         topic,
-        firstLearned: String(kbRow.first_learned ?? ""),
-        lastReview: String(kbRow.last_review ?? ""),
-        mastery: String(kbRow.mastery ?? ""),
-        examMastery: String(kbRow.exam_mastery ?? ""),
+        firstLearned: String(kbRow.status ?? "").trim() === "✅" && !lr2 ? "✅" : "",
+        lastReview: lr2,
+        mastery: "",
+        examMastery: "",
         assessRubric: rubricMap.get(topic + "::" + t) ?? "",
         assessMethod: methodMap.get(topic) ?? "",
       });
@@ -792,17 +782,18 @@ export function buildSelectionPrompt(
     for (const c of candidates) bump(c.topic, c.topicName, "window");
   } else {
     for (const c of candidates) {
-      const fl = c.firstLearned || "";
+      // 2026-09-10：不再有「首次学习时间」——周期归属统一按最近学习时间（lastReview）；✅=已学无日期，归「更早」
       const lr = c.lastReview || "";
+      const noDate = c.firstLearned === "✅";
       if (freq === "monthly") {
-        const inMonth = (fl >= monthStart && fl <= scheduledDay) || (lr >= monthStart && lr <= scheduledDay);
+        const inMonth = lr >= monthStart && lr <= scheduledDay;
         if (inMonth) bump(c.topic, c.topicName, "month");
-        else if (fl === "✅" || (fl !== "" && fl < monthStart)) bump(c.topic, c.topicName, "prev"); // ✅=已学无日期（更早学习）
+        else if (noDate || (lr !== "" && lr < monthStart)) bump(c.topic, c.topicName, "prev");
       } else if (freq === "custom") {
         bump(c.topic, c.topicName, "window"); // 自定义：统计全部候选，由规则决定挑多少
       } else {
         const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
-        if ((fl >= winStart && fl <= scheduledDay) || (lr >= winStart && lr <= scheduledDay)) bump(c.topic, c.topicName, "window");
+        if (lr >= winStart && lr <= scheduledDay) bump(c.topic, c.topicName, "window");
       }
     }
   }
@@ -827,15 +818,15 @@ export function buildSelectionPrompt(
   const flagByTitle = new Map<string, string>();
   if (freq !== "custom" && !planWin) {
     for (const c of candidates) {
-      const fl = c.firstLearned || "";
       const lr = c.lastReview || "";
+      const noDate = c.firstLearned === "✅";
       if (freq === "monthly") {
-        const inMonth = (fl >= monthStart && fl <= scheduledDay) || (lr >= monthStart && lr <= scheduledDay);
+        const inMonth = lr >= monthStart && lr <= scheduledDay;
         if (inMonth) flagByTitle.set(c.title, "★ 本月");
-        else if (fl === "✅" || (fl !== "" && fl < monthStart)) flagByTitle.set(c.title, "◐ 本月前"); // ✅=已学无日期（更早学习）
+        else if (noDate || (lr !== "" && lr < monthStart)) flagByTitle.set(c.title, "◐ 本月前");
       } else {
         const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
-        if ((fl >= winStart && fl <= scheduledDay) || (lr >= winStart && lr <= scheduledDay)) flagByTitle.set(c.title, "★ 本周期");
+        if (lr >= winStart && lr <= scheduledDay) flagByTitle.set(c.title, "★ 本周期");
       }
     }
   }
@@ -850,10 +841,7 @@ export function buildSelectionPrompt(
         i + 1 + ". [" + c.topicName + "] " + c.title,
         planWin ? "计划日期:" + (c.planDate || "-") : null,
         "主题类型:" + (c.topicType || "-"),
-        "首次学习:" + (c.firstLearned || "-"),
-        "最近复习:" + (c.lastReview || "-"),
-        "引导掌握度:" + (c.mastery || "-"),
-        "考核掌握度:" + (c.examMastery || "-"),
+        "最近学习:" + (c.lastReview || (c.firstLearned === "✅" ? "✅（无日期）" : "-")),
         "上次考核:" + (c.lastExamAt || "-"),
         planWin ? null : "计划复习:" + (c.planReviewAt || "-"),
       ].filter((x): x is string => x !== null);
@@ -1030,9 +1018,9 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       for (const t of topics) {
         const learned = kb
           .prepare(
-            "SELECT title, first_learned, last_review, mastery FROM courses WHERE topic = ? AND (first_learned != '' OR last_review != '' OR status = '✅') ORDER BY sort_order, title"
+            "SELECT title, last_review FROM courses WHERE topic = ? AND (last_review != '' OR status = '✅') ORDER BY sort_order, title"
           )
-          .all(t.topic_key) as Array<{ title: string; first_learned: string; last_review: string; mastery: string }>;
+          .all(t.topic_key) as Array<{ title: string; last_review: string }>;
         if (learned.length === 0) continue;
         const rubrics = parent
           .prepare("SELECT title, assess_rubric FROM courses WHERE topic = ? AND assess_rubric != ''")
@@ -1044,9 +1032,9 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           assessMethod: t.assess_method,
           courses: learned.map((c) => ({
             title: c.title,
-            firstLearned: c.first_learned ?? "",
+            firstLearned: "", // 2026-09-10：首次学习时间已下线
             lastReview: c.last_review ?? "",
-            mastery: c.mastery ?? "",
+            mastery: "", // 掌握度改由 course_progress 视图（最近一次考核）输出
             assessRubric: rubricMap.get(c.title) ?? "",
           })),
         });
@@ -1334,25 +1322,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         String(body.scheduleId ?? ""),
         now
       );
-    // 掌握度双轨：把本次课程聚合率回写孩子 kb courses.exam_mastery（引导 mastery 不动）
-    const cm = body.courseMastery as Record<string, { rate?: number }> | null;
-    if (cm && typeof cm === "object") {
-      const kb = openKb(deps.config.dataDir, parentId, childId);
-      try {
-        const topic = String(body.topic ?? "");
-        for (const [course, m] of Object.entries(cm)) {
-          const rate = typeof m?.rate === "number" ? m.rate : 0;
-          const level = masteryLevel(rate);
-          kb.prepare("UPDATE courses SET exam_mastery = ? WHERE topic = ? AND title = ?").run(
-            level,
-            topic,
-            course
-          );
-        }
-      } finally {
-        kb.close();
-      }
-    }
+    // 2026-09-10 计划域：掌握度不再回写 courses（该表已无 mastery/exam_mastery 列）。
+    // 掌握度 = course_progress 视图（按 exam_plan_courses / 最近一次考核聚合），此处只保留 attempt 记录。
     // 考核 v2：关联排期 → 标记完成（done + attempt_id）
     const scheduleId = String(body.scheduleId ?? "");
     if (scheduleId) {

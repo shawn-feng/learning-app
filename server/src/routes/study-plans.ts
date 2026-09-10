@@ -41,7 +41,7 @@ export interface StudyPlanRowDto {
   origin: string;
   status: string;
   doneAt: string;
-  done: boolean; // 服务端按 child kb 课程当天活动判定（new 看 first_learned / review 看 last_review == date）
+  done: boolean; // 服务端按 plan.status 判定（worker 在孩子当天实际学/复习完对应课程后写入 done_at，已升级口径）
   active: number;
   updatedAt: string;
 }
@@ -91,20 +91,6 @@ function parseItems(raw: unknown): PlanItemInput[] | null {
     });
   }
   return items;
-}
-
-interface PlanRow {
-  id: string;
-  child_id: string;
-  date: string;
-  topic_key: string;
-  course_name: string;
-  mode: string;
-  origin: string;
-  status: string;
-  done_at: string;
-  active: number;
-  updated_at: string;
 }
 
 /**
@@ -181,95 +167,8 @@ function toPlanDto(r: SpRow): StudyPlanRowDto {
   };
 }
 
-function fetchRow(db: DatabaseSync, parentId: string, id: string): PlanRow | undefined {
-  return db.prepare("SELECT * FROM study_plan_items WHERE id = ? AND parent_id = ?").get(id, parentId) as
-    | PlanRow
-    | undefined;
-}
-
-/**
- * 读孩子库课程状态（学过没学过/首次/最近复习），供按行 mode 判完成（2026-09-04 语义，与 worker stat 同口径）：
- *  - mode=new → 课程标注学过（状态 ✅ 或有首次学习日期）即 done，**不限日期**（提前学也算）；
- *  - mode=review → courses.last_review == 该行日期 才 done（复习必须当天）。
- * 找不到对应课程 → done=false（排了但课程表没有，视为未完成）。
- *
- * key 用**课程名(title)**匹配（与 worker 的 courseByTitle 同口径）——计划行 topic_key 常为空
- * （家长 agent 排课时未填），若用 topic_key+course_name 复合 key 会查不到 → 面板误显示未完成。
- */
-function loadCourseStates(
-  dataDir: string,
-  parentId: string,
-  childId: string
-): Map<string, { status: string; first_learned: string; last_review: string }> {
-  const out = new Map<string, { status: string; first_learned: string; last_review: string }>();
-  try {
-    const db = openKb(dataDir, parentId, childId);
-    try {
-      const rows = db
-        .prepare("SELECT topic, title, status, first_learned, last_review FROM courses")
-        .all() as Array<{ topic: string; title: string; status: string; first_learned: string; last_review: string }>;
-      for (const c of rows) {
-        const title = (c.title || "").trim();
-        if (!title) continue;
-        if (!out.has(title)) {
-          out.set(title, { status: c.status || "", first_learned: c.first_learned || "", last_review: c.last_review || "" });
-        }
-      }
-    } finally {
-      db.close();
-    }
-  } catch {
-    // 读不到课程表则不判定（保持未完成）
-  }
-  return out;
-}
-
-/** 以课程库为锚匹配计划行课程（与 worker 同口径）：找 title 是 course_name（最长）前缀的课程，
- * 兼容「××章（上）/（下）」等拆章排法——课程库整章 title 必命中。 */
-function lookupState(
-  states: Map<string, { status: string; first_learned: string; last_review: string }>,
-  planCourseName: string
-): { status: string; first_learned: string; last_review: string } | undefined {
-  const name = (planCourseName || "").trim();
-  if (!name) return undefined;
-  let best: { status: string; first_learned: string; last_review: string } | undefined;
-  let bestLen = -1;
-  for (const [title, st] of states) {
-    if (title && name.startsWith(title) && title.length > bestLen) {
-      best = st;
-      bestLen = title.length;
-    }
-  }
-  return best;
-}
-
-/** 单行完成判定（与 worker stat 的 planCourseDone 同口径）。 */
-function planRowDone(r: PlanRow, states: Map<string, { status: string; first_learned: string; last_review: string }>): boolean {
-  const c = lookupState(states, r.course_name);
-  if (!c) return false;
-  if (r.mode === "review") return (c.last_review || "").trim() === r.date;
-  return (c.status || "").trim() === "✅" || !!(c.first_learned || "").trim();
-}
-
-function toDto(
-  r: PlanRow,
-  states: Map<string, { status: string; first_learned: string; last_review: string }>
-): StudyPlanRowDto {
-  return {
-    id: r.id,
-    childId: r.child_id,
-    date: r.date,
-    topicKey: r.topic_key,
-    courseName: r.course_name,
-    mode: r.mode,
-    origin: r.origin,
-    status: r.status,
-    doneAt: r.done_at,
-    done: planRowDone(r, states),
-    active: r.active,
-    updatedAt: r.updated_at,
-  };
-}
+// 2026-09-10 计划域重构：旧的主库读取与「按课程学习痕迹判完成」已删。
+// 完成态现由 worker/plan-domain.ts 在 stat tick 里统一判定并写入 study_plans.status，本路由只读结果。
 
 export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDeps): void {
   // 列表（家长回显 / 只读面板）。可 date 精确、from/to 段过滤。

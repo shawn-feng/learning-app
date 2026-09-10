@@ -189,7 +189,7 @@ function applySignals(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): numb
 
   // ---------- 学习域 ----------
   const courses = kb
-    .prepare("SELECT topic, title, COALESCE(NULLIF(last_review,''), first_learned) AS learned_at FROM courses")
+    .prepare("SELECT topic, title, last_review AS learned_at FROM courses WHERE last_review != ''")
     .all() as Array<{ topic: string; title: string; learned_at: string | null }>;
   const studyPlans = kb
     .prepare("SELECT id, topic_key, course_uuid, course_name, start_at, due_at FROM study_plans WHERE status = 'pending' AND active = 1")

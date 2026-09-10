@@ -306,10 +306,20 @@ const api = {
   eventPollConfigGet: () => ipcRenderer.invoke("eventpoll:config:get"),
   eventPollConfigSet: (cfg: any) => ipcRenderer.invoke("eventpoll:config:set", cfg),
 
-  // ISSUE-025：孩子 Todolist（今日计划）——孩子端「今日计划」弹框与「我的执行力」趋势数据源
+  // 孩子端「今日计划」弹框 + 「我的执行力」趋势（2026-09-10 计划域重构版）：
+  // todoGet 走 /api/v1/plans/today（三表窗口覆盖当天的行）；
+  // todoStatsList 走 /api/v1/rewards/:childId（reward_daily_stats 按日汇总）。
   todoGet: (childId: string, date?: string) => ipcRenderer.invoke("todo:get", childId, date),
   todoStatsList: (childId: string, range?: number) =>
     ipcRenderer.invoke("todo:stats:list", childId, range),
+  // 计划域 / 积分域（2026-09-10）
+  rewardGet: (childId: string, opts?: { date?: string; limit?: number; days?: number }) =>
+    ipcRenderer.invoke("reward:get", childId, opts),
+  rewardConfigGet: (childId: string) => ipcRenderer.invoke("reward:config:get", childId),
+  rewardConfigSet: (childId: string, config: Record<string, unknown>) =>
+    ipcRenderer.invoke("reward:config:set", childId, config),
+  planSetStatus: (plan: { childId: string; planId: string; kind: string; action: string; note?: string }) =>
+    ipcRenderer.invoke("plan:setStatus", plan),
 
   // ISSUE-033：学习计划（家长端只读面板数据源；编辑走家长对话 study_plan_* 工具）
   studyPlanList: (childId: string, opts?: { from?: string; to?: string }) =>

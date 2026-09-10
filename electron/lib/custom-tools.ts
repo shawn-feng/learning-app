@@ -376,16 +376,16 @@ export const kbQueryTool = defineTool({
             Array<{ topic: string; learned: number; total: number; next: string; updated: string }>
           >("kb.progress.list", { child_id })
         ).find((p) => p.topic === topicKey);
-        // 服务端 courses.list 返回 snake_case 行 → 映射为 CourseItem（camelCase），
-        // 否则 reviewCount/firstLearned/lastReview 等字段丢失（progressToMarkdown 渲染不全）。
+        // 服务端 courses.list 返回 snake_case 行 → 映射为 CourseItem（camelCase）。
+        // 2026-09-10 计划域：mastery/exam_mastery/first_learned 列已删，对应字段恒为空串。
         const rows = await dbQuery<Array<Record<string, unknown>>>("kb.courses.list", { child_id, topic: topicKey });
         let courses: CourseItem[] = rows.map((r) => ({
           topic: String(r.topic ?? ""),
           title: String(r.title ?? ""),
           sortOrder: Number(r.sort_order ?? 0),
           status: String(r.status ?? ""),
-          mastery: String(r.mastery ?? ""),
-          firstLearned: String(r.first_learned ?? ""),
+          mastery: "", // 2026-09-10：掌握度改由服务端 course_status（最近一次考核）输出
+          firstLearned: "", // 已下线
           lastReview: String(r.last_review ?? ""),
           reviewCount: Number(r.review_count ?? 0),
           material: String(r.material ?? ""),
@@ -535,7 +535,6 @@ export const kbInsertTool = defineTool({
         topic: params.topic,
         title: params.title,
         status: params.status,
-        mastery: params.mastery,
         material: params.material,
         sendMaterial: params.sendMaterial,
         tags: params.tags,
@@ -1431,14 +1430,14 @@ export const parentStatsTool = defineTool({
     "**只读**查询家长工作台统计信息（数据库是二进制 SQLite，read 工具读不了，查统计一律用本工具，不要尝试用 read 读 .sqlite 文件）：\n\n" +
     "- `type`=`tokens`：token 消耗汇总（总 token / 成本 / 按模型分组）+ 最近明细。传 `childId` 只看该孩子，缺省=全部（家长+孩子）；\n" +
     "- `type`=`progress`：孩子学习进度。传 `childId`=单孩子（各主题 learned/total/next + 每课状态/首次学习/最近复习）；`childId` 缺省=**全部孩子对比**（每孩子一行 learned/total/next + 最近 updated）；\n" +
-    "- `type`=`mastery`：孩子某主题的**逐课掌握度分布**，**必填 `childId`**，`topic` 缺省=该孩子全部主题（已掌握=status ✅ / 学习中=已开首次学习未掌握 / 未开始，附 mastery 掌握度字段）；\n" +
+    "- `type`=`mastery`：孩子某主题的**逐课学习状态分布**，**必填 `childId`**，`topic` 置空=该孩子全部主题（已学=✅ / 学习中=有学习时间 / 未开始）。⚠️ 2026-09-10 起本工具不再返回掌握度——掌握度（=最近一次考核得分率）请用 **course_status** 查；\n" +
     "- `type`=`daily`：孩子每日学习记录，**必填 `childId`**，`date`=YYYY-MM-DD 查某一天（缺省=最近 7 天）。",
   parameters: Type.Object({
     type: Type.Union([Type.Literal("tokens"), Type.Literal("progress"), Type.Literal("mastery"), Type.Literal("daily")], {
-      description: "tokens=token 统计 | progress=学习进度(单孩子或全孩子对比) | mastery=逐课掌握度 | daily=每日学习记录",
+      description: "tokens=token 统计 | progress=学习进度(单孩子或全孩子对比) | mastery=逐课学习状态分布(不含掌握度) | daily=每日学习记录",
     }),
     childId: Type.Optional(Type.String({ description: "孩子 childId（progress 缺省=全部孩子对比；mastery/daily 必填；tokens 缺省=全部）" })),
-    topic: Type.Optional(Type.String({ description: "mastery 专用：主题目录名/中文名，缺省=该孩子全部主题" })),
+    topic: Type.Optional(Type.String({ description: "mastery 专用：主题目录名/中文名，置空=该孩子全部主题" })),
     date: Type.Optional(Type.String({ description: "daily 专用：YYYY-MM-DD 查某一天，缺省=最近 7 天" })),
   }),
   execute: async (_toolCallId, params) => {
@@ -1506,8 +1505,8 @@ export const parentStatsTool = defineTool({
               title: String(c.title),
               sortOrder: Number(c.sort_order) || 0,
               status: String(c.status ?? "⬜"),
-              mastery: String(c.mastery ?? ""),
-              firstLearned: String(c.first_learned ?? ""),
+              mastery: "", // 2026-09-10：掌握度另取 course_status
+              firstLearned: "", // 已下线
               lastReview: String(c.last_review ?? ""),
               reviewCount: Number(c.review_count) || 0,
               material: String(c.material ?? ""),
@@ -1546,20 +1545,19 @@ export const parentStatsTool = defineTool({
       }
       const parts: string[] = [];
       for (const [topic, rows] of byTopic) {
+        // 2026-09-10：口径从「掌握度」改为「学习状态」（已学/学习中/未开始）；
+        // 掌握度 = 最近一次考核得分率，改用 course_status 查。
         const mastered = rows.filter((r) => String(r.status ?? "") === "✅");
-        const learning = rows.filter((r) => String(r.status ?? "") !== "✅" && String(r.first_learned ?? "") !== "");
-        const notStarted = rows.filter((r) => String(r.status ?? "") !== "✅" && String(r.first_learned ?? "") === "");
+        const learning = rows.filter((r) => String(r.status ?? "") !== "✅" && String(r.last_review ?? "") !== "");
+        const notStarted = rows.filter((r) => String(r.status ?? "") !== "✅" && String(r.last_review ?? "") === "");
         const lines = rows
           .slice()
           .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
           .map((c) => {
             const st = String(c.status ?? "⬜");
-            const m = String(c.mastery ?? "");
-            const em = String(c.exam_mastery ?? "");
-            const fl = String(c.first_learned ?? "").slice(0, 10);
             const lr = String(c.last_review ?? "").slice(0, 10);
-            const tag = st === "✅" ? "已掌握" : fl ? "学习中" : "未开始";
-            return `- ${String(c.title)}（${tag}${m ? `，掌握度 ${m}` : ""}${em ? `，考核 ${em}` : ""}${fl ? `，首学 ${fl}` : ""}${lr ? `，最近复习 ${lr}` : ""}）`;
+            const tag = st === "✅" ? "已学" : lr ? "学习中" : "未开始";
+            return `- ${String(c.title)}（${tag}${lr ? `，最近学习 ${lr}` : ""}）`;
           })
           .join("\n");
         parts.push(
@@ -1770,7 +1768,10 @@ export const sceneCommandTool = defineTool({
   },
 });
 
-// ==================== ISSUE-025：Todolist（今日计划） ====================
+// ==================== 本地日期 ====================
+// 2026-09-10 计划域重构：todolist 工具已下线，但「今天」的本地时区 YYYY-MM-DD 工具仍被
+// 学习/考核/生活三域共同使用（主会话创建时按本地时区取当天三表窗口覆盖；测试也用），
+// 所以保留 todoLocalDate() 命名（不重命名为避免无关 diff）。
 
 /** 本地时区 YYYY-MM-DD（不用 toISOString：UTC 会跨到错误的「今天」）。 */
 export function todoLocalDate(d: Date = new Date()): string {
@@ -1780,77 +1781,10 @@ export function todoLocalDate(d: Date = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
-/**
- * todo_list：读写孩子 Todolist（一事一条，非 markdown）。每件事一条结构化记录。
- * 数据存服务端孩子 kb 的 todo_items 表，多设备共享。
- * 来源=家长（source=parent，来自学习计划）项**绝不可删除/改标题**，只能由系统按课程实际学习核对完成；
- * 来源=孩子（source=child）自规划项，孩子可增删、可自行 check/uncheck。
- */
-export const todoListTool = defineTool({
-  name: "todo_list",
-  label: "读写孩子 Todolist（一事一条）",
-  description:
-    "读写孩子当天的 Todolist。每件事是一条结构化记录（非 markdown）。\n\n" +
-    "**read**：`action: \"read\"` + `date`(缺省=今天) 返回当天清单，每条含 id / 标题 / 来源(家长|孩子) / 是否完成 / 截止时间 / 备注。\n" +
-    "**add**：`action: \"add\"` + `title`（+可选 date,note,due_time）新增一条**孩子自规划项**。\n" +
-    "  孩子说了「几点前要完成」（如『我 3 点前写完数学』）时，把时刻填进 **due_time**（HH:MM，如 15:00），title 只写干净的事（数学作业），不要把时间写进标题。\n" +
-    "**check**：`action: \"check\"` + `id` 把某条标记完成（系统会记真实完成时刻）；`uncheck` 取消完成。\n" +
-    "**remove**：`action: \"remove\"` + `id` 删除（仅孩子自规划项）。\n\n" +
-    "**规则**：来源=家长 的项（来自学习计划，read 里标 [家长]）**绝不能删除或改标题**，只能由系统按课程实际学习核对完成；来源=孩子 的自规划项孩子可增删、可自行 check/uncheck。",
-  parameters: Type.Object({
-    action: Type.String({ description: "read=读取 | add=新增 | check=完成 | uncheck=取消完成 | remove=删除" }),
-    date: Type.Optional(Type.String({ description: "日期 YYYY-MM-DD（缺省=今天，本地时区）" })),
-    title: Type.Optional(Type.String({ description: "add 时必填：事项标题（干净，不带时间）" })),
-    due_time: Type.Optional(Type.String({ description: "add 时可选：约定截止时刻 HH:MM（如 15:00），孩子说几点前完成时填这" })),
-    id: Type.Optional(Type.String({ description: "check/uncheck/remove 时必填：事项 id（read 返回，形如 xxxx…）" })),
-    note: Type.Optional(Type.String({ description: "add 时可带备注" })),
-  }),
-  execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-    const child_id = childIdFromCwd(ctx.cwd);
-    if (!child_id) throw new Error("无法从会话目录解析 childId");
-    const date = params.date || todoLocalDate();
-    if (params.action === "read") {
-      const rows = await dbQuery<Array<Record<string, unknown>>>("kb.todo.list", { child_id, date });
-      if (!rows || rows.length === 0) {
-        return {
-          content: [
-            { type: "text" as const, text: `${date} 还没有安排 Todolist——今天没有具体任务（空天 = 不要求学），孩子可以自由安排自己的时间。` },
-          ],
-        };
-      }
-      const lines = rows.map((r) => {
-        const src = r.source === "parent" ? "[家长] " : "";
-        const st = r.status === "done" ? "x" : " ";
-        const due = r.due_time ? ` ⏰${String(r.due_time)}前` : "";
-        const note = r.note ? `（${r.note}）` : "";
-        const mode = r.mode ? `${r.mode} ` : "";
-        return `- [${st}] ${src}${mode}${r.title}${due}${note} [id=${String(r.id).slice(0, 8)}]`;
-      });
-      return { content: [{ type: "text" as const, text: `「${date}」的 Todolist：\n${lines.join("\n")}` }] };
-    }
-    if (params.action === "add") {
-      if (!params.title || !String(params.title).trim()) throw new Error("todo_list add 需要 title");
-      await dbExec("kb.todo.add", { child_id, date, title: params.title, note: params.note ?? "", due_time: params.due_time ?? "" });
-      const dueMsg = params.due_time ? `，约定 ${params.due_time} 前完成` : "";
-      return { content: [{ type: "text" as const, text: `已新增自规划项「${params.title}」${dueMsg}。` }] };
-    }
-    if (params.action === "check" || params.action === "uncheck") {
-      if (!params.id) throw new Error("todo_list check/uncheck 需要 id");
-      const r = await dbExec("kb.todo.set", { child_id, id: params.id, status: params.action === "check" ? "done" : "pending" });
-      return {
-        content: [
-          { type: "text" as const, text: (r as any)?.ok === false ? "未找到该事项（可能已被删除）。" : params.action === "check" ? "已标记完成。" : "已取消完成。" },
-        ],
-      };
-    }
-    if (params.action === "remove") {
-      if (!params.id) throw new Error("todo_list remove 需要 id");
-      await dbExec("kb.todo.remove", { child_id, id: params.id });
-      return { content: [{ type: "text" as const, text: "已删除该自规划项。" }] };
-    }
-    throw new Error("todo_list 的 action 仅支持 read / add / check / uncheck / remove");
-  },
-});
+// 2026-09-10 计划域重构（清理保留）：孩子端 agent 不再拥有 todo_list 工具——
+// todolist 不再落表（动态查三张计划表），且**不允许勾选**：
+// 完成由系统判定（生活=对话证据 / 学习=课程学习时间 / 考核=提交），家长在积分页审计与修正。
+// 孩子当日计划由会话创建时预取的「今日计划」段落注入提示词。
 
 // ==================== ISSUE-047：孩子端 agent 自建定时提醒（语音 + 频率） ====================
 export const scheduleTaskTool = defineTool({
@@ -2520,7 +2454,8 @@ export const courseStatusTool = defineTool({
   label: "课程综合学习情况（一站式）",
   description:
     "一次性获取某个孩子**全部课程的综合学习情况**，用于判断「哪些课掌握得不好、该优先复习/考核」。\n\n" +
-    "每个课程返回 8 类信息：① 学习时间(firstLearned) ② 复习时间(lastReview) ③ 考核时间(lastExamAt) ④ 复习次数(reviewCount) ⑤ 考核次数(examCount) ⑥ 学习情况(status 是否已学✅ / mastery 引导掌握度) ⑦ 复习情况(lastReview + reviewCount) ⑧ 考核情况(examMastery 考核掌握度 + examRate 正确率 + planReviewAt 计划复习时间 + focus 计划复习重点)。\n\n" +
+    "每个课程返回：① 最近学习时间(lastLearnedAt) ② 复习次数(reviewCount) ③ 考核次数(examCount) ④ **掌握度 = 最近一次考核得分率(lastExamRate)** ⑤ 最近考核时间(lastExamAt) ⑥ 累计正确率(examRate) ⑦ 计划复习时间与重点(planReviewAt/focus)。\n" +
+    "（2026-09-10 计划域：推荐掌握度看 lastExamRate；旧的引导掌握度(mastery)、首次学习时间已下线）\n\n" +
     "**参数**：`childName`（孩子姓名，必填）、`topic`（可选，只查某主题，如 lunyu 或 论语）、`onlyWeak`（可选 true，只返回需关注/薄弱的课程，减少噪音）、`keyword`（可选，课程名含此词）。\n\n" +
     "**何时调用**：家长说「哪些课掌握得不好」「帮我安排复习计划」「优先复习哪些」「这次考核考什么」等需要了解课程整体掌握度时——**一次调用即可拿到全部课程的维度，无需逐课查询**；根据 examRate 低 / 从未复习(reviewCount=0) / 计划复习已到期(planReviewAt ≤ 今天) / status 未学 等判断薄弱项。",
   parameters: Type.Object({
@@ -2557,7 +2492,7 @@ export const courseStatusTool = defineTool({
       const today = new Date().toISOString().slice(0, 10);
       list = list.filter((c) => {
         if (String(c.status ?? "").trim() !== "✅") return true; // 未学
-        if (c.examRate > 0 && c.examRate < 0.7) return true; // 考核正确率低
+        if (c.lastExamRate != null && c.lastExamRate < 0.8) return true; // 最近一次考核得分率低
         if (Number(c.reviewCount) === 0) return true; // 从未复习
         if (c.planReviewAt && c.planReviewAt <= today) return true; // 计划复习已到期
         if (!c.lastReview) return true; // 无复习记录
@@ -2573,15 +2508,15 @@ export const courseStatusTool = defineTool({
     for (const c of list) {
       const weak: string[] = [];
       if (String(c.status ?? "").trim() !== "✅") weak.push("未学");
-      if (c.examRate > 0 && c.examRate < 0.7) weak.push(`考核正确率${(c.examRate * 100).toFixed(0)}%`);
+      if (c.lastExamRate != null && c.lastExamRate < 0.8) weak.push(`最近考核${(c.lastExamRate * 100).toFixed(0)}%`);
       if (Number(c.reviewCount) === 0) weak.push("从未复习");
       if (c.planReviewAt && c.planReviewAt <= today) weak.push(`计划复习${c.planReviewAt}已到期`);
       const tag = weak.length ? ` ⚠️需关注(${weak.join("、")})` : "";
       lines.push(
         `- ${c.title}（${c.topicName}${c.topicType ? `/${c.topicType}` : ""}）` +
-          ` 学习:${c.status || "⬜"}${c.mastery ? "·" + c.mastery : ""}` +
-          ` | 学于${c.firstLearned || "-"} 复习${c.lastReview || "-"}(${c.reviewCount}次)` +
-          ` | 考于${c.lastExamAt || "-"}草(${c.examCount}次,正确率${c.examRate ? (c.examRate * 100).toFixed(0) + "%" : "-"}) 考核掌握:${c.examMastery || "-"}` +
+          ` 学习:${c.status || "⬜"}` +
+          ` | 最近学习${c.lastLearnedAt || c.lastReview || "-"}(${c.reviewCount}次复习)` +
+          ` | 最近考核${c.lastExamAt || "-"}（${c.examCount}次,得分率${c.lastExamRate != null ? (c.lastExamRate * 100).toFixed(0) + "%" : "-"}） 累计正确率:${c.examRate ? (c.examRate * 100).toFixed(0) + "%" : "-"}` +
           `${c.planReviewAt ? ` | 计划复习:${c.planReviewAt}${c.focus?.length ? " 重点:" + c.focus.join("、") : ""}` : ""}` +
           tag
       );

@@ -1028,31 +1028,94 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     return result;
   });
 
-  // ISSUE-025 重构（2026-09-04）：孩子 Todolist 读取（一事一行）——孩子端「今日计划」弹框与「我的执行力」趋势数据源。
-  // 数据真源在服务端孩子 kb 的 todo_items / child_todo_stats 表，这里只读返回 rows（不再返回 markdown）。
+  // 孩子端「今日计划」弹框 + 「我的执行力」趋势数据源（2026-09-10 计划域重构版）。
+  // 数据真源在服务端孩子 kb：todolist = 三张计划表里窗口覆盖当天的行（/api/v1/plans/today），
+  // 趋势 = reward_daily_stats 按日汇总（/api/v1/rewards/:childId）。
   ipcMain.handle("todo:get", async (_e, childId: string, date?: string) => {
     try {
       const d = typeof date === "string" && date ? date : formatLocalDate(new Date());
-      const rows = await dbQuery<unknown[]>("kb.todo.list", {
-        child_id: childId,
-        date: d,
-      }).catch(() => []);
-      return { success: true, date: d, rows: rows ?? [] };
+      const res = await serverFetch<{ ok: boolean; date: string; items: unknown[] }>(
+        `/plans/today?childId=${encodeURIComponent(childId)}&date=${encodeURIComponent(d)}`,
+        { token: currentSessionToken(), timeoutMs: 20000 }
+      );
+      return { success: true, date: res.date ?? d, items: res.items ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
+  // 近 N 天完成情况（趋势；来自 reward_daily_stats 按日汇总）
   ipcMain.handle("todo:stats:list", async (_e, childId: string, range?: number) => {
     try {
-      const rows = await dbQuery<unknown[]>("kb.todo.stats.list", {
-        child_id: childId,
-        range: typeof range === "number" ? Math.min(365, Math.max(1, Math.floor(range))) : 30,
-      }).catch(() => []);
-      return { success: true, rows };
+      const n = typeof range === "number" ? Math.min(365, Math.max(1, Math.floor(range))) : 30;
+      const res = await serverFetch<{ ok: boolean; recentStats: unknown[] }>(
+        `/rewards/${encodeURIComponent(childId)}?days=${n}`,
+        { token: currentSessionToken(), timeoutMs: 20000 }
+      );
+      return { success: true, rows: res.recentStats ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // ==================== 计划域 / 积分域（2026-09-10） ====================
+  /** 积分详情：余额 + 当日结算（含未解锁）+ 近 N 天趋势 + 流水 */
+  ipcMain.handle("reward:get", async (_e, childId: string, opts?: { date?: string; limit?: number; days?: number }) => {
+    try {
+      const q = new URLSearchParams();
+      if (opts?.date) q.set("date", opts.date);
+      if (opts?.limit) q.set("limit", String(opts.limit));
+      if (opts?.days) q.set("days", String(opts.days));
+      const res = await serverFetch<Record<string, unknown>>(
+        `/rewards/${encodeURIComponent(childId)}${q.toString() ? `?${q}` : ""}`,
+        { token: currentSessionToken(), timeoutMs: 20000 }
+      );
+      return { success: true, ...(res as object) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  /** 积分奖罚设置（分档 + 门控阈值） */
+  ipcMain.handle("reward:config:get", async (_e, childId: string) => {
+    try {
+      const res = await serverFetch<{ ok: boolean; config: unknown }>(
+        `/rewards/${encodeURIComponent(childId)}/config`,
+        { token: currentSessionToken(), timeoutMs: 20000 }
+      );
+      return { success: true, config: res.config };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("reward:config:set", async (_e, childId: string, config: Record<string, unknown>) => {
+    try {
+      await serverFetch(`/rewards/${encodeURIComponent(childId)}/config`, {
+        method: "PUT",
+        token: currentSessionToken(),
+        body: config,
+        timeoutMs: 20000,
+      });
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  /** 家长审计与修正：取消计划 / 撤销判定 / 代判完成 */
+  ipcMain.handle(
+    "plan:setStatus",
+    async (_e, plan: { childId: string; planId: string; kind: string; action: string; note?: string }) => {
+      try {
+        const res = await serverFetch<{ ok: boolean; status: string }>("/plans/status", {
+          method: "POST",
+          token: currentSessionToken(),
+          body: plan,
+          timeoutMs: 20000,
+        });
+        return { success: true, status: res.status };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
 
   // ISSUE-033 重构（2026-09-04）：学习计划只读展示（家长面板；数据真源=服务端 study_plans，一课一行，
   // done 由服务端按课程当天活动下发——客户端不再本地剥文本前缀现算）。
