@@ -1,6 +1,7 @@
 # MATERIAL-BRIDGE-PROTOCOL（资料页 ↔ 宿主/AI 统一通讯协议）
 
 > 定稿：2026-09-08。本协议是**唯一标准**：任何"需要与宿主/agent 通讯"的学习资料网页（孩子端场景互动、家长端随堂测验、绘本等）都由编程 agent 按本协议制作。
+> 修订：2026-09-10 —— §5 `tts.speak` 语义对齐实现（resolve=已受理，宿主 FIFO 队列逐句播完）；§9 更新为当前宿主实现（asset:// doc=1 顶层文档加载 + 加载进度、TTS 双模式队列、scene 委托 `appCmd('scene.*')`）。
 > 目标：网页作者只面对一个 `window.PiBridge` API；宿主与 agent 侧只面对一套信封与动作目录；不再按场景/页面种类各维护一套私有通道（如历史遗留的 `scene:*` 直发消息）。
 
 ---
@@ -52,7 +53,7 @@ PiBridge.off(action, handler?)
 
 - **通用**（家长端测验、绘本等一切网页）：
   - 上行 `emit`：`submit-answer`（{questionId, answer, correct?}）、`complete-section`（{section}）、`request-help`（{topic?}）、`self-check`（{correct, wrong[]}）…；
-  - 宿主能力 `request`：`tts.speak`（{text, voice?}，播完 resolve）、`lookup`（{text}，返回拼音/释义）、`goto-course`（预留）、`get-progress`（预留）；
+  - 宿主能力 `request`：`tts.speak`（{text}，resolve=**已受理**，非播完——宿主按 FIFO 队列逐句串行播放，多句连读互不打断、顺序读完）、`lookup`（{text}，返回拼音/释义）、`goto-course`（预留）、`get-progress`（预留）；
   - 自定义 action 约定：payload 自带 `semantic` 说明字段，宿主不理解的 action 也会透传进 agent 上下文，由 agent 依据说明回应。
 - **场景演出命名空间 `scene.*`**（场景互动引擎使用，历史 `scene_command` 工具的下行语义平移到此，agent 侧仍用工具名 `scene_command`，参数不变）：
   - 宿主→页面：`scene.say` {character,text,zh} / `scene.move` {character,x,duration} / `scene.act` {character,act} / `scene.show` {character} / `scene.hide` {character} / `scene.highlight` {target} / `scene.update` {task,progress,total} / `scene.busy` {busy}（伙伴回应中提示）/ `scene.mic.status` {status} / `scene.mic.result` {ok,text?,error?}；
@@ -95,6 +96,9 @@ PiBridge.emit('scene.ready', { title: '…', props: [ … ], characters: [ … ]
 
 ## 9. 宿主实现要点（供维护）
 
-- 渲染层 `src/lib/page-bridge.ts`：桥内注入 `PiBridge` SDK + `capture=manual` 识别；类型/常量。
-- `MaterialsPanel`：`page:app`→构造 `PageEvent{kind:'app'}` 上抛；`page:req`→查能力表（`tts.speak` 等）处理并回 `page:app-res`，未知能力走 `onAppRequest`（默认 `{ok:false,error:'unknown-action'}`）；`page:app-cmd:result`→兑现 pending；暴露 `appCmd(action,payload)`（复用 exec 就绪/超时/pending）。
+- **iframe 加载通道（2026-09-08 起）**：共享 html 资料（有 filePath、服务端可拉取）优先以 **真实 URL 顶层文档** 加载 `asset://local/parent/{parentId}/{topic}/{rest}?doc=1&font=N&v={epoch}`——主进程 `electron/lib/material-doc.ts` 在协议层完成 `拉原始 → rewriteMaterialHtmlForRender → injectBridge`（PiBridge SDK + manual 采集 + 字号）→ 返回 `text/html`，页面**正文脚本随真实导航执行**（修复了 srcDoc/dataURL 内嵌在 Electron 沙箱 iframe 中正文脚本不执行、导致 `PiBridge.on` 永不注册的问题）。渲染层 `MaterialsPanel`（`HtmlFrame`）据此构造 `docUrl`，内容指纹/epoch 变化即强重建 iframe，加载期间显示进度 overlay；无 filePath 的旧内容仍回退 dataURL 内嵌。非 html 资源（音视频/图片）仍走 `media://` 代理。
+- 渲染层 `src/lib/page-bridge.ts`：桥内注入 `PiBridge` SDK + `capture=manual` 识别；类型/常量。主进程 `material-doc.ts` 直接 import 该模块的 `injectBridge`（模块无浏览器顶层副作用，可被主进程安全引用）。
+- `MaterialsPanel`：`page:app`→构造 `PageEvent{kind:'app'}` 上抛；`page:req`→查能力表处理并回 `page:app-res`（未知能力回 `{ok:false,error}`）；`page:app-cmd:result`→兑现 pending；暴露 `appCmd(action,payload)`（复用 exec 就绪/超时/pending 底座）。场景演出工具 `MaterialsPanel.scene(command)` 委托 `appCmd('scene.'+command)`，动作目录白名单 say/move/act/show/hide/highlight/update。
+- **TTS 队列（2026-09-08）**：`tts.speak`（页面请求，场景台词/点读）走 `speakMaterialText(text,{queue:true})`——请求**入队后立即回执**，宿主 FIFO 串行播放（一条 audio ended/error 才取下一条，多角色连读不互相覆盖）；资料朗读/查词/点读等单条意图维持「新请求取代当前」（打断模式）。队列条目快照当前 seq，仅打断模式 `seq++` 使进行中与整条队列失效。
 - 主进程 `electron/lib/page-bridge.ts` `formatPageEvent`：`kind:"app"` → `在资料「title」中触发动作「action」，数据：{payload}`。
+- 就绪 gate：资料切换/iframe 重建即复位就绪态，新页面 `page:ready` 前不下发命令（`appCmd`/exec 自动拒绝）。

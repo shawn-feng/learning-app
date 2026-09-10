@@ -20,6 +20,9 @@
 - `REQUIREMENTS.md` / `EXAM-REQUIREMENTS.md` / `ENGLISH-AGENT-REQUIREMENTS.md` / `PARENT-AGENT-REQUIREMENTS.md` —— 各模块需求
 - `RESEARCH-aliyun-ssecp-child-assessment-2026-09-07.md`、`DESIGN-ssecp-speech-assessment-2026-09-07.md`、`RESEARCH-pronunciation-assessment-2026-08-31.md` —— 语音/发音评测调研与设计
 - `DESIGN-english-scene-courses-2026-09-10.md` —— 英语「学习+场景合一」课程方案（33 集 wowenglish → 9 场景课，一课两阶段单页）
+- `DESIGN-reward-points-2026-09-10.md` —— 积分奖励机制设计（分档规则/数据模型/兑换双路，待评审）
+- `DESIGN-plan-domain-rewrite-2026-09-10.md` —— **计划域重构设计（三张计划表 + 排期表 + daily 两列 + worker 改造 + mastery 清理，待评审；实施前必读）**
+- `需求盘点-三大需求场景分析-2026-09-10.md` —— 三大需求场景盘点 + 数据交互现状 + 表结构评估/优化清单 + 计划域提案评估与定案（§5~§13 为决策记录真源）
 - `调研笔记-叶圣陶语文方法论.md` —— 语文教学思路调研
 
 ## 日志

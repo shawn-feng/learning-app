@@ -688,6 +688,11 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                                         {activeCat.categoryName} · {BEHAVIOR_LABEL[selQ.behavior || activeCat.behavior] || selQ.behavior || activeCat.behavior} · {selQ.pointMax || 10} 分
                                       </div>
                                     )}
+                                    {(selQ as any).knowledgePointName ? (
+                                      <div style={{ fontSize: 11, color: "#8a7dd8", marginBottom: 8 }}>
+                                        知识点：{(selQ as any).knowledgePointName}
+                                      </div>
+                                    ) : null}
                                     {(selQ as any).options?.length ? (
                                       <div style={{ marginBottom: 6 }}>
                                         <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>选项（选择题：孩子看选项口头作答）：</div>

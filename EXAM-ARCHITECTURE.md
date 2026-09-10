@@ -41,7 +41,8 @@
 |---|---|
 | `question_bank` | 题库（uuid 主键）。stem 题干 / **answer**（口述题=参考答案要点；背诵朗读题=标准原文 refText）/ scoring（JSON dims+special，speech 类空）/ point_max / **behavior**（题级判定：`speech_recite`背诵评测·`speech_read`朗读·`generic`口述，**判题以题为准**）/ note 备注 / knowledge_summary 知识点概要（供向量检索）/ **options**（选择题选项 `[{key,text}]`，`[]`=非选择题） |
 | `topic_categories` | 主题考核类别（id/topic_id/name/behavior）。类别 behavior 仅作**新题默认继承**，不参与判题 |
-| `course_category_questions` | 课-类-题关系（course_id/category_id/question_id/seq/overview）。一课多类、一类多题=例题池（随机抽）、各课类别可不同 |
+| `course_category_questions` | 课-类-题关系（course_id/category_id/question_id/seq/overview/**knowledge_point_id**）。一课多类、一类多题=例题池（随机抽）、各课类别可不同；knowledge_point_id=该挂载关联的课内知识点（2026-09-10 知识点实体化，可空） |
+| `knowledge_points` | **知识点实体**（2026-09-10）：id/course_uuid（外键 courses.uuid）/name/seq，UNIQUE(course_uuid,name)。挂在课下；题目经 ccq 挂载关系关联（同题跨课可挂各自课的知识点） |
 | `courses.uuid` | 课程 uuid（关系表外键，2026-09-09 回填） |
 | `topics.method_spec` | **主题级考核方法**（JSON，key=childId）：`perChild{require{类别uuid:题数}, exclude[], rules.recitePass}` + `default` 回退（require 空→该课实际挂的类别各 1 题） |
 | `courses.assess_rubric` / `topics.assess_method` | 旧自由文本 rubric/方法（**兼容保留**：未结构化课走旧路径；不要再新写） |
@@ -70,7 +71,7 @@
    - 方法过滤（exclude → require 命中；require 空=default 该课全部类别）；
    - 每类别题池**随机抽 require 数**（缺题跳过该类别，不 LLM 临时命题）；
    - **speech 题置该课最前**（背诵前不出含原文引用的其它题，防泄漏）；speech 题 `refText=answer`、带 `recitePass`；选择题带 `options/correctKey/answerText`；文字题带 `scoringText`（参考答案+维度+特殊情况）；
-   - 每题带 `questionId/categoryId`（落库溯源/轮换排除）。
+   - 每题带 `questionId/categoryId`（落库溯源/轮换排除）**与 `knowledgePointId/knowledgePointName`**（挂载关联的课内知识点，2026-09-10 起；经 questionMetaRef 回填后写入 per_question 溯源，按知识点聚合掌握度后置）。
 3. 旧路径（仅非结构化课）：客户端 LLM 逐课出题（`generateForCourse`，注入 assess_method 按孩子点名 + rubric 全文；流式并发≤3，首门课就绪即开考）。
 
 ### 5.3 答题（iframe 模板）
@@ -91,7 +92,7 @@
 | 工具 | 用途 |
 |---|---|
 | `assess_categories_list` / `assess_category_create` | 主题考核类别查看/创建（REST `/assess/*`） |
-| `assess_course_get` / `assess_content_save` | 课程结构化内容查看/整课保存（事务替换；题可引用或内联，支持 behavior/note/knowledgeSummary/options） |
+| `assess_course_get` / `assess_content_save` | 课程结构化内容查看/整课保存（事务替换；题可引用或内联，支持 behavior/note/knowledgeSummary/options/**knowledgePoint**——题级知识点名（课内自动创建/同名复用）或 knowledgePointId，item 级可给默认） |
 | `assess_method_set` | 主题级考核方法（按孩子 require/exclude/recitePass） |
 | `exam_schedule_create` | 自定义考核排期（courses 必填；categories/excludeCategories/recitePass=本次方法） |
 | 旧通道 `parent_course_save`(assessRubric) / `parent_topic_save`(assessMethod) | 仅存量未迁移课程兼容，**不要新写** |

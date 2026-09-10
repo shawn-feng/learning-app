@@ -61,7 +61,7 @@ export const assessCourseGetTool = defineTool({
   name: "assess_course_get",
   label: "查看课程考核内容",
   description:
-    "查看某门课（topicKey + 课程标题）结构化考核内容：挂了哪些类别、每题题干/答案/评分，用于核对与写作前阅读。",
+    "查看某门课（topicKey + 课程标题）结构化考核内容：挂了哪些类别、每题题干/答案/评分/关联知识点，用于核对与写作前阅读。",
   parameters: Type.Object({
     topicKey: Type.String({ description: "主题 topic_key" }),
     courseTitle: Type.String({ description: "课程标题，须与课程名册一致" }),
@@ -83,6 +83,8 @@ export const assessCourseGetTool = defineTool({
         if (q.scoring) lines.push(`  评分标准：${String(q.scoring).slice(0, 300)}`);
         if (q.note) lines.push(`  备注：${q.note}`);
         if (q.knowledgeSummary) lines.push(`  知识点概要：${q.knowledgeSummary}`);
+        const kpName = String((q as any).knowledgePointName || "");
+        if (kpName) lines.push(`  关联知识点：${kpName}（id=${String((q as any).knowledgePointId || "")}）`);
       }
     }
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
@@ -98,6 +100,8 @@ export const assessContentSaveTool = defineTool({
     "选择题可带 options:[{key:\"A\",text:\"…\"},…]（孩子看选项口头作答，判分按正确项自动对照，不进 LLM；answer 填正确项内容，可不填 scoring）。" +
     "文字题每题必填 stem+answer（参考答案/得分要点），scoring 建议 JSON：{\"dims\":[{\"dim\":\"维度\",\"points\":\"得分点\",\"score\":分,\"note\":\"说明\"}],\"special\":[\"特殊情况\"]}，也可写人话；" +
     "note=备注、knowledgeSummary=知识点概要均可空（供向量检索）。引用已有题库题给 {\"questionId\":\"...\"}。\n" +
+    "知识点关联（2026-09-10 起）：每题可带 \"knowledgePoint\":\"知识点名\"（课内不存在会自动创建；同名复用）或 \"knowledgePointId\"（课内已有知识点的 id）；" +
+    "也可在 item 级给 \"knowledgePoint\" 作为该类别下未显式指定的题目的默认。知识点应取自该课真实覆盖的知识点（先 assess_course_get 看现有知识点名，保持同名复用，不要同义造新名）。每题关联一个最核心的知识点即可。\n" +
     "内容要对应真实课程材料（不编造原文）；写前先 assess_course_get / parent_library_courses 核对。",
   parameters: Type.Object({
     topicKey: Type.String({ description: "主题 topic_key" }),

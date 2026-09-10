@@ -44,7 +44,7 @@ interface Row {
   behavior: string;
   note: string;
   knowledgeSummary: string;
-  contexts: Array<{ topic: string; course: string; category: string }>;
+  contexts: Array<{ topic: string; course: string; category: string; knowledgePoint?: string }>;
 }
 interface RecRow {
   childId: string;
@@ -163,7 +163,8 @@ export default function QuestionBankPanel() {
                   <span>{sel.pointMax || 10} 分</span>
                   {sel.contexts.map((c, ci) => (
                     <span key={ci}>
-                      {c.course}（{c.category}）
+                      {c.course}（{c.category}
+                      {c.knowledgePoint ? ` · ${c.knowledgePoint}` : ""}）
                     </span>
                   ))}
                 </div>

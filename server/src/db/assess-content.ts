@@ -39,10 +39,22 @@ CREATE TABLE IF NOT EXISTS course_category_questions (
   question_id TEXT NOT NULL,
   seq         INTEGER NOT NULL DEFAULT 0,
   overview    TEXT,
+  knowledge_point_id TEXT,
   PRIMARY KEY (course_id, category_id, question_id)
 );
 CREATE INDEX IF NOT EXISTS idx_ccq_course   ON course_category_questions(course_id);
 CREATE INDEX IF NOT EXISTS idx_ccq_category ON course_category_questions(category_id);
+
+-- 知识点（2026-09-10 拍板建实体）：挂在课下，题目经挂载关系（ccq）关联到课内知识点。
+-- 关联落点在挂载关系而非题目——同一题挂到不同课可关联各自课的知识点（与"题目语义随挂载"约定一致）。
+CREATE TABLE IF NOT EXISTS knowledge_points (
+  id          TEXT PRIMARY KEY,
+  course_uuid TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  seq         INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (course_uuid, name)
+);
+CREATE INDEX IF NOT EXISTS idx_kp_course ON knowledge_points(course_uuid);
 `;
 
 /** 就地迁移（幂等）：courses.uuid、topics.method_spec、三张新表。每次 openParentLib 时调用。 */
@@ -65,6 +77,9 @@ export function ensureAssessContentSchema(db: DatabaseSync): void {
   if (!qCols.includes("knowledge_summary")) db.exec("ALTER TABLE question_bank ADD COLUMN knowledge_summary TEXT NOT NULL DEFAULT ''");
   // 选择题选项（2026-09-10）：JSON 数组 [{key:"A",text:"…"}]，[] = 非选择题。展示给孩子的选项。
   if (!qCols.includes("options")) db.exec("ALTER TABLE question_bank ADD COLUMN options TEXT NOT NULL DEFAULT '[]'");
+  // 知识点实体（2026-09-10 拍板）：存量库补 ccq.knowledge_point_id 列（knowledge_points 表由 ASSESS_CONTENT_TABLES 幂等建）
+  const ccqCols = (db.prepare("PRAGMA table_info(course_category_questions)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!ccqCols.includes("knowledge_point_id")) db.exec("ALTER TABLE course_category_questions ADD COLUMN knowledge_point_id TEXT");
 }
 
 /** 解析题库题 options 文本 → 数组（容错：非法/空返回 []）。 */
@@ -116,6 +131,9 @@ export interface CourseContentItem {
     note: string;
     knowledgeSummary: string;
     options: QuestionOption[];
+    /** 挂载关联的知识点（2026-09-10 知识点实体）；空串=未关联 */
+    knowledgePointId: string;
+    knowledgePointName: string;
   }>;
 }
 export interface CourseContent {
@@ -146,6 +164,37 @@ export function getOrCreateCategory(db: DatabaseSync, topicId: string, name: str
     behavior
   );
   return { id, topicId, name, behavior };
+}
+
+// ==================== 知识点 ====================
+
+export interface KnowledgePointRow {
+  id: string;
+  courseUuid: string;
+  name: string;
+  seq: number;
+}
+
+/** 某课全部知识点（按 seq,rowid 排序）。 */
+export function listKnowledgePoints(db: DatabaseSync, courseUuid: string): KnowledgePointRow[] {
+  const rows = db
+    .prepare("SELECT id, course_uuid AS courseUuid, name, seq FROM knowledge_points WHERE course_uuid = ? ORDER BY seq, rowid")
+    .all(courseUuid) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({ id: String(r.id), courseUuid: String(r.courseUuid), name: String(r.name), seq: Number(r.seq) || 0 }));
+}
+
+/** 按 (course_uuid, name) 查；没有则创建。name 先 trim。 */
+export function getOrCreateKnowledgePoint(db: DatabaseSync, courseUuid: string, name: string): KnowledgePointRow {
+  const n = String(name || "").trim();
+  if (!n) throw new Error("知识点名称不能为空");
+  const row = db
+    .prepare("SELECT id, course_uuid AS courseUuid, name, seq FROM knowledge_points WHERE course_uuid = ? AND name = ?")
+    .get(courseUuid, n) as KnowledgePointRow | undefined;
+  if (row) return row;
+  const seq = (db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM knowledge_points WHERE course_uuid = ?").get(courseUuid) as { next: number }).next;
+  const id = randomUUID();
+  db.prepare("INSERT INTO knowledge_points (id, course_uuid, name, seq) VALUES (?, ?, ?, ?)").run(id, courseUuid, n, seq);
+  return { id, courseUuid, name: n, seq };
 }
 
 // ==================== 题库 ====================
@@ -212,21 +261,29 @@ export function getCourseUuid(db: DatabaseSync, topic: string, title: string): s
   return r?.uuid || undefined;
 }
 
-/** 整课替换该课挂的内容（事务）。items 顺序即类别展示顺序；同类别多题按数组序分配 seq。 */
+/** 整课替换该课挂的内容（事务）。items 顺序即类别展示顺序；同类别多题按数组序分配 seq。
+ *  questions[i].knowledgePointId 可空（未关联知识点）。 */
 export function replaceCourseContent(
   db: DatabaseSync,
   courseUuid: string,
-  items: Array<{ categoryId: string; overview: string; questionIds: string[] }>
+  items: Array<{
+    categoryId: string;
+    overview: string;
+    questionIds: string[];
+    /** 与 questionIds 等长的知识点 id（null=未关联）；缺省视为全空 */
+    knowledgePointIds?: Array<string | null>;
+  }>
 ): void {
   db.exec("BEGIN");
   try {
     db.prepare("DELETE FROM course_category_questions WHERE course_id = ?").run(courseUuid);
     const ins = db.prepare(
-      "INSERT OR IGNORE INTO course_category_questions (course_id, category_id, question_id, seq, overview) VALUES (?, ?, ?, ?, ?)"
+      "INSERT OR IGNORE INTO course_category_questions (course_id, category_id, question_id, seq, overview, knowledge_point_id) VALUES (?, ?, ?, ?, ?, ?)"
     );
     for (const item of items) {
       item.questionIds.forEach((qid, i) => {
-        ins.run(courseUuid, item.categoryId, qid, i, item.overview || "");
+        const kpId = item.knowledgePointIds?.[i] ?? null;
+        ins.run(courseUuid, item.categoryId, qid, i, item.overview || "", kpId || null);
       });
     }
     db.exec("COMMIT");
@@ -243,10 +300,12 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
       `SELECT ccq.category_id AS cid, tc.name AS cname, tc.behavior AS behavior, ccq.overview AS overview,
               ccq.question_id AS qid, ccq.seq AS seq,
               qb.stem AS stem, qb.answer AS answer, qb.scoring AS scoring, qb.point_max AS pointMax,
-              qb.behavior AS qbehavior, qb.note AS qnote, qb.knowledge_summary AS qks, qb.options AS qopts
+              qb.behavior AS qbehavior, qb.note AS qnote, qb.knowledge_summary AS qks, qb.options AS qopts,
+              kp.id AS kpid, kp.name AS kpname
        FROM course_category_questions ccq
        JOIN topic_categories tc ON tc.id = ccq.category_id
        JOIN question_bank qb    ON qb.id = ccq.question_id
+       LEFT JOIN knowledge_points kp ON kp.id = ccq.knowledge_point_id
        WHERE ccq.course_id = ?
        ORDER BY ccq.rowid`
     )
@@ -265,6 +324,8 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
     qnote: string;
     qks: string;
     qopts: string;
+    kpid: string | null;
+    kpname: string | null;
   }>;
   const items: CourseContentItem[] = [];
   const byCat = new Map<string, CourseContentItem>();
@@ -286,6 +347,8 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
       note: r.qnote ?? "",
       knowledgeSummary: r.qks ?? "",
       options: parseOptions(r.qopts),
+      knowledgePointId: r.kpid ?? "",
+      knowledgePointName: r.kpname ?? "",
     });
   }
   return { courseId: courseUuid, items };
@@ -302,7 +365,7 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
   note: string;
   knowledgeSummary: string;
   options: QuestionOption[];
-  contexts: Array<{ topic: string; course: string; category: string }>;
+  contexts: Array<{ topic: string; course: string; category: string; knowledgePoint: string }>;
 }> {
   const qs = db
     .prepare(
@@ -321,17 +384,19 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
   }>;
   const ctx = db
     .prepare(
-      `SELECT ccq.question_id AS qid, c.topic AS topic, c.title AS course, tc.name AS category
+      `SELECT ccq.question_id AS qid, c.topic AS topic, c.title AS course, tc.name AS category,
+              COALESCE(kp.name, '') AS knowledgePoint
        FROM course_category_questions ccq
        JOIN courses c ON c.uuid = ccq.course_id
        JOIN topic_categories tc ON tc.id = ccq.category_id
+       LEFT JOIN knowledge_points kp ON kp.id = ccq.knowledge_point_id
        ORDER BY ccq.rowid`
     )
-    .all() as Array<{ qid: string; topic: string; course: string; category: string }>;
-  const ctxMap = new Map<string, Array<{ topic: string; course: string; category: string }>>();
+    .all() as Array<{ qid: string; topic: string; course: string; category: string; knowledgePoint: string }>;
+  const ctxMap = new Map<string, Array<{ topic: string; course: string; category: string; knowledgePoint: string }>>();
   for (const c of ctx) {
     const arr = ctxMap.get(c.qid) || [];
-    arr.push({ topic: c.topic, course: c.course, category: c.category });
+    arr.push({ topic: c.topic, course: c.course, category: c.category, knowledgePoint: c.knowledgePoint });
     ctxMap.set(c.qid, arr);
   }
   return qs.map((q) => ({ ...q, options: parseOptions(q.options), contexts: ctxMap.get(q.id) || [] }));

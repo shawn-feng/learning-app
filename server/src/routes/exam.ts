@@ -16,6 +16,7 @@ import { openParentLib } from "../db/parent-lib.js";
 import { attachStructuredQuestions } from "../assess-selection.js";
 import {
   getOrCreateCategory,
+  getOrCreateKnowledgePoint,
   saveQuestion,
   getQuestion,
   getCourseUuid,
@@ -1612,14 +1613,29 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     try {
       const uuid = getCourseUuid(db, String(b.topic), String(b.title));
       if (!uuid) return reply.code(400).send({ error: `课程不存在：${b.topic}/${b.title}（请先在课程库创建该课）` });
-      const replaceItems: Array<{ categoryId: string; overview: string; questionIds: string[] }> = [];
+      const replaceItems: Array<{ categoryId: string; overview: string; questionIds: string[]; knowledgePointIds: Array<string | null> }> = [];
       let created = 0;
       let linked = 0;
       for (const it of b.items) {
         const cat = resolveCategory(db, String(b.topic), it);
+        // 类别级默认知识点：题目未显式给知识点时回退用它（每题也可各自带 knowledgePoint/knowledgePointId 覆盖）
+        const catKpName = String(it.knowledgePoint ?? it.knowledgePointName ?? "").trim();
         const qs = (Array.isArray(it.questions) ? it.questions : []) as Array<Record<string, unknown>>;
         const qids: string[] = [];
+        const kpIds: Array<string | null> = [];
         for (const qo of qs) {
+          // 知识点解析：knowledgePointId（须属于本课）> knowledgePoint 名称（getOrCreate）> 类别级默认 > 空
+          let kpId: string | null = null;
+          const kpIdRaw = typeof qo.knowledgePointId === "string" ? qo.knowledgePointId.trim() : "";
+          const kpName = String(qo.knowledgePoint ?? qo.knowledgePointName ?? "").trim() || catKpName;
+          if (kpIdRaw) {
+            const row = db.prepare("SELECT id FROM knowledge_points WHERE id = ? AND course_uuid = ?").get(kpIdRaw, uuid);
+            if (!row) return reply.code(400).send({ error: `知识点不存在或不属于该课：${kpIdRaw}` });
+            kpId = kpIdRaw;
+          } else if (kpName) {
+            kpId = getOrCreateKnowledgePoint(db, uuid, kpName).id;
+          }
+          kpIds.push(kpId);
           if (typeof qo.questionId === "string" && qo.questionId) {
             const exists = getQuestion(db, qo.questionId);
             if (!exists) return reply.code(400).send({ error: `题库题不存在：${qo.questionId}` });
@@ -1637,14 +1653,14 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
               // 行为以题级为准；题目没写时继承该类别行为（兼容存量写法）
               behavior: String(qo.behavior || cat.behavior || "generic"),
               note: qo.note != null ? String(qo.note) : "",
-              knowledgeSummary: qo.knowledgeSummary != null ? String(qo.knowledgeSummary) : "",
+              knowledgeSummary: qo.knowledgeSummary != null ? String(qo.knowledgeSummary) : (kpName || ""),
               options: Array.isArray(qo.options) ? (qo.options as Array<{ key: string; text: string }>) : undefined,
             });
             qids.push(id);
             created++;
           }
         }
-        replaceItems.push({ categoryId: cat.id, overview: String(it.overview ?? ""), questionIds: qids });
+        replaceItems.push({ categoryId: cat.id, overview: String(it.overview ?? ""), questionIds: qids, knowledgePointIds: kpIds });
       }
       replaceCourseContent(db, uuid, replaceItems);
       return { ok: true, courseUuid: uuid, categories: replaceItems.length, questionsCreated: created, questionsLinked: linked };

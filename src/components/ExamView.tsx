@@ -122,6 +122,8 @@ export default function ExamView({ childId, onExit }: Props) {
       scoringText: string;
       questionId: string;
       categoryId: string;
+      knowledgePointId: string;
+      knowledgePointName: string;
       options: string; // JSON [{key,text}]；选择题展示/判分用
       correctKey: string;
       answerText: string;
@@ -224,6 +226,8 @@ export default function ExamView({ childId, onExit }: Props) {
           scoringText: String(q?.scoringText || ""),
           questionId: String(q?.questionId || ""),
           categoryId: String(q?.categoryId || ""),
+          knowledgePointId: String(q?.knowledgePointId || ""),
+          knowledgePointName: String(q?.knowledgePointName || ""),
           options: JSON.stringify(Array.isArray(q?.options) ? q.options : []),
           correctKey: String(q?.correctKey || ""),
           answerText: String(q?.answerText || ""),
@@ -338,6 +342,8 @@ export default function ExamView({ childId, onExit }: Props) {
           (q as any).scoringText = metas[i]!.scoringText || "";
           (q as any).questionId = metas[i]!.questionId || "";
           (q as any).categoryId = metas[i]!.categoryId || "";
+          (q as any).knowledgePointId = metas[i]!.knowledgePointId || "";
+          (q as any).knowledgePointName = metas[i]!.knowledgePointName || "";
           (q as any).options = JSON.parse(metas[i]!.options || "[]");
           (q as any).correctKey = metas[i]!.correctKey || "";
           (q as any).answerText = metas[i]!.answerText || "";
@@ -463,6 +469,8 @@ export default function ExamView({ childId, onExit }: Props) {
           pointMax: Number(q.pointMax) || 10,
           questionId: String((q as any).questionId || ""), // 题库题目 uuid（结构化 v2，溯源/轮换）
           categoryId: String((q as any).categoryId || ""), // 类别 uuid
+          knowledgePointId: String((q as any).knowledgePointId || ""), // 知识点 uuid（挂载关系，溯源）
+          knowledgePointName: String((q as any).knowledgePointName || ""),
         });
         if (isSpeech(q)) {
           const g = speechGotByQid.get(q.qid)!;

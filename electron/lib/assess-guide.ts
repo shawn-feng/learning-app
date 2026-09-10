@@ -61,6 +61,8 @@ export const COURSE_ASSESS_GUIDE_MD = `# 课程考核内容编写规范（家长
 
 注意：item 用 categoryName（可自动建类别，默认 generic）或 categoryId 引用；questions 内联即自动进题库（返回新题 uuid），也可传 {"questionId":"已有题库题uuid"} 复用。behavior 是**题级**字段（2026-09-10）：内联题可显式给 speech_recite/speech_read/generic，不写则继承该类别默认；另可带 \`note\`（备注）与 \`knowledgeSummary\`（知识点概要），均可空、供向量检索。
 
+**知识点关联（2026-09-10 起）**：每题可带 \`knowledgePoint\`:\"知识点名\"（课内不存在自动创建，同名复用）或 \`knowledgePointId\`（assess_course_get 输出里的已有知识点 id）；也可在 item 级给 \`knowledgePoint\` 作该类别下未显式指定题目的默认。每题关联**一个最核心**的知识点即可；知识点名要用该课真实覆盖的知识点（先 assess_course_get 看现有名称，**同名复用、不要同义造新名**，如「学而时习之」不要一会儿写「时习之」一会儿写「学而时习之章」）。考核结果会按知识点落库溯源，供后续按知识点看掌握度。
+
 **选择题（2026-09-10 起支持）**：若某题本质是需要从几个候选里判断（题干常带「下列哪种/哪个…」），可把它写成选择题——题对象带 \`options\`:[{"key":"A","text":"…"},…]（通常 4 项），\`answer\` 填**正确项内容文本**（系统据此自动判定孩子口头作答「选 B」或说出正确内容，判分不进 LLM；建议每题配一个「正确的孩子做法/答案」作 answer 以便内容匹配兜底）。没有依赖选项的普通问答题仍是题干+answer+scoring 即可。
 
 ## 5. 孩子考核方法（assess_method_set）
@@ -72,6 +74,7 @@ export const COURSE_ASSESS_GUIDE_MD = `# 课程考核内容编写规范（家长
 1. 写前用 parent_library_courses 核对课程标题；用 parent_transcribe_media / parent_read_image 对准该课真实资料——**不编造原文与知识点**（尤其 answer 里的原文必须逐字与材料一致）。
 2. 每课至少挂"方法要考的类别"的题；某个类别该课暂时无题 → 该类型考核时会被跳过（方法要求但无题的类别应告知家长）。
 3. 旧 \`courses.assess_rubric\` 是未迁移课程的后备（存量 489 课迁移前仍走旧出题路径）；**迁移完成前不要用 parent_course_save 把新课写成旧 rubric**。
+4. 知识点关联：每题挂一个最核心的知识点，**同名复用**（先 assess_course_get 核对该课现有知识点名）；知识点=该课实际教的知识点，不编造。
 4. 写完后向家长汇报：哪些课已配、哪些类别缺题、哪个孩子方法已设。
 `;
 

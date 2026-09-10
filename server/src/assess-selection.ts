@@ -109,6 +109,8 @@ export function attachStructuredQuestions(
         scoring: string | null;
         pointMax: number;
         options: Array<{ key: string; text: string }>;
+        knowledgePointId: string;
+        knowledgePointName: string;
       };
     }> = [];
     for (const item of content.items) {
@@ -148,6 +150,8 @@ export function attachStructuredQuestions(
         pointMax: p.item.pointMax || 10,
         questionId: p.item.id, // 题库题目 uuid（落库溯源/轮换排除）
         categoryId: p.categoryId, // 类别 uuid
+        knowledgePointId: p.item.knowledgePointId || "", // 知识点 uuid（2026-09-10 实体化，落库溯源）
+        knowledgePointName: p.item.knowledgePointName || "",
       };
       if (p.behavior.startsWith("speech")) {
         return {
