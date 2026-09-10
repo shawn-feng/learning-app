@@ -8,6 +8,8 @@
 | 文档 | 位置 | 内容 |
 |---|---|---|
 | **ARCHITECTURE.md** | 仓库根 | app 技术架构、功能清单、实现细节、数据真源、实现红线（**每次调整后更新**） |
+| **EXAM-ARCHITECTURE.md** | 仓库根 | 学习考核模块架构与工作流程**真源**（2026-09-10 收口）：三表数据模型/两层考核方法/端到端流程/判分规则/agent 工具/审计/实现红线；考核改动必看必更新 |
+| **MATERIAL-BRIDGE-PROTOCOL.md** | 仓库根 | 资料页 ↔ 宿主/AI 统一通讯标准（PiBridge：API/信封/动作目录/tts 能力/编程 agent 约定/宿主实现要点）；架构落点见 ARCHITECTURE §12 |
 | **PACKAGING.md** | 仓库根 | 打包 + 部署（201 / ECS / OSS）+ 发布流程 + 运维坑 + 开发期构建验证速查 |
 | **ISSUES.md** | `.workbuddy/memory/` | 问题清单（2026-08-30 SPLIT 架构起重新编号） |
 | ISSUES-archive-2026-08-30.md | `.workbuddy/memory/` | 旧一体化架构时期的 ISSUE-001~052 归档 |
