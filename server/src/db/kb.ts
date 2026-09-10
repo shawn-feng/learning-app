@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS life_plans (
   title TEXT NOT NULL,
   creator TEXT NOT NULL DEFAULT 'parent',
   origin TEXT NOT NULL DEFAULT 'conversation',
+  carry_from TEXT NOT NULL DEFAULT '',
   recurrence_id TEXT NOT NULL DEFAULT '',
   start_at TEXT NOT NULL DEFAULT '',
   due_at TEXT NOT NULL DEFAULT '',
@@ -354,6 +355,16 @@ function ensureDailyPlanColumns(db: DatabaseSync): void {
     if (!cols.includes("plan_outcome")) db.exec("ALTER TABLE daily_entries ADD COLUMN plan_outcome TEXT NOT NULL DEFAULT ''");
   } catch {
     /* daily_entries 不存在则忽略 */
+  }
+  // 2026-09-10 收口修复：早期 life_plans 建表漏了 carry_from（/plans/today 与「顺延」标签都依赖），
+  // 已建的老库这里幂等补列；新建库由上面的 CREATE TABLE 直接带上。
+  try {
+    const lpCols = (db.prepare("PRAGMA table_info(life_plans)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (lpCols.length && !lpCols.includes("carry_from")) {
+      db.exec("ALTER TABLE life_plans ADD COLUMN carry_from TEXT NOT NULL DEFAULT ''");
+    }
+  } catch {
+    /* life_plans 不存在则忽略 */
   }
 }
 

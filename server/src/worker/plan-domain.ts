@@ -260,8 +260,10 @@ function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { 
         const v = r[c];
         return v == null ? "" : typeof v === "number" ? v : String(v);
       });
-      const extraCols = s.table === "study_plans" ? ", carry_from, origin" : ", origin";
-      const extraVals = s.table === "study_plans" ? ", ?, 'carry'" : ", 'carry'";
+      // carry_from：study/life 两表有该列（顺延标记）；exam_plans 无此列也不 carry（考核错过后由家长重排）
+      const hasCarry = s.table !== "exam_plans";
+      const extraCols = hasCarry ? ", carry_from, origin" : ", origin";
+      const extraVals = hasCarry ? ", ?, 'carry'" : ", 'carry'";
       kb.prepare(
         `INSERT INTO ${s.table} (id, parent_id, child_id, ${colNames}${extraCols}, start_at, due_at, status, result, done_at,
            active, created_at, updated_at)
@@ -271,7 +273,7 @@ function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { 
         ctx.parentId,
         ctx.childId,
         ...values,
-        ...(s.table === "study_plans" ? [id] : []),
+        ...(hasCarry ? [id] : []),
         dayStart(today),
         dayEnd(today),
         nowIso,
