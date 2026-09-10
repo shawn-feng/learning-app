@@ -357,7 +357,13 @@ interface GroupStat {
   rate: number;
 }
 
-/** 归属日统计（设计 §2.1）：done→完成那天；missed→最后一天；pending 不进分母。 */
+/**
+ * 归属日统计（2026-09-10 收口修正——窗口覆盖口径）：
+ * 分母 = 当天窗口覆盖的全部 count_in_rate 行（done/missed/pending 都算），
+ * rate = done / 分母。此前口径只数 done+missed、pending 不进分母，
+ * 导致白天 stat tick 结算时分母=已完成数 → rate 恒 100% 提前发满档分。
+ * （跨天场景：done 行无论哪天完成都算当窗口日的完成；missed 行由 expireAndCarry 在到期日落定。）
+ */
 function computeGroupStats(
   kb: DatabaseSync,
   table: string,
@@ -366,11 +372,12 @@ function computeGroupStats(
 ): GroupStat {
   const rows = kb
     .prepare(
-      `SELECT status, done_at, due_at, task_type, count_in_rate FROM ${table}
+      `SELECT status, task_type, count_in_rate FROM ${table}
        WHERE creator = ? AND active = 1 AND count_in_rate = 1
-         AND ( (status='done' AND substr(done_at,1,10) = ?) OR (status='missed' AND substr(due_at,1,10) = ?) )`
+         AND (start_at = '' OR substr(start_at,1,10) <= ?)
+         AND (due_at  = '' OR substr(due_at,1,10)  >= ?)`
     )
-    .all(owner, date, date) as Array<{ status: string; done_at: string; due_at: string; task_type: string; count_in_rate: number }>;
+    .all(owner, date, date) as Array<{ status: string; task_type: string; count_in_rate: number }>;
   const required = rows.filter((r) => r.task_type !== "optional");
   const optionalDone = rows.filter((r) => r.task_type === "optional" && r.status === "done").length;
   const total = required.length;
@@ -406,12 +413,16 @@ interface SettleResult {
   ledgerRows: number;
 }
 
-/** 积分结算（只结算当天，避免回溯）：档位 + 门控 + 流水（幂等）。 */
+/** 积分结算（只结算当天，避免回溯）：档位 + 门控 + 流水（幂等）。
+ *  2026-09-10 收口修正：**窗口未结束时只写实时统计、不发分**——
+ *  此前 stat tick 白天就结算，分母只含已完成行 → rate 恒 100% 提前发满档分。
+ *  finalOk = 当天窗口已结束（now ≥ 23:59:59 之后的首个 tick）；只有 finalOk 才匹配档位、写流水、更新余额。 */
 export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): SettleResult {
   const cfg = loadRewardConfig(kb, ctx.childId);
   const now = nowStr(ctx.now);
   const nowIso = ctx.now.toISOString();
   const out: SettleResult = { earned: 0, deducted: 0, ledgerRows: 0 };
+  const finalOk = now > dayEnd(today); // 23:59:59 之后为真；白天 tick 只更新实时进度
 
   // 先算两组的 todo 完成率与 exam 得分率（门控需要）
   const todoParent = computeGroupStats(kb, "study_plans", "parent", today);
@@ -461,6 +472,15 @@ export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: strin
     gateReason: string
   ) => {
     if (!stat.total) return; // 该组当天没有归属项 → 不结算
+    // 窗口未结束：只写实时进度（rate=实时口径），不评档、不发分、不动流水。
+    if (!finalOk) {
+      upsertStats.run(
+        ctx.childId, today, source, owner, stat.total, stat.done, stat.optionalDone, stat.missed,
+        stat.rate, "", null,
+        0, "", nowIso
+      );
+      return;
+    }
     const tier = matchTier(tiers, stat.rate);
     let points = tier ? tier.points : 0;
     let effectiveGate: boolean | null = null;
