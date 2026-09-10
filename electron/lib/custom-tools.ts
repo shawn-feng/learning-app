@@ -1788,12 +1788,65 @@ export function todoLocalDate(d: Date = new Date()): string {
 
 // ==================== ISSUE-047：孩子端 agent 自建定时提醒（语音 + 频率） ====================
 /**
- * plan_create（2026-09-10：孩子自建生活计划，制定人=孩子自己）。
+ * parent_plan_create（2026-09-10：家长为孩子创建生活计划，制定人=家长，必须完成项）。
+ * 与孩子的 plan_life 对称：家长说「让他每天整理书包 / 周五之前把手工做完」→ life_plans（creator='parent'）。
+ * 支持 days 数组一次排多天（与 study_plan_create 同风格）；参与家长组（必须完成项）完成率与积分分档。
+ */
+export const parentPlanLifeTool = defineTool({
+  name: "parent_plan_create",
+  label: "创建孩子生活计划（必须完成项）",
+  description:
+    "为孩子创建**生活计划**（必须完成项，制定人=家长）：日常任务类安排，如「每天整理书包」「周五前完成手工」「睡前阅读 20 分钟」。\n\n" +
+    "**参数**：`childName`（孩子姓名，必填）、`days`（必填数组，每项 = `date`（YYYY-MM-DD）+ `title`（要做的事，干净表述，时间放 `time`）+ `time`（可选 HH:mm 截止时刻，如 20:30 表示「八点半前做完」））。一次调用可排**多天**。\n\n" +
+    "**语义**：这些是**必须完成项**——当天没完成会影响完成率与积分档位（可能扣分），到点未完成自动顺延（carry）。孩子端「今日计划」会显示为「必须完成项（家长制定）」。空天 = 不要求；同天同标题已存在会自动跳过。",
+  parameters: Type.Object({
+    childName: Type.String({ description: "孩子姓名（必填）" }),
+    days: Type.Array(
+      Type.Object({
+        date: Type.String({ description: "哪天做，YYYY-MM-DD（口语「周五」先换算成日期）" }),
+        title: Type.String({ description: "要做的事（干净表述，时间放 time 参数）" }),
+        time: Type.Optional(Type.String({ description: "截止时刻 HH:mm（可选），如 20:30" })),
+      }),
+      { description: "生活计划数组（必填）：每项 = 某天的安排" }
+    ),
+  }),
+  execute: async (_toolCallId, params) => {
+    const { childId, name } = await resolvePlanChild(params.childName);
+    const days = Array.isArray(params.days) ? params.days : [];
+    if (!days.length) throw new Error("parent_plan_create 需要 days（至少一天的生活安排）");
+    const created: string[] = [];
+    for (const d of days) {
+      const date = String(d.date || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error(`日期格式应为 YYYY-MM-DD：${date}`);
+      const title = String(d.title || "").trim();
+      if (!title) throw new Error(`${date} 缺少 title（要做的事）`);
+      const time = String(d.time || "").trim();
+      const res = await serverFetch<{ ok: boolean; skipped?: boolean; message?: string }>("/plans/life", {
+        method: "POST",
+        body: { childId, title, date, time: time || undefined, creator: "parent" },
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      });
+      created.push(res.skipped ? `${date}：${title}（已存在，跳过）` : `${date}：${title}${time ? `（${time} 前）` : ""}`);
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `已为「${name}」创建生活计划（必须完成项）：\n${created.map((c) => `- ${c}`).join("\n")}\n（当天未完成会影响完成率与积分，未完成自动顺延；想取消用家长端「积分」页的取消按钮。）`,
+        },
+      ],
+    };
+  },
+});
+
+/**
+ * plan_life（2026-09-10：孩子自建生活计划，制定人=孩子自己）。
  * 孩子说「我今天想做 XX / 帮我记一件事」时落一条 life_plans（加分项，参与孩子组完成率统计）。
  * 约束：单日窗口（当天或未来某天）、一次一条；完成由系统判定（对话证据），不能勾选。
  */
-export const childPlanCreateTool = defineTool({
-  name: "plan_create",
+export const childPlanLifeTool = defineTool({
+  name: "plan_life",
   label: "添加到我的计划（孩子自定安排）",
   description:
     "孩子想给自己安排一件事（如「我今天想读完这本书」「帮我记着明天交手工」）时，用本工具把它加进当天/某天的计划（加分项）。\n\n" +
@@ -1808,7 +1861,7 @@ export const childPlanCreateTool = defineTool({
     const child_id = childIdFromCwd(ctx.cwd);
     if (!child_id) throw new Error("无法从会话目录解析 childId");
     const title = String(params.title || "").trim();
-    if (!title) throw new Error("plan_create 需要 title（要做的事）");
+    if (!title) throw new Error("plan_life 需要 title（要做的事）");
     const date = String(params.date || "").trim() || todoLocalDate();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("date 格式应为 YYYY-MM-DD");
     const time = String(params.time || "").trim();

@@ -283,8 +283,8 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
   });
 
   // ==================== 孩子自建生活计划（2026-09-10：制定人=孩子自己） ====================
-  /** POST /api/v1/plans/life —— 孩子端 agent plan_create 工具的落库入口。
-   *  creator 固定 'child'（加分项，task_type=optional），单日窗口；同 title+date 已有 pending 行则跳过（防重复）。 */
+  /** POST /api/v1/plans/life —— 生活计划创建入口（孩子端 plan_life / 家长端 parent_plan_create 共用）。
+   *  creator: 'child'(默认,加分项 optional) | 'parent'(必须完成项 required)；单日窗口；同 title+date 已有 pending 行则跳过（防重复）。 */
   app.post("/api/v1/plans/life", async (req, reply) => {
     let parentId: string;
     try {
@@ -293,11 +293,13 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const body = (req.body ?? {}) as { childId?: string; title?: string; date?: string; time?: string };
+    const body = (req.body ?? {}) as { childId?: string; title?: string; date?: string; time?: string; creator?: string };
     const childId = String(body.childId ?? "");
     const title = String(body.title ?? "").trim();
     if (!childId || !title) return reply.code(400).send({ error: "childId / title 必填" });
     if (title.length > 200) return reply.code(400).send({ error: "title 过长（≤200 字）" });
+    const planCreator = body.creator === "parent" ? "parent" : "child";
+    const taskType = planCreator === "parent" ? "required" : "optional";
     const date = String(body.date ?? "") || new Date().toLocaleDateString("sv-SE");
     if (!validDate(date)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
     const time = String(body.time ?? "").trim();
@@ -314,10 +316,10 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
     try {
       const dup = kb
         .prepare(
-          `SELECT id FROM life_plans WHERE title = ? AND active = 1 AND status IN ('pending')
+          `SELECT id FROM life_plans WHERE title = ? AND creator = ? AND active = 1 AND status IN ('pending')
              AND substr(start_at,1,10) <= ? AND substr(due_at,1,10) >= ?`
         )
-        .get(title, date, date) as { id: string } | undefined;
+        .get(title, planCreator, date, date) as { id: string } | undefined;
       if (dup) {
         return { ok: true, skipped: true, planId: dup.id, message: "同名计划当天已存在（待完成），未重复创建" };
       }
@@ -327,8 +329,8 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
         `INSERT INTO life_plans
            (id,parent_id,child_id,title,creator,origin,carry_from,recurrence_id,start_at,due_at,status,result,done_at,
             task_type,count_in_rate,points,active,created_at,updated_at)
-         VALUES (?,?,?,?,'child','conversation','','',?,?, 'pending','','','optional',1,0,1,?,?)`
-      ).run(id, parentId, childId, title, `${date} 00:00:00`, time ? `${date} ${time}:00` : `${date} 23:59:59`, now, now);
+         VALUES (?,?,?,?,?,'conversation','','',?,?,'pending','','',?,1,0,1,?,?)`
+      ).run(id, parentId, childId, title, planCreator, `${date} 00:00:00`, time ? `${date} ${time}:00` : `${date} 23:59:59`, taskType, now, now);
       return { ok: true, planId: id, date, dueAt: time ? `${date} ${time}:00` : `${date} 23:59:59` };
     } finally {
       kb.close();
