@@ -177,7 +177,9 @@ export function createWorkerKbTools(b: WorkerBindings) {
     description:
       "向 SQLite 知识库插入新条目，内容不进上下文。\n" +
       "**table: \"daily\"**：`date` + `block`（学习/生活/问答/任务）+ `content`（### 标题开头 + 字段行；生活事件含 `- 标签：诚实,亲情` 行，自动解析）。**批量推荐**：同一天多条用 `entries: [{block, content}, ...]` 一次写入（单事务，重复自动跳过）。\n" +
-      "**table: \"course\"**：新增课程，`topic`（主题目录名）+ `title`（课程名）；可选 status/mastery/material/sendMaterial/tags。",
+      "**table: \"course\"**：新增课程，`topic`（主题目录名）+ `title`（课程名）；可选 status/mastery/material/sendMaterial/tags。\n" +
+      "**计划证据（2026-09-10 计划域）**：daily 条目可带 `planId`（系统注入的当天生活计划 id）与 `planOutcome`（done=对话中明确完成 / missed=明确没做 / unknown=说不清）；" +
+      "批量时写在每条 entry 上（entry.planId / entry.planOutcome）。系统据 daily 的 planId+planOutcome 更新生活计划状态——**不要自己改计划表、也不要做勾选**。",
     parameters: Type.Object({
       table: Type.String({ description: "写入目标：daily | course" }),
       date: Type.Optional(Type.String({ description: "daily：日期 YYYY-MM-DD（批量时共用）" })),
@@ -188,10 +190,14 @@ export function createWorkerKbTools(b: WorkerBindings) {
           Type.Object({
             block: Type.String({ description: "区块" }),
             content: Type.String({ description: "条目文本" }),
+            planId: Type.Optional(Type.String({ description: "关联的生活计划 id（系统注入清单里的 plan_id）" })),
+            planOutcome: Type.Optional(Type.String({ description: "done | missed | unknown" })),
           }),
           { description: "批量写入 daily：同一 date 的多条条目" }
         )
       ),
+      planId: Type.Optional(Type.String({ description: "daily（单条）：关联的生活计划 id" })),
+      planOutcome: Type.Optional(Type.String({ description: "daily（单条）：done | missed | unknown" })),
       topic: Type.Optional(Type.String({ description: "course：主题目录名（如 lunyu）" })),
       title: Type.Optional(Type.String({ description: "course：新课程名" })),
       status: Type.Optional(Type.String({ description: "course：初始掌握状态（⬜/✅）" })),
@@ -215,7 +221,7 @@ export function createWorkerKbTools(b: WorkerBindings) {
         }
         const r = exec<{ inserted: number }>("kb.daily_entries.insertMany", {
           date: params.date,
-          entries: [{ block: params.block, content: params.content }],
+          entries: [{ block: params.block, content: params.content, planId: params.planId, planOutcome: params.planOutcome }],
         });
         return ok(r.inserted ? "已写入 daily。" : "该条目已存在，跳过。");
       }

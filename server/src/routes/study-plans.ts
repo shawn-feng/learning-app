@@ -314,16 +314,20 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     // 家长库 courses（(topic,title) 复合主键，title 基本唯一）反查补全；查不到留空（不影响
     // gen/stat 完成判定——那两处按 course_name 匹配）。
     const titleToTopic = new Map<string, string>();
+    // 计划域 S1（2026-09-10）：同时反查课程 uuid（course_uuid = 计划行对课程的真引用，替代按名匹配）
+    const titleToUuid = new Map<string, string>();
     try {
       const pdb = openParentLib(deps.config.dataDir, parentId);
       try {
-        const crows = pdb.prepare("SELECT topic, title FROM courses").all() as Array<{
+        const crows = pdb.prepare("SELECT topic, title, uuid FROM courses").all() as Array<{
           topic: string;
           title: string;
+          uuid: string | null;
         }>;
         for (const r of crows) {
           const t = (r.title || "").trim();
           if (t && !titleToTopic.has(t)) titleToTopic.set(t, r.topic);
+          if (t && r.uuid && !titleToUuid.has(t)) titleToUuid.set(t, String(r.uuid));
         }
       } finally {
         pdb.close();
@@ -344,12 +348,13 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       }
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
+      const courseUuid = titleToUuid.get(courseName) || "";
       deps.db
         .prepare(
-          "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, mode, origin, status, done_at, active, created_at, updated_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'conversation', 'pending', '', 1, ?, ?)"
+          "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, course_uuid, mode, origin, status, done_at, active, created_at, updated_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'conversation', 'pending', '', 1, ?, ?)"
         )
-        .run(id, parentId, childId, day, topicKey, courseName, mode, now, now);
+        .run(id, parentId, childId, day, topicKey, courseName, courseUuid, mode, now, now);
       have.add(k);
       inserted.push(`${it.courseName}（${mode === "review" ? "复习" : "新学"}）`);
     }

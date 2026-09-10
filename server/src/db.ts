@@ -200,6 +200,7 @@ export function openDb(dataDir: string): DatabaseSync {
       date TEXT NOT NULL DEFAULT '',
       topic_key TEXT NOT NULL DEFAULT '',
       course_name TEXT NOT NULL,
+      course_uuid TEXT NOT NULL DEFAULT '',
       mode TEXT NOT NULL DEFAULT 'new',
       origin TEXT NOT NULL DEFAULT 'conversation',
       status TEXT NOT NULL DEFAULT 'pending',
@@ -251,6 +252,17 @@ export function openDb(dataDir: string): DatabaseSync {
     }
   } catch {
     // 新库无旧表则忽略
+  }
+  // 计划域 S1（2026-09-10）：study_plan_items 加 course_uuid —— 计划行的课程真引用（替代课程名字符串匹配）。
+  // 幂等；存量回填见 server/scripts/backfill-plan-course-uuid.mts（按 topic_key+course_name 从家长库 courses.uuid 对账）。
+  try {
+    const spCols = (db.prepare("PRAGMA table_info(study_plan_items)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!spCols.includes("course_uuid")) {
+      db.exec("ALTER TABLE study_plan_items ADD COLUMN course_uuid TEXT NOT NULL DEFAULT ''");
+      console.log("[db] study_plan_items 加列 course_uuid（待回填）");
+    }
+  } catch {
+    // 表不存在则忽略
   }
   // 旧库迁移：materials 主键从单列 id（base64url(路径)）升级为复合主键 (parent_id, id)。
   // 旧设计跨家长同路径冲突：ON CONFLICT 只更新 size/updated_at 不更新 parent_id，

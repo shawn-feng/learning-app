@@ -12,6 +12,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
 import { runKbQuery, runKbExec } from "../routes/db.js";
+import { openKb } from "../db/kb.js";
 import { readServerDailyConversation } from "../db/sessions.js";
 import { getWorkerRuntime, pickWorkerModel } from "./runtime.js";
 import { createWorkerKbTools, formatLocalDate } from "./kb-tools.js";
@@ -168,6 +169,7 @@ async function buildProvidedContextLite(
     return line;
   });
   const tagsText = (tags ?? []).map((t) => `- ${t.tag}（${t.dimension}）：${t.criteria}`).join("\n");
+  const lifePlans = todayLifePlansText(ctx.dataDir, ctx.parentId, ctx.childId, formatLocalDate(ctx.now));
   const parts = [
     "## 已提供的上下文（直接使用，无需调用工具查询）",
     "",
@@ -177,6 +179,15 @@ async function buildProvidedContextLite(
     "【标签定义表】",
     tagsText || "（无标签定义）",
   ];
+  if (lifePlans) {
+    parts.push(
+      "",
+      "【今天的生活计划（判定完成用；写 daily 时带上对应 plan_id 与 plan_outcome）】",
+      lifePlans,
+      "规则：对照本次对话判断每条是否完成，写该事件的 daily 条目时带 plan_id=上面的 id、plan_outcome=done/missed/unknown；",
+      "对不上任何计划行的自由事件照常记录但不带 plan_id；**不要编造计划项、不要改动计划**（状态由系统更新）。"
+    );
+  }
   if (existingList) {
     parts.push(
       "",
@@ -189,6 +200,37 @@ async function buildProvidedContextLite(
     );
   }
   return parts.join("\n");
+}
+
+/** 当天生活计划清单（供 recording 判定完成并回写 plan_id/plan_outcome）。 */
+function todayLifePlansText(dataDir: string, parentId: string, childId: string, date: string): string {
+  try {
+    const kb = openKb(dataDir, parentId, childId);
+    try {
+      const rows = kb
+        .prepare(
+          `SELECT id, title, creator, due_at FROM life_plans
+           WHERE active = 1 AND status = 'pending'
+             AND (start_at = '' OR substr(start_at,1,10) <= ?)
+             AND (due_at  = '' OR substr(due_at,1,10)  >= ?)
+           ORDER BY due_at`
+        )
+        .all(date, date) as Array<{ id: string; title: string; creator: string; due_at: string }>;
+      if (!rows.length) return "";
+      return rows
+        .map(
+          (r) =>
+            `- plan_id=${r.id}｜「${r.title}」｜截止 ${String(r.due_at).slice(0, 16)}｜${
+              r.creator === "parent" ? "必须完成项（家长制定）" : "加分项（孩子自定）"
+            }`
+        )
+        .join("\n");
+    } finally {
+      kb.close();
+    }
+  } catch {
+    return "";
+  }
 }
 
 const recordingTask: WorkerTask = {
@@ -215,7 +257,7 @@ const recordingTask: WorkerTask = {
     const session = await createWorkerEphemeralSession(
       ctx,
       RECORDING_SYSTEM_PROMPT,
-      ["kb_query", "kb_insert", "kb_update", "todo_list"],
+      ["kb_query", "kb_insert", "kb_update"],
       kbTools
     );
     try {

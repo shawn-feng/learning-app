@@ -22,9 +22,9 @@ import {
   recordTaskRun,
   type EffectiveChildConfig,
 } from "../db/task-runs.js";
-import { listTasks, hhmm, runTodoGenServer, runTodoStatServer, type WorkerSchedulerChildConfig, type WorkerTask, type WorkerTaskCtx } from "./tasks.js";
+import { listTasks, hhmm, type WorkerSchedulerChildConfig, type WorkerTask, type WorkerTaskCtx } from "./tasks.js";
 import { formatLocalDate } from "./kb-tools.js";
-import { runStudyPlanCarryTick } from "./study-plan-carry.js";
+import { expandRecurrences, runPlanStat } from "./plan-domain.js";
 
 interface WorkerSchedulerDeps {
   dataDir: string;
@@ -367,25 +367,19 @@ function buildTodoCtx(
  * carry 与 gen 合并且 carry 在前，保证顺延行在 gen 读取当日排期前落库。
  */
 export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
-  // carry 先于 gen：runStudyPlanCarryTick 内部按 (child, 昨天) 游标幂等（一天一次，已顺延过即跳过）
-  await runStudyPlanCarryTick(deps).catch((e) =>
-    console.error("[worker] study-plan carry failed:", (e as Error).message)
-  );
+  // 2026-09-10 计划域重构：todolist 不再物化（动态查三张计划表）；carry 已并入 stat（判 missed 时复制新行）。
+  // plan tick 只负责「按重复规则展开计划行」。
   const now = new Date();
   const today = formatLocalDate(now);
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   for (const p of parents) {
     const settings = readParentSettings(deps.db, deps.dataDir, p.id);
-    // 2026-09-04：gen 不再受旧 todo.enabled 开关/调度任务约束——只要孩子今天有学习计划排期就物化 todolist
-    // （新模型里学习计划就是家长 todo 的真源；无计划则自然无事可物化）。
     for (const childId of listChildIds(deps.db, p.id)) {
-      if (!childHasPlanToday(deps.db, p.id, childId, today)) continue;
       try {
-        // gen = todolist 家长项 ↔ 学习计划「同步」——每次 tick 以最新 study_plan_items 物化今日家长
-        // todo_items：家长中途改计划 ≤2 分钟反映；孩子自规划项（source=child）不受影响。
-        await runTodoGenServer(buildTodoCtx(deps, p.id, childId, {}, settings, now));
+        const created = expandRecurrences(buildTodoCtx(deps, p.id, childId, {}, settings, now));
+        if (created) console.log(`[worker:plan] child=${childId}: 重复规则展开 ${created} 条计划（${today}）`);
       } catch (e) {
-        console.error(`[worker:plan] todo-sync child=${childId} failed:`, (e as Error).message);
+        console.error(`[worker:plan] recurrence-expand child=${childId} failed:`, (e as Error).message);
       }
     }
   }
@@ -442,26 +436,19 @@ export async function runStatTick(deps: WorkerSchedulerDeps): Promise<void> {
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   for (const p of parents) {
     const settings = readParentSettings(deps.db, deps.dataDir, p.id);
-    // 2026-09-04：stat 不再受旧 todo.enabled 开关约束——今天有计划或有 todo_items 的孩子都统计
-    // （runTodoStatServer 内部自判无 todo_items 即跳过；daily 条数变化驱动当天多次重跑）。
+    // 2026-09-10 计划域重构：stat = 三域判定（学习/考核/生活）→ 到期 carry → 归属日统计 → 积分结算。
+    // 事件驱动 + 周期性：每次 tick 都跑（结算/判 missed 依赖时间推进），写入全部幂等
+    // （points_ledger 唯一索引 / carry 只对 pending 且已过期行生效 / 统计 upsert）。
     for (const childId of listChildIds(deps.db, p.id)) {
-      if (!childHasPlanToday(deps.db, p.id, childId, today) && !childHasTodosToday(deps.dataDir, p.id, childId, today)) {
-        continue;
-      }
       try {
-        const daily = todayDailyEntries(deps, p.id, childId, today);
-        if (daily.length === 0) continue; // 无学习记录不统计（避免空转）
-        const seen = parseStatSeen(getWorkerStateKey(deps.db, childId, "todo_stat"), today);
-        if (seen.ranToday && seen.count >= daily.length) continue; // 无新增记录 → 不重复跑
-        await runTodoStatServer(buildTodoCtx(deps, p.id, childId, {}, settings, now));
-        setWorkerState(
-          deps.db,
-          childId,
-          "todo_stat",
-          now.toISOString(),
-          JSON.stringify({ date: today, count: daily.length })
-        );
-        console.log(`[worker:stat] child=${childId}: ${today} 已统计完成度（daily ${daily.length} 条${seen.ranToday ? "，有新增" : "，首次"}）`);
+        const r = runPlanStat(buildTodoCtx(deps, p.id, childId, {}, settings, now));
+        const changed = r.signals + r.exams + r.missed + r.carried + r.reward.ledgerRows;
+        if (changed) {
+          console.log(
+            `[worker:stat] child=${childId}: 学习判定 ${r.signals}，考核场次 ${r.exams}，missed ${r.missed}（carry ${r.carried}），` +
+              `统计 ${r.stats} 组，积分 +${r.reward.earned}/-${r.reward.deducted}（流水 ${r.reward.ledgerRows} 条）`
+          );
+        }
       } catch (e) {
         console.error(`[worker:stat] child=${childId} failed:`, (e as Error).message);
       }

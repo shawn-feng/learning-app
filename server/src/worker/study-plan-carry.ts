@@ -27,6 +27,7 @@ interface PlanCourseRow {
   date: string;
   topic_key: string;
   course_name: string;
+  course_uuid?: string;
   mode: string;
   origin: string;
   status: string;
@@ -81,7 +82,7 @@ async function carryOnceForChild(
   // 昨天全部排期行（只取仍未完成 status != done）
   const rows = deps.db
     .prepare(
-      "SELECT id, parent_id, child_id, date, topic_key, course_name, mode, origin, status " +
+      "SELECT id, parent_id, child_id, date, topic_key, course_name, course_uuid, mode, origin, status " +
         "FROM study_plan_items WHERE child_id = ? AND date = ? AND active = 1"
     )
     .all(childId, yesterday) as unknown as PlanCourseRow[];
@@ -109,10 +110,10 @@ async function carryOnceForChild(
     const id = crypto.randomUUID();
     deps.db
       .prepare(
-        "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, mode, origin, status, done_at, active, created_at, updated_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, 'carry', 'pending', '', 1, ?, ?)"
+        "INSERT INTO study_plan_items (id, parent_id, child_id, date, topic_key, course_name, course_uuid, mode, origin, status, done_at, active, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'carry', 'pending', '', 1, ?, ?)"
       )
-      .run(id, parentId, childId, today, r.topic_key, r.course_name, r.mode, now.toISOString(), now.toISOString());
+      .run(id, parentId, childId, today, r.topic_key, r.course_name, r.course_uuid || "", r.mode, now.toISOString(), now.toISOString());
     // 昨天的行不再保持 pending（停用，防下一天重复顺延同课）
     deps.db
       .prepare("UPDATE study_plan_items SET status = 'carried', active = 0, updated_at = ? WHERE id = ?")

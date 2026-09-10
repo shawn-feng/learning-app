@@ -23,6 +23,30 @@ interface RpcContext {
   parentId: string;
 }
 
+/**
+ * 计划域 S2（2026-09-10）：按课程名从**家长库**取课程 uuid —— 孩子库 courses.uuid / 计划行 course_uuid 的真源。
+ * 家长库 courses.uuid 在 openParentLib 时幂等回填；查不到返回 ""（课程可能已删）。
+ */
+function resolveCourseUuid(dataDir: string, parentId: string, topic: string, title: string): string {
+  try {
+    const pdb = openParentLib(dataDir, parentId);
+    try {
+      const byTopic = pdb.prepare("SELECT uuid FROM courses WHERE topic = ? AND title = ?").get(topic, title) as
+        | { uuid?: string }
+        | undefined;
+      if (byTopic?.uuid) return String(byTopic.uuid);
+      const byTitle = pdb.prepare("SELECT uuid FROM courses WHERE title = ? LIMIT 1").get(title) as
+        | { uuid?: string }
+        | undefined;
+      return byTitle?.uuid ? String(byTitle.uuid) : "";
+    } finally {
+      pdb.close();
+    }
+  } catch {
+    return "";
+  }
+}
+
 function assertChildOwned(ctx: RpcContext, childId: string): void {
   const row = ctx.mainDb
     .prepare("SELECT 1 FROM children WHERE id = ? AND parent_id = ?")
@@ -545,10 +569,19 @@ export const execHandlers: Record<string, ExecHandler> = {
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
+      // 计划域（2026-09-10）：可选 plan_id / plan_outcome —— 生活计划证据（recording 写，stat 据此判完成）
       db.prepare(
-        `INSERT OR REPLACE INTO daily_entries (date, block, title, raw, tags)
-         VALUES (?, ?, ?, ?, ?)`
-      ).run(str(args.date), str(args.block), str(args.title), str(args.raw), str(args.tags));
+        `INSERT OR REPLACE INTO daily_entries (date, block, title, raw, tags, plan_id, plan_outcome)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        str(args.date),
+        str(args.block),
+        str(args.title),
+        str(args.raw),
+        str(args.tags),
+        str(args.plan_id || args.planId || ""),
+        str(args.plan_outcome || args.planOutcome || "")
+      );
       return { ok: true };
     } finally {
       db.close();
@@ -564,7 +597,7 @@ export const execHandlers: Record<string, ExecHandler> = {
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
       const tx = db.prepare(
-        "INSERT OR IGNORE INTO daily_entries (date, block, title, raw, tags) VALUES (?, ?, ?, ?, ?)"
+        "INSERT OR IGNORE INTO daily_entries (date, block, title, raw, tags, plan_id, plan_outcome) VALUES (?, ?, ?, ?, ?, ?, ?)"
       );
       let inserted = 0;
       db.exec("BEGIN");
@@ -573,7 +606,15 @@ export const execHandlers: Record<string, ExecHandler> = {
           const content = str(e.content);
           const title = content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "";
           if (!title) continue;
-          const r = tx.run(date, str(e.block), title, content, extractTagsFromRaw(content));
+          const r = tx.run(
+            date,
+            str(e.block),
+            title,
+            content,
+            extractTagsFromRaw(content),
+            str(e.planId || e.plan_id || ""),
+            str(e.planOutcome || e.plan_outcome || "")
+          );
           if (r.changes > 0) inserted++;
         }
         db.exec("COMMIT");
@@ -704,9 +745,9 @@ export const execHandlers: Record<string, ExecHandler> = {
     try {
       db.prepare(
         `INSERT INTO courses (
-           topic, title, sort_order, status, mastery, exam_mastery, first_learned, last_review,
+           topic, title, uuid, sort_order, status, mastery, exam_mastery, first_learned, last_review,
            review_count, material, send_material, tags, lesson_method, html_path, teaching_copy
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(topic, title) DO UPDATE SET
            sort_order = excluded.sort_order,
            status = excluded.status,
@@ -724,6 +765,7 @@ export const execHandlers: Record<string, ExecHandler> = {
       ).run(
         str(args.topic),
         str(args.title),
+        resolveCourseUuid(ctx.dataDir, ctx.parentId, str(args.topic), str(args.title)),
         num(args.sort_order),
         str(args.status),
         str(args.mastery),
@@ -757,12 +799,13 @@ export const execHandlers: Record<string, ExecHandler> = {
       const r = db
         .prepare(
           `INSERT OR IGNORE INTO courses (
-             topic, title, sort_order, status, mastery, exam_mastery, material, send_material, tags, lesson_method, html_path, teaching_copy
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             topic, title, uuid, sort_order, status, mastery, exam_mastery, material, send_material, tags, lesson_method, html_path, teaching_copy
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           topic,
           str(args.title),
+          resolveCourseUuid(ctx.dataDir, ctx.parentId, topic, str(args.title)),
           max.m + 1,
           str(args.status),
           str(args.mastery),
