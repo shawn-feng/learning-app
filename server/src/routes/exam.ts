@@ -523,6 +523,23 @@ function listCourseStatus(
       }
     }
     const reinforce = latestReinforcePlan(db, childId);
+    // 计划域重构（2026-09-10）：掌握度口径改为「最近一次考核」（course_progress 视图；学习侧只报最近学习时间）。
+    // 旧的 courses.mastery/exam_mastery 列保留但不再作为掌握度口径（物理删列留下一版，避免运行时断裂）。
+    const progress = new Map<string, { lastExamAt: string; lastExamRate: number | null; lastLearnedAt: string }>();
+    try {
+      const rows = kb
+        .prepare("SELECT title, lastExamAt, lastExamRate, lastLearnedAt FROM course_progress")
+        .all() as Array<{ title: string; lastExamAt: string | null; lastExamRate: number | null; lastLearnedAt: string | null }>;
+      for (const r of rows) {
+        progress.set(String(r.title), {
+          lastExamAt: String(r.lastExamAt ?? ""),
+          lastExamRate: r.lastExamRate == null ? null : Number(r.lastExamRate),
+          lastLearnedAt: String(r.lastLearnedAt ?? ""),
+        });
+      }
+    } catch {
+      /* 视图不存在（未迁移库）则跳过 */
+    }
     const rows = kb
       .prepare(
         "SELECT topic, title, status, mastery, exam_mastery, first_learned, last_review, review_count FROM courses ORDER BY topic, sort_order, title"
@@ -546,19 +563,28 @@ function listCourseStatus(
       const rp = reinforce[r.title];
       // 仅纳入有学习/复习/考核信号的课程（复习计划制定聚焦于已学课程）
       if (!fl && !lr && String(r.status ?? "").trim() !== "✅" && !es) continue;
+      // 掌握度口径（2026-09-10 重构）：**只取最近一次考核**（progress.lastExamRate）；
+      // 学习状态只报最近学习时间（progress.lastLearnedAt）。旧列 mastery/exam_mastery 不再作为口径。
+      const pg = progress.get(r.title);
+      const lastExamRate = pg?.lastExamRate ?? null;
       out.push({
         topic: r.topic,
         topicName: topicNames.get(r.topic) ?? r.topic,
         title: r.title,
         topicType: childTopicTypes.get(r.topic) ?? "",
         status: r.status ?? "⬜",
-        mastery: r.mastery ?? "",
+        // ↓ 新口径
+        lastLearnedAt: pg?.lastLearnedAt || lr || fl,
+        lastExamRate, // 最近一次考核得分率（0~1），null=未考过
+        lastExamAtNew: pg?.lastExamAt ?? "",
+        // ↓ 兼容保留（家长端旧字段；mastery 已无口径意义，恒空）
+        mastery: "",
         firstLearned: learnedNoDate ? "✅" : fl,
         lastReview: lr,
         reviewCount: Number(r.review_count) || 0,
-        lastExamAt: es?.lastAt ?? "",
+        lastExamAt: pg?.lastExamAt || es?.lastAt || "",
         examCount: es?.ids.size ?? 0,
-        examMastery: r.exam_mastery ?? "",
+        examMastery: lastExamRate == null ? "" : String(lastExamRate),
         examRate: es && es.total ? Math.round((es.correct / es.total) * 1000) / 1000 : 0,
         planReviewAt: rp?.planReviewAt ?? "",
         focus: Array.isArray(rp?.focus) ? rp!.focus!.map(String) : [],

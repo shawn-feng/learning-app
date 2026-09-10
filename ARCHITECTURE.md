@@ -62,19 +62,33 @@
 ## 4. 服务端 worker 调度（方案 B，当前真源）
 
 - **cron = 每 5 分钟**（`*/5`）。`server/src/worker/scheduler.ts`：`runPlanTick → runStatTick → runWorkerTick(recording)`。
-- **runPlanTick**：先 carry（游标 = 昨天，纯 SQL 顺延未完成排期行），再 gen = 以最新 `study_plan_items` 当日排期物化今日 parent todo_items（家长中途改计划 ≤5min 反映；孩子自规划项绝不动）。
-- **runStatTick**：事件驱动、当天可多次（勿回退「一天一次」）——今天有 todo_items 且 daily 有记录才跑；去重 = `worker_state` `todo_stat`.last_key=`{date,count}`，**daily 条数新增 → 下次 tick 重跑**。stat 纯代码按 courses `first_learned/last_review==今天` → ① 回写 study_plan_items done ② 按 plan_id 勾今日 parent todo ③ 汇总 child_kb `child_todo_stats`。
-  - ⚠️ 勾 todo 判定勿用 `r.status`（load 的陈旧内存值 → todo 永不勾），须用 `doneOfPlan`（2026-09-04 实证）。
-- **游标**：gen 无；stat = `todo_stat`.last_key；carry = `study_plan_carry`=昨天。
+- **2026-09-10 计划域重构后**（真源 `server/src/worker/plan-domain.ts`，设计见根目录 `DESIGN-plan-domain-rewrite-2026-09-10.md`）：
+  - **runPlanTick** = `expandRecurrences`：只把 `plan_recurrences` 命中当天的重复规则展开成计划行（幂等 `last_expanded_date`）。**不再物化 todolist、不再 carry**。
+  - **runStatTick** = `runPlanStat`（每次 tick 都跑，写入全幂等）：
+    1. 学习域：courses 学习时间落在计划窗口内 → `study_plans` done（并回写该日 daily 学习条目 `plan_id`）
+    2. 考核域：场次 → `exam_plans` done/score/attempt_id + `exam_plan_courses` 逐题明细
+    3. 生活域：`daily_entries(plan_id, plan_outcome='done')` → `life_plans` done
+    4. 到期未完成 → `missed` + **复制新行到当天**（`origin='carry'`，窗口=当天）；`cancelled` 不复制
+    5. **归属日统计** → `reward_daily_stats(child_id,date,source,owner)`（done 计入完成那天 / missed 只计入 due_at 那天 / pending 不进分母）
+    6. **积分结算** → `points_ledger`（幂等唯一索引；档位 + 门控 + 每分变动带 `reason/rate/meta`），余额 = 流水净额
+  - **游标**：`worker_state` 的 `todo_stat`/`study_plan_carry` 已不再使用（旧字段保留）；积分用 `points_ledger` 唯一索引天然幂等。
 
 ## 5. 学习计划 / todolist（ISSUE-033 多列表，不兼容旧版）
 
-- **主库 `study_plan_items`（一课一行）**：字段 `parent_id/child_id/date/topic_key/course_name/mode('new'|'review')/origin('conversation'|'carry')/status('pending'|'done'|'carried')/done_at/active`；**完成态由 stat 回写**。旧表启动就地转换（`migrateStudyPlanV2`，meta `study_plan_v2_migrated` 幂等）；全量脚本 `server/scripts/migrate-study-plan-v2.mts <dataDir>`。
-- **孩子 kb `todo_items`（一事一行）**：`child_id/todo_date/title/source('parent'|'child')/plan_id/status/done_at/note/sort`；`child_todo_stats` 由它汇总。
-- **kb.todo ops**：list / add(仅 child) / addParent(source=parent,plan_id) / set / remove(仅 child) / removeByPlan(仅 parent)。⚠️ 写操作放 execHandlers、读操作放 queryHandlers，放错 registry 运行时报错。
-- 服务端 `/study-plans` 与 `/today` 下发每行 `done`（家长面板以服务端为准，客户端不现算）。
-- 工具契约：`todo_list` = read/add/check/uncheck/remove 结构化；`study_plan_update` 行级 act=delete/reschedule/setmode。家长排课「复习：」前缀在 agent-tool 入口归一为 mode=review。plan-text.ts 已删除。
-- 验证脚本：`server/scripts/verify-study-plan-v2.mts`（10/10 通过）。
+> **2026-09-10 计划域重构（当前真源）**：计划从「主库一行一天 + todolist 物化」改为**孩子 kb 的三张计划表 + 动态 todolist**。
+> 详细设计：`DESIGN-plan-domain-rewrite-2026-09-10.md`；积分域：`DESIGN-reward-points-2026-09-10.md`。
+
+- **三张计划表（孩子 kb）**：`study_plans` / `exam_plans` / `life_plans`——统一字段形态（`id/parent_id/child_id/creator('parent'|'child')/origin/start_at/due_at/status('pending'|'done'|'missed'|'cancelled')/result/done_at/task_type/count_in_rate/points/active`）。
+  - 时间精确到秒（`YYYY-MM-DD HH:mm:ss`；只给日期则 due 补 `23:59:59`）；匹配按**窗口区间**（`start_at ≤ 信号日期 ≤ due_at`）。
+  - `creator` 展示名：**必须完成项**（家长制定，未达负分档扣分）/ **加分项**（孩子自定，只加不扣、受门控）。
+- **`exam_plan_courses`**：考核范围（课程+知识点）→ 开考抽题后回填 `question_id` 与得分（计划期不固化题目，保留随机抽题）。
+- **`plan_recurrences`**：重复规则（daily/weekly）→ worker 展开成计划行。
+- **todolist 不再落表**：`/today` 与孩子端当日列表 = 三表中「窗口覆盖当天」的行（UNION）；`todo_items` 仅历史归档（迁完即停用）。
+- **完成信号**：学习=courses 学习时间（`last_review`，语义=最近学习时间）；考核=考核页提交（场次直写）；**生活=only recording 写入的 daily 证据**（`plan_id` + `plan_outcome`）。
+- **积分**：`reward_configs`（按比例自由分档 + 门控阈值）/`reward_daily_stats`/`points_ledger`（唯一真源，每分记原因）/`points_balance`/`redemption_*`。
+- **掌握度口径**：`course_progress` 视图——掌握度=**最近一次考核得分率**、学习状态=**最近学习时间**；`courses.mastery/exam_mastery` 不再作为口径（物理删列留在下一版）。
+- **迁移**：`server/scripts/migrate-plan-domain.mts <dataDir> [parentId] [--dry-run|--force]`（主库按 child_id 拆入孩子 kb；历史未完成 → `missed`+`active=0`，不回溯发分）；`backfill-plan-course-uuid.mts`（S1 回填）。
+- 旧脚本仍可用于历史查询：`migrate-study-plan-v2.mts` / `verify-study-plan-v2.mts`。
 
 ## 6. 学习考核（EXAM，ISSUE-027 → 065/066/067）
 
