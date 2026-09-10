@@ -116,7 +116,16 @@ export default function ExamView({ childId, onExit }: Props) {
   // 题流元数据（结构化 v2）：与 iframe D.questions 完全同序，记录每题评分标准文本与溯源 id；
   // iframe 会重排 qid 且丢弃未知字段，判分标准/题目溯源只能由宿主按送达顺序在提交时回填。
   const questionMetaRef = useRef<
-    Array<{ course: string; stem: string; scoringText: string; questionId: string; categoryId: string }>
+    Array<{
+      course: string;
+      stem: string;
+      scoringText: string;
+      questionId: string;
+      categoryId: string;
+      options: string; // JSON [{key,text}]；选择题展示/判分用
+      correctKey: string;
+      answerText: string;
+    }>
   >([]);
   // 准备阶段提示文案（选课/出题/判分共用「批改中」遮罩）
   const [prepText, setPrepText] = useState("");
@@ -214,6 +223,9 @@ export default function ExamView({ childId, onExit }: Props) {
           scoringText: String(q?.scoringText || ""),
           questionId: String(q?.questionId || ""),
           categoryId: String(q?.categoryId || ""),
+          options: JSON.stringify(Array.isArray(q?.options) ? q.options : []),
+          correctKey: String(q?.correctKey || ""),
+          answerText: String(q?.answerText || ""),
         });
       }
       try {
@@ -324,6 +336,9 @@ export default function ExamView({ childId, onExit }: Props) {
           (q as any).scoringText = metas[i]!.scoringText || "";
           (q as any).questionId = metas[i]!.questionId || "";
           (q as any).categoryId = metas[i]!.categoryId || "";
+          (q as any).options = JSON.parse(metas[i]!.options || "[]");
+          (q as any).correctKey = metas[i]!.correctKey || "";
+          (q as any).answerText = metas[i]!.answerText || "";
         }
       });
       const isSpeech = (q: (typeof payload.perQuestion)[number]) => !!q.questionType;
@@ -352,6 +367,15 @@ export default function ExamView({ childId, onExit }: Props) {
           scoring: String((q as any).scoringText || ""),
           asrText: q.asr || "",
           durationMs: q.durationMs ?? null,
+          // 选择题（带选项）：交给判分引擎本地规则判分（不进 LLM）
+          choice:
+            Array.isArray((q as any).options) && (q as any).options.length
+              ? {
+                  options: (q as any).options as Array<{ key: string; text: string }>,
+                  correctKey: String((q as any).correctKey || ""),
+                  answerText: String((q as any).answerText || ""),
+                }
+              : undefined,
         }));
         const r: any = await window.api.examScore(childId, scoringPrompt, answers);
         if (!r?.success) throw new Error(r?.error || "判分失败");

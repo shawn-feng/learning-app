@@ -39,7 +39,14 @@ export function attachStructuredQuestions(db: DatabaseSync, childId: string, cou
       categoryId: string;
       categoryName: string;
       overview: string;
-      item: { id: string; stem: string; answer: string; scoring: string | null; pointMax: number };
+      item: {
+        id: string;
+        stem: string;
+        answer: string;
+        scoring: string | null;
+        pointMax: number;
+        options: Array<{ key: string; text: string }>;
+      };
     }> = [];
     for (const item of content.items) {
       if (exclude.has(item.categoryId)) continue;
@@ -88,9 +95,29 @@ export function attachStructuredQuestions(db: DatabaseSync, childId: string, cou
           refText: p.item.answer, // 标准原文 = 题库 answer
         };
       }
-      return { ...base, qid: `q${++textNo}`, scoringText: serializeScoring(p.item) };
+      const q = { ...base, qid: `q${++textNo}`, scoringText: serializeScoring(p.item) } as Record<string, unknown>;
+      // 选择题（题库带 options）：下发选项给答题端展示 + 正确项 key/答案文本供规则判分
+      const opts = p.item.options ?? [];
+      if (opts.length) {
+        q.options = opts;
+        q.correctKey = correctKeyOf({ answer: p.item.answer, options: opts });
+        q.answerText = p.item.answer;
+      }
+      return q;
     });
   }
+}
+
+/** 选项里找与答案文本匹配的 key（判分规则用）；找不到返回 ""（判分可回退内容匹配/LLM）。 */
+function correctKeyOf(item: { answer: string; options: Array<{ key: string; text: string }> }): string {
+  const norm = (s: string) => String(s).replace(/\s+/g, "").replace(/[，。！？、,.!?;；:："“”‘’'（）()]/g, "");
+  const ans = norm(item.answer);
+  if (!ans) return "";
+  for (const o of item.options) {
+    const t = norm(o.text);
+    if (t && (t === ans || (ans.length >= 3 && (t.includes(ans) || ans.includes(t))))) return o.key;
+  }
+  return "";
 }
 
 /** 把题库的答案/评分维度/特殊情况压成判分可读文本（不下发渲染 UI 作展示，判分锚定用）。 */

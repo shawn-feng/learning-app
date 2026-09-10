@@ -77,6 +77,8 @@ export const assessCourseGetTool = defineTool({
       for (const q of it.questions) {
         const tag = q.behavior && q.behavior !== "generic" ? `[${q.behavior}]` : "";
         lines.push(`- 题${tag}(${q.pointMax}分): ${q.stem}`);
+        if ((q as any).options?.length)
+          lines.push(`  选项：${(q as any).options.map((o: { key: string; text: string }) => `${o.key}.${o.text}`).join("  ")}（孩子看选项口头作答，判分按正确项）`);
         if (q.answer) lines.push(`  答案：${q.answer}`);
         if (q.scoring) lines.push(`  评分标准：${String(q.scoring).slice(0, 300)}`);
         if (q.note) lines.push(`  备注：${q.note}`);
@@ -93,6 +95,7 @@ export const assessContentSaveTool = defineTool({
   description:
     "整课保存某门课的考核内容（事务替换旧挂载）。payloadJson 为 JSON：{\"items\":[{ \"categoryName\":\"背诵\", \"overview\":\"该课该类别说明(可选)\", \"questions\":[ {\"stem\":\"背诵本章原文\",\"answer\":\"<标准原文>\",\"behavior\":\"speech_recite\",\"note\":\"备注(可选)\",\"knowledgeSummary\":\"知识点概要(可选)\"} ] }]}。\n" +
     "每道题可带 behavior（题级判定，2026-09-10 起）——speech_recite 背诵评测（answer=标准原文、不显示原文、置首题）、speech_read 朗读跟读、generic 口述主观题；不写则默认继承该类别的 behavior。" +
+    "选择题可带 options:[{key:\"A\",text:\"…\"},…]（孩子看选项口头作答，判分按正确项自动对照，不进 LLM；answer 填正确项内容，可不填 scoring）。" +
     "文字题每题必填 stem+answer（参考答案/得分要点），scoring 建议 JSON：{\"dims\":[{\"dim\":\"维度\",\"points\":\"得分点\",\"score\":分,\"note\":\"说明\"}],\"special\":[\"特殊情况\"]}，也可写人话；" +
     "note=备注、knowledgeSummary=知识点概要均可空（供向量检索）。引用已有题库题给 {\"questionId\":\"...\"}。\n" +
     "内容要对应真实课程材料（不编造原文）；写前先 assess_course_get / parent_library_courses 核对。",

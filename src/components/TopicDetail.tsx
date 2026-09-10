@@ -688,6 +688,16 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                                         {activeCat.categoryName} · {BEHAVIOR_LABEL[selQ.behavior || activeCat.behavior] || selQ.behavior || activeCat.behavior} · {selQ.pointMax || 10} 分
                                       </div>
                                     )}
+                                    {(selQ as any).options?.length ? (
+                                      <div style={{ marginBottom: 6 }}>
+                                        <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>选项（选择题：孩子看选项口头作答）：</div>
+                                        {((selQ as any).options as Array<{ key: string; text: string }>).map((o, oi) => (
+                                          <div key={oi} style={{ fontSize: 13, background: "#f4f6fc", border: "1px solid #e3e8f3", borderRadius: 6, padding: "4px 8px", marginBottom: 3 }}>
+                                            <b style={{ color: "#667eea" }}>{o.key}.</b> {o.text}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : null}
                                     {selQ.answer ? (
                                       <div style={{ marginBottom: 6 }}>
                                         <div style={{ fontSize: 12, color: "#6b7686" }}>参考答案：</div>

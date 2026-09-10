@@ -25,6 +25,10 @@ function fmtScoreLines(scoring: string | null): string[] {
     return [scoring];
   }
 }
+/** 选择题选项（sel.options 可为空/未定义）：[] = 非选择题 */
+function fmtOpts(sel: any): Array<{ key: string; text: string }> {
+  return Array.isArray(sel?.options) ? sel.options : [];
+}
 function fmtDT(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -163,6 +167,16 @@ export default function QuestionBankPanel() {
                     </span>
                   ))}
                 </div>
+                {fmtOpts(sel).length ? (
+                  <div style={{ marginBottom: 6 }}>
+                    <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>选项（选择题：孩子看选项口头作答）：</div>
+                    {fmtOpts(sel).map((o, oi) => (
+                      <div key={oi} style={{ fontSize: 13, background: "#f4f6fc", border: "1px solid #e3e8f3", borderRadius: 6, padding: "4px 8px", marginBottom: 3 }}>
+                        <b style={{ color: "#667eea" }}>{o.key}.</b> {o.text}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 {sel.answer ? (
                   <div style={{ marginBottom: 6 }}>
                     <div style={{ fontSize: 12, color: "#6b7686" }}>参考答案：</div>

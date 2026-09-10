@@ -61,6 +61,8 @@ export const COURSE_ASSESS_GUIDE_MD = `# 课程考核内容编写规范（家长
 
 注意：item 用 categoryName（可自动建类别，默认 generic）或 categoryId 引用；questions 内联即自动进题库（返回新题 uuid），也可传 {"questionId":"已有题库题uuid"} 复用。behavior 是**题级**字段（2026-09-10）：内联题可显式给 speech_recite/speech_read/generic，不写则继承该类别默认；另可带 \`note\`（备注）与 \`knowledgeSummary\`（知识点概要），均可空、供向量检索。
 
+**选择题（2026-09-10 起支持）**：若某题本质是需要从几个候选里判断（题干常带「下列哪种/哪个…」），可把它写成选择题——题对象带 \`options\`:[{"key":"A","text":"…"},…]（通常 4 项），\`answer\` 填**正确项内容文本**（系统据此自动判定孩子口头作答「选 B」或说出正确内容，判分不进 LLM；建议每题配一个「正确的孩子做法/答案」作 answer 以便内容匹配兜底）。没有依赖选项的普通问答题仍是题干+answer+scoring 即可。
+
 ## 5. 孩子考核方法（assess_method_set）
 
 一次设一个孩子：requireText 形如 "背诵:1,句意白话:1,道理:1"，excludeText 形如 "字词,典故"，recitePass 默认 90。方法按主题存、按孩子区分；同一主题不同孩子分别设。设完可用 assess_categories_list / assess_course_get 核对。

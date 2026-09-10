@@ -24,6 +24,8 @@ export interface AssessQuestionView {
   behavior: string;
   note: string;
   knowledgeSummary: string;
+  /** 选择题选项 [{key,text}]；[] = 非选择题（2026-09-10） */
+  options: Array<{ key: string; text: string }>;
 }
 export interface AssessBankQuestion extends Omit<AssessQuestionView, "seq"> {
   contexts: Array<{ topic: string; course: string; category: string }>;

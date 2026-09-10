@@ -63,7 +63,21 @@ export function ensureAssessContentSchema(db: DatabaseSync): void {
   if (!qCols.includes("behavior")) db.exec("ALTER TABLE question_bank ADD COLUMN behavior TEXT NOT NULL DEFAULT 'generic'");
   if (!qCols.includes("note")) db.exec("ALTER TABLE question_bank ADD COLUMN note TEXT NOT NULL DEFAULT ''");
   if (!qCols.includes("knowledge_summary")) db.exec("ALTER TABLE question_bank ADD COLUMN knowledge_summary TEXT NOT NULL DEFAULT ''");
+  // 选择题选项（2026-09-10）：JSON 数组 [{key:"A",text:"…"}]，[] = 非选择题。展示给孩子的选项。
+  if (!qCols.includes("options")) db.exec("ALTER TABLE question_bank ADD COLUMN options TEXT NOT NULL DEFAULT '[]'");
 }
+
+/** 解析题库题 options 文本 → 数组（容错：非法/空返回 []）。 */
+export function parseOptions(raw: string | null | undefined): Array<{ key: string; text: string }> {
+  if (!raw) return [];
+  try {
+    const a = JSON.parse(raw);
+    return Array.isArray(a) ? a.filter((o) => o && typeof o.text === "string") : [];
+  } catch {
+    return [];
+  }
+}
+export type QuestionOption = { key: string; text: string };
 
 // ==================== 类型 ====================
 
@@ -83,6 +97,8 @@ export interface QuestionRow {
   behavior: string;
   note: string;
   knowledgeSummary: string;
+  /** 选择题选项 [{key,text}]；[] = 非选择题 */
+  options: QuestionOption[];
 }
 export interface CourseContentItem {
   categoryId: string;
@@ -99,6 +115,7 @@ export interface CourseContentItem {
     behavior: string;
     note: string;
     knowledgeSummary: string;
+    options: QuestionOption[];
   }>;
 }
 export interface CourseContent {
@@ -145,6 +162,8 @@ export function saveQuestion(
     behavior?: string;
     note?: string;
     knowledgeSummary?: string;
+    /** 选择题选项 [{key,text}]（缺省 = 保留原值/非选择题） */
+    options?: QuestionOption[] | null;
   }
 ): string {
   const id = q.id ?? randomUUID();
@@ -155,13 +174,24 @@ export function saveQuestion(
   const knowledgeSummary = q.knowledgeSummary ?? "";
   const exists = db.prepare("SELECT id FROM question_bank WHERE id = ?").get(id);
   if (exists) {
-    db.prepare(
-      "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, behavior = ?, note = ?, knowledge_summary = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary, id);
+    const cur =
+      q.options === undefined
+        ? null
+        : JSON.stringify(Array.isArray(q.options) ? q.options : []);
+    if (cur === null) {
+      db.prepare(
+        "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, behavior = ?, note = ?, knowledge_summary = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary, id);
+    } else {
+      db.prepare(
+        "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, behavior = ?, note = ?, knowledge_summary = ?, options = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary, cur, id);
+    }
   } else {
+    const opts = JSON.stringify(Array.isArray(q.options) ? q.options : []);
     db.prepare(
-      "INSERT INTO question_bank (id, stem, answer, scoring, point_max, behavior, note, knowledge_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(id, q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary);
+      "INSERT INTO question_bank (id, stem, answer, scoring, point_max, behavior, note, knowledge_summary, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary, opts);
   }
   return id;
 }
@@ -169,10 +199,10 @@ export function saveQuestion(
 export function getQuestion(db: DatabaseSync, id: string): QuestionRow | undefined {
   const r = db
     .prepare(
-      "SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary FROM question_bank WHERE id = ?"
+      "SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary, options FROM question_bank WHERE id = ?"
     )
-    .get(id) as QuestionRow | undefined;
-  return r ? { ...r } : undefined;
+    .get(id) as (Omit<QuestionRow, "options"> & { options: string }) | undefined;
+  return r ? { ...r, options: parseOptions(r.options) } : undefined;
 }
 
 // ==================== 课程 ↔ 类别 ↔ 题目 ====================
@@ -213,7 +243,7 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
       `SELECT ccq.category_id AS cid, tc.name AS cname, tc.behavior AS behavior, ccq.overview AS overview,
               ccq.question_id AS qid, ccq.seq AS seq,
               qb.stem AS stem, qb.answer AS answer, qb.scoring AS scoring, qb.point_max AS pointMax,
-              qb.behavior AS qbehavior, qb.note AS qnote, qb.knowledge_summary AS qks
+              qb.behavior AS qbehavior, qb.note AS qnote, qb.knowledge_summary AS qks, qb.options AS qopts
        FROM course_category_questions ccq
        JOIN topic_categories tc ON tc.id = ccq.category_id
        JOIN question_bank qb    ON qb.id = ccq.question_id
@@ -234,6 +264,7 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
     qbehavior: string;
     qnote: string;
     qks: string;
+    qopts: string;
   }>;
   const items: CourseContentItem[] = [];
   const byCat = new Map<string, CourseContentItem>();
@@ -254,6 +285,7 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
       behavior: r.qbehavior || r.behavior || "generic",
       note: r.qnote ?? "",
       knowledgeSummary: r.qks ?? "",
+      options: parseOptions(r.qopts),
     });
   }
   return { courseId: courseUuid, items };
@@ -269,11 +301,12 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
   behavior: string;
   note: string;
   knowledgeSummary: string;
+  options: QuestionOption[];
   contexts: Array<{ topic: string; course: string; category: string }>;
 }> {
   const qs = db
     .prepare(
-      `SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary FROM question_bank ORDER BY rowid DESC LIMIT 2000`
+      `SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary, options FROM question_bank ORDER BY rowid DESC LIMIT 2000`
     )
     .all() as Array<{
     id: string;
@@ -284,6 +317,7 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
     behavior: string;
     note: string;
     knowledgeSummary: string;
+    options: string;
   }>;
   const ctx = db
     .prepare(
@@ -300,7 +334,7 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
     arr.push({ topic: c.topic, course: c.course, category: c.category });
     ctxMap.set(c.qid, arr);
   }
-  return qs.map((q) => ({ ...q, contexts: ctxMap.get(q.id) || [] }));
+  return qs.map((q) => ({ ...q, options: parseOptions(q.options), contexts: ctxMap.get(q.id) || [] }));
 }
 
 // ==================== 考核方法 method_spec ====================

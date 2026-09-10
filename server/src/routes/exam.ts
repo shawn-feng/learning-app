@@ -1571,6 +1571,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       behavior?: string;
       note?: string;
       knowledgeSummary?: string;
+      options?: Array<{ key: string; text: string }>;
     };
     if (!b.stem || !b.answer) return reply.code(400).send({ error: "题目需要 stem + answer" });
     const db = openParentFor(parentId);
@@ -1584,6 +1585,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         behavior: String(b.behavior || "generic"),
         note: String(b.note ?? ""),
         knowledgeSummary: String(b.knowledgeSummary ?? ""),
+        options: Array.isArray(b.options) ? b.options : undefined,
       });
       return { id };
     } finally {
@@ -1634,6 +1636,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
               behavior: String(qo.behavior || cat.behavior || "generic"),
               note: qo.note != null ? String(qo.note) : "",
               knowledgeSummary: qo.knowledgeSummary != null ? String(qo.knowledgeSummary) : "",
+              options: Array.isArray(qo.options) ? (qo.options as Array<{ key: string; text: string }>) : undefined,
             });
             qids.push(id);
             created++;

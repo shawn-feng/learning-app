@@ -300,6 +300,8 @@ export interface ExamAnswerIn {
   scoring?: string;
   asrText: string;
   durationMs: number | null;
+  /** 选择题（2026-09-10）：带选项 → 本地规则判分，不进 LLM（孩子看选项口头作答「选B」/说出内容） */
+  choice?: { options: Array<{ key: string; text: string }>; correctKey: string; answerText: string } | null;
 }
 
 export interface ScoredQuestion {
@@ -318,6 +320,67 @@ export interface ScoredResult {
 }
 
 const SCORING_SYSTEM_PROMPT = `你是儿童学习考核的评估老师。你根据家长写的考核要点严格、温和地评判孩子的口述回答，只输出 JSON，不输出其它文字。`;
+
+/**
+ * 选择题规则判分（2026-09-10）：孩子看选项口头作答（「选B」或说出选项内容），
+ * 无需 LLM——文本含正确选项 key/正确项内容 → 满分；命中其它选项 → 0 分；
+ * 无法判定（语音识别不清/未作答）返回 null → 由调用方兜底走 LLM。
+ */
+function judgeChoice(
+  asr: string,
+  choice: { options: Array<{ key: string; text: string }>; correctKey: string; answerText: string },
+  pointMax: number
+): { pointGot: number; correct: boolean; aiComment: string } | null {
+  const norm = (s: string) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[\s\u3000，。！？、,.!?;；:："“”‘’'（）()【】]/g, "");
+  const n = norm(asr);
+  if (!n) return null;
+  const opts = choice.options;
+  const keys = ["a", "b", "c", "d", "e", "f"];
+  const cjk = ["一", "二", "三", "四", "五", "六"];
+
+  // ① 明确说「选B / 答案是B / B」→ 直接按 key 判定
+  const letterHit = n.match(/(?:选|答|答案|选择)?(?:的)?(?:是|为|选)?([a-f一二三四五六])\s*$/) || n.match(/(?:选|答|答案|选择)(?:的)?(?:是|为)?\s*([a-f一二三四五六])/);
+  if (letterHit) {
+    const c = letterHit[1]!;
+    const ki = keys.indexOf(c) >= 0 ? keys.indexOf(c) : cjk.indexOf(c);
+    if (ki >= 0 && ki < opts.length) {
+      const opt = opts[ki]!;
+      const right = opt.key.toLowerCase() === String(choice.correctKey || "").toLowerCase();
+      return {
+        pointGot: right ? pointMax : 0,
+        correct: right,
+        aiComment: right
+          ? `答对了（选 ${opt.key}）。`
+          : `答的是 ${opt.key}，正确答案是 ${String(choice.correctKey || "未知")}。`,
+      };
+    }
+  }
+
+  // ② 内容匹配：完整包含正确项文本 → 对；包含其它选项文本 → 错
+  const ansN = norm(choice.answerText);
+  if (ansN && n.includes(ansN)) return { pointGot: pointMax, correct: true, aiComment: "答对了（说出了正确选项的内容）。" };
+  let wrongText = "";
+  for (const o of opts) {
+    const t = norm(o.text);
+    if (!t || t.length < 4) continue;
+    if (n.includes(t)) {
+      const right = o.key.toLowerCase() === String(choice.correctKey || "").toLowerCase();
+      if (right) return { pointGot: pointMax, correct: true, aiComment: "答对了（说出了正确选项的内容）。" };
+      wrongText = o.text;
+    }
+  }
+  if (wrongText) {
+    return {
+      pointGot: 0,
+      correct: false,
+      aiComment: `答的是「${wrongText.slice(0, 18)}…」，正确答案是 ${String(choice.answerText || choice.correctKey || "其它选项")}。`,
+    };
+  }
+  return null; // 判定不出 → 走 LLM 兜底
+}
 
 /**
  * 判分（独立内存 session，prompt 取自服务端——判分口径单一真源）。
@@ -360,10 +423,29 @@ export async function scoreExamAttempt(
     while (idx < answers.length) {
       const i = idx++;
       const a = answers[i]!;
+      // 选择题：本地规则判分（不进 LLM）；判定不出（识别不清/未答）才兜底走 LLM
+      if (a.choice && a.choice.options.length) {
+        const judged = judgeChoice(a.asrText, a.choice, a.pointMax);
+        if (judged) {
+          results[i] = {
+            per: { qid: a.qid, pointGot: judged.pointGot, correct: judged.correct, aiComment: judged.aiComment },
+            overall: "",
+            reply: "[选择题规则判分] " + judged.aiComment,
+          };
+          continue;
+        }
+      }
+      const optsLine =
+        a.choice && a.choice.options.length
+          ? `本题是选择题，孩子看选项口头作答。选项：\n${a.choice.options
+              .map((o) => `${o.key}. ${o.text}`)
+              .join("\n")}\n正确选项：${a.choice.correctKey || "（未标注）"}；正确内容参照：${a.choice.answerText || ""}\n`
+          : "";
       const questionText =
         `【本场第 ${i + 1} 题】qid=${a.qid}，pointMax=${a.pointMax}\n` +
         (a.rubric ? `课程考核要点(rubric)：${a.rubric}\n` : "") +
         `题干：${a.stem}\n` +
+        (optsLine ? optsLine : "") +
         (a.scoring ? `本题评分标准（家长设定，按此给分）：\n${a.scoring}\n` : "") +
         `孩子回答（ASR 转写，可能有识别误差）：${a.asrText || "（未作答/仅语音）"}\n` +
         `本题用时：${a.durationMs != null ? Math.round(a.durationMs / 1000) + "秒" : "未知"}`;

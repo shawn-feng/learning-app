@@ -62,6 +62,9 @@ export function buildExamHtml(
   .q-hint{font-size:20px; color:var(--muted); margin:-10px 0 18px}
   .q-ref{font-size:30px; line-height:1.6; background:#fff8ec; border:1px solid #f0e2c0; border-radius:12px; padding:14px 16px; margin:-6px 0 18px; color:#8a5a00; white-space:pre-wrap; font-family:"KaiTi","STKaiti",serif;}
   .q-ref:empty{display:none}
+  .q-opts{margin:-4px 0 16px; display:flex; flex-direction:column; gap:8px}
+  .q-opt{background:#f4f6fc; border:1.5px solid #dbe2f0; border-radius:10px; padding:10px 14px; font-size:22px; line-height:1.5; color:#2a3350}
+  .q-opt .k{display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:30px; border-radius:50%; background:#667eea; color:#fff; font-weight:700; font-size:16px; margin-right:10px; vertical-align:2px}
   .answer{border-top:1px dashed var(--line); padding-top:18px; margin-top:6px}
   .mic-row{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
   .mic-btn{border:none; border-radius:14px; padding:16px 26px; font-size:24px; font-weight:600; background:var(--brand); color:#fff; cursor:pointer; display:inline-flex; align-items:center; gap:10px; user-select:none; -webkit-user-select:none; touch-action:none;}
@@ -106,6 +109,7 @@ export function buildExamHtml(
         <span class="q-course" id="qCourse"></span>
         <div class="q-stem" id="qStem"></div>
         <div class="q-ref" id="qRef"></div>
+        <div class="q-opts" id="qOpts"></div>
         <div class="q-hint" id="qHint">🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。</div>
         <div class="answer">
           <div class="mic-row">
@@ -234,7 +238,8 @@ window.EXAM_DATA = ${dataJson};
         stem: q.stem || "",
         pointMax: Number(q.pointMax) || 10,
         questionType: q.questionType || "",
-        refText: q.refText || ""
+        refText: q.refText || "",
+        options: Array.isArray(q.options) ? q.options : [] // 选择题选项（展示用；不泄漏正确答案）
       });
     }
     if(wasEmpty){
@@ -264,13 +269,27 @@ window.EXAM_DATA = ${dataJson};
     // 跟读/朗读/听说类（cn_sentence/cn_paragraph/en_*）才显示参考原文。
     var isReciteBlind = q.questionType === "cn_recitation" || q.questionType === "cn_poem";
     $("qRef").textContent = isReciteBlind ? "" : (q.refText || "");
+    // 选择题：题干下展示选项列表（只读，孩子看选项后口头作答「选 B」或说出内容）
+    var opts = q.options || [];
+    if(opts.length){
+      var esc = function(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); };
+      var html = "";
+      for(var oi=0; oi<opts.length; oi++){ var o = opts[oi]; html += '<div class="q-opt"><span class="k">'+esc(o.key)+'</span><span>'+esc(o.text)+'</span></div>'; }
+      $("qOpts").innerHTML = html;
+      $("qOpts").style.display = "flex";
+    } else {
+      $("qOpts").style.display = "none";
+      $("qOpts").innerHTML = "";
+    }
     // 口语/听说题：隐藏文字识别框、不触发 ASR
     var isSpeech = !!q.questionType;
     $("qHint").textContent = isSpeech
       ? (isReciteBlind
           ? "🧠 这是一道背诵题：先在脑子里回忆本章原文，再按住麦克风背诵，松手即停；可以分几段背，提交后自动评分。"
           : "🎤 按住麦克风朗读/跟读下面的原文，松手即停；可以分几段读，提交后自动评分。")
-      : "🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。";
+      : (opts.length
+          ? "👀 看下面的选项，按住麦克风说出你选哪一个（例如「选 B」），也可以直接把答案内容说出来；松开后自动识别。"
+          : "🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。");
     $("asrLabel").style.display = isSpeech ? "none" : "";
     $("asr").style.display = isSpeech ? "none" : "";
     paintState();
