@@ -125,6 +125,7 @@ export default function ExamView({ childId, onExit }: Props) {
       options: string; // JSON [{key,text}]；选择题展示/判分用
       correctKey: string;
       answerText: string;
+      recitePass: number; // 背诵通过线（主题方法/排期覆盖，默认 90）
     }>
   >([]);
   // 准备阶段提示文案（选课/出题/判分共用「批改中」遮罩）
@@ -226,6 +227,7 @@ export default function ExamView({ childId, onExit }: Props) {
           options: JSON.stringify(Array.isArray(q?.options) ? q.options : []),
           correctKey: String(q?.correctKey || ""),
           answerText: String(q?.answerText || ""),
+          recitePass: Number(q?.recitePass) || 0,
         });
       }
       try {
@@ -339,6 +341,7 @@ export default function ExamView({ childId, onExit }: Props) {
           (q as any).options = JSON.parse(metas[i]!.options || "[]");
           (q as any).correctKey = metas[i]!.correctKey || "";
           (q as any).answerText = metas[i]!.answerText || "";
+          (q as any).recitePass = metas[i]!.recitePass || 0;
         }
       });
       const isSpeech = (q: (typeof payload.perQuestion)[number]) => !!q.questionType;
@@ -430,16 +433,17 @@ export default function ExamView({ childId, onExit }: Props) {
             );
             if (!a?.success) throw new Error(a?.error || "发音评测失败");
             const sp: SpeechAssessment = a.data.result;
-            // 背诵通过线 90 分（2026-09-09 约定）：背诵考记忆与准确，90 分以上才算通过；
-            // 总分取评测 overall，缺省回退 pron。
+            // 背诵通过线：取本题方法里的 recitePass（主题方法/排期覆盖，默认 90）；
+            // 背诵考记忆与准确，达标才算通过。
+            const pass = Number((q as any).recitePass) || 90;
             const total = sp.overall ?? sp.pron ?? 0;
             const pointGot = Math.round((total / 100) * (Number(q.pointMax) || 10));
             return {
               qid: q.qid,
               pointGot,
               pointMax: Number(q.pointMax) || 10,
-              correct: total >= 90,
-              aiComment: `背诵 ${Math.round(total)} 分（90 分以上通过；完整度 ${Math.round(sp.integrity ?? 0)} / 准确 ${Math.round(sp.accuracy ?? 0)} / 流利 ${Math.round(sp.fluency?.overall ?? 0)}）`,
+              correct: total >= pass,
+              aiComment: `背诵 ${Math.round(total)} 分（${pass} 分以上通过；完整度 ${Math.round(sp.integrity ?? 0)} / 准确 ${Math.round(sp.accuracy ?? 0)} / 流利 ${Math.round(sp.fluency?.overall ?? 0)}）`,
               audioFileId: a.data.audioFileId,
               speech: sp,
             };

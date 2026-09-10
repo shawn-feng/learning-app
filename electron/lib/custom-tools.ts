@@ -1056,6 +1056,7 @@ export const examScheduleCreateTool = defineTool({
     "为某个孩子创建一次**自定义考核排期**（家长通过对话预约：某天考什么内容，到该天孩子就可在考核页点击开始——考核只按日期、不约定具体时刻）。\n\n" +
     "**参数**：`childName`（孩子姓名，必填）、`scheduledAt`（考核日期，必填，给 **日期** 而非时刻，如 2026-09-05 或 \"2026-09-05T08:00:00\"——把家长的「本周五」「9 月 5 号」等说法换算成日期，当天 0 点起全天可考）、`courses`（**必填**，要考核的精确课程名数组，如 [\"论语为政篇第一章\"]；必须把家长说的「考乡党篇最近学的 3 课」等内容描述**解析成确定的课程名**——可先查孩子课程/学习记录确定具体考哪几门，不要留模糊范围）、`topics`（可选，辅助的主题目录名，如 [\"lunyu\"]，仅为备注）、`note`（可选，给孩子的说明）。\n\n" +
     "**约束（2026-09-09 起）**：自定义考核的课程必须在创建时就确定（courses 必填且为精确课程名）——考核开始后不再用文字规则挑选课程。无法确定具体课程名时必须向家长确认清楚再创建，**不要自行猜测**。\n\n" +
+    "**本次考核方法（可选，2026-09-10 起）**：家长想「这次只考背诵」「这次不考字词」这类**单次要求**时，用 `categories` / `excludeCategories` 指定本次考的**考核类别名**（见主题的考核类别，如 背诵/句意白话/道理/字词/典故；可用 assess_categories_list 查），它会**覆盖该主题的默认考核方法**（不影响其它考核）。例如家长说「只考背诵」→ categories: [\"背诵\"]。\n\n" +
     "**推荐做法（先查再填）**：家长说「考某主题/某篇最近学的 N 课」等模糊范围时，先调用查询工具确定精确课程名再填 courses——\n" +
     "· 要判断「最近学的/该复习的/掌握薄弱」：调 `course_status`（topic/ keyword 过滤，看 lastReview / planReviewAt / examRate / lastExamAt）选出应考的课；\n" +
     "· 要拿**权威课程名**：调 `parent_library_courses`（topic=该主题、keyword=篇名）确认库里真实存在的课程标题（课程名以它返回为准）。\n" +
@@ -1066,6 +1067,13 @@ export const examScheduleCreateTool = defineTool({
     courses: Type.Array(Type.String({ description: "要考核的精确课程名（必填），如 论语学而篇第一章" })),
     topics: Type.Optional(Type.Array(Type.String({ description: "辅助主题目录名（仅备注），如 lunyu" }))),
     note: Type.Optional(Type.String({ description: "考核内容说明（给孩子的提示，可空）" })),
+    categories: Type.Optional(
+      Type.Array(Type.String({ description: '本次只考这些考核类别（类别名，如 ["背诵"]；覆盖主题默认方法，用于「这次只考背诵」这类单次要求）' }))
+    ),
+    excludeCategories: Type.Optional(
+      Type.Array(Type.String({ description: '本次不考这些考核类别（类别名，如 ["字词","典故"]）' }))
+    ),
+    recitePass: Type.Optional(Type.Number({ description: "本次背诵通过线（0-100，默认 90）" })),
   }),
   execute: async (_toolCallId, params) => {
     const childName = (params.childName || "").trim();
@@ -1090,16 +1098,33 @@ export const examScheduleCreateTool = defineTool({
       throw new Error(`找不到孩子「${childName}」${names ? `（现有孩子：${names}）` : ""}`);
     }
     const childId = child.childId || child.id;
-    const r = await createExamSchedule(
-      childId,
-      scheduledAt,
-      { topics: params.topics ?? [], courses, note: params.note ?? "" }
-    );
+    // 本次考核方法（排期级覆盖）：只考/不考某些类别、背诵通过线——覆盖主题默认方法，仅对这一次生效
+    const methodSpec: Record<string, unknown> = {};
+    const cats = (params.categories ?? []).map((c: string) => String(c).trim()).filter(Boolean);
+    if (cats.length) {
+      const require: Record<string, number> = {};
+      for (const c of cats) require[c] = 1;
+      methodSpec.require = require;
+    }
+    const exc = (params.excludeCategories ?? []).map((c: string) => String(c).trim()).filter(Boolean);
+    if (exc.length) methodSpec.exclude = exc;
+    if (params.recitePass != null) methodSpec.recitePass = Math.max(0, Number(params.recitePass) || 90);
+    const r = await createExamSchedule(childId, scheduledAt, {
+      topics: params.topics ?? [],
+      courses,
+      note: params.note ?? "",
+      ...(Object.keys(methodSpec).length ? { methodSpec } : {}),
+    });
+    const methodDesc = cats.length
+      ? `；本次只考：${cats.join("、")}${exc.length ? `（不考 ${exc.join("、")}）` : ""}`
+      : exc.length
+        ? `；本次不考：${exc.join("、")}`
+        : "";
     return {
       content: [
         {
           type: "text" as const,
-          text: `已为孩子「${childName}」创建自定义考核排期（${scheduledAt}，考核课程：${courses.join("、")}）${params.note ? `，说明：${params.note}` : ""}。到达当天孩子即可在考核页参加。`,
+          text: `已为孩子「${childName}」创建自定义考核排期（${scheduledAt}，考核课程：${courses.join("、")}）${params.note ? `，说明：${params.note}` : ""}${methodDesc}。到达当天孩子即可在考核页参加。`,
         },
       ],
     };

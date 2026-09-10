@@ -454,9 +454,18 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
                 {(() => {
                   const g = groups.find((x) => x.key === selCustomKey) || groups[0];
                   if (!g) return <div style={{ color: "#aaa", fontSize: 13 }}>暂无数据</div>;
-                  const sc = (g.rows[0]?.scope || {}) as { note?: string; topics?: string[]; courses?: string[]; prompt?: string };
+                  const sc = (g.rows[0]?.scope || {}) as {
+                    note?: string;
+                    topics?: string[];
+                    courses?: string[];
+                    prompt?: string;
+                    methodSpec?: { require?: Record<string, number>; exclude?: string[]; recitePass?: number };
+                  };
                   const topics = Array.isArray(sc.topics) ? sc.topics : [];
                   const courses = Array.isArray(sc.courses) ? sc.courses : [];
+                  const ms = sc.methodSpec || {};
+                  const onlyCats = Object.keys(ms.require || {});
+                  const excCats = Array.isArray(ms.exclude) ? ms.exclude : [];
                   const statusLabel = (st: string) => (st === "done" ? "✅ 已完成" : st === "started" ? "🔄 进行中（可继续/补考）" : "⏳ 待考核");
                   return (
                     <div>
@@ -465,6 +474,16 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
                         <span style={{ fontSize: 12, color: "#8a94a6" }}>自定义考核 · 共 {g.rows.length} 个孩子</span>
                       </div>
                       {g.note ? <div style={{ fontSize: 13, color: "#555", marginBottom: 8 }}>说明：{g.note}</div> : null}
+                      {onlyCats.length || excCats.length || ms.recitePass != null ? (
+                        <div style={{ fontSize: 13, marginBottom: 8, background: "#f0f4ff", border: "1px solid #dbe3f7", borderRadius: 8, padding: "6px 10px" }}>
+                          <b style={{ color: "#3b4cca" }}>本次考核方法：</b>
+                          <span style={{ color: "#3b4cca" }}>
+                            {onlyCats.length ? `只考 ${onlyCats.join("、")}` : "（按主题默认）"}
+                            {excCats.length ? `；不考 ${excCats.join("、")}` : ""}
+                            {ms.recitePass != null ? `；背诵通过线 ${ms.recitePass} 分` : ""}
+                          </span>
+                        </div>
+                      ) : null}
                       {topics.length > 0 && (
                         <div style={{ marginBottom: 8 }}>
                           <span style={{ fontSize: 12, fontWeight: 700, color: "#3b4cca" }}>主题：</span>

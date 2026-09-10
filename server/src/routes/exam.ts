@@ -907,11 +907,11 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       const childName = String(childRow?.name ?? "");
       // 结构化考核（v2）：课程有挂载内容时由服务端按孩子方法直接抽题（course.questions），不再客户端 LLM 出题；
       // 无挂载内容(非结构化)照旧返回 rubric，客户端走旧路径。
-      const structuredCourses = (titles: string[]) => {
+      const structuredCourses = (titles: string[], methodOverride?: unknown) => {
         const cs = fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, titles);
         try {
           const pl = openParentLib(deps.config.dataDir, parentId);
-          attachStructuredQuestions(pl, childId, cs);
+          attachStructuredQuestions(pl, childId, cs, (methodOverride as never) ?? undefined);
           pl.close();
         } catch (e) {
           console.warn(`[exam] 结构化挂题失败（回退 rubric 旧路径）：${(e as Error).message}`);
@@ -945,7 +945,9 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         return {
           schedule,
           childName,
-          courses: structuredCourses(scopeCourses),
+          // 排期级考核方法（可选）：scope.methodSpec = { require:{类别名:题数}, exclude:[类别名], recitePass }
+          // → 本次考核只考这些类别（覆盖主题默认方法）；如"只考核背诵"。
+          courses: structuredCourses(scopeCourses, (scope as { methodSpec?: unknown }).methodSpec),
           scoringPrompt: buildScoringPrompt(),
         };
       }

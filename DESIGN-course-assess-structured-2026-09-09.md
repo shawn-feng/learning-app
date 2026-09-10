@@ -110,6 +110,19 @@ CREATE INDEX IF NOT EXISTS idx_ccq_category ON course_category_questions(categor
 - `default` 回退：require 为空 → 取该课关系表里**实际挂的类别各 1 题**，防止新孩子整场空。
 - 旧 `topics.assess_method` 散文保留给人看/迁移对照；`type_catalog` 方案作废（别名归组需求已消失）。
 
+**排期级方法覆盖（2026-09-10 追加）** —— 自定义考核可对**这一次**单独指定考核方法（如"这次只考背诵"），
+覆盖主题默认方法，不影响其它考核。存放：排期 `exam_schedules.scope.methodSpec`：
+
+```jsonc
+{ "courses": ["论语学而篇第一章", "…"], "note": "只考核背诵",
+  "methodSpec": { "require": { "背诵": 1 }, "exclude": ["字词"], "recitePass": 90 } }
+```
+
+- 类别可写**类别名**（如 "背诵"）或 uuid——服务端按该课所属主题的类别表解析（名称对 agent/家长更友好；uuid 改名不断链）。
+- 优先级：`scope.methodSpec` > 主题 `method_spec.perChild[childId]` > `default`；`require` 全部解析失败 → 视为未覆盖（回退主题方法，避免整场无题）。
+- 入口：家长 agent `exam_schedule_create` 的 `categories` / `excludeCategories` / `recitePass` 参数（家长端不自填规则，见 ISSUE-065）。
+- 背诵通过线 `recitePass` 随题目下发到客户端，判分按它判「是否通过」（默认 90）。
+
 ## 3. 读取（出题/判分）链路
 
 1. config：取该课关系行（join 类别/题库）+ 主题 method_spec；

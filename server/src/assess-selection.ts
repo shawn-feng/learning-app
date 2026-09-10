@@ -10,7 +10,7 @@
  * - qid 跨课连续（rqN=背诵/朗读，qN=文字题），避免与答题/判分按 qid 配对冲突。
  */
 import type { DatabaseSync } from "node:sqlite";
-import { listCourseContent, getCourseUuid, getMethodSpec } from "./db/assess-content.js";
+import { listCourseContent, getCourseUuid, getMethodSpec, listCategories } from "./db/assess-content.js";
 
 export interface CourseLike {
   topic: string;
@@ -18,8 +18,62 @@ export interface CourseLike {
   [k: string]: unknown;
 }
 
-/** 把结构化课程列表里每门课的选中题目挂到 course.questions（非结构化课程不加该字段）。 */
-export function attachStructuredQuestions(db: DatabaseSync, childId: string, courses: CourseLike[]): void {
+/**
+ * 排期级考核方法覆盖（2026-09-10）：自定义考核可单独指定"这次考哪些类别"，
+ * 覆盖主题级 method_spec。类别可用**类别名**（如 "背诵"）或类别 uuid；解析不到的名称忽略。
+ * 例：{ require: { 背诵: 1 }, exclude: ["字词"], recitePass: 90 } → 本次只考背诵。
+ */
+export interface MethodOverride {
+  require?: Record<string, number>;
+  exclude?: string[];
+  recitePass?: number;
+}
+
+/** 把排期级覆盖解析成 uuid（按该课程所属主题的类别表）；require 全解析失败 → 视为未覆盖（回退主题方法）。 */
+function resolveOverride(
+  db: DatabaseSync,
+  topicId: string,
+  ov?: MethodOverride | null
+): { used: boolean; requireMap: Record<string, number>; exclude: Set<string>; recitePass?: number } {
+  const out = { used: false, requireMap: {} as Record<string, number>, exclude: new Set<string>(), recitePass: undefined as number | undefined };
+  if (!ov || (!ov.require && !ov.exclude && ov.recitePass == null)) return out;
+  let cats: Array<{ id: string; name: string }> = [];
+  try {
+    cats = listCategories(db, topicId);
+  } catch {
+    cats = [];
+  }
+  const byId = new Map(cats.map((c) => [c.id, c]));
+  const byName = new Map(cats.map((c) => [String(c.name).trim(), c]));
+  const find = (k: string) => byId.get(k) ?? byName.get(String(k).trim());
+
+  let anyReq = false;
+  for (const [k, v] of Object.entries(ov.require ?? {})) {
+    const c = find(k);
+    if (!c) continue;
+    out.requireMap[c.id] = Math.max(1, Number(v) || 1);
+    anyReq = true;
+  }
+  let anyExc = false;
+  for (const k of ov.exclude ?? []) {
+    const c = find(k);
+    if (!c) continue;
+    out.exclude.add(c.id);
+    anyExc = true;
+  }
+  if (ov.recitePass != null) out.recitePass = Math.max(0, Number(ov.recitePass) || 90);
+  out.used = anyReq || anyExc; // require/exclude 全解析失败 → 不覆盖
+  return out;
+}
+
+/** 把结构化课程列表里每门课的选中题目挂到 course.questions（非结构化课程不加该字段）。
+ *  override：排期级考核方法（自定义考核"本次只考 X"），优先于主题 method_spec。 */
+export function attachStructuredQuestions(
+  db: DatabaseSync,
+  childId: string,
+  courses: CourseLike[],
+  override?: MethodOverride | null
+): void {
   let textNo = 0;
   let recNo = 0;
   for (const course of courses) {
@@ -30,9 +84,18 @@ export function attachStructuredQuestions(db: DatabaseSync, childId: string, cou
 
     const spec = (getMethodSpec(db, course.topic) as any) ?? {};
     const childSpec = spec?.perChild?.[childId] ?? spec?.default ?? {};
-    const requireMap: Record<string, number> = childSpec?.require ?? {};
-    const requireKeys = Object.keys(requireMap);
-    const exclude = new Set<string>(childSpec?.exclude ?? []);
+    let requireMap: Record<string, number> = childSpec?.require ?? {};
+    let requireKeys = Object.keys(requireMap);
+    let exclude = new Set<string>(childSpec?.exclude ?? []);
+    let recitePass = Math.max(0, Number(childSpec?.rules?.recitePass) || 90);
+    // 排期级覆盖（自定义考核"本次只考背诵"等）：优先于主题方法
+    const ovr = resolveOverride(db, course.topic, override);
+    if (ovr.used) {
+      requireMap = ovr.requireMap;
+      requireKeys = Object.keys(requireMap);
+      exclude = ovr.exclude;
+    }
+    if (ovr.recitePass != null) recitePass = ovr.recitePass;
 
     const picked: Array<{
       behavior: string;
@@ -93,6 +156,7 @@ export function attachStructuredQuestions(db: DatabaseSync, childId: string, cou
           assessMethod: "speech" as const,
           questionType: "cn_recitation",
           refText: p.item.answer, // 标准原文 = 题库 answer
+          recitePass, // 背诵通过线（主题方法/排期覆盖，默认 90）
         };
       }
       const q = { ...base, qid: `q${++textNo}`, scoringText: serializeScoring(p.item) } as Record<string, unknown>;
