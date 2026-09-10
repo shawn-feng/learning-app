@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { getLearningSummary, getProgressSyncMeta, progressSummaryToMarkdown } from "./learning-summary";
 import { logActivity, deleteParentCourse, getParentContentForChild, getParentMaterialsDir, upsertParentCourse, upsertParentTopic, allocateTopicToChild, rewriteMaterialHtmlForRender, followHtmlRedirectRemote, uploadMaterialToServer, DEFAULT_PARENT_ID } from "./parent-library";
-import { getChildrenDir, getDataDir } from "./config";
+import { getChildrenDir, getDataDir, getCurrentParentId } from "./config";
 import { transcribeAudio } from "./voice";
 import { describeImageViaVision, imageMimeFromExt } from "./parent-vision";
 import { fetchMaterialContent } from "./media-protocol";
@@ -714,11 +714,12 @@ export const createHtmlLessonTool = defineTool({
   name: "create_html_lesson",
   label: "编程 agent 生成/修改 HTML 学习资料",
   description:
-    "把一份可交互 HTML 产物（工具/游戏/一次性页面等）的生成或修改需求交给「编程 agent」完成，产出落盘文件。\n\n" +
-    "**用途**：当孩子需要一份可交互的 html 工具/游戏/一次性页面（如番茄钟、小游戏、贺卡），而该文件还不存在或需要修改时，先调用本工具生成/更新文件，再用 display_content 展示。\n\n" +
-    "**outputPath**：输出路径，相对学习目录，必须以 .html 结尾。这类独立产物统一放在 `outputs/{名称}.html`（如 `outputs/番茄钟.html`），集中在 `outputs/` 便于统一查找、复用与清理；具体落到什么路径由调用方（学习 agent）按实际需要决定，本工具只负责把 HTML 写到该路径，不关心学习资料等其它类型的归档位置。\n\n" +
+    "把一份可交互 HTML 产物（工具/游戏/一次性页面/课程学习资料页等）的生成或修改需求交给「编程 agent」完成，产出落盘文件。\n\n" +
+    "**用途**：需要一份可交互或排好版的 HTML 文件而它还不存在（或要修改）时调用。孩子端典型场景：番茄钟、小游戏、贺卡等可交互工具；家长端典型场景：课程配套的 HTML 学习资料页。生成后按会话做后续处理——孩子端用 display_content 展示；家长端用 parent_upload_material 上传服务端 + parent_course_save 登记 htmlPath。\n\n" +
+    "**outputPath**：输出路径（相对、必须以 .html 结尾），由调用方按用途决定：孩子端独立工具/游戏统一放 `outputs/{名称}.html`（如 `outputs/番茄钟.html`，集中在 outputs/ 便于查找、复用与清理）；学习资料放 `materials/{topic}/{名称}.html`（落到家长库共享资料目录，家长端课程资料走这条）。本工具只负责把 HTML 写到该路径。\n\n" +
     "**参数**：`title`（标题）、`requirement`（需求描述：页面结构、内容要点、交互要求，尽可能具体）、`outputPath`（见上方，相对学习目录、.html 结尾）、`sessionKey`（可选，同一份资料的生成与后续修改传相同值以复用上下文；缺省按 outputPath 自动派生）。\n\n" +
-    "**返回**：生成的文件相对路径。成功后请立即用 display_content 展示给孩子。\n\n" +
+    "**返回**：生成的文件相对路径 + 下一步动作提示（孩子端=display_content 展示；家长端=parent_upload_material 上传 + parent_course_save 登记 htmlPath）。\n\n" +
+    "**通讯类页面无需你指定实现方式**：凡需要与宿主/agent 通讯的页面（上报操作、朗读、接收 AI 下行命令），编程 agent 会**自动按统一标准 PiBridge 协议**实现（window.PiBridge 的 emit/request/on；详见 MATERIAL-BRIDGE-PROTOCOL.md）。你在 requirement 里只描述**产品需求**（页面要做什么、孩子能怎么互动），**不要**指定 postMessage、事件名或通讯细节。\n\n" +
     "**未配置时**：若家长未在设置页配置「编程 agent 模型」，本工具会报错，请告诉家长到设置页配置后重试。",
   parameters: Type.Object({
     title: Type.String({ description: "标题（如 番茄钟 / 论语先进篇第十三章）" }),
@@ -730,19 +731,28 @@ export const createHtmlLessonTool = defineTool({
     if (!params.title || !params.requirement || !params.outputPath) {
       throw new Error("create_html_lesson 需要 title / requirement / outputPath 参数");
     }
-    const childId = path.basename(ctx.cwd);
+    // 会话自适应（同一工具同时挂在孩子会话与家长会话）：
+    //   孩子会话 cwd = children/<childId> → 工作根=该孩子目录，隔离键=childId；
+    //   家长会话 cwd = data/（家长工作台全量）→ 工作根=data/，隔离键=当前家长 id。
+    const isChildSession = path.basename(path.dirname(ctx.cwd)) === "children";
+    const workDir = isChildSession ? ctx.cwd : getDataDir();
+    const scopeKey = isChildSession ? path.basename(ctx.cwd) : (getCurrentParentId() || "parent");
     const result = await generateHtmlLesson({
-      childId,
+      workDir,
+      scopeKey,
       title: params.title,
       requirement: params.requirement,
       outputPath: params.outputPath,
       sessionKey: params.sessionKey,
     });
+    const nextStep = isChildSession
+      ? "请用 display_content 展示给孩子。"
+      : "请用 parent_upload_material 把该文件上传到服务端，再用 parent_course_save 把路径登记为课程的 htmlPath。";
     return {
       content: [
         {
           type: "text" as const,
-          text: `已生成/更新 HTML 学习资料：${result.title}\n文件路径：${result.relPath}\n请用 display_content 展示给孩子。`,
+          text: `已生成/更新 HTML 资料：${result.title}\n文件路径：${result.relPath}\n${nextStep}`,
         },
       ],
       details: { relPath: result.relPath, title: result.title },

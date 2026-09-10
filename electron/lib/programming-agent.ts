@@ -6,8 +6,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import path from "path";
 import fs from "fs";
-import { getChildDir } from "./config";
-import { getParentMaterialsDir } from "./parent-library";
+import { getCurrentParentId } from "./config";
+import { getParentMaterialsDir, DEFAULT_PARENT_ID } from "./parent-library";
 import { getSharedRuntime, getProgrammingModel } from "./pi-runtime";
 import learningGuardExtension from "../extensions/learning-guard";
 
@@ -47,29 +47,30 @@ function buildProgrammingPrompt(): string {
 ## 交互通讯协议（需要与宿主/AI 通讯的资料必须遵循；勿发明私有 postMessage 通道）
 凡资料要“上报孩子操作 / 调用朗读等宿主能力 / 接收 AI 下行命令”，统一使用宿主已注入的 window.PiBridge：
 - 上报事件：PiBridge.emit(action, payload)（如测验提交后 emit('submit-answer', {questionId, answer, correct})）；
-- 调用宿主能力：await PiBridge.request(action, payload)（如朗读：await PiBridge.request('tts.speak', {text: 'Hello'}); 返回 {ok}）；
-- 接收宿主/agent 下行命令：PiBridge.on(action, function(payload){...})（如演出页注册 scene.say / scene.act / scene.move 处理器）；
+- 调用宿主能力：await PiBridge.request(action, payload)（如朗读：await PiBridge.request('tts.speak', {text: 'Hello'}); 返回 {ok}）。已实现能力：tts.speak（{text}）、lookup（{text}）；其它 action 会透传给 agent。⚠️ tts.speak 的 {ok} 只表示“已受理”——宿主按队列顺序朗读多句，页面不要自行排队、不要等待播完、更不要自建语音合成；
+- 接收宿主/agent 下行命令：PiBridge.on(action, function(payload){...})（如演出页注册 scene.say / scene.act / scene.move 处理器）；handler 可返回 {data} 或 Promise，作为命令执行回执；PiBridge.off(action, handler) 注销；
 - 交互密集或语义型页面在 <head> 声明 <meta name="pi-bridge" content="capture=manual">，让“只有 emit 的操作”才会被上报；
 - action 用小写连字符命名（submit-answer、scene.say、scene.act、scene.ready 等）；自定义 action 的 payload 里带 semantic 字段自解释；
-- 朗读不要自行实现语音合成，一律 PiBridge.request('tts.speak', {text})；
-- 场景互动（角色演出/物品/字幕）类页面：角色/物品等由页面绘制，AI 经 PiBridge.on('scene.*',...) 命令驱动，页面用 emit('scene.ready', manifest) 上报属性清单、emit('scene.item-click', ...) 上报点物品。
+- 场景互动（角色演出/物品/字幕）类页面：角色/物品由页面绘制；下行用 PiBridge.on 注册 scene.say{character,text,zh} / scene.move{character,x,duration} / scene.act{character,act} / scene.show|hide{character} / scene.highlight{target} / scene.update{task,progress,total} / scene.busy{busy} / scene.mic.status{status}；上行 emit('scene.ready', manifest) 报属性清单、emit('scene.item-click', {target,word,zh}) 报点物品、emit('scene.mic.press' | 'scene.mic.release') 触发宿主录音。
 完整协议规范见仓库根 MATERIAL-BRIDGE-PROTOCOL.md（协议文档用于开发维护，正文约定以上述为准）。`;
 }
 
 /**
  * 获取（或创建）某个 sessionKey 对应的编程 agent 会话。
+ * - workDir：编程会话的工作根（孩子会话 = children/<childId>；家长会话 = data/）。
+ * - scopeKey：会话隔离键（孩子 id / 家长 id），与 sessionKey 组成缓存 key，避免跨会话串上下文。
  * sessionKey 通常由调用方按输出路径派生（如 "lunyu-论语先进篇第十三章"），
  * 同一 key 复用同一会话，保证「生成 + 后续修改」上下文连续。
  */
 export async function getProgrammingAgentSession(
-  childId: string,
+  workDir: string,
+  scopeKey: string,
   sessionKey: string
 ): Promise<AgentSession> {
-  const key = `${childId}:${sessionKey}`;
+  const key = `${scopeKey}:${sessionKey}`;
   const existing = programmingSessions.get(key);
   if (existing) return existing;
 
-  const childDir = getChildDir(childId);
   const model = await getProgrammingModel();
   if (!model) {
     throw new Error(
@@ -79,11 +80,11 @@ export async function getProgrammingAgentSession(
   const modelRuntime = await getSharedRuntime();
 
   const loader = new DefaultResourceLoader({
-    cwd: childDir,
+    cwd: workDir,
     // 必须显式传 agentDir：SDK 构造时对 agentDir 调 resolvePath，Windows 下传 undefined 会
     // 在 normalizeWindowsShellPath 里 undefined.startsWith 崩溃（珊珊会话 create_html_lesson 实测报错）。
     // 与学习 agent 一致，隔离到该孩子的 .pi/agent。
-    agentDir: path.join(childDir, ".pi", "agent"),
+    agentDir: path.join(workDir, ".pi", "agent"),
     systemPromptOverride: () => buildProgrammingPrompt(),
     // 编程 agent 同样不需要全局技能索引（~/.agents/skills 60 个无关技能），noSkills 关掉。
     noSkills: true,
@@ -94,7 +95,7 @@ export async function getProgrammingAgentSession(
   await loader.reload();
 
   const { session } = await createAgentSession({
-    cwd: childDir,
+    cwd: workDir,
     modelRuntime,
     model,
     sessionManager: SessionManager.inMemory(),
@@ -109,15 +110,20 @@ export async function getProgrammingAgentSession(
 }
 
 export interface GenerateHtmlLessonInput {
-  childId: string;
+  /** 工作根：孩子会话 = children/<childId>（outputs/ 落此）；家长会话 = data/（家长工作台全量） */
+  workDir: string;
+  /** 会话隔离键：孩子 id / 家长 id（编程会话按此隔离，避免跨会话串上下文） */
+  scopeKey: string;
   /** 课程标题（如「论语先进篇第十三章」），用于命名与文件头注释 */
   title: string;
-  /** 需求描述：结构、内容、交互要求等（由学习 agent 从 method/材料整理） */
+  /** 需求描述：结构、内容、交互要求等（由调用方 agent 从 method/材料整理） */
   requirement: string;
-  /** 输出路径（相对格式：工具/游戏用 outputs/{名称}.html，学习资料用 materials/{topic}/{课程名}.html；函数内部锚定到正确根目录并以绝对路径写出） */
+  /** 输出路径（相对格式：孩子端工具/游戏用 outputs/{名称}.html；学习资料用 materials/{topic}/{课程名}.html。函数内部锚定到正确根目录并以绝对路径写出） */
   outputPath: string;
   /** 会话键：同一份 HTML 的生成/修改复用同一会话；缺省按 outputPath 派生 */
   sessionKey?: string;
+  /** materials/ 落盘所属家长库 id；缺省取当前登录家长（未登录兜底 default） */
+  parentId?: string;
 }
 
 export interface GenerateHtmlLessonResult {
@@ -189,13 +195,14 @@ function collectPhaseStats(session: any, t0: number): () => PhaseStats {
 export async function generateHtmlLesson(
   input: GenerateHtmlLessonInput
 ): Promise<GenerateHtmlLessonResult> {
-  const { childId, title, requirement, outputPath, sessionKey } = input;
-  const childDir = getChildDir(childId);
+  const { workDir, scopeKey, title, requirement, outputPath, sessionKey } = input;
+  // materials/ 落到当前登录家长的父库共享目录（唯一真源，多孩子共享）；未登录时兜底 default。
+  const parentId = input.parentId || getCurrentParentId() || DEFAULT_PARENT_ID;
 
-  // 锚定到正确根目录：工具/游戏（outputs/...）落在孩子学习目录；学习资料（materials/...）落在父库共享目录。
+  // 锚定到正确根目录：工具/游戏（outputs/...）落在调用方工作根（孩子学习目录 / 家长 data/）；学习资料（materials/...）落在父库共享目录。
   // 之后以绝对路径交给编程 agent 写出——资料直接落盘到唯一真源，不需要镜像或软链接。
   const isMaterial = outputPath.startsWith("materials/");
-  const base = isMaterial ? getParentMaterialsDir() : childDir;
+  const base = isMaterial ? getParentMaterialsDir(parentId) : workDir;
   const relInBase = isMaterial ? outputPath.slice("materials/".length) : outputPath;
   const resolved = path.resolve(base, relInBase);
   const guardRoot = base;
@@ -210,7 +217,7 @@ export async function generateHtmlLesson(
   // 环节计时：定位耗时（2026-08-24 用户反馈单次生成 ~4 分钟，需区分会话创建 / LLM 生成 / 落盘）
   const t0 = Date.now();
 
-  const session = await getProgrammingAgentSession(childId, sessionKey ?? outputPath);
+  const session = await getProgrammingAgentSession(workDir, scopeKey, sessionKey ?? outputPath);
   const t1 = Date.now();
 
   // 预建目录（materials/{topic}/ 或 outputs/），避免 write 因目录不存在失败
