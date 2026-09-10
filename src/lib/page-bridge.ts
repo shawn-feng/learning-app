@@ -18,7 +18,7 @@ export const PAGE_MSG_TYPES = ["page:event", "page:ready", "page:exec", "page:ex
 /** ISSUE-061：场景页标记（资料 html 含此 meta 即视为场景页，scene_command 只对该类页面生效） */
 export const SCENE_PAGE_MARKER = 'meta name="pi-scenario" content="1"';
 
-export type PageEventKind = "open" | "click" | "scroll" | "input" | "submit" | "pagehide" | "tts" | "tts-cancel" | "lookup";
+export type PageEventKind = "open" | "click" | "scroll" | "input" | "submit" | "pagehide" | "tts" | "tts-cancel" | "lookup" | "app";
 
 /** iframe → 父页面：互动事件上报 */
 export interface PageEvent {
@@ -37,7 +37,10 @@ export interface PageEvent {
     type?: string;
     name?: string;
     value?: string;
+    /** PiBridge（MATERIAL-BRIDGE-PROTOCOL）：作者自定义动作名，如 submit-answer / scene.ready / scene.item-click */
     action?: string;
+    /** PiBridge：作者自定义载荷（任意结构化数据，会随事件注入 agent 上下文） */
+    payload?: unknown;
     /** lookup：选中文本相对 iframe 视口左上角的坐标（父页面叠加 iframe 自身偏移定位浮层） */
     x?: number;
     y?: number;
@@ -100,6 +103,13 @@ export interface MaterialsPanelHandle {
    * busy=true 在孩子消息已发给场景 agent、等回复期间调用；回复/出错后 busy=false。
    */
   sceneAgentBusy(on: boolean): void;
+  /**
+   * MATERIAL-BRIDGE-PROTOCOL：宿主→页面作者命令下行（page:app-cmd，页面 PiBridge.on 接收）。
+   * requestId 配对 + 就绪 gate + 超时（与 exec 同一套 pending）；DOM 白名单操作请继续用 exec。
+   */
+  appCmd(action: string, payload?: unknown): Promise<PageExecResultUplink>;
+  /** 场景准备状态（Learn 预建 scene 会话/预热期间展示「正在准备场景伙伴…」） */
+  scenePreparing(on: boolean): void;
 }
 
 /**
@@ -138,6 +148,14 @@ export const BRIDGE_SCRIPT = `(function () {
   }
   // 初始字号（injectBridge 在桥脚本前注入 window.__PI_MAT_FONT）
   applyMatFont(window.__PI_MAT_FONT);
+
+  // —— 诊断：资料页内运行错误上抛（宿主打印，用于定位"页面 JS 未执行/报错"类问题）——
+  window.addEventListener("error", function (e) {
+    try {
+      var msg = String((e && e.error && e.error.message) || e.message || e);
+      window.parent.postMessage({ type: "page:diag", kind: "js-error", text: msg.slice(0, 300) }, "*");
+    } catch (err) { /* ignore */ }
+  });
 
   // —— 元素索引：WeakMap 惰性分配，同一元素恒同索引（快照 i / 事件 index / 下行定位同源）——
   var indexMap = typeof WeakMap === "function" ? new WeakMap() : null;
@@ -237,6 +255,9 @@ export const BRIDGE_SCRIPT = `(function () {
   }
 
   // —— 事件采集（全部捕获阶段，绝不 preventDefault / stopPropagation，不干扰课程脚本）——
+  // MATERIAL-BRIDGE-PROTOCOL：页面声明 capture=manual 后停用自动采集（作者改用 PiBridge.emit 显式上报）。
+  var autoCapture = window.__PI_CAPTURE_MANUAL !== 1;
+  if (autoCapture) {
   document.addEventListener("click", function (e) {
     var t = e.target;
     if (!t || t.nodeType !== 1) return;
@@ -322,6 +343,7 @@ export const BRIDGE_SCRIPT = `(function () {
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "hidden") reportPageHide();
   });
+  } // if (autoCapture) —— manual 采集模式下不挂自动监听（PiBridge.emit 显式上报）
 
   // —— ISSUE-011：接管 speechSynthesis → 父级 edge-tts（音色与聊天一致）——
   // 课程 html（hanzigong/english）朗读按钮用 window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))，
@@ -452,6 +474,99 @@ export const BRIDGE_SCRIPT = `(function () {
 })();`;
 
 /**
+ * PiBridge SDK（MATERIAL-BRIDGE-PROTOCOL.md）—— 资料作者与宿主/AI 通讯的唯一标准 API。
+ * 独立 IIFE、零依赖；挂在 <head>（BRIDGE_SCRIPT 之后）注入，早于页面正文脚本执行。
+ * API：emit(action,payload) 上行事件；request(action,payload)→Promise 调用宿主能力；
+ *      on/off(action,handler) 接收宿主→页面命令（page:app-cmd，含 requestId 回执）。
+ * 约束与桥一致：无 eval/new Function；window.parent.postMessage 用 "*"；不用反引号/模板串。
+ */
+export const PIBRIDGE_SCRIPT = `(function () {
+  "use strict";
+  if (window.__piBridgeSdk) return window.__piBridgeSdk;
+  var seq = 0;
+  function send(msg) {
+    msg.seq = ++seq;
+    msg.ts = Date.now();
+    window.parent.postMessage(msg, "*");
+  }
+  var reqSeq = 0;
+  var reqWaiters = {};
+  var cmdHandlers = {};
+
+  function emit(action, payload) {
+    if (!action) return;
+    send({ type: "page:app", action: action, payload: payload === undefined ? null : payload });
+  }
+  function request(action, payload) {
+    return new Promise(function (resolve) {
+      var rid = "r" + Date.now().toString(36) + "-" + (++reqSeq).toString(36);
+      reqWaiters[rid] = resolve;
+      send({ type: "page:req", requestId: rid, action: action, payload: payload === undefined ? null : payload });
+      setTimeout(function () {
+        if (reqWaiters[rid]) {
+          var w = reqWaiters[rid];
+          delete reqWaiters[rid];
+          w({ ok: false, error: "PiBridge request timeout: " + action });
+        }
+      }, 12000);
+    });
+  }
+  function on(action, handler) {
+    if (!action || typeof handler !== "function") return;
+    (cmdHandlers[action] = cmdHandlers[action] || []).push(handler);
+  }
+  function off(action, handler) {
+    var a = cmdHandlers[action];
+    if (!a) return;
+    if (!handler) { delete cmdHandlers[action]; return; }
+    var i = a.indexOf(handler);
+    if (i >= 0) a.splice(i, 1);
+  }
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!d || typeof d.type !== "string") return;
+    if (d.type === "page:app-res" && d.requestId && reqWaiters[d.requestId]) {
+      var w = reqWaiters[d.requestId];
+      delete reqWaiters[d.requestId];
+      w({ ok: d.ok !== false, data: d.data, error: d.error });
+      return;
+    }
+    if (d.type === "page:app-cmd" && d.requestId) {
+      var fns = cmdHandlers[d.action] || [];
+      if (!fns.length) {
+        send({ type: "page:app-cmd:result", requestId: d.requestId, ok: false, error: "no handler for action: " + d.action });
+        return;
+      }
+      var finish = function (ok, data, error) {
+        send({ type: "page:app-cmd:result", requestId: d.requestId, ok: ok, data: data, error: error });
+      };
+      try {
+        var out = fns[0](d.payload);
+        if (out && typeof out.then === "function") {
+          out.then(
+            function (v) {
+              var bad = v && v.error;
+              finish(!bad, bad ? undefined : (v && v.data !== undefined ? v.data : v), bad ? v.error : undefined);
+            },
+            function (err) { finish(false, undefined, String((err && err.message) || err)); }
+          );
+        } else {
+          var bad2 = out && out.error;
+          finish(!bad2, bad2 ? undefined : (out && out.data !== undefined ? out.data : out), bad2 ? out.error : undefined);
+        }
+      } catch (err) {
+        finish(false, undefined, String((err && err.message) || err));
+      }
+      return;
+    }
+  });
+  var api = { emit: emit, request: request, on: on, off: off, version: 1 };
+  window.PiBridge = api;
+  window.__piBridgeSdk = api;
+  return api;
+})();`;
+
+/**
  * 把桥脚本注入课程 html，保证 <!DOCTYPE> 仍是文档首字符（避免 quirks mode 破坏课程 CSS）。
  * 注入优先级：<head> 后 → <!doctype> 后 → <html> 后 → 纯 fragment 前置。
  * matFontPx（ISSUE-030）：在桥脚本前置一段 init，把初始资料字号写入 window.__PI_MAT_FONT，
@@ -459,8 +574,13 @@ export const BRIDGE_SCRIPT = `(function () {
  * 仅影响运行期渲染，课程 html 文件本体始终不被修改。
  */
 export function injectBridge(html: string, matFontPx?: number): string {
+  // MATERIAL-BRIDGE-PROTOCOL：页面声明 <meta name="pi-bridge" content="capture=manual"> →
+  // 注入 manual 标志，桥脚本跳过自动采集（作者改用 PiBridge.emit 显式上报）。
+  const captureManual =
+    /capture\s*=\s*manual/i.test(html) && /<meta[^>]+name\s*=\s*["']?pi-bridge["']?[^>]*>/i.test(html) ? "1" : "0";
   const fontInit = typeof matFontPx === "number" && matFontPx >= 8 ? `<script>window.__PI_MAT_FONT=${matFontPx};</script>` : "";
-  const script = `${fontInit}<script>${BRIDGE_SCRIPT}</script>`;
+  const init = `${fontInit}<script>window.__PI_CAPTURE_MANUAL=${captureManual};</script>`;
+  const script = `${init}<script>${BRIDGE_SCRIPT}</script><script>${PIBRIDGE_SCRIPT}</script>`;
 
   const head = /<head[^>]*>/i.exec(html);
   if (head) {

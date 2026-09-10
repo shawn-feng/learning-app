@@ -15,10 +15,41 @@ const HOST = "soe.cloud.tencent.com/soe/api";
 const WSS_BASE = "wss://soe.cloud.tencent.com/soe/api";
 const TIMEOUT_MS = 30_000;
 
+/** 智聆引擎类型：16k_zh=中文（普通话，覆盖背诵/朗读/诗词），16k_en=英文（单词/句子）。 */
+export type SoeEngine = "16k_zh" | "16k_en";
+
+/** 按参考文本语种推断引擎：含中日韩汉字 → 16k_zh，否则 16k_en。 */
+const CJK_RE = /[㐀-鿿豈-﫿]/;
+export function engineForText(text: string): SoeEngine {
+  return CJK_RE.test(text || "") ? "16k_zh" : "16k_en";
+}
+
+/**
+ * 评测模式自动选择，规避 4104「ref_text 字数超过最大限制」：
+ * - 句子模式(1)：中文≤30字 / 英文≤60词
+ * - 段落模式(2)：中文≤120字 / 英文≤300词（整章背诵、诗词等长文本走此模式，音频无需拆分）
+ * 超过段落模式上限（如>120字中文）仍会 4104，需按句拆分多次评测合并（不在本修复范围）。
+ */
+const SENTENCE_MAX_ZH_CHARS = 30;
+const SENTENCE_MAX_EN_WORDS = 60;
+const PARA_MAX_ZH_CHARS = 120;
+
+export function evalModeForText(refText: string, engine: SoeEngine): 1 | 2 {
+  const t = (refText || "").trim();
+  if (engine === "16k_zh") {
+    const chars = [...t].length;
+    if (chars > PARA_MAX_ZH_CHARS) return 2; // 仍给段落模式，交由服务端报错以暴露需拆句
+    return chars > SENTENCE_MAX_ZH_CHARS ? 2 : 1;
+  }
+  const words = t ? t.split(/\s+/).filter(Boolean).length : 0;
+  return words > SENTENCE_MAX_EN_WORDS ? 2 : 1;
+}
+
 /** 构造智聆握手 URL：参数字典序 → HmacSha1(SecretKey) → base64 签名 → wss URL（含签名参数） */
 export function buildSoeUrl(
   creds: { appId: string; secretId: string; secretKey: string },
-  refText: string
+  refText: string,
+  engine: SoeEngine = "16k_en"
 ): { url: string; signPlain: string; signature: string } {
   const appId = creds.appId.trim();
   const secretId = creds.secretId.trim();
@@ -29,10 +60,12 @@ export function buildSoeUrl(
   const nonce = Math.floor(Math.random() * 900000000) + 100000000;
   const voiceId = crypto.randomUUID();
 
-  // 儿童场景：score_coeff=1.0（最低苛刻度，对应最小年龄段）；句子模式 eval_mode=1；
-  // rec_mode=1 录音评测；voice_format=0 pcm（16bit PCM 长度必为偶数，规避 4107 对齐报错）；16k_en 英文标准引擎。
+  // 儿童场景：score_coeff=1.0（最低苛刻度，对应最小年龄段）；
+  // eval_mode 按参考文本长度自动选：短文本句子模式(1)，超 30 字中文自动降级段落模式(2)（规避 4104）；
+  // rec_mode=1 录音评测；voice_format=0 pcm（16bit PCM 长度必为偶数，规避 4107 对齐报错）；
+  // server_engine_type 由调用方按题型/语种传入：中文背诵 16k_zh、英文 16k_en。
   const params: Record<string, string | number> = {
-    eval_mode: 1,
+    eval_mode: evalModeForText(refText, engine),
     expired,
     nonce,
     rec_mode: 1,
@@ -40,7 +73,7 @@ export function buildSoeUrl(
     score_coeff: 1.0,
     secretid: secretId,
     sentence_info_enabled: 1,
-    server_engine_type: "16k_en",
+    server_engine_type: engine,
     text_mode: 0,
     timestamp,
     voice_format: 0,
@@ -64,7 +97,7 @@ export function buildSoeUrl(
 export async function assess(
   wav: Buffer,
   creds: Record<string, string>,
-  opts: { refText: string }
+  opts: { refText: string; engine?: SoeEngine }
 ): Promise<AssessmentResult> {
   const appId = (creds.appId || "").trim();
   const secretId = (creds.secretId || "").trim();
@@ -72,7 +105,9 @@ export async function assess(
   if (!appId || !secretId || !secretKey) {
     throw new Error("智聆配置不完整（appId / secretId / secretKey）");
   }
-  const { url } = buildSoeUrl({ appId, secretId, secretKey }, opts.refText);
+  // 引擎：显式传入优先（EXAM 按题型 cn_* 指定 16k_zh）；否则按参考文本语种自动判别。
+  const engine = opts.engine || engineForText(opts.refText);
+  const { url } = buildSoeUrl({ appId, secretId, secretKey }, opts.refText, engine);
 
   // 转纯 PCM（16k/单声道/16bit）发送：voice_format=0 时引擎按 16bit 样本对齐解析，
   // PCM 长度必为偶数，规避 4107「音频数据指针或长度必须为偶数」（wav 头解析不可靠）。

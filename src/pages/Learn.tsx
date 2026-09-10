@@ -255,6 +255,7 @@ export default function Learn({ child, onExit }: Props) {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [selectedMaterialId, setSelectedMaterialId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false); // ISSUE-068：停止中锁，保持发送禁用直到 SDK 真正 idle
   const childIdRef = useRef(child.childId);
   // ISSUE-029 任务2：当前课程子会话（英语课）。空串 = 主会话；`english:<title>` = 英语课按课隔离子会话
   const [currentCourseKey, setCurrentCourseKey] = useState("");
@@ -432,6 +433,9 @@ export default function Learn({ child, onExit }: Props) {
         // 自动打开最新一份由下方统一的 materials 监听 effect 处理（ISSUE-014），这里只负责回填。
         if (Array.isArray(r.materials)) {
           setMaterials(r.materials);
+          // MATERIAL 保鲜：恢复展示的共享 html 可能是旧缓存（服务端文件已更新，尤其场景课）。
+          // 后台逐份刷新为最新内容 → 左侧资料/场景自动载入新版本，无需 agent 重新 display。
+          void refreshStaleMaterials(r.materials);
         }
         if (typeof r.materialsLimit === "number" && r.materialsLimit > 0) {
           materialsLimitRef.current = r.materialsLimit;
@@ -486,6 +490,18 @@ export default function Learn({ child, onExit }: Props) {
     // ISSUE-008/016：AI 展示新材料（display_content）时自动展开展示区（即便当前折叠）
     setPanelCollapsed(false);
     setSelectedMaterialId(materials[materials.length - 1].id);
+    // 场景课恢复路径：自动打开的资料若本身就是场景页（内容含 pi-scenario 标记），
+    // 同样激活场景模式（不进课程也能与场景对话）。不设 sceneOpenedTurnRef——没有本轮的
+    // 课程 agent 收尾可衔接，仅保证下一条消息路由到 scene 会话。
+    const last = materials[materials.length - 1];
+    if (
+      last &&
+      last.format === "html" &&
+      typeof last.content === "string" &&
+      last.content.includes("pi-scenario")
+    ) {
+      activateSceneFromTool(last.filePath, last.title);
+    }
   }, [materials]);
 
   // 工具结束调用 + 学习资料列表更新
@@ -494,6 +510,16 @@ export default function Learn({ child, onExit }: Props) {
     if (data.toolName === "display_content") {
       const panel = data.result?.details?.panelContent;
       if (panel) {
+        // 场景课全托管：display_content 工具级判定（主进程已按 HTML 标记/主题名单给出 panel.isScene，
+        // 渲染层再按内容标记兜底）。命中即置交棒标记并**立即激活场景会话**——不再等 iframe 的
+        // scene.ready（app 内沙箱 iframe 正文脚本可能不执行，曾导致永不跳转）。
+        const isScene =
+          panel.isScene === true ||
+          (typeof panel.content === "string" && panel.content.includes("pi-scenario"));
+        if (isScene) {
+          sceneOpenedTurnRef.current = true;
+          activateSceneFromTool(panel.filePath, panel.title);
+        }
         const filePath = panel.filePath;
         setMaterials((prev) => {
           const lim = materialsLimitRef.current;
@@ -569,11 +595,6 @@ export default function Learn({ child, onExit }: Props) {
     setBusy(false);
   }, []);
 
-  const handleReplyEnd = useCallback(() => {
-    workingIdRef.current = null;
-    setBusy(false);
-  }, []);
-
   const handleReplyError = useCallback((data: { childId: string; error: string }) => {
     if (data.childId !== childIdRef.current) return;
     const id = workingIdRef.current;
@@ -595,20 +616,65 @@ export default function Learn({ child, onExit }: Props) {
   // 场景页（pi-scenario）就绪 → 切场景模式：聊天/语音球消息路由到独立 scene 会话。
   // 会话 key 优先课程子会话；主会话直接打开的场景资料用 filePath 前段 topic + 资料标题派生，
   // 保证「不进课程也能用语音球和场景对话」（2026-09-07 实测语音识别成功但无反应=被 courseKey 门槛静默丢弃）。
-  function handleSceneActive() {
+  // 场景会话激活的共用实现：
+  //  - 工具级路径（display_content 返回场景页 → handleToolEnd 调用，不依赖 iframe 就绪）
+  //  - 页面就绪路径（iframe scene.ready → handleSceneActive 调用，兜底）
+  // 无课程会话时按资料 filePath/title 派生 `<topic>:<title>` 作 scene 会话 key；
+  // 派生不出（资料缺 filePath/标题）则不激活并明确提示。
+  function activateSceneFromTool(filePath: string | undefined, title: string | undefined) {
     const ck = courseKeyRef.current;
     if (!ck) {
-      const sel = materials.find((m) => m.id === selectedMaterialId);
-      const fp = sel?.filePath || "";
+      const fp = String(filePath || "").replace(/^materials\//, "");
       const topic = fp ? fp.split("/")[0] : "";
-      const title = (sel?.title || "").trim();
-      sceneFallbackKeyRef.current = topic && title ? `${topic}:${title}` : "";
+      const t = String(title || "").trim();
+      console.warn("[Learn-scene] 工具激活：无课程会话，尝试按资料派生", { fp, topic, title: t });
+      sceneFallbackKeyRef.current = topic && t ? `${topic}:${t}` : "";
       if (!sceneFallbackKeyRef.current) {
+        console.warn("[Learn-scene] fallback key 为空 → 场景模式未激活", { fp, title: t });
         applySceneMode(false);
         return;
       }
     }
     applySceneMode(true);
+    // 场景就绪：后台预建场景会话/预热（每场景课程首次触发一次），HTML 会显示「正在准备…」
+    const key = resolveSceneKey();
+    if (key && scenePreparedForRef.current !== key) {
+      scenePreparedForRef.current = key;
+      void prepareSceneFlow(key);
+    }
+    // 场景历史回填：场景对话独立持久在 scene jsonl（主/课程会话 history 不含），激活场景会话时
+    // 把历史拉回聊天框——否则每次重进孩子模式，之前的场景对话在 UI 上「消失」（agent 记忆仍在）。
+    if (key) void restoreSceneHistory(key);
+  }
+
+  // 场景会话历史 → 聊天框（scene:history）。仅当该场景确有历史时才替换当前消息，
+  // 保持聊天框 = 场景对话的完整视角（与 piStartChild 恢复主会话 history 的体验对齐）。
+  const sceneHistLoadingRef = useRef("");
+  async function restoreSceneHistory(key: string) {
+    if (!key || sceneHistLoadingRef.current === key) return;
+    sceneHistLoadingRef.current = key;
+    try {
+      const r: any = await window.api.sceneHistory(childIdRef.current, key);
+      if (r?.success && Array.isArray(r.history) && r.history.length) {
+        setMessages(
+          r.history.map((m: any) => ({
+            id: nextId(),
+            role: m.role === "user" ? "user" : "ai",
+            text: typeof m.text === "string" ? m.text : "",
+            time: m.time || nowLabel(),
+          }))
+        );
+      }
+    } catch (e) {
+      console.warn("[Learn-scene] 恢复场景历史失败", e);
+    } finally {
+      sceneHistLoadingRef.current = "";
+    }
+  }
+
+  function handleSceneActive() {
+    const sel = materials.find((m) => m.id === selectedMaterialId);
+    activateSceneFromTool(sel?.filePath, sel?.title);
   }
 
   // 场景对话目标会话 key（课程会话优先，其次按资料派生的场景会话）
@@ -616,6 +682,93 @@ export default function Learn({ child, onExit }: Props) {
     () => courseKeyRef.current || sceneFallbackKeyRef.current || "",
     []
   );
+
+  // 场景「准备」（每个场景课程首次就绪触发一次）：预建 scene 会话+取课文+预热 TTS。
+  // 期间 HTML 显示「正在准备场景伙伴…」；就绪后聊天给一条引导（孩子能感知后端在准备）。
+  const scenePreparedForRef = useRef("");
+  // ISSUE-061 全托管：场景课由学习 agent 打开后，课程轮结束即让场景伙伴开场接管
+  const sceneOpenedTurnRef = useRef(false); // 本工作轮学习 agent 是否刚打开过场景资料
+  const sceneIntroDoneRef = useRef<Set<string>>(new Set());
+  const lastAskTextRef = useRef(""); // 最近一次孩子向学习 agent 发送的文本（交棒开场时引用）
+
+  // 共享 html 资料保鲜：恢复后逐份拉服务端最新内容就地替换（scene/课程 html 更新后左侧自动刷新）
+  async function refreshStaleMaterials(mats: Material[]) {
+    const targets = mats.filter(
+      (m) =>
+        m.format === "html" &&
+        m.filePath &&
+        !m.filePath.startsWith("outputs/") &&
+        /^[^/]+\/.+\.(html|htm)$/i.test(String(m.filePath).replace(/^materials\//, ""))
+    );
+    for (const m of targets) {
+      try {
+        const r: any = await window.api.materialsRefresh(m.filePath);
+        if (r?.success && typeof r.content === "string" && r.content !== m.content) {
+          setMaterials((prev) => prev.map((x) => (x.id === m.id ? { ...x, content: r.content, time: nowLabel() } : x)));
+        }
+      } catch {
+        /* 单份刷新失败跳过 */
+      }
+    }
+  }
+
+  // 场景伙伴自动开场：只建一个工作气泡并 scenePrompt（不依赖语音球），角色用英文台词接孩子的话
+  const launchSceneIntro = useCallback(
+    async (ck: string) => {
+      if (!ck || sceneIntroDoneRef.current.has(ck)) return;
+      if (workingIdRef.current) return; // 课程 agent 轮还在收尾，等 reply_end 重入
+      sceneIntroDoneRef.current.add(ck);
+      const id = nextId();
+      workingIdRef.current = id;
+      setMessages((prev) => [...prev, { id, role: "ai" as const, text: "", working: true, time: nowTime() }]);
+      setBusy(true);
+      materialsPanelRef.current?.sceneAgentBusy(true);
+      const ask = (lastAskTextRef.current || "").slice(0, 140);
+      const promptText = ask
+        ? `[开场] 孩子刚才请求学习本课，原话：「${ask}」。现在场景资料已打开，请你作为场景伙伴正式开场：让在场角色用英语向孩子问好并邀请他开口（一两句英文台词 + 配 1~2 个场景动作即可），然后等待孩子说话。`
+        : "[开场] 孩子打开了本课场景资料。请你作为场景伙伴开场欢迎孩子，并邀请他用英语对话（一两句英文台词 + 简单动作即可），然后等待孩子说话。";
+      const result = await window.api.scenePrompt(child.childId, ck, promptText);
+      if (!result.success && workingIdRef.current === id) {
+        workingIdRef.current = null;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === id
+              ? { ...m, text: `⚠️ 场景伙伴暂时没准备好：${result.error || "请稍后再试"}`, working: false }
+              : m
+          )
+        );
+        setBusy(false);
+        materialsPanelRef.current?.sceneAgentBusy(false);
+      }
+    },
+    []
+  );
+  const prepareSceneFlow = useCallback(
+    async (ck: string) => {
+      materialsPanelRef.current?.scenePreparing(true);
+      try {
+        await window.api.scenePrepare(childIdRef.current, ck);
+      } catch {
+        /* 准备失败不阻断：首次说话时仍会自动建会话 */
+      }
+      materialsPanelRef.current?.scenePreparing(false);
+      addAiMessage("🎭 场景伙伴已就绪！按住 🎤 语音球说话，或用键盘打字，用英语和角色聊天吧～");
+    },
+    []
+  );
+
+  // 学习 agent 回复收尾（pi:reply_end）
+  const handleReplyEnd = useCallback(() => {
+    workingIdRef.current = null;
+    setStopping(false);
+    setBusy(false);
+    // 场景课全托管：本工作轮学习 agent 刚打开过场景资料 → 课程收尾后由场景伙伴开场接管
+    if (sceneOpenedTurnRef.current && sceneModeRef.current) {
+      sceneOpenedTurnRef.current = false;
+      const ck = resolveSceneKey();
+      if (ck) void launchSceneIntro(ck);
+    }
+  }, [launchSceneIntro, resolveSceneKey]);
 
   // 场景语音球：录音结束（voice/scene 已由主进程落盘）+ ASR 文本 → 场景会话
   const handleSceneVoice = useCallback(
@@ -699,6 +852,7 @@ export default function Learn({ child, onExit }: Props) {
   const handleSceneReplyEnd = useCallback((data: { childId: string }) => {
     if (data.childId !== childIdRef.current) return;
     workingIdRef.current = null;
+    setStopping(false);
     setBusy(false);
     materialsPanelRef.current?.sceneAgentBusy(false);
   }, []);
@@ -716,6 +870,7 @@ export default function Learn({ child, onExit }: Props) {
       return [...prev, { id: nextId(), role: "ai", text: `⚠️ ${data.error}`, time: nowTime() }];
     });
     setBusy(false);
+    setStopping(false);
     materialsPanelRef.current?.sceneAgentBusy(false);
   }, []);
 
@@ -743,7 +898,9 @@ export default function Learn({ child, onExit }: Props) {
   const handleStop = useCallback(async () => {
     const id = workingIdRef.current;
     workingIdRef.current = null;
-    setBusy(false);
+    // ISSUE-068：进入「停止中」——保持发送禁用，直到 pi:reply_end（SDK 真正 idle）才解禁，
+    // 避免「已停止」UI 抢先解禁、在底层流未终止的窗口内误发新消息命中 SDK 重入守卫。
+    setStopping(true);
     if (id) {
       setMessages((prev) =>
         prev.map((m) => (m.id === id ? { ...m, text: "⏹ 已停止", working: false } : m))
@@ -754,6 +911,11 @@ export default function Learn({ child, onExit }: Props) {
     } catch {
       /* abort 失败忽略（prompt 可能已结束） */
     }
+    // 安全兜底：极端竞态/崩溃导致 reply_end 未到达时，5s 后强制解禁，避免按钮卡死
+    setTimeout(() => {
+      setStopping(false);
+      setBusy(false);
+    }, 5000);
   }, [child.childId]);
 
   // 定时任务触发的会话重置：清空当前孩子的会话与资料面板
@@ -914,6 +1076,9 @@ export default function Learn({ child, onExit }: Props) {
       await handleCommand(trimmed);
       return;
     }
+    // 记录最近一次孩子向学习 agent 说的话（场景交棒开场用）；新轮开始清掉上一轮的“打开过场景”标记
+    lastAskTextRef.current = trimmed;
+    sceneOpenedTurnRef.current = false;
     // ISSUE-061：场景对话模式（场景页就绪）→ 聊天消息也路由到独立 scene 会话。
     // 会话 key = 课程子会话优先，未进课程时用当前场景资料派生的 key（resolveSceneKey）。
     const sceneTargetKey = resolveSceneKey();
@@ -1406,8 +1571,8 @@ export default function Learn({ child, onExit }: Props) {
                 <ChatWindow
                   messages={messages}
                   onSend={handleSend}
-                  disabled={busy}
-                  running={busy}
+                  disabled={busy || stopping}
+                  running={busy || stopping}
                   onStop={handleStop}
                   aiEmoji={aiEmoji}
                   rate={rate}

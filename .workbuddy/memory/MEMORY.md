@@ -17,6 +17,7 @@
 - `SPLIT-REQUIREMENTS.md` / `DESIGN-SPLIT.md` / `SPLIT-DATA-STRUCTURE.md` —— 客户端+服务端拆分架构的需求、设计与数据结构
 - `REQUIREMENTS.md` / `EXAM-REQUIREMENTS.md` / `ENGLISH-AGENT-REQUIREMENTS.md` / `PARENT-AGENT-REQUIREMENTS.md` —— 各模块需求
 - `RESEARCH-aliyun-ssecp-child-assessment-2026-09-07.md`、`DESIGN-ssecp-speech-assessment-2026-09-07.md`、`RESEARCH-pronunciation-assessment-2026-08-31.md` —— 语音/发音评测调研与设计
+- `DESIGN-english-scene-courses-2026-09-10.md` —— 英语「学习+场景合一」课程方案（33 集 wowenglish → 9 场景课，一课两阶段单页）
 - `调研笔记-叶圣陶语文方法论.md` —— 语文教学思路调研
 
 ## 日志

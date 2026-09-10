@@ -475,6 +475,20 @@ input, textarea {
   flex-wrap: wrap;
   justify-content: center;
   max-width: 600px;
+  /* ISSUE-064: 孩子多了不裁切、内部滚动（保留居中换行） */
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-right: 8px;
+  padding-bottom: 8px;
+}
+
+/* 家长卡在列表滚动时始终固定在顶部可见 */
+.child-select .avatar-card.parent-card {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .child-select .avatar-card {
@@ -1029,6 +1043,51 @@ input, textarea {
   border: 1px solid #eee;
   border-radius: 8px;
   background: white;
+}
+
+/* ISSUE-061（2026-09-08）：真实 URL 顶层文档加载的进度/错误指示。
+   覆盖 iframe 区域，加载完成（onLoad）即消失。 */
+.html-frame-loading,
+.html-frame-error {
+  position: absolute;
+  inset: 0 0 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #eee;
+  border-radius: 8px;
+  z-index: 5;
+  pointer-events: none;
+  font-size: 13px;
+  color: #7a7a7a;
+}
+.html-frame-error {
+  background: rgba(255, 247, 242, 0.95);
+  color: #c05621;
+}
+.hf-progress {
+  width: 180px;
+  height: 6px;
+  border-radius: 999px;
+  background: #ececf3;
+  overflow: hidden;
+}
+.hf-progress-bar {
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #6a62c9, #4a41a8);
+  animation: hf-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes hf-indeterminate {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(280%); }
+}
+.hf-progress-text {
+  letter-spacing: 0.3px;
 }
 
 .content-panel .placeholder {

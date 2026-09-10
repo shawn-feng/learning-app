@@ -1,0 +1,30 @@
+## [ISSUE-064] 主页（选择身份）孩子列表溢出无滚动条：孩子多了显示不全
+- **类型**：UI 布局缺陷（首页可访问性）
+- **需求（用户 9/8 原话）**：主页部分增加滚动条，因为孩子多了，无法显示全部的。
+- **现状确认（已读 `src/pages/Home.tsx` + `src/styles.css`）**：
+  - 孩子列表渲染在 `Home.tsx:96-132` 的 `<div className="avatars">` 内，用 `children.map(...)` 渲染每个孩子一张 `.avatar-card`（含始终在场的「家长」卡，:97）。
+  - 容器样式 `src/styles.css:472` `.child-select .avatars`：`display:flex; flex-wrap:wrap; justify-content:center; max-width:600px;` —— **只有 `max-width`、没有 `max-height`，也没有 `overflow`**。
+  - 父级 `src/styles.css:458` `.child-select`：`height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;` —— **整体垂直居中且 `overflow` 默认 `visible`**。
+  - **根因**：孩子数量增加 → `.avatars` 多行换行后高度超过视口，但容器无固定高度上限也不滚动；父级又用 `justify-content:center` 把内容「居中挤占」，导致**顶部/底部卡片被视口裁切、且整页无滚动条**，尾部的「家长」卡或后续孩子点不到。这是纯 CSS 缺失，非数据问题。
+- **修复方向（建议，二选一或组合）**：
+  - **A（推荐，最小改动）**：给 `.child-select .avatars` 加 `max-height` + `overflow-y:auto`：
+    - `max-height: calc(100vh - 220px);`（预留 h1 标题 + 副标题 + 下方密码输入区高度）
+    - `overflow-y: auto; overflow-x: hidden;`
+    - `overscroll-behavior: contain;`（防止滚到底连带滚动整页）
+    - `padding-right: 8px;`（给滚动条留位，避免卡片贴边）
+    - 保留 `flex-wrap:wrap; justify-content:center;`，让卡片仍居中、多行后内部滚动。
+  - **B（更稳，防极端小窗）**：把 `.child-select` 的 `justify-content:center` 改为 `justify-content:flex-start` 并给整页加 `overflow-y:auto;`（或外层再套一个 `home-scroll` 容器专门滚动），保证「标题 + 头像区 + 密码输入」整体可滚、绝不裁切。注意 B 会改变「垂直居中」的视觉，需保留在大窗下仍居中（可在 `min-height:100vh` + `justify-content:center` 基础上用内滚容器，避免整页跳动）。
+  - **补充**：卡片尺寸固定 120px（`styles.css:481`），每行约 `(600-24)/144≈3~4` 张；孩子多时即使 A 方案内部滚动也合理。若担心「家长」卡被滚出，可在滚动容器内把家长卡固定（sticky）或始终排第一即可（当前已是第一个，A 方案下家长卡在顶部固定可见）。
+- **修改入口**：
+  - `src/styles.css:472` `.child-select .avatars`（**主改动点**：加 max-height + overflow-y:auto + overscroll-behavior）
+  - `src/styles.css:458` `.child-select`（可选，配合方案 B：调整 justify-content / 加 overflow-y）
+  - `src/pages/Home.tsx`（仅当方案 B 需额外包一层滚动容器时动；否则不动 JSX）
+- **验证**：临时在 `window.api.childList()` 返回里塞 12 个虚拟孩子，窗口高度压到 500px，确认头像区出现滚动条、家长卡与首个孩子始终可见、滚动流畅、密码输入区不被裁。
+- **优先级**：中（首页是「选择身份」刚需入口，孩子多的家庭直接无法进入孩子端，影响可用性与首因体验；改动小、风险低）
+- **记录时间**：2026-09-08
+- **状态**：✅ 已修复（2026-09-08）
+- **修复内容**（纯 CSS，未动 JSX）：
+  - `src/styles.css:472` `.child-select .avatars` 加 `max-height: calc(100vh - 220px)` + `overflow-y:auto` + `overflow-x:hidden` + `overscroll-behavior:contain` + `padding-right/8px padding-bottom/8px`，孩子多时头像区内部滚动、不再裁切。
+  - 新增 `.child-select .avatar-card.parent-card` 设 `position:sticky; top:0; z-index:1`，列表滚动时「家长」卡固定在顶部始终可点。
+  - 父级 `.child-select` 与 `Home.tsx` 均无需改动；沿用方案 A（最小改动、低风险的内部滚动方案）。
+- **验证**：窗口压到 ~500px、孩子塞 12 个时，头像区应出现滚动条，家长卡与首个孩子始终可见、滚动手感顺滑、密码输入区不被裁切。

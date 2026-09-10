@@ -12,7 +12,7 @@ import {
   isAssessmentConfigured,
 } from "./assessment-config";
 import { assess as tencentAssess } from "./providers/tencent-soe";
-import { assess as aliyunAssess } from "./providers/aliyun-kid";
+import { assess as aliyunAssess } from "./providers/aliyun-ssecp";
 import { webmToWav16k } from "../voice/audio";
 
 export async function assessAudio(
@@ -34,7 +34,7 @@ export async function assessAudio(
   }
 
   if (id === "tencent-soe") return tencentAssess(wav, creds, { refText: opts.refText || "" });
-  if (id === "aliyun-kid") return aliyunAssess(wav, creds, { refText: opts.refText || "" });
+  if (id === "aliyun-ssecp") return aliyunAssess(wav, creds, { refText: opts.refText || "" });
   throw new Error(`未知评测服务：${id}`);
 }
 

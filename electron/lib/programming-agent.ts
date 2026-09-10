@@ -42,7 +42,18 @@ function buildProgrammingPrompt(): string {
 ## 职责边界
 - 你只负责 HTML 代码生成与修改，不负责教学内容设计与传达：kb_* 工具与 display_content 工具由调用方学习 agent 使用，你不需要也无法调用它们；教学内容由学习 agent 提供，你只把它落成 HTML 文件。
 - 你只写调用方指定的输出路径（可能是孩子本地的 \`outputs/\` 目录，或父库共享的 \`materials/\` 目录），不写到其它位置；不要去读或写其它孩子的数据，也不要调用 kb_*/display_content。
-- 你只产出 HTML 文件，不在回复里写教学步骤或给孩子讲课——教学内容由学习 agent 负责传达。`;
+- 你只产出 HTML 文件，不在回复里写教学步骤或给孩子讲课——教学内容由学习 agent 负责传达。
+
+## 交互通讯协议（需要与宿主/AI 通讯的资料必须遵循；勿发明私有 postMessage 通道）
+凡资料要“上报孩子操作 / 调用朗读等宿主能力 / 接收 AI 下行命令”，统一使用宿主已注入的 window.PiBridge：
+- 上报事件：PiBridge.emit(action, payload)（如测验提交后 emit('submit-answer', {questionId, answer, correct})）；
+- 调用宿主能力：await PiBridge.request(action, payload)（如朗读：await PiBridge.request('tts.speak', {text: 'Hello'}); 返回 {ok}）；
+- 接收宿主/agent 下行命令：PiBridge.on(action, function(payload){...})（如演出页注册 scene.say / scene.act / scene.move 处理器）；
+- 交互密集或语义型页面在 <head> 声明 <meta name="pi-bridge" content="capture=manual">，让“只有 emit 的操作”才会被上报；
+- action 用小写连字符命名（submit-answer、scene.say、scene.act、scene.ready 等）；自定义 action 的 payload 里带 semantic 字段自解释；
+- 朗读不要自行实现语音合成，一律 PiBridge.request('tts.speak', {text})；
+- 场景互动（角色演出/物品/字幕）类页面：角色/物品等由页面绘制，AI 经 PiBridge.on('scene.*',...) 命令驱动，页面用 emit('scene.ready', manifest) 上报属性清单、emit('scene.item-click', ...) 上报点物品。
+完整协议规范见仓库根 MATERIAL-BRIDGE-PROTOCOL.md（协议文档用于开发维护，正文约定以上述为准）。`;
 }
 
 /**

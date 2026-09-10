@@ -1,5 +1,5 @@
-// 发音评测统一类型
-export type AssessmentProviderId = "tencent-soe" | "aliyun-kid";
+// 发音评测统一类型：腾讯云智聆（WebSocket） / 阿里 SSECP 声希（HTTP POST API，客户端直连）
+export type AssessmentProviderId = "tencent-soe" | "aliyun-ssecp";
 
 export interface PhoneScore {
   phone: string;

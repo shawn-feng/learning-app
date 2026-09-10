@@ -1,0 +1,36 @@
+## [ISSUE-027] 学习考核（全主观题语音作答 + 客户端出卷/判分 + 服务端存储 + v3 选课 LLM）——需求文档 `EXAM-REQUIREMENTS.md`，2026-09-01 实施完成
+- **🎯 v2 演进（同日完成，EXAM-REQUIREMENTS §14 取代初版「按主题 assess_method 周期」）**：固定考核（每天/每周/每月/半年/年末多档并存，同日多档去重只考周期最长档）+ 自定义考核（家长对话 `exam_schedule_create` 生成排期，信息不全先确认）。核心 = `exam_schedules` 排期表（kind/scheduled_at/scope/status/attempt_id）；固定排期懒生成（60 天窗口）；选课算法 4 因子（复习到期/薄弱/久未考/新学）取前 N 门课、**每课完整出题**（去 8 题上限）；孩子端考核时间点列表（pending/started 可重试）替代选科目；家长端设置「学习考核」tab + 记录页排期查看/取消；`exam_attempts.schedule_id` 回填。验证：冒烟 18/18、每课完整出题 3 课 9 题、排期去重正确。
+- **🎯 v3 演进（同日，EXAM-REQUIREMENTS §14.9 取代 v2 代码打分选课）**：**选课不用代码、给每个周期设置一个可编辑 prompt**（家长设置页「各周期选课规则」5 档 textarea + 恢复默认）。默认：每天/每周=周期内**所有**课程；每月=每主题**本月 50% + 本月前 25%**（数量=本月课数×25%）。**config 两段式**：`?schedule=X` → selectionPrompt（注入统计+候选清单）+ candidates（无 rubric）；`?schedule=X&courses=a,b` → 选中课程带 rubric + scoringPrompt。**周期归属标记（可靠性关键）**：服务端代码精确打标「★ 本周期/★ 本月/◐ 本月前」，LLM 按标记挑选不自己算日期（293 门长清单实测否则输出空）。候选口径含 status=✅ 已学无日期课（记「✅」归更早学习）。客户端 `selectCoursesForSchedule` 内存 session 选课（清理 LLM 复制的前缀 "[论语] "）+ 出卷改**逐课并发出题**（并发 3）。空窗口=空考核不自动放宽。验证：冒烟 20/20、真实 LLM 293 门候选→精确选窗口内 1 门→rubric 6078 字→逐课 3 题覆盖。
+- **🎯 v3.1 演进（9-02，EXAM-REQUIREMENTS §14.10 取代五档固定频率）**：固定考核**只留 每天/每周**标签管理（每档：启用开关 + prompt + 时间；每周可设**周几几点** weekly{weekday,time}）；**去掉月度/半年/年度固定档**（自定义考核灵活安排）；**自定义考核可建多个**，每个有自己的 **scope.prompt + 日期时间点**（带 prompt 的自定义走选课两段式，freq="custom" 不打周期标记；第二段 courses 参数须在 scope 分支内优先——曾因 scope 先返回拿不到 rubric）。家长端入口从「设置」迁到家长中心左侧边栏「🎯 学习考核」（ExamAdminPanel）。验证：冒烟 24/24、daily/weekly 按配置生成、自定义两段式。
+
+- **类型**：需求 / 新功能（已完整落地，本条目为后续查找的索引）
+- **描述**：孩子按家长设置的周期参加「学习考核」：系统自动挑该周期内学/复习过的知识点出**全主观口述题**，孩子**语音作答**（每题一段、可重录/转写回显/文字兜底/记录用时），提交后**离线判分**，产出评估报告（整体掌握度 + 逐题反馈 + 每课加强计划）。需求细节见根目录 `EXAM-REQUIREMENTS.md`（设计稿 `assets/exam-template.html`）。
+- **架构（关键约定，勿偏离）**：
+  - **存储全在服务端**（内容 `assess_method`/`assess_rubric` + 记录 `exam_attempts` + 语音大文件走 files 通道落服务端磁盘）；**计算在客户端**（出卷+判分用本地 LLM 独立内存 session，符合本 app「AI 在客户端跑」现状——Electron 持有 LLM key 本地推理）。
+  - **判分 prompt 由服务端下发**（`server/src/routes/exam.ts` 的 `SCORING_PROMPT`）= 判分口径单一真源，保证可比不漂移；判分 session 仅内存进行、**只把最终结果写 server DB**。
+  - 考试视图 = HTML 模板（`src/lib/exam-template.ts` 的 `buildExamHtml`），宿主 `<iframe sandbox="allow-scripts allow-modals allow-forms" allow="microphone" srcDoc=...>` 渲染；锁定（禁导航/资料/AI 提示）由 `ExamView.tsx` 全屏覆盖保证；**严格一次性**（提交前不落盘，关闭即作废）。
+- **数据模型**：
+  - 家长库 `parent.sqlite` v4 迁移：`topics.assess_method`（每科目考核方法说明：周期/对象/题量）、`courses.assess_rubric`（每课考核要点）。
+  - 孩子库 `kb.sqlite` v7 迁移：`courses.exam_mastery`（考核掌握度，与引导 mastery 双轨）。
+  - 服务端 `exam_attempts` 表：`per_question` / `course_mastery` / `reinforce_plan` 为 JSON 列。
+- **关键文件（后续查找入口）**：
+  - 客户端对接+待考核：`electron/lib/exam.ts`（getExamConfig / uploadExamVoice / submitExamAttempt / listExamAttempts / getExamCourseRecords / getExamAudioDataUrl / **getExamPending** / **parsePeriodDays**）
+  - 出卷/判分引擎：`electron/lib/exam-engine.ts`（`generateExamQuestions(topicConfig, childId)` / `scoreExamAttempt(scoringPrompt, answers, childId)`，SessionManager.inMemory + noContextFiles/noSkills）
+  - IPC/preload：`electron/lib/ipc-handlers.ts`（`exam:config/pending/submit/attempts/courseRecords/audio/generate/score`）、`electron/preload.ts`（exam* 系列）
+  - 服务端：`server/src/routes/exam.ts`（config 下发/attempts 提交/列表/course-records 每课聚合 + exam_mastery 回写）、`server/src/db.ts`（exam_attempts 建表）、`server/src/index.ts`（registerExamRoutes）
+  - 孩子端：`src/components/ExamView.tsx`（pick→exam→scoring→report）、`src/lib/exam-template.ts`（buildExamHtml 应用内模板）、`src/pages/Learn.tsx`（考核按钮 + **待考核红角标**）
+  - 家长端：`src/components/TopicDetail.tsx`（「考核要点」tab：方法说明 + 每课 rubric 编辑器）、`src/components/ExamRecords.tsx`（每课程考核记录表 + ▶ 听原音，挂 `ChildDetailPage.tsx` 的「🎯 考核记录」tab）
+  - agent 工具：`electron/lib/custom-tools.ts` `parent_content` 支持 `type="assessRubric"` 取课程考核要点
+  - 测试/冒烟：`test/exam.test.ts`（parsePeriodDays 5 例 + extractJson 3 例）、`server/scripts/verify-exam-smoke.mjs`（config 下发/提交/列表/每课聚合/403，**10/10 通过**）
+- **验证**：主 tsc 0 业务错误（仅 5 条已知环境告警）、server tsc 0 错、vitest 33 文件/302 例全绿、electron-vite build 通过、服务端冒烟 10/10。
+- **⚠️ 已知注意点**：
+  - **判分必须带 rubric**：`ExamAnswerIn.rubric` 由 ExamView 从 `examTopic.courses` 按 course 匹配 `assessRubric` 传入，否则 LLM 看不到家长写的要点（2026-09-01 修复，勿再漏）。
+  - 出卷/判分 session 目录按 childId 隔离（`getChildDir(childId||"default")`，2026-09-01 修复多孩子硬编码）。
+  - 判分 prompt 涉及"按今天推算日期"必须注入具体日期（服务端 `buildScoringPrompt()` 替换 `{{TODAY}}`，2026-09-01 修复——否则 LLM 产出 2025-03-24 错误年份）。
+  - 出卷已微调为**优先采用 rubric「考核内容」里的现成题目**（选择题去掉选项改口述，见 `exam-engine.ts` 出卷 prompt；配合 lunyu_exam 合并 md 导入的 rubric 使用）。
+  - **createAgentSession 必须解构 `{ session }`**（exam-engine 曾直接当返回值用 → `dispose is not a function` 崩，2026-09-01 修复；daily-summary 同款写法）。
+  - 服务端冒烟跑法（8899 + `SERVER_DATA_DIR` 指定临时数据目录 + run_in_background 起进程 + 每次清库重跑），详见 `2026-09-01.md` 日志。
+  - 待考核提醒 = `exam:pending` IPC + Learn.tsx 考核按钮红角标（科目数），失败静默不打断学习。
+- **2026-09-01 真实数据实测**（lunyu_exam 489 章）：`scripts/merge-lunyu-exam.mjs`（md+json 容错合并，461 章完整+28 降级）→ `scripts/import-lunyu-exam.mjs`（家长库 assess_rubric 489/489 + assess_method + 闻闻已学标记）→ 本机 8788 升级 v0.3.0（exam 路由+迁移）→ 出卷（LLM 按 rubric 出生活场景口述题）/判分（答对 4 分 vs 答错 0 分，评语带 rubric 锚定）/提交写库/course-records 聚合/exam_mastery='薄弱' 回写**全通**。
+- **优先级**：已完成（2026-09-01 实施 + 全链路验证 + lunyu_exam 真实数据实测；设计文档 `EXAM-REQUIREMENTS.md` 与模板设计稿 `assets/exam-template.html` 于 2026-08-31 产出）
+- **记录时间**：2026-09-01

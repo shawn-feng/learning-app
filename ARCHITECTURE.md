@@ -103,7 +103,14 @@
 ## 10. 语音 / 评测相关
 
 - 本地语音 ASR：默认千问 token-plan，响应为多层时需 pickText 多路径兜底（ISSUE-052）。
-- 发音评测对接阿里 ssecp，调研/设计见 `RESEARCH-aliyun-ssecp-child-assessment-2026-09-07.md`、`DESIGN-ssecp-speech-assessment-2026-09-07.md`。
+- 发音评测（口语/背诵题判分）：**客户端主进程本地评测（不走我们的云服务端）**，设置页可配置并切换默认 provider，当前支持两家并存：
+  - **腾讯云智聆 SOE**：中文题型 `cn_*` 用引擎 `16k_zh`（长文本自动降级段落模式 eval_mode=2 规避 4104），其余 `16k_en`；凭证 AppID/SecretId/SecretKey（见 `tencent-aksk.txt`）。
+  - **阿里云 SSECP（声希）HTTP POST API**：客户端直连声希，`cn.pred.score`（中文背诵/段落）/ `en.sent.score`（英文），声希直连 authorize 拿 `warrant_id`（**无需阿里云 AccessKey**，也不依赖卡死的 `CreateAccessWarrant.requestSign`）；凭证 appKey/appSecret（见 `ssapi.txt`）。provider=`aliyun-ssecp`。
+  - 映射统一见 `electron/lib/exam.ts` 的 `toSpeechAssessment`；题型自动选引擎/corType。注意：早期服务端的 `server/src/assessment/*`、`routes/assessment.ts`、`providers/aliyun-kid.ts` 已删除，现阿里方案完全在客户端（`providers/aliyun-ssecp.ts`）。
+  - **文本长度限制（2026-09-09 实测）**：
+    - **腾讯智聆**：句子模式 `eval_mode=1` 中文 **≤30 字** / 英文 **≤60 词**；段落模式 `eval_mode=2` 中文 **≤120 字** / 英文 **≤300 词**。超段落上限仍报 `4104`，需按句拆分合并（代码已按长度自动选 eval_mode 规避 30 字 4104，但 >120 字硬上限未做拆分）。
+    - **阿里声希 `cn.pred.score`**：**无字符数硬上限**——实测 800 / 2000 / 4000 字均返回正常结果，**从不报"文本过长 / refText exceeds"类错误**；唯一失败模式为 `"error":"core is timeout"`（服务端内核处理超时），由**录音与参考文本对齐不足 / 语音质量差**触发，与字数无关（结果非单调：4000 字过、1500 字反超时属噪声）。音频时长 ≤180s 已验证通过，更长受测试机上行带宽限制未证出硬天花板。
+    - **实现影响**：阿里分支**不需要**腾讯式 30/120 字 eval_mode 降级或超长按句拆分（`aliyun-ssecp.ts` 当前无长度拆分逻辑即正确）；唯一注意点——录音时长须与文本大致匹配（别用 3s 短录音对 1000 字背诵），否则可能 `core is timeout`。腾讯的 >120 字拆分限制**只适用于腾讯**，对阿里不适用。
 - 语音输入依赖 `ffmpeg-static`（跨平台打包时须按架构 rebuild，见 PACKAGING.md）。
 
 ## 11. 场景角色扮演（ISSUE-061）

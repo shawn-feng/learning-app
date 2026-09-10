@@ -82,6 +82,13 @@ export function formatPageEvent(evt: PageBridgeEvent): string {
       const text = d.text ? shortText(d.text, 500) : "场景已就绪";
       return text;
     }
+    case "app": {
+      // MATERIAL-BRIDGE-PROTOCOL：作者自定义语义事件（PiBridge.emit）——动作名 + 载荷
+      const title = evt.title ? `「${shortText(evt.title, 30)}」` : "";
+      const payload =
+        d.payload === undefined || d.payload === null ? "" : `，数据：${JSON.stringify(d.payload).slice(0, 600)}`;
+      return `${title}触发了动作「${shortText(String(d.action || ""), 60)}」${payload}`;
+    }
     default:
       return `有互动事件（${evt.kind}）`;
   }

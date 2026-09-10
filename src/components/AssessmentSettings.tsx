@@ -10,14 +10,15 @@ interface AssessmentProviderDef {
   fields: { key: string; label: string; placeholder?: string }[];
 }
 
-// 发音评测供应商：腾讯云智聆口语评测（新版）+ 阿里云儿童单词评测。
+// 发音评测供应商：腾讯云智聆（WebSocket）/ 阿里 SSECP 声希（HTTP POST API，客户端直连）。
 // 智聆：AppID + SecretId + SecretKey（腾讯云 API 密钥 + AppID，控制台「智聆口语评测」开通）。
-// 阿里：AppKey + AppSecret（阿里云「智能科教-口语评测」控制台获取），User ID 可选（默认 pi-child）。
+// 阿里声希：appKey + appSecret（阿里云「智能科教内容生成平台 SSECP」控制台获取，即声希凭证）；
+//         评测在 app 客户端完成，无需阿里云 AccessKey；中文背诵与英文均支持。
 const ASSESSMENT_PROVIDERS: AssessmentProviderDef[] = [
   {
     id: "tencent-soe",
     name: "腾讯云智聆",
-    desc: "口语评测（新版）WebSocket 流式，音素级反馈，儿童苛刻度自动最低档",
+    desc: "口语评测（新版）WebSocket 流式，音素级反馈，儿童苛刻度自动最低档；中文背诵与英文均支持",
     fields: [
       { key: "appId", label: "AppID", placeholder: "腾讯云 AppID（数字）" },
       { key: "secretId", label: "SecretId", placeholder: "腾讯云 API 密钥 SecretId" },
@@ -25,12 +26,12 @@ const ASSESSMENT_PROVIDERS: AssessmentProviderDef[] = [
     ],
   },
   {
-    id: "aliyun-kid",
-    name: "阿里云儿童单词",
-    desc: "智能科教-口语评测（en.word_kid.score，12 岁以下儿童单词跟读评测）",
+    id: "aliyun-ssecp",
+    name: "阿里云·声希",
+    desc: "SSECP 口语评测（声希 HTTP POST API），评测在客户端完成，无需阿里云 AccessKey；中文背诵与英文均支持",
     fields: [
-      { key: "appKey", label: "AppKey", placeholder: "阿里云口语评测 AppKey" },
-      { key: "appSecret", label: "AppSecret", placeholder: "阿里云口语评测 AppSecret" },
+      { key: "appKey", label: "appKey", placeholder: "声希 appKey（SSECP 控制台）" },
+      { key: "appSecret", label: "appSecret", placeholder: "声希 appSecret（SSECP 控制台）" },
       { key: "userId", label: "User ID（可选）", placeholder: "留空默认 pi-child" },
     ],
   },

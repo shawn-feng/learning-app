@@ -15,7 +15,8 @@ import { startScheduler, runCatchUp } from "./lib/scheduler";
 import { startSessionSyncTimer, flushSessionSync } from "./lib/session-sync";
 import { startServerFeaturesSync } from "./lib/server-features";
 import { lintAllChildren } from "./lib/kb-lint";
-import { registerCustomSchemes, registerMediaProtocol, registerAssetProtocol, registerAppProtocol } from "./lib/media-protocol";
+import { registerCustomSchemes, registerMediaProtocol, registerAssetProtocol, registerAppProtocol, setAssetDocRenderer } from "./lib/media-protocol";
+import { serveMaterialDocument } from "./lib/material-doc";
 import { initUpdater, silentCheckForUpdates } from "./lib/updater";
 
 let mainWindow: BrowserWindow | null = null;
@@ -189,6 +190,10 @@ app.whenReady().then(() => {
   registerMediaProtocol();
   // 注册 asset:// 协议，把沙盒 iframe(srcDoc) 里引用的共享资料文件映射到本地
   registerAssetProtocol();
+  // 文档渲染通道（ISSUE-061 根治）：asset://...?doc=1 顶层导航 → 协议层 rewrite+注入桥后返回。
+  // 让 iframe 以真实 URL 文档加载场景/资料页，正文 <script> 随正常导航执行（dataURL/srcDoc 内嵌
+  // 在 app 沙盒下正文脚本不执行的怪癖被绕开）。
+  setAssetDocRenderer(serveMaterialDocument);
   // 注册 app://bundle 协议，生产渲染层顶层（替代 file:// 加载，见 createWindow）
   registerAppProtocol();
 

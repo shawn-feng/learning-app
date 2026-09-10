@@ -63,28 +63,16 @@
 <div id="log" data-page-node-id="DTAsCvYYeQt7Pov2As7w2E">· 点按钮向下发 scene: 指令观察演出；台词命中物品会自动高亮（mentionScan）；点场景里物品/角色会发声。</div>
 <script>
   var frame = document.getElementById("stage");
-  function send(msg){ frame.contentWindow.postMessage(msg, "*"); log(JSON.stringify(msg)); }
-  function say(c, text, zh){ send({ type:"scene:say", character:c, text:text, zh:zh }); }
-  function act(c, a){ send({ type:"scene:act", character:c, act:a }); }
-  function move(c, x){ send({ type:"scene:move", character:c, x:x }); }
-  function showMaggie(){ send({ type:"scene:show", character:"maggie" }); }
-  function hideMaggie(){ send({ type:"scene:hide", character:"maggie" }); }
-  function upd(n){ send({ type:"scene:update", state:{ task:"hello", progress:n, total:3 } }); }
+  // 场景页已切 MATERIAL-BRIDGE-PROTOCOL（无私有 scene:* 消息监听）：
+  // 演示壳直接在 iframe 里调 window.Scene（页面调试导出），模拟 agent 经 PiBridge.on('scene.*') 的驱动效果。
+  function swin() { return frame.contentWindow; }
   function log(t){ var el=document.getElementById("log"); el.textContent = "· " + t + "\n" + el.textContent; }
-
-  // 宿主模拟：场景内 speak 走 page:tts → 此处用浏览器语音朗读
-  window.addEventListener("message", function(e){
-    if (e.source !== frame.contentWindow) return;
-    if (e.data && e.data.type === "page:tts" && window.speechSynthesis) {
-      try {
-        window.speechSynthesis.cancel();
-        var u = new SpeechSynthesisUtterance(String(e.data.text || ""));
-        var vs = window.speechSynthesis.getVoices().filter(function(v){ return /^en/i.test(v.lang); });
-        u.lang="en-US"; u.rate=0.92; if(vs.length) u.voice=vs[0];
-        window.speechSynthesis.speak(u);
-      } catch(err){}
-    }
-  });
+  function say(c, text, zh){ try { swin().Scene.say(c, text, zh); log("scene.say " + c + ": " + text); } catch (e) { log("ERR " + e.message); } }
+  function act(c, a){ try { swin().Scene.act(c, a); log("scene.act " + c + " " + a); } catch (e) { log("ERR " + e.message); } }
+  function move(c, x){ try { swin().Scene.move(c, x, 1.8); log("scene.move " + c + " -> " + x); } catch (e) { log("ERR " + e.message); } }
+  function showMaggie(){ try { swin().Scene.show("maggie"); log("scene.show maggie"); } catch (e) { log("ERR " + e.message); } }
+  function hideMaggie(){ try { swin().Scene.hide("maggie"); log("scene.hide maggie"); } catch (e) { log("ERR " + e.message); } }
+  function upd(n){ try { swin().Scene.update({ task: "hello", progress: n, total: 3 }); log("scene.update " + n + "/3"); } catch (e) { log("ERR " + e.message); } }
 
   var timers = [];
   function later(fn, ms){ timers.push(setTimeout(fn, ms)); }

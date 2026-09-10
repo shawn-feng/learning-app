@@ -1,0 +1,18 @@
+## [ISSUE-055] 家长 agent 缺「上传资料到 server 指定目录」工具：自动制作课程资料后无法推上服务端真源
+- **类型**：新功能（家长 agent 工具缺口，闭环断点）
+- **现象/需求**：家长 agent 自动制作课程资料（用 `write` 写好 html/md/媒体后），需要把文件传到 server 端对应目录（`materials/<parentId>/<topic>/...`），目前**缺这个工具**——资料只落本地，server 真源没有文件，孩子经 `asset://` 远程代理读不到（404）。
+- **现状链路（已读代码，缺口已确证）**：
+  - **服务端上传路由已就绪**：`server/src/routes/materials.ts:170` `POST /api/v1/materials/upload`（multipart：`topic` + 可选 `subDir` + `file`）→ 落 `materialsRoot(dataDir,parentId)/<topic>/<subDir>/<filename>` 并 `upsertMaterialFile` 写 `materials` 表，返回 `{id,path,type,size,updated_at}`；`parentId` 由 JWT（Bearer）取（`authParent`，:28）。`topic` 仅字母/数字/_/-（`:48` `TOPIC_KEY_RE`）；`subDir` 防穿越（`:211`）。
+  - **客户端封装已存在**：`electron/lib/parent-library.ts:46` `uploadMaterialToServer(topicDir, subDir, filePath)`（FormData POST，token 取自 `currentSessionToken()`，base 取自 `getServerUrl()`）→ 返回服务端相对 path；已被 `copyMaterialIntoParent`（:901）复用。
+  - **家长 IPC `parent:uploadMaterial`（ipc-handlers.ts:559）已用 `copyMaterialIntoParent`**，但**依赖 `dialog.showOpenDialog` 弹窗选文件（交互式，agent 无法在无头执行栈里调用）**——这是 UI 上传通道，不是 agent 工具。
+  - **家长 agent 工具列表（pi-session.ts:679 主家长会话 / :725 家长内容会话）有 `write`/`edit`/`ls`/`parent_course_save`/`parent_course_delete`/`move_file`/`copy_file`，但无"上传到 server"工具**。agent 用 `write` 写到本地 cwd 的 `parents/<id>/materials/<topic>/`，而 SPLIT 方案 A 下该本地目录=**旧残留（真源在服务端 `materials/<parentId>/<topic>/`）**（memory 已记）；`parent_course_save` 登记的 `htmlPath` 是相对服务端根的路径 → 文件不在服务端即 404，child 渲染经 `asset://`→`/api/v1/materials/content/{id}` 读不到。
+- **根因**：家长 agent 工具集缺一个"把本地文件推到 server 指定目录"的动作；上传能力只活在交互式 IPC（`parent:uploadMaterial` 弹窗）里，未暴露成 agent 可调用的 customTool。`write` 只写本地，不触达服务端真源。
+- **修改入口（复用既有 `uploadMaterialToServer`，改动小）**：
+  - **新增工具 `parent_upload_material`**（`electron/lib/custom-tools.ts`，仿 `parent_course_save` 风格）：入参 `{localPath, topic, subDir?}`；实现 `const rel = await uploadMaterialToServer(topic, subDir, localPath)`（`parent-library.ts:46`），返回服务端相对 path（如 `lunyu/xxx.html` / `english/media/yyy.mp3`）；失败抛 `上传失败 (HTTP ${status}): ${detail}`。
+  - **注册到家长双会话**：`pi-session.ts:679` + `:725` 两个 `tools` 数组与 `customTools` 数组都加 `parent_upload_material`（name 须同时进白名单，见 :603 注释 `customTools 的 name 必须同时出现在 tools 白名单`）。
+  - **工具 description 写清闭环**：「先 `write` 写好本地文件 → 调本工具上传到 server `<topic>/<subDir>/` → 用 `parent_course_save` 把返回的 path 登记为 `htmlPath`；媒体文件 `subDir` 传 `media`」。
+  - **边界**：`topic` 仅 `[a-zA-Z0-9_-]`（服务端会 400，工具需先本地校验并给友好提示）；`subDir` 不得含 `..`/`\`/绝对路径；大视频注意 busboy 默认体积限制（必要时服务端放宽）；批量首版循环调用即可。
+  - **关联**：`parent_course_save`（htmlPath 登记）、ISSUE-021（资料重发必须重显）、SPLIT 方案 A（资料真源=服务端）、`parent:uploadMaterial`（UI 通道可保留，agent 走新工具）。
+- **优先级**：中（家长 agent 自动生产资料的闭环断点：不影响手动 UI 上传，但 agent 自动做完资料后无法上云，孩子端看不到）；建议与 ISSUE-021 资料流程一并验证。
+- **记录时间**：2026-09-06
+- **✅ 已实现（2026-09-06）**：`electron/lib/custom-tools.ts` 新增 `parentUploadMaterialTool`（name=`parent_upload_material`，入参 `{localPath,topic,subDir?}`），复用 `uploadMaterialToServer`，本地预校验 topic 仅 `[a-zA-Z0-9_-]` / localPath 存在且为文件 / subDir 无 `..\` 或绝对路径；成功后 appendActivityLog 并返回服务端相对 path（无 materials/ 前缀，如 `lunyu/xxx.html`），description 写清「write→上传→parent_course_save 登记 htmlPath」闭环。已在 `electron/lib/pi-session.ts` 双家长会话（主家长 + parent-content）的 `tools` 白名单与 `customTools` 数组各注册一处。tsc 0 业务错（仅 5 环境噪音）+ electron-vite build 全过。未提交、未部署；勿与并行 ISSUE-049/050 等改动混入本提交（本改动仅 custom-tools.ts + pi-session.ts 两文件）。

@@ -367,12 +367,15 @@ export async function getExamAudioDataUrl(fileId: string): Promise<string> {
   return `data:audio/webm;base64,${btoa(binary)}`;
 }
 
-// ==================== 口语评测（考核内口语/听说题判分，SSECP 声希引擎） ====================
+// ==================== 口语评测（考核内口语/听说题判分，本地腾讯智聆） ====================
 
-/** 服务端口语评测结果（与服务端 SpeechAssessment 对应，字段为展示所需子集）。 */
+import type { AssessmentResult } from "./assessment/types";
+
+/** 口语评测结果（展示所需子集，契约兼容原 SSECP 结构）。 */
 export interface SpeechAssessment {
-  provider: "aliyun-ssecp";
-  overall: number;
+  provider: "tencent-soe" | "aliyun-ssecp";
+  overall?: number;
+  /** 发音总分（腾讯=SuggestedScore 建议分，用于踩分） */
   pron: number;
   accuracy?: number;
   integrity?: number;
@@ -384,20 +387,24 @@ export interface SpeechAssessment {
   raw?: unknown;
 }
 
-/** 调用服务端 SSECP 口语评测（考核内口语/听说题判分）。录音需先经 uploadExamVoice 拿 audioFileId。 */
-export async function assessSpeech(
-  childId: string,
-  audioFileId: string,
-  questionType: string,
-  refText: string,
-  opts?: { topic?: string; course?: string; isExam?: boolean; examAttemptId?: string }
-): Promise<{ assessmentId: string; result: SpeechAssessment }> {
-  return serverFetch<{ assessmentId: string; result: SpeechAssessment }>("/assessment/speech", {
-    method: "POST",
-    body: { childId, audioFileId, questionType, refText, ...opts },
-    token: currentSessionToken(),
-    timeoutMs: 35000,
-  });
+/** 将 AssessmentResult（腾讯智聆 / 阿里声希）映射为 EXAM 展示用的 SpeechAssessment（字段兼容原 SSECP 契约）。 */
+export function toSpeechAssessment(r: AssessmentResult): SpeechAssessment {
+  return {
+    provider: r.provider,
+    pron: r.score,
+    accuracy: r.accuracy,
+    integrity: r.completeness,
+    fluency: r.fluency != null ? { overall: r.fluency } : undefined,
+    prosody: undefined,
+    words: (r.words || []).map((w) => ({
+      word: w.word,
+      score: w.score,
+      dpType: w.dpType,
+      phones: (w.phones || []).map((p) => ({ phone: p.phone, score: p.score })),
+    })),
+    cnSyllables: undefined,
+    raw: r.raw,
+  };
 }
 
 /** 口语题默认算分：pron(0-100) 线性映射到 pointMax；rubric 精细映射后续扩展。 */

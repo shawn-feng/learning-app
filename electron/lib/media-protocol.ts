@@ -184,12 +184,28 @@ export function isMediaExt(rel: string): boolean {
   return ALLOWED_EXT.has(path.extname(rel).toLowerCase());
 }
 
+/**
+ * 文档渲染回调：iframe 顶层导航加载真实 URL（asset://...?doc=1）时由协议层返回
+ * 「rewrite + 注入桥」后的 html。由 main.ts 装配（serveMaterialDocument 在 material-doc.ts，
+ * 避免本模块 → parent-library 循环依赖）。
+ */
+type AssetDocRenderer = (rel: string, url: URL) => Promise<Response | null>;
+let assetDocRenderer: AssetDocRenderer | null = null;
+export function setAssetDocRenderer(r: AssetDocRenderer | null): void {
+  assetDocRenderer = r;
+}
+
 export function registerAssetProtocol(): void {
   protocol.handle("asset", async (request) => {
     try {
       const url = new URL(request.url);
       const rel = resolveAssetTarget(url.pathname);
       if (!rel) return new Response("forbidden", { status: 403 });
+      // doc=1 且配置了渲染器 → 顶层文档通道：返回 rewrite+注入桥 的 html（iframe 正文随真实导航执行）
+      if (url.searchParams.get("doc") === "1" && assetDocRenderer) {
+        const rendered = await assetDocRenderer(rel, url);
+        if (rendered) return rendered;
+      }
       return await proxyMaterial(rel, request);
     } catch {
       return new Response("not found", { status: 404 });

@@ -4,40 +4,40 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="pi-scenario" content="1">
+<meta name="pi-bridge" content="capture=manual">
 <title>第1课·客厅打招呼 Hello</title>
 <!--
   场景资料标准（SCENARIO-HTML-SPEC / ISSUE-061 v2）
   ─────────────────────────────────────────────────────────
   本页 = 场景「舞台」。只做演出：展示客厅场景、角色、可点物品；播放台词/单词；执行动作动画。
-  语音识别 / TTS / agent 会话都不在本页（在 app 壳/宿主）。本页只有上行/下行两类消息。
+  语音识别 / TTS / agent 会话都不在本页（在 app 壳/宿主）。本页通讯**全部走统一标准协议
+  MATERIAL-BRIDGE-PROTOCOL（window.PiBridge，宿主注入）**，不发明私有 postMessage。
 
-  ◆ 场景页标记：<meta name="pi-scenario"> 宿主据此放行 scene_command 指令。
-
-  ◆ 下行指令（宿主经桥 postMessage，或演示壳经 iframe.postMessage；window.Scene 仅供调试直调）
-    { type:"scene:say",       character:"steve", text:"Hello! I'm Steve.", zh:"你好！我是 Steve。" }
-    { type:"scene:move",      character:"steve", x:320 }            // x=舞台横坐标，或目标名 window/sofa/table/plant/lamp/tv/picture/rug
-    { type:"scene:act",       character:"steve", act:"turn-on-lamp" } // 动作表见 Scene.act
-    { type:"scene:show"|"scene:hide", character:"maggie" }
-    { type:"scene:highlight", target:"sofa" }
-    { type:"scene:update",    task:"hello", progress:1, total:3 }
-    场景页没有「结束」：不下发 end 类指令；完成提示在宿主聊天区。
-
-  ◆ 上行事件（页面 postMessage 给宿主）
-    { type:"scene:ready", manifest }                    // 就绪后自动上报一次（含物品/角色/地标清单）
-    { type:"scene:child-click", target:"sofa", word:"sofa", zh:"沙发" }  // 点物品/角色
-    { type:"scene:mic-press" } / { type:"scene:mic-release" }            // 按住语音球说话（宿主录音+ASR）
-
+  ◆ 场景页标记：<meta name="pi-scenario">（宿主据此放行 scene_command 指令）；
+     采集模式：<meta name="pi-bridge" content="capture=manual">（停自动采集，只上报显式 emit）。
+  ◆ 下行（宿主/agent → 页面）：演出命令由页面注册 PiBridge.on('scene.*', handler) 接收
+     —— scene.say{character,text,zh} / scene.move{character,x|目标名,duration} /
+     scene.act{character,act(动作表见 Scene.act)} / scene.show|scene.hide{character} /
+     scene.highlight{target} / scene.update{task,progress,total}；
+     控制消息：scene.mic.status / scene.mic.result / scene.busy。执行完自动回执宿主。
+     场景页没有「结束」：不下发 end 类指令；完成提示在宿主聊天区。
+  ◆ 上行（页面 → 宿主/agent，PiBridge.emit）：
+     scene.ready(manifest) 场景就绪清单（物品/角色/地标）；scene.item-click{target,word,zh} 点物品/角色；
+     scene.mic.press / scene.mic.release 按住语音球说话（宿主录音+ASR）。
+  ◆ 朗读：PiBridge.request('tts.speak', {text})（宿主 edge-tts）；独立预览无宿主时 fallback speechSynthesis。
   ◆ 台词自动高亮：任何 say 台词提到物品的 id/英文/中文即自动高亮该物品（Scene.mentionScan）。
-  ◆ 物品朗读：点击弹单词卡并朗读 data-word；TTS 上行复用 page:tts（宿主 edge-tts），独立预览 fallback speechSynthesis。
-  ◆ 红线：本页不含任何手动控制/演示 UI。动作只能由 agent 指令驱动。
+  ◆ window.Scene 仅供宿主/演示壳直调（调试用），页面自身不带任何手动控制/演示 UI。
 -->
 <style>
   :root{
     --floor:#c8a176; --wall:#f3e6cd; --wood:#b98a4e; --ink:#3a3240;
   }
   *{ box-sizing:border-box; }
+  /* 舞台 + 下方字幕栏整体居中；实际尺寸按视口等比缩放（见 JS fitScene） */
   html,body{ margin:0; height:100%; overflow:hidden; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
-  #stage{ position:relative; width:1120px; height:640px; margin:0 auto; background:var(--wall);
+  body{ display:flex; align-items:center; justify-content:center; }
+  #scene-fit{ width:1120px; transform-origin:center center; display:flex; flex-direction:column; align-items:center; gap:12px; }
+  #stage{ position:relative; width:1120px; height:640px; background:var(--wall);
     overflow:hidden; border-radius:18px; box-shadow:0 10px 34px rgba(0,0,0,.25); user-select:none; }
 
   /* ── 房间结构 ── */
@@ -178,14 +178,8 @@
   .character .halo{ position:absolute; left:50%; top:-4px; width:70px; height:70px; transform:translateX(-50%);
     border-radius:50%; background:radial-gradient(circle,rgba(255,255,255,.85),transparent 70%); opacity:0; }
   .character.speaking .halo{ opacity:1; }
-  .character .bubble{ position:absolute; left:50%; bottom:100%; transform:translateX(-50%);
-    background:#fff; border-radius:14px; padding:6px 12px; min-width:120px; max-width:320px; text-align:center;
-    box-shadow:0 6px 16px rgba(0,0,0,.18); opacity:0; pointer-events:none; transition:opacity .25s; z-index:60; }
-  .character .bubble::after{ content:""; position:absolute; left:50%; bottom:-7px; transform:translateX(-50%);
-    border:7px solid transparent; border-top-color:#fff; }
-  .character.speaking .bubble{ opacity:1; }
-  .character .bubble .en{ display:block; font-size:16px; font-weight:700; color:#333; }
-  .character .bubble .zh{ display:block; font-size:12px; color:#888; margin-top:2px; }
+  /* 台词字幕已移至舞台下方 #captionbar；画面内不显示气泡/台词文本（避免遮挡场景） */
+  .character .bubble{ display:none; }
   .character.small{ width:110px; height:186px; bottom:96px; }
   .character.glow{ filter:drop-shadow(0 0 10px rgba(255,209,84,.95)); }
   .hidden{ display:none; }
@@ -205,14 +199,22 @@
   .glow{ filter:drop-shadow(0 0 12px rgba(255,205,60,.95)); animation:pulse 1s ease-in-out infinite; }
   @keyframes pulse{ 0%,100%{filter:drop-shadow(0 0 6px rgba(255,205,60,.7))} 50%{filter:drop-shadow(0 0 18px rgba(255,205,60,1))} }
 
-  /* 底部双语字幕 */
-  #subtitle{ position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:65;
-    background:rgba(20,26,44,.82); color:#fff; border-radius:14px; padding:8px 20px; max-width:820px;
-    display:none; align-items:baseline; gap:12px; box-shadow:0 6px 20px rgba(0,0,0,.3); }
-  #subtitle.show{ display:flex; }
-  #subtitle .speaker{ font-weight:700; color:#ffd95e; }
-  #subtitle .en{ font-size:19px; }
-  #subtitle .zh{ font-size:14px; color:#bcd0f0; }
+  /* 舞台 + 下方字幕栏 整体适配视口（等比缩放居中，字幕不遮挡画面） */
+  #scene-fit{ flex:none; transform-origin:center center; }
+
+  /* 场景下方字幕栏：英文常驻；中文翻译默认折叠，点「翻译」按钮展开 */
+  #captionbar{ width:1120px; min-height:52px; background:rgba(24,30,52,.9); color:#fff;
+    border-radius:14px; padding:8px 18px; box-shadow:0 6px 18px rgba(0,0,0,.18);
+    display:flex; flex-direction:column; gap:4px; font-size:15px; line-height:1.45; }
+  #captionbar .row{ display:flex; align-items:flex-start; gap:12px; }
+  #captionbar .speaker{ font-weight:700; color:#ffd95e; flex:none; white-space:nowrap; }
+  #captionbar .en{ font-size:19px; flex:1; min-width:0; }
+  #captionbar .zh{ display:none; font-size:14px; color:#bcd0f0; }
+  #captionbar .zh.show{ display:block; }
+  #captionbar .cap-toggle{ flex:none; align-self:center; background:none; border:1px solid rgba(255,255,255,.4);
+    color:#ffe9a8; border-radius:999px; padding:2px 12px; font-size:12px; cursor:pointer; white-space:nowrap;
+    font-family:inherit; }
+  #captionbar .cap-toggle:hover{ background:rgba(255,255,255,.12); }
 
   /* 小任务进度点（右上角，仅提示不阻塞） */
   #tasks{ position:absolute; right:18px; top:14px; z-index:50; background:rgba(255,255,255,.82);
@@ -236,6 +238,15 @@
   #mic-hint.ok{ color:#1d8a4c; }
   #mic-hint.err{ color:#c03b3b; }
   #mic-hint.busy{ color:#b25d0a; }
+  /* 场景准备中（Learn 预建场景会话/预热时提示）——语音球上方 */
+  #scene-preparing{ position:absolute; right:24px; bottom:196px; z-index:76;
+    background:rgba(30,84,130,.92); color:#dceeff; font-size:13px; border-radius:12px; padding:6px 14px;
+    display:none; box-shadow:0 6px 16px rgba(0,0,0,.28); max-width:280px; }
+  #scene-preparing.show{ display:flex; align-items:center; gap:6px; }
+  #scene-preparing .spinner{ width:12px; height:12px; border-radius:50%; border:2px solid rgba(220,238,255,.35);
+    border-top-color:#fff; animation:spin 0.9s linear infinite; flex:0 0 auto; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
   /* 场景伙伴回应中（agent 处理中提示）——紧贴语音球上方，孩子能一眼看到 */
   #agent-thinking{ position:absolute; right:24px; bottom:158px; z-index:76;
     background:rgba(46,42,88,.9); color:#ffd95e; font-size:13px; border-radius:12px; padding:6px 14px;
@@ -253,6 +264,7 @@
 </style>
 </head>
 <body>
+<div id="scene-fit">
 <div id="stage">
   <div id="floor"></div>
   <div class="wall-band" style="top:44px"></div>
@@ -382,12 +394,23 @@
     </div>
   </div>
 
-  <!-- 单词卡 / 字幕 / 语音球 -->
+  <!-- 单词卡 / 语音球（字幕已移至舞台下方 #captionbar，不再遮挡画面） -->
   <div id="wordcard"><span class="w"></span> <span class="ph"></span><span class="z"></span></div>
-  <div id="subtitle"><span class="speaker"></span><span class="en"></span><span class="zh"></span></div>
   <div id="agent-thinking">💭 场景伙伴正在回应<span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+  <div id="scene-preparing"><span class="spinner"></span>正在准备场景伙伴…</div>
   <button id="mic-btn" title="按住说话">🎤</button>
   <div id="mic-hint">松开结束</div>
+</div>
+
+  <!-- 场景下方字幕栏：英文常驻；中文默认隐藏，点「翻译」展开 -->
+  <div id="captionbar">
+    <div class="row">
+      <span class="speaker" id="cap-speaker"></span>
+      <span class="en" id="cap-en"></span>
+      <button class="cap-toggle" id="cap-toggle" type="button">中文</button>
+    </div>
+    <div class="zh" id="cap-zh"></div>
+  </div>
 </div>
 
 <script>
@@ -397,25 +420,45 @@
   var stage = $("stage");
   var inIframe = window.parent !== window;
 
-  /* ============ 语音朗读：优先宿主 page:tts（app 内 edge-tts），独立预览 fallback 浏览器语音 ============ */
-  var ttsBusy = false;
+  // 舞台 + 下方字幕栏整体按视口等比缩放（场景资料 iframe 高度不定，避免超高被裁/过小留白）
+  var sceneFit = $("scene-fit");
+  var captionbar = $("captionbar");
+  function fitScene() {
+    if (!sceneFit) return;
+    var baseW = 1120;
+    var baseH = 640 + captionbar.offsetHeight + 12; // 舞台 + gap + 字幕栏
+    var vw = window.innerWidth - 16;
+    var vh = window.innerHeight - 16;
+    var s = Math.min(1, vw / baseW, vh / baseH);
+    sceneFit.style.transform = "scale(" + s + ")";
+    sceneFit.style.height = baseH + "px";
+  }
+  window.addEventListener("resize", fitScene);
+
+  // 字幕栏中文翻译开关：默认折叠，点击「中文」展开/收起
+  var capZhOn = false;
+  var capToggle = $("cap-toggle");
+  var capZh = $("cap-zh");
+  if (capToggle) {
+    capToggle.addEventListener("click", function () {
+      capZhOn = !capZhOn;
+      capZh.classList.toggle("show", capZhOn);
+      capToggle.textContent = capZhOn ? "收起中文" : "中文";
+    });
+  }
+
+  /* ============ MATERIAL-BRIDGE-PROTOCOL：统一通讯走宿主注入的 PiBridge（由桥注入）============ */
+  var PB = window.PiBridge || null; // 独立预览无宿主注入 → null（emit/request 降级，页面仍可用）
+  function hostEmit(action, payload) { if (PB) PB.emit(action, payload); }
+  function hostSpeak(text) { if (PB) { PB.request("tts.speak", { text: text }); return true; } return false; }
+
+  /* ============ 语音朗读：PiBridge request('tts.speak')（宿主 edge-tts）；独立预览 fallback 浏览器语音 ============ */
   function speak(text) {
     if (!text) return;
-    if (inIframe) {
-      ttsBusy = true;
-      window.parent.postMessage({ type: "page:tts", text: text }, "*");
-      clearTimeout(speak._t);
-      speak._t = setTimeout(function () { ttsBusy = false; }, 9000);
-      window.addEventListener("message", function onDone(e) {
-        if (e.data && e.data.type === "page:tts:done") {
-          ttsBusy = false;
-          clearTimeout(speak._t);
-          window.removeEventListener("message", onDone);
-        }
-      });
-    } else if (window.speechSynthesis) {
+    if (hostSpeak(text)) return; // 宿主朗读（request 内部 12s 超时；宿主端已有 seq 去重/停止上一个）
+    if (window.speechSynthesis) {
       try {
-        window.speechSynthesis.cancel();
+        // 不 cancel：多句台词/点读由 speechSynthesis 自带队列顺序播放，后一句不覆盖前一句
         var u = new SpeechSynthesisUtterance(text);
         var vs = window.speechSynthesis.getVoices().filter(function (v) { return /^en/i.test(v.lang); });
         u.lang = "en-US"; u.rate = 0.92;
@@ -453,14 +496,13 @@
       var ch = chars[cid]; if (!ch) return;
       Object.keys(chars).forEach(function (k) { chars[k].classList.remove("speaking"); });
       ch.classList.add("speaking");
-      ch.querySelector(".bubble .en").textContent = text || "";
-      ch.querySelector(".bubble .zh").textContent = zh || "";
-      var st = $("subtitle");
+      // 台词只写进舞台下方字幕栏（#captionbar），画面内不再显示字幕避免遮挡；
+      // 中文翻译默认折叠，用户点「中文」按钮展开。
       var meta = roleMeta[cid];
-      st.querySelector(".speaker").textContent = meta ? meta.sub : (cid + ":");
-      st.querySelector(".en").textContent = text || "";
-      st.querySelector(".zh").textContent = zh || "";
-      st.classList.add("show");
+      $("cap-speaker").textContent = meta ? meta.sub : (cid + ":");
+      $("cap-en").textContent = text || "";
+      $("cap-zh").textContent = zh || "";
+      if (!capZhOn) $("cap-zh").classList.remove("show");
       speak(text);
       // 台词自动高亮提及的物品（无需 agent 额外发 highlight）
       Scene.mentionScan(text);
@@ -468,7 +510,6 @@
       clearTimeout(Scene.say._t);
       Scene.say._t = setTimeout(function () {
         ch.classList.remove("speaking");
-        st.classList.remove("show");
       }, Math.max(3200, (text || "").length * 240));
     },
 
@@ -601,7 +642,6 @@
     clearTimeout(showWordCard._t);
     showWordCard._t = setTimeout(function () { card.classList.remove("show"); }, 3800);
   }
-  function up(msg) { if (inIframe) window.parent.postMessage(msg, "*"); }
   function wordOf(el) { return el.dataset.word || (el.id ? el.id.replace("p-", "") : ""); }
   function zhOf(el) { return el.dataset.zh || propZh[wordOf(el)] || ""; }
 
@@ -614,7 +654,7 @@
       showWordCard(el);
       var word = wordOf(el);
       speak(word);
-      up({ type: "scene:child-click", target: el.id.replace("p-", ""), word: word, zh: zhOf(el) });
+      hostEmit("scene.item-click", { target: el.id.replace("p-", ""), word: word, zh: zhOf(el) });
     });
   });
   // 点角色：角色名单词卡 + 上行
@@ -625,7 +665,7 @@
       Scene.highlightTarget(cid);
       showWordCard({ dataset: { word: meta.name, zh: meta.zh, phon: "" } });
       speak(meta.name);
-      up({ type: "scene:child-click", target: cid, word: meta.name, zh: meta.zh });
+      hostEmit("scene.item-click", { target: cid, word: meta.name, zh: meta.zh });
     });
   });
   // 点场景空白：收起单词卡
@@ -651,7 +691,7 @@
     micBtn.classList.add("recording");
     micBtn.classList.remove("transcribing");
     micHintShow("🎤 正在听…说完后松开", "busy", 0);
-    up({ type: "scene:mic-press" });
+    hostEmit("scene.mic.press", {});
   }
   function micEnd(ev) {
     if (!micDown) return;
@@ -661,12 +701,12 @@
     if (dur < 450) {
       // 按住太短：本地即时提示（宿主对该录音也判定太短，会再给聊天提示，这里先给孩子看）
       micHintShow("太快啦，按住说完一整句再松手", "err", 2000);
-      up({ type: "scene:mic-release" });
+      hostEmit("scene.mic.release", {});
       return;
     }
     micBtn.classList.add("transcribing");
     micHintShow("识别中…", "busy", 0);
-    up({ type: "scene:mic-release" });
+    hostEmit("scene.mic.release", {});
   }
   // 宿主下行：ASR 进行中 / 结果
   function onMicStatus(st) {
@@ -685,6 +725,12 @@
   }
   // 宿主下行：场景 agent 正在处理（角色要回应了）
   function onAgentBusy(b) { $("agent-thinking").classList.toggle("show", !!b); }
+  // 宿主下行：场景会话/语音准备中
+  function onScenePreparing(st) {
+    var el = $("scene-preparing");
+    if (st === "loading") { el.classList.add("show"); micBtn.classList.add("transcribing"); }
+    else { el.classList.remove("show"); micBtn.classList.remove("transcribing"); }
+  }
 
   micBtn.addEventListener("pointerdown", micStart);
   micBtn.addEventListener("pointerup", micEnd);
@@ -715,34 +761,30 @@
   Scene._manifest = SCENE_MANIFEST;
   window.__PI_SCENE__ = SCENE_MANIFEST;
 
-  /* ============ 下行：接收宿主 / 桥转发的 scene: 指令 ============ */
-  window.addEventListener("message", function (e) {
-    var d = e.data;
-    if (!d || typeof d.type !== "string" || d.type.indexOf("scene:") !== 0) return;
-    switch (d.type) {
-      case "scene:say":       Scene.say(d.character, d.text, d.zh); break;
-      case "scene:move":      Scene.move(d.character, d.x, d.duration); break;
-      case "scene:act":       Scene.act(d.character, d.act || d.action); break;
-      case "scene:show":      Scene.show(d.character); break;
-      case "scene:hide":      Scene.hide(d.character); break;
-      case "scene:highlight": Scene.highlightTarget(d.target); break;
-      case "scene:update":    Scene.update(d.state || { task: d.task, progress: d.progress, total: d.total }); break;
-      // 语音球状态 / agent 处理中（宿主下行控制消息，非演出指令）
-      case "scene:mic-status": onMicStatus(d.status); break;
-      case "scene:mic-result": onMicResult(d.ok === true, d.ok === true ? d.text : d.error); break;
-      case "scene:agent-busy": onAgentBusy(d.busy === true); break;
-      // scene:end / 其它一律忽略——场景页没有「结束」
-    }
-    // 指令回执：宿主（MaterialsPanel.scene）带 _rq 等待本页确认，避免「页面没反应却以为成功」
-    if (d._rq && inIframe) {
-      up({ type: "scene:ack", _rq: d._rq });
-    }
-  });
+  /* ============ 下行：MATERIAL-BRIDGE-PROTOCOL —— 宿主/agent 命令统一经 PiBridge.on('scene.*') 接收 ============
+   * （宿主注入的 PiBridge 收到 page:app-cmd 后按本页注册分发，执行完自动回执；独立预览无宿主时各 on 为 noop，
+   *   演出仍可用 window.Scene 直调演示。） */
+  var pbBind = function (action, fn) { if (PB) PB.on(action, fn); };
+  pbBind("scene.say", function (p) { Scene.say(p.character, p.text, p.zh); });
+  pbBind("scene.move", function (p) { Scene.move(p.character, p.x, p.duration); });
+  pbBind("scene.act", function (p) { Scene.act(p.character, p.act || p.action); });
+  pbBind("scene.show", function (p) { Scene.show(p.character); });
+  pbBind("scene.hide", function (p) { Scene.hide(p.character); });
+  pbBind("scene.highlight", function (p) { Scene.highlightTarget(p.target); });
+  pbBind("scene.update", function (p) { Scene.update(p || {}); });
+  // 语音球状态 / agent 处理中（宿主下行控制消息）
+  pbBind("scene.mic.status", function (p) { onMicStatus(p && p.status); });
+  pbBind("scene.mic.result", function (p) { onMicResult(p && p.ok === true, p && p.ok === true ? p.text : (p && p.error)); });
+  pbBind("scene.busy", function (p) { onAgentBusy(p && p.busy === true); });
+  pbBind("scene.prepare", function (p) { onScenePreparing(p && p.status); });
 
-  // 场景就绪后向宿主上报一次 manifest
+  // 场景就绪后经标准协议上报一次 manifest（含物品/角色/地标清单，供 agent 感知与问答）
   setTimeout(function () {
-    if (inIframe) up({ type: "scene:ready", manifest: SCENE_MANIFEST });
+    hostEmit("scene.ready", SCENE_MANIFEST);
   }, 350);
+
+  // 首帧后应用视口缩放（iframe 尺寸已定）
+  fitScene();
 })();
 </script>
 </body>

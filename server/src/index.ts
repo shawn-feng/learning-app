@@ -15,7 +15,6 @@ import { registerSessionsRoutes } from "./routes/sessions.js";
 import { registerExamRoutes } from "./routes/exam.js";
 import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerStudyPlanRoutes } from "./routes/study-plans.js";
-import { registerAssessmentRoutes } from "./routes/assessment.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
 import { initServerLog, logInfo, logError, installServerConsoleRedirect } from "./log.js";
 
@@ -58,7 +57,6 @@ registerSessionsRoutes(app, { config, db });
 registerExamRoutes(app, { config, db });
 registerSchedulerRoutes(app, { config, db });
 registerStudyPlanRoutes(app, { config, db });
-registerAssessmentRoutes(app, { config, db });
 startWorkerScheduler({ dataDir: config.dataDir, db });
 
 const start = async (): Promise<void> => {

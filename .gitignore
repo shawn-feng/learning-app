@@ -14,6 +14,9 @@ cloud-service/server*.log
 .pi/
 aliyun-aksk.txt
 tencent-aksk.txt
+# SSECP/声希口语评测凭证（明文密钥，不入库）
+ssapi.txt
+data/assessment-config.json
 .npm-cache/
 electron.vite.config.*.mjs
 学习技能和资料/

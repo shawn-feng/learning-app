@@ -105,6 +105,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // stopped 标记用于 prompt 收尾时跳过正常回复/错误回发（避免 abort 后被前端追加多余气泡）。
   let childPromptAbort: { stopped: boolean; abort: () => Promise<void> } | null = null;
   let parentPromptAbort: { stopped: boolean; abort: () => Promise<void> } | null = null;
+  let parentContentPromptAbort: { stopped: boolean; abort: () => Promise<void> } | null = null; // ISSUE-068：家长教学内容会话在途守卫
   // SPLIT：服务端连接配置（纯服务端模式必需）
   ipcMain.handle("server:get_config", async () => {
     return { url: getServerUrl() };
@@ -1212,6 +1213,11 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       console.log(
         `[pi:prompt] child=${childId}${courseKey ? ` course=${courseKey}` : ""} text="${text.slice(0, 50)}" images=${imgCount}`
       );
+      // ISSUE-068：在途拦截（含「停止中」）——上一轮 prompt 仍在跑/收尾时直接拒绝，
+      // 返回友好中文提示，避免把 SDK 的 "Agent is already processing" 抛给用户。
+      if (childPromptAbort) {
+        return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
+      }
       try {
         // ISSUE-029 任务2：courseKey 有值时路由到对应课程子会话（英语课），否则主会话。
         const session = await getChildSession(childId, courseKey);
@@ -1336,6 +1342,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
   ipcMain.handle("scene:prompt", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string, text: string) => {
+    // ISSUE-068：在途拦截（含「停止中」），避免重入触发 SDK "Agent is already processing"
+    if (scenePromptAbort) {
+      return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
+    }
     try {
       const session = await getSceneSession(childId, courseKey);
       sceneTryPrewarm(childId, courseKey);
@@ -1478,6 +1488,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   // ISSUE-037：家长发送支持 images（对齐 pi:prompt）
   ipcMain.handle("pi:prompt_parent", async (_e: IpcMainInvokeEvent, text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) => {
+    // ISSUE-068：在途拦截（含「停止中」），避免重入触发 SDK "Agent is already processing"
+    if (parentPromptAbort) {
+      return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
+    }
     try {
       const session = await getParentSession();
       const beforeCount = (session as any).messages?.length ?? 0;
@@ -1557,10 +1571,21 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("pi:prompt_parent_content", async (_e: IpcMainInvokeEvent, text: string) => {
+    // ISSUE-068：在途拦截（含「停止中」），避免重入触发 SDK "Agent is already processing"
+    if (parentContentPromptAbort) {
+      return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
+    }
     try {
       const session = await getParentContentSession();
       const beforeCount = (session as any).messages?.length ?? 0;
+      // ISSUE-068：登记在途守卫，供 pi:abort 标记停止 + 在途拦截判断
+      parentContentPromptAbort = { stopped: false, abort: () => session.abort() };
       await session.prompt(text);
+      // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件
+      if (parentContentPromptAbort?.stopped) {
+        _e.sender.send("pi:reply_end", { childId: "parent-content" });
+        return { success: true, stopped: true };
+      }
       // ISSUE-037：同 pi:prompt_parent——prompt 失败不抛异常，错误在最后一条 assistant 消息里，
       // 必须显式检查并回发 pi:reply_error / pi:reply（childId=parent-content，前端 TopicDetail /
       // TopicEditor 据此展示），否则家长「课程管理」页聊天发送后静默无反应、busy 卡死。
@@ -1599,10 +1624,17 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyTexts.join("").length });
       return { success: true };
     } catch (err) {
+      // abort 中断导致 prompt reject：不当作错误回发（前端已自行收起工作气泡）
+      if (parentContentPromptAbort?.stopped) {
+        _e.sender.send("pi:reply_end", { childId: "parent-content" });
+        return { success: true, stopped: true };
+      }
       console.error(`[pi:prompt_parent_content] error:`, (err as Error).message);
       _e.sender.send("pi:reply_error", { childId: "parent-content", error: friendlyError((err as Error).message) });
       _e.sender.send("pi:reply_end", { childId: "parent-content" });
       return { success: false, error: (err as Error).message };
+    } finally {
+      parentContentPromptAbort = null;
     }
   });
 
@@ -1628,6 +1660,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     // 标记当前运行中的 prompt 已被停止，收尾时跳过正常回复/错误回发（避免追加多余气泡）
     if (childId === "parent") {
       if (parentPromptAbort && !parentPromptAbort.stopped) parentPromptAbort.stopped = true;
+    } else if (childId === "parent-content") {
+      if (parentContentPromptAbort && !parentContentPromptAbort.stopped) parentContentPromptAbort.stopped = true;
     } else {
       if (childPromptAbort && !childPromptAbort.stopped) childPromptAbort.stopped = true;
     }

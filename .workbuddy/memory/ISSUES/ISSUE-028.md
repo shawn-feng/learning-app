@@ -1,0 +1,29 @@
+## [ISSUE-028] 服务端增加 agent 功能：会话同步上云 + 无头 worker + 家长对话回顾（方案B）
+
+- **类型**：架构 / 需求（2026-08-31 讨论定方向，2026-09-01 归档记录）
+- **描述**：
+  - 背景需求两个：① 定时任务需要 agent 自主运行，但客户端设备可能关机/休眠 → 漏跑（recording/todo 原在主进程 node-cron，runCatchUp 不回溯历史）；② 家长需要查看孩子与 agent 的完整对话过程（原会话 jsonl 只落客户端本地，家长端无通道）。
+  - 结论：完整交互 agent **留在客户端**；只把三件搬上 learning-server（:8788）：**会话 jsonl 增量同步上云** + **服务端无头 worker**（ephemeral agent 跑 recording/todo 及未来自主任务）+ **家长完整逐字稿回顾**。已确认 pi-web（兄弟目录中间产物）为淘汰方案、不作为可复用资产；learning-server 原零 agent 代码。
+- **现状 / 排查入口**：
+  - 会话同步（阶段①）：
+    - 客户端 `electron/lib/session-sync.ts`（新增）：游标 `data/children/<id>/.pi/sync-state.json`（files:[name]:{syncedBytes,lineCount}），Buffer 字节偏移切片增量，**服务端 ack 才推进游标**（离线/失败天然安全，无需持久队列）；触发 = 每轮对话后（`ipc-handlers.ts` pi:prompt 挂钩）+ 5min 定时 + before-quit flush。
+    - 服务端 `server/src/routes/sessions.ts` + `server/src/db/sessions.ts`（新增）：`POST /api/v1/sessions/:childId/sync`（幂等 append，session_files 表存同步游标，session_messages 按 (child_id,file,line_index) INSERT OR REPLACE，**客户端权威**）；`GET /api/v1/sessions/:childId/dates`；`GET /api/v1/sessions/:childId?date=YYYY-MM-DD`（完整逐字稿，剔除 thinking，assistant 附工具调用）。表：`session_messages / session_files / worker_state`（`server/src/db.ts` schema v7）。
+    - 家长端：`src/components/SessionReview.tsx`（新增，「💬 对话回顾」tab 挂 `ChildDetailPage.tsx`）+ IPC `sessions:reviewDates/reviewMessages`（`ipc-handlers.ts`）+ `electron/preload.ts`。
+  - 无头 worker（阶段②/④）：
+    - `server/src/worker/`（新增）：`providers.ts`（平移客户端 provider 配置）、`runtime.ts`（ModelRuntime.create 按家长临时 auth 文件注入，模型优先 app_settings.defaultModel，兜底 qwen-tokenplan/deepseek-v4-flash-0731）、`kb-tools.ts`（kb 三件套/todo_list/get_date 直调 `routes/db.ts` 导出的 queryHandlers/execHandlers，**不重复实现 SQL**）、`tasks.ts`（**WorkerTask 注册机制**：type/points(cfg)/catchUp/run；recording+todo 首批，未来「孩子不在场自主任务」registerTask 即可）、`scheduler.ts`（cron 每分钟 + worker_state 去重 + **启动补跑 runWorkerCatchUp**，catchUp: latest=recording 只补最近过期点 / all=todo 按序补 gen+stat）、`recording-prompt.ts`（与客户端同源副本）。
+    - 数据源全服务端：当天对话读镜像 `data/sessions/`（`db/sessions.ts` readServerDailyConversation），kb 直读写服务端 DB，**不依赖客户端存活**。
+  - apiKey 安全（任务5）：`server/src/crypto.ts`（新增，AES-256-GCM，密钥 SERVER_SECRET env 或首启生成 `dataDir/.secret`）；`routes/config.ts` settings 键 `auth` 加密落盘 + `GET /config` 解密回环（客户端 config-sync 会拉 auth 合并回本地，**不能过滤该键**——与计划偏差点）。
+  - 双跑切换：`server/src/routes/version.ts`（0.2.0，`features: ["session_sync","worker"]`）；客户端 `electron/lib/server-features.ts`（新增，探测缓存）→ `electron/lib/scheduler.ts` 在 `hasServerFeature("worker")` 时跳过本地 recording/todo（含 runCatchUp），旧服务端无标志则保持本地调度不破坏现状。
+  - 构建坑：`server/scripts/build.mjs` 增加 import_meta.url 垫片（esbuild CJS 打包 pi-coding-agent 后 `import_metaN.url` 为 undefined 启动即崩；构建后正则替换为 `require('url').pathToFileURL(__filename).href`，18 处）。另服务端 SDK 已固定精确版本 "0.84.1" 并适配严格类型（registry 重发布导致与客户端嵌套副本类型不同：reasoning 必填/samplingParams 移除/AgentToolResult.details 必填）。
+- **关键文件清单（后续查找入口）**：
+  - 客户端：`electron/lib/session-sync.ts`、`electron/lib/server-features.ts`、`src/components/SessionReview.tsx`（新增）；`ipc-handlers.ts`（sync 钩子 + sessions:review*）、`scheduler.ts`（worker 接管跳过）、`main.ts`（定时/探测启动）、`preload.ts`（sessionReview*）
+  - 服务端：`server/src/routes/sessions.ts`、`server/src/db/sessions.ts`、`server/src/crypto.ts`、`server/src/worker/*`（providers/runtime/kb-tools/tasks/scheduler/recording-prompt）（新增）；`routes/db.ts`（导出 handlers）、`routes/config.ts`（auth 加密）、`routes/version.ts`（0.2.0+features）、`db.ts`（3 表）、`index.ts`（注册+启动 worker）、`scripts/build.mjs`（import_meta 垫片）
+  - 验证脚本：`server/scripts/smoke-sessions.mjs`、`server/scripts/worker-catchup-check.mts`、`server/scripts/worker-tasks-check.mts`
+- **验证**：server tsc 0 错；esbuild 单文件 15.7MB；冒烟全过（sync+幂等+回顾+加密回环+features）；补跑专项全过（latest/all/二次去重）；客户端 tsc 仅 5 条已知环境告警 + electron-vite build 通过；Linux pkg 产物 `server/dist/learning-server`（v0.2.0）打包成功。已提交 git `de2ef67`（28 文件 +4546 行）。
+- **⚠️ 已知注意点 / 后续**：
+  - **部署顺序**：先发客户端新版（含 server-features）再升服务端 0.2.0，否则老客户端本地 recording/todo 与服务端 worker 双跑（daily 重复/双倍 token）。
+  - 真实 recording 冒烟需真实 apiKey（冒烟刻意未烧 token）。
+  - 传输层仍 LAN HTTP 明文（完整保护需 HTTPS/RSA）；apiKey 目前仅静态加密。
+  - 家长会话/父库未纳入同步；worker 只补「当天启动补跑」，服务端整日宕机错过时间点不回溯历史（影响极小）。
+- **优先级**：已完成（2026-08-31 实施 + 全链路验证 + 提交 de2ef67；2026-09-01 归档记录）
+- **记录时间**：2026-09-01

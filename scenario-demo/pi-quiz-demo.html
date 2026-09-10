@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="pi-bridge" content="capture=manual">
+<title>随堂小测验（PiBridge 协议样例）</title>
+<!--
+  MATERIAL-BRIDGE-PROTOCOL reference 样例（家长端/孩子端通用“需要通讯的网页”标准写法）：
+  - capture=manual：只上报显式 emit 的操作
+  - PiBridge.emit('submit-answer', {...})：作答即上报（宿主会注入 agent 上下文）
+  - PiBridge.request('tts.speak', {text})：朗读走宿主能力
+  - 无宿主独立预览时：PiBridge 不存在 → 下方 demo stub 提供本地可演示行为
+-->
+<style>
+  body{ font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; margin:0; padding:40px; background:#f5f7ff; }
+  .card{ background:#fff; max-width:520px; margin:0 auto; border-radius:18px; padding:28px 32px;
+    box-shadow:0 8px 26px rgba(60,80,200,.12); }
+  h1{ font-size:20px; margin:0 0 4px; color:#334; }
+  .sub{ color:#888; font-size:13px; margin-bottom:18px; }
+  .q{ margin-bottom:16px; }
+  .q .t{ font-size:15px; color:#333; margin-bottom:8px; }
+  .opt{ display:block; padding:9px 12px; margin-bottom:6px; border:1.5px solid #d9deef; border-radius:10px;
+    cursor:pointer; font-size:15px; color:#333; }
+  .opt:hover{ border-color:#6a62c9; background:#f6f5ff; }
+  .opt.chosen{ border-color:#534ab7; background:#ece9ff; font-weight:600; }
+  .opt .l{ display:inline-block; width:22px; color:#6a62c9; font-weight:700; }
+  #next{ display:none; margin-top:14px; background:#534ab7; color:#fff; border:none; border-radius:10px;
+    padding:10px 18px; font-size:15px; cursor:pointer; }
+  #result{ display:none; margin-top:14px; padding:12px 14px; border-radius:12px; font-size:15px; }
+  #result.good{ background:#e6f6ea; color:#1d8a4c; }
+  #result.bad{ background:#fdeaea; color:#b04040; }
+  #demo-note{ text-align:center; color:#aaa; font-size:12px; margin-top:18px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎓 随堂小测验</h1>
+  <div class="sub">示例：作答即上报（PiBridge.emit）+ 朗读（PiBridge.request）</div>
+
+  <div id="q1" class="q">
+    <div class="t">Q1. How do you say “你好” in English?</div>
+    <label class="opt" data-q="q1" data-v="A"><span class="l">A</span> Bonjour</label>
+    <label class="opt" data-q="q1" data-v="B"><span class="l">B</span> Hello</label>
+    <label class="opt" data-q="q1" data-v="C"><span class="l">C</span> Merci</label>
+  </div>
+
+  <div id="q2" class="q" style="display:none">
+    <div class="t">Q2. What color is the sofa in the living room scene?</div>
+    <label class="opt" data-q="q2" data-v="A"><span class="l">A</span> Blue</label>
+    <label class="opt" data-q="q2" data-v="B"><span class="l">B</span> Green</label>
+    <label class="opt" data-q="q2" data-v="C"><span class="l">C</span> Red</label>
+  </div>
+
+  <button id="next">下一题 ▶</button>
+  <div id="result"></div>
+</div>
+<div id="demo-note">独立预览为本地演示；在 app 中宿主注入 PiBridge 后，作答会上报 agent 并自动朗读</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  // 独立预览（无宿主注入）时的最小 PiBridge stub：emit 打印到页面结果、request 用浏览器语音
+  if (!window.PiBridge) {
+    window.PiBridge = {
+      emit: function (action, payload) {
+        showResult("（本地演示）已上报：" + action + " " + JSON.stringify(payload));
+      },
+      request: function (action, payload) {
+        if (action === "tts.speak" && window.speechSynthesis) {
+          try {
+            window.speechSynthesis.cancel();
+            var u = new SpeechSynthesisUtterance(String(payload && payload.text || ""));
+            window.speechSynthesis.speak(u);
+          } catch (e) { /* ignore */ }
+        }
+        return Promise.resolve({ ok: true });
+      },
+      on: function () {}, off: function () {}, version: 1
+    };
+  }
+  var PB = window.PiBridge;
+  var answers = { q1: null, q2: null };
+  var KEY = { q1: "B", q2: "A" };
+
+  function showResult(msg, good) {
+    var r = $("result");
+    r.textContent = msg;
+    r.className = good === undefined ? "" : (good ? "good" : "bad");
+    r.style.display = "block";
+  }
+
+  var opts = Array.prototype.slice.call(document.querySelectorAll(".opt"));
+  opts.forEach(function (o) {
+    o.addEventListener("click", function () {
+      var q = o.dataset.q, v = o.dataset.v;
+      answers[q] = v;
+      opts.forEach(function (x) {
+        if (x.dataset.q === q) x.classList.toggle("chosen", x === o);
+      });
+      // 标准动作：作答提交（带是否正确的参考答案）
+      var correct = KEY[q] === v;
+      PB.emit("submit-answer", { questionId: q, answer: v, correct: correct, semantic: "孩子完成了一道选择题，correct 表示参考答案对错" });
+      // 标准宿主能力：朗读
+      PB.request("tts.speak", { text: correct ? "Great job!" : "Good try!" });
+      showResult(correct ? "✅ 答对啦，真棒！" : "🤔 再想想？参考答案是 " + KEY[q], correct);
+      if (q === "q1") { $("q1").style.display = "none"; $("q2").style.display = "block"; }
+      else { $("q2").style.display = "none"; PB.emit("complete-section", { section: "mini-quiz", correct: Object.keys(answers).filter(function (k) { return answers[k] === KEY[k]; }).length, total: 2 }); }
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -26,6 +26,7 @@ function stripInstructions(text: string): string {
 export default function ParentChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false); // ISSUE-068：停止中锁，保持发送禁用直到 SDK 真正 idle
   // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡）
   const workingIdRef = useRef<string | null>(null);
 
@@ -87,7 +88,7 @@ export default function ParentChatPanel() {
       });
     });
     window.api.onPiAgentEnd((data: any) => {
-      if (data.childId === "parent") setBusy(false);
+      if (data.childId === "parent") { setStopping(false); setBusy(false); }
     });
     // 思考增量（主进程已节流）——在 working 气泡里实时展示
     window.api.onPiThinking((data: any) => {
@@ -135,10 +136,11 @@ export default function ParentChatPanel() {
         }
         return clone;
       });
+      setStopping(false);
       setBusy(false);
     });
     window.api.onPiReplyEnd((data: any) => {
-      if (data.childId === "parent") setBusy(false);
+      if (data.childId === "parent") { setStopping(false); setBusy(false); }
     });
     // 回复错误：替换 working 气泡为错误提示（不再静默）
     window.api.onPiReplyError((data: any) => {
@@ -158,10 +160,12 @@ export default function ParentChatPanel() {
         }
         return clone;
       });
+      setStopping(false);
       setBusy(false);
     });
     // SDK 会话级错误事件兜底提示
     window.api.onPiError((error: string) => {
+      setStopping(false);
       setBusy(false);
     });
   }, [patchWorking]);
@@ -307,7 +311,9 @@ export default function ParentChatPanel() {
   const handleStop = useCallback(async () => {
     const id = workingIdRef.current;
     workingIdRef.current = null;
-    setBusy(false);
+    // ISSUE-068：进入「停止中」——保持发送禁用，直到 reply_end（SDK 真正 idle）才解禁，
+    // 避免「已停止」UI 抢先解禁、在底层流未终止的窗口内误发新消息命中 SDK 重入守卫。
+    setStopping(true);
     if (id) {
       setMessages((prev) =>
         prev.map((m) => (m.id === id ? { ...m, text: "⏹ 已停止", working: false } : m))
@@ -318,12 +324,17 @@ export default function ParentChatPanel() {
     } catch {
       /* abort 失败忽略 */
     }
+    // 安全兜底：极端竞态/崩溃导致 reply_end 未到达时，5s 后强制解禁，避免按钮卡死
+    setTimeout(() => {
+      setStopping(false);
+      setBusy(false);
+    }, 5000);
   }, []);
 
   return (
     <div className="parent-chat-panel">
       <div className="parent-chat-title">家长助手</div>
-      <ChatWindow messages={messages} onSend={handleSend} disabled={busy} running={busy} onStop={handleStop} owner="parent" />
+      <ChatWindow messages={messages} onSend={handleSend} disabled={busy || stopping} running={busy || stopping} onStop={handleStop} owner="parent" />
     </div>
   );
 }

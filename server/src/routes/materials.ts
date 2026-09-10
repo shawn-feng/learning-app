@@ -139,7 +139,11 @@ export function registerMaterialsRoutes(app: FastifyInstance, deps: MaterialsDep
     };
     const ext = path.extname(row.path).toLowerCase().replace(".", "");
     const contentType = MIME[ext] ?? "application/octet-stream";
-    const size = row.size;
+    // ⚠️ 2026-09-08 根治：Content-Length/Range 一律以**真实文件 stat** 为准，绝不用 materials 索引的 size——
+    // 索引可能在文件被覆盖（cp/上传同步）后未刷新（旧值 40483 < 磁盘 41618），按旧 Content-Length 发送会让
+    // 客户端截断响应体 → html 正文脚本尾部丢失 → 语法错误 → 整段脚本不执行（场景页 ready/演出全失效，长排根因）。
+    const realStat = fs.statSync(abs);
+    const size = realStat.size;
     reply.header("Content-Type", contentType);
     reply.header("Accept-Ranges", "bytes");
     reply.header("Cache-Control", "no-store");
