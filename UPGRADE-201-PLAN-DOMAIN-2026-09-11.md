@@ -352,7 +352,9 @@
 
 ### 12.4 期间发现的独立生产事故（另行登记）
 
-`ISSUES/ISSUE-075.md`（**高**）：14:40 客户端 `192.168.1.200` 推送空 `frequencies` 到 `POST /exam/fixed-config`，而服务端 `exam.ts:1254` 的 `DELETE FROM exam_schedules ...` **没有 child/parent 作用域** → 删掉 118 行未来固定排期（136→18），且 `frequencies: []` 会让 `ensureFixedSchedules` 直接 return 0 → 固定档考核从此静默不再生成。与本次升级/同步无关（写入方是客户端，服务端逻辑为既有代码），但需尽快修复 + 恢复配置。
+`ISSUES/ISSUE-075.md`（**高**）：14:40 客户端 `192.168.1.200` 推送空 `frequencies` 到 `POST /exam/fixed-config`，而服务端 `exam.ts:1254` 的 `DELETE FROM exam_schedules ...` **没有 child/parent 作用域** → 删掉 118 行未来固定排期（136→18），且 `frequencies: []` 会让 `ensureFixedSchedules` 直接 return 0 → 固定档考核从此静默不再生成。与本次升级/同步无关（写入方是客户端，服务端逻辑为既有代码）。
+
+**处置（14:58，按用户决定「生产暂时不开启考核」）**：备份 `data/backups/pre-exam-off-2026-09-11T06-58-25-452Z/` → 清空主库 `exam_schedules` 18 行 + 两孩子 `exam_plans` 68+68 行（只删无真实成绩的行，生产 `exam_attempts=0` 故全为排期态）→ 冒烟 `generated=0 schedules=0` 且复查仍为 0（`frequencies=[]` 不懒生成）。**重新开启前必须先修 ISSUE-075 的①②**（无作用域 DELETE + 客户端空配置覆盖）。
 
 ### 12.5 过程中的两个自纠
 

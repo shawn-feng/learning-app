@@ -7,6 +7,29 @@
 
 ---
 
+## 生产处置（2026-09-11 14:58，按用户决定：生产暂时不开启考核）
+
+用户决定：**生产里不要有任何考核排期，暂时不开启考核**。已执行（脚本 `.workbuddy/tmp/deploy201/exam-off.js`，可重跑）：
+
+| 动作 | 结果 |
+|---|---|
+| 备份 | `data/backups/pre-exam-off-2026-09-11T06-58-25-452Z/`（server.sqlite 6244KB + agents + 两孩子 kb） |
+| 主库 `exam_schedules` | 删除 **18 行** → 0 |
+| 孩子 kb `exam_plans` | 闻闻 **68 行** / 珊珊 **68 行** → 0（仅删 `COALESCE(attempt_id,'')=''` 的行；**真考过的场次一律保留**——生产 `exam_attempts=0`，故本次全为排期态） |
+| `exam_plan_courses` | 0 行（无变化） |
+| 不回归验证 | `GET /exam/schedules/:childId` → `generated=0 schedules=0`，**复查后主库仍为 0**（因 `exam_fixed.frequencies=[]`，`ensureFixedSchedules` 首行 `return 0`，不会懒生成） |
+| 服务 | active / health ok / 0 条 error 日志 |
+
+`reward_daily_stats` 全部为 `source='todo'`（无 exam 来源），故删除排期不会产生孤儿统计。
+
+**重新开启考核前必须先修本 issue 的①②**（否则一改配置又会跨孩子误删）：
+1. `exam.ts:1254` 的 DELETE 补 `child_id`/`parent_id` 作用域；
+2. 客户端不得用本地空 `frequencies` 覆盖服务端配置。
+
+**当前状态下要重新开启考核的做法**：把 `settings.exam_fixed:<parentId>` 的 `frequencies` 恢复为 `["daily","weekly"]`（`time:19:00`、`weekly.weekday:5` 仍在配置里），打开一次考核页即自动铺未来 60 天排期。
+
+---
+
 ## 现场（2026-09-11 生产 201）
 
 | 时刻 | 事件 |
