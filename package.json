@@ -1,6 +1,6 @@
 {
   "name": "learning-app",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "AI-guided learning app for children",
   "homepage": "https://github.com/learning-app/xuexihub",
   "main": "out/main/index.js",
@@ -24,7 +24,7 @@
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
     "directories": {
-      "output": "dist-release-019"
+      "output": "dist"
     },
     "asar": true,
     "asarUnpack": [

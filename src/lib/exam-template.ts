@@ -285,8 +285,8 @@ window.EXAM_DATA = ${dataJson};
     var isSpeech = !!q.questionType;
     $("qHint").textContent = isSpeech
       ? (isReciteBlind
-          ? "🧠 这是一道背诵题：先在脑子里回忆本章原文，再按住麦克风背诵，松手即停；可以分几段背，提交后自动评分。"
-          : "🎤 按住麦克风朗读/跟读下面的原文，松手即停；可以分几段读，提交后自动评分。")
+          ? "🧠 这是一道背诵题：先在脑子里回忆原文，再按住麦克风背诵，松手即停。可分段录好几遍拼成完整一篇；背错了只需再背一遍，不用删前面的录音，提交后自动评分。"
+          : "🎤 按住麦克风朗读/跟读下面的原文，松手即停。可分段录好几遍拼接；读错了只需再读一遍，不用删前面的录音，提交后自动评分。")
       : (opts.length
           ? "👀 看下面的选项，按住麦克风说出你选哪一个（例如「选 B」），也可以直接把答案内容说出来；松开后自动识别。"
           : "🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。");
@@ -369,10 +369,9 @@ window.EXAM_DATA = ${dataJson};
           if(qIndex(qid) === idx) updateNav(); // 录上音即可进入下一题
           if(qIndex(qid) === idx && !recA.locked){
             if(q.questionType){
-              // 背诵/跟读题：无需 ASR，录完即存（提交时统一评测）；不打识别中状态（避免麦克风被锁）
-              if(!recA.answeredAt) recA.answeredAt = Date.now();
-              if(recA.sec) recA.durationMs = recA.sec * 1000;
-              recA.locked = true;
+              // 背诵/跟读题：无需 ASR，本次录音段已 push 进 recA.segs（提交时宿主用 voiceMerge 合并多段为单音频再评测）；
+              // 注意：此处**不锁定**——孩子可多次按住补充录音、多段拼接成完整一篇，仅当点「下一题/上一题」切走时由 saveCurrent() 锁定。
+              // （计时器在 !a.locked && !a.answeredAt 时才累加本题用时，故不在此置 answeredAt，保证多段期间总用时持续累计。）
               paintState();
             } else {
               // 识别中提示（防孩子以为没录上）

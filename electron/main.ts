@@ -3,6 +3,15 @@
 delete process.env.ELECTRON_RUN_AS_NODE;
 
 import { app, BrowserWindow, session, systemPreferences } from "electron";
+
+// APP_DISABLE_GPU=1 时禁用硬件加速（无 GPU/远程桌面环境 GPU 进程会 FATAL 崩溃退出）。
+// 必须在 app ready 前调用；正常桌面环境不受影响。
+if (process.env.APP_DISABLE_GPU === "1") {
+  app.disableHardwareAcceleration();
+  // commandLine 开关比 disableHardwareAcceleration 更早生效：阻止 GPU 进程反复崩溃拖垮 browser 进程
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+}
 import path from "path";
 // ISSUE-044: 统一应用日志（console 重定向 + 崩溃捕获 + client-log.jsonl 落盘）。
 // 必须在进程早期、其它模块开始打印前初始化（幂等）。
