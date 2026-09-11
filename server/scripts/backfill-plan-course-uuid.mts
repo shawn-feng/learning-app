@@ -51,7 +51,12 @@ try {
   const now = new Date().toISOString();
 
   for (const [parentId, list] of byParent) {
-    let uuidByName = new Map<string, string>();
+    // 两级匹配（与 migrate-plan-domain 同口径，2026-09-11 修正）：
+    //   ① (topic_key, title) 精确 —— 最可靠；
+    //   ② title 唯一命中 —— 兜底。生产库存量行的 topic_key 大量为空（历史写入未带），
+    //      只按 ① 匹配会出现「几乎全未命中」的假象（201 实测 2/290）。
+    let uuidByKey = new Map<string, string>();
+    let uuidByTitleUniq = new Map<string, string>();
     try {
       const pdb = openParentLib(dataDir, parentId);
       try {
@@ -60,9 +65,15 @@ try {
           title: string;
           uuid: string | null;
         }>;
-        uuidByName = new Map(
-          courses.filter((c) => c.uuid).map((c) => [`${c.topic}\u0000${c.title}`, String(c.uuid)])
-        );
+        const dupTitles = new Set<string>();
+        for (const c of courses) {
+          if (!c.uuid) continue;
+          uuidByKey.set(`${c.topic}\u0000${c.title}`, String(c.uuid));
+          if (uuidByTitleUniq.has(c.title)) dupTitles.add(c.title);
+          else uuidByTitleUniq.set(c.title, String(c.uuid));
+        }
+        // 同名课程（跨主题）不可歧义匹配 → 剔除
+        for (const t of dupTitles) uuidByTitleUniq.delete(t);
       } finally {
         pdb.close();
       }
@@ -72,17 +83,24 @@ try {
       continue;
     }
 
+    let byKey = 0;
+    let byTitle = 0;
     for (const r of list) {
-      const uuid = uuidByName.get(`${r.topic_key}\u0000${r.course_name}`);
+      const exact = uuidByKey.get(`${r.topic_key}\u0000${r.course_name}`);
+      const uuid = exact || uuidByTitleUniq.get(r.course_name);
       if (uuid) {
         matched++;
+        if (exact) byKey++;
+        else byTitle++;
         if (!dryRun) upd.run(uuid, now, r.id);
       } else {
         unmatched++;
         if (unmatchedSamples.length < 20) unmatchedSamples.push(`${r.topic_key}/${r.course_name}`);
       }
     }
-    console.log(`家长 ${parentId}: 待填 ${list.length} 行，命中 ${list.filter((r) => uuidByName.has(`${r.topic_key}\u0000${r.course_name}`)).length}`);
+    console.log(
+      `家长 ${parentId}: 待填 ${list.length} 行，命中 ${byKey + byTitle}（精确 ${byKey} / 仅标题 ${byTitle}）`
+    );
   }
 
   console.log(`\n${dryRun ? "[DRY-RUN] " : ""}合计：命中 ${matched}，未命中 ${unmatched}（共 ${rows.length}）`);
