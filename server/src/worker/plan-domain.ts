@@ -246,17 +246,18 @@ function applySignals(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): numb
   return n;
 }
 
-/** 到期未完成 → missed + 复制新行到当天（carry）。cancelled 不复制。返回 (missed, carried)。 */
+/** 到期未完成 → missed + 复制新行到当天（carry）。cancelled 不复制。返回 (missed, carried)。
+ *  考核计划（exam_plans）只判 missed、**不顺延**——考核错过后由家长重排（2026-09-11 拍板；
+ *  此前 specs 误含 exam_plans 导致考核也被顺延，已修正）。 */
 function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { missed: number; carried: number } {
   const now = nowStr(ctx.now);
   const nowIso = ctx.now.toISOString();
   let missed = 0;
   let carried = 0;
 
-  const specs: Array<{ table: string; cols: string[]; copyExtra: Record<string, unknown> }> = [
-    { table: "study_plans", cols: ["topic_key", "course_uuid", "course_name", "mode", "creator", "task_type", "count_in_rate", "points"], copyExtra: {} },
-    { table: "life_plans", cols: ["title", "creator", "task_type", "count_in_rate", "points"], copyExtra: {} },
-    { table: "exam_plans", cols: ["title", "creator", "kind", "freq", "scope_json", "task_type", "count_in_rate", "points"], copyExtra: {} },
+  const specs: Array<{ table: string; cols: string[] }> = [
+    { table: "study_plans", cols: ["topic_key", "course_uuid", "course_name", "mode", "creator", "task_type", "count_in_rate", "points"] },
+    { table: "life_plans", cols: ["title", "creator", "task_type", "count_in_rate", "points"] },
   ];
 
   for (const s of specs) {
@@ -267,7 +268,7 @@ function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { 
       const id = String(r.id);
       kb.prepare(`UPDATE ${s.table} SET status='missed', updated_at=? WHERE id=?`).run(nowIso, id);
       missed++;
-      // 复制新行到当天（窗口=当天；不继承原窗口）
+      // 复制新行到当天（窗口=当天；不继承原窗口）。carry_from=原行 id（溯源）；origin='carry' 供「顺延」过滤。
       const newId = randomUUID();
       const colNames = s.cols.join(", ");
       const placeholders = s.cols.map(() => "?").join(", ");
@@ -275,20 +276,16 @@ function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { 
         const v = r[c];
         return v == null ? "" : typeof v === "number" ? v : String(v);
       });
-      // carry_from：study/life 两表有该列（顺延标记）；exam_plans 无此列也不 carry（考核错过后由家长重排）
-      const hasCarry = s.table !== "exam_plans";
-      const extraCols = hasCarry ? ", carry_from, origin" : ", origin";
-      const extraVals = hasCarry ? ", ?, 'carry'" : ", 'carry'";
       kb.prepare(
-        `INSERT INTO ${s.table} (id, parent_id, child_id, ${colNames}${extraCols}, start_at, due_at, status, result, done_at,
+        `INSERT INTO ${s.table} (id, parent_id, child_id, ${colNames}, carry_from, origin, start_at, due_at, status, result, done_at,
            active, created_at, updated_at)
-         VALUES (?, ?, ?, ${placeholders}${extraVals}, ?, ?, 'pending', '', '', 1, ?, ?)`
+         VALUES (?, ?, ?, ${placeholders}, ?, 'carry', ?, ?, 'pending', '', '', 1, ?, ?)`
       ).run(
         newId,
         ctx.parentId,
         ctx.childId,
         ...values,
-        ...(hasCarry ? [id] : []),
+        id,
         dayStart(today),
         dayEnd(today),
         nowIso,
@@ -348,12 +345,12 @@ function applyExamAttempts(ctx: WorkerTaskCtx, kb: DatabaseSync): number {
     }
     let seq = 0;
     const ins = kb.prepare(
-      `INSERT INTO exam_plan_courses (id,plan_id,course_uuid,course_name,category_id,knowledge_point_id,question_id,
-        point_got,point_max,score,seq,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO exam_plan_courses (id,plan_id,course_uuid,course_name,knowledge_point_id,question_id,
+        point_got,point_max,score,seq,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     );
     for (const q of pq) {
       ins.run(
-        randomUUID(), planId, String(q.courseId ?? ""), String(q.course ?? ""), String(q.categoryId ?? ""),
+        randomUUID(), planId, String(q.courseId ?? ""), String(q.course ?? ""),
         String(q.knowledgePointId ?? ""), String(q.questionId ?? ""),
         q.pointGot != null ? Number(q.pointGot) : null, q.pointMax != null ? Number(q.pointMax) : null,
         q.pointGot != null ? Number(q.pointGot) : null, seq++, now
@@ -428,31 +425,43 @@ interface SettleResult {
   ledgerRows: number;
 }
 
-/** 积分结算（只结算当天，避免回溯）：档位 + 门控 + 流水（幂等）。
- *  2026-09-10 收口修正：**窗口未结束时只写实时统计、不发分**——
- *  此前 stat tick 白天就结算，分母只含已完成行 → rate 恒 100% 提前发满档分。
- *  finalOk = 当天窗口已结束（now ≥ 23:59:59 之后的首个 tick）；只有 finalOk 才匹配档位、写流水、更新余额。 */
+/** 积分结算：**每天 tick 结算「上一日」**（其窗口已确定结束）——评档 + 门控 + 流水（幂等）；当天只写实时进度。
+ *  设计意图：窗口未结束不发分（此前 stat tick 白天就结算，分母只含已完成行 → rate 恒 100% 提前发满档分）。
+ *  2026-09-11 修复：旧实现用 `finalOk = now > dayEnd(today)` 判"当天窗口结束"，但 now 与 today 同源同日，
+ *  该条件恒 false → 流水从不写入、余额恒 0。改为结算上一日后，昨天的计划行已在 expireAndCarry 全部进入
+ *  终态（done/missed/cancelled），分母口径稳定；流水唯一索引保证重复 tick 不会重复发分。
+ *  注：结算后家长回改昨日计划（reopen）不会重发/追回流水——结算一次性语义，如需纠错走手工调整。 */
 export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): SettleResult {
   const cfg = loadRewardConfig(kb, ctx.childId);
   const now = nowStr(ctx.now);
   const nowIso = ctx.now.toISOString();
   const out: SettleResult = { earned: 0, deducted: 0, ledgerRows: 0 };
-  const finalOk = now > dayEnd(today); // 23:59:59 之后为真；白天 tick 只更新实时进度
+  const yd = new Date(ctx.now);
+  yd.setDate(yd.getDate() - 1);
+  const settleDay = formatLocalDate(yd); // 日终结算日 = 昨天
 
-  // 先算两组的 todo 完成率与 exam 得分率（门控需要）
-  const todoParent = computeGroupStats(kb, "study_plans", "parent", today);
-  const todoParentLife = computeGroupStats(kb, "life_plans", "parent", today);
-  const todoChild = computeGroupStats(kb, "study_plans", "child", today);
-  const todoChildLife = computeGroupStats(kb, "life_plans", "child", today);
+  // 各组在指定归属日的统计（学习+生活合并为 todo；考核按场次归属日）
+  const groupsFor = (date: string) => {
+    const parentTodo = mergeTodo(
+      computeGroupStats(kb, "study_plans", "parent", date),
+      computeGroupStats(kb, "life_plans", "parent", date)
+    );
+    const childTodo = mergeTodo(
+      computeGroupStats(kb, "study_plans", "child", date),
+      computeGroupStats(kb, "life_plans", "child", date)
+    );
+    return {
+      parentTodo,
+      childTodo,
+      parentExam: computeExamRate(kb, "parent", date),
+      childExam: computeExamRate(kb, "child", date),
+    };
+  };
   const mergeTodo = (a: GroupStat, b: GroupStat): GroupStat => {
     const total = a.total + b.total;
     const done = a.done + b.done;
     return { total, done, missed: a.missed + b.missed, optionalDone: a.optionalDone + b.optionalDone, rate: total ? done / total : 0 };
   };
-  const parentTodo = mergeTodo(todoParent, todoParentLife);
-  const childTodo = mergeTodo(todoChild, todoChildLife);
-  const parentExam = computeExamRate(kb, "parent", today);
-  const childExam = computeExamRate(kb, "child", today);
 
   const upsertStats = kb.prepare(
     `INSERT INTO reward_daily_stats
@@ -478,7 +487,19 @@ export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: strin
     return Number(r?.b) || 0;
   };
 
-  const applyGroup = (
+  /** 今天的实时进度：只写统计（rate=实时口径），不评档、不发分、不动流水。 */
+  const writeLiveStats = (source: "todo" | "exam", owner: "parent" | "child", stat: GroupStat) => {
+    if (!stat.total) return;
+    upsertStats.run(
+      ctx.childId, today, source, owner, stat.total, stat.done, stat.optionalDone, stat.missed,
+      stat.rate, "", null,
+      0, "", nowIso
+    );
+  };
+
+  /** 某日的日终结算：评档 + 写流水（唯一索引幂等，复跑不重复发分）。 */
+  const settleGroup = (
+    date: string,
     source: "todo" | "exam",
     owner: "parent" | "child",
     stat: GroupStat,
@@ -487,15 +508,6 @@ export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: strin
     gateReason: string
   ) => {
     if (!stat.total) return; // 该组当天没有归属项 → 不结算
-    // 窗口未结束：只写实时进度（rate=实时口径），不评档、不发分、不动流水。
-    if (!finalOk) {
-      upsertStats.run(
-        ctx.childId, today, source, owner, stat.total, stat.done, stat.optionalDone, stat.missed,
-        stat.rate, "", null,
-        0, "", nowIso
-      );
-      return;
-    }
     const tier = matchTier(tiers, stat.rate);
     let points = tier ? tier.points : 0;
     let effectiveGate: boolean | null = null;
@@ -505,7 +517,7 @@ export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: strin
       if (!gateOk) points = 0; // 门控未开 → 不加分
     }
     upsertStats.run(
-      ctx.childId, today, source, owner, stat.total, stat.done, stat.optionalDone, stat.missed,
+      ctx.childId, date, source, owner, stat.total, stat.done, stat.optionalDone, stat.missed,
       stat.rate, tier?.label ?? "", effectiveGate === null ? null : effectiveGate ? 1 : 0,
       points, nowIso, nowIso
     );
@@ -518,11 +530,11 @@ export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: strin
     // 幂等：唯一索引 (child_id,biz_date,type,source_table,source_id) 保证只插一次；
     // 未真正插入（复跑）时不计入本次结算结果、也不动余额。
     const res = insertLedger.run(
-      randomUUID(), ctx.childId, now, today, type, Math.abs(points), balanceOf() + points,
+      randomUUID(), ctx.childId, now, date, type, Math.abs(points), balanceOf() + points,
       owner === "parent" ? (points > 0 ? `${source}_award` : `${source}_deduct`) : `${source}_award`,
       reason, stat.rate,
       JSON.stringify({ tier, owner, counts: { total: stat.total, done: stat.done, missed: stat.missed }, gate: effectiveGate, gateReason }),
-      `${today}|${source}|${owner}`, nowIso
+      `${date}|${source}|${owner}`, nowIso
     );
     if (res.changes === 0) return; // 已结算过 → 不再累加
     out.ledgerRows++;
@@ -530,19 +542,27 @@ export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: strin
     else out.deducted += Math.abs(points);
   };
 
-  // 家长组（必须完成项）：达标加分、不合格扣分
-  applyGroup("todo", "parent", parentTodo, cfg.todoTiers, null, "");
-  applyGroup("exam", "parent", parentExam, cfg.examTiers, null, "");
+  // ① 今天：实时进度（不评档、不发分）
+  const live = groupsFor(today);
+  writeLiveStats("todo", "parent", live.parentTodo);
+  writeLiveStats("exam", "parent", live.parentExam);
+  writeLiveStats("todo", "child", live.childTodo);
+  writeLiveStats("exam", "child", live.childExam);
 
-  // 孩子组（加分项）：门控 = 家长组达标
-  const todoGateOk = parentTodo.total > 0 && parentTodo.rate >= cfg.todoGateParentMinRate;
-  const examGateOk = parentExam.total > 0 && parentExam.rate >= cfg.examGateParentMinScore;
-  applyGroup(
-    "todo", "child", childTodo, cfg.todoTiers, todoGateOk,
+  // ② 昨天：日终结算（评档 + 门控 + 流水）
+  const y = groupsFor(settleDay);
+  settleGroup(settleDay, "todo", "parent", y.parentTodo, cfg.todoTiers, null, "");
+  settleGroup(settleDay, "exam", "parent", y.parentExam, cfg.examTiers, null, "");
+
+  // 孩子组（加分项）：门控 = 昨天家长组达标
+  const todoGateOk = y.parentTodo.total > 0 && y.parentTodo.rate >= cfg.todoGateParentMinRate;
+  const examGateOk = y.parentExam.total > 0 && y.parentExam.rate >= cfg.examGateParentMinScore;
+  settleGroup(
+    settleDay, "todo", "child", y.childTodo, cfg.todoTiers, todoGateOk,
     todoGateOk ? "" : `必须完成项完成率未达 ${(cfg.todoGateParentMinRate * 100).toFixed(0)}%`
   );
-  applyGroup(
-    "exam", "child", childExam, cfg.examTiers, examGateOk,
+  settleGroup(
+    settleDay, "exam", "child", y.childExam, cfg.examTiers, examGateOk,
     examGateOk ? "" : `必须完成项得分率未达 ${(cfg.examGateParentMinScore * 100).toFixed(0)}%`
   );
 
