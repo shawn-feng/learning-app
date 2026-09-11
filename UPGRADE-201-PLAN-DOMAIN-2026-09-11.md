@@ -340,13 +340,21 @@
 - 备份：`data/backups/pre-plan-domain-20260911-113102/parent-86a84278.sqlite`（**本次导入前的快照**，可回滚）与 `data/backups/post-assess-sync-20260911-144116/parent.sqlite`。
 - 服务：`active`、`/api/v1/health` ok、日志 **0 条 error**（导入不需停服，靠单事务 + `busy_timeout`）。
 
-### 12.3 本次发现的待办（未做）
+### 12.3 本次同步后发现的待办（2026-09-11 15:00 已处理）
 
-1. **题库列表硬上限 2000 条**：`server/src/db/assess-content.ts:372` 的 `listAllBankQuestions` 写死 `LIMIT 2000`，而题库已有 **3575** 条 → 家长「题库」菜单最多只能看到 2000 题。需改为分页或提高上限。
-2. **类别 → 知识点 的代码切换**：数据已按知识点就位，但读取路径仍按类别（`listCourseContent` / `listAllBankQuestions` 上下文 / `attachStructuredQuestions` 抽题 / `method_spec` 解析 / electron 端 `TopicDetail`·`QuestionBankPanel` 字段）。属跨端改动，需与客户端排期。
-3. `topic_categories` 的 5 行在完成切换后可清理（当前是必需的父键）。
+| # | 问题 | 处理 |
+|---|---|---|
+| 1 | **题库列表硬上限 2000 条**：`server/src/db/assess-content.ts` 的 `listAllBankQuestions` 写死 `LIMIT 2000`，而题库已有 **3575** 条 → 家长「题库」最多只能看到 2000 题 | ✅ **已修**：抽常量 `BANK_LIST_LIMIT = 10000`（不改响应形状，不破坏客户端）。已重新构建 + 部署 201 + 端到端验证：接口返回 **3575 条 / 1.70 MB / 118 ms** |
+| 2 | **考核排期静默截断**：`server/src/routes/exam.ts:1068` 的 `LIMIT 100`（单孩子已 68 条，固定档每天 +3 → 约 11 天撞上限） | ✅ **已修**：改为 `LIMIT 1000`，同样不改响应形状 |
+| 3 | **类别 → 知识点 的代码切换**：数据已按知识点就位，但读取路径仍按类别（服务端 4 处 + electron 端 5 文件 + UI 3 组件） | 📋 **已登记** `ISSUES/ISSUE-073.md`（含逐文件行号锚点与 4 条待确认项）。属跨端改动、会改 API 形状，需与客户端打包同批 |
+| 4 | 同类静默 LIMIT 剩余项（考核记录 `LIMIT 60`、学习计划 `LIMIT 2000`）与题库分页设计 | 📋 **已登记** `ISSUES/ISSUE-074.md` |
+| 5 | `topic_categories` 的 5 行 | ⏳ 待 #3 完成后清理（当前是必需的父键） |
 
-### 12.4 过程中的两个自纠
+### 12.4 期间发现的独立生产事故（另行登记）
+
+`ISSUES/ISSUE-075.md`（**高**）：14:40 客户端 `192.168.1.200` 推送空 `frequencies` 到 `POST /exam/fixed-config`，而服务端 `exam.ts:1254` 的 `DELETE FROM exam_schedules ...` **没有 child/parent 作用域** → 删掉 118 行未来固定排期（136→18），且 `frequencies: []` 会让 `ensureFixedSchedules` 直接 return 0 → 固定档考核从此静默不再生成。与本次升级/同步无关（写入方是客户端，服务端逻辑为既有代码），但需尽快修复 + 恢复配置。
+
+### 12.5 过程中的两个自纠
 
 1. **导入前的 `node -e` 备份命令因引号被 shell 吞掉而静默失败**（`mkdir` 成功、VACUUM 未执行）→ 未影响数据（导入是纯新增且内容可从 bundle 复现），且 11:31 的 `pre-plan-domain` 快照本就在导入前；随后补做了导入后备份，并删除了误导性的空目录 `pre-assess-sync-*`。
    **教训：跨 SSH 执行带引号的 node 一行式不可靠，应一律上传脚本文件执行**（与 `PACKAGING.md` §8 坑 15 同一类问题）。
