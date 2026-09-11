@@ -189,11 +189,11 @@
 ### 8.2 版本号（**已执行：0.3.4 → 0.3.5**）
 `server/src/routes/version.ts` 的 `SERVER_VERSION` 与 `server/package.json` 已同改为 **0.3.5** 并重建（生产冒烟确认 `/api/v1/version` 返回 0.3.5）。
 
-### 8.3 家长库考核内容为空（**结论：本次不做，用户已确认**）
+### 8.3 家长库考核内容为空（**已于同日 14:40 单独执行，见 §12**）
 生产家长库 `assess_rubric` 0/1315、`assess_method` 0/11，考核内容 4 表为空；而**本地家长库已有 3575 道结构化题目 + 5 个类别 + 课程 uuid**。
 - 生产 136 条考核排期全部 pending、`exam_attempts=0` → 考核功能在生产实际未被使用，**不迁移不构成回归**。
 - 若要同步，需按 `(topic,title)` 把本地 `question_bank/topic_categories/course_category_questions` + `courses.uuid` 重映射到生产家长库（本地 uuid 是随机生成，必须重映射，不能直接照搬）。
-- 建议**另起一个任务**做，不在本次结构升级里夹带。
+- **→ 已在 2026-09-11 14:40 作为独立任务执行完成（桥梁 + 知识点双写），详见 §12。**
 
 ### 8.4 其他
 1. **孤儿孩子库** `4d6e76fc-…`（512 门课，不在 `children` 表）：迁移会跳过（脚本按 `children` 遍历）。本次不动，建议另案判定归属后清理。
@@ -299,3 +299,55 @@
 3. `study_plan_items` / `todo_items` / `child_todo_stats` 废表**未物理删除**（保留只读，一版后清理）。
 4. 孤儿孩子库 `4d6e76fc`（512 门课）与 `kb/test-parent/*` 已随本次备份留档，未清理。
 5. `backfill-plan-course-uuid.mts` 已修但**生产用的 bundle 是修正后的版本**；仓库源文件同步已改（`server/scripts/backfill-plan-course-uuid.mts`）。
+
+---
+
+## 12. 附：家长库考核内容同步（2026-09-11 14:40 执行完成）
+
+背景：201 家长库考核内容四表**全空**，UI「题库」为空是真实状态（内容此前只在本地开发库）。用户决定目标模型为 **主题 → 课程 → 知识点 → 题目**（`topic_categories` 将来被 `knowledge_points` 取代），并要求**本次一并把数据填起来**。
+
+### 12.1 采纳方案：桥梁 + 知识点双写
+
+| 层 | 处理 | 理由 |
+|---|---|---|
+| `topic_categories`（5 行） | **填**（作桥梁） | `ccq.category_id` 是它的子键；`listCourseContent` 是 **INNER JOIN 类别表**，不填则「课程详情→考核要点」取不到任何数据 |
+| `question_bank` | 填 3575 题（含 `behavior`/`options`） | 题库主体 |
+| `course_category_questions` | 填 3575 挂载（`course_id` 由 `(topic,title)` 重映射到生产 uuid） | 本地 uuid 是随机的，不能照搬 |
+| `knowledge_points` | **按「课程 × 分组名」建 1969 个**并回填 `ccq.knowledge_point_id` | 落实「课程下是知识点」——数据先就位，将来只做**代码切换** |
+| `courses.assess_rubric` | 填 489 课 | 旧整文路径的兜底 |
+| `topics.method_spec` | 填 1 条（论语） | require 背诵/句意白话/道理、exclude 字词/典故，`recitePass=90` |
+
+> API 形状**未改动** → 不影响同时在进行的客户端打包任务。
+
+### 12.2 执行与结果
+
+- 本地导出内容包 `assess-content-bundle.json`（8.86MB，按 `(topic,title)` 索引而非 uuid）。
+- **先在「生产家长库副本」上完整排练**（3575 条挂载全部映射成功、0 失败；知识点 1969、rubric 489 全部命中），再上生产。
+- 生产导入（单事务，导入前断言四表为空）：
+
+| 项 | 结果 |
+|---|---|
+| `question_bank` | **3575**（背诵题 440、带选项 352） |
+| `topic_categories` | **5**（背诵/句意白话/道理/字词/典故） |
+| `course_category_questions` | **3575**（映射失败 0） |
+| `knowledge_points` | **1969**（覆盖 489 课，平均 4.0/课；句意白话 460 / 背诵 440 / 字词 390 / 道理 389 / 典故 290） |
+| `ccq.knowledge_point_id` | 回填 **3575/3575** |
+| `courses.assess_rubric` | **489** 课 |
+| `topics.method_spec` | **1**（引用的 5 个类别 uuid 全部可解析） |
+| 样例课「论语学而篇第一章」 | 走 UI 同款 JOIN 取到 **5 条**考核要点（背诵/句意白话/道理/字词/典故，各带知识点名） |
+| 样例课「论语为政篇第一章」 | **8 条** |
+
+- 备份：`data/backups/pre-plan-domain-20260911-113102/parent-86a84278.sqlite`（**本次导入前的快照**，可回滚）与 `data/backups/post-assess-sync-20260911-144116/parent.sqlite`。
+- 服务：`active`、`/api/v1/health` ok、日志 **0 条 error**（导入不需停服，靠单事务 + `busy_timeout`）。
+
+### 12.3 本次发现的待办（未做）
+
+1. **题库列表硬上限 2000 条**：`server/src/db/assess-content.ts:372` 的 `listAllBankQuestions` 写死 `LIMIT 2000`，而题库已有 **3575** 条 → 家长「题库」菜单最多只能看到 2000 题。需改为分页或提高上限。
+2. **类别 → 知识点 的代码切换**：数据已按知识点就位，但读取路径仍按类别（`listCourseContent` / `listAllBankQuestions` 上下文 / `attachStructuredQuestions` 抽题 / `method_spec` 解析 / electron 端 `TopicDetail`·`QuestionBankPanel` 字段）。属跨端改动，需与客户端排期。
+3. `topic_categories` 的 5 行在完成切换后可清理（当前是必需的父键）。
+
+### 12.4 过程中的两个自纠
+
+1. **导入前的 `node -e` 备份命令因引号被 shell 吞掉而静默失败**（`mkdir` 成功、VACUUM 未执行）→ 未影响数据（导入是纯新增且内容可从 bundle 复现），且 11:31 的 `pre-plan-domain` 快照本就在导入前；随后补做了导入后备份，并删除了误导性的空目录 `pre-assess-sync-*`。
+   **教训：跨 SSH 执行带引号的 node 一行式不可靠，应一律上传脚本文件执行**（与 `PACKAGING.md` §8 坑 15 同一类问题）。
+2. **校验正则假通过**：`method_spec` 的类别引用校验最初用 `[0-9a-f]{32}`（无连字符）匹配，而实际 id 是带连字符的 uuid → 匹配 0 条却报「✓ 全部解析成功」。改为标准 uuid 正则后确认真实结果（5 个类别 uuid 全部存在）。
