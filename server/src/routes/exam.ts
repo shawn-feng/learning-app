@@ -1064,8 +1064,11 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }
     const generated = ensureFixedSchedules(deps.db, parentId, childId);
     const migrated = normalizeExamScheduleDays(deps.db);
+    // 2026-09-11：`LIMIT 100` 是静默截断（超出的排期在家长端「考核计划」里直接消失、无提示）。
+    // 固定档会随时间自动生成排期（每天约 3 条），生产单孩子已到 68 条 → 约 11 天后就会撞上 100。
+    // 放宽到 1000（足够覆盖数年），仍不改响应形状。同类静默 LIMIT 问题见 ISSUES/ISSUE-072。
     const rows = deps.db
-      .prepare("SELECT * FROM exam_schedules WHERE child_id = ? ORDER BY scheduled_at ASC LIMIT 100")
+      .prepare("SELECT * FROM exam_schedules WHERE child_id = ? ORDER BY scheduled_at ASC LIMIT 1000")
       .all(childId) as Array<Record<string, unknown>>;
     const now = Date.now();
     const schedules = rows.map((r) => ({

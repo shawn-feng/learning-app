@@ -354,6 +354,15 @@ export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseC
   return { courseId: courseUuid, items };
 }
 
+/**
+ * 家长「题库」列表一次最多返回的题目数。
+ * 2026-09-11 修正：原为硬编码 `LIMIT 2000`，而生产家长库题库已有 3575 条 →
+ * 家长端「题库」只能看到最新的 2000 题，**1575 题不可见**（静默截断，无任何提示）。
+ * 先放宽到 10000：覆盖当前全量并留余量，且**不改响应形状**（仍是数组，不分页）→ 不破坏既有客户端。
+ * ⚠️ 题库继续增长后应改为分页或按「主题/课程」服务端过滤（见 ISSUES/ISSUE-071）。
+ */
+const BANK_LIST_LIMIT = 10000;
+
 /** 全量题目列表（家长「题库」浏览）：带所属 主题/课程/类别 上下文与行为。 */
 export function listAllBankQuestions(db: DatabaseSync): Array<{
   id: string;
@@ -369,7 +378,7 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
 }> {
   const qs = db
     .prepare(
-      `SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary, options FROM question_bank ORDER BY rowid DESC LIMIT 2000`
+      `SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary, options FROM question_bank ORDER BY rowid DESC LIMIT ${BANK_LIST_LIMIT}`
     )
     .all() as Array<{
     id: string;
