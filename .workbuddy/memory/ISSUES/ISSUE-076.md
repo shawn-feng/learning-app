@@ -3,7 +3,7 @@
 - **类型**：bug / 设计缺陷（判定输入由 LLM 自由裁量；且历史数据大面积缺日期）
 - **优先级**：**高**（生产已实际发生：孩子复习完课程，todolist 仍显示未完成；62% 已学课都不可能被打勾）
 - **记录时间**：2026-09-11
-- **状态**：**待实施**（已定位取证 + 已出改造方案 §6；未改动代码、未改数据）
+- **状态**：**已实施并上生产（2026-09-11）** —— 数据修正 + 判定改读 daily + 写入校验 + prompt 清理，均已上线并验证
 - **现场**：201 生产 / 家长 `86a84278…` / 孩子珊珊 `1f050a7f…`
 
 > 前置澄清：**不存在 todolist 表**。`GET /api/v1/plans/today` 直接查三张计划表（`study_plans`/`life_plans`/`exam_plans`）里「窗口覆盖当天且 `active=1`」的行，行上的 `status` 就是界面上的对勾状态（`server/src/routes/plans-rewards.ts:117-214`）。客户端 `todo:get` 走同一接口（`electron/lib/ipc-handlers.ts:1034-1045`），不读任何本地表。
@@ -189,13 +189,16 @@ const inWindow = d >= dateOf(p.start_at) && d <= dateOf(p.due_at);  // "-" >= "2
    - B（严格）：判定仅全等，但**必须先把存量带后缀的标题规范化**（一次性脚本，含合并同课重复条目），否则复习类记录永远匹配不上。
 3. **写入侧须同步收紧**：`electron/lib/recording-prompt.ts:112-116` 要求「每条学习记录用 ### 课程名 作标题」——需**明确禁止**在标题里追加「（复习）」「（进行中）」等状态后缀，并清理该文件中已删除列的引用（`掌握度`/`首次学习`）。
 
-### 6.6 代码改动落点（待实施）
+### 6.6 代码改动落点（已实施 2026-09-11）
 
-| 文件 | 改动 |
-|---|---|
-| `server/src/worker/plan-domain.ts:186-219` | `applySignals` 学习域：数据源由 `courses` 改为 `daily_entries`（`block='学习'`），判定条件改为 `title(规范化) == plan.course_name` 且 `daily.date ∈ [dateOf(start_at), dateOf(due_at)]`；保留判定成功后回写 `plan_id/plan_outcome` 的行为 |
-| `electron/lib/recording-prompt.ts` | 收紧「标题 = 课程名」（禁止状态后缀）；清理已删除列引用 |
-| （可选）一次性脚本 | 规范化存量 daily 标题（去尾部括号后缀）+ 存量 missed 是否需要按新口径补判 |
+| 文件 | 改动 | 状态 |
+|---|---|---|
+| `server/src/worker/plan-domain.ts` | `applySignals` 学习域改读 `daily_entries`（标题=课程名 + `date ∈ 窗口`），保留回写 `plan_id/plan_outcome` | ✅ 已上生产 |
+| `server/src/routes/db.ts` | `kb.daily_entries.insertMany`：`block='学习'` 时校验标题是 `courses` 中课程名，否则报错提醒 agent | ✅ 已上生产 |
+| `electron/lib/recording-prompt.ts` | 标题只写课程名（禁「（复习）」等后缀）；清理已删除列（`掌握度`/`首次学习`）引用 | ✅ 已改（随客户端发布生效） |
+| 数据修正脚本 | 201 两孩子库 daily 标题规范化：**更新 66 条 + 合并重复 9 条**（`backups/post-daily-title-fix-*` 留档） | ✅ 已执行 |
+
+**验证（201 生产，部署后）**：珊珊 09-11「论语为政篇第三章」由 `pending` → **`done`**（`done_at=2026-09-11 12:00:00`）；其余无 daily 记录的（为政 1/4/5/10/11 章、学而篇第十六章）仍 `pending`（无误判）；服务 `active`、日志 0 error。
 
 ## 七、取证命令（可直接重跑）
 

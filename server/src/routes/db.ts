@@ -412,6 +412,15 @@ export const execHandlers: Record<string, ExecHandler> = {
           const content = str(e.content);
           const title = content.match(/^###\s+(.+)$/m)?.[1]?.trim() ?? "";
           if (!title) continue;
+          // 学习条目：标题必须是 courses 中存在的课程名，否则报错提醒 agent 确认（保证「按课程名判定学习计划完成」可靠）。
+          if (str(e.block) === "学习") {
+            const valid = db.prepare("SELECT 1 FROM courses WHERE title = ?").get(title);
+            if (!valid) {
+              throw new Error(
+                `学习记录标题「${title}」不是有效的课程名。请用 courses 表里存在的准确课程名作为标题（格式 ### 课程名）重写本条记录，不要加「（复习）」等后缀。`
+              );
+            }
+          }
           const r = tx.run(
             date,
             str(e.block),

@@ -4,7 +4,7 @@
  * 职责（取代旧的 todo_gen / todo_stat / carry 三件套）：
  *   1) expandRecurrences：把 plan_recurrences 命中今天的规则展开成计划行（三表之一，origin=recurrence，幂等）
  *   2) runPlanStat：三域判定 + 到期 carry + 归属日统计 + 积分结算
- *      - 学习域：courses 有学习时间且落在计划窗口内 → study_plans.done（并回写当天 daily 学习条目的 plan_id）
+ *      - 学习域：daily 学习记录（标题=课程名、记录日落在计划窗口内）→ study_plans.done（并回写当天 daily 学习条目的 plan_id）
  *      - 考核域：当天考核场次 → exam_plans.done/score/attempt_id + exam_plan_courses 明细（计划期不固化题目）
  *      - 生活域：daily_entries(plan_id + plan_outcome='done') → life_plans.done
  *      - 到期未完成 → missed；**复制新行到当天**（origin=carry，窗口=当天）；cancelled 不复制
@@ -182,36 +182,51 @@ export function expandRecurrences(ctx: WorkerTaskCtx): number {
   }
 }
 
-/** 三域判定：学习（courses 学习时间落在窗口）/ 生活（daily 证据）→ done。返回判定条数。 */
+/** 三域判定：学习（daily 学习记录落在窗口）/ 生活（daily 证据）→ done。返回判定条数。 */
 function applySignals(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): number {
   let n = 0;
   const now = nowStr(ctx.now);
 
   // ---------- 学习域 ----------
-  const courses = kb
-    .prepare("SELECT topic, title, last_review AS learned_at FROM courses WHERE last_review != ''")
-    .all() as Array<{ topic: string; title: string; learned_at: string | null }>;
+  // 2026-09-11 起：完成信号 = daily 学习记录，不再读 courses（后者是旧口径、且 last_review 无确定性写入方）。
+  // 判定条件：daily 学习条目的标题 == 课程名，且记录日 date 落在计划的 [start_at, due_at] 窗口内。
+  let dailyLearning: Array<{ title: string; date: string }> = [];
+  try {
+    dailyLearning = kb
+      .prepare("SELECT title, date FROM daily_entries WHERE block = '学习'")
+      .all() as Array<{ title: string; date: string }>;
+  } catch {
+    /* daily 表缺失则学习域不判定 */
+  }
+  const learnedDatesByCourse = new Map<string, Set<string>>();
+  for (const r of dailyLearning) {
+    const t = String(r.title ?? "");
+    if (!t) continue;
+    let set = learnedDatesByCourse.get(t);
+    if (!set) {
+      set = new Set();
+      learnedDatesByCourse.set(t, set);
+    }
+    set.add(String(r.date ?? ""));
+  }
   const studyPlans = kb
     .prepare("SELECT id, topic_key, course_uuid, course_name, start_at, due_at FROM study_plans WHERE status = 'pending' AND active = 1")
     .all() as Array<{ id: string; topic_key: string; course_uuid: string; course_name: string; start_at: string; due_at: string }>;
   const updStudy = kb.prepare("UPDATE study_plans SET status='done', done_at=?, result=?, updated_at=? WHERE id=?");
+  const updDaily = kb.prepare(
+    "UPDATE daily_entries SET plan_id = ?, plan_outcome = 'done' WHERE date = ? AND block = '学习' AND (plan_id IS NULL OR plan_id = '') AND title = ?"
+  );
   for (const p of studyPlans) {
-    const c = courses.find(
-      (x) => x.title === p.course_name && (x.learned_at || "") !== ""
+    const dates = learnedDatesByCourse.get(p.course_name);
+    if (!dates) continue;
+    const d = [...dates].find(
+      (x) => (!p.start_at || x >= dateOf(p.start_at)) && (!p.due_at || x <= dateOf(p.due_at))
     );
-    const learnedAt = c?.learned_at ?? "";
-    if (!learnedAt) continue;
-    const d = dateOf(learnedAt);
-    const inWindow = (!p.start_at || d >= dateOf(p.start_at)) && (!p.due_at || d <= dateOf(p.due_at));
-    if (!inWindow) continue;
+    if (!d) continue;
     updStudy.run(`${d} 12:00:00`, "学习完成", now, p.id);
-    // 回写当天 daily 学习条目的 plan_id（模糊匹配课程名；匹配不到则跳过，不造记录）
+    // 回写当天 daily 学习条目的 plan_id（标题精确等于课程名；匹配不到则跳过，不造记录）
     try {
-      kb.prepare(
-        `UPDATE daily_entries SET plan_id = ?, plan_outcome = 'done'
-         WHERE date = ? AND block = '学习' AND (plan_id IS NULL OR plan_id = '')
-           AND (raw LIKE ? OR title LIKE ?)`
-      ).run(p.id, d, `%${p.course_name}%`, `%${p.course_name}%`);
+      updDaily.run(p.id, d, p.course_name);
     } catch {
       /* 未装 daily 表则跳过 */
     }
