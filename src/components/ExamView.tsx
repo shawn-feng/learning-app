@@ -29,8 +29,9 @@ interface CourseConfig {
   lastReview: string;
   mastery: string;
   examMastery: string;
-  assessRubric: string;
-  /** 结构化考核(v2)：服务端按孩子方法预生成的本课题目（有则直接开考，不再 LLM 出题） */
+  /** 该课知识点（= 考核要点）：未挂题课程由客户端按知识点详情走 LLM 出题 */
+  knowledgePoints?: Array<{ name: string; detail: string }>;
+  /** 结构化考核：服务端按孩子方法预生成的本课题目（有则直接开考，不再 LLM 出题） */
   questions?: Array<Record<string, unknown>>;
 }
 
@@ -56,9 +57,8 @@ interface ScoredResult {
     refText?: string;
     audioFileId?: string;
     speech?: SpeechAssessment;
-    /** 结构化 v2 溯源（题库题目 uuid / 类别 uuid / 本题满分） */
+    /** 结构化溯源（题库题目 uuid / 本题满分） */
     questionId?: string;
-    categoryId?: string;
     pointMax?: number;
   }>;
   courseMastery: Record<string, { correct: number; total: number; rate: number }>;
@@ -121,7 +121,6 @@ export default function ExamView({ childId, onExit }: Props) {
       stem: string;
       scoringText: string;
       questionId: string;
-      categoryId: string;
       knowledgePointId: string;
       knowledgePointName: string;
       options: string; // JSON [{key,text}]；选择题展示/判分用
@@ -225,7 +224,6 @@ export default function ExamView({ childId, onExit }: Props) {
           stem: String(q?.stem || ""),
           scoringText: String(q?.scoringText || ""),
           questionId: String(q?.questionId || ""),
-          categoryId: String(q?.categoryId || ""),
           knowledgePointId: String(q?.knowledgePointId || ""),
           knowledgePointName: String(q?.knowledgePointName || ""),
           options: JSON.stringify(Array.isArray(q?.options) ? q.options : []),
@@ -341,7 +339,6 @@ export default function ExamView({ childId, onExit }: Props) {
         if (i < metas.length) {
           (q as any).scoringText = metas[i]!.scoringText || "";
           (q as any).questionId = metas[i]!.questionId || "";
-          (q as any).categoryId = metas[i]!.categoryId || "";
           (q as any).knowledgePointId = metas[i]!.knowledgePointId || "";
           (q as any).knowledgePointName = metas[i]!.knowledgePointName || "";
           (q as any).options = JSON.parse(metas[i]!.options || "[]");
@@ -362,11 +359,18 @@ export default function ExamView({ childId, onExit }: Props) {
       const b64ToBuf = (s: string) =>
         Uint8Array.from(atob(plainB64(s)), (c) => c.charCodeAt(0)).buffer;
 
-      // 1) 口述题（文字/知识类）：客户端 LLM 判分（独立内存 session，rubric 作判分锚定）
+      // 1) 口述题（文字/知识类）：客户端 LLM 判分（独立内存 session，知识点详情作判分锚定）
       let scored: ScoredResult | null = null;
       if (textQs.length) {
         const courses = examCoursesRef.current;
-        const rubricByCourse = new Map(courses.map((c) => [c.title, c.assessRubric || ""]));
+        const rubricByCourse = new Map(
+          courses.map((c: any) => [
+            c.title,
+            (Array.isArray(c.knowledgePoints) ? c.knowledgePoints : [])
+              .map((k: { name: string; detail: string }) => `- ${k.name}${k.detail ? `：${k.detail}` : ""}`)
+              .join("\n"),
+          ])
+        );
         const answers = textQs.map((q) => ({
           qid: q.qid,
           course: q.course,
@@ -467,9 +471,8 @@ export default function ExamView({ childId, onExit }: Props) {
       const perQuestion: ScoredResult["perQuestion"] = payload.perQuestion.map((q) => {
         const origin = (q: (typeof payload.perQuestion)[number]) => ({
           pointMax: Number(q.pointMax) || 10,
-          questionId: String((q as any).questionId || ""), // 题库题目 uuid（结构化 v2，溯源/轮换）
-          categoryId: String((q as any).categoryId || ""), // 类别 uuid
-          knowledgePointId: String((q as any).knowledgePointId || ""), // 知识点 uuid（挂载关系，溯源）
+          questionId: String((q as any).questionId || ""), // 题库题目 uuid（溯源/轮换）
+          knowledgePointId: String((q as any).knowledgePointId || ""), // 知识点 uuid（溯源）
           knowledgePointName: String((q as any).knowledgePointName || ""),
         });
         if (isSpeech(q)) {

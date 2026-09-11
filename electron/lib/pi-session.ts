@@ -13,8 +13,7 @@ import { getSharedRuntime, getDefaultModel } from "./pi-runtime";
 import { parseCourseKey } from "./kb-sqlite";
 import { createHtmlLessonTool, displayContentTool, getDateTool, getProgressTool, kbInsertTool, kbQueryTool, kbUpdateTool, parentContentTool, parentUpsertCourseTool, parentDeleteCourseTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, pageActionTool, pageInspectTool, sceneCommandTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, todoLocalDate, scheduleTaskTool, childPlanLifeTool, childPlanStudyTool, childPlanExamTool, parentPlanLifeTool, parentUploadMaterialTool, parentTopicSaveTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, childSelfInfoTool } from "./custom-tools";
 import {
-  assessCategoriesListTool,
-  assessCategoryCreateTool,
+  assessKnowledgePointsListTool,
   assessCourseGetTool,
   assessContentSaveTool,
   assessMethodSetTool,
@@ -232,9 +231,9 @@ function buildParentPrompt(): string {
 
 ### 2.6 课程考核内容与考核方法（家长 agent 编写职责）
 - **背景**：孩子「学习考核」的**出题与判分锚定**课程考核内容与孩子考核方法；会用于考核的主题，在**建课/完善课程内容时就把考核内容写好**（结构化优先），不要让家长事后在 UI 逐课补。
-- **编写入口（结构化 v2，推荐）**：用 assess_* 工具——assess_categories_list/assess_category_create（主题类别，背诵=speech_recite、朗读=speech_read、其余=generic）、assess_course_get/assess_content_save（整课挂题：题干+参考答案+评分）、assess_method_set（按孩子设考哪些类别各几题/排除/背诵通过线）。旧入口 parent_course_save(assessRubric)/parent_topic_save(assessMethod) 仅**存量未迁移课程**兼容，新内容一律走 assess_*。
-- **编写前先 read 「.pi/agent/assess-rubric-guide.md」**（结构化 v2 规范+payload 示例）。
-- **背诵类**：类别 behavior=speech_recite，题目 answer=要背的标准原文（逐字、与真实资料一致）；系统出背诵题（不显示原文、发音评测、置首题、通过线取 recitePass 默认 90）。不要在文字题里另出“背出原文”的题。
+- **编写入口（知识点制，推荐）**：用 assess_* 工具——assess_knowledge_points_list（看主题/某课知识点）、assess_course_get/assess_content_save（整课保存：每项=知识点(名称+**详情 detail**)+挂在其下的题目：题干+参考答案+评分）、assess_method_set（按孩子设考哪些知识点各几题/排除/背诵通过线）。**每课的考核要点=该课的知识点**（detail 要写详细）；旧入口 parent_course_save(assessRubric) 已废弃，不要再写旧 rubric。
+- **编写前先 read 「.pi/agent/assess-rubric-guide.md」**（知识点制规范+payload 示例）。
+- **背诵类**：题目 behavior=speech_recite，answer=要背的标准原文（逐字、与真实资料一致）；系统出背诵题（不显示原文、发音评测、置首题、通过线取 recitePass 默认 90）。不要在文字题里另出“背出原文”的题。
 - **文字题**：每题=题干 + 参考答案/要点 + 评分标准（dims/special 越具体判分越准）。起草前先对准该课真实资料（parent_transcribe_media / parent_read_image），**不要编造原文与知识点**。
 
 ### 3. 配置管理（可读可改，改前确认、改后汇报）
@@ -1067,8 +1066,8 @@ export async function getParentSession(): Promise<AgentSession> {
     //  move_file/copy_file 整理资料——移动/重命名/复制文件与目录；
     //  study_plan_* 学习计划——家长对话制定「每天学什么」的逐日排期（ISSUE-033，服务端 study_plans 真源）；
     //  parent_library_topics/courses 家长库只读查询——起草排期前读权威主题/课程名册）。
-    tools: ["read", "write", "edit", "ls", "create_html_lesson", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "parent_plan_create", "app_config", "parent_transcribe_media", "parent_read_image", "parent_list_children", "assess_categories_list", "assess_category_create", "assess_course_get", "assess_content_save", "assess_method_set"],
-    customTools: [createHtmlLessonTool, getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, parentPlanLifeTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, assessCategoriesListTool, assessCategoryCreateTool, assessCourseGetTool, assessContentSaveTool, assessMethodSetTool],
+    tools: ["read", "write", "edit", "ls", "create_html_lesson", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "parent_plan_create", "app_config", "parent_transcribe_media", "parent_read_image", "parent_list_children", "assess_knowledge_points_list", "assess_course_get", "assess_content_save", "assess_method_set"],
+    customTools: [createHtmlLessonTool, getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, parentPlanLifeTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, assessKnowledgePointsListTool, assessCourseGetTool, assessContentSaveTool, assessMethodSetTool],
   });
 
   cachedParentSession = session;
@@ -1119,8 +1118,8 @@ export async function getParentContentSession(): Promise<AgentSession> {
     model,
     sessionManager: mgr,
     resourceLoader: loader,
-    tools: ["read", "write", "edit", "ls", "create_html_lesson", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "parent_plan_create", "app_config", "parent_transcribe_media", "parent_read_image", "parent_list_children", "assess_categories_list", "assess_category_create", "assess_course_get", "assess_content_save", "assess_method_set"],
-    customTools: [createHtmlLessonTool, getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, parentPlanLifeTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, assessCategoriesListTool, assessCategoryCreateTool, assessCourseGetTool, assessContentSaveTool, assessMethodSetTool],
+    tools: ["read", "write", "edit", "ls", "create_html_lesson", "get_date", "parent_course_save", "parent_course_delete", "parent_topic_save", "parent_upload_material", "parent_stats", "log_activity", "move_file", "copy_file", "exam_schedule_create", "study_plan_create", "study_plan_list", "study_plan_get", "study_plan_update", "study_plan_sources", "parent_library_topics", "parent_library_courses", "course_status", "parent_plan_create", "app_config", "parent_transcribe_media", "parent_read_image", "parent_list_children", "assess_knowledge_points_list", "assess_course_get", "assess_content_save", "assess_method_set"],
+    customTools: [createHtmlLessonTool, getDateTool, parentUpsertCourseTool, parentDeleteCourseTool, parentTopicSaveTool, parentUploadMaterialTool, parentStatsTool, logActivityTool, moveFileTool, copyFileTool, examScheduleCreateTool, studyPlanCreateTool, studyPlanListTool, studyPlanGetTool, studyPlanUpdateTool, studyPlanSourcesTool, parentLibraryTopicsTool, parentLibraryCoursesTool, courseStatusTool, parentPlanLifeTool, appConfigTool, parentTranscribeMediaTool, parentReadImageTool, parentListChildrenTool, assessKnowledgePointsListTool, assessCourseGetTool, assessContentSaveTool, assessMethodSetTool],
   });
 
   cachedParentContentSession = session;

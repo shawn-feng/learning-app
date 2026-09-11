@@ -134,7 +134,6 @@ CREATE TABLE IF NOT EXISTS exam_plan_courses (
   plan_id TEXT NOT NULL,
   course_uuid TEXT NOT NULL DEFAULT '',
   course_name TEXT NOT NULL DEFAULT '',
-  category_id TEXT NOT NULL DEFAULT '',
   knowledge_point_id TEXT NOT NULL DEFAULT '',
   question_id TEXT NOT NULL DEFAULT '',
   point_got REAL,

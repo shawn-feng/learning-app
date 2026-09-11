@@ -1,6 +1,6 @@
 /**
  * 学习考核（EXAM-REQUIREMENTS.md）——服务端：内容真源 + 存储，不跑判分 LLM。
- * - GET  /api/v1/exam/config/:childId   考核配置下发（周期内学/复习过的知识点 + assess_method/assess_rubric + 判分 prompt）
+ * - GET  /api/v1/exam/config/:childId   考核配置下发（结构化直出题或课程知识点 + assess_method + 判分 prompt）
  * - POST /api/v1/exam/attempts          提交一次考核结果（客户端判分后上报；语音经 /files/upload 先行上传，这里引用 fileId）
  * - GET  /api/v1/exam/attempts/:childId 家长查询考核记录列表（按时间倒序）
  * - GET  /api/v1/exam/course-records/:childId 每课程考核记录表（最近考核/掌握/难点/亮点/计划复习）
@@ -15,14 +15,14 @@ import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { attachStructuredQuestions } from "../assess-selection.js";
 import {
-  getOrCreateCategory,
   getOrCreateKnowledgePoint,
   saveQuestion,
   getQuestion,
   getCourseUuid,
   replaceCourseContent,
   listCourseContent,
-  listCategories,
+  listKnowledgePoints,
+  listTopicKnowledgePoints,
   getMethodSpec,
   saveMethodSpec,
   listAllBankQuestions,
@@ -59,7 +59,7 @@ function handleAuthError(err: unknown, reply: any): boolean {
 
 /**
  * 判分 prompt（服务端单一真源，客户端判分 session 用此 prompt 执行）。
- * 客户端拿到后拼入本场考核的题目与孩子答案；rubric 为家长写的 assess_rubric。
+ * 客户端拿到后拼入本场考核的题目与孩子答案；scoring 为本题评分标准/参考答案文本。
  * ⚠️ `{{TODAY}}` 占位符在下发时被替换为服务器当天日期（YYYY-MM-DD）——不注入日期，
  * LLM 会瞎猜复习日期（实测产出 2025-03-24 之类的错误年份）。
  */
@@ -346,60 +346,7 @@ function latestReinforcePlan(db: DatabaseSync, childId: string): Record<string, 
   }
 }
 
-interface ScheduleCourse {
-  title: string;
-  firstLearned: string;
-  lastReview: string;
-  mastery: string;
-  examMastery: string;
-  assessRubric: string;
-  score: number;
-}
-
-/** 自定义排期（家长指定主题/课程范围）：直接按 scope 返回带 rubric 的课程，不经过选课 LLM（§14.9）。 */
-function selectScopeCourses(
-  dataDir: string,
-  parentId: string,
-  childId: string,
-  scope: { topics?: string[]; courses?: string[] }
-): Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string }> {
-  const kb = openKb(dataDir, parentId, childId);
-  const parent = openParentLib(dataDir, parentId);
-  try {
-    const topicList = Array.isArray(scope.topics) ? scope.topics : [];
-    const courseList = Array.isArray(scope.courses) ? scope.courses : [];
-    const out: Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string }> = [];
-    for (const t of topicList) {
-      const rows = parent
-        .prepare("SELECT title, assess_rubric FROM courses WHERE topic = ? AND assess_rubric != ''")
-        .all(t) as Array<{ title: string; assess_rubric: string }>;
-      for (const r of rows) {
-        if (courseList.length && !courseList.includes(r.title)) continue;
-        // 2026-09-10 计划域：mastery/exam_mastery/first_learned 列已删。
-        // firstLearned 仅作为「已学无日期」标记（status='✅'），mastery/examMastery 恒空。
-        const kbRow = kb
-          .prepare("SELECT status, last_review FROM courses WHERE topic = ? AND title = ?")
-          .get(t, r.title) as { status?: string; last_review?: string } | undefined;
-        const noDate = String(kbRow?.status ?? "").trim() === "✅" && !(kbRow?.last_review ?? "");
-        out.push({
-          title: r.title,
-          topic: t,
-          firstLearned: noDate ? "✅" : "",
-          lastReview: kbRow?.last_review ?? "",
-          mastery: "",
-          examMastery: "",
-          assessRubric: r.assess_rubric,
-        });
-      }
-    }
-    return out;
-  } finally {
-    kb.close();
-    parent.close();
-  }
-}
-
-/** 全部「有学习痕迹」课程的元数据（选课 LLM 的候选清单；不含 rubric 全文，控制 prompt 体积）。
+/** 全部「有学习痕迹」课程的元数据（选课 LLM 的候选清单；不含知识点全文，控制 prompt 体积）。
  *  口径：学习过（first_learned）或复习过（last_review）或已学标记（status='✅'）的课程；
  *  已学但日期未知的课程 firstLearned 记为 "✅"（归属「更早学习」，可被每月「本月前 25%」等规则选中）。 */
 function listLearnedCourseMeta(
@@ -700,27 +647,23 @@ function listPlanCourseMeta(
 }
 
 
-function fetchCoursesWithRubric(
+function fetchCoursesWithKnowledgePoints(
   dataDir: string,
   parentId: string,
   childId: string,
   titles: string[]
-): Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string; assessMethod: string }> {
+): Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; knowledgePoints: Array<{ name: string; detail: string }>; assessMethod: string }> {
   const kb = openKb(dataDir, parentId, childId);
   const parent = openParentLib(dataDir, parentId);
   try {
-    const rubrics = parent
-      .prepare("SELECT topic, title, assess_rubric FROM courses WHERE assess_rubric != ''")
-      .all() as Array<{ topic: string; title: string; assess_rubric: string }>;
-    const rubricMap = new Map(rubrics.map((r) => [r.topic + "::" + r.title, r.assess_rubric]));
     // 主题考核方法说明（家长可编辑，按孩子区分题目构成与不考范围）——出题 prompt 必须读到它，
-    // 否则模型只会按 rubric「全部知识点」出题，家长在方法里写的“考什么/不考什么”全部落空（2026-09-09）。
+    // 否则模型只会按知识点「全部出题」，家长在方法里写的"考什么/不考什么"全部落空。
     const methodMap = new Map(
       (parent.prepare("SELECT topic_key, assess_method FROM topics").all() as Array<{ topic_key: string; assess_method: string }>)
         .map((r) => [r.topic_key, String(r.assess_method || "")] as [string, string])
         .filter(([, v]) => !!v)
     );
-    const out: Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; assessRubric: string; assessMethod: string }> = [];
+    const out: Array<{ title: string; topic: string; firstLearned: string; lastReview: string; mastery: string; examMastery: string; knowledgePoints: Array<{ name: string; detail: string }>; assessMethod: string }> = [];
     for (const t of titles) {
       const kbRow = kb
         .prepare("SELECT topic, status, last_review FROM courses WHERE title = ?")
@@ -728,6 +671,15 @@ function fetchCoursesWithRubric(
       if (!kbRow) continue; // 孩子库无此课 → 跳过
       const topic = String(kbRow.topic ?? "");
       const lr2 = String(kbRow.last_review ?? "");
+      // 该课知识点（= 考核要点）：name + detail。结构化课程由服务端直出题；
+      // 未挂题课程由客户端按知识点详情走 LLM 出题（旧 assess_rubric 已废弃）。
+      let kps: Array<{ name: string; detail: string }> = [];
+      const uuidRow = parent
+        .prepare("SELECT uuid FROM courses WHERE topic = ? AND title = ?")
+        .get(topic, t) as { uuid?: string } | undefined;
+      if (uuidRow?.uuid) {
+        kps = listKnowledgePoints(parent, uuidRow.uuid).map((k) => ({ name: k.name, detail: k.detail }));
+      }
       out.push({
         title: t,
         topic,
@@ -735,7 +687,7 @@ function fetchCoursesWithRubric(
         lastReview: lr2,
         mastery: "",
         examMastery: "",
-        assessRubric: rubricMap.get(topic + "::" + t) ?? "",
+        knowledgePoints: kps,
         assessMethod: methodMap.get(topic) ?? "",
       });
     }
@@ -920,16 +872,16 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       // 孩子显示名（考核方法 assess_method 常按孩子名分段，出题 prompt 需要点名当前孩子）
       const childRow = deps.db.prepare("SELECT name FROM children WHERE id = ?").get(childId) as { name?: string } | undefined;
       const childName = String(childRow?.name ?? "");
-      // 结构化考核（v2）：课程有挂载内容时由服务端按孩子方法直接抽题（course.questions），不再客户端 LLM 出题；
-      // 无挂载内容(非结构化)照旧返回 rubric，客户端走旧路径。
+      // 结构化考核：课程有挂载内容时由服务端按孩子方法直接抽题（course.questions），不再客户端 LLM 出题；
+      // 无挂载内容(非结构化)返回该课知识点详情，客户端按知识点走 LLM 出题。
       const structuredCourses = (titles: string[], methodOverride?: unknown) => {
-        const cs = fetchCoursesWithRubric(deps.config.dataDir, parentId, childId, titles);
+        const cs = fetchCoursesWithKnowledgePoints(deps.config.dataDir, parentId, childId, titles);
         try {
           const pl = openParentLib(deps.config.dataDir, parentId);
           attachStructuredQuestions(pl, childId, cs, (methodOverride as never) ?? undefined);
           pl.close();
         } catch (e) {
-          console.warn(`[exam] 结构化挂题失败（回退 rubric 旧路径）：${(e as Error).message}`);
+          console.warn(`[exam] 结构化挂题失败（回退知识点出题路径）：${(e as Error).message}`);
         }
         return cs;
       };
@@ -1022,20 +974,24 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           )
           .all(t.topic_key) as Array<{ title: string; last_review: string }>;
         if (learned.length === 0) continue;
-        const rubrics = parent
-          .prepare("SELECT title, assess_rubric FROM courses WHERE topic = ? AND assess_rubric != ''")
-          .all(t.topic_key) as Array<{ title: string; assess_rubric: string }>;
-        const rubricMap = new Map(rubrics.map((r) => [r.title, r.assess_rubric]));
+        // 每课考核要点 = 该课知识点（name + detail）
+        const kpRows = listTopicKnowledgePoints(parent, t.topic_key);
+        const kpMap = new Map<string, Array<{ name: string; detail: string }>>();
+        for (const k of kpRows) {
+          const arr = kpMap.get(k.courseTitle) || [];
+          arr.push({ name: k.name, detail: k.detail });
+          kpMap.set(k.courseTitle, arr);
+        }
         out.push({
           topicKey: t.topic_key,
           name: t.name,
           assessMethod: t.assess_method,
           courses: learned.map((c) => ({
             title: c.title,
-            firstLearned: "", // 2026-09-10：首次学习时间已下线
+            firstLearned: "",
             lastReview: c.last_review ?? "",
             mastery: "", // 掌握度改由 course_progress 视图（最近一次考核）输出
-            assessRubric: rubricMap.get(c.title) ?? "",
+            knowledgePoints: kpMap.get(c.title) ?? [],
           })),
         });
       }
@@ -1480,29 +1436,11 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     return { records };
   });
 
-  // ===== 考核内容结构化 v2（ISSUE-067 步骤2：家长 agent 读写新表；权威库 = 服务端 parent.sqlite） =====
+  // ===== 考核内容结构化（家长 agent 读写；权威库 = 服务端 parent.sqlite；知识点制） =====
   const openParentFor = (parentId: string) => openParentLib(deps.config.dataDir, parentId);
-  /** item 里给 categoryId 或 categoryName(+behavior)：返回该主题下类别 uuid 与行为；两者都给优先 id。 */
-  const resolveCategory = (
-    db: DatabaseSync,
-    topic: string,
-    p: Record<string, unknown>
-  ): { id: string; behavior: string } => {
-    if (typeof p.categoryId === "string" && p.categoryId) {
-      const row = db
-        .prepare("SELECT id, behavior FROM topic_categories WHERE id = ? AND topic_id = ?")
-        .get(p.categoryId, topic) as { id: string; behavior?: string } | undefined;
-      if (!row) throw new Error(`类别 ${p.categoryId} 不属于主题 ${topic}（或不存在）`);
-      return { id: row.id, behavior: String(row.behavior || "generic") };
-    }
-    if (typeof p.categoryName === "string" && p.categoryName.trim()) {
-      const c = getOrCreateCategory(db, topic, p.categoryName.trim(), String(p.behavior || "generic"));
-      return { id: c.id, behavior: c.behavior };
-    }
-    throw new Error("每项需要 categoryId 或 categoryName");
-  };
 
-  app.get("/api/v1/assess/topics/:topic/categories", async (req, reply) => {
+  /** 某主题下全部课程的知识点（名称/详情/所属课程）——写考核内容与设考核方法前先看。 */
+  app.get("/api/v1/assess/topics/:topic/knowledge-points", async (req, reply) => {
     let parentId: string;
     try {
       parentId = authParent(req, deps.config.jwtSecret);
@@ -1514,7 +1452,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     if (!topic) return reply.code(400).send({ error: "缺少 topic" });
     const db = openParentFor(parentId);
     try {
-      return { topic, categories: listCategories(db, topic) };
+      return { topic, knowledgePoints: listTopicKnowledgePoints(db, topic) };
     } finally {
       db.close();
     }
@@ -1533,25 +1471,6 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     const db = openParentFor(parentId);
     try {
       return { topic, spec: getMethodSpec(db, topic) };
-    } finally {
-      db.close();
-    }
-  });
-
-  app.post("/api/v1/assess/categories", async (req, reply) => {
-    let parentId: string;
-    try {
-      parentId = authParent(req, deps.config.jwtSecret);
-    } catch (err) {
-      if (handleAuthError(err, reply)) return;
-      throw err;
-    }
-    const b = (req.body || {}) as { topicId?: string; name?: string; behavior?: string };
-    if (!b.topicId || !b.name) return reply.code(400).send({ error: "需要 topicId + name" });
-    const db = openParentFor(parentId);
-    try {
-      const category = getOrCreateCategory(db, String(b.topicId), String(b.name).trim(), String(b.behavior || "generic"));
-      return { category };
     } finally {
       db.close();
     }
@@ -1596,7 +1515,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }
   });
 
-  /** 整课保存考试内容：topic+title 定位课程；每项挂类别+若干题（可引用题库题或内联新建）。事务替换旧挂载。 */
+  /** 整课保存考核内容：topic+title 定位课程；每项 = 一个知识点（可带详情）+ 挂在该知识点下的若干题
+   *  （可引用题库题或内联新建）。事务替换旧挂载。 */
   app.post("/api/v1/assess/courses/save", async (req, reply) => {
     let parentId: string;
     try {
@@ -1613,29 +1533,28 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     try {
       const uuid = getCourseUuid(db, String(b.topic), String(b.title));
       if (!uuid) return reply.code(400).send({ error: `课程不存在：${b.topic}/${b.title}（请先在课程库创建该课）` });
-      const replaceItems: Array<{ categoryId: string; overview: string; questionIds: string[]; knowledgePointIds: Array<string | null> }> = [];
+      const replaceItems: Array<{ knowledgePointId: string; overview: string; questionIds: string[] }> = [];
       let created = 0;
       let linked = 0;
       for (const it of b.items) {
-        const cat = resolveCategory(db, String(b.topic), it);
-        // 类别级默认知识点：题目未显式给知识点时回退用它（每题也可各自带 knowledgePoint/knowledgePointId 覆盖）
-        const catKpName = String(it.knowledgePoint ?? it.knowledgePointName ?? "").trim();
+        // 知识点解析：knowledgePointId（须属于本课）> knowledgePoint 名称（getOrCreate，可带 detail 详情）
+        const kpIdRaw = typeof it.knowledgePointId === "string" ? it.knowledgePointId.trim() : "";
+        const kpName = String(it.knowledgePoint ?? it.knowledgePointName ?? "").trim();
+        const kpDetail = String(it.detail ?? it.knowledgePointDetail ?? "").trim();
+        let kpId: string;
+        if (kpIdRaw) {
+          const row = db.prepare("SELECT id FROM knowledge_points WHERE id = ? AND course_uuid = ?").get(kpIdRaw, uuid);
+          if (!row) return reply.code(400).send({ error: `知识点不存在或不属于该课：${kpIdRaw}` });
+          kpId = kpIdRaw;
+          if (kpDetail) getOrCreateKnowledgePoint(db, uuid, kpName || "", kpDetail); // 名称为空时不新建，仅当能定位到名称才更新详情
+        } else if (kpName) {
+          kpId = getOrCreateKnowledgePoint(db, uuid, kpName, kpDetail).id;
+        } else {
+          return reply.code(400).send({ error: "每项需要 knowledgePointId 或 knowledgePoint（知识点名称）" });
+        }
         const qs = (Array.isArray(it.questions) ? it.questions : []) as Array<Record<string, unknown>>;
         const qids: string[] = [];
-        const kpIds: Array<string | null> = [];
         for (const qo of qs) {
-          // 知识点解析：knowledgePointId（须属于本课）> knowledgePoint 名称（getOrCreate）> 类别级默认 > 空
-          let kpId: string | null = null;
-          const kpIdRaw = typeof qo.knowledgePointId === "string" ? qo.knowledgePointId.trim() : "";
-          const kpName = String(qo.knowledgePoint ?? qo.knowledgePointName ?? "").trim() || catKpName;
-          if (kpIdRaw) {
-            const row = db.prepare("SELECT id FROM knowledge_points WHERE id = ? AND course_uuid = ?").get(kpIdRaw, uuid);
-            if (!row) return reply.code(400).send({ error: `知识点不存在或不属于该课：${kpIdRaw}` });
-            kpId = kpIdRaw;
-          } else if (kpName) {
-            kpId = getOrCreateKnowledgePoint(db, uuid, kpName).id;
-          }
-          kpIds.push(kpId);
           if (typeof qo.questionId === "string" && qo.questionId) {
             const exists = getQuestion(db, qo.questionId);
             if (!exists) return reply.code(400).send({ error: `题库题不存在：${qo.questionId}` });
@@ -1644,14 +1563,13 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           } else {
             const stem = String(qo.stem ?? "").trim();
             const answer = String(qo.answer ?? "").trim();
-            if (!stem || !answer) return reply.code(400).send({ error: `类别「${String(it.categoryName || it.categoryId || "")}」下内联题目需要 stem + answer` });
+            if (!stem || !answer) return reply.code(400).send({ error: `知识点「${kpName || kpIdRaw}」下内联题目需要 stem + answer` });
             const id = saveQuestion(db, {
               stem,
               answer,
               scoring: qo.scoring != null ? String(qo.scoring) : null,
               pointMax: Number(qo.pointMax) || 10,
-              // 行为以题级为准；题目没写时继承该类别行为（兼容存量写法）
-              behavior: String(qo.behavior || cat.behavior || "generic"),
+              behavior: String(qo.behavior || "generic"),
               note: qo.note != null ? String(qo.note) : "",
               knowledgeSummary: qo.knowledgeSummary != null ? String(qo.knowledgeSummary) : (kpName || ""),
               options: Array.isArray(qo.options) ? (qo.options as Array<{ key: string; text: string }>) : undefined,
@@ -1660,10 +1578,10 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
             created++;
           }
         }
-        replaceItems.push({ categoryId: cat.id, overview: String(it.overview ?? ""), questionIds: qids, knowledgePointIds: kpIds });
+        replaceItems.push({ knowledgePointId: kpId, overview: String(it.overview ?? ""), questionIds: qids });
       }
       replaceCourseContent(db, uuid, replaceItems);
-      return { ok: true, courseUuid: uuid, categories: replaceItems.length, questionsCreated: created, questionsLinked: linked };
+      return { ok: true, courseUuid: uuid, knowledgePoints: replaceItems.length, questionsCreated: created, questionsLinked: linked };
     } catch (e) {
       if (reply.sent) return;
       return reply.code(400).send({ error: String((e as Error).message || e) });
@@ -1715,24 +1633,26 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       const spec = (getMethodSpec(db, String(b.topicId)) as { perChild?: Record<string, unknown>; default?: unknown }) ?? {};
       const per: Record<string, any> = (spec.perChild as Record<string, any>) ?? {};
       const cur: any = per[String(b.childId)] ?? { require: {}, exclude: [], rules: { recitePass: 90 } };
+      // require/exclude 键 = 知识点 uuid 或知识点名（按主题下全部课程的知识点解析；只校验可解析，键按原样存储——
+      // 同名知识点可存在于多门课，按名引用可一次覆盖多课）
       if (b.require) {
+        const kps = listTopicKnowledgePoints(db, String(b.topicId));
+        const byName = new Set(kps.map((k) => k.name));
+        const byId = new Set(kps.map((k) => k.id));
         const reqIds: Record<string, number> = {};
-        const cats = listCategories(db, String(b.topicId));
-        const byName = new Map(cats.map((c) => [c.name, c.id]));
-        const byId = new Set(cats.map((c) => c.id));
         for (const [k, v] of Object.entries(b.require)) {
-          const id = byName.get(k) ?? (byId.has(k) ? k : undefined);
-          if (!id) return reply.code(400).send({ error: `类别「${k}」不属于主题 ${b.topicId}` });
-          reqIds[id] = Math.max(1, Number(v) || 1);
+          if (!byId.has(k) && !byName.has(k)) return reply.code(400).send({ error: `知识点「${k}」不属于主题 ${b.topicId}` });
+          reqIds[k] = Math.max(1, Number(v) || 1);
         }
         cur.require = reqIds;
       }
       if (Array.isArray(b.exclude)) {
-        const cats = listCategories(db, String(b.topicId));
-        const byName = new Map(cats.map((c) => [c.name, c.id]));
+        const kps = listTopicKnowledgePoints(db, String(b.topicId));
+        const byName = new Set(kps.map((k) => k.name));
+        const byId = new Set(kps.map((k) => k.id));
         cur.exclude = b.exclude
-          .map((k) => byName.get(k) ?? (cats.some((c) => c.id === k) ? k : null))
-          .filter((x): x is string => !!x);
+          .map((k) => String(k).trim())
+          .filter((k) => byId.has(k) || byName.has(k));
       }
       if (b.recitePass != null) cur.rules = { ...(cur.rules || {}), recitePass: Math.max(0, Number(b.recitePass) || 90) };
       per[String(b.childId)] = cur;

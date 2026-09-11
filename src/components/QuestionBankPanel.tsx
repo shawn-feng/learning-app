@@ -44,7 +44,7 @@ interface Row {
   behavior: string;
   note: string;
   knowledgeSummary: string;
-  contexts: Array<{ topic: string; course: string; category: string; knowledgePoint?: string }>;
+  contexts: Array<{ topic: string; course: string; knowledgePoint?: string }>;
 }
 interface RecRow {
   childId: string;
@@ -101,7 +101,7 @@ export default function QuestionBankPanel() {
           r.answer.toLowerCase().includes(kw) ||
           r.behavior.includes(kw) ||
           (r.note || "").toLowerCase().includes(kw) ||
-          r.contexts.some((c) => c.category.includes(kw) || c.course.toLowerCase().includes(kw) || c.topic.toLowerCase().includes(kw))
+          r.contexts.some((c) => (c.knowledgePoint || "").includes(kw) || c.course.toLowerCase().includes(kw) || c.topic.toLowerCase().includes(kw))
       )
     : rows;
   const sel = rows.find((r) => r.id === qId) || null;
@@ -115,7 +115,7 @@ export default function QuestionBankPanel() {
       <input
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
-        placeholder="搜索题干 / 答案 / 类别 / 课程…"
+        placeholder="搜索题干 / 答案 / 知识点 / 课程…"
         style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1px solid #ddd", fontSize: 13, marginBottom: 10, boxSizing: "border-box" }}
       />
       {loading ? (
@@ -163,8 +163,8 @@ export default function QuestionBankPanel() {
                   <span>{sel.pointMax || 10} 分</span>
                   {sel.contexts.map((c, ci) => (
                     <span key={ci}>
-                      {c.course}（{c.category}
-                      {c.knowledgePoint ? ` · ${c.knowledgePoint}` : ""}）
+                      {c.course}
+                      {c.knowledgePoint ? `（${c.knowledgePoint}）` : ""}
                     </span>
                   ))}
                 </div>

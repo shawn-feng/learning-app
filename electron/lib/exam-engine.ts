@@ -1,7 +1,7 @@
 /**
  * 学习考核引擎（客户端，本地 LLM）——出卷与判分都跑在**独立内存 session**：
- * - 出卷：读服务端下发的考核数据（assess_method + 课程/知识点 + assess_rubric），生成全主观题 JSON；
- * - 判分：用**服务端下发的判分 prompt**（rubric 单一真源）逐题打分 + 评语 + 课程级加强计划 JSON。
+ * - 出卷：读服务端下发的考核数据（assess_method + 课程/知识点详情），生成全主观题 JSON；
+ * - 判分：用**服务端下发的判分 prompt**（评分口径单一真源）逐题打分 + 评语。
  * 两者都只在内存进行、不写任何中间文件；判分后仅把最终结果上报服务端（ipc exam:submit）。
  * 参考：daily-summary.ts 的 createEphemeralSession（SessionManager.inMemory + noContextFiles/noSkills）。
  */
@@ -31,32 +31,12 @@ export interface GeneratedQuestion {
   refText?: string;
 }
 
-const GENERATION_SYSTEM_PROMPT = `你是儿童学习考核的出题老师。你只做一件事：根据家长写的考核方法说明与每课考核要点，为孩子出「主观题」（口述题，孩子用语音回答）。你只输出 JSON，不输出任何其它文字。`;
+const GENERATION_SYSTEM_PROMPT = `你是儿童学习考核的出题老师。你只做一件事：根据家长写的考核方法说明与每课知识点（考核要点），为孩子出「主观题」（口述题，孩子用语音回答）。你只输出 JSON，不输出任何其它文字。`;
 
-/**
- * 背诵题 refText 来源（问题 1 修复，2026-09-08）：从**本课 rubric 的「原文背诵」行**提取
- * 该章原文（如「- 原文背诵：能正确流利背诵“子曰：'学而时习之…'”」），结构化直给、不靠 LLM 生成，
- * 避免错字漏字让逐字评失真。⚠️ 只取本课原文——**不再注入跨章 POC 种子**（旧实现凡「论语」课
- * 都塞 5 句固定名句，含为政/述而篇，导致"只考第一章却考了别的章"）。取不到本课背诵内容则不注入。
- */
-const RECITATION_MARK_RE = /原文背诵[^“”"\n]*?[：:][^\n]*?[“"]([^”"\n]+)[”"]/g;
-
-/** 取一门课的背诵题（结构化 refText）。优先课程自带 recitation；否则从本课 rubric「原文背诵」行提取。 */
+/** 取一门课的背诵题（结构化 refText）：仅使用课程自带 recitation 通道（结构化直出）。 */
 function recitationFor(course: ExamCourseConfig): Array<{ stem: string; refText: string }> {
   const own = (course as any).recitation;
-  if (Array.isArray(own) && own.length) return own;
-  const rubric = String((course as any).assessRubric || "");
-  const out: Array<{ stem: string; refText: string }> = [];
-  const re = new RegExp(RECITATION_MARK_RE.source, "g");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(rubric)) && out.length < 3) {
-    const ref = (m[1] || "").replace(/[“”"'']/g, "").trim();
-    if (!ref) continue;
-    // 同一段重复出现的「背诵」提示可能指同一原文，按内容去重
-    if (out.some((x) => x.refText === ref)) continue;
-    out.push({ stem: "请完整背诵本章原文（不看书，背完整、背流利）", refText: ref });
-  }
-  return out;
+  return Array.isArray(own) ? own : [];
 }
 
 // ==================== 选课（v3 §14.9：服务端下发选课 prompt，家长可编辑） ====================
@@ -124,7 +104,7 @@ export async function selectCoursesForSchedule(selectionPrompt: string, childId:
  * 课程由服务端下发的「选课结果」给定（v3 §14.9：LLM 按家长可编辑的选课 prompt 挑选，非代码裁剪）；
  * 本地不再按最近复习时间硬裁，而是对**每门选中课程单独一次 LLM 调用**完整出题——
  * 一课一次完整考核（覆盖该课全部知识点、题量由课决定），避免多课 rubric 全量拼一个 prompt 撑爆上下文。
- * @param topicConfig 服务端下发的科目考核配置（课程 = 选课结果，每课带 assess_rubric）
+ * @param topicConfig 服务端下发的科目考核配置（课程 = 选课结果，每课带知识点详情）
  * @param childId 孩子 id（session 工作目录按孩子隔离）
  */
 /**
@@ -179,11 +159,9 @@ export async function generateCourseQuestions(
 }
 
 const GENERATION_PER_COURSE_RULES =
-  `题目要覆盖该课「考核内容」里的全部知识点（原文背诵/字词/句意/道理应用/典故等都要考到），可一课多题（每课 2~4 题，题量由该课考核内容决定，不设全局题量上限）。` +
-  `题目**优先直接采用该课「考核内容」里已有的现成题目**（含选择题和问答题），不要另出新题；` +
-  `选择题改造成口述题：保留题干、**去掉 A/B/C/D 选项**（孩子口述作答，例如「北辰的正确读音是什么？请说出口头答案」）；` +
-  `问答题直接采用题干。每题满分 pointMax 给 10（选择题原本 2 分的也按 10 分制口述题处理）。贴近 6~12 岁孩子，语气亲切。` +
-  `⚠️ **不要出“请背诵/背出原文”这类要求背原文的题**：若考核含「原文背诵」，背诵题由系统单独生成并用发音评测自动评分——` +
+  `题目要覆盖该课「考核要点」里的全部知识点（原文背诵/字词/句意/道理应用等都要考到），可一课多题（每课 2~4 题，题量由该课知识点数量决定，不设全局题量上限）。` +
+  `贴近 6~12 岁孩子，语气亲切，题目要贴合知识点详情里描述的考核期望。` +
+  `⚠️ **不要出“请背诵/背出原文”这类要求背原文的题**：背诵题由系统单独生成并用发音评测自动评分——` +
   `你只出需要孩子**用自己的话回答**的文字题（讲意思、白话翻译、道理应用、字词读音与用法等），否则背诵会重复出现。`;
 
 /** 为单门课程完整出题（一次独立内存 session；course 字段固定为该课标题，保证与候选清单一致）。 */
@@ -205,7 +183,7 @@ async function generateForCourse(
   });
   await loader.reload();
 
-  // 主题考核方法（家长设定，按孩子区分题目构成与不考范围，2026-09-09）：
+  // 主题考核方法（家长设定，按孩子区分题目构成与不考范围）：
   // 方法优先于通用出题规则；方法含多孩子段落时只按「当前孩子」的段落出题。
   const method = String((course as any).assessMethod || "").trim();
   const methodBlock = method
@@ -213,10 +191,16 @@ async function generateForCourse(
       (childName ? `本次考核孩子是「${childName}」。请只按方法说明中**针对 ${childName}** 的要求出题，忽略针对其它孩子的段落；方法明确不考的（如“不考核字词读音/解释”）一律不要出。\n` : "")
     : "";
 
+  // 该课知识点（= 考核要点）：name + detail（详细描述）。出题材料以此为准。
+  const kps = Array.isArray((course as any).knowledgePoints) ? (course as any).knowledgePoints as Array<{ name: string; detail: string }> : [];
+  const kpBlock = kps.length
+    ? kps.map((k, i) => `${i + 1}. ${k.name}${k.detail ? `：${k.detail}` : ""}`).join("\n")
+    : "（该课暂未写知识点详情，按课程标题出基础理解题）";
+
   const prompt =
     `考核科目：${topicName}\n` +
     methodBlock +
-    `课程「${course.title}」的考核内容（知识点 + 现成题目 + 评分标准）：\n${course.assessRubric || "（未写考核内容，按题意出基础理解题）"}\n\n` +
+    `课程「${course.title}」的考核要点（知识点 + 详情）：\n${kpBlock}\n\n` +
     `请为这一门课程完整出题：${GENERATION_PER_COURSE_RULES}\n\n` +
     `只输出 JSON（不要 markdown 代码块围栏），格式：\n` +
     `{"questions":[{"qid":"q1","course":"${course.title}","stem":"题干","pointMax":10}]}`;
@@ -261,7 +245,7 @@ async function generateForCourse(
       kind: "ok",
       course: course.title,
       topic: topicName,
-      rubric: String((course as any).assessRubric || ""),
+      knowledgePoints: kps.map((k) => k.name),
       prompt,
       reply: text,
       parsed,

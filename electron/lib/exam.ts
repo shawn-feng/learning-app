@@ -1,7 +1,7 @@
 /**
  * 学习考核客户端（EXAM-REQUIREMENTS.md）——主进程侧：与服务端 /api/v1/exam/* 对接。
  * 出卷与判分在客户端（本地 LLM 独立内存 session）完成，本模块只负责：
- *   取考核配置（知识点 + assess_method/assess_rubric + 判分 prompt，判分口径服务端单一真源）
+ *   取考核配置（结构化直出题 / 课程知识点 + assess_method + 判分 prompt，判分口径服务端单一真源）
  *   上传语音（files 通道）→ 提交考核结果（写服务端 exam_attempts；掌握度由服务端按最近一次考核聚合，不再回写孩子库）
  *   家长查询考核记录 / 每课程考核记录表 / 播放原音。
  */
@@ -17,7 +17,8 @@ export interface ExamCourseConfig {
   lastReview: string;
   mastery: string;
   examMastery: string;
-  assessRubric: string;
+  /** 该课知识点（= 考核要点）：未挂题课程由客户端按知识点详情走 LLM 出题 */
+  knowledgePoints?: Array<{ name: string; detail: string }>;
   /** 结构化背诵题（口语/听说题）：refText 为标准原文，提交时走 SSECP 发音评测而非 LLM */
   recitation?: Array<{ stem: string; refText: string }>;
 }

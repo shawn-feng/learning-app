@@ -72,10 +72,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
   const [editingAssessMethod, setEditingAssessMethod] = useState(false);
   const [savingAssessMethod, setSavingAssessMethod] = useState(false);
 
-  // 每课考核要点编辑器（courses.assess_rubric）
-  const [editingRubric, setEditingRubric] = useState(false);
-  const [rubricText, setRubricText] = useState("");
-  // 结构化考核内容浏览（v2：类别 → 题目；右栏显示该题考核记录）
+  // 结构化考核内容浏览（知识点 → 题目；右栏显示该题考核记录）
   const [struct, setStruct] = useState<any | null>(null);
   const [structLoading, setStructLoading] = useState(false);
   const [catIdx, setCatIdx] = useState(0);
@@ -340,24 +337,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
     }
   }
 
-  // 每课考核要点：保存到 courses.assess_rubric（期望孩子答到的要点，出题/判分锚定）
-  async function saveRubric() {
-    if (!selected) return;
-    if (!rubricText.trim()) {
-      setMsg({ ok: false, text: "考核要点为空，未保存（可重新填写后保存）" });
-      return;
-    }
-    const r: any = await window.api.parentUpsertCourse(topicDir, { title: selected.title, assessRubric: rubricText });
-    if (r?.success) {
-      const updated = { ...selected, assessRubric: rubricText };
-      setSelected(updated);
-      setCourses((prev) => prev.map((c) => (c.title === updated.title ? updated : c)));
-      setMsg({ ok: true, text: "✓ 考核要点已保存" });
-      setEditingRubric(false);
-    } else {
-      setMsg({ ok: false, text: r?.error || "保存失败" });
-    }
-  }
+  // 每课考核要点 = 该课知识点（在「考核要点」页浏览：知识点 → 题目；编辑由家长 AI 通过 assess_* 工具完成）
 
   async function uploadMaterials() {
     const r = await window.api.parentUploadMaterial(topicDir);
@@ -580,55 +560,36 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
 
           {tab === "assess" && (
             <div>
-              {/* 每课考核要点：v2 结构化浏览（类别→题目+该题记录）；旧版 rubric 全文可切换编辑 */}
+              {/* 每课考核要点 = 该课知识点：结构化浏览（知识点→题目+该题记录）；内容由家长 AI 通过 assess_* 工具维护 */}
               {!selected ? (
-                <p style={{ color: "#888", fontSize: 13 }}>请先在左侧选择一门课程，查看/填写它的考核要点（结构化题目或旧版全文）。</p>
+                <p style={{ color: "#888", fontSize: 13 }}>请先在左侧选择一门课程，查看它的考核要点（知识点与题目）。</p>
               ) : (
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>📄 {selected.title} · 考核要点</div>
-                    {editingRubric ? (
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <button onClick={() => { setRubricText(selected.assessRubric || ""); setEditingRubric(false); }} style={smallBtn}>取消</button>
-                        <button onClick={saveRubric} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>保存</button>
-                      </div>
-                    ) : (
-                      <IconButton icon={Pencil} title="编辑旧版全文要点" onClick={() => { setRubricText(selected.assessRubric || ""); setEditingRubric(true); }} />
-                    )}
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>📄 {selected.title} · 考核要点（知识点）</div>
                   </div>
 
-                  {editingRubric ? (
-                    <>
-                      <p style={{ color: "#9a6b00", fontSize: 12, margin: "0 0 6px" }}>编辑的是旧版全文 rubric（结构化课程建议用 AI/对话按类别维护；保存仅写旧字段）。</p>
-                      <textarea
-                        value={rubricText}
-                        onChange={(e) => setRubricText(e.target.value)}
-                        rows={8}
-                        placeholder={"期望孩子答到的要点（出题/判分锚定），如：\n- 能说出「学而时习之」的意思\n- 能结合自己的生活举例"}
-                        style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, boxSizing: "border-box", resize: "vertical" }}
-                      />
-                    </>
-                  ) : structLoading ? (
+                  {structLoading ? (
                     <span style={{ color: "#888", fontSize: 13 }}>正在读取结构化考核内容…</span>
                   ) : struct && struct.items.length > 0 ? (
                     <div>
                       {(() => {
                         const total = struct.items.reduce((s: number, it: any) => s + (it.questions?.length || 0), 0);
-                        const activeCat = struct.items[Math.min(catIdx, struct.items.length - 1)];
-                        const qs: any[] = activeCat?.questions || [];
+                        const activeKp = struct.items[Math.min(catIdx, struct.items.length - 1)];
+                        const qs: any[] = activeKp?.questions || [];
                         const selQ = qs.find((q) => q.id === qId) || null;
                         return (
                           <>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
                               <span style={{ fontSize: 12, color: "#6b7686" }}>
-                                结构化考核内容：{struct.items.length} 个类别 / 共 {total} 题（每类考核时抽 1）
+                                结构化考核内容：{struct.items.length} 个知识点 / 共 {total} 题（每知识点随机抽题）
                               </span>
                             </div>
-                            {/* 上面一行：类别选择 */}
+                            {/* 上面一行：知识点选择 */}
                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
                               {struct.items.map((it: any, i: number) => (
                                 <button
-                                  key={it.categoryId || it.categoryName}
+                                  key={it.knowledgePointId || it.knowledgePointName}
                                   onClick={() => { setCatIdx(i); setQId(null); setRecords(null); }}
                                   style={{
                                     padding: "5px 12px",
@@ -640,16 +601,22 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                                     cursor: "pointer",
                                   }}
                                 >
-                                  {it.categoryName}
+                                  {it.knowledgePointName}
                                   <span style={{ opacity: 0.6, marginLeft: 4, fontSize: 11 }}>({it.questions?.length || 0})</span>
                                 </button>
                               ))}
                             </div>
+                            {activeKp?.detail ? (
+                              <div style={{ fontSize: 12, color: "#556", background: "#f6f4fc", border: "1px solid #e6e1f5", borderRadius: 8, padding: "8px 12px", marginBottom: 10, whiteSpace: "pre-wrap" }}>
+                                <b style={{ color: "#6b5fc9" }}>知识点详情：</b>
+                                {activeKp.detail}
+                              </div>
+                            ) : null}
                             {/* 下左：题目列表；下右：题目详情 + 考核记录 */}
                             <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
                               <div style={{ width: "38%", minWidth: 260, border: "1px solid #eee", borderRadius: 8, padding: 6, maxHeight: 380, overflow: "auto", boxSizing: "border-box" }}>
                                 {qs.length === 0 ? (
-                                  <p style={{ color: "#aaa", fontSize: 12, padding: 8 }}>该类别暂无题目（方法选中时会被跳过）</p>
+                                  <p style={{ color: "#aaa", fontSize: 12, padding: 8 }}>该知识点暂无题目（考核时会被跳过）</p>
                                 ) : (
                                   qs.map((q: any, qi: number) => (
                                     <div
@@ -683,16 +650,11 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                                 ) : (
                                   <div>
                                     <div style={{ fontSize: 14, lineHeight: 1.5, color: "#222", fontWeight: 600, marginBottom: 6 }}>{selQ.stem}</div>
-                                    {activeCat && (
+                                    {activeKp && (
                                       <div style={{ fontSize: 11, color: "#667eea", marginBottom: 8 }}>
-                                        {activeCat.categoryName} · {BEHAVIOR_LABEL[selQ.behavior || activeCat.behavior] || selQ.behavior || activeCat.behavior} · {selQ.pointMax || 10} 分
+                                        {activeKp.knowledgePointName} · {BEHAVIOR_LABEL[selQ.behavior] || selQ.behavior || "generic"} · {selQ.pointMax || 10} 分
                                       </div>
                                     )}
-                                    {(selQ as any).knowledgePointName ? (
-                                      <div style={{ fontSize: 11, color: "#8a7dd8", marginBottom: 8 }}>
-                                        知识点：{(selQ as any).knowledgePointName}
-                                      </div>
-                                    ) : null}
                                     {(selQ as any).options?.length ? (
                                       <div style={{ marginBottom: 6 }}>
                                         <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>选项（选择题：孩子看选项口头作答）：</div>
@@ -748,12 +710,8 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                         );
                       })()}
                     </div>
-                  ) : selected.assessRubric ? (
-                    <div className="markdown-body">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{selected.assessRubric}</ReactMarkdown>
-                    </div>
                   ) : (
-                    <span style={{ color: "#aaa" }}>（暂无结构化题目，也暂无旧版全文要点；可让 AI 协助按类别建题）</span>
+                    <span style={{ color: "#aaa" }}>（暂无结构化考核内容；可让 AI 按「知识点 → 题目」协助建题，知识点详情会作为该课的考核要点）</span>
                   )}
                 </div>
               )}

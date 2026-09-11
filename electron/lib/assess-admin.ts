@@ -1,5 +1,5 @@
 /**
- * 考核内容结构化 v2 管理（家长 agent 读/写新表）。
+ * 考核内容结构化管理（家长 agent 读/写，知识点制）。
  * 权威库 = 服务端 parent.sqlite（客户端本地 parent.sqlite 为空占位），一律经 /api/v1/assess/* REST。
  */
 import { serverFetch } from "./server-client";
@@ -7,12 +7,6 @@ import { currentSessionToken } from "./client-data";
 
 const TOK = () => currentSessionToken();
 
-export interface AssessCategory {
-  id: string;
-  topicId: string;
-  name: string;
-  behavior: string;
-}
 export interface AssessQuestionView {
   id: string;
   stem: string;
@@ -20,20 +14,21 @@ export interface AssessQuestionView {
   scoring: string | null;
   pointMax: number;
   seq: number;
-  /** 题级行为：speech_recite / speech_read / generic（2026-09-10 起判题以题级为准） */
+  /** 题级行为：speech_recite / speech_read / generic（判题以题级为准） */
   behavior: string;
   note: string;
   knowledgeSummary: string;
-  /** 选择题选项 [{key,text}]；[] = 非选择题（2026-09-10） */
+  /** 选择题选项 [{key,text}]；[] = 非选择题 */
   options: Array<{ key: string; text: string }>;
 }
 export interface AssessBankQuestion extends Omit<AssessQuestionView, "seq"> {
-  contexts: Array<{ topic: string; course: string; category: string }>;
+  contexts: Array<{ topic: string; course: string; knowledgePoint: string }>;
 }
 export interface AssessCourseItem {
-  categoryId: string;
-  categoryName: string;
-  behavior: string;
+  knowledgePointId: string;
+  knowledgePointName: string;
+  /** 知识点详情（该课考核要点的一部分） */
+  detail: string;
   overview: string;
   questions: AssessQuestionView[];
 }
@@ -44,33 +39,30 @@ export interface AssessCourseContent {
   structured: boolean;
   items: AssessCourseItem[];
 }
-/** 整课保存里每项：categoryId 或 categoryName(+behavior)；questions 引用或内联新建。 */
+/** 整课保存里每项：一个知识点（id 或 名称+详情）+ 挂在其下的题目（引用或内联新建）。 */
 export interface AssessSaveItem {
-  categoryId?: string;
-  categoryName?: string;
-  behavior?: string;
+  knowledgePointId?: string;
+  knowledgePoint?: string;
+  detail?: string;
   overview?: string;
   questions: Array<
     | { questionId: string }
-    | { stem: string; answer: string; scoring?: string | null; pointMax?: number }
+    | { stem: string; answer: string; scoring?: string | null; pointMax?: number; behavior?: string; note?: string; options?: Array<{ key: string; text: string }> }
   >;
 }
 
-export async function listTopicCategories(topic: string): Promise<{ topic: string; categories: AssessCategory[] }> {
-  return serverFetch(`/assess/topics/${encodeURIComponent(topic)}/categories`, { method: "GET", token: TOK() });
+export interface AssessKnowledgePoint {
+  id: string;
+  courseUuid: string;
+  courseTitle: string;
+  name: string;
+  detail: string;
+  seq: number;
 }
 
-/** 添加/确保主题类别（同名已存在时服务端直接返回既有行）。 */
-export async function saveAssessCategory(
-  topicId: string,
-  name: string,
-  behavior = "generic"
-): Promise<{ category: AssessCategory }> {
-  return serverFetch(`/assess/categories`, {
-    method: "POST",
-    body: { topicId, name, behavior },
-    token: TOK(),
-  });
+/** 某主题下全部课程的知识点（名称/详情/所属课程）。 */
+export async function listTopicKnowledgePoints(topic: string): Promise<{ topic: string; knowledgePoints: AssessKnowledgePoint[] }> {
+  return serverFetch(`/assess/topics/${encodeURIComponent(topic)}/knowledge-points`, { method: "GET", token: TOK() });
 }
 
 export async function getTopicMethodSpec(topic: string): Promise<{ topic: string; spec: unknown }> {
@@ -88,7 +80,7 @@ export async function saveCourseAssess(
   topic: string,
   title: string,
   items: AssessSaveItem[]
-): Promise<{ ok: boolean; courseUuid: string; categories: number; questionsCreated: number; questionsLinked: number }> {
+): Promise<{ ok: boolean; courseUuid: string; knowledgePoints: number; questionsCreated: number; questionsLinked: number }> {
   return serverFetch(`/assess/courses/save`, {
     method: "POST",
     body: { topic, title, items },

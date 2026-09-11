@@ -1,16 +1,15 @@
 /**
- * 考核内容结构化 v2：按「孩子方法(method_spec)」从结构化课程里抽题组题（服务端读取侧）。
- * 设计依据：DESIGN-course-assess-structured-2026-09-09.md §8.2 取题。
- *
+ * 考核内容结构化：按「孩子方法(method_spec)」从结构化课程里抽题组题（服务端读取侧）。
+ * 模型（2026-09-11 知识点制）：
  * 规则：
- * - 该课无关系行 → 非结构化（不产出 questions，调用方走旧整文 rubric 路径）；
- * - exclude 过滤；require 非空时只考 require 命中的类别，为空(default)时考该课实际挂的全部类别；
- * - 每类别池内随机抽 ≤require 道（缺题→跳过该类别，不 LLM 临时命题）；
- * - speech 行为类别置该课最前；speech 题 answer=refText、questionType=cn_recitation（答题端不显示原文）。
+ * - 该课无挂载行 → 非结构化（不产出 questions，调用方按该课知识点详情走 LLM 出题）；
+ * - exclude 过滤知识点；require 非空时只考 require 命中的知识点，为空(default)时考该课实际挂的全部知识点；
+ * - 每知识点池内随机抽 ≤require 道（缺题→跳过该知识点，不 LLM 临时命题）；
+ * - speech 行为题置该课最前；speech 题 answer=refText、questionType=cn_recitation（答题端不显示原文）。
  * - qid 跨课连续（rqN=背诵/朗读，qN=文字题），避免与答题/判分按 qid 配对冲突。
  */
 import type { DatabaseSync } from "node:sqlite";
-import { listCourseContent, getCourseUuid, getMethodSpec, listCategories } from "./db/assess-content.js";
+import { listCourseContent, getCourseUuid, getMethodSpec, listKnowledgePoints } from "./db/assess-content.js";
 
 export interface CourseLike {
   topic: string;
@@ -19,9 +18,9 @@ export interface CourseLike {
 }
 
 /**
- * 排期级考核方法覆盖（2026-09-10）：自定义考核可单独指定"这次考哪些类别"，
- * 覆盖主题级 method_spec。类别可用**类别名**（如 "背诵"）或类别 uuid；解析不到的名称忽略。
- * 例：{ require: { 背诵: 1 }, exclude: ["字词"], recitePass: 90 } → 本次只考背诵。
+ * 排期级考核方法覆盖（自定义考核"这次只考某些知识点"），覆盖主题级 method_spec。
+ * 键可用**知识点 uuid 或知识点名**（按该课知识点表解析）；解析不到的名称忽略。
+ * 例：{ require: { "温故而知新的含义": 1 }, exclude: ["通假字"], recitePass: 90 }
  */
 export interface MethodOverride {
   require?: Record<string, number>;
@@ -29,36 +28,36 @@ export interface MethodOverride {
   recitePass?: number;
 }
 
-/** 把排期级覆盖解析成 uuid（按该课程所属主题的类别表）；require 全解析失败 → 视为未覆盖（回退主题方法）。 */
+/** 把排期级覆盖解析成本课知识点 id（按 uuid 或名称）；require/exclude 全解析失败 → 视为未覆盖（回退主题方法）。 */
 function resolveOverride(
   db: DatabaseSync,
-  topicId: string,
+  courseUuid: string,
   ov?: MethodOverride | null
 ): { used: boolean; requireMap: Record<string, number>; exclude: Set<string>; recitePass?: number } {
   const out = { used: false, requireMap: {} as Record<string, number>, exclude: new Set<string>(), recitePass: undefined as number | undefined };
   if (!ov || (!ov.require && !ov.exclude && ov.recitePass == null)) return out;
-  let cats: Array<{ id: string; name: string }> = [];
+  let kps: Array<{ id: string; name: string }> = [];
   try {
-    cats = listCategories(db, topicId);
+    kps = listKnowledgePoints(db, courseUuid);
   } catch {
-    cats = [];
+    kps = [];
   }
-  const byId = new Map(cats.map((c) => [c.id, c]));
-  const byName = new Map(cats.map((c) => [String(c.name).trim(), c]));
-  const find = (k: string) => byId.get(k) ?? byName.get(String(k).trim());
+  const byId = new Map(kps.map((k) => [k.id, k]));
+  const byName = new Map(kps.map((k) => [String(k.name).trim(), k]));
+  const find = (key: string) => byId.get(key) ?? byName.get(String(key).trim());
 
   let anyReq = false;
-  for (const [k, v] of Object.entries(ov.require ?? {})) {
-    const c = find(k);
-    if (!c) continue;
-    out.requireMap[c.id] = Math.max(1, Number(v) || 1);
+  for (const [key, v] of Object.entries(ov.require ?? {})) {
+    const kp = find(key);
+    if (!kp) continue;
+    out.requireMap[kp.id] = Math.max(1, Number(v) || 1);
     anyReq = true;
   }
   let anyExc = false;
-  for (const k of ov.exclude ?? []) {
-    const c = find(k);
-    if (!c) continue;
-    out.exclude.add(c.id);
+  for (const key of ov.exclude ?? []) {
+    const kp = find(key);
+    if (!kp) continue;
+    out.exclude.add(kp.id);
     anyExc = true;
   }
   if (ov.recitePass != null) out.recitePass = Math.max(0, Number(ov.recitePass) || 90);
@@ -67,7 +66,7 @@ function resolveOverride(
 }
 
 /** 把结构化课程列表里每门课的选中题目挂到 course.questions（非结构化课程不加该字段）。
- *  override：排期级考核方法（自定义考核"本次只考 X"），优先于主题 method_spec。 */
+ *  override：排期级考核方法（自定义考核"本次只考某知识点"），优先于主题 method_spec。 */
 export function attachStructuredQuestions(
   db: DatabaseSync,
   childId: string,
@@ -80,7 +79,7 @@ export function attachStructuredQuestions(
     const uuid = getCourseUuid(db, course.topic, course.title);
     if (!uuid) continue;
     const content = listCourseContent(db, uuid);
-    if (!content.items.length) continue; // 非结构化：走旧整文路径
+    if (!content.items.length) continue; // 非结构化：走知识点详情 LLM 出题路径
 
     const spec = (getMethodSpec(db, course.topic) as any) ?? {};
     const childSpec = spec?.perChild?.[childId] ?? spec?.default ?? {};
@@ -88,8 +87,8 @@ export function attachStructuredQuestions(
     let requireKeys = Object.keys(requireMap);
     let exclude = new Set<string>(childSpec?.exclude ?? []);
     let recitePass = Math.max(0, Number(childSpec?.rules?.recitePass) || 90);
-    // 排期级覆盖（自定义考核"本次只考背诵"等）：优先于主题方法
-    const ovr = resolveOverride(db, course.topic, override);
+    // 排期级覆盖（自定义考核"本次只考某知识点"等）：优先于主题方法
+    const ovr = resolveOverride(db, uuid, override);
     if (ovr.used) {
       requireMap = ovr.requireMap;
       requireKeys = Object.keys(requireMap);
@@ -99,8 +98,8 @@ export function attachStructuredQuestions(
 
     const picked: Array<{
       behavior: string;
-      categoryId: string;
-      categoryName: string;
+      knowledgePointId: string;
+      knowledgePointName: string;
       overview: string;
       item: {
         id: string;
@@ -109,27 +108,25 @@ export function attachStructuredQuestions(
         scoring: string | null;
         pointMax: number;
         options: Array<{ key: string; text: string }>;
-        knowledgePointId: string;
-        knowledgePointName: string;
       };
     }> = [];
     for (const item of content.items) {
-      if (exclude.has(item.categoryId)) continue;
-      // 命中判定：require 非空 → 只取 require 里的；require 空(default) → 该课全部类别
-      if (requireKeys.length && !(item.categoryId in requireMap)) continue;
-      const want = requireKeys.length ? Math.max(1, requireMap[item.categoryId] ?? 1) : 1;
-      if (!item.questions.length) continue; // 缺题跳过该类别
+      if (exclude.has(item.knowledgePointId)) continue;
+      // 命中判定：require 非空 → 只取 require 里的；require 空(default) → 该课全部知识点
+      if (requireKeys.length && !(item.knowledgePointId in requireMap)) continue;
+      const want = requireKeys.length ? Math.max(1, requireMap[item.knowledgePointId] ?? 1) : 1;
+      if (!item.questions.length) continue; // 缺题跳过该知识点
       const pool = [...item.questions].sort((a, b) => a.seq - b.seq);
       for (let k = 0; k < Math.min(want, pool.length); k++) {
-        // 随机抽 1（多题池）：洗牌取前 want
+        // 洗牌取前 want（多题池随机抽）
         const j = k + Math.floor(Math.random() * (pool.length - k));
         const qi = pool[k];
         pool[k] = pool[j]!;
         pool[j] = qi!;
         picked.push({
-          behavior: pool[k]!.behavior || item.behavior || "generic", // 题级行为为准（同类别可混口述/背诵）
-          categoryId: item.categoryId,
-          categoryName: item.categoryName,
+          behavior: pool[k]!.behavior || "generic", // 题级行为为准（同知识点可混口述/背诵）
+          knowledgePointId: item.knowledgePointId,
+          knowledgePointName: item.knowledgePointName,
           overview: item.overview,
           item: pool[k]!,
         });
@@ -139,7 +136,7 @@ export function attachStructuredQuestions(
       course.questions = [];
       continue;
     }
-    // 题序：speech 行为置最前，其余保持类别挂载顺序
+    // 题序：speech 行为置最前，其余保持知识点挂载顺序
     picked.sort(
       (a, b) => Number(b.behavior.startsWith("speech")) - Number(a.behavior.startsWith("speech"))
     );
@@ -149,9 +146,8 @@ export function attachStructuredQuestions(
         stem: p.item.stem,
         pointMax: p.item.pointMax || 10,
         questionId: p.item.id, // 题库题目 uuid（落库溯源/轮换排除）
-        categoryId: p.categoryId, // 类别 uuid
-        knowledgePointId: p.item.knowledgePointId || "", // 知识点 uuid（2026-09-10 实体化，落库溯源）
-        knowledgePointName: p.item.knowledgePointName || "",
+        knowledgePointId: p.knowledgePointId, // 知识点 uuid（落库溯源）
+        knowledgePointName: p.knowledgePointName,
       };
       if (p.behavior.startsWith("speech")) {
         return {
