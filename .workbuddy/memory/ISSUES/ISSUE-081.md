@@ -1,0 +1,60 @@
+# [ISSUE-081] P1：agent 服务端化·会话权威上移 + 持久会话 + SSE 流式（分水岭）
+
+- **类型**：架构 / 实施（承接 ISSUE-080 §七定案）
+- **优先级**：高
+- **状态**：待实施
+- **记录时间**：2026-09-12
+- **设计真源**：`DESIGN-server-agent-migration-2026-09-12.md`（§6 P1）
+- **标签**：`server-agent` `SPLIT` `会话权威` `SSE` `分水岭`
+
+---
+
+## 一、为什么是分水岭
+
+用户定案「agent 只在 server 端、client 不再有 agent、不要过渡」（ISSUE-080 §七）。P1 是这条路线能否成立的技术关口：**server 必须能跑持久会话并流式输出**，后续 P2（家长）/P3（孩子）/P4（web 客户端）都建立在它之上。
+
+## 二、范围（P1 交付物）
+
+1. **共享包抽取（P0 并入本 issue 前置）**：新增 `packages/agent-core`，抽取 sessions / runtime / prompts / guard / tools / **bridge** / paths 七模块（`bridge` 含 PiBridge 信封常量 + `formatPageEvent` 格式化 + 动作目录）；合并 `server/src/worker/recording-prompt.ts` 与 `electron/lib/recording-prompt.ts` 的同源副本。硬约束：shared 内不得 import `electron`、不得自行拼路径。
+2. **持久会话（服务端）**：会话按 `parentId/childId` 落盘；`session_files` / `session_messages` 从「客户端权威镜像」翻转为 **server 权威**；客户端 `session-sync.ts` 同步逻辑下线。
+3. **SSE 流式通道**：`GET /api/v1/agent/:childId/stream`（流式 token / thinking / tool 调用与结果）+ `POST /api/v1/agent/:childId/prompt`（提交输入）+ 事件缓冲与 `Last-Event-ID` 重放 + **建连时 `caps` 上报骨架**（P3 起用于工具装配）。
+4. **server 作用域文件工具**：read/write/edit/ls 的路径沙箱版（替代客户端 `cwd=data/children/<id>` 语义）。
+5. **上下文压缩上移**：`daily-summary.ts`（summarize_conversation，客户端 L159）迁 server。
+6. **并发语义最小实现**：同 childId 单活动会话；后连设备只读回看，「接管」按钮切换。
+
+## 三、关键文件 / 入口
+
+| 动作 | 位置 | 现状 |
+|---|---|---|
+| 现有 worker 会话（ephemeral，仅内存） | `server/src/worker/tasks.ts` L87-117（`SessionManager.inMemory()` L111） | 需扩展为持久会话 |
+| 现有 worker 运行时（极简） | `server/src/worker/runtime.ts`（58 行） | 需并入 `packages/agent-core/runtime` 并补模型注册/token 统计 |
+| 现有 kb 工具（直调 handler 先例） | `server/src/worker/kb-tools.ts`（290 行） | 复用模式到其余工具 |
+| 服务端入口（仅 REST，无流式） | `server/src/index.ts`（Fastify + multipart） | 需注册 SSE 路由 |
+| 会话表（客户端权威镜像） | `server/src/db/sessions.ts`（265 行）、`server/src/routes/sessions.ts`（130 行） | 权威反转 |
+| 客户端会话/prompt 源 | `electron/lib/pi-session.ts`（1478 行）、`pi-runtime.ts`（401 行）、`agent-prompts.ts`（123 行） | 抽取来源 |
+| 客户端同步（将下线） | `electron/lib/session-sync.ts`（198 行） | 权威反转后下线 |
+| 压缩上移来源 | `electron/lib/daily-summary.ts` L159 | 迁 server |
+| 副本坏味道 | `server/src/worker/recording-prompt.ts` ↔ `electron/lib/recording-prompt.ts` | 合并为一份 |
+
+## 四、验收标准
+
+1. 孩子对话在 server 完整跑通：流式 token、thinking、工具调用与结果、上下文压缩。
+2. 客户端进程关闭后 server 会话不丢；重新打开客户端可完整回看。
+3. 同一 childId 两个客户端：一个可「接管」继续对话，另一个自动降级只读。
+4. server 不可达时客户端**显式错误 + 禁用对话**，无本地兜底路径（红线验证）。
+5. `packages/agent-core` 内 `grep -r "electron"` 为空；`recording-prompt` 仅存一份。
+6. server `tsc` 0 错 + 客户端 build 通过 + 既有 worker 冒烟脚本（`server/scripts/worker-*-check.mts`）全过。
+
+> 范围说明：资料页工具（`page_inspect`/`page_action`）的**传输层改造属 P3**（见设计 §4/§6），不在 P1；P1 只需把 `bridge/` 模块（信封常量 + `formatPageEvent`）抽进共享包，避免后续再动。
+
+## 五、红线
+
+- 不双跑（client 不得留任何 agent/LLM 路径）；
+- 不静默降级；
+- 隔离不放松（`parentId`+`childId` 路径与数据沙箱，逐条对照 ISSUE-023）。
+
+## 六、关联
+
+- ISSUE-080（定案与设计来源）、`DESIGN-server-agent-migration-2026-09-12.md`
+- ISSUE-028（worker/runtime/kb-tools 基建）
+- ISSUE-023（隔离教训）、ISSUE-056（副本漂移教训）

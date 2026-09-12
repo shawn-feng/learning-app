@@ -2,6 +2,7 @@
 
 > 定稿：2026-09-08。本协议是**唯一标准**：任何"需要与宿主/agent 通讯"的学习资料网页（孩子端场景互动、家长端随堂测验、绘本等）都由编程 agent 按本协议制作。
 > 修订：2026-09-10 —— §5 `tts.speak` 语义对齐实现（resolve=已受理，宿主 FIFO 队列逐句播完）；§9 更新为当前宿主实现（asset:// doc=1 顶层文档加载 + 加载进度、TTS 双模式队列、scene 委托 `appCmd('scene.*')`）。
+> 修订：2026-09-12 —— **拓扑变更（定案，待实施）**：agent 全量上移服务端后，本协议对端从「页面 ↔ 本地 agent」变为「页面 ↔ 客户端宿主 ↔ server agent」。**信封与动作目录不变**（页面作者无感）；`page:app` 事件由客户端透传给 server，受控操作（click/scroll/input/read）由 server 经 SSE 下发、客户端 `MaterialsPanel.appCmd` 执行并回收执。详情见 `DESIGN-server-agent-migration-2026-09-12.md` §4。
 > 目标：网页作者只面对一个 `window.PiBridge` API；宿主与 agent 侧只面对一套信封与动作目录；不再按场景/页面种类各维护一套私有通道（如历史遗留的 `scene:*` 直发消息）。
 
 ---
