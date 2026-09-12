@@ -368,6 +368,40 @@ export function messageText(message: any): string {
 }
 
 /**
+ * 从场景会话的 assistant 消息里提取「角色台词」（scene_command say）+ 兜底正文。
+ * 与本地 scene:prompt 的台词清洗规则一致：本轮有 say 台词 → 聊天只显示台词（与 HTML 字幕同文，
+ * 前缀角色名首字母大写）；无 say → 才显示 assistant 正文。
+ */
+export function extractSceneLines(message: any): { lines: Array<{ speaker: string; text: string }>; texts: string[] } {
+  const lines: Array<{ speaker: string; text: string }> = [];
+  const texts: string[] = [];
+  if (!message || !Array.isArray(message.content)) return { lines, texts };
+  for (const c of message.content) {
+    if (!c) continue;
+    if (c.type === "text" && typeof c.text === "string" && c.text.trim()) {
+      texts.push(c.text.trim());
+    } else if (c.type === "toolCall" && c.name === "scene_command") {
+      const args = typeof c.arguments === "string" ? safeJson(c.arguments) : c.arguments;
+      const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+      if (a.command === "say" && typeof a.text === "string" && a.text.trim()) {
+        const cid = String(a.character || "").trim();
+        const speaker = cid ? cid.charAt(0).toUpperCase() + cid.slice(1) + ":" : "";
+        lines.push({ speaker, text: a.text.trim() });
+      }
+    }
+  }
+  return { lines, texts };
+}
+
+function safeJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 把服务端 agent 事件流桥接到渲染层（孩子侧）——除 translateAgentEvent 的 pi:* 通道外，
  * 额外补「最终回复气泡」语义：
  *   message_end(assistant) → pi:reply（整段文本，前端用它替换工作气泡）+ pi:message_end
