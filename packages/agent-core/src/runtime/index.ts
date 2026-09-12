@@ -11,6 +11,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { registerProviders, WORKER_DEFAULT_PROVIDER, WORKER_DEFAULT_MODEL } from "./providers.js";
 
+// 把 provider 表与模型枚举一并对外暴露（薄客户端「模型列表」路由用 listProviderModels）。
+export * from "./providers.js";
+
 const cacheKey = "__learningServerWorkerRuntime";
 
 /** 按家长写临时 auth 文件（返回路径）。 */

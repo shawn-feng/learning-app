@@ -240,4 +240,36 @@ export async function examGrade(
   return serverFetch(`/exam/agent/grade`, { method: "POST", token, body: { childId, answers }, timeoutMs: 120000 });
 }
 
+// ==================== 模型配置（薄客户端：设置页改服务端 app_settings / 密钥） ====================
+
+export interface ModelInfo {
+  provider: string;
+  id: string;
+  name: string;
+  input: string[];
+}
+
+/** 可用模型列表（服务端静态 provider 表）。 */
+export async function listModels(token = sessionToken()): Promise<ModelInfo[]> {
+  const r = await serverFetch<{ models: ModelInfo[] }>("/models", { token });
+  return r.models ?? [];
+}
+
+/** 设置某 provider 的 API key（合并进服务端 auth 封套，加密落盘）。 */
+export async function setModelApiKey(provider: string, apiKey: string, token = sessionToken()): Promise<void> {
+  await serverFetch("/models/apikey", { method: "POST", token, body: { provider, apiKey } });
+}
+
+/** 合并 app_settings（defaultModel / visionModel / programmingModel / tts…）。 */
+export async function setAppSettings(patch: Record<string, unknown>, token = sessionToken()): Promise<void> {
+  await serverFetch("/models/app_settings", { method: "POST", token, body: patch });
+}
+
+/** 读取当前 app_settings 与脱敏后的 provider 密钥态。 */
+export async function getModelSettings(
+  token = sessionToken()
+): Promise<{ appSettings: Record<string, unknown>; providers: Array<{ provider: string; hasKey: boolean }> }> {
+  return serverFetch("/models/settings", { token });
+}
+
 export { ServerError };

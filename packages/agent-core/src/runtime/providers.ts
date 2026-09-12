@@ -194,21 +194,38 @@ const MIMO_TOKENPLAN_PROVIDER: ProviderConfig = {
   models: MIMO_MODELS,
 };
 
+/** 服务端 provider 注册表（国内 provider；与客户端白名单一致，无国外 provider）。 */
+export const PROVIDER_REGISTRATIONS: Array<[string, ProviderConfig]> = [
+  ["qwen", QWEN_PROVIDER],
+  ["qwen-tokenplan", QWEN_TOKENPLAN_PROVIDER],
+  ["minimax", MINIMAX_PROVIDER],
+  ["mimo", MIMO_PROVIDER],
+  ["mimo-tokenplan", MIMO_TOKENPLAN_PROVIDER],
+];
+
 export function registerProviders(runtime: ModelRuntime): void {
-  const registrations: Array<[string, ProviderConfig]> = [
-    ["qwen", QWEN_PROVIDER],
-    ["qwen-tokenplan", QWEN_TOKENPLAN_PROVIDER],
-    ["minimax", MINIMAX_PROVIDER],
-    ["mimo", MIMO_PROVIDER],
-    ["mimo-tokenplan", MIMO_TOKENPLAN_PROVIDER],
-  ];
-  for (const [id, cfg] of registrations) {
+  for (const [id, cfg] of PROVIDER_REGISTRATIONS) {
     try {
       runtime.registerProvider(id, cfg);
     } catch (err) {
       console.error(`[worker] register provider ${id} failed:`, (err as Error).message);
     }
   }
+}
+
+/**
+ * 静态枚举可用模型（薄客户端「模型列表」用）：不依赖 ModelRuntime（无需 auth），
+ * 直接从 provider 配置表展开——与客户端 getAvailableModels 的输出形状一致
+ * （{ provider, id, name, input }），供设置页下拉与视觉模型过滤。
+ */
+export function listProviderModels(): Array<{ provider: string; id: string; name: string; input: string[] }> {
+  const out: Array<{ provider: string; id: string; name: string; input: string[] }> = [];
+  for (const [pid, cfg] of PROVIDER_REGISTRATIONS) {
+    for (const m of cfg.models ?? []) {
+      out.push({ provider: pid, id: m.id, name: m.name || m.id, input: m.input ?? [] });
+    }
+  }
+  return out;
 }
 
 /** 兜底默认模型（与客户端一致：token-plan 套餐内的 deepseek flash 定点快照）。 */
