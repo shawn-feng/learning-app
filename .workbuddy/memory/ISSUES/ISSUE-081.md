@@ -102,6 +102,16 @@
 
 ---
 
+## 〇之六、P4 客户端瘦身（进行中，2026-09-12）
+
+用户定范围：**只做客户端瘦身，web/手机端先不做**；执行方式「直接切薄客户端」。
+
+**已落地（第一批，可独立验证）**：`electron/lib/server-agent-client.ts` 薄客户端核心适配层——SSE 解析（`parseSseChunk`）、事件→渲染层 `pi:*` 通道翻译（`translateAgentEvent`，契约不变）、`streamChildAgent`/`streamParentAgent`/`promptChild`/`promptParent`/`postPageEvent`/`postPageResult`/`examGenerateCourse`/`examGrade`。验证：客户端 build 全绿 + `test/server-agent-client.test.ts` 12 项全过。新增 `pi:display_content` 通道（渲染层待订阅）。
+
+**P4 剩余（下一批）**：① 接线 ipc-handlers ~40 个 agent 相关 handler 到 server-agent-client；② 删本地 agent 代码（pi-session/pi-runtime/exam-engine/parent-vision/programming-agent/custom-tools/daily-summary 临时会话）；③ 渲染层 `pi:display_content` 订阅 + MaterialsPanel 改接推送；④ 会话历史读服务端。完整链路需 201 联调（本环境无服务端+key，无法 E2E）。
+
+---
+
 ## 一、为什么是分水岭
 
 用户定案「agent 只在 server 端、client 不再有 agent、不要过渡」（ISSUE-080 §七）。P1 是这条路线能否成立的技术关口：**server 必须能跑持久会话并流式输出**，后续 P2（家长）/P3（孩子）/P4（web 客户端）都建立在它之上。
