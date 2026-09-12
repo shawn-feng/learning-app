@@ -29,6 +29,7 @@ import { getAgentPrompt } from "../db/agents.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { createSummarizeConversationTool } from "./kb-summary-tool.js";
+import { createTodayPlanTool, createParentContentTool } from "./plan-tools.js";
 import { createDisplayContentTool, DISPLAY_TOOL_NAME } from "./display-tool.js";
 import { PAGE_TOOL_NAMES, createPageTools } from "./page-tools.js";
 import { createProgrammingTool } from "./programming-agent.js";
@@ -132,6 +133,8 @@ export function computeChildToolNames(caps: { materialPanel: boolean }, kind: Ch
   return [
     ...SERVER_FS_TOOL_NAMES,
     "get_date",
+    "get_today_plan",
+    "parent_content",
     "summarize_conversation",
     DISPLAY_TOOL_NAME,
     "create_html_lesson",
@@ -182,6 +185,12 @@ async function ensureEntry(
     ...(isScene ? [] : fsTools),
     displayTool,
     ...(isScene ? [] : [programmingTool]),
+    ...(isScene
+      ? []
+      : [
+          createTodayPlanTool({ dataDir: deps.dataDir, parentId, childId }),
+          createParentContentTool({ dataDir: deps.dataDir, parentId, childId }),
+        ]),
     ...(pageTools
       ? isScene
         ? [pageTools.sceneCommandTool]
