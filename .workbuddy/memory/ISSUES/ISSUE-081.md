@@ -100,6 +100,9 @@
 
 **P3 全部完成；剩余 = P4**（客户端瘦身 + web/手机端 `window.api` 适配层 + 客户端 agent 与镜像通道下线 + 家长侧排期/考核/积分工具上移）。
 
+### P3 补漏（2026-09-13）：孩子 agent 缺计划域/教学方法工具
+联调发现孩子 agent 问「今天学什么」答不上——P3 上移漏掉了旧客户端工具清单里的 plan_* / parent_content / child_self_info，且「今日计划」旧架构靠会话创建时 `getTodayPlan` 注入 prompt（服务端未注入）。修复（commit `2f57334`）：新增 `get_today_plan`（查当日三域计划）+ `parent_content`（查家长库教学方法），主会话挂载。遗留：child_self_info 数据源缺失（children 表仅 name）、plan_study/life/exam 与 schedule_task 未上移、AGENTS 用户版残留「todolist」旧文案、create_html_lesson 编程 agent 落盘失败待查。
+
 ---
 
 ## 〇之六、P4 客户端瘦身（✅ 已完成，2026-09-12）

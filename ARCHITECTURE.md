@@ -210,6 +210,7 @@
 - **选课 LLM 未迁**：2026-09-09 起固定档为「计划周期内必学课全考」内置规则，LLM 选课已废弃。
 - **programming-agent 上移**（`server/src/agent/programming-agent.ts`）：独立会话、模型取家长「编程 agent 模型」（未配置即报错）、输出路径沙箱；家长侧工具 `parent_build_material`、孩子侧 `create_html_lesson`。
 - **会话类型**（`session-registry.ts`）：`main` / `scene` / `course:<课程名>` 三种独立落盘；场景会话工具收窄（`scene_command`+`display_content`+`get_date`）、课程会话注入该课教法/考核要点/资料路径；路由 `session` 参数区分，SSE 仍按孩子聚合。
+- **计划域 + 教学方法工具（P3 补漏，2026-09-13）**（`server/src/agent/plan-tools.ts`）：`get_today_plan`（查当日三域计划，复用 `/api/v1/plans/today` 聚合 SQL）、`parent_content`（查家长库教学方法/教学文案/考核要点/html 路径）。主会话挂载；旧架构「今日计划」靠会话创建时注入 prompt（`getTodayPlan`），上移时遗漏——孩子问「今天学什么」靠这两个工具实时查，不再注入。
 
 ### 13.5 客户端瘦身完成（P4，2026-09-12）
 
