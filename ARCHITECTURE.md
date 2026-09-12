@@ -208,10 +208,12 @@
 - `server/src/agent/exam-engine.ts`：出题（**仅非结构化课程**——题库有挂题的课由 `assess-selection.ts` 直出，无需 LLM）与判分（逐题并发上限 3，选择题走本地规则 `judgeChoice`，口径取 `buildScoringPrompt()`）；审计落 `exam-audit/`（prompt 原文默认不落盘）。
 - `server/src/routes/exam-agent.ts`（feature `exam_agent`）：`POST /api/v1/exam/agent/generate`（输入只给 childId/topicName/courseTitle，配置由服务端真源拼装）、`POST /api/v1/exam/agent/grade`（判分口径不接受客户端传入）、`GET /api/v1/exam/agent/scoring-prompt`。
 - **选课 LLM 未迁**：2026-09-09 起固定档为「计划周期内必学课全考」内置规则，LLM 选课已废弃。
+- **programming-agent 上移**（`server/src/agent/programming-agent.ts`）：独立会话、模型取家长「编程 agent 模型」（未配置即报错）、输出路径沙箱；家长侧工具 `parent_build_material`、孩子侧 `create_html_lesson`。
+- **会话类型**（`session-registry.ts`）：`main` / `scene` / `course:<课程名>` 三种独立落盘；场景会话工具收窄（`scene_command`+`display_content`+`get_date`）、课程会话注入该课教法/考核要点/资料路径；路由 `session` 参数区分，SSE 仍按孩子聚合。
 
-### 13.5 尚未落地（P3 余项 + P4）
+### 13.5 尚未落地（P4）
 
-`programming-agent` 上移为 server 端子 agent、课程/场景会话的完整语义平移；客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端 agent 与镜像通道下线（P4）；家长侧排期/考核/积分工具上移（P2 余项）。
+客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端 agent 与镜像通道下线（P4）；家长侧排期/考核/积分工具上移（P2 余项）。
 
 ---
 

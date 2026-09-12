@@ -26,12 +26,14 @@ import {
 import { createWorkerKbTools } from "../worker/kb-tools.js";
 import { readParentSettings } from "../worker/scheduler.js";
 import { getAgentPrompt } from "../db/agents.js";
+import { openParentLib } from "../db/parent-lib.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { createSummarizeConversationTool } from "./kb-summary-tool.js";
 import { createDisplayContentTool, DISPLAY_TOOL_NAME } from "./display-tool.js";
 import { PAGE_TOOL_NAMES, createPageTools } from "./page-tools.js";
+import { createProgrammingTool } from "./programming-agent.js";
 import { getCaps } from "./caps.js";
-import { buildServerChildPrompt } from "./prompt.js";
+import { buildServerChildPrompt, buildServerScenePrompt } from "./prompt.js";
 import { agentStreamHub, AgentStreamHub } from "./stream-hub.js";
 import { learningGuardExtension as guardExtension } from "@pi/agent-core";
 
@@ -55,8 +57,14 @@ interface Entry {
 
 const entries = new Map<string, Entry>();
 
-function keyOf(parentId: string, childId: string): string {
-  return `${parentId}:${childId}`;
+/** 会话键：一个孩子可有主/场景/课程多条会话，各自独立上下文与落盘目录。 */
+function keyOf(parentId: string, childId: string, kind: ChildSessionKind = "main"): string {
+  return `${parentId}:${childId}:${kind}`;
+}
+
+/** 流（SSE）键：仍按孩子聚合——客户端订阅一个孩子的流即可收到其所有会话的事件（与客户端旧行为一致）。 */
+function streamKeyOf(parentId: string, childId: string): string {
+  return AgentStreamHub.key(parentId, childId);
 }
 
 function localDate(d = new Date()): string {
@@ -99,15 +107,31 @@ function childName(db: DatabaseSync, childId: string): string {
 
 /** 懒创建/复用某孩子的持久会话。 */
 /**
- * 按设备能力计算孩子会话的工具白名单（纯函数，便于测试与调试）。
- * 资料面板类工具（page_*）只在设备声明 `material-panel` 时注册——见 caps.ts 的说明。
+ * 会话类型（P3）：主会话 / 场景会话 / 课程会话。
+ * 课程会话把该课的教法、考核方法、资料路径注入 prompt，让「这节课怎么上」有据可依；
+ * 场景会话只驱动演出（工具表收窄）。三者各自持久落盘，互不污染上下文。
  */
-export function computeChildToolNames(caps: { materialPanel: boolean }): string[] {
+export type ChildSessionKind = "main" | "scene" | `course:${string}`;
+
+/** 会话槽名（用于会话目录/agentDir：把冒号等换成连字符，避免非法路径段）。 */
+export function sessionSlot(childId: string, kind: ChildSessionKind): string {
+  return `${childId}-${String(kind).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+/**
+ * 按设备能力 + 会话类型计算工具白名单（纯函数，便于测试与调试）。
+ * 资料面板类工具（page_* / scene_command）只在设备声明 `material-panel` 时注册——见 caps.ts 的说明。
+ */
+export function computeChildToolNames(caps: { materialPanel: boolean }, kind: ChildSessionKind = "main"): string[] {
+  if (kind === "scene") {
+    return ["display_content", ...(caps.materialPanel ? ["scene_command"] : []), "get_date"];
+  }
   return [
     ...SERVER_FS_TOOL_NAMES,
     "get_date",
     "summarize_conversation",
     DISPLAY_TOOL_NAME,
+    "create_html_lesson",
     ...(caps.materialPanel ? PAGE_TOOL_NAMES : []),
     "kb_query",
     "kb_insert",
@@ -115,8 +139,13 @@ export function computeChildToolNames(caps: { materialPanel: boolean }): string[
   ];
 }
 
-async function ensureEntry(deps: AgentSessionDeps, parentId: string, childId: string): Promise<Entry> {
-  const key = keyOf(parentId, childId);
+async function ensureEntry(
+  deps: AgentSessionDeps,
+  parentId: string,
+  childId: string,
+  kind: ChildSessionKind = "main"
+): Promise<Entry> {
+  const key = keyOf(parentId, childId, kind);
   const existing = entries.get(key);
   if (existing) return existing;
 
@@ -133,62 +162,107 @@ async function ensureEntry(deps: AgentSessionDeps, parentId: string, childId: st
   } as any);
   const workspace = paths.childWorkspaceDir(parentId, childId);
   const fsTools = createServerFsTools(workspace);
-  const displayTool = createDisplayContentTool({ dataDir: deps.dataDir, parentId, childId, streamKey: key });
+  const displayTool = createDisplayContentTool({ dataDir: deps.dataDir, parentId, childId, streamKey: streamKeyOf(parentId, childId) });
+  const programmingTool = createProgrammingTool({ dataDir: deps.dataDir, db: deps.db, parentId }, { scope: "child", childId });
 
   // 设备能力协商（P3）：资料面板类工具只在「对端确实有资料面板」时注册。
   // 若一律注册，模型会调用做不到的工具（如手机端无面板 / 无 Electron 面板），调用后只能报错，
   // 不如让它从工具表就知道这台设备做不到，从而改用对话引导。
-  const caps = getCaps(key);
+  const caps = getCaps(streamKeyOf(parentId, childId));
   const pageTools = caps.materialPanel
-    ? createPageTools({ db: deps.db, dataDir: deps.dataDir, parentId, childId, streamKey: key })
+    ? createPageTools({ db: deps.db, dataDir: deps.dataDir, parentId, childId, streamKey: streamKeyOf(parentId, childId) })
     : null;
+  const isScene = kind === "scene";
 
   const customTools = [
-    ...kbTools,
-    ...fsTools,
+    ...(isScene ? [] : kbTools),
+    ...(isScene ? [] : fsTools),
     displayTool,
-    ...(pageTools ? [pageTools.pageActionTool, pageTools.pageInspectTool, pageTools.sceneCommandTool] : []),
+    ...(isScene ? [] : [programmingTool]),
+    ...(pageTools
+      ? isScene
+        ? [pageTools.sceneCommandTool]
+        : [pageTools.pageActionTool, pageTools.pageInspectTool, pageTools.sceneCommandTool]
+      : []),
     createGetDateTool(),
-    createSummarizeConversationTool({ db: deps.db, dataDir: deps.dataDir, parentId, childId }),
+    ...(isScene ? [] : [createSummarizeConversationTool({ db: deps.db, dataDir: deps.dataDir, parentId, childId })]),
   ];
 
-  const toolNames = computeChildToolNames(caps);
+  const toolNames = computeChildToolNames(caps, kind);
 
   // AGENTS 用户版本：服务端就是唯一真源（scope=child, ref=childId），直接读库注入，
   // 不再有旧架构「客户端先远程预取到本地缓存、同步回调再读缓存」的时序问题。
   const agentRules = getAgentPrompt(deps.dataDir, "child", childId) ?? "";
 
-  const systemPrompt = buildServerChildPrompt({
-    paths,
-    parentId,
-    childId,
-    childName: childName(deps.db, childId),
-    today: localDate(),
-    now: localTime(),
-    agentRules,
-  });
+  const systemPrompt = isScene
+    ? buildServerScenePrompt({ childName: childName(deps.db, childId), today: localDate(), agentRules })
+    : buildServerChildPrompt({
+        paths,
+        parentId,
+        childId,
+        childName: childName(deps.db, childId),
+        today: localDate(),
+        now: localTime(),
+        agentRules,
+        courseBlock: kind.startsWith("course:") ? courseContextBlock(deps, parentId, childId, kind.slice("course:".length)) : "",
+      });
 
+  const slot = sessionSlot(childId, kind);
   const handle = await createCoreSession({
     deps: CORE_SESSION_DEPS,
     runtime,
     model,
     cwd: workspace,
-    agentDir: `${workspace}/.pi`,
+    agentDir: `${workspace}/.pi/${slot}`,
     systemPrompt,
     toolNames,
     customTools,
-    sessionsDir: paths.agentSessionsDir(parentId, childId),
+    sessionsDir: paths.agentSessionsDir(parentId, slot),
     // 会话级红线（路径越界拦截 + 每轮注入日期）与客户端同一份实现
     extensionFactories: [guardExtension],
   });
 
   const entry: Entry = { session: handle.session, busy: false, paths };
-  attachStream(entry, key);
+  attachStream(entry, streamKeyOf(parentId, childId));
   entries.set(key, entry);
   console.log(
-    `[agent] 已就绪会话 ${key}（持久：${paths.agentSessionsDir(parentId, childId)}；caps=${caps.raw || "none"}；工具 ${toolNames.length} 项；AGENTS ${agentRules ? "用户版" : "默认"}）`
+    `[agent] 已就绪会话 ${key}（持久：${paths.agentSessionsDir(parentId, slot)}；caps=${caps.raw || "none"}；工具 ${toolNames.length} 项；AGENTS ${agentRules ? "用户版" : "默认"}）`
   );
   return entry;
+}
+
+/**
+ * 课程会话的上下文块：该课的教法/考核方法/资料路径（均取自家长库真源）。
+ * 拿不到课程记录时不编造，显式说明——避免模型凭课程名猜教学内容。
+ */
+function courseContextBlock(deps: AgentSessionDeps, parentId: string, childId: string, courseTitle: string): string {
+  try {
+    const lib = openParentLib(deps.dataDir, parentId);
+    try {
+      const row = lib
+        .prepare(
+          `SELECT topic, lesson_method, teach_copy, assess_rubric, html_path, status, last_review
+           FROM courses WHERE title = ? LIMIT 1`
+        )
+        .get(courseTitle) as
+        | { topic?: string; lesson_method?: string; teach_copy?: string; assess_rubric?: string; html_path?: string; status?: string; last_review?: string }
+        | undefined;
+      if (!row) return `本课「${courseTitle}」在家长库中未找到（可能有名字差异），请先与家长确认课程名再开始。`;
+      const lines = [
+        `- 课程：${courseTitle}（主题 ${row.topic ?? "-"}）`,
+        `- 状态：${row.status ?? "-"}｜最近学习：${row.last_review || "-"}`,
+        row.html_path ? `- 已有资料：${row.html_path}（可用 display_content 展示）` : "",
+        row.lesson_method ? `- 教法（怎么上）：${row.lesson_method}` : "",
+        row.teach_copy ? `- 教学文案要点：${row.teach_copy.slice(0, 800)}` : "",
+        row.assess_rubric ? `- 考核要点：${row.assess_rubric.slice(0, 500)}` : "",
+      ].filter(Boolean);
+      return lines.join("\n");
+    } finally {
+      lib.close();
+    }
+  } catch (err) {
+    return `（读取课程资料失败：${(err as Error).message}）`;
+  }
 }
 
 /** 把 SDK 事件映射为流事件（与客户端 attachSessionEvents 的事件面保持一致）。 */
@@ -253,65 +327,80 @@ export async function submitChildPrompt(
   parentId: string,
   childId: string,
   text: string,
-  opts: { pendingPageEvents?: string } = {}
+  opts: { pendingPageEvents?: string; kind?: ChildSessionKind } = {}
 ): Promise<SubmitResult> {
-  const entry = await ensureEntry(deps, parentId, childId);
+  const kind = opts.kind ?? "main";
+  const entry = await ensureEntry(deps, parentId, childId, kind);
   if (entry.busy) {
     return { ok: false, error: "busy：上一轮还在回答，请稍候" };
   }
-  const key = keyOf(parentId, childId);
+  const key = keyOf(parentId, childId, kind);
+  const streamKey = streamKeyOf(parentId, childId);
   const evtPrefix = opts.pendingPageEvents ? `[页面事件] ${opts.pendingPageEvents}\n` : "";
   const prompt = `${evtPrefix}${text ?? ""}`.trim();
   if (!prompt) return { ok: false, error: "空消息" };
 
   entry.busy = true;
-  agentStreamHub.publish(key, "user_message", { text: prompt, pageEvents: opts.pendingPageEvents ?? "" });
+  agentStreamHub.publish(streamKey, "user_message", { text: prompt, pageEvents: opts.pendingPageEvents ?? "", session: kind });
   try {
     await entry.session.prompt(prompt);
     return { ok: true };
   } catch (err) {
     const message = (err as Error)?.message ?? String(err);
-    agentStreamHub.publish(key, "error", { message });
+    agentStreamHub.publish(streamKey, "error", { message, session: kind });
     return { ok: false, error: message };
   } finally {
     entry.busy = false;
-    agentStreamHub.publish(key, "turn_end", {});
+    agentStreamHub.publish(streamKey, "turn_end", { session: kind });
   }
 }
 
 /** 某孩子是否已在服务端建过会话（供测试与调试） */
-export function hasSession(parentId: string, childId: string): boolean {
-  return entries.has(keyOf(parentId, childId));
+export function hasSession(parentId: string, childId: string, kind: ChildSessionKind = "main"): boolean {
+  return entries.has(keyOf(parentId, childId, kind));
 }
 
 /**
  * 释放某孩子的会话（caps 变化或测试清理用）。
  * 为什么要能释放：设备能力是**创建会话时**决定工具表的，手机端后连上报 material-panel 时，
  * 旧会话的工具表里没有 page_*，必须重建才能拿到——不重建会出现「同一会话有时能操作页面有时不能」。
+ * 不传 kind 时释放该孩子的**全部会话**（caps 变化影响所有会话）。
  */
-export function disposeSession(parentId: string, childId: string): void {
-  const key = keyOf(parentId, childId);
-  const entry = entries.get(key);
-  if (!entry) return;
-  try {
-    entry.session.dispose?.();
-  } catch {
-    /* 忽略 */
+export function disposeSession(parentId: string, childId: string, kind?: ChildSessionKind): void {
+  if (kind) {
+    const key = keyOf(parentId, childId, kind);
+    const entry = entries.get(key);
+    if (!entry) return;
+    try {
+      entry.session.dispose?.();
+    } catch {
+      /* 忽略 */
+    }
+    entries.delete(key);
+    console.log(`[agent] 已释放会话 ${key}（下次对话按最新能力重建）`);
+    return;
   }
-  entries.delete(key);
-  console.log(`[agent] 已释放会话 ${key}（下次对话按最新能力重建）`);
+  for (const [key, entry] of [...entries]) {
+    if (!key.startsWith(`${parentId}:${childId}:`)) continue;
+    try {
+      entry.session.dispose?.();
+    } catch {
+      /* 忽略 */
+    }
+    entries.delete(key);
+  }
+  console.log(`[agent] 已释放 ${parentId}:${childId} 的全部会话（下次对话按最新能力重建）`);
 }
 
-/** 释放会话（服务重启/测试清理用） */
+/** 释放某孩子的全部会话（服务重启/测试清理用）。 */
 export function disposeChildAgentSession(childId: string): void {
-  for (const [key, entry] of entries) {
-    if (key.endsWith(`:${childId}`)) {
-      try {
-        entry.session.dispose?.();
-      } catch {
-        /* 忽略 */
-      }
-      entries.delete(key);
+  for (const [key, entry] of [...entries]) {
+    if (!key.includes(`:${childId}:`)) continue;
+    try {
+      entry.session.dispose?.();
+    } catch {
+      /* 忽略 */
     }
+    entries.delete(key);
   }
 }

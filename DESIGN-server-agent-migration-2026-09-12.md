@@ -280,5 +280,15 @@ packages/agent-core/            # 新增，server 与 client(过渡期) 共用�
 **验证**：typecheck 0 错；`exam-agent-check.mts` 30 项全过（JSON 容错 / 选择题规则判分 / prompt 组装 / 审计 / 路由鉴权与 404 / 选择题不经模型即判出）；三个既有冒烟脚本回归全过。
 
 **P3 剩余**：`programming-agent` 上移；课程/场景会话完整语义平移；客户端切换（P4）。
+
+---
+
+## 13. 实施记录：P3 第三批（2026-09-12）—— programming-agent + 会话类型
+
+**已落地**：`server/src/agent/programming-agent.ts`（独立会话、按 sessionKey 复用、只做代码生成、模型取家长「编程 agent 模型」未配置即报错、输出沙箱、落盘非空校验），家长侧工具 `parent_build_material`、孩子侧 `create_html_lesson`；会话类型 `main`/`scene`/`course:<课程名>`（各自落盘、场景工具收窄 + 游戏主持人口径、课程注入教法/考核/资料路径、`sessionSlot` 路径安全），路由 `session` 参数区分。
+
+**验证**：typecheck 0 错；`agent-session-check.mts` 54 项全过；三个既有冒烟脚本回归全过。踩坑：注释里 `kb_*/` 的 `*/` 会提前闭合块注释。
+
+**P3 全部完成；剩余 = P4**。
 - **ISSUE-023**：childId 隔离教训，P1/P3 在 server 侧重做时必须逐条对照
 - **ISSUE-056**：两套纪律/两处副本漂移的教训，是 §4 共享包的直接动因

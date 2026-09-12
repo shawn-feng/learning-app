@@ -2,7 +2,7 @@
 
 - **类型**：架构 / 实施（承接 ISSUE-080 §七定案）
 - **优先级**：高
-- **状态**：**P0 + P1 + P2 + P3（第一批）已实施（2026-09-12）**，P3 余项与 P4 待做
+- **状态**：**P0 + P1 + P2 + P3（三批全部）已实施（2026-09-12）**，仅剩 P4
 - **记录时间**：2026-09-12
 - **设计真源**：`DESIGN-server-agent-migration-2026-09-12.md`（§6 P1 / §9 实施记录）
 - **标签**：`server-agent` `SPLIT` `会话权威` `SSE` `分水岭`
@@ -80,7 +80,25 @@
 
 **验证**：typecheck 0 错；新增 `scripts/exam-agent-check.mts` **30 项全过**（JSON 提取容错 5 / 选择题规则判分 6 / prompt 组装 11 / 审计落盘 3 / 路由 401-403-400-404 与「选择题不经模型即判出」/ 版本协商）；`agent-session-check`(44)、`parent-agent-check`(27)、`worker-catchup-check` 回归全过；esbuild 产物 16.7MB（v0.4.0）。
 
-**P3 剩余**：`programming-agent` 上移；课程/场景会话完整语义平移；客户端切换（P4）。
+**P3 剩余**：`programming-agent` 上移；课程/场景会话完整语义平移；客户端切换（P4）。→ 见下「〇之五」；仅剩 P4。
+
+---
+
+## 〇之五、P3 第三批：programming-agent 上移 + 课程/场景会话语义（2026-09-12）
+
+**已落地**：
+- `server/src/agent/programming-agent.ts`：自客户端 `programming-agent.ts` 上移。
+  - 独立会话（不共享上下文）、按 sessionKey 复用、只做代码生成（read/write/edit）、模型取家长设置的「编程 agent 模型」（**未配置即明确报错，不静默回退**）、输出路径沙箱（`materials/...` → 家长资料真源 / 其它 → 工作区）、扩展名校验（仅 .html/.htm）、落盘非空校验（≥100B）。
+  - 暴露两个工具：家长侧 `parent_build_material`（产出到资料真源）、孩子侧 `create_html_lesson`（产出到孩子工作区）——共用同一编程 agent 与协议 prompt，分开命名让模型一眼看懂产出归属。
+- **会话类型**（`session-registry.ts`）：`main` / `scene` / `course:<课程名>` 三种，各自持久落盘（`agent-sessions/<pid>/<childId>-<kind>/`）、互不污染上下文。
+  - 场景会话：工具表收窄为 `display_content + scene_command + get_date`（不挂 kb/文件/出题），prompt 为「游戏主持人」口径（`buildServerScenePrompt`）。
+  - 课程会话：注入该课上下文块（教法/教学文案/考核要点/已有资料路径，取自家长库 `courses` 真源），工具含 `create_html_lesson`。
+  - 路由 `POST /api/v1/agent/:childId/prompt` 支持 `session` 参数（main/scene/course:…）；SSE 仍按孩子聚合（客户端订阅一个流即可收到全部会话事件）。
+  - `sessionSlot()` 把课程名里的冒号等转成连字符，避免非法路径段。
+
+**验证**：typecheck 0 错；`agent-session-check.mts` 扩到 **54 项全过**（新增 9 项：场景/课程工具表、sessionSlot 路径安全、场景 prompt、编程工具命名/拒绝非 html/拒绝越界/未配置模型明确报错）；`parent-agent-check`(27)、`exam-agent-check`(30)、`worker-catchup-check` 回归全过；esbuild 产物 16.75MB（v0.4.0）。踩坑：注释里 `kb_*/`、`page_*/` 的 `*/` 会提前闭合块注释 → 已改为 `kb_* /`、`page_* /`。
+
+**P3 全部完成；剩余 = P4**（客户端瘦身 + web/手机端 `window.api` 适配层 + 客户端 agent 与镜像通道下线 + 家长侧排期/考核/积分工具上移）。
 
 ---
 

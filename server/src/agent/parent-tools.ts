@@ -28,6 +28,7 @@ import {
   type MaterialCtx,
 } from "./parent-materials.js";
 import { describeImageViaVision, imageMimeFromExt } from "./vision.js";
+import { createProgrammingTool } from "./programming-agent.js";
 
 export interface ParentToolDeps extends MaterialCtx {
   /** 家长 agent 工作区（临时产出） */
@@ -278,6 +279,8 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     coursesTool,
     imageTool,
     logTool,
+    // 编程 agent（P3 上移）：家长 agent 描述需求 → 服务端编程 agent 产出 HTML 资料到真源
+    createProgrammingTool({ dataDir: deps.dataDir, db: deps.db, parentId: deps.parentId }, { scope: "parent" }),
   ];
 }
 
@@ -294,6 +297,7 @@ export const PARENT_AGENT_TOOL_NAMES = [
   "parent_library_topics",
   "parent_library_courses",
   "parent_read_image",
+  "parent_build_material",
   "log_activity",
   "get_date",
 ];

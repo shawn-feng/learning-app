@@ -15,7 +15,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { agentStreamHub, AgentStreamHub } from "../agent/stream-hub.js";
-import { submitChildPrompt, hasSession, disposeSession, type AgentSessionDeps } from "../agent/session-registry.js";
+import { submitChildPrompt, hasSession, disposeSession, type AgentSessionDeps, type ChildSessionKind } from "../agent/session-registry.js";
 import { hubFor, hubForChild } from "../agent/page-hub.js";
 import { registerCaps, parseCaps, getCaps } from "../agent/caps.js";
 
@@ -129,9 +129,17 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const body = (req.body ?? {}) as { text?: string; pageEvents?: string };
+    const body = (req.body ?? {}) as { text?: string; pageEvents?: string; session?: string };
     const text = String(body.text ?? "").trim();
     if (!text) return reply.code(400).send({ error: "text 必填" });
+    // session：main（缺省）/ scene / course:<课程名>——课程与场景各有独立上下文（P3）
+    let kind: ChildSessionKind = "main";
+    const rawSession = String(body.session ?? "").trim();
+    if (rawSession && rawSession !== "main") {
+      if (rawSession === "scene") kind = "scene";
+      else if (rawSession.startsWith("course:")) kind = rawSession as ChildSessionKind;
+      else return reply.code(400).send({ error: "session 只能是 main / scene / course:<课程名>" });
+    }
     // 页面事件：优先用调用方显式传入，否则取桥内累积的待附带事件（ISSUE-015 语义）
     const streamKey = AgentStreamHub.key(parentId, childId);
     const hub = hubFor(streamKey, childId);
@@ -141,6 +149,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
         : hub.takePending(childId);
     const result = await submitChildPrompt(agentDeps, parentId, childId, text, {
       pendingPageEvents: pending,
+      kind,
     });
     if (!result.ok) {
       return reply.code(result.error?.startsWith("busy") ? 409 : 500).send({ error: result.error });

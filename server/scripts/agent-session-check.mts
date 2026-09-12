@@ -26,10 +26,11 @@ import { signSession } from "../src/auth/jwt.js";
 import { createDisplayContentTool } from "../src/agent/display-tool.js";
 import { createPageTools } from "../src/agent/page-tools.js";
 import { hubFor, hubForChild } from "../src/agent/page-hub.js";
-import { computeChildToolNames } from "../src/agent/session-registry.js";
+import { computeChildToolNames, sessionSlot } from "../src/agent/session-registry.js";
 import { parseCaps, registerCaps, getCaps } from "../src/agent/caps.js";
-import { buildServerChildPrompt } from "../src/agent/prompt.js";
+import { buildServerChildPrompt, buildServerScenePrompt } from "../src/agent/prompt.js";
 import { learningGuardExtension } from "@pi/agent-core";
+import { createProgrammingTool } from "../src/agent/programming-agent.js";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -296,6 +297,52 @@ async function main() {
       agentRules: "## 家长补充\n- 先复习再上新内容",
     });
     check("AGENTS 用户版本被注入 system prompt", promptWithRules.includes("先复习再上新内容"));
+  }
+
+  console.log("G. P3-3：会话类型 + 编程 agent 工具");
+  {
+    const gdb = new DatabaseSync(":memory:");
+    gdb.exec("CREATE TABLE children (id TEXT PRIMARY KEY, parent_id TEXT, name TEXT);");
+    gdb.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT);");
+    // G1. 会话类型工具表
+    const sceneTools = computeChildToolNames({ materialPanel: true }, "scene");
+    check("场景会话只驱动演出（无 kb / 无 create_html_lesson）", sceneTools.includes("scene_command") && !sceneTools.includes("kb_insert") && !sceneTools.includes("create_html_lesson") && !sceneTools.includes("summarize_conversation"));
+    check("场景会话无面板时不注册 scene_command", !computeChildToolNames({ materialPanel: false }, "scene").includes("scene_command"));
+    const courseTools = computeChildToolNames({ materialPanel: false }, "course:论语学而篇第一章");
+    check("课程会话保留记录与出题工具", courseTools.includes("kb_insert") && courseTools.includes("create_html_lesson"));
+    check("sessionSlot 把冒号转成连字符（路径安全）", !sessionSlot("c1", "course:论语学而篇第一章").includes(":"));
+
+    // G2. 场景 prompt
+    const sp = buildServerScenePrompt({ childName: "珊珊", today: "2026-09-12" });
+    check("场景 prompt 是「游戏主持人」口径", sp.includes("游戏主持人") && sp.includes("scene_command"));
+
+    // G3. 编程 agent 工具：路径沙箱与扩展名校验先于模型检查
+    const progChild = createProgrammingTool({ db: gdb, dataDir: tmp, parentId: "p1" }, { scope: "child", childId: "c1" });
+    check("孩子侧编程工具名为 create_html_lesson", progChild.name === "create_html_lesson");
+    let badExt = false;
+    try {
+      await progChild.execute("t", { title: "x", requirement: "y", path: "outputs/x.txt" });
+    } catch (err) {
+      badExt = /只产出 \.html/.test(String((err as Error).message));
+    }
+    check("编程工具拒绝非 html 输出", badExt);
+    let traversal = false;
+    try {
+      await progChild.execute("t", { title: "x", requirement: "y", path: "outputs/../../escape.html" });
+    } catch (err) {
+      traversal = /输出路径超出允许范围/.test(String((err as Error).message));
+    }
+    check("编程工具拒绝越界输出", traversal);
+    let noModel = false;
+    try {
+      await progChild.execute("t", { title: "x", requirement: "y", path: "outputs/ok.html" });
+    } catch (err) {
+      noModel = /编程 agent 未配置模型/.test(String((err as Error).message));
+    }
+    check("编程 agent 未配置模型时明确报错（不静默回退）", noModel);
+
+    const progParent = createProgrammingTool({ db: gdb, dataDir: tmp, parentId: "p1" }, { scope: "parent" });
+    check("家长侧编程工具名为 parent_build_material", progParent.name === "parent_build_material");
   }
 
   fs.rmSync(tmp, { recursive: true, force: true });

@@ -21,8 +21,10 @@ export interface ChildPromptInput {
   today: string;
   /** 当前时间（HH:mm） */
   now: string;
-  /** 家长下发的额外行为规范（P3 接入 AGENTS 真源；P1 为空串） */
+  /** 家长下发的额外行为规范（P3 接入 AGENTS 真源；无自定义版本时为空串） */
   agentRules?: string;
+  /** 课程会话专用上下文（课程名/教法/考核方法/资料路径）；主会话为空 */
+  courseBlock?: string;
 }
 
 export function buildServerChildPrompt(input: ChildPromptInput): string {
@@ -44,6 +46,32 @@ export function buildServerChildPrompt(input: ChildPromptInput): string {
 - 面向孩子，语言简短、鼓励、具体；一次只推进一小步，先问再讲。
 - 孩子答错时先肯定尝试，再引导他自己发现（不直接给答案）。
 - 不闲聊无关话题；孩子跑题时温和拉回学习。
+
+${input.courseBlock ? `## 本次课程\n${input.courseBlock}\n` : ""}
+${input.agentRules ? `## 家长设定的额外规范\n${input.agentRules}\n` : ""}`;
+}
+
+/**
+ * 场景会话的 system prompt（P3）：场景页的「游戏主持人」。
+ * 与主会话分开的原因：场景里孩子的注意力在画面与角色上，主会话的学习引导话术会干扰演出节奏；
+ * 工具表也刻意收窄（只用 scene_command + display_content），避免它跑去做记录/查进度等无关动作。
+ */
+export function buildServerScenePrompt(input: {
+  childName: string;
+  today: string;
+  agentRules?: string;
+}): string {
+  return `你是场景学习页的「游戏主持人」，陪伴 ${input.childName} 在场景里用英语（或目标语言）互动。
+
+## 当前上下文
+- 孩子：${input.childName}
+- 今天：${input.today}
+
+## 你的工作方式
+- 用 scene_command 让角色说话/移动/做动作、更新任务进度；一次只下发 1~2 条指令，然后等孩子回应。
+- 角色台词用目标语言（英语），同时给中文对照；孩子听不懂时用更简单的说法重复，而不是切回中文长句。
+- 任务完成靠**对话收束**（祝贺 + 问是否继续）——场景没有「结束」指令，不要说「再见/下课」除非孩子明确要结束。
+- 先确认场景页已展示（用 display_content）；指令失败通常意味着页面没打开。
 
 ${input.agentRules ? `## 家长设定的额外规范\n${input.agentRules}\n` : ""}`;
 }
