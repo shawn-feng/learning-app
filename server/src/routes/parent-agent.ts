@@ -13,7 +13,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { AgentStreamHub, agentStreamHub } from "../agent/stream-hub.js";
-import { submitParentPrompt, type ParentSessionKind } from "../agent/parent-registry.js";
+import { submitParentPrompt, resetParentSession, type ParentSessionKind } from "../agent/parent-registry.js";
 
 interface ParentAgentDeps {
   config: ServerConfig;
@@ -109,6 +109,20 @@ export function registerParentAgentRoutes(app: FastifyInstance, deps: ParentAgen
     if (!r.ok) {
       return reply.code(r.error?.startsWith("busy") ? 409 : 500).send({ error: r.error });
     }
+    return { ok: true };
+  });
+
+  app.post("/api/v1/parent-agent/reset", async (req, reply) => {
+    let parentId: string;
+    let kind: ParentSessionKind;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+      kind = parseKind((req.body as any)?.kind);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    resetParentSession(parentId, kind);
     return { ok: true };
   });
 }

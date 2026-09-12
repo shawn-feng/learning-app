@@ -283,6 +283,78 @@ export async function checkProviderAuth(provider: string, token = sessionToken()
   return r.status === true;
 }
 
+// ==================== 会话历史 / 重置（薄客户端） ====================
+
+export interface HistoryMessage {
+  role: "user" | "ai";
+  text: string;
+  time?: string;
+  thinking?: string;
+  tools?: Array<{ id: string; name: string; argsPreview?: string; status: "running" | "done" | "error"; resultPreview?: string }>;
+}
+
+function contentText(content: unknown[]): string {
+  let t = "";
+  for (const c of content ?? []) {
+    const b = c as { type?: string; text?: string };
+    if (b?.type === "text" && typeof b.text === "string") t += b.text;
+  }
+  return t.trim();
+}
+
+function contentThinking(content: unknown[]): string {
+  let t = "";
+  for (const c of content ?? []) {
+    const b = c as { type?: string; text?: string; thinking?: string };
+    if (b?.type === "thinking" && typeof (b.thinking ?? b.text) === "string") t += (b.thinking ?? b.text) as string;
+  }
+  return t.trim();
+}
+
+/**
+ * 把服务端会话原始消息映射成前端气泡恢复用的 HistoryMessage。
+ * 覆盖 user/assistant 的正文与思考；工具调用气泡的恢复（toolCall 块 + toolResult 匹配）暂不做——
+ * 联调点：退出重进时工具调用记录不恢复为气泡，仅正文/思考恢复。
+ */
+export function mapHistoryMessages(raw: Array<{ role: string; content: unknown[]; timestamp?: number }>): HistoryMessage[] {
+  const out: HistoryMessage[] = [];
+  for (const m of raw ?? []) {
+    const content = Array.isArray(m.content) ? m.content : [];
+    if (m.role === "user") {
+      const text = contentText(content);
+      if (text) out.push({ role: "user", text });
+    } else if (m.role === "assistant") {
+      const text = contentText(content);
+      const thinking = contentThinking(content);
+      if (text || thinking) {
+        out.push({ role: "ai", text, thinking: thinking || undefined });
+      }
+    }
+    // toolResult / 其它角色不恢复为气泡（前端只展示 user/ai）
+  }
+  return out;
+}
+
+/** 读取某孩子会话历史（映射为前端气泡）。 */
+export async function getChildHistory(childId: string, session?: string, token = sessionToken()): Promise<HistoryMessage[]> {
+  const q = session ? `?session=${encodeURIComponent(session)}` : "";
+  const r = await serverFetch<{ messages: Array<{ role: string; content: unknown[]; timestamp?: number }> }>(
+    `/agent/${encodeURIComponent(childId)}/history${q}`,
+    { token }
+  );
+  return mapHistoryMessages(r.messages ?? []);
+}
+
+/** 重置孩子会话（服务端 newSession）。 */
+export async function resetChildSession(childId: string, session?: string, token = sessionToken()): Promise<void> {
+  await serverFetch(`/agent/${encodeURIComponent(childId)}/reset`, { method: "POST", token, body: { session } });
+}
+
+/** 重置家长会话。 */
+export async function resetParentSession(kind: "parent" | "parent-content", token = sessionToken()): Promise<void> {
+  await serverFetch("/parent-agent/reset", { method: "POST", token, body: { kind } });
+}
+
 // ==================== 对话流桥（服务端 SSE → 渲染层 pi:* + pi:reply 语义） ====================
 
 /** 从服务端下发的 assistant 消息里提取纯文本（content 里的 text 块拼接）。 */

@@ -220,3 +220,16 @@ export async function submitParentPrompt(
 export function hasParentSession(parentId: string, kind: ParentSessionKind = "parent"): boolean {
   return entries.has(keyOf(parentId, kind));
 }
+
+/** 重置家长会话：释放内存实例（下次对话按 continueRecent 续接；服务端家长会话暂不做「新会话」语义）。 */
+export function resetParentSession(parentId: string, kind: ParentSessionKind = "parent"): void {
+  const key = keyOf(parentId, kind);
+  const entry = entries.get(key);
+  if (!entry) return;
+  try {
+    entry.session.dispose?.();
+  } catch {
+    /* 忽略 */
+  }
+  entries.delete(key);
+}

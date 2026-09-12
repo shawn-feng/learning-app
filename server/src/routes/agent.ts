@@ -15,7 +15,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { agentStreamHub, AgentStreamHub } from "../agent/stream-hub.js";
-import { submitChildPrompt, hasSession, disposeSession, type AgentSessionDeps, type ChildSessionKind } from "../agent/session-registry.js";
+import { submitChildPrompt, hasSession, disposeSession, resetSession, getChildSessionHistory, type AgentSessionDeps, type ChildSessionKind } from "../agent/session-registry.js";
 import { hubFor, hubForChild } from "../agent/page-hub.js";
 import { registerCaps, parseCaps, getCaps } from "../agent/caps.js";
 
@@ -185,6 +185,46 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       });
     }
     return { ok: true, queued: events.length };
+  });
+
+  // —— 会话历史 / 重置（薄客户端回填与 /reset 命令） ——
+  app.get("/api/v1/agent/:childId/history", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { childId } = req.params as { childId: string };
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const kind = (req.query as any)?.session === "scene" ? "scene" : (req.query as any)?.session?.startsWith("course:") ? (req.query as any).session : "main";
+    return { messages: getChildSessionHistory(parentId, childId, kind) };
+  });
+
+  app.post("/api/v1/agent/:childId/reset", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { childId } = req.params as { childId: string };
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const raw = String((req.body as any)?.session ?? "");
+    resetSession(parentId, childId, raw === "scene" ? "scene" : raw.startsWith("course:") ? (raw as ChildSessionKind) : undefined);
+    return { ok: true };
   });
 
   // —— 资料页受控操作回执 ——

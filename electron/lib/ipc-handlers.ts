@@ -7,7 +7,7 @@ import { getChildSession, getParentSession, getParentContentSession, disposeChil
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
 import { getSharedRuntime, getVisionModel } from "./pi-runtime";
-import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, bridgeChildAgentEvents, bridgeParentAgentEvents } from "./server-agent-client";
+import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, getChildHistory, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer } from "./server-agent-client";
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
@@ -52,7 +52,6 @@ import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerCon
 import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus, toSpeechAssessment } from "./exam";
-import { generateExamQuestions, generateCourseQuestions, scoreExamAttempt, selectCoursesForSchedule } from "./exam-engine";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -1277,6 +1276,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       try {
         // 薄客户端：建立服务端 agent 事件流（SSE → pi:* 通道），会话由服务端持久管理。
         ensureChildStream(childId);
+        // 会话历史回填（服务端会话消息 → 前端气泡；工具调用气泡暂不恢复，见 server-agent-client 注释）
+        const session = courseKey ? `course:${courseKey}` : "main";
+        const history = await getChildHistory(childId, session === "main" ? undefined : session).catch(() => [] as any[]);
         // ISSUE-041：孩子打开会话时立即处理一轮云端收件箱（分配包/进度请求），不等定时轮询
         try {
           const { handleCloudInbox } = await import("./delivery");
@@ -1287,7 +1289,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
             .catch(() => {});
         } catch { /* 忽略 */ }
         // 历史与资料改由服务端会话/display_content 推送驱动；此处返回空（联调点：会话历史回填）
-        return { success: true, history: [], materials: [], materialsLimit: getMaterialsLimit() };
+        return { success: true, history, materials: [], materialsLimit: getMaterialsLimit() };
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
@@ -1651,15 +1653,11 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     return { success: true };
   });
 
-  // 会话重置：清空孩子当前会话上下文 + 学习资料面板，重新开始。
+  // 会话重置：清空孩子当前会话上下文（服务端 newSession），重新开始。
   // 触发来源：聊天 /reset 命令 或 家长设置的定时任务（scheduler.ts 调用 resetChildSession）。
   ipcMain.handle("pi:reset", async (_e: IpcMainInvokeEvent, childId: string) => {
     try {
-      const archiveLimit = getChildSchedulerConfig(childId).archiveLimit;
-      await resetChildSession(childId, archiveLimit);
-      // 重建干净会话并重新挂载事件（Learn 页面仍挂载，需保证下一次 pi:prompt 可用）
-      const session = await getChildSession(childId);
-      attachSessionEvents(session, childId, getMainWindow);
+      await resetChildSessionServer(childId);
       return { success: true, history: [], materials: [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1669,10 +1667,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // ISSUE-042：家长会话重置（对齐 pi:reset）
   ipcMain.handle("pi:reset_parent", async () => {
     try {
-      await resetParentSession();
-      // 重建干净会话并重新挂载事件（ParentChatPanel 仍挂载，需保证下一次 piPromptParent 可用）
-      const session = await getParentSession();
-      attachSessionEvents(session, "parent", getMainWindow);
+      await resetParentSessionServer("parent");
       return { success: true, history: [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -2136,12 +2131,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
   // 选课（v3 §14.9）：客户端独立内存 session 按服务端下发的选课 prompt（家长可编辑）从候选课程中挑课
   ipcMain.handle("exam:selectCourses", async (_e, childId: string, selectionPrompt: string) => {
-    try {
-      const titles = await selectCoursesForSchedule(selectionPrompt, childId);
-      return { success: true, data: titles };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
+    // 选课 LLM 已废弃（2026-09-09 起固定档 = 计划周期内必学课全考，内置规则），服务端不再提供选课。
+    return { success: false, error: "选课已由服务端内置规则处理（计划周期内必学课全考），无需再调用选课。" };
   });
   // 待考核提醒（v2：排期到期未完成数；孩子端边栏角标用）
   ipcMain.handle("exam:pending", async (_e, childId: string) => {
@@ -2285,8 +2276,18 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 出卷：客户端独立内存 session 按考核方法说明 + 各课考核要点生成全主观题
   ipcMain.handle("exam:generate", async (_e, childId: string, topicConfig: any) => {
     try {
-      const questions = await generateExamQuestions(topicConfig, childId);
-      return { success: true, data: questions };
+      // 一次性出题（流式出题路径用 exam:generateCourse；本接口兼容旧调用，逐课并发走服务端）
+      const courses = Array.isArray(topicConfig?.courses) ? topicConfig.courses : [];
+      const out: any[] = [];
+      for (const c of courses) {
+        try {
+          const r = await examGenerateCourse(childId, { topicName: topicConfig?.name ?? "", courseTitle: c?.title ?? "", childName: "" });
+          out.push(...r.questions);
+        } catch {
+          /* 单课失败跳过，与旧实现一致 */
+        }
+      }
+      return { success: true, data: out };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -2323,17 +2324,17 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("exam:generateCourse", async (_e, childId: string, topicName: string, course: any, childName: string) => {
     try {
-      const questions = await generateCourseQuestions(topicName, course, childName || "", childId);
-      return { success: true, data: questions };
+      const r = await examGenerateCourse(childId, { topicName: topicName || "", courseTitle: course?.title ?? "", childName: childName || "" });
+      return { success: true, data: r.questions };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
-  // 判分：客户端独立内存 session，prompt 取自服务端（单一真源），仅返回结构化结果
+  // 判分：走服务端（判分口径单一真源，不接受客户端传入的 prompt）
   ipcMain.handle("exam:score", async (_e, childId: string, scoringPrompt: string, answers: any[]) => {
     try {
-      const result = await scoreExamAttempt(scoringPrompt, answers, childId);
-      return { success: true, data: result };
+      const result = await examGrade(childId, answers as any);
+      return { success: true, data: { perQuestion: result.perQuestion, courseMastery: {}, reinforcePlan: {}, score: 0, overall: result.overall } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

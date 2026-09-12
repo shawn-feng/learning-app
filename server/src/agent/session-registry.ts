@@ -57,6 +57,9 @@ interface Entry {
 
 const entries = new Map<string, Entry>();
 
+/** 待重建标记：reset 后置位，下次 ensureEntry 时 newSession()（丢弃旧会话文件的历史）。 */
+const resetMarks = new Set<string>();
+
 /** 会话键：一个孩子可有主/场景/课程多条会话，各自独立上下文与落盘目录。 */
 function keyOf(parentId: string, childId: string, kind: ChildSessionKind = "main"): string {
   return `${parentId}:${childId}:${kind}`;
@@ -218,9 +221,12 @@ async function ensureEntry(
     toolNames,
     customTools,
     sessionsDir: paths.agentSessionsDir(parentId, slot),
+    // reset 后首次重建：newSession() 起一个干净会话（丢弃旧文件历史）
+    shouldAutoNewSession: () => resetMarks.has(key),
     // 会话级红线（路径越界拦截 + 每轮注入日期）与客户端同一份实现
     extensionFactories: [guardExtension],
   });
+  resetMarks.delete(key);
 
   const entry: Entry = { session: handle.session, busy: false, paths };
   attachStream(entry, streamKeyOf(parentId, childId));
@@ -358,6 +364,39 @@ export async function submitChildPrompt(
 /** 某孩子是否已在服务端建过会话（供测试与调试） */
 export function hasSession(parentId: string, childId: string, kind: ChildSessionKind = "main"): boolean {
   return entries.has(keyOf(parentId, childId, kind));
+}
+
+/**
+ * 重置某孩子的会话：释放内存实例并置「待重建」标记——下次对话 newSession() 起干净会话
+ * （旧会话文件保留为历史，但不再被 continueRecent 选中）。不传 kind 时重置该孩子全部会话。
+ */
+export function resetSession(parentId: string, childId: string, kind?: ChildSessionKind): void {
+  if (kind) {
+    const key = keyOf(parentId, childId, kind);
+    disposeSession(parentId, childId, kind);
+    resetMarks.add(key);
+    return;
+  }
+  const prefix = `${parentId}:${childId}:`;
+  for (const key of [...entries.keys()]) {
+    if (key.startsWith(prefix)) {
+      disposeSession(parentId, childId, key.slice(prefix.length) as ChildSessionKind);
+      resetMarks.add(key);
+    }
+  }
+}
+
+/** 读取某孩子会话的历史消息（原始 shape 供客户端映射；会话未建立时返回空数组）。 */
+export function getChildSessionHistory(parentId: string, childId: string, kind: ChildSessionKind = "main"): Array<{ role: string; content: unknown[]; timestamp?: number; toolCallId?: string; isError?: boolean }> {
+  const entry = entries.get(keyOf(parentId, childId, kind));
+  if (!entry?.session?.messages) return [];
+  return entry.session.messages.map((m: any) => ({
+    role: String(m?.role ?? ""),
+    content: m?.content ?? [],
+    ...(m?.timestamp != null ? { timestamp: m.timestamp } : {}),
+    ...(m?.toolCallId != null ? { toolCallId: String(m.toolCallId) } : {}),
+    ...(m?.isError != null ? { isError: !!m.isError } : {}),
+  }));
 }
 
 /**
