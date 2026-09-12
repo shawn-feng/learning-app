@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(root, "..");
 // package.json 为 "type":"module"，esbuild CJS 产物必须用 .cjs 扩展名避免被当 ESM 解析
 const outfile = path.join(root, "dist", "server.cjs");
 
@@ -19,6 +20,13 @@ await build({
   target: "node22",
   format: "cjs",
   outfile,
+  // P0：共享包 packages/agent-core 以包名引入（tsconfig paths 同款），此处显式别名解析到源码；
+  // 同时把 SDK 锁定到**服务端自己的** node_modules 副本——否则从共享包位置向上解析会命中
+  // 根目录（客户端）的 ^0.84.1 副本，与服务端精确锁定的 0.84.1 类型/行为不一致（ISSUE-028 教训）。
+  alias: {
+    "@pi/agent-core": path.join(repoRoot, "packages", "agent-core", "src", "index.ts"),
+    "@earendil-works/pi-coding-agent": path.join(root, "node_modules", "@earendil-works", "pi-coding-agent"),
+  },
   // node: 内置模块不打包（node:sqlite 为 Node 内置实验模块，运行时有）
   external: ["node:sqlite"],
   legalComments: "none",

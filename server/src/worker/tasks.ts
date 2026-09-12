@@ -14,9 +14,16 @@ import { createAgentSession, DefaultResourceLoader, SessionManager } from "@eare
 import { runKbQuery, runKbExec } from "../routes/db.js";
 import { openKb } from "../db/kb.js";
 import { readServerDailyConversation } from "../db/sessions.js";
-import { getWorkerRuntime, pickWorkerModel } from "./runtime.js";
+// P0：运行时 / 会话工厂 / prompt 真源统一在 packages/agent-core（唯一真源，不再各存副本）
+import {
+  getWorkerRuntime,
+  pickWorkerModel,
+  createEphemeralSession,
+  RECORDING_PROMPT,
+  RECORDING_SYSTEM_PROMPT,
+  type CoreSessionDeps,
+} from "@pi/agent-core";
 import { createWorkerKbTools, formatLocalDate } from "./kb-tools.js";
-import { RECORDING_PROMPT, RECORDING_SYSTEM_PROMPT } from "./recording-prompt.js";
 
 /** 与客户端 scheduler.ts 的 SchedulerChildConfig 对齐（结构兼容，缺省字段调用方已补齐）。 */
 export interface WorkerSchedulerChildConfig {
@@ -79,10 +86,17 @@ export function hhmm(d: Date): string {
 
 // ---------- ephemeral 会话 ----------
 
+/** SDK 依赖注入（P0 起会话工厂在共享包内，SDK 由调用方注入以避免跨侧版本解析） */
+const CORE_SESSION_DEPS: CoreSessionDeps = {
+  createAgentSession,
+  ResourceLoader: DefaultResourceLoader,
+  SessionManager: SessionManager as unknown as CoreSessionDeps["SessionManager"],
+};
+
 /**
- * 服务端无头 ephemeral 会话：与客户端 createEphemeralSession 同构
- * （noContextFiles + noSkills + inMemory + systemPromptOverride），
- * cwd 用家长 kb 目录（已存在），agentDir 用 .worker/agent 隔离目录。
+ * 服务端无头 ephemeral 会话（与客户端 createEphemeralSession 同构）：
+ * noContextFiles + noSkills + inMemory + systemPromptOverride，cwd 用家长 kb 目录，
+ * agentDir 用 .worker/agent 隔离目录。会话创建细节统一在 packages/agent-core/sessions.ts。
  */
 async function createWorkerEphemeralSession(
   ctx: WorkerTaskCtx,
@@ -92,28 +106,16 @@ async function createWorkerEphemeralSession(
 ) {
   const runtime = await getWorkerRuntime(ctx.dataDir, ctx.parentId, ctx.auth);
   const model = pickWorkerModel(runtime, ctx.appSettings);
-  const cwd = path.join(ctx.dataDir, "kb", ctx.parentId);
-  const agentDir = path.join(ctx.dataDir, ".worker", "agent", ctx.parentId, ctx.childId);
-  fs.mkdirSync(agentDir, { recursive: true });
-  const loader = new DefaultResourceLoader({
-    cwd,
-    agentDir,
-    noContextFiles: true,
-    noSkills: true,
-    systemPromptOverride: () => systemPrompt,
-  });
-  await loader.reload();
-  const { session } = await createAgentSession({
-    cwd,
-    agentDir,
-    modelRuntime: runtime,
+  return createEphemeralSession({
+    deps: CORE_SESSION_DEPS,
+    runtime,
     model,
-    sessionManager: SessionManager.inMemory(),
-    resourceLoader: loader,
-    tools: toolNames,
+    cwd: path.join(ctx.dataDir, "kb", ctx.parentId),
+    agentDir: path.join(ctx.dataDir, ".worker", "agent", ctx.parentId, ctx.childId),
+    systemPrompt,
+    toolNames,
     customTools,
   });
-  return session;
 }
 
 // ---------- recording ----------

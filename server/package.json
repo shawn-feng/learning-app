@@ -4,11 +4,11 @@
   "description": "学习伙伴服务端：数据唯一真源 + 认证代理 + materials/大文件（SPLIT 架构）",
   "private": true,
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/server.cjs",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "build": "node scripts/build.mjs",
+    "start": "node dist/server.cjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

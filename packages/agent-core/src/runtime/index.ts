@@ -1,5 +1,7 @@
 /**
- * 服务端无头 worker 的模型运行时（方案B 阶段②）。
+ * agent 模型运行时（共享内核 · 服务端形态）。
+ * 2026-09-12 P0：自 server/src/worker/runtime.ts 迁入（原「方案B 阶段②」），成为服务端
+ * 唯一的模型运行时入口；P1 起交互会话与无头 worker 共用同一运行时（同进程内按 parentId 缓存）。
  * - 凭据：按家长从服务端密钥（settings "auth"，静态加密存储）解密后落盘临时 auth 文件，
  *   经 ModelRuntime.create({ authPath }) 注入（复用 SDK 的凭据读取路径，不走客户端 auth.json）。
  * - 模型：优先家长 app_settings.defaultModel（"provider/modelId"），否则兜底 qwen-tokenplan/deepseek-v4-flash-0731。

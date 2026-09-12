@@ -4,15 +4,19 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2023"],
-    "outDir": "dist",
-    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@pi/agent-core": ["../packages/agent-core/src/index.ts"],
+      "@earendil-works/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent"]
+    },
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": false,
-    "sourceMap": false
+    "sourceMap": false,
+    "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src", "../packages/agent-core/src"]
 }

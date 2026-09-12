@@ -17,6 +17,6 @@
       "@electron/*": ["./electron/*"]
     }
   },
-  "include": ["electron/**/*", "src/**/*"],
+  "include": ["electron/**/*", "src/**/*", "packages/**/*"],
   "exclude": ["node_modules", "out", "cloud-service"]
 }
