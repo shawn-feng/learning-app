@@ -3,3 +3,4 @@ export * from "./bridge.js";
 export * from "./sessions.js";
 export * from "./runtime/index.js";
 export * from "./prompts/index.js";
+export { default as learningGuardExtension } from "./guard/learning-guard.js";

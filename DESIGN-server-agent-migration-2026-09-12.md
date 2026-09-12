@@ -260,5 +260,15 @@ packages/agent-core/            # 新增，server 与 client(过渡期) 共用�
 - 客户端尚未切换到服务端家长 agent（切换属 P4，与孩子端同批）。
 - 家长侧的排期（study_plan_*）、考核（assess_*）、积分工具尚未上移——P2 先交付「资料治理」这条最痛链路（079 场景），其余随 P3/P4 或增量补齐。
 - `parent_read_image` 目前支持材料相对路径与 `uploads/`、`files/` 前缀的上传路径。
+
+---
+
+## 11. 实施记录：P3 第一批（2026-09-12）
+
+**已落地**：`display_content` 改建为「服务端登记 + SSE 推送」（校验路径 + 推事件 + 多端渲染）；`page_inspect`/`page_action`/`scene_command` 上移并以 SSE 完成传输层改造（下行 `page_cmd` / 上行 `page-result`，客户端桥实现不动）；设备能力协商 `caps`（`page_*` 仅在有资料面板时注册，caps 变化重建会话）；`learning-guard` 上移至共享包（客户端转发）；AGENTS 用户版本直读服务端真源注入 prompt。
+
+**验证**：typecheck 0 错；`agent-session-check.mts` 44 项全过（含 page_action 下行→回执闭环、scene 映射、caps 装配、guard 拦截与日期注入、AGENTS 注入）；`parent-agent-check.mts`(27)、`worker-catchup-check.mts` 回归全过；客户端 build 全绿。
+
+**P3 余项（下一批）**：考核 LLM 上移（选课/出题/判分，对应 §4 之外的 exam-engine 迁移）；`programming-agent` 上移为 server 端子 agent；课程会话/场景会话的完整语义平移（当前孩子会话为单会话形态，课程级 prompt 注入待接）；客户端切换（P4）。
 - **ISSUE-023**：childId 隔离教训，P1/P3 在 server 侧重做时必须逐条对照
 - **ISSUE-056**：两套纪律/两处副本漂移的教训，是 §4 共享包的直接动因

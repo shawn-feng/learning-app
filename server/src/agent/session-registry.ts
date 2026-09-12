@@ -25,10 +25,15 @@ import {
 } from "@pi/agent-core";
 import { createWorkerKbTools } from "../worker/kb-tools.js";
 import { readParentSettings } from "../worker/scheduler.js";
+import { getAgentPrompt } from "../db/agents.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { createSummarizeConversationTool } from "./kb-summary-tool.js";
+import { createDisplayContentTool, DISPLAY_TOOL_NAME } from "./display-tool.js";
+import { PAGE_TOOL_NAMES, createPageTools } from "./page-tools.js";
+import { getCaps } from "./caps.js";
 import { buildServerChildPrompt } from "./prompt.js";
-import { agentStreamHub } from "./stream-hub.js";
+import { agentStreamHub, AgentStreamHub } from "./stream-hub.js";
+import { learningGuardExtension as guardExtension } from "@pi/agent-core";
 
 const CORE_SESSION_DEPS: CoreSessionDeps = {
   createAgentSession,
@@ -93,6 +98,23 @@ function childName(db: DatabaseSync, childId: string): string {
 }
 
 /** 懒创建/复用某孩子的持久会话。 */
+/**
+ * 按设备能力计算孩子会话的工具白名单（纯函数，便于测试与调试）。
+ * 资料面板类工具（page_*）只在设备声明 `material-panel` 时注册——见 caps.ts 的说明。
+ */
+export function computeChildToolNames(caps: { materialPanel: boolean }): string[] {
+  return [
+    ...SERVER_FS_TOOL_NAMES,
+    "get_date",
+    "summarize_conversation",
+    DISPLAY_TOOL_NAME,
+    ...(caps.materialPanel ? PAGE_TOOL_NAMES : []),
+    "kb_query",
+    "kb_insert",
+    "kb_update",
+  ];
+}
+
 async function ensureEntry(deps: AgentSessionDeps, parentId: string, childId: string): Promise<Entry> {
   const key = keyOf(parentId, childId);
   const existing = entries.get(key);
@@ -109,22 +131,32 @@ async function ensureEntry(deps: AgentSessionDeps, parentId: string, childId: st
     parentId,
     childId,
   } as any);
-  const fsTools = createServerFsTools(paths.childWorkspaceDir(parentId, childId));
+  const workspace = paths.childWorkspaceDir(parentId, childId);
+  const fsTools = createServerFsTools(workspace);
+  const displayTool = createDisplayContentTool({ dataDir: deps.dataDir, parentId, childId, streamKey: key });
+
+  // 设备能力协商（P3）：资料面板类工具只在「对端确实有资料面板」时注册。
+  // 若一律注册，模型会调用做不到的工具（如手机端无面板 / 无 Electron 面板），调用后只能报错，
+  // 不如让它从工具表就知道这台设备做不到，从而改用对话引导。
+  const caps = getCaps(key);
+  const pageTools = caps.materialPanel
+    ? createPageTools({ db: deps.db, dataDir: deps.dataDir, parentId, childId, streamKey: key })
+    : null;
+
   const customTools = [
     ...kbTools,
     ...fsTools,
+    displayTool,
+    ...(pageTools ? [pageTools.pageActionTool, pageTools.pageInspectTool, pageTools.sceneCommandTool] : []),
     createGetDateTool(),
     createSummarizeConversationTool({ db: deps.db, dataDir: deps.dataDir, parentId, childId }),
   ];
 
-  const toolNames = [
-    ...SERVER_FS_TOOL_NAMES,
-    "get_date",
-    "summarize_conversation",
-    "kb_query",
-    "kb_insert",
-    "kb_update",
-  ];
+  const toolNames = computeChildToolNames(caps);
+
+  // AGENTS 用户版本：服务端就是唯一真源（scope=child, ref=childId），直接读库注入，
+  // 不再有旧架构「客户端先远程预取到本地缓存、同步回调再读缓存」的时序问题。
+  const agentRules = getAgentPrompt(deps.dataDir, "child", childId) ?? "";
 
   const systemPrompt = buildServerChildPrompt({
     paths,
@@ -133,24 +165,29 @@ async function ensureEntry(deps: AgentSessionDeps, parentId: string, childId: st
     childName: childName(deps.db, childId),
     today: localDate(),
     now: localTime(),
+    agentRules,
   });
 
   const handle = await createCoreSession({
     deps: CORE_SESSION_DEPS,
     runtime,
     model,
-    cwd: paths.childWorkspaceDir(parentId, childId),
-    agentDir: `${paths.childWorkspaceDir(parentId, childId)}/.pi`,
+    cwd: workspace,
+    agentDir: `${workspace}/.pi`,
     systemPrompt,
     toolNames,
     customTools,
     sessionsDir: paths.agentSessionsDir(parentId, childId),
+    // 会话级红线（路径越界拦截 + 每轮注入日期）与客户端同一份实现
+    extensionFactories: [guardExtension],
   });
 
   const entry: Entry = { session: handle.session, busy: false, paths };
   attachStream(entry, key);
   entries.set(key, entry);
-  console.log(`[agent] 已就绪会话 ${key}（持久：${paths.agentSessionsDir(parentId, childId)}）`);
+  console.log(
+    `[agent] 已就绪会话 ${key}（持久：${paths.agentSessionsDir(parentId, childId)}；caps=${caps.raw || "none"}；工具 ${toolNames.length} 项；AGENTS ${agentRules ? "用户版" : "默认"}）`
+  );
   return entry;
 }
 
@@ -245,6 +282,24 @@ export async function submitChildPrompt(
 /** 某孩子是否已在服务端建过会话（供测试与调试） */
 export function hasSession(parentId: string, childId: string): boolean {
   return entries.has(keyOf(parentId, childId));
+}
+
+/**
+ * 释放某孩子的会话（caps 变化或测试清理用）。
+ * 为什么要能释放：设备能力是**创建会话时**决定工具表的，手机端后连上报 material-panel 时，
+ * 旧会话的工具表里没有 page_*，必须重建才能拿到——不重建会出现「同一会话有时能操作页面有时不能」。
+ */
+export function disposeSession(parentId: string, childId: string): void {
+  const key = keyOf(parentId, childId);
+  const entry = entries.get(key);
+  if (!entry) return;
+  try {
+    entry.session.dispose?.();
+  } catch {
+    /* 忽略 */
+  }
+  entries.delete(key);
+  console.log(`[agent] 已释放会话 ${key}（下次对话按最新能力重建）`);
 }
 
 /** 释放会话（服务重启/测试清理用） */

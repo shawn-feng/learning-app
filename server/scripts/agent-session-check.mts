@@ -23,6 +23,13 @@ import { createServerFsTools } from "../src/agent/fs-tools.js";
 import { registerAgentRoutes } from "../src/routes/agent.js";
 import { SERVER_FEATURES } from "../src/routes/version.js";
 import { signSession } from "../src/auth/jwt.js";
+import { createDisplayContentTool } from "../src/agent/display-tool.js";
+import { createPageTools } from "../src/agent/page-tools.js";
+import { hubFor, hubForChild } from "../src/agent/page-hub.js";
+import { computeChildToolNames } from "../src/agent/session-registry.js";
+import { parseCaps, registerCaps, getCaps } from "../src/agent/caps.js";
+import { buildServerChildPrompt } from "../src/agent/prompt.js";
+import { learningGuardExtension } from "@pi/agent-core";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = "") {
@@ -167,6 +174,129 @@ async function main() {
 
   console.log("E. 版本协商");
   check("features 含 server_agent", (SERVER_FEATURES as readonly string[]).includes("server_agent"));
+
+  console.log("F. P3：display_content 推送 / page_* 传输 / caps 装配 / guard / AGENTS");
+  {
+    // F 段自带内存库（D 段的 db 在其块作用域内）
+    const fdb = new DatabaseSync(":memory:");
+    fdb.exec(
+      "CREATE TABLE materials (parent_id TEXT, id TEXT, path TEXT, type TEXT, size INTEGER, updated_at TEXT, PRIMARY KEY (parent_id,id));" +
+        "CREATE TABLE children (id TEXT PRIMARY KEY, parent_id TEXT, name TEXT);"
+    );
+    fdb.prepare("INSERT INTO children (id,parent_id,name) VALUES (?,?,?)").run("c1", "p1", "珊珊");
+    const db = fdb;
+    const ctx = { db, dataDir: tmp, parentId: "p1", childId: "c1" };
+    const streamKey = AgentStreamHub.key("p1", "c1");
+
+    // F1. display_content：校验 + 推送事件（服务端不渲染，只登记并把展示动作推给客户端）
+    const ws = createCorePaths(tmp).childWorkspaceDir("p1", "c1");
+    fs.mkdirSync(path.join(ws, "outputs"), { recursive: true });
+    fs.writeFileSync(path.join(ws, "outputs", "demo.html"), "<html>demo</html>", "utf-8");
+    const matDir = path.join(tmp, "materials", "p1", "lunyu");
+    fs.mkdirSync(matDir, { recursive: true });
+    fs.writeFileSync(path.join(matDir, "lesson.html"), "<html>lesson</html>", "utf-8");
+
+    const seen: string[] = [];
+    const off = agentStreamHub.subscribe(streamKey, (e) => seen.push(e.type));
+    const display = createDisplayContentTool({ dataDir: tmp, parentId: "p1", childId: "c1", streamKey });
+    const r1 = await display.execute("t", { path: "lunyu/lesson.html" }, undefined as any, undefined as any, { cwd: ws });
+    check("display_content 展示资料库文件成功", String(r1.content[0].text).includes("已展示"));
+    check("display_content 推了 display_content 事件", seen.includes("display_content"));
+    const r2 = await display.execute("t", { path: "materials/lunyu/lesson.html" }, undefined as any, undefined as any, { cwd: ws });
+    check("display_content 兼容旧 materials/ 前缀", String(r2.content[0].text).includes("已展示"));
+    const rr = await display.execute("t", { path: "outputs/demo.html" }, undefined as any, undefined as any, { cwd: ws });
+    check("display_content 支持孩子工作区 outputs/", String(rr.content[0].text).includes("已展示"));
+    let notFound = false;
+    try {
+      await display.execute("t", { path: "lunyu/nope.html" }, undefined as any, undefined as any, { cwd: ws });
+    } catch (err) {
+      notFound = /资料不存在/.test(String((err as Error).message));
+    }
+    check("display_content 对不存在的资料给出可执行报错", notFound);
+    let badExt = false;
+    try {
+      await display.execute("t", { path: "lunyu/x.mp4" }, undefined as any, undefined as any, { cwd: ws });
+    } catch (err) {
+      badExt = /只支持 \.html/.test(String((err as Error).message));
+    }
+    check("display_content 拒绝非 html", badExt);
+    off();
+
+    // F2. page_* 下行 → 回执上行（P3 的传输改造闭环）
+    const tools = createPageTools({ db, dataDir: tmp, parentId: "p1", childId: "c1", streamKey });
+    const cmds: Array<{ action: string; requestId: string }> = [];
+    const off2 = agentStreamHub.subscribe(streamKey, (e) => {
+      if (e.type === "page_cmd") {
+        const d = e.data as { action: string; requestId: string };
+        cmds.push(d);
+        // 模拟客户端执行端点：拿到指令后立刻回执
+        setTimeout(() => {
+          hubForChild("c1")!.resolveAction(d.requestId, {
+            ok: true,
+            data: d.action === "read" ? { items: [{ i: 0, tag: "p", text: "页面里的文字" }] } : { done: 1 },
+          });
+        }, 0);
+      }
+    });
+    const act = await tools.pageActionTool.execute("t", { action: "click", text: "下一步" } as any);
+    check("page_action 经 SSE 下发并拿到回执", String(act.content[0].text).includes("页面操作完成"), cmds[0]?.action);
+    const insp = await tools.pageInspectTool.execute("t", {});
+    check("page_inspect 返回页面快照（来自设备回执）", String(insp.content[0].text).includes("页面里的文字"));
+    off2();
+
+    // F3. 场景指令走同一通道（scene.<command>）
+    const sceneCmds: string[] = [];
+    const off3 = agentStreamHub.subscribe(streamKey, (e) => {
+      if (e.type === "page_cmd") {
+        const d = e.data as { action: string; requestId: string };
+        sceneCmds.push(d.action);
+        setTimeout(() => hubForChild("c1")!.resolveAction(d.requestId, { ok: true }), 0);
+      }
+    });
+    await tools.sceneCommandTool.execute("t", { command: "say", character: "steve", text: "Hello" } as any);
+    check("scene_command 映射为 scene.say 下发", sceneCmds.includes("scene.say"));
+    off3();
+
+    // F4. 互动事件累积 → 下一轮消息附带（ISSUE-015 语义）
+    const hub = hubFor(streamKey, "c1");
+    hub.queueEvent("c1", { kind: "app", title: "论语", detail: { action: "submit-answer", payload: { q1: "B" } } });
+    const pending = hub.takePending("c1");
+    check("页面事件累积并可被下一轮取走", pending.includes("submit-answer") && hub.takePending("c1") === "");
+
+    // F5. caps 装配：无面板不注册 page_*
+    const noCaps = computeChildToolNames({ materialPanel: false });
+    const withCaps = computeChildToolNames({ materialPanel: true });
+    check("caps 缺失时不注册 page_*", !noCaps.includes("page_action") && !noCaps.includes("scene_command"));
+    check("caps 含 material-panel 时注册 page_*", withCaps.includes("page_action") && withCaps.includes("page_inspect") && withCaps.includes("scene_command"));
+    check("caps 解析：逗号串→布尔", (() => {
+      const c = parseCaps("material-panel,mic,electron");
+      return c.materialPanel && c.mic && c.electron;
+    })());
+    registerCaps("tmp:key", parseCaps("mic"));
+    check("caps 登记/读取隔离", getCaps("tmp:key").mic === true && getCaps("tmp:key").materialPanel === false);
+
+    // F6. guard 扩展：越界拦截 + 日期注入（与客户端同一份实现）
+    const handlers: Record<string, Function> = {};
+    (learningGuardExtension as any)({ on: (name: string, fn: Function) => (handlers[name] = fn) });
+    const blocked = await handlers["tool_call"]({ toolName: "read", input: { path: "../../etc/passwd" } }, { cwd: ws });
+    check("guard 拦截越界文件工具调用", blocked?.block === true);
+    const allowed = await handlers["tool_call"]({ toolName: "read", input: { path: "outputs/demo.html" } }, { cwd: ws });
+    check("guard 放行界内路径", allowed === undefined);
+    const injected = await handlers["before_agent_start"]({ systemPrompt: "BASE" });
+    check("guard 每轮注入当天日期（不含时分秒，保前缀缓存）", /当前日期/.test(injected.systemPrompt) && !/\d{2}:\d{2}/.test(injected.systemPrompt));
+
+    // F7. AGENTS 真源注入 system prompt
+    const promptWithRules = buildServerChildPrompt({
+      paths: createCorePaths(tmp),
+      parentId: "p1",
+      childId: "c1",
+      childName: "珊珊",
+      today: "2026-09-12",
+      now: "21:00",
+      agentRules: "## 家长补充\n- 先复习再上新内容",
+    });
+    check("AGENTS 用户版本被注入 system prompt", promptWithRules.includes("先复习再上新内容"));
+  }
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(failed === 0 ? "\n全部通过 ✅" : `\n失败 ${failed} 项 ❌`);

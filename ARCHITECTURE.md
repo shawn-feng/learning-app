@@ -195,9 +195,17 @@
   - `parent_read_image`（`agent/vision.ts` 识图旁路，客户端 `parent-vision.ts` 上移）；`log_activity`（activity-log.md）。
 - **安全**：材料根 `<dataDir>/materials/<parentId>`；topic 段 `^[a-zA-Z0-9_-]+$`；禁 `.`/`..` 段；一律经 `resolveWithin` 沙箱。
 
-### 13.3 尚未落地（P3~P4，见设计文档）
+### 13.3 孩子 agent 上移·第一批（P3，2026-09-12 起）
 
-孩子 agent 全量工具与 learning-guard/AGENTS 真源接入、`display_content` 改推送、page_* 传输层改造、考核 LLM 上移（P3）；客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端 agent 与镜像通道下线（P4）；家长侧排期/考核/积分工具上移（P2 余项）。
+- **`display_content` 改为服务端登记 + SSE 推送**（`server/src/agent/display-tool.ts`）：服务端校验资料路径（材料真源 `materials/<pid>/…` 或孩子工作区 `outputs/…`，兼容旧 `materials/` 前缀）后推 `display_content` 事件，各端资料面板自行渲染（多端同时可见、断线可回放）。
+- **`page_inspect` / `page_action` / `scene_command` 上移**（`server/src/agent/page-tools.ts` + `page-hub.ts`）：内容感知读材料源；互动事件经 `POST /agent/:childId/events` 上行（PiBridge 信封）；受控操作经 SSE 下发 `page_cmd` → 客户端 `MaterialsPanel.appCmd` → 回执经 `POST /agent/:childId/page-result` 兑现；场景指令映射为 `scene.<command>`。**客户端桥实现不变**。
+- **设备能力协商**（`server/src/agent/caps.ts`）：SSE 建连上报 `caps=material-panel,mic,electron`；`page_*` 仅在声明 material-panel 时注册；**caps 变化即重建会话**（工具表创建时定稿）。装配 = `computeChildToolNames(caps)`。
+- **learning-guard 上移**（`packages/agent-core/src/guard/learning-guard.ts`，客户端文件改为转发）：路径越界拦截 + 每轮注入日期（不含时分秒，保前缀缓存）。
+- **AGENTS 真源直读**：服务端 `agents.sqlite`（scope=child/ref=childId）直接注入 system prompt（不再有客户端预取缓存的时序问题）。
+
+### 13.4 尚未落地（P3 余项 + P4）
+
+考核 LLM 上移（选课/出题/判分，`exam-engine.ts`）、`programming-agent` 上移为 server 端子 agent、课程/场景会话的完整语义平移；客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端 agent 与镜像通道下线（P4）；家长侧排期/考核/积分工具上移（P2 余项）。
 
 ---
 

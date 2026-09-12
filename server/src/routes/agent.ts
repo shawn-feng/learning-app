@@ -15,8 +15,9 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { agentStreamHub, AgentStreamHub } from "../agent/stream-hub.js";
-import { submitChildPrompt, type AgentSessionDeps } from "../agent/session-registry.js";
-import { defaultPageBridge } from "@pi/agent-core";
+import { submitChildPrompt, hasSession, disposeSession, type AgentSessionDeps } from "../agent/session-registry.js";
+import { hubFor, hubForChild } from "../agent/page-hub.js";
+import { registerCaps, parseCaps, getCaps } from "../agent/caps.js";
 
 interface AgentRoutesDeps {
   config: ServerConfig;
@@ -74,9 +75,16 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    // caps：设备能力（mic / electron / material-panel），P3 起用于工具装配，P1 仅记录
+    // caps：设备能力（material-panel / mic / electron）——登记后由会话装配决定注册哪些设备相关工具
     const { caps } = req.query as { caps?: string };
     const key = AgentStreamHub.key(parentId, childId);
+    const prevCaps = getCaps(key).raw;
+    const nextCaps = parseCaps(caps);
+    registerCaps(key, nextCaps);
+    // 能力变化 → 重建会话（工具表在创建时定稿，不重建会出现「同一会话有时能操作页面有时不能」）
+    if (prevCaps !== nextCaps.raw && hasSession(parentId, childId)) {
+      disposeSession(parentId, childId);
+    }
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
@@ -125,10 +133,12 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
     const text = String(body.text ?? "").trim();
     if (!text) return reply.code(400).send({ error: "text 必填" });
     // 页面事件：优先用调用方显式传入，否则取桥内累积的待附带事件（ISSUE-015 语义）
+    const streamKey = AgentStreamHub.key(parentId, childId);
+    const hub = hubFor(streamKey, childId);
     const pending =
       typeof body.pageEvents === "string" && body.pageEvents.trim()
         ? body.pageEvents.trim()
-        : defaultPageBridge.takePending(childId);
+        : hub.takePending(childId);
     const result = await submitChildPrompt(agentDeps, parentId, childId, text, {
       pendingPageEvents: pending,
     });
@@ -157,8 +167,9 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
     const body = (req.body ?? {}) as { events?: Array<{ kind?: string; title?: string; detail?: Record<string, unknown> }> };
     const events = Array.isArray(body.events) ? body.events : [];
     if (!events.length) return reply.code(400).send({ error: "events 必填（非空数组）" });
+    const hub = hubFor(AgentStreamHub.key(parentId, childId), childId);
     for (const e of events) {
-      defaultPageBridge.queueEvent(childId, {
+      hub.queueEvent(childId, {
         kind: String(e?.kind ?? ""),
         title: e?.title,
         detail: e?.detail,
@@ -185,7 +196,9 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
     }
     const body = (req.body ?? {}) as { requestId?: string; ok?: boolean; error?: string; data?: unknown };
     if (!body.requestId) return reply.code(400).send({ error: "requestId 必填" });
-    defaultPageBridge.resolveAction(body.requestId, {
+    const hub = hubForChild(childId);
+    if (!hub) return reply.code(409).send({ error: "该孩子当前没有活跃会话，回执无处可兑" });
+    hub.resolveAction(body.requestId, {
       ok: body.ok === true,
       error: body.error,
       data: body.data,
