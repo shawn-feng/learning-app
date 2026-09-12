@@ -95,6 +95,9 @@ const api = {
   // 读取家长 uploads 目录内文件内容（base64），用于家长聊天历史消息播放语音录音
   readParentUpload: (parentId: string, relPath: string) =>
     ipcRenderer.invoke("file:read_upload_parent", parentId, relPath),
+  // ISSUE-078：读当前登录家长 id（来自 <data>/.session.json，只读）。
+  // 家长聊天面板用它把真实 parentId 传给 ChatWindow，上传按登录家长落盘（不再全落 parents/default）。
+  getSessionParentId: () => ipcRenderer.invoke("session:get_parent_id"),
   // ISSUE-037：家长发送支持 images（对齐 piPrompt）
   piPromptParent: (text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) =>
     ipcRenderer.invoke("pi:prompt_parent", text, images || []),

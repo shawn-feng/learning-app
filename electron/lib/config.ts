@@ -35,7 +35,10 @@ export function getSkillsDir(): string {
 // 客户端本地配置（模型 key/模型选择/定时任务等）存到家长目录 parents/<parentId>/，
 // 多个家长登录同一 app 互不干扰。当前家长 id 记在 <data>/.session.json（登录写、登出清）。
 // **未登录 = 无任何家长数据**（家长库/孩子/kb 都在服务端按 token 鉴权）：getCurrentParentId()
-// 返回 ""，配置读取函数落到 parents/ 根下的空位 → 读默认值（不创建 default 目录，default 已废弃）。
+// 返回 ""，配置读取函数落到 parents/ 根下的空位 → 读默认值（不创建目录）。
+// 注意（ISSUE-078 纠偏）：parent-library/delivery/custom-tools 等的 DEFAULT_PARENT_ID("default")
+// 并未废弃——它仍是未显式传 parentId 时的兜底落盘目录；renderer 上传通道已改为透传登录家长真实 id，
+// "default" 仅在未登录/拿不到 id 时兜底。
 
 const SESSION_FILE = ".session.json";
 

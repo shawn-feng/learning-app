@@ -27,8 +27,23 @@ export default function ParentChatPanel() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false); // ISSUE-068：停止中锁，保持发送禁用直到 SDK 真正 idle
+  // ISSUE-078 根因 B 修复：当前登录家长 id（来自主进程 .session.json）。
+  // 此处不传给 ChatWindow 时其内部兜底 "default"，导致上传全部落 parents/default/（家长间隔离失效）。
+  const [parentId, setParentId] = useState<string>("");
   // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡）
   const workingIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    // ISSUE-078：取当前登录家长 id（未登录返回 ""，ChatWindow 仍兜底 default）
+    window.api
+      .getSessionParentId()
+      .then((r: any) => {
+        if (r?.success && r.parentId) setParentId(r.parentId);
+      })
+      .catch(() => {
+        /* 取不到就保持 ""，由 ChatWindow 兜底，不阻断聊天 */
+      });
+  }, []);
 
   // 更新当前工作气泡（按 id 定位）
   const patchWorking = useCallback((patch: (m: ChatMessage) => ChatMessage) => {
@@ -236,9 +251,11 @@ export default function ParentChatPanel() {
     const files = opts?.files || [];
     const parts: string[] = [];
     if (text) parts.push(text);
-    // 家长上传路径（persistUpload 已返回相对 data/ 的 parents/<pid>/uploads/xxx）
-    // toRel 转为 agent cwd（data/）下的相对路径
-    const toRel = (p?: string) => (p ? p.replace(/^parents\/[^/]+\//, "") : "未保存");
+    // ISSUE-078 根因 A 修复：家长 agent 会话 cwd = data/，saveParentUpload 返回的就是
+    // 相对 data/ 的全路径（parents/<pid>/uploads/xxx），直接透传即可命中。
+    // 此前剥掉 parents/<pid>/ 前缀 → 标记变成 uploads/xxx → agent 去读 data/uploads/xxx（不存在）→ 第一轮找不到文件。
+    // 图片【附件图片】与文件【附件文件】走同一 toRel，一并修好。
+    const toRel = (p?: string) => (p ? p : "未保存");
     for (const img of images) {
       parts.push(`【附件图片：${img.name}|${toRel(img.path)}】`);
     }
@@ -334,7 +351,9 @@ export default function ParentChatPanel() {
   return (
     <div className="parent-chat-panel">
       <div className="parent-chat-title">家长助手</div>
-      <ChatWindow messages={messages} onSend={handleSend} disabled={busy || stopping} running={busy || stopping} onStop={handleStop} owner="parent" />
+      {/* ISSUE-078：透传登录家长真实 id —— 上传/打开/读取附件落到 data/parents/<真实pid>/uploads/，
+          与家长 agent 提示词「当前家长」目录一致；未登录时 parentId 为空，ChatWindow 兜底 default */}
+      <ChatWindow messages={messages} onSend={handleSend} disabled={busy || stopping} running={busy || stopping} onStop={handleStop} owner="parent" parentId={parentId} />
     </div>
   );
 }

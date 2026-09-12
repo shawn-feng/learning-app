@@ -2083,6 +2083,13 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // ISSUE-078：向 renderer 暴露当前登录家长 id（只读，源自 <data>/.session.json）。
+  // 家长聊天面板据此把真实 parentId 传给 ChatWindow，使上传落到 data/parents/<登录家长>/uploads/
+  // （此前 renderer 拿不到 id，ChatWindow 兜底 "default"，上传全部落 parents/default，隔离失效）。
+  ipcMain.handle("session:get_parent_id", async () => {
+    return { success: true, parentId: getCurrentParentId() };
+  });
+
   // Voice (STT) config + transcribe
   ipcMain.handle("voice:config:get", async () => {
     return { success: true, config: getMaskedConfig() };
