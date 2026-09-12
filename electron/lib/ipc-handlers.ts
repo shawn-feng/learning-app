@@ -6,7 +6,8 @@ import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, s
 import { getChildSession, getParentSession, getParentContentSession, disposeChildSession, disposeChildCourseSession, getSceneSession, disposeSceneSession, buildSceneSummaryForCourse, getActiveSession, getSessionHistory, getSessionMaterials, resetChildSession, resetParentSession, listChildSessions, readChildSessionMessages, getDefaultPrompt } from "./pi-session";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
-import { getAvailableModels, setProviderApiKey, checkProviderAuth, getSharedRuntime, getVisionModel } from "./pi-runtime";
+import { getSharedRuntime, getVisionModel } from "./pi-runtime";
+import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings } from "./server-agent-client";
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
@@ -48,7 +49,7 @@ import {
   upsertParentTag,
 } from "./parent-library";
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
-import { getMaterialsLimit, setMaterialsLimit, getDefaultModelKey, setDefaultModelKey, getProgrammingModelKey, setProgrammingModelKey, getVisionModelKey, setVisionModelKey } from "./app-settings";
+import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus, toSpeechAssessment } from "./exam";
 import { generateExamQuestions, generateCourseQuestions, scoreExamAttempt, selectCoursesForSchedule } from "./exam-engine";
@@ -926,7 +927,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 默认模型（与渲染侧 Settings / ModelSelector 同源，存于 app-settings.json）
   ipcMain.handle("pi:get_default_model", async () => {
     try {
-      return { success: true, key: getDefaultModelKey() };
+      const s = await getModelSettings();
+      return { success: true, key: (s.appSettings?.defaultModel as string) ?? "" };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -934,7 +936,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("pi:set_default_model", async (_e: IpcMainInvokeEvent, key: string) => {
     try {
-      setDefaultModelKey(key || "");
+      await setAppSettings({ defaultModel: key || "" });
       // 通知所有渲染窗口：默认模型变了（孩子模式侧边栏自动预选新默认）
       getMainWindow()?.webContents.send("pi:default_model_changed", key || "");
       return { success: true, key: key || "" };
@@ -946,7 +948,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // ISSUE-020：编程 agent 模型（未配置 = 空串，create_html_lesson 不可用）
   ipcMain.handle("pi:get_programming_model", async () => {
     try {
-      return { success: true, key: getProgrammingModelKey() };
+      const s = await getModelSettings();
+      return { success: true, key: (s.appSettings?.programmingModel as string) ?? "" };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -954,7 +957,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("pi:set_programming_model", async (_e: IpcMainInvokeEvent, key: string) => {
     try {
-      setProgrammingModelKey(key || "");
+      await setAppSettings({ programmingModel: key || "" });
       return { success: true, key: key || "" };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -964,7 +967,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // 默认视觉模型（图片上传自动切换，缺省 qwen/qwen3-vl-flash）
   ipcMain.handle("pi:get_vision_model", async () => {
     try {
-      return { success: true, key: getVisionModelKey() };
+      const s = await getModelSettings();
+      return { success: true, key: (s.appSettings?.visionModel as string) ?? "" };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -972,7 +976,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("pi:set_vision_model", async (_e: IpcMainInvokeEvent, key: string) => {
     try {
-      setVisionModelKey(key || "");
+      await setAppSettings({ visionModel: key || "" });
       return { success: true, key: key || "" };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1735,7 +1739,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("pi:get_models", async () => {
     try {
-      const models = await getAvailableModels();
+      const models = await listModels();
       return models.map((m: any) => ({
         provider: m.provider,
         id: m.id,
@@ -1764,7 +1768,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("pi:set_api_key", async (_e: IpcMainInvokeEvent, provider: string, apiKey: string) => {
     try {
-      await setProviderApiKey(provider, apiKey);
+      await setModelApiKey(provider, apiKey);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };

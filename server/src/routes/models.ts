@@ -17,7 +17,8 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { getServerSecret, encryptJson, decryptJson } from "../crypto.js";
 import { bumpConfigRevision } from "../db.js";
-import { listProviderModels } from "@pi/agent-core";
+import { listProviderModels, getWorkerRuntime } from "@pi/agent-core";
+import { readParentSettings } from "../worker/scheduler.js";
 
 interface ModelsDeps {
   config: ServerConfig;
@@ -117,6 +118,28 @@ export function registerModelRoutes(app: FastifyInstance, deps: ModelsDeps): voi
     const current = (readSetting(parentId, "app_settings") as Record<string, unknown>) ?? {};
     writeSetting(parentId, "app_settings", { ...current, ...patch });
     return { ok: true, appSettings: { ...current, ...patch } };
+  });
+
+  // 校验某 provider 的密钥是否可用（真实探测：用该家长的 auth 建运行时 → runtime.checkAuth）。
+  // 与客户端设置页「测试连接」语义一致；探测失败不抛异常，返回 SDK 的检查结果。
+  app.post("/api/v1/models/check", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { provider } = (req.body ?? {}) as { provider?: string };
+    if (!provider?.trim()) return reply.code(400).send({ error: "provider 必填" });
+    try {
+      const settings = readParentSettings(deps.db, deps.config.dataDir, parentId);
+      const runtime = await getWorkerRuntime(deps.config.dataDir, parentId, settings.auth);
+      const status = await runtime.checkAuth(provider.trim());
+      return { ok: true, status };
+    } catch (err) {
+      return { ok: false, status: false, error: (err as Error).message };
+    }
   });
 
   // 读取当前 app_settings + auth 脱敏态（供设置页回显；auth 只回 provider 名 + 是否有 key，不回明文）。

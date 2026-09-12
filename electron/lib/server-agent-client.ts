@@ -272,4 +272,15 @@ export async function getModelSettings(
   return serverFetch("/models/settings", { token });
 }
 
+/** 校验某 provider 密钥是否可用（服务端真实探测）。 */
+export async function checkProviderAuth(provider: string, token = sessionToken()): Promise<boolean> {
+  const r = await serverFetch<{ ok: boolean; status: boolean }>("/models/check", {
+    method: "POST",
+    token,
+    body: { provider },
+    timeoutMs: 30000,
+  });
+  return r.status === true;
+}
+
 export { ServerError };
