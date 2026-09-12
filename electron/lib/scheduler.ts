@@ -2,14 +2,11 @@ import fs from "fs";
 import path from "path";
 import cron from "node-cron";
 import { BrowserWindow } from "electron";
-import { getTaskStatePath, getSchedulerConfigPath, getChildDir } from "./config";
+import { getTaskStatePath, getSchedulerConfigPath } from "./config";
 import { pushConfig } from "./config-sync";
 import { listChildren } from "./child-auth";
-import { summarizeDailyConversation, formatLocalDate } from "./daily-summary";
-import { resetChildSession } from "./pi-session";
 import { handleCloudInbox } from "./delivery";
-// 方案B：服务端无头 worker 接管 recording 后，本地关闭其调度避免双跑；gen/stat 已完全移交服务端
-import { hasServerFeature, refreshServerFeatures } from "./server-features";
+import { resetChildSession } from "./server-agent-client";
 // ISSUE-047：孩子端 agent 自建定时提醒——每分钟轮询服务端到期提醒并播报（需已登录才能拉取）
 import { currentSessionToken } from "./client-data";
 import { serverFetch } from "./server-client";
@@ -460,19 +457,11 @@ export function setEventPollConfig(cfg: SchedulerEventPollConfig): SchedulerEven
 
 // ---- 会话与任务执行 ----
 
-// 每日学习记录总结（recording）：按天汇总今天（本地）的会话——有会话则 AI 提取写 daily，无会话跳过。
-// 读取与 ephemeral session 逻辑在 electron/lib/daily-summary.ts（定时 / 会话前 / AI 工具三路共用）。
-async function runRecording(childId: string): Promise<void> {
-  const childDir = getChildDir(childId);
-  await summarizeDailyConversation(childDir, formatLocalDate(new Date()));
-}
-
 // 会话重置：清空孩子会话上下文与学习资料面板（不清除学习进度文件）。
-// 先销毁内存会话，再清空持久化 sessions 目录；随后广播事件，
+// 客户端已零 agent：会话由服务端持久管理，重置即通知服务端 newSession；随后广播事件，
 // 若家长/孩子正打开该孩子的 Learn 页面，前端会同步清空。
 async function runSessionReset(childId: string): Promise<void> {
-  const archiveLimit = getChildSchedulerConfig(childId).archiveLimit;
-  await resetChildSession(childId, archiveLimit);
+  await resetChildSession(childId);
   broadcastSessionReset(childId);
 }
 
@@ -558,27 +547,6 @@ export function startScheduler(): void {
     for (const child of children) {
       const cc = getChildSchedulerConfig(child.childId);
       const cs = getChildState(state, child.childId);
-
-      // 每日学习记录总结（recording）：按配置的具体时间点（可多个）触发，每个时间点每天只跑一次；
-      // 当天无会话时 summarizeDailyConversation 内部跳过（不消耗 token）。
-      // 方案B：服务端无头 worker 已接管（hasServerFeature("worker")）→ 本地跳过，避免双跑。
-      if (cc.recording.enabled && !hasServerFeature("worker")) {
-        const nowMin = hhmm(now);
-        if (cc.recording.times.includes(nowMin)) {
-          const last = cs.recording.lastRun ? new Date(cs.recording.lastRun) : null;
-          const alreadyRan =
-            last && formatLocalDate(last) === formatLocalDate(now) && hhmm(last) === nowMin;
-          if (!alreadyRan) {
-            try {
-              await runRecording(child.childId);
-              cs.recording.lastRun = new Date().toISOString();
-              saveTaskState(state);
-            } catch (e) {
-              console.error(`Recording failed for child ${child.childId}:`, e);
-            }
-          }
-        }
-      }
 
       // auto-new-session：每天在配置的 hour:minute 新建空会话。
       // 冷路径（会话未加载）由 getChildSession 打开时按「最后消息非今天 / 已过设定节点」自动开新会话；
@@ -669,10 +637,7 @@ export function startScheduler(): void {
 
 // 启动时补跑：仅对已开启对应任务且到期的孩子执行（默认关闭，因此默认不补跑）。
 export async function runCatchUp(): Promise<void> {
-  // 方案B：先探服务端能力（worker 接管后本地 recording/todo 不补跑，避免双跑）
-  await refreshServerFeatures();
   const state = loadTaskState();
-  const children = await listChildren();
   const now = new Date();
   const today = now.toDateString();
 
@@ -693,32 +658,6 @@ export async function runCatchUp(): Promise<void> {
         }
       }
     }
-  }
-
-  for (const child of children) {
-    const cc = getChildSchedulerConfig(child.childId);
-    const cs = getChildState(state, child.childId);
-
-    if (cc.recording.enabled && !hasServerFeature("worker")) {
-      // catch-up：今天已过的配置时间点若还没跑过，补跑最近一个（启动/休眠恢复场景）
-      const passed = cc.recording.times.filter((t) => t <= hhmm(now));
-      if (passed.length > 0) {
-        const latestPoint = passed[passed.length - 1];
-        const lastRec = cs.recording.lastRun ? new Date(cs.recording.lastRun) : null;
-        const alreadyRan =
-          lastRec && formatLocalDate(lastRec) === formatLocalDate(now) && hhmm(lastRec) === latestPoint;
-        if (!alreadyRan) {
-          try {
-            await runRecording(child.childId);
-            cs.recording.lastRun = new Date().toISOString();
-          } catch (e) {
-            console.error(`Recording catch-up failed for child ${child.childId}:`, e);
-          }
-        }
-      }
-    }
-
-    // ISSUE-025 的 gen/stat catch-up 已移除：客户端不再本地调度，由服务端 worker 统一负责。
   }
 
   saveTaskState(state);

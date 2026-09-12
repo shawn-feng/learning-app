@@ -67,7 +67,6 @@ import * as config from "../electron/lib/config";
 import * as userInit from "../electron/lib/user-init";
 import * as childAuth from "../electron/lib/child-auth";
 import * as authManager from "../electron/lib/auth-manager";
-import * as piSession from "../electron/lib/pi-session";
 
 describe("Electron app modules", () => {
   let createdChildId: string;
@@ -133,7 +132,7 @@ describe("Electron app modules", () => {
     expect(settings.skills[0]).toBe(config.getSkillsDir());
   });
 
-  it("adds child, authenticates with local password, and creates pi session", { timeout: 30000 }, async () => {
+  it("adds child and authenticates with local password", { timeout: 30000 }, async () => {
     const added = await childAuth.addChild({
       name: "小红",
       avatar: "🐰",
@@ -155,11 +154,6 @@ describe("Electron app modules", () => {
 
     const list = await childAuth.listChildren();
     expect(list.some((c) => c.childId === createdChildId)).toBe(true);
-
-    // Create pi session for this child
-    const session = await piSession.getChildSession(createdChildId);
-    expect(session).toBeTruthy();
-    await piSession.disposeChildSession(createdChildId);
   });
 
   it("registers parent with cloud service and caches license", async () => {

@@ -21,7 +21,7 @@ import {
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
 import { dbQuery, currentSessionToken } from "./client-data";
 import { serverFetch } from "./server-client";
-import { formatLocalDate } from "./daily-summary";
+import { formatLocalDate } from "./dates";
 import { syncChildSessions } from "./session-sync";
 import { listChildren } from "./child-auth";
 import { getSyncStatus, getSyncLog, readSyncLogFile } from "./sync-logger";
@@ -48,7 +48,7 @@ import {
 } from "./parent-library";
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
-import { logRound, readTokenLog, getTokenSummary } from "./token-stats";
+import { readTokenLog, getTokenSummary } from "./token-stats";
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus, toSpeechAssessment } from "./exam";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {

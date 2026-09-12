@@ -19,7 +19,6 @@ import { installConsoleRedirect, installCrashHandlers, logInfo } from "./lib/app
 import { getDataDir } from "./lib/config";
 import { initSharedSkills } from "./lib/user-init";
 import { registerIpcHandlers } from "./lib/ipc-handlers";
-import { disposeAllSessions } from "./lib/pi-session";
 import { startScheduler, runCatchUp } from "./lib/scheduler";
 import { startSessionSyncTimer, flushSessionSync } from "./lib/session-sync";
 import { startServerFeaturesSync } from "./lib/server-features";
@@ -252,5 +251,4 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   logInfo("main", "app quitting");
   flushSessionSync(); // 退出前兜底同步一次（fire-and-forget）
-  disposeAllSessions().catch(() => {});
 });
