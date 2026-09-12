@@ -11,8 +11,9 @@ export const MIN_CLIENT_VERSION = "0.1.0";
  * - server_agent：支持服务端 agent 交互会话（/api/v1/agent/*，SSE 流式）——agent 服务端化的能力门槛；
  *   客户端据此判断「可以切换到服务端 agent」；旧客户端不认识该标志时行为不变（不误判为可用）。
  * - parent_agent：支持服务端家长 agent（/api/v1/parent-agent/*，SSE 流式 + 课程资料治理工具）。
+ * - exam_agent：支持服务端考核 LLM 链路（/api/v1/exam/agent/*：非结构化课程出题 + 判分）。
  */
-export const SERVER_FEATURES = ["session_sync", "worker", "exam", "server_agent", "parent_agent"] as const;
+export const SERVER_FEATURES = ["session_sync", "worker", "exam", "server_agent", "parent_agent", "exam_agent"] as const;
 
 export function registerVersionRoutes(app: FastifyInstance): void {
   app.get("/api/v1/version", async () => ({

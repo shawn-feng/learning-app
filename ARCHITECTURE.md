@@ -203,9 +203,15 @@
 - **learning-guard 上移**（`packages/agent-core/src/guard/learning-guard.ts`，客户端文件改为转发）：路径越界拦截 + 每轮注入日期（不含时分秒，保前缀缓存）。
 - **AGENTS 真源直读**：服务端 `agents.sqlite`（scope=child/ref=childId）直接注入 system prompt（不再有客户端预取缓存的时序问题）。
 
-### 13.4 尚未落地（P3 余项 + P4）
+### 13.4 考核 LLM 上移（P3 第二批，2026-09-12）
 
-考核 LLM 上移（选课/出题/判分，`exam-engine.ts`）、`programming-agent` 上移为 server 端子 agent、课程/场景会话的完整语义平移；客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端 agent 与镜像通道下线（P4）；家长侧排期/考核/积分工具上移（P2 余项）。
+- `server/src/agent/exam-engine.ts`：出题（**仅非结构化课程**——题库有挂题的课由 `assess-selection.ts` 直出，无需 LLM）与判分（逐题并发上限 3，选择题走本地规则 `judgeChoice`，口径取 `buildScoringPrompt()`）；审计落 `exam-audit/`（prompt 原文默认不落盘）。
+- `server/src/routes/exam-agent.ts`（feature `exam_agent`）：`POST /api/v1/exam/agent/generate`（输入只给 childId/topicName/courseTitle，配置由服务端真源拼装）、`POST /api/v1/exam/agent/grade`（判分口径不接受客户端传入）、`GET /api/v1/exam/agent/scoring-prompt`。
+- **选课 LLM 未迁**：2026-09-09 起固定档为「计划周期内必学课全考」内置规则，LLM 选课已废弃。
+
+### 13.5 尚未落地（P3 余项 + P4）
+
+`programming-agent` 上移为 server 端子 agent、课程/场景会话的完整语义平移；客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端 agent 与镜像通道下线（P4）；家长侧排期/考核/积分工具上移（P2 余项）。
 
 ---
 

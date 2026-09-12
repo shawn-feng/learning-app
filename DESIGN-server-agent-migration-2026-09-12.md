@@ -270,5 +270,15 @@ packages/agent-core/            # 新增，server 与 client(过渡期) 共用�
 **验证**：typecheck 0 错；`agent-session-check.mts` 44 项全过（含 page_action 下行→回执闭环、scene 映射、caps 装配、guard 拦截与日期注入、AGENTS 注入）；`parent-agent-check.mts`(27)、`worker-catchup-check.mts` 回归全过；客户端 build 全绿。
 
 **P3 余项（下一批）**：考核 LLM 上移（选课/出题/判分，对应 §4 之外的 exam-engine 迁移）；`programming-agent` 上移为 server 端子 agent；课程会话/场景会话的完整语义平移（当前孩子会话为单会话形态，课程级 prompt 注入待接）；客户端切换（P4）。
+
+---
+
+## 12. 实施记录：P3 第二批（2026-09-12）—— 考核 LLM 上移
+
+**已落地**：`server/src/agent/exam-engine.ts`（出题仅覆盖非结构化课程 + 逐题并发判分 + 选择题本地规则判分 + 服务端审计，prompt 默认不落盘）；`server/src/routes/exam-agent.ts`（generate / grade / scoring-prompt，feature `exam_agent`）——输入只给标识、配置由服务端真源拼装、判分口径不接受客户端传入；`fetchCoursesWithKnowledgePoints` 从 routes/exam.ts 导出复用。**选课 LLM 未迁**——2026-09-09 起固定档已用「计划周期内必学课全考」的内置规则替代，LLM 选课废弃。
+
+**验证**：typecheck 0 错；`exam-agent-check.mts` 30 项全过（JSON 容错 / 选择题规则判分 / prompt 组装 / 审计 / 路由鉴权与 404 / 选择题不经模型即判出）；三个既有冒烟脚本回归全过。
+
+**P3 剩余**：`programming-agent` 上移；课程/场景会话完整语义平移；客户端切换（P4）。
 - **ISSUE-023**：childId 隔离教训，P1/P3 在 server 侧重做时必须逐条对照
 - **ISSUE-056**：两套纪律/两处副本漂移的教训，是 §4 共享包的直接动因

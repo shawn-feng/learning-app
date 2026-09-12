@@ -57,10 +57,30 @@
 **验证**：server typecheck 0 错；`scripts/agent-session-check.mts` 扩到 **44 项全过**（新增 22 项：display 校验/推送、page_action 下行→回执闭环、scene 映射、事件累积、caps 装配与解析、guard 拦截与日期注入、AGENTS 注入）；`parent-agent-check.mts`(27) 与 `worker-catchup-check.mts` 回归全过；客户端 build 全绿；esbuild 产物 v0.4.0。会话就绪日志实测显示「caps=none → 工具 10 项」（未注册 page_*），协商按预期生效。
 
 **P3 余项（未做，下一批）**：
-- **考核 LLM 上移**（`electron/lib/exam-engine.ts` 的选课 LLM / 出题 / 判分；server 现有 exam 路由只有数据层）。
+- **考核 LLM 上移**（`electron/lib/exam-engine.ts` 的选课 LLM / 出题 / 判分；server 现有 exam 路由只有数据层）。→ **已实施，见下**
 - **`programming-agent` 上移**为 server 端子 agent（由 server agent 调用）。
 - **课程会话 / 场景会话语义**的完整平移（当前孩子会话是单会话形态；课程级 prompt 注入与 scene 专用会话属下一批）。
 - 客户端尚未切换到服务端 agent（P4）。
+
+---
+
+## 〇之四、P3 第二批：考核 LLM 上移（2026-09-12）
+
+**已落地**：
+- `server/src/agent/exam-engine.ts`：出题与判分两条链路自客户端 `exam-engine.ts` 上移。
+  - 出题：只覆盖**非结构化课程**（题库无挂题的课）——结构化课程本就走 `assess-selection.ts` 的题库直出，无需 LLM；prompt 组装抽为纯函数 `buildCourseGenerationPrompt`。
+  - 判分：逐题并发（上限 3）、判分口径取服务端 `buildScoringPrompt()`；**带选项的选择题走本地规则判分**（`judgeChoice`，识别不清才交 LLM 兜底）；prompt 组装抽为纯函数 `buildScorePrompt`。
+  - **选课 LLM 不迁**：2026-09-09 起固定档已改为「计划周期内必学课全考」的内置规则，LLM 选课已废弃（server 侧注释亦如此标记）。
+  - 审计：服务端 `exam-audit/<childId>/<YYYYMMDD>.jsonl`；**prompt 原文默认不落盘**（`EXAM_AUDIT_PROMPTS=1` 才写入），避免把长文本无意义落库。
+- `server/src/routes/exam-agent.ts`（feature `exam_agent`）：
+  - `POST /api/v1/exam/agent/generate` { childId, topicName, courseTitle, childName? } → { questions }——**输入只给标识**，课程配置（知识点详情/主题考核方法）由服务端 `fetchCoursesWithKnowledgePoints` 取真源拼装；找不到课程返回 404 并提示核对课程名。
+  - `POST /api/v1/exam/agent/grade` { childId, answers } → { perQuestion, overall }——**判分口径不接受客户端传入**（否则家长可编辑口径会被客户端覆盖，出现同答案不同分）。
+  - `GET /api/v1/exam/agent/scoring-prompt`：只读展示当前判分口径。
+- `fetchCoursesWithKnowledgePoints` 由 routes/exam.ts 导出复用。
+
+**验证**：typecheck 0 错；新增 `scripts/exam-agent-check.mts` **30 项全过**（JSON 提取容错 5 / 选择题规则判分 6 / prompt 组装 11 / 审计落盘 3 / 路由 401-403-400-404 与「选择题不经模型即判出」/ 版本协商）；`agent-session-check`(44)、`parent-agent-check`(27)、`worker-catchup-check` 回归全过；esbuild 产物 16.7MB（v0.4.0）。
+
+**P3 剩余**：`programming-agent` 上移；课程/场景会话完整语义平移；客户端切换（P4）。
 
 ---
 

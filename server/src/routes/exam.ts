@@ -647,7 +647,8 @@ function listPlanCourseMeta(
 }
 
 
-function fetchCoursesWithKnowledgePoints(
+/** 取「课程 + 知识点详情 + 主题考核方法」（P3 起亦被 exam-agent 路由复用于服务端出题）。 */
+export function fetchCoursesWithKnowledgePoints(
   dataDir: string,
   parentId: string,
   childId: string,
