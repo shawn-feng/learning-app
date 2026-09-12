@@ -7,7 +7,7 @@ import { getChildSession, getParentSession, getParentContentSession, disposeChil
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
 import { getSharedRuntime, getVisionModel } from "./pi-runtime";
-import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings } from "./server-agent-client";
+import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, bridgeChildAgentEvents, bridgeParentAgentEvents } from "./server-agent-client";
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
@@ -107,6 +107,49 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   let childPromptAbort: { stopped: boolean; abort: () => Promise<void> } | null = null;
   let parentPromptAbort: { stopped: boolean; abort: () => Promise<void> } | null = null;
   let parentContentPromptAbort: { stopped: boolean; abort: () => Promise<void> } | null = null; // ISSUE-068：家长教学内容会话在途守卫
+
+  // ---- 服务端 agent 流桥（P4 薄客户端）----
+  // 孩子/家长对话改走服务端 agent：pi:start_* 建立 SSE 流（事件桥回渲染层 pi:* 通道），
+  // pi:prompt* 走 POST（await 到本轮结束），渲染层契约（pi:reply/pi:reply_end/pi:streaming/...）不变。
+  const agentStreams = new Map<string, { close: () => void }>();
+  const sendToRenderer = (channel: string, payload: any) => {
+    getMainWindow()?.webContents.send(channel, payload);
+  };
+  const ensureChildStream = (childId: string) => {
+    const key = `child:${childId}`;
+    if (agentStreams.has(key)) return;
+    agentStreams.set(
+      key,
+      streamChildAgent({
+        childId,
+        onEvent: (e) => bridgeChildAgentEvents(e, childId, sendToRenderer),
+        onError: (err) => {
+          sendToRenderer("pi:reply_error", { childId, error: err });
+          sendToRenderer("pi:reply_end", { childId });
+        },
+      })
+    );
+  };
+  const ensureParentStream = (kind: "parent" | "parent-content") => {
+    const key = `parent:${kind}`;
+    if (agentStreams.has(key)) return;
+    agentStreams.set(
+      key,
+      streamParentAgent({
+        kind,
+        onEvent: (e) => bridgeParentAgentEvents(e, kind, sendToRenderer),
+        onError: (err) => {
+          sendToRenderer("pi:reply_error", { childId: kind, error: err });
+          sendToRenderer("pi:reply_end", { childId: kind });
+        },
+      })
+    );
+  };
+  // 在途守卫（薄客户端版）：与本地 session.abort 解耦，只防「上一轮未结束时重复发送」。
+  let childBusy = false;
+  let parentBusy = false;
+  let parentContentBusy = false;
+
   // SPLIT：服务端连接配置（纯服务端模式必需）
   ipcMain.handle("server:get_config", async () => {
     return { url: getServerUrl() };
@@ -1232,36 +1275,29 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     "pi:start_child",
     async (_e: IpcMainInvokeEvent, childId: string, courseKey?: string) => {
       try {
-        // ISSUE-029 任务2：courseKey（<topic>:<title>，如 english:12-yellow-01-...）→ 按课隔离子会话。
-        // 进入课程 = 每次全新干净窗口：先丢弃旧子会话（dispose + 清创建 Promise）再创建；
-        // 不传 courseKey 时走主会话，行为与之前完全一致。
-        if (courseKey) disposeChildCourseSession(childId, courseKey);
-        const session = await getChildSession(childId, courseKey);
-        attachSessionEvents(session, childId, getMainWindow);
-        const history = getSessionHistory(session);
-        const materials = (await getSessionMaterials(session, getChildDir(childId))).slice(-getMaterialsLimit());
-      // ISSUE-041：孩子打开会话时立即处理一轮云端收件箱（分配包/进度请求），不等定时轮询
-      try {
-        const { handleCloudInbox } = await import("./delivery");
-        handleCloudInbox(childId)
-          .then((r) => {
-            if (r.applied > 0 || r.pushed) console.log(`[start_child] inbox: applied=${r.applied} pushed=${r.pushed}`);
-          })
-          .catch(() => {});
-      } catch { /* 忽略 */ }
-      return { success: true, history, materials, materialsLimit: getMaterialsLimit() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
+        // 薄客户端：建立服务端 agent 事件流（SSE → pi:* 通道），会话由服务端持久管理。
+        ensureChildStream(childId);
+        // ISSUE-041：孩子打开会话时立即处理一轮云端收件箱（分配包/进度请求），不等定时轮询
+        try {
+          const { handleCloudInbox } = await import("./delivery");
+          handleCloudInbox(childId)
+            .then((r) => {
+              if (r.applied > 0 || r.pushed) console.log(`[start_child] inbox: applied=${r.applied} pushed=${r.pushed}`);
+            })
+            .catch(() => {});
+        } catch { /* 忽略 */ }
+        // 历史与资料改由服务端会话/display_content 推送驱动；此处返回空（联调点：会话历史回填）
+        return { success: true, history: [], materials: [], materialsLimit: getMaterialsLimit() };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
     }
-  });
+  );
 
   ipcMain.handle("pi:start_parent", async () => {
     try {
-      const session = await getParentSession();
-      attachSessionEvents(session, "parent", getMainWindow);
-      // ISSUE-039：返回会话历史，前端进入时回填聊天记录
-      const history = getSessionHistory(session);
-      return { success: true, history };
+      ensureParentStream("parent");
+      return { success: true, history: [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1280,100 +1316,27 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       console.log(
         `[pi:prompt] child=${childId}${courseKey ? ` course=${courseKey}` : ""} text="${text.slice(0, 50)}" images=${imgCount}`
       );
-      // ISSUE-068：在途拦截（含「停止中」）——上一轮 prompt 仍在跑/收尾时直接拒绝，
-      // 返回友好中文提示，避免把 SDK 的 "Agent is already processing" 抛给用户。
-      if (childPromptAbort) {
+      // 在途守卫：上一轮未结束时拒绝（服务端也会 409 busy，这里给友好提示）
+      if (childBusy) {
         return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
       }
+      childBusy = true;
       try {
-        // ISSUE-029 任务2：courseKey 有值时路由到对应课程子会话（英语课），否则主会话。
-        const session = await getChildSession(childId, courseKey);
-        // 图片上传：若当前模型不支持图像输入，自动切换到视觉模型（ISSUE-008）。
-        // 切换是会话级、持久的（qwen3-vl 也能正常聊文字），仅切一次，不做切换提示状态回退。
-        if (imgCount > 0) {
-          const cur: any = session.model;
-          const supportsImage = Array.isArray(cur?.input) && cur.input.includes("image");
-          if (!supportsImage) {
-            // 用设置页配置的默认视觉模型（缺省 qwen/qwen3-vl-flash，见 getVisionModel）
-            const vl = await getVisionModel();
-            if (vl) {
-              await session.setModel(vl);
-              _e.sender.send("pi:vision_model_switched", { childId, modelId: vl.id });
-              console.log(`[pi:prompt] switched to vision model ${vl.id} for image input`);
-            }
-          }
-        }
-        console.log(`[pi:prompt] session ready, calling prompt()...`);
-        const beforeCount = (session as any).messages?.length ?? 0;
-        childPromptAbort = { stopped: false, abort: () => session.abort() };
-        await session.prompt(text, imgCount > 0 ? { images: images! } : undefined);
-        console.log(`[pi:prompt] prompt() completed`);
-        // 方案B 阶段①：每轮对话后即时增量同步会话 jsonl 上云（失败由 5min 定时/退出兜底重试）
-        void syncChildSessions(childId, "prompt").catch(() => {});
-        // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件（前端已自行收起工作气泡）
-        if (childPromptAbort?.stopped) {
-          _e.sender.send("pi:reply_end", { childId });
-          return { success: true, stopped: true };
-        }
-
-      const messages: any[] = session.messages || [];
-
-      // 关键：session.prompt() 出错时不抛异常，而是把 stopReason="error" +
-      // errorMessage 记在最后一条 assistant 消息里（content 为空）。
-      // 若忽略它，下面的提取逻辑会回退到旧回复，导致断网时反复显示同一条旧消息。
-      const lastAssistant = findLastAssistant(messages);
-      const errMsg = assistantError(lastAssistant);
-      if (errMsg) {
-        const friendly = friendlyError(errMsg);
-        console.error(`[pi:prompt] LLM 调用失败:`, errMsg);
-        // ISSUE-010：失败轮也记账（input 通常已实际发生），ok=false
-        logRound({ session, beforeCount, channel: "child", childId, ok: false });
-        _e.sender.send("pi:reply_error", { childId, error: friendly });
+        // 薄客户端：交给服务端 agent。courseKey → course:<key> 会话；主会话 = main。
+        ensureChildStream(childId);
+        const session = courseKey ? (`course:${courseKey}` as const) : ("main" as const);
+        await promptChild(childId, text, { session, images: images ?? undefined });
+        return { success: true };
+      } catch (err) {
+        console.error(`[pi:prompt] error:`, (err as Error).message);
+        _e.sender.send("pi:reply_error", { childId, error: friendlyError((err as Error).message) });
         _e.sender.send("pi:reply_end", { childId });
-        return { success: false, error: friendly };
+        return { success: false, error: (err as Error).message };
+      } finally {
+        childBusy = false;
       }
-
-      // ISSUE-016：一次 prompt 内 agent 可能产生**多条 assistant 消息**（工具调用轮中间的
-      // 文本 + 最终回复）。原实现只提取最后一条 → 中间文本实时丢失（jsonl 已写入，历史
-      // 恢复才显示两条）。改为按消息逐条回发：第一条替换前端工作气泡、后续追加新气泡，
-      // 与历史恢复的呈现一致（同一轮回复的多段内容各自成气泡）。
-      const replyTexts: string[] = [];
-      for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
-        const m = messages[i];
-        if (m.role === "assistant") {
-          let t = "";
-          for (const c of (m.content || [])) {
-            if (c.type === "text") t += c.text;
-          }
-          if (t.trim()) replyTexts.push(t);
-        }
-      }
-      if (replyTexts.length > 0) {
-        for (const t of replyTexts) {
-          _e.sender.send("pi:reply", { childId, text: t });
-        }
-      } else {
-        // 没有可展示的文本回复（异常兜底，正常应有 text）
-        _e.sender.send("pi:reply_error", { childId, error: "没有收到回复，请重试" });
-      }
-      _e.sender.send("pi:reply_end", { childId });
-      // ISSUE-010：正常轮记账（真实 input/output + 已有/新增估算）
-      logRound({ session, beforeCount, channel: "child", childId, ok: true, replyLength: replyTexts.join("").length });
-
-      return { success: true };
-    } catch (err) {
-      // abort 中断导致 prompt reject：不当作错误回发（前端已自行收起工作气泡）
-      if (childPromptAbort?.stopped) {
-        _e.sender.send("pi:reply_end", { childId });
-        return { success: true, stopped: true };
-      }
-      console.error(`[pi:prompt] error:`, (err as Error).message);
-      _e.sender.send("pi:reply_error", { childId, error: friendlyError((err as Error).message) });
-      return { success: false, error: (err as Error).message };
-    } finally {
-      childPromptAbort = null;
     }
-  });
+  );
 
   // ISSUE-061：场景对话会话 prompt —— 语音球/场景键盘输入走独立 scene agent（专职扮演，与课程会话解耦）
   let scenePromptAbort: { stopped: boolean; abort: () => void } | null = null;
@@ -1555,82 +1518,30 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   // ISSUE-037：家长发送支持 images（对齐 pi:prompt）
   ipcMain.handle("pi:prompt_parent", async (_e: IpcMainInvokeEvent, text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) => {
-    // ISSUE-068：在途拦截（含「停止中」），避免重入触发 SDK "Agent is already processing"
-    if (parentPromptAbort) {
+    // 在途守卫：上一轮未结束时拒绝
+    if (parentBusy) {
       return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
     }
+    parentBusy = true;
     try {
-      const session = await getParentSession();
-      const beforeCount = (session as any).messages?.length ?? 0;
-      parentPromptAbort = { stopped: false, abort: () => session.abort() };
-      const imgCount = images?.length || 0;
-      await session.prompt(text, imgCount > 0 ? { images: images! } : undefined);
-      // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件
-      if (parentPromptAbort?.stopped) {
-        _e.sender.send("pi:reply_end", { childId: "parent" });
-        return { success: true, stopped: true };
-      }
-      // ISSUE-037：session.prompt() 出错时不抛异常，而是把 stopReason="error" + errorMessage
-      // 记在最后一条 assistant 消息里。必须像孩子会话（pi:prompt）一样显式检查并回发
-      // pi:reply_error / pi:reply，否则前端（SkillEditor 等）只靠 streaming 事件、无任何错误反馈，
-      // 表现为「发送后完全没反应、输入框一直转圈」。
-      const lastAssistant = findLastAssistant((session as any).messages || []);
-      const errMsg = assistantError(lastAssistant);
-      if (errMsg) {
-        const friendly = friendlyError(errMsg);
-        console.error(`[pi:prompt_parent] LLM 调用失败:`, errMsg);
-        // ISSUE-010：失败轮也记账（input 通常已实际发生），ok=false
-        logRound({ session, beforeCount, channel: "parent", ok: false });
-        _e.sender.send("pi:reply_error", { childId: "parent", error: friendly });
-        _e.sender.send("pi:reply_end", { childId: "parent" });
-        return { success: false, error: friendly };
-      }
-
-      // ISSUE-016：与孩子分支一致——本轮新增的每条 assistant 消息逐条回发（多条成多个气泡）
-      const replyTexts: string[] = [];
-      const messages: any[] = (session as any).messages || [];
-      for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
-        const m = messages[i];
-        if (m.role === "assistant") {
-          let t = "";
-          for (const c of m.content || []) {
-            if (c.type === "text") t += c.text;
-          }
-          if (t.trim()) replyTexts.push(t);
-        }
-      }
-      if (replyTexts.length > 0) {
-        for (const t of replyTexts) {
-          _e.sender.send("pi:reply", { childId: "parent", text: t });
-        }
-      } else {
-        // 没有可展示的文本回复（异常兜底，正常应有 text）
-        _e.sender.send("pi:reply_error", { childId: "parent", error: "没有收到回复，请重试" });
-      }
-      _e.sender.send("pi:reply_end", { childId: "parent" });
-      // ISSUE-010：正常轮记账
-      logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyTexts.join("").length });
+      // 薄客户端：家长会话走服务端（图片暂未随 prompt 上送——联调点：家长识图走 parent_read_image 工具）
+      ensureParentStream("parent");
+      await promptParent(text, { kind: "parent" });
       return { success: true };
     } catch (err) {
-      // abort 中断导致 prompt reject：不当作错误回发
-      if (parentPromptAbort?.stopped) {
-        _e.sender.send("pi:reply_end", { childId: "parent" });
-        return { success: true, stopped: true };
-      }
       console.error(`[pi:prompt_parent] error:`, (err as Error).message);
       _e.sender.send("pi:reply_error", { childId: "parent", error: friendlyError((err as Error).message) });
       _e.sender.send("pi:reply_end", { childId: "parent" });
       return { success: false, error: (err as Error).message };
     } finally {
-      parentPromptAbort = null;
+      parentBusy = false;
     }
   });
 
   // ---- 教学内容生成专用会话（ISSUE-026）：与通用家长助手解耦，专门引导家长制作教学内容 ----
   ipcMain.handle("pi:start_parent_content", async () => {
     try {
-      const session = await getParentContentSession();
-      attachSessionEvents(session, "parent-content", getMainWindow);
+      ensureParentStream("parent-content");
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1638,70 +1549,22 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("pi:prompt_parent_content", async (_e: IpcMainInvokeEvent, text: string) => {
-    // ISSUE-068：在途拦截（含「停止中」），避免重入触发 SDK "Agent is already processing"
-    if (parentContentPromptAbort) {
+    // 在途守卫：上一轮未结束时拒绝
+    if (parentContentBusy) {
       return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
     }
+    parentContentBusy = true;
     try {
-      const session = await getParentContentSession();
-      const beforeCount = (session as any).messages?.length ?? 0;
-      // ISSUE-068：登记在途守卫，供 pi:abort 标记停止 + 在途拦截判断
-      parentContentPromptAbort = { stopped: false, abort: () => session.abort() };
-      await session.prompt(text);
-      // 用户点「停止」中断了本轮：跳过正常回复/错误回发，只发结束事件
-      if (parentContentPromptAbort?.stopped) {
-        _e.sender.send("pi:reply_end", { childId: "parent-content" });
-        return { success: true, stopped: true };
-      }
-      // ISSUE-037：同 pi:prompt_parent——prompt 失败不抛异常，错误在最后一条 assistant 消息里，
-      // 必须显式检查并回发 pi:reply_error / pi:reply（childId=parent-content，前端 TopicDetail /
-      // TopicEditor 据此展示），否则家长「课程管理」页聊天发送后静默无反应、busy 卡死。
-      const lastAssistant = findLastAssistant((session as any).messages || []);
-      const errMsg = assistantError(lastAssistant);
-      if (errMsg) {
-        const friendly = friendlyError(errMsg);
-        console.error(`[pi:prompt_parent_content] LLM 调用失败:`, errMsg);
-        logRound({ session, beforeCount, channel: "parent", ok: false });
-        _e.sender.send("pi:reply_error", { childId: "parent-content", error: friendly });
-        _e.sender.send("pi:reply_end", { childId: "parent-content" });
-        return { success: false, error: friendly };
-      }
-
-      // ISSUE-016：与孩子分支一致——本轮新增的每条 assistant 消息逐条回发（多条成多个气泡）
-      const replyTexts: string[] = [];
-      const messages: any[] = (session as any).messages || [];
-      for (let i = Math.max(0, beforeCount); i < messages.length; i++) {
-        const m = messages[i];
-        if (m.role === "assistant") {
-          let t = "";
-          for (const c of m.content || []) {
-            if (c.type === "text") t += c.text;
-          }
-          if (t.trim()) replyTexts.push(t);
-        }
-      }
-      if (replyTexts.length > 0) {
-        for (const t of replyTexts) {
-          _e.sender.send("pi:reply", { childId: "parent-content", text: t });
-        }
-      } else {
-        _e.sender.send("pi:reply_error", { childId: "parent-content", error: "没有收到回复，请重试" });
-      }
-      _e.sender.send("pi:reply_end", { childId: "parent-content" });
-      logRound({ session, beforeCount, channel: "parent", ok: true, replyLength: replyTexts.join("").length });
+      ensureParentStream("parent-content");
+      await promptParent(text, { kind: "parent-content" });
       return { success: true };
     } catch (err) {
-      // abort 中断导致 prompt reject：不当作错误回发（前端已自行收起工作气泡）
-      if (parentContentPromptAbort?.stopped) {
-        _e.sender.send("pi:reply_end", { childId: "parent-content" });
-        return { success: true, stopped: true };
-      }
       console.error(`[pi:prompt_parent_content] error:`, (err as Error).message);
       _e.sender.send("pi:reply_error", { childId: "parent-content", error: friendlyError((err as Error).message) });
       _e.sender.send("pi:reply_end", { childId: "parent-content" });
       return { success: false, error: (err as Error).message };
     } finally {
-      parentContentPromptAbort = null;
+      parentContentBusy = false;
     }
   });
 

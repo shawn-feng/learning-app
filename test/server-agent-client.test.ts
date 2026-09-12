@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { translateAgentEvent, parseSseChunk } from "../electron/lib/server-agent-client";
+import { translateAgentEvent, parseSseChunk, messageText, bridgeChildAgentEvents } from "../electron/lib/server-agent-client";
 
 describe("parseSseChunk", () => {
   it("解析单条事件（id/event/data）", () => {
@@ -62,5 +62,36 @@ describe("translateAgentEvent（服务端 SSE → 渲染层 pi:* 通道，契约
   });
   it("未知类型 → null（不打扰渲染层）", () => {
     expect(translateAgentEvent({ id: 10, type: "hello", data: {} }, childId, "main")).toBeNull();
+  });
+});
+
+describe("桥：最终回复气泡语义（pi:reply / pi:reply_end）", () => {
+  const childId = "c1";
+  function collect(events: Array<{ id: number; type: string; data: any }>) {
+    const sent: Array<{ channel: string; payload: any }> = [];
+    for (const e of events) bridgeChildAgentEvents(e, childId, (channel, payload) => sent.push({ channel, payload }));
+    return sent;
+  }
+  it("messageText 提取 assistant 文本", () => {
+    expect(messageText({ content: [{ type: "text", text: "你好" }, { type: "text", text: "呀" }] })).toBe("你好呀");
+    expect(messageText({ content: [{ type: "image", data: "x" }] })).toBe("");
+    expect(messageText(null)).toBe("");
+  });
+  it("assistant message_end → pi:reply（最终气泡）", () => {
+    const sent = collect([
+      { id: 1, type: "text_delta", data: { delta: "你好" } },
+      { id: 2, type: "message_end", data: { message: { role: "assistant", content: [{ type: "text", text: "你好呀" }] } } },
+      { id: 3, type: "turn_end", data: {} },
+    ]);
+    const channels = sent.map((s) => s.channel);
+    expect(channels).toContain("pi:streaming");
+    expect(channels).toContain("pi:reply");
+    expect(sent.find((s) => s.channel === "pi:reply")!.payload).toEqual({ childId, text: "你好呀" });
+    expect(channels).toContain("pi:reply_end");
+  });
+  it("error → pi:reply_error + pi:reply_end（聊天框显式报错）", () => {
+    const sent = collect([{ id: 1, type: "error", data: { message: "No API key" } }]);
+    expect(sent.some((s) => s.channel === "pi:reply_error" && s.payload.error === "No API key")).toBe(true);
+    expect(sent.some((s) => s.channel === "pi:reply_end")).toBe(true);
   });
 });

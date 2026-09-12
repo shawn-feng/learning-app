@@ -283,4 +283,82 @@ export async function checkProviderAuth(provider: string, token = sessionToken()
   return r.status === true;
 }
 
+// ==================== 对话流桥（服务端 SSE → 渲染层 pi:* + pi:reply 语义） ====================
+
+/** 从服务端下发的 assistant 消息里提取纯文本（content 里的 text 块拼接）。 */
+export function messageText(message: any): string {
+  if (!message || !Array.isArray(message.content)) return "";
+  let t = "";
+  for (const c of message.content) {
+    if (c && c.type === "text" && typeof c.text === "string") t += c.text;
+  }
+  return t;
+}
+
+/**
+ * 把服务端 agent 事件流桥接到渲染层（孩子侧）——除 translateAgentEvent 的 pi:* 通道外，
+ * 额外补「最终回复气泡」语义：
+ *   message_end(assistant) → pi:reply（整段文本，前端用它替换工作气泡）+ pi:message_end
+ *   turn_end / agent_end  → pi:reply_end（本轮收束）
+ *   error                  → pi:reply_error + pi:reply_end（聊天框显式报错，而非静默转圈）
+ * 这是本地实现里 session.prompt 返回后「逐条回发 assistant 文本」的等价物。
+ * @param send 渲染层通道发送函数（ipc-handlers 传入 webContents.send）
+ */
+export function bridgeChildAgentEvents(
+  e: AgentEvent,
+  childId: string,
+  send: (channel: string, payload: any) => void
+): void {
+  const base = translateAgentEvent(e, childId, "main");
+  if (base) send(base.channel, base.payload);
+
+  switch (e.type) {
+    case "message_end": {
+      const text = messageText(e.data?.message);
+      if (text.trim()) send("pi:reply", { childId, text });
+      break;
+    }
+    case "turn_end":
+    case "agent_end":
+      send("pi:reply_end", { childId });
+      break;
+    case "error":
+      send("pi:reply_error", { childId, error: String(e.data?.message ?? "未知错误") });
+      send("pi:reply_end", { childId });
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+ * 家长侧桥（childId 语义用 "parent" / "parent-content" 表示会话，供前端路由）。
+ */
+export function bridgeParentAgentEvents(
+  e: AgentEvent,
+  childId: "parent" | "parent-content",
+  send: (channel: string, payload: any) => void
+): void {
+  const base = translateAgentEvent(e, childId, "parent");
+  if (base) send(base.channel, base.payload);
+
+  switch (e.type) {
+    case "message_end": {
+      const text = messageText(e.data?.message);
+      if (text.trim()) send("pi:reply", { childId, text });
+      break;
+    }
+    case "turn_end":
+    case "agent_end":
+      send("pi:reply_end", { childId });
+      break;
+    case "error":
+      send("pi:reply_error", { childId, error: String(e.data?.message ?? "未知错误") });
+      send("pi:reply_end", { childId });
+      break;
+    default:
+      break;
+  }
+}
+
 export { ServerError };
