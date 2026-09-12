@@ -90,7 +90,7 @@
 | 078 | 家长上传文件后家长 agent 读不到：【附件文件】标记路径被错误剥 `parents/<pid>/` 前缀 + 聊天未透传登录家长 id（全落 `parents/default`） | ✅ 已实施 | 2026-09-12 | [详情](ISSUES/ISSUE-078.md) |
 | 079 | 家长 agent 无法整理/治理服务端课程学习资料：缺 list/read/delete/move 的 agent 工具封装（仅暴露上传） | 高 | 2026-09-12 | [详情](ISSUES/ISSUE-079.md) |
 | 080 | 设计讨论：agent 从客户端迁到 server 端——**✅已定案：不要过渡 / agent 只在 server / client 零 agent；5 项设计点全部拍板（page_* 保留并上移、TTS server 合成、提醒本地播放、硬断代、programming-agent 上移）** | **高** | 2026-09-12 | [详情](ISSUES/ISSUE-080.md) |
-| 081 | P1+P2：agent 服务端化·共享包 + 会话权威 + SSE + **P2 家长 agent 上移（含 ISSUE-079 资料治理 server 形态）**——**✅ P0+P1+P2 已实施（服务端 0.4.0，parent_agent/server_agent 特性）** | 高 | 2026-09-12 | [详情](ISSUES/ISSUE-081.md) |
+| 081 | agent 服务端化：共享包 + 会话权威 + SSE + 家长/孩子/考核/编程 agent 上移 + 客户端零 agent——**✅ P0~P4 已实施（服务端 0.4.0，server_agent/parent_agent/exam_agent 特性；本地 agent 代码已删）** | 高 | 2026-09-12 | [详情](ISSUES/ISSUE-081.md) |
 
 ## 记录格式（模板）
 

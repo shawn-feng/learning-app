@@ -2,7 +2,7 @@
 
 - **类型**：架构 / 实施（承接 ISSUE-080 §七定案）
 - **优先级**：高
-- **状态**：**P0 + P1 + P2 + P3（三批全部）已实施（2026-09-12）**，仅剩 P4
+- **状态**：**P0 + P1 + P2 + P3（三批全部）+ P4 客户端瘦身 已实施（2026-09-12）**；web/手机端 `window.api` 适配层、客户端会话镜像通道下线、家长侧排期/考核/积分工具上移为后续增量（用户定范围「P4 只做客户端瘦身」）
 - **记录时间**：2026-09-12
 - **设计真源**：`DESIGN-server-agent-migration-2026-09-12.md`（§6 P1 / §9 实施记录）
 - **标签**：`server-agent` `SPLIT` `会话权威` `SSE` `分水岭`
@@ -102,13 +102,19 @@
 
 ---
 
-## 〇之六、P4 客户端瘦身（进行中，2026-09-12）
+## 〇之六、P4 客户端瘦身（✅ 已完成，2026-09-12）
 
 用户定范围：**只做客户端瘦身，web/手机端先不做**；执行方式「直接切薄客户端」。
 
-**已落地（第一批，可独立验证）**：`electron/lib/server-agent-client.ts` 薄客户端核心适配层——SSE 解析（`parseSseChunk`）、事件→渲染层 `pi:*` 通道翻译（`translateAgentEvent`，契约不变）、`streamChildAgent`/`streamParentAgent`/`promptChild`/`promptParent`/`postPageEvent`/`postPageResult`/`examGenerateCourse`/`examGrade`。验证：客户端 build 全绿 + `test/server-agent-client.test.ts` 12 项全过。新增 `pi:display_content` 通道（渲染层待订阅）。
+**已落地（分批 commit）**：
+- `electron/lib/server-agent-client.ts` 薄客户端核心适配层——SSE 解析（`parseSseChunk`）、事件→渲染层 `pi:*` 通道翻译（`translateAgentEvent`，契约不变）、`streamChildAgent`/`streamParentAgent`/`promptChild`/`promptParent`/`postPageEvent`/`postPageResult`/`examGenerateCourse`/`examGrade`。新增 `pi:display_content` 通道。
+- 服务端补「模型/密钥/app_settings」路由（`/api/v1/models/*`），设置页 handler 接线走服务端。
+- 孩子/家长/场景/考核四类对话主链路全部切服务端；会话重置/历史回填读服务端。
+- **收尾（commit `5ea8fd6`）**：删 8 个本地 agent 模块（pi-session/pi-runtime/exam-engine/parent-vision/programming-agent/custom-tools/daily-summary/recording-prompt）+ 12 个仅测本地 agent 的测试；`scheduler.ts` 移除本地 recording 调度、`runSessionReset` 改走服务端 `resetChildSession`；`main.ts` 移除 `disposeAllSessions`；`formatLocalDate` 迁独立 `electron/lib/dates.ts`。
 
-**P4 剩余（下一批）**：① 接线 ipc-handlers ~40 个 agent 相关 handler 到 server-agent-client；② 删本地 agent 代码（pi-session/pi-runtime/exam-engine/parent-vision/programming-agent/custom-tools/daily-summary 临时会话）；③ 渲染层 `pi:display_content` 订阅 + MaterialsPanel 改接推送；④ 会话历史读服务端。完整链路需 201 联调（本环境无服务端+key，无法 E2E）。
+**验证**：客户端 build 全绿；`test/server-agent-client.test.ts` 15 项全过；vitest 全量 238 通过 / 11 失败均为改动无关既有失败（mastery 已下线、assessment `aliyun-kid` 缺失、assess-guide 内容漂移、page-bridge 已知 2 项）。完整链路需 201 联调（本环境无服务端+key，无法 E2E）。
+
+**后续增量（非本批）**：web/手机端 `window.api` 适配层；客户端会话镜像通道下线；家长侧排期/考核/积分工具上移；渲染层 `pi:display_content` 订阅 + MaterialsPanel 改接推送；prompt 图片上送（孩子/家长）。
 
 ---
 

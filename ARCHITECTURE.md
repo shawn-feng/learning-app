@@ -162,8 +162,8 @@
 ## 13. 服务端 agent 交互（P1 分水岭，2026-09-12）
 
 > 背景与决策：`DESIGN-server-agent-migration-2026-09-12.md`（定案：**agent 只在 server、client 零 agent、不要过渡**）；
-> 本文只登记当前已落地部分与落点，进度见 ISSUE-081。**客户端尚未切换到服务端 agent（属 P4）**，故现在的
-> 客户端仍是旧的本地 agent，两套并存只是迁移过程中的临时状态，不是设计目标。
+> 本文只登记当前已落地部分与落点，进度见 ISSUE-081。**P4 客户端瘦身已完成（2026-09-12）**：客户端运行时
+> 不再创建任何本地 agent 会话，本地 agent 实现已从代码库删除（见 §13.5）。
 
 ### 13.1 已落地（P1）
 
@@ -211,9 +211,13 @@
 - **programming-agent 上移**（`server/src/agent/programming-agent.ts`）：独立会话、模型取家长「编程 agent 模型」（未配置即报错）、输出路径沙箱；家长侧工具 `parent_build_material`、孩子侧 `create_html_lesson`。
 - **会话类型**（`session-registry.ts`）：`main` / `scene` / `course:<课程名>` 三种独立落盘；场景会话工具收窄（`scene_command`+`display_content`+`get_date`）、课程会话注入该课教法/考核要点/资料路径；路由 `session` 参数区分，SSE 仍按孩子聚合。
 
-### 13.5 尚未落地（P4）
+### 13.5 客户端瘦身完成（P4，2026-09-12）
 
-客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端 agent 与镜像通道下线（P4）；家长侧排期/考核/积分工具上移（P2 余项）。
+- **客户端零 agent 已落地**：孩子/家长/场景/考核四类对话运行时全部走服务端 agent（`electron/lib/server-agent-client.ts` 薄客户端适配层：SSE 解析 + 事件→渲染层 `pi:*` 通道翻译，契约不变）；本地 agent 模块（pi-session / pi-runtime / exam-engine / parent-vision / programming-agent / custom-tools / daily-summary / recording-prompt）已删除。
+- **会话重置/历史读服务端**：`pi:reset` / `pi:start_*` 回填历史走 `GET /agent/:childId/history`、`POST /agent/:childId/reset`；`scheduler.ts` 本地 recording 调度已移除（服务端 worker 接管）、`runSessionReset` 改走服务端。
+- **模型/密钥/app_settings** 走服务端 `POST /api/v1/models/*`（设置页 handler 已接线）。
+
+**后续增量（未做）**：web/手机端 `window.api` web 适配层；客户端会话镜像通道下线（`session-sync.ts` 仍保留，旧客户端兼容）；家长侧排期/考核/积分工具上移（P2 余项）；渲染层 `pi:display_content` 订阅 + MaterialsPanel 改接推送；prompt 图片上送（孩子/家长）。
 
 ---
 
