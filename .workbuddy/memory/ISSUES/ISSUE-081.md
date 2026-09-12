@@ -2,10 +2,24 @@
 
 - **类型**：架构 / 实施（承接 ISSUE-080 §七定案）
 - **优先级**：高
-- **状态**：待实施
+- **状态**：**P0 + P1 已实施（2026-09-12）**，P2~P4 待做
 - **记录时间**：2026-09-12
-- **设计真源**：`DESIGN-server-agent-migration-2026-09-12.md`（§6 P1）
+- **设计真源**：`DESIGN-server-agent-migration-2026-09-12.md`（§6 P1 / §9 实施记录）
 - **标签**：`server-agent` `SPLIT` `会话权威` `SSE` `分水岭`
+
+---
+
+## 〇、实施结果（2026-09-12）
+
+**已落地**：`packages/agent-core` 共享包（paths/bridge/sessions/runtime/prompts，recording prompt 两端副本已合并为一份）；服务端 agent 路由（`routes/agent.ts`：SSE 流 + prompt + 事件上行 + 资料页操作回执；feature `server_agent`）；持久会话注册表（`agent/session-registry.ts` → `agent-sessions/<pid>/<cid>/`）；事件中枢（`stream-hub.ts`，Last-Event-ID 重放）；服务端文件工具（`fs-tools.ts`，路径沙箱）；上下文压缩上移（`kb-summary-tool.ts` 复用 worker 的 `runRecordingSummary`）；构建对齐（tsc 退为类型检查、产物 = esbuild `server.cjs`、SDK 锁定服务端副本）；版本 0.4.0。
+
+**验证**：server typecheck 0 错；esbuild 产物 15.9MB（v0.4.0）；`scripts/agent-session-check.mts` 22 项全过；`worker-catchup-check.mts` 全过；客户端 build 全绿（page-bridge 2 个既有失败与本改动无关）。
+
+**边界（未做）**：客户端尚未切换到服务端 agent（P4）；DB 会话镜像未翻转（服务端会话已自持落盘，镜像通道保留给旧客户端）；孩子工具面仍是 P1 子集（display_content / page_* / 考核 / learning-guard / AGENTS 属 P3）。
+
+**新增目录约定**：`agent-sessions/<parentId>/<childId>/`（服务端自持会话）、`workspaces/<parentId>/<childId>/`（文件工具根），均已在 `paths.ts` 集中定义并登记 ARCHITECTURE §2.1。
+
+**踩坑**：① 共享包直接解析 SDK 会命中错误版本（两端 SDK 版本不同、`AgentToolResult.details` 必填差异）→ 服务端用 alias 锁定自己的副本；② `server/package.json` 的 UTF-8 BOM 会让 `JSON.parse` 崩（build.mjs 已加剥 BOM 兜底）。
 
 ---
 

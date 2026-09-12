@@ -187,5 +187,50 @@ packages/agent-core/            # 新增，server 与 client(过渡期) 共用�
 - **ISSUE-078**：已完成的上传路径/家长隔离修复保持有效（P2 后在 server 侧天然成立）
 - **ISSUE-020**：编程 agent 定案并入服务端（server 端子 agent，由 server agent 调用）
 - **MATERIAL-BRIDGE-PROTOCOL.md**：协议拓扑从「页面 ↔ 本地 agent」变为「页面 ↔ 客户端宿主 ↔ server agent」，落地时按本文件 §4 同步修订
+
+---
+
+## 9. 实施记录：P0 + P1（2026-09-12）
+
+### 9.1 已落地
+
+| 项 | 落点 | 说明 |
+|---|---|---|
+| 共享包 | `packages/agent-core` | `paths` / `bridge` / `sessions` / `runtime` / `prompts`（recording prompt 真源，已合并两端漂移副本） |
+| 服务端 agent 路由 | `server/src/routes/agent.ts` | SSE 流 + prompt + 事件上行 + 资料页操作回执；feature 标志 `server_agent` |
+| 会话注册表 | `server/src/agent/session-registry.ts` | 按 `parentId:childId` 复用**持久会话**，事件广播多端 |
+| 事件中枢 | `server/src/agent/stream-hub.ts` | 环形缓冲 + `Last-Event-ID` 重放 + 订阅退订 |
+| 服务端文件工具 | `server/src/agent/fs-tools.ts` | read/write/edit/ls，路径沙箱（越界拒绝） |
+| 上下文压缩上移 | `server/src/agent/kb-summary-tool.ts` | `summarize_conversation` 复用 worker 的 `runRecordingSummary` |
+| 构建对齐 | `server/tsconfig.json` / `scripts/build.mjs` / `package.json` | tsc 退为纯类型检查（noEmit）；构建物 = esbuild `dist/server.cjs`（与 201 生产一致）；SDK 别名锁定服务端副本 |
+| 版本 | `SERVER_VERSION` → 0.4.0，features + `server_agent` | 客户端将来据此判断「可切换到服务端 agent」 |
+
+### 9.2 与设计的两处偏差（均已落地并记录原因）
+
+1. **共享包的消费方式**：客户端只引 **SDK-free 模块**（`bridge` / `prompts`，相对路径转发），服务端以包名引入全部模块并把 SDK 别名锁定到 `server/node_modules`。
+   原因：两端固定了不同版本的 pi-coding-agent（服务端 0.84.1 精确、客户端 ^0.84.1），若共享模块直接解析 SDK，会从共享包位置向上命中**其中一侧**的副本，导致另一侧编译/打包静默用错版本——本次实测已出现类型差异（服务端 0.84.1 要求 `AgentToolResult.details` 必填，客户端不要求），印证了这个风险。
+2. **新增两个服务端目录**（设计时未定，实施中确定）：
+   - `agent-sessions/<parentId>/<childId>/`：服务端自持会话（与客户端镜像 `sessions/` 分开，避免命名/游标互相污染）；
+   - `workspaces/<parentId>/<childId>/`：孩子 agent 工作区（文件工具根）。
+   两者均已在 `packages/agent-core/src/paths.ts` 集中定义，并在 `ARCHITECTURE.md` §2.1 登记。
+
+### 9.3 P1 的边界（尚未做的部分）
+
+- **客户端尚未切换到服务端 agent**：切换属 P4（含 `window.api` web 适配层与客户端 agent 拆除）。当前客户端仍跑旧本地 agent，是迁移过程中的临时并存，不是设计目标。
+- **DB 会话镜像未翻转**：`session_files/session_messages` 仍是客户端权威镜像；服务端会话已自持落盘（`agent-sessions/`），镜像通道保留兼容旧客户端，P4 随客户端改造下线。
+- **孩子工具面仍是 P1 子集**：kb 三件套 + 文件工具 + `get_date` + `summarize_conversation`；`display_content` / page_* / 考核 / learning-guard / AGENTS 真源接入属 P3。
+
+### 9.4 验证
+
+- `server npm run typecheck` → 0 错；`node scripts/build.mjs` → `dist/server.cjs` 15.9MB（banner v0.4.0，import_meta 垫片 18 处）。
+- `server/scripts/agent-session-check.mts` → **22 项全过**（事件中枢/沙箱/文件工具/路由鉴权与隔离/版本协商；prompt 在无模型 key 时干净报错并流出 `user_message,error,turn_end`，不烧 token）。
+- `server/scripts/worker-catchup-check.mts` → 全过（证明共享包抽取未破坏既有 worker 行为）。
+- 客户端 `npm run build` → 全绿；`test/page-bridge.test.ts` 32 通过 / 2 失败（两个失败均为**改动无关的既有失败**：`src/lib/page-bridge.ts` 的 `injectBridge` 组合断言与 BRIDGE_SCRIPT 体积断言）。
+- 清理：`server/dist` 移除旧的 tsc 产物（只保留 `server.cjs`），避免「跑的是过期代码」；`worker-tasks-check.mts` 修正为不再假设第二个任务是 todo（todo 已于计划域重构迁至 plan-domain 游标驱动）。
+
+### 9.5 踩坑登记
+
+- **package.json 的 BOM**：用脚本重写 `server/package.json` 时若引入 UTF-8 BOM，Node 的 `JSON.parse` 会抛 `Unexpected token ''`（构建产物其实已生成，只在末尾读版本时崩）。已给 `scripts/build.mjs` 加 `replace(/^\uFEFF/, "")` 兜底。
+- **SDK 版本严格类型差异**：见 9.2.1——服务端 `AgentToolResult` 要求 `details` 必填，新增工具须带 `details: {}`。
 - **ISSUE-023**：childId 隔离教训，P1/P3 在 server 侧重做时必须逐条对照
 - **ISSUE-056**：两套纪律/两处副本漂移的教训，是 §4 共享包的直接动因

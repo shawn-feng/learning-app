@@ -229,6 +229,39 @@ function todayLifePlansText(dataDir: string, parentId: string, childId: string, 
   }
 }
 
+/**
+ * 汇总某天对话并写入 daily（recording 的核心逻辑）。
+ * 抽成独立函数：定时任务（recordingTask）与 agent 工具（summarize_conversation，P1 上移）共用同一实现，
+ * 避免「同一套记录流程两处实现」再次漂移。
+ */
+export async function runRecordingSummary(ctx: WorkerTaskCtx, date: string): Promise<WorkerRunResult> {
+  const conversation = readServerDailyConversation(ctx.dataDir, ctx.parentId, ctx.childId, date);
+  if (!conversation.trim()) {
+    console.log(`[worker:recording] child ${ctx.childId}: ${date} 无会话，跳过`);
+    return { status: "skip", message: `${date} 无会话，跳过` };
+  }
+  const existing = runKbQuery<Array<{ block: string; title: string; raw: string }>>(
+    ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.daily_entries.queryByDate", { child_id: ctx.childId, date }
+  );
+  const existingList = formatDailyExistingListLite(existing ?? []);
+  const provided = await buildProvidedContextLite(ctx, existingList);
+  const kbTools = createWorkerKbTools(ctx);
+  const session = await createWorkerEphemeralSession(
+    ctx,
+    RECORDING_SYSTEM_PROMPT,
+    ["kb_query", "kb_insert", "kb_update"],
+    kbTools
+  );
+  try {
+    const prompt = `${RECORDING_PROMPT}\n\n${provided}\n\n今天是 ${date}。以下是孩子 ${date} 的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}`;
+    await session.prompt(prompt);
+    console.log(`[worker:recording] child ${ctx.childId}: ${date} 已总结`);
+    return { status: "ok", message: `已总结 ${date} 的对话并写入 daily` };
+  } finally {
+    session.dispose();
+  }
+}
+
 const recordingTask: WorkerTask = {
   type: "recording",
   // 一天最多补一次汇总（与客户端 runCatchUp 一致：只补最近一个已过期时间点）
@@ -237,34 +270,7 @@ const recordingTask: WorkerTask = {
     cfg.recording?.enabled && Array.isArray(cfg.recording.times)
       ? cfg.recording.times.filter((t) => /^\d{2}:\d{2}$/.test(t))
       : [],
-  run: async (ctx): Promise<WorkerRunResult> => {
-    const date = formatLocalDate(ctx.now);
-    const conversation = readServerDailyConversation(ctx.dataDir, ctx.parentId, ctx.childId, date);
-    if (!conversation.trim()) {
-      console.log(`[worker:recording] child ${ctx.childId}: ${date} 无会话，跳过`);
-      return { status: "skip", message: `${date} 无会话，跳过` };
-    }
-    const existing = runKbQuery<Array<{ block: string; title: string; raw: string }>>(
-      ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.daily_entries.queryByDate", { child_id: ctx.childId, date }
-    );
-    const existingList = formatDailyExistingListLite(existing ?? []);
-    const provided = await buildProvidedContextLite(ctx, existingList);
-    const kbTools = createWorkerKbTools(ctx);
-    const session = await createWorkerEphemeralSession(
-      ctx,
-      RECORDING_SYSTEM_PROMPT,
-      ["kb_query", "kb_insert", "kb_update"],
-      kbTools
-    );
-    try {
-      const prompt = `${RECORDING_PROMPT}\n\n${provided}\n\n今天是 ${date}。以下是孩子 ${date} 的对话记录，请按要求提取信息并写入 daily：\n\n${conversation}`;
-      await session.prompt(prompt);
-      console.log(`[worker:recording] child ${ctx.childId}: ${date} 已总结`);
-      return { status: "ok", message: `已总结 ${date} 的对话并写入 daily` };
-    } finally {
-      session.dispose();
-    }
-  },
+  run: async (ctx): Promise<WorkerRunResult> => runRecordingSummary(ctx, formatLocalDate(ctx.now)),
 };
 
 registerTask(recordingTask);

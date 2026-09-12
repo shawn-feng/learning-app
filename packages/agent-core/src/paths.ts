@@ -34,6 +34,14 @@ export interface CorePaths {
   childKbFile(parentId: string, childId: string): string;
   /** 孩子会话目录（server 权威，按 childId 隔离） */
   childSessionsDir(parentId: string, childId: string): string;
+  /**
+   * 服务端 agent 会话目录（与「客户端会话镜像」分开存放）。
+   * 为什么分开：`childSessionsDir` 下的 jsonl 是客户端同步上来的镜像（旧架构遗留），
+   * 服务端自己跑的持久会话若混在同一目录，命名/游标会互相污染，故独立成 agent-sessions/。
+   */
+  agentSessionsDir(parentId: string, childId: string): string;
+  /** 孩子的 agent 工作区（server 作用域文件工具的根，read/write/edit/ls 只能在此树内） */
+  childWorkspaceDir(parentId: string, childId: string): string;
   /** 家长会话目录 */
   parentSessionsDir(parentId: string): string;
 }
@@ -53,6 +61,10 @@ export function createCorePaths(dataDir: string): CorePaths {
       path.join(abs, "kb", nonEmpty(parentId, "parentId"), `${safeSegment(childId, "childId")}.sqlite`),
     childSessionsDir: (parentId, childId) =>
       path.join(abs, "sessions", nonEmpty(parentId, "parentId"), safeSegment(childId, "childId")),
+    agentSessionsDir: (parentId, childId) =>
+      path.join(abs, "agent-sessions", nonEmpty(parentId, "parentId"), safeSegment(childId, "childId")),
+    childWorkspaceDir: (parentId, childId) =>
+      path.join(abs, "workspaces", nonEmpty(parentId, "parentId"), safeSegment(childId, "childId")),
     parentSessionsDir: (parentId) =>
       path.join(abs, "sessions", nonEmpty(parentId, "parentId"), "parent"),
   };

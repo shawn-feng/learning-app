@@ -30,13 +30,14 @@ interface WorkerSchedulerDeps {
   db: DatabaseSync;
 }
 
-interface ParentSettings {
+export interface ParentSettings {
   auth: Record<string, unknown>;
   appSettings?: Record<string, unknown>;
   schedulerConfig?: { children?: Record<string, WorkerSchedulerChildConfig> };
 }
 
-function readParentSettings(db: DatabaseSync, dataDir: string, parentId: string): ParentSettings {
+/** 读取家长密钥/应用设置/调度配置（P1 起亦被 agent 交互路由复用——模型凭据同一来源）。 */
+export function readParentSettings(db: DatabaseSync, dataDir: string, parentId: string): ParentSettings {
   const secret = getServerSecret(dataDir);
   const get = (key: string): unknown => {
     const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(`${parentId}:${key}`) as

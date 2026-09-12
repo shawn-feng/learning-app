@@ -11,7 +11,7 @@
 | 部分 | 技术 | 位置 | 说明 |
 |---|---|---|---|
 | **客户端**（学习伙伴） | Electron + React + TypeScript，内嵌 Pi agent 运行时 | 仓库根（`src/` 渲染层、`electron/` 主进程） | 孩子/家长双模式桌面应用；包名 `learning-app`，当前客户端版本 0.1.13 |
-| **服务端**（learning-server） | Node + node:sqlite，Fastify 风格 REST `/api/v1/*` | `server/` | 部署家庭局域网 **201 (192.168.1.201):8788**；所有业务数据真源；服务端版本 0.3.x（真源 `server/src/routes/version.ts` 的 `SERVER_VERSION`） |
+| **服务端**（learning-server） | Node + node:sqlite，Fastify 风格 REST `/api/v1/*` | `server/` | 部署家庭局域网 **201 (192.168.1.201):8788**；所有业务数据真源；服务端版本 0.4.x（真源 `server/src/routes/version.ts` 的 `SERVER_VERSION`）；构建物 = esbuild 单文件 `server/dist/server.cjs`（201 上 `node /opt/learning-server/server.cjs`） |
 | **公网源**（learning-cloud） | FastAPI + nginx | ECS 47.96.154.226 | 仅做下载分发 + 版本登记，与业务无关（见 PACKAGING.md） |
 
 - 客户端所有业务数据以 **服务端为真源**，经 REST + JWT session 访问；客户端本地 `data/` 下的 `materials/`、`children/*/kb.sqlite` 等均为旧架构残留，**不是真源**。
@@ -25,6 +25,8 @@
 - **学习资料**：`SERVER_DATA_DIR/materials/<parentId>/<topic>/...`；`materialsRoot(dataDir,parentId)=dataDir/materials/parentId`。`courses.html_path` 存相对路径。索引在 `server.sqlite.materials` 表（`/materials/content/:id` **只查索引表不扫磁盘**，见 PACKAGING.md 运维坑）。
 - **agents**：`data/agents.sqlite`（AGENTS 提示词纯 SQLite，ISSUE-033；编辑入口 = 家长端 `AgentPromptEditor` 组件）。
 - **学习计划**：服务端 `study_plan_items`（见 §5）；游标/去重状态在 `worker_state`。
+- **服务端 agent 会话（P1，2026-09-12 起）**：`SERVER_DATA_DIR/agent-sessions/<parentId>/<childId>/`——服务端自持的交互会话文件；与客户端镜像目录 `sessions/<parentId>/<childId>/` **分开存放**（后者是旧架构遗留的客户端权威镜像，P4 下线）。
+- **孩子 agent 工作区（P1）**：`SERVER_DATA_DIR/workspaces/<parentId>/<childId>/`——服务端 read/write/edit/ls 工具的根，路径经 `resolveWithin` 沙箱校验（`..`/绝对路径一律拒绝）。
 
 ### 2.2 双库区分（家长库 vs 孩子 kb）⚠️
 
@@ -156,6 +158,33 @@
   - agent 侧转译：`electron/lib/page-bridge.ts` `formatPageEvent`（`kind:"app"` → 自然语言事件注入）；
   - 制作侧：`electron/lib/programming-agent.ts` `buildProgrammingPrompt` 内嵌协议约定——编程 agent 产出的网页默认合规（家长端/孩子端一致，无需各维护一套）。
 - **迁移状态**：场景英语已切单轨（页面零私有 `scene:*` 消息）；`MaterialsPanel` 保留旧 `scene:*` 上行兼容分支供未迁移页面兜底；家长端资料同样经 asset doc 通道加载即自动获得桥注入。
+
+## 13. 服务端 agent 交互（P1 分水岭，2026-09-12）
+
+> 背景与决策：`DESIGN-server-agent-migration-2026-09-12.md`（定案：**agent 只在 server、client 零 agent、不要过渡**）；
+> 本文只登记当前已落地部分与落点，进度见 ISSUE-081。**客户端尚未切换到服务端 agent（属 P4）**，故现在的
+> 客户端仍是旧的本地 agent，两套并存只是迁移过程中的临时状态，不是设计目标。
+
+### 13.1 已落地（P1）
+
+- **共享包 `packages/agent-core`**（唯一真源）：
+  - `paths.ts` 路径沙箱（唯一拼装点 + `resolveWithin` 防越界）；`bridge.ts` PiBridge 信封/格式化/环形缓冲/下行 requestId 配对（transport 注入：客户端 IPC / 服务端 SSE）；`sessions.ts` 会话工厂（ephemeral 内存 / persistent 落盘）；`runtime/` 服务端模型运行时与 provider 表；`prompts/` recording prompt 真源。
+  - 消费方式：客户端以**相对路径**引入 SDK-free 模块（`electron/lib/page-bridge.ts`、`recording-prompt.ts` 改为转发）；服务端以包名 `@pi/agent-core` 引入（tsconfig paths + esbuild alias），并把 SDK 锁定到 `server/node_modules` 的 0.84.1——避免从共享包位置向上解析到客户端副本。
+  - 原因：此前 prompt / 桥逻辑两端各存副本且已漂移（ISSUE-056 教训）。
+- **服务端 agent 路由**（`server/src/routes/agent.ts`，feature 标志 `server_agent`）：
+  - `GET /api/v1/agent/:childId/stream` SSE（`text_delta`/`thinking_delta`/`tool_start`/`tool_end`/`message_end`/`agent_end`/`error`；`Last-Event-ID` 重放 + 心跳；EventSource 不能带头，故支持 `?token=`）
+  - `POST /api/v1/agent/:childId/prompt`（提交一轮；`busy` 时 409，不排队以免上下文交错）
+  - `POST /api/v1/agent/:childId/events`（PiBridge 事件上行，累积到下一轮消息前——ISSUE-015 语义）
+  - `POST /api/v1/agent/:childId/page-result`（资料页受控操作回执，requestId 配对）
+  - 鉴权：家长 JWT + `children.parent_id` 归属校验（跨家长 403）。
+- **服务端会话注册表**（`server/src/agent/session-registry.ts`）：按 `parentId:childId` 复用持久会话（`agent-sessions/`），事件经 `stream-hub.ts` 广播（多设备可同时订阅）；工具 = kb 三件套 + 服务端文件工具 + `get_date` + `summarize_conversation`。
+- **服务端文件工具**（`server/src/agent/fs-tools.ts`）：read/write/edit/ls，根 = 孩子工作区，越界拒绝。
+- **上下文压缩上移**：`summarize_conversation` 工具（`server/src/agent/kb-summary-tool.ts`）复用 worker 的 recording 流程（`runRecordingSummary`，与定时任务同一实现）。
+- **构建对齐**：服务端 `npm run build` 改为 esbuild 单文件（与 201 生产实际运行物一致），`tsc` 退为纯类型检查（`noEmit`）；`server/dist` 只保留 `server.cjs`。
+
+### 13.2 尚未落地（P2~P4，见设计文档）
+
+家长 agent 上移（P2）；孩子 agent 全量工具与 learning-guard/AGENTS 真源接入、`display_content` 改推送、page_* 传输层改造、考核 LLM 上移（P3）；客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端会话镜像通道下线（P4）。
 
 ---
 

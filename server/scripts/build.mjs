@@ -48,5 +48,7 @@ await build({
 }
 
 // 版本标记（供 pkg/运行识别）
-const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
+// 注意：读 package.json 前先剥 BOM——编辑器/脚本写入 UTF-8 BOM 时 JSON.parse 会直接抛
+// "Unexpected token ''"（2026-09-12 实测踩到，构建产物其实已生成、只是末尾这一步崩）。
+const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8").replace(/^\uFEFF/, ""));
 console.log(`\n✓ 构建完成: ${outfile} (learning-server v${pkg.version})`);
