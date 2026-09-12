@@ -2,7 +2,7 @@
 
 - **类型**：架构 / 实施（承接 ISSUE-080 §七定案）
 - **优先级**：高
-- **状态**：**P0 + P1 已实施（2026-09-12）**，P2~P4 待做
+- **状态**：**P0 + P1 + P2 已实施（2026-09-12）**，P3~P4 待做
 - **记录时间**：2026-09-12
 - **设计真源**：`DESIGN-server-agent-migration-2026-09-12.md`（§6 P1 / §9 实施记录）
 - **标签**：`server-agent` `SPLIT` `会话权威` `SSE` `分水岭`
@@ -20,6 +20,28 @@
 **新增目录约定**：`agent-sessions/<parentId>/<childId>/`（服务端自持会话）、`workspaces/<parentId>/<childId>/`（文件工具根），均已在 `paths.ts` 集中定义并登记 ARCHITECTURE §2.1。
 
 **踩坑**：① 共享包直接解析 SDK 会命中错误版本（两端 SDK 版本不同、`AgentToolResult.details` 必填差异）→ 服务端用 alias 锁定自己的副本；② `server/package.json` 的 UTF-8 BOM 会让 `JSON.parse` 崩（build.mjs 已加剥 BOM 兜底）。
+
+---
+
+## 〇之二、P2 实施结果（2026-09-12，家长 agent 上移 + ISSUE-079 server 形态）
+
+**已落地**：
+- `server/src/agent/parent-materials.ts` 材料域操作（真源直操作）：`list / read / put / delete / move` + 路径归一化与沙箱（`..` 段、非法 topic、越界一律拒绝）+ `activity-log` 追加。
+- `server/src/agent/parent-tools.ts` 家长 agent 工具集：`parent_list_materials / parent_read_material / parent_delete_material / parent_move_material / parent_put_material / parent_library_topics / parent_library_courses / parent_read_image / log_activity`（+ 工作区 read/write/edit/ls + get_date）。
+- `server/src/agent/vision.ts` 识图旁路（客户端 `parent-vision.ts` 上移；`pickVisionModel` 已在共享包 runtime 提供）。
+- `server/src/agent/parent-registry.ts` 家长会话（kind=`parent` / `parent-content`，持久落 `agent-sessions/<pid>/<kind>/`，工作区 `workspaces/<pid>/parent/`）。
+- `server/src/routes/parent-agent.ts`：`GET /api/v1/parent-agent/stream`（SSE + Last-Event-ID 重放 + `?token=`）、`POST /api/v1/parent-agent/prompt`（kind 校验、busy→409）；feature 增 `parent_agent`。
+
+**ISSUE-079 的落地方案**（原方案 A「客户端封装 agent 工具」已被本条取代）：
+- 四个管理动作齐备：list / read / delete / move（+ put 发布）；
+- **删除必须先演练后确认**：`confirm !== true` 只返回将删除清单（工具层实现，不是靠提示词约束），真删写 activity-log；
+- read 限流：文本类 ≤200KB 返回正文，二进制只回元数据（避免灌爆上下文）——对应 079 待确认项 3；
+- 路径白名单：topic 段 `^[a-zA-Z0-9_-]+$` + 禁 `.`/`..` 段 + `resolveWithin` 沙箱——对应 079 待确认项 1；
+- 隔离：`materials/<parentId>` 为根，跨家长路径被拒（对应 079 待确认项 5 的客户端侧防护；服务端 `/materials/*` 路由的 parentId 校验属既有实现）。
+
+**验证**：server typecheck 0 错；`scripts/parent-agent-check.mts` **27 项全过**（四动作 + 隔离/穿越 + dryRun→confirm 两步语义 + 工具层 + 路由 401/400/kind + 家长库只读 + 版本协商）；P1 的 `agent-session-check.mts` 与 `worker-catchup-check.mts` 回归全过；esbuild 产物 16.7MB（v0.4.0）。
+
+**边界（未做）**：客户端尚未切换到服务端家长 agent（P4 统一切换）；家长侧的排期/考核/积分工具尚未上移（现只有资料治理 + 家长库只读）；`parent_read_image` 的 uploads 路径分支仅支持 `uploads/`、`files/` 前缀。这些随 P3/P4 或后续增量补齐。
 
 ---
 

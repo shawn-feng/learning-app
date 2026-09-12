@@ -66,3 +66,30 @@ export function pickWorkerModel(
   }
   return runtime.getModel(WORKER_DEFAULT_PROVIDER, WORKER_DEFAULT_MODEL);
 }
+
+/** 识图默认模型（家长 agent 读教材扫描页/截图用；与 provider 表里的 VL 模型一致）。 */
+export const VISION_DEFAULT_MODEL = "qwen3-vl-flash";
+
+/**
+ * 选择视觉模型：优先 app_settings.visionModel（"provider/modelId"），否则默认 provider + VL 默认模型。
+ * 独立于 pickWorkerModel 的原因：家长主会话可能用文本模型，识图要走带 image 输入的模型；
+ * 混用会让「描述这张图」这类请求落到不支持图片的模型上而报错。
+ */
+export function pickVisionModel(
+  runtime: ModelRuntime,
+  appSettings?: Record<string, unknown>
+): any {
+  const key = typeof appSettings?.visionModel === "string" ? appSettings.visionModel : "";
+  let provider = WORKER_DEFAULT_PROVIDER;
+  let modelId = VISION_DEFAULT_MODEL;
+  if (key) {
+    const sep = key.indexOf("/");
+    if (sep > 0) {
+      provider = key.slice(0, sep);
+      modelId = key.slice(sep + 1);
+    } else {
+      modelId = key;
+    }
+  }
+  return runtime.getModel(provider, modelId) ?? runtime.getModel(WORKER_DEFAULT_PROVIDER, VISION_DEFAULT_MODEL);
+}

@@ -182,9 +182,22 @@
 - **上下文压缩上移**：`summarize_conversation` 工具（`server/src/agent/kb-summary-tool.ts`）复用 worker 的 recording 流程（`runRecordingSummary`，与定时任务同一实现）。
 - **构建对齐**：服务端 `npm run build` 改为 esbuild 单文件（与 201 生产实际运行物一致），`tsc` 退为纯类型检查（`noEmit`）；`server/dist` 只保留 `server.cjs`。
 
-### 13.2 尚未落地（P2~P4，见设计文档）
+### 13.2 家长 agent（P2，2026-09-12 起）
 
-家长 agent 上移（P2）；孩子 agent 全量工具与 learning-guard/AGENTS 真源接入、`display_content` 改推送、page_* 传输层改造、考核 LLM 上移（P3）；客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端会话镜像通道下线（P4）。
+- **路由**（`server/src/routes/parent-agent.ts`，feature 标志 `parent_agent`）：
+  `GET /api/v1/parent-agent/stream?kind=parent|parent-content`（SSE，同孩子侧语义：Last-Event-ID 重放 + `?token=`）、
+  `POST /api/v1/parent-agent/prompt`（kind 校验；busy→409）。
+- **会话**（`server/src/agent/parent-registry.ts`）：key = `<parentId>:<kind>`，持久落 `agent-sessions/<parentId>/<kind>/`，工作区 `workspaces/<parentId>/parent/`。
+- **资料治理工具**（`server/src/agent/parent-tools.ts` + `parent-materials.ts`）——**ISSUE-079 的 server 形态**，直接操作资料真源，不再需要「客户端工具 → IPC → HTTP」封装：
+  - `parent_list_materials` / `parent_read_material`（文本 ≤200KB 正文，二进制只回元数据）/ `parent_put_material` / `parent_move_material`（先写新再删旧，最坏留副本不丢数据）；
+  - `parent_delete_material`：**`confirm !== true` 时只返回将删除清单（演练）**，家长确认后才真删并写 activity-log——危险动作在工具层约束，不依赖提示词；
+  - `parent_library_topics` / `parent_library_courses`（家长库 topics/courses 只读，`openParentLib`）；
+  - `parent_read_image`（`agent/vision.ts` 识图旁路，客户端 `parent-vision.ts` 上移）；`log_activity`（activity-log.md）。
+- **安全**：材料根 `<dataDir>/materials/<parentId>`；topic 段 `^[a-zA-Z0-9_-]+$`；禁 `.`/`..` 段；一律经 `resolveWithin` 沙箱。
+
+### 13.3 尚未落地（P3~P4，见设计文档）
+
+孩子 agent 全量工具与 learning-guard/AGENTS 真源接入、`display_content` 改推送、page_* 传输层改造、考核 LLM 上移（P3）；客户端瘦身 + web/手机端（`window.api` web 适配层）、客户端 agent 与镜像通道下线（P4）；家长侧排期/考核/积分工具上移（P2 余项）。
 
 ---
 

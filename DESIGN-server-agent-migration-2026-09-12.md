@@ -232,5 +232,33 @@ packages/agent-core/            # 新增，server 与 client(过渡期) 共用�
 
 - **package.json 的 BOM**：用脚本重写 `server/package.json` 时若引入 UTF-8 BOM，Node 的 `JSON.parse` 会抛 `Unexpected token ''`（构建产物其实已生成，只在末尾读版本时崩）。已给 `scripts/build.mjs` 加 `replace(/^\uFEFF/, "")` 兜底。
 - **SDK 版本严格类型差异**：见 9.2.1——服务端 `AgentToolResult` 要求 `details` 必填，新增工具须带 `details: {}`。
+
+---
+
+## 10. 实施记录：P2（2026-09-12）
+
+### 10.1 已落地（家长 agent 上移 + ISSUE-079 server 形态）
+
+| 项 | 落点 | 说明 |
+|---|---|---|
+| 材料域操作 | `server/src/agent/parent-materials.ts` | list/read/put/delete/move 直接操作真源（磁盘 + `materials` 索引表）；路径归一化 + 沙箱 + activity-log |
+| 家长工具集 | `server/src/agent/parent-tools.ts` | 9 个家长工具 + 工作区文件工具 + get_date |
+| 识图上移 | `server/src/agent/vision.ts` | 客户端 `parent-vision.ts` 逻辑上移；`pickVisionModel` 已加入共享包 runtime |
+| 家长会话 | `server/src/agent/parent-registry.ts` | key=`<parentId>:<kind>`，持久落 `agent-sessions/<parentId>/<kind>/` |
+| 家长路由 | `server/src/routes/parent-agent.ts` | SSE + prompt（kind 校验、busy→409）；feature `parent_agent` |
+
+**ISSUE-079 的落地形态（取代原「客户端封装 agent 工具」方案）**：四个必备管理动作齐备；删除**工具层强制先演练后确认**（`confirm !== true` 只返回清单，不靠提示词约束）；read 文本 ≤200KB、二进制只回元数据；topic 白名单 + 禁 `.`/`..` 段 + `resolveWithin` 沙箱；跨家长路径被拒。
+
+### 10.2 验证
+
+- `server npm run typecheck` → 0 错；`node scripts/build.mjs` → `dist/server.cjs` 16.7MB（v0.4.0）。
+- `server/scripts/parent-agent-check.mts` → **27 项全过**（四动作 + 隔离/穿越 + dryRun→confirm 两步语义 + 工具层 + 路由 401/400/kind + 家长库只读 + 版本协商；prompt 在无 key 时干净报错，不烧 token）。
+- 回归：`agent-session-check.mts`、`worker-catchup-check.mts` 全过。
+
+### 10.3 P2 余项（未做）
+
+- 客户端尚未切换到服务端家长 agent（切换属 P4，与孩子端同批）。
+- 家长侧的排期（study_plan_*）、考核（assess_*）、积分工具尚未上移——P2 先交付「资料治理」这条最痛链路（079 场景），其余随 P3/P4 或增量补齐。
+- `parent_read_image` 目前支持材料相对路径与 `uploads/`、`files/` 前缀的上传路径。
 - **ISSUE-023**：childId 隔离教训，P1/P3 在 server 侧重做时必须逐条对照
 - **ISSUE-056**：两套纪律/两处副本漂移的教训，是 §4 共享包的直接动因

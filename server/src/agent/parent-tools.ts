@@ -1,0 +1,299 @@
+/**
+ * 家长 agent 工具集（P2，服务端形态）。
+ *
+ * 与孩子工具集的差异：家长工具面向「课程/资料治理」——资料真源就是服务端磁盘+索引表，
+ * 因此这些工具是直接函数调用（不再需要旧架构「客户端工具 → IPC → HTTP 回服务端」的封装）。
+ *
+ * 危险动作约定（ISSUE-079 待确认项 1 的落地）：
+ * `parent_delete_material` 必须 dryRun：`confirm !== true` 时**只返回将删除的清单**，
+ * 由 agent 向家长复述并征得同意后再带 `confirm: true` 调用；真删会写 activity-log。
+ * 这样即使模型想「顺手清理」，家长也一定先看到清单。
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { Type } from "typebox";
+import { defineTool } from "@earendil-works/pi-coding-agent";
+import type { DatabaseSync } from "node:sqlite";
+import { resolveWithin } from "@pi/agent-core";
+import { openParentLib } from "../db/parent-lib.js";
+import {
+  appendParentActivityLog,
+  deleteMaterial,
+  formatMaterialTree,
+  listMaterials,
+  materialAbsPath,
+  moveMaterial,
+  putMaterial,
+  readMaterial,
+  type MaterialCtx,
+} from "./parent-materials.js";
+import { describeImageViaVision, imageMimeFromExt } from "./vision.js";
+
+export interface ParentToolDeps extends MaterialCtx {
+  /** 家长 agent 工作区（临时产出） */
+  workspaceDir: string;
+  /** agent 私有目录 */
+  agentDir: string;
+  auth: Record<string, unknown>;
+  appSettings?: Record<string, unknown>;
+}
+
+const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+
+export function createParentAgentTools(deps: ParentToolDeps) {
+  const ctx: MaterialCtx = { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
+
+  const listTool = defineTool({
+    name: "parent_list_materials",
+    label: "列出课程学习资料",
+    description:
+      "列出服务端课程学习资料真源（可按 topic 或路径前缀过滤）。\n\n" +
+      "**何时调用**：整理资料前先看「现在有什么」——去重、归并目录、重命名都必须先列清单。\n" +
+      "返回每条的相对路径（可直接用作 read/delete/move 的 path）。",
+    parameters: Type.Object({
+      topic: Type.Optional(Type.String({ description: "主题目录名（第一级目录，如 lunyu）；不传=全部" })),
+      relPrefix: Type.Optional(Type.String({ description: "路径前缀过滤（如 lunyu/materials）" })),
+    }),
+    execute: async (_id: string, params: { topic?: string; relPrefix?: string }) => {
+      const items = listMaterials(ctx, { topic: params?.topic, relPrefix: params?.relPrefix });
+      return ok(`共 ${items.length} 条材料：\n${formatMaterialTree(items)}`);
+    },
+  });
+
+  const readTool = defineTool({
+    name: "parent_read_material",
+    label: "读取课程资料内容",
+    description:
+      "读取一份课程资料的正文（html/md/txt/css/js/json 等文本类，超 200KB 截断）。\n\n" +
+      "**何时调用**：需要看资料里到底写了什么（如判断两份是否重复、检查链接是否有效）。\n" +
+      "音视频/图片等二进制只返回元数据（类型与大小），不返回正文——避免大文件灌爆上下文。",
+    parameters: Type.Object({
+      path: Type.String({ description: "材料相对路径（来自 parent_list_materials）" }),
+    }),
+    execute: async (_id: string, params: { path: string }) => {
+      const r = readMaterial(ctx, params.path);
+      if (r.text === undefined) {
+        return ok(`${r.path}：${r.type} 类型（${r.size} 字节），二进制内容不返回正文；如需理解图片内容用 parent_read_image。`);
+      }
+      return ok(
+        `${r.path}（${r.type}，${r.size} 字节${r.truncated ? "，已截断至 200KB" : ""}）：\n\n${r.text}`
+      );
+    },
+  });
+
+  const deleteTool = defineTool({
+    name: "parent_delete_material",
+    label: "删除课程资料（需确认）",
+    description:
+      "删除一份课程学习资料。**默认只演练（dryRun）**：不传 confirm 时只返回「将被删除的文件」清单。\n\n" +
+      "**流程（必须遵守）**：先调用一次（不传 confirm）拿到清单 → 向家长复述要删什么并征得同意 →\n" +
+      "再带 `confirm: true` 调用真正删除。删除会写入家长操作记录（activity-log）可追溯。\n\n" +
+      "**为什么**：资料是孩子上课要用的真源，误删无法回滚。",
+    parameters: Type.Object({
+      path: Type.String({ description: "材料相对路径" }),
+      confirm: Type.Optional(Type.Boolean({ description: "true = 真正执行删除；不传/ false = 只返回将删除清单" })),
+    }),
+    execute: async (_id: string, params: { path: string; confirm?: boolean }) => {
+      if (params.confirm !== true) {
+        // dryRun：校验路径合法且存在，只回报；不做任何删除
+        const items = listMaterials(ctx).filter(
+          (m) => m.path === params.path || m.path.startsWith(params.path.replace(/\/+$/, "") + "/")
+        );
+        if (!items.length) {
+          // 路径不存在时明确告知，避免家长以为「确认一下就删了」
+          try {
+            materialAbsPath(ctx, params.path);
+          } catch (err) {
+            return ok(`路径非法：${(err as Error).message}`);
+          }
+          return ok(`没有找到材料「${params.path}」（可用 parent_list_materials 核对准确路径）`);
+        }
+        return ok(
+          `【演练】将删除以下 ${items.length} 项（尚未执行）：\n${items.map((m) => `- ${m.path} [${m.type}, ${m.size}B]`).join("\n")}\n\n` +
+            `请向家长复述并确认；确认后再带 confirm=true 调用本工具。`
+        );
+      }
+      const r = deleteMaterial(ctx, params.path);
+      appendParentActivityLog(ctx, `删除资料「${r.deleted}」`);
+      return ok(`已删除：${r.deleted}（已记入 activity-log）`);
+    },
+  });
+
+  const moveTool = defineTool({
+    name: "parent_move_material",
+    label: "移动/重命名课程资料",
+    description:
+      "把一份资料移动或改名（如把散落的 html 归入 lunyu/materials/、修正错别字文件名）。\n\n" +
+      "**何时调用**：整理资料结构时。目标路径已存在会被拒绝（不覆盖），避免静默丢文件。\n" +
+      "实现上是「先写新路径再删旧路径」，最坏情况留下重复副本，需要时用 delete 清理。",
+    parameters: Type.Object({
+      from: Type.String({ description: "源相对路径" }),
+      to: Type.String({ description: "目标相对路径" }),
+    }),
+    execute: async (_id: string, params: { from: string; to: string }) => {
+      const r = moveMaterial(ctx, params.from, params.to);
+      appendParentActivityLog(ctx, `移动资料「${r.from}」→「${r.to}」`);
+      return ok(`已移动：${r.from} → ${r.to}（已记入 activity-log）`);
+    },
+  });
+
+  const putTool = defineTool({
+    name: "parent_put_material",
+    label: "写入/覆盖课程资料",
+    description:
+      "把文本内容写入课程资料真源（新建或覆盖整份文件；单次上限 2MB）。\n\n" +
+      "**何时调用**：你生成了教案/练习页等资料后发布到真源。\n" +
+      "覆盖已有文件前建议先 parent_read_material 看原内容，避免误覆盖家长手工改过的版本。",
+    parameters: Type.Object({
+      path: Type.String({ description: "材料相对路径（如 lunyu/materials/lesson-01.html）" }),
+      content: Type.String({ description: "完整文本内容" }),
+    }),
+    execute: async (_id: string, params: { path: string; content: string }) => {
+      const meta = putMaterial(ctx, params.path, params.content);
+      appendParentActivityLog(ctx, `写入资料「${meta.path}」（${meta.size} 字节）`);
+      return ok(`已写入：${meta.path}（${meta.size} 字节，已记入 activity-log）`);
+    },
+  });
+
+  const topicsTool = defineTool({
+    name: "parent_library_topics",
+    label: "查看教学主题与进度",
+    description:
+      "列出家长库里的教学主题及其进度（已学/总数/下一课）。起草排期或整理资料前用它确认权威主题名（topic_key）。",
+    parameters: Type.Object({}),
+    execute: async () => {
+      const db = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        const rows = db
+          .prepare(
+            `SELECT t.name, t.topic_key, t.method,
+                    (SELECT COUNT(*) FROM courses c WHERE c.topic = t.topic_key) AS total,
+                    (SELECT COUNT(*) FROM courses c WHERE c.topic = t.topic_key AND c.status='✅') AS learned
+             FROM topics t ORDER BY t.topic_key`
+          )
+          .all() as Array<{ name: string; topic_key: string; method: string; total: number; learned: number }>;
+        if (!rows.length) return ok("（家长库暂无教学主题）");
+        return ok(
+          rows
+            .map((r) => `- ${r.name}（${r.topic_key}）：已学 ${r.learned}/${r.total}${r.method ? `｜方法：${r.method}` : ""}`)
+            .join("\n")
+        );
+      } finally {
+        db.close();
+      }
+    },
+  });
+
+  const coursesTool = defineTool({
+    name: "parent_library_courses",
+    label: "查看主题下的课程",
+    description: "列出某主题下的课程（标题/状态/资料路径）。改资料前用它核对课程与资料的对应关系。",
+    parameters: Type.Object({
+      topic: Type.String({ description: "主题目录名（topic_key，如 lunyu）" }),
+    }),
+    execute: async (_id: string, params: { topic: string }) => {
+      const db = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        const rows = db
+          .prepare(
+            `SELECT title, status, last_review, html_path FROM courses WHERE topic = ? ORDER BY sort_order, title`
+          )
+          .all(params.topic) as Array<{ title: string; status: string; last_review: string; html_path: string }>;
+        if (!rows.length) return ok(`主题「${params.topic}」下没有课程（可用 parent_library_topics 核对 topic 名）`);
+        return ok(
+          rows
+            .map((r) => `- ${r.title}｜${r.status}｜最近 ${r.last_review || "-"}｜${r.html_path || "无资料"}`)
+            .join("\n")
+        );
+      } finally {
+        db.close();
+      }
+    },
+  });
+
+  const imageTool = defineTool({
+    name: "parent_read_image",
+    label: "理解图片内容",
+    description:
+      "用视觉模型读一张图片（教材扫描页/截图/图示），返回画面描述与图中文字。\n\n" +
+      "**何时调用**：需要知道图片/扫描件里到底写了什么（起草教学文案前常需要）。\n" +
+      "参数 path 用材料相对路径（如 lunyu/media/page1.jpg）；图片需是 png/jpg/webp/gif/bmp 等常见格式。",
+    parameters: Type.Object({
+      path: Type.String({ description: "图片的材料相对路径" }),
+      question: Type.Optional(Type.String({ description: "想让模型重点回答的问题（缺省=描述并识别全部文字）" })),
+    }),
+    execute: async (_id: string, params: { path: string; question?: string }) => {
+      let abs: string;
+      // 材料真源优先；也允许读家长上传目录（uploads/ 前缀），二者都在沙箱内解析
+      const rel = String(params.path ?? "").trim();
+      if (rel.startsWith("uploads/") || rel.startsWith("files/")) {
+        abs = resolveWithin(deps.dataDir, rel.replace(/^files\//, "files/"));
+      } else {
+        abs = materialAbsPath(ctx, rel);
+      }
+      if (!fs.existsSync(abs)) throw new Error(`图片不存在：${params.path}`);
+      const mime = imageMimeFromExt(abs);
+      if (!mime.startsWith("image/")) throw new Error(`${params.path} 不是图片（识别为 ${mime}）`);
+      const stat = fs.statSync(abs);
+      if (stat.size > 8 * 1024 * 1024) throw new Error(`图片过大（${stat.size} 字节 > 8MB）`);
+      const text = await describeImageViaVision(
+        {
+          dataDir: deps.dataDir,
+          parentId: deps.parentId,
+          auth: deps.auth,
+          appSettings: deps.appSettings,
+          agentDir: deps.agentDir,
+        },
+        { type: "image", mimeType: mime, data: fs.readFileSync(abs).toString("base64") },
+        params.question
+      );
+      return ok(`【${params.path}】\n${text}`);
+    },
+  });
+
+  const logTool = defineTool({
+    name: "log_activity",
+    label: "记录家长操作",
+    description:
+      "把本次改动追加记录到家长操作记录（activity-log.md，纯追加）。\n\n" +
+      "**何时调用**：用 read/write 之类的通用工具改了工作区内容之后调用一次；\n" +
+      "parent_put_material / parent_delete_material / parent_move_material **已自动记录**，无需再调。",
+    parameters: Type.Object({
+      entry: Type.String({ description: "一句话描述做了什么（如「归并 lunyu 下散落的 3 个 html」）" }),
+    }),
+    execute: async (_id: string, params: { entry: string }) => {
+      if (!params.entry?.trim()) throw new Error("entry 不能为空");
+      const file = appendParentActivityLog(ctx, params.entry.trim());
+      return ok(`已记录：${params.entry.trim()}（${path.basename(file)}）`);
+    },
+  });
+
+  return [
+    listTool,
+    readTool,
+    deleteTool,
+    moveTool,
+    putTool,
+    topicsTool,
+    coursesTool,
+    imageTool,
+    logTool,
+  ];
+}
+
+export const PARENT_AGENT_TOOL_NAMES = [
+  "read",
+  "write",
+  "edit",
+  "ls",
+  "parent_list_materials",
+  "parent_read_material",
+  "parent_delete_material",
+  "parent_move_material",
+  "parent_put_material",
+  "parent_library_topics",
+  "parent_library_courses",
+  "parent_read_image",
+  "log_activity",
+  "get_date",
+];
