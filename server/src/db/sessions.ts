@@ -214,8 +214,13 @@ function safeParse<T>(s: string, fallback: T): T {
 }
 
 /**
- * 服务端读取某天对话文本（无头 worker recording 用，镜像客户端 readDailyConversation 逻辑，
- * 数据源换为服务端镜像 data/sessions/）。当天无会话返回空串。
+ * 服务端读取某天对话文本（无头 worker recording + agent summarize_conversation 工具共用）。
+ * 合并两个来源：
+ *   1. 客户端同步镜像 data/sessions/<pid>/<cid>/（旧架构遗留，会话同步上云仍会写入）；
+ *   2. 服务端 agent 持久会话 data/agent-sessions/<pid>/<cid>-<slot>/（P4 起孩子对话真实落盘处，
+ *      slot = main / scene / course-*）。
+ * 为什么必须合并：P4 客户端零 agent 后，孩子对话全走服务端 agent，只落 agent-sessions/；
+ * 若仍只读 sessions/ 镜像会读不到 → 误报「无会话，跳过」。当天无会话返回空串。
  */
 export function readServerDailyConversation(
   dataDir: string,
@@ -223,12 +228,37 @@ export function readServerDailyConversation(
   childId: string,
   date: string
 ): string {
-  const dir = getSessionsDir(dataDir, parentId, childId);
-  if (!fs.existsSync(dir)) return "";
   const [y, m, d] = date.split("-").map(Number);
   const start = new Date(y, m - 1, d).getTime();
   const end = start + 24 * 3600 * 1000;
-  const msgs: { ts: number; role: string; text: string }[] = [];
+
+  // 来源 1：客户端同步镜像（递归，english-<title>/ 等子目录内也有 jsonl）
+  const mirrorDir = path.join(dataDir, "sessions", parentId, childId);
+  // 来源 2：服务端 agent 会话（扫描 <cid>-<slot> 目录，slot=main/scene/course-*）
+  const agentRoot = path.join(dataDir, "agent-sessions", parentId);
+  const agentDirs: string[] = [];
+  if (fs.existsSync(agentRoot)) {
+    for (const e of fs.readdirSync(agentRoot, { withFileTypes: true })) {
+      if (e.isDirectory() && e.name.startsWith(`${childId}-`)) {
+        agentDirs.push(path.join(agentRoot, e.name));
+      }
+    }
+  }
+
+  const msgs = collectDailyMessages([mirrorDir, ...agentDirs], start, end);
+  msgs.sort((a, b) => a.ts - b.ts);
+  return msgs.map((m) => `${m.role === "user" ? "孩子" : "饺子"}: ${m.text}`).join("\n\n");
+}
+
+interface DailyMsg {
+  ts: number;
+  role: string;
+  text: string;
+}
+
+/** 从一组目录（递归）收集某天窗口内的 user/assistant 文本消息。 */
+function collectDailyMessages(dirs: string[], start: number, end: number): DailyMsg[] {
+  const msgs: DailyMsg[] = [];
   // ISSUE-051：english 课程子会话 jsonl 在子目录（english-<title>/），需递归收集
   const files: string[] = [];
   const collect = (cur: string): void => {
@@ -244,8 +274,13 @@ export function readServerDailyConversation(
       else if (e.isFile() && e.name.endsWith(".jsonl")) files.push(full);
     }
   };
-  collect(dir);
+  for (const dir of dirs) {
+    if (fs.existsSync(dir)) collect(dir);
+  }
+  const seen = new Set<string>();
   for (const f of files) {
+    if (seen.has(f)) continue;
+    seen.add(f);
     for (const line of fs.readFileSync(f, "utf-8").split("\n").filter(Boolean)) {
       try {
         const entry = JSON.parse(line);
@@ -266,8 +301,7 @@ export function readServerDailyConversation(
       }
     }
   }
-  msgs.sort((a, b) => a.ts - b.ts);
-  return msgs.map((m) => `${m.role === "user" ? "孩子" : "饺子"}: ${m.text}`).join("\n\n");
+  return msgs;
 }
 
 /** 服务端无头 worker 任务去重游标读取（ISO 字符串或空）。 */
