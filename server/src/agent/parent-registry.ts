@@ -204,17 +204,20 @@ export async function submitParentPrompt(
   const key = keyOf(parentId, kind);
   entry.busy = true;
   agentStreamHub.publish(key, "user_message", { text: prompt });
-  try {
-    await entry.session.prompt(prompt);
-    return { ok: true };
-  } catch (err) {
-    const message = (err as Error)?.message ?? String(err);
-    agentStreamHub.publish(key, "error", { message });
-    return { ok: false, error: message };
-  } finally {
-    entry.busy = false;
-    agentStreamHub.publish(key, "turn_end", {});
-  }
+  // 异步执行整轮（提交即返回）：与孩子侧同因——长工具轮若被 POST 同步等待，会撞客户端超时
+  // 把成功轮误报成「无法连接服务端」。结束/错误经 SSE（turn_end / error）推送。
+  void (async () => {
+    try {
+      await entry.session.prompt(prompt);
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err);
+      agentStreamHub.publish(key, "error", { message });
+    } finally {
+      entry.busy = false;
+      agentStreamHub.publish(key, "turn_end", {});
+    }
+  })();
+  return { ok: true };
 }
 
 export function hasParentSession(parentId: string, kind: ParentSessionKind = "parent"): boolean {

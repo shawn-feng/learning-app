@@ -160,15 +160,20 @@ async function main() {
     const empty = await app.inject({ method: "POST", url: "/api/v1/agent/c1/prompt", headers: auth, payload: { text: "  " } });
     check("空消息 → 400", empty.statusCode === 400, `status=${empty.statusCode}`);
 
-    // 真 prompt：无模型 key 时应「干净报错」（仍有完整错误信息），有 key 则走通
+    // 真 prompt（异步化语义）：POST 提交即返回 200，整轮结束/错误经 SSE 推送
+    // （长工具轮实测 3 分钟+，同步等待会被客户端超时误判为断连）。
     const p = await app.inject({ method: "POST", url: "/api/v1/agent/c1/prompt", headers: auth, payload: { text: "你好" } });
-    const streamed = agentStreamHub.replayAfter(AgentStreamHub.key("p1", "c1"), 0).map((e) => e.type);
-    if (p.statusCode === 200) {
-      check("prompt 走通（已配置模型 key）", true, `events=${streamed.join(",")}`);
-    } else {
-      check("prompt 无 key 时干净报错（非崩溃）", p.statusCode === 500 && /error/.test(p.body), `status=${p.statusCode} body=${p.body.slice(0, 160)}`);
-      check("本轮事件已入流（user_message/turn_end 至少其一）", streamed.length > 0, `events=${streamed.join(",")}`);
+    check("prompt 提交即返回（异步化）", p.statusCode === 200, `status=${p.statusCode} body=${p.body.slice(0, 120)}`);
+    // 轮询事件流：无 key 环境数秒内会流出 error+turn_end；有 key 环境至少 user_message 已入流
+    let streamed: string[] = [];
+    for (let i = 0; i < 48; i++) {
+      streamed = agentStreamHub.replayAfter(AgentStreamHub.key("p1", "c1"), 0).map((e) => e.type);
+      if (streamed.includes("turn_end")) break;
+      await new Promise((r) => setTimeout(r, 250));
     }
+    check("user_message 已入流", streamed.includes("user_message"), `events=${streamed.join(",")}`);
+    check("error/turn_end 至少其一入流（无 key 环境干净报错；有 key 环境稍后到）",
+      streamed.includes("error") || streamed.includes("turn_end"), `events=${streamed.join(",")}`);
     await app.close();
     db.close();
   }

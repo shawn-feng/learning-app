@@ -14,6 +14,21 @@ export class ServerError extends Error {
   }
 }
 
+/**
+ * 把 fetch 层异常翻译成语义化提示（实测踩坑）：AbortSignal.timeout 超时与「真连不上」
+ * 都走同一个 catch，过去统一报「无法连接服务端」——agent 长工具轮（summarize 实测 3 分钟+）
+ * 超过客户端超时后，明明服务端在正常执行却被误报成断连，家长/孩子都会被误导去重启服务端。
+ * 这里区分：超时 → 明确告知是响应超时且任务仍在后台执行；其余 → 才是连接问题。
+ */
+function describeFetchError(err: unknown, timeoutMs: number): string {
+  const name = (err as { name?: string })?.name ?? "";
+  const msg = ((err as Error)?.message ?? "").toLowerCase();
+  if (name === "TimeoutError" || name === "AbortError" || msg.includes("timeout") || msg.includes("aborted")) {
+    return `服务端响应超时（等待 ${Math.round(timeoutMs / 1000)} 秒）——长任务通常仍在服务端后台执行，请稍候查看结果，勿重复提交`;
+  }
+  return "无法连接服务端，请检查服务端地址或网络";
+}
+
 /** 服务端基址；未配置时抛 ServerError（status 0）。 */
 export function serverBase(): string {
   const url = getServerUrl();
@@ -52,8 +67,8 @@ export async function serverFetch<T = unknown>(
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15000),
     });
-  } catch {
-    throw new ServerError(0, "无法连接服务端，请检查服务端地址或网络");
+  } catch (e) {
+    throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 15000));
   }
 
   if (!res.ok) {
@@ -88,8 +103,8 @@ export async function serverFetchBinary(path: string, opts: ServerFetchOptions =
       headers,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 60000),
     });
-  } catch {
-    throw new ServerError(0, "无法连接服务端，请检查服务端地址或网络");
+  } catch (e) {
+    throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 60000));
   }
 
   if (!res.ok) {
@@ -127,8 +142,8 @@ export async function serverUploadFile(
       body: form,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 120000),
     });
-  } catch {
-    throw new ServerError(0, "无法连接服务端，请检查服务端地址或网络");
+  } catch (e) {
+    throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 120000));
   }
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;

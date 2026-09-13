@@ -357,17 +357,21 @@ export async function submitChildPrompt(
 
   entry.busy = true;
   agentStreamHub.publish(streamKey, "user_message", { text: prompt, pageEvents: opts.pendingPageEvents ?? "", session: kind });
-  try {
-    await entry.session.prompt(prompt);
-    return { ok: true };
-  } catch (err) {
-    const message = (err as Error)?.message ?? String(err);
-    agentStreamHub.publish(streamKey, "error", { message, session: kind });
-    return { ok: false, error: message };
-  } finally {
-    entry.busy = false;
-    agentStreamHub.publish(streamKey, "turn_end", { session: kind });
-  }
+  // 异步执行整轮（提交即返回）：一轮 agent 可能带长工具链（summarize_conversation 实测 3 分钟+），
+  // 若 POST 同步等整轮结束，客户端 2 分钟超时会把**成功轮**误报成「无法连接服务端」。
+  // 结束/错误统一经 SSE（turn_end / error）推送——渲染层的忙碌态本就由 pi:reply_end 驱动。
+  void (async () => {
+    try {
+      await entry.session.prompt(prompt);
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err);
+      agentStreamHub.publish(streamKey, "error", { message, session: kind });
+    } finally {
+      entry.busy = false;
+      agentStreamHub.publish(streamKey, "turn_end", { session: kind });
+    }
+  })();
+  return { ok: true };
 }
 
 /** 某孩子是否已在服务端建过会话（供测试与调试） */
