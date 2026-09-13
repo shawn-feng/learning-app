@@ -140,10 +140,11 @@ function formatDailyExistingListLite(
   return lines.join("\n");
 }
 
-/** 首轮注入上下文（镜像客户端 buildProvidedContext：主题进度 + 标签定义 + 已有 daily）。 */
+/** 首轮注入上下文（镜像客户端 buildProvidedContext：主题进度 + 标签定义 + 已有 daily）。date=被汇总的那天。 */
 async function buildProvidedContextLite(
   ctx: WorkerTaskCtx,
-  existingList: string
+  existingList: string,
+  date: string
 ): Promise<string> {
   const [topics, summaries, tags] = [
     runKbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>(
@@ -165,7 +166,9 @@ async function buildProvidedContextLite(
     return line;
   });
   const tagsText = (tags ?? []).map((t) => `- ${t.tag}（${t.dimension}）：${t.criteria}`).join("\n");
-  const lifePlans = todayLifePlansText(ctx.dataDir, ctx.parentId, ctx.childId, formatLocalDate(ctx.now));
+  // 生活计划对照「被汇总的那天」（date），而非当前时刻——summarize_conversation 允许回顾任意一天，
+  // 定时任务入口传的 date 本来就是当天，行为不变；这样本链路也不再依赖 ctx.now。
+  const lifePlans = todayLifePlansText(ctx.dataDir, ctx.parentId, ctx.childId, date);
   const parts = [
     "## 已提供的上下文（直接使用，无需调用工具查询）",
     "",
@@ -244,7 +247,7 @@ export async function runRecordingSummary(ctx: WorkerTaskCtx, date: string): Pro
     ctx.dataDir, ctx.mainDb, ctx.parentId, "kb.daily_entries.queryByDate", { child_id: ctx.childId, date }
   );
   const existingList = formatDailyExistingListLite(existing ?? []);
-  const provided = await buildProvidedContextLite(ctx, existingList);
+  const provided = await buildProvidedContextLite(ctx, existingList, date);
   const kbTools = createWorkerKbTools(ctx);
   const session = await createWorkerEphemeralSession(
     ctx,

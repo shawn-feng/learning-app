@@ -11,6 +11,7 @@ import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { DatabaseSync } from "node:sqlite";
 import { runRecordingSummary } from "../worker/tasks.js";
+import { readParentSettings } from "../worker/scheduler.js";
 
 export interface SummaryToolDeps {
   db: DatabaseSync;
@@ -41,8 +42,23 @@ export function createSummarizeConversationTool(deps: SummaryToolDeps) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return { content: [{ type: "text" as const, text: `日期格式不对：${date}（应为 YYYY-MM-DD）` }], details: {} };
       }
+      // ctx 必须与 scheduler 同源补全（实测踩坑，缺一即崩/选错模型）：
+      // - now：runRecordingSummary 链路要用（缺 → "Cannot read properties of undefined (reading 'getFullYear')"）；
+      // - auth：getWorkerRuntime 按家长写临时密钥文件（缺 → 密钥文件被覆写为空，重启后首个调用
+      //   若是本工具会建出无 key runtime 并缓存，连累交互会话报 No API key）；
+      // - appSettings：pickWorkerModel 选模型（缺 → 兜底内置 qwen-tokenplan 而非家长配置的模型）。
+      const settings = readParentSettings(deps.db, deps.dataDir, deps.parentId);
       const r = await runRecordingSummary(
-        { dataDir: deps.dataDir, mainDb: deps.db, parentId: deps.parentId, childId: deps.childId } as any,
+        {
+          dataDir: deps.dataDir,
+          mainDb: deps.db,
+          parentId: deps.parentId,
+          childId: deps.childId,
+          auth: settings.auth,
+          appSettings: settings.appSettings,
+          schedulerConfig: {} as any,
+          now: new Date(),
+        } as any,
         date
       );
       return { content: [{ type: "text" as const, text: r?.message ?? `已处理 ${date}` }], details: {} };
