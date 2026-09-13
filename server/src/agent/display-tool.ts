@@ -69,7 +69,15 @@ export function createDisplayContentTool(deps: DisplayToolDeps) {
 
       const title = params.title?.trim() || rel.split("/").pop()!.replace(/\.html?$/i, "");
       const source = isWorkspace ? "workspace" : "materials";
-      agentStreamHub.publish(deps.streamKey, "display_content", { path: rel, source, title, ts: Date.now() });
+      // 正文随事件一起推送：渲染层收到即可直接 iframe 渲染（多端同看、无需再拉文件）。
+      // 读取失败（竞态/权限）不阻断——前端拿不到正文会走 materialsRefresh 兜底。
+      let content = "";
+      try {
+        content = fs.readFileSync(abs, "utf-8");
+      } catch {
+        content = "";
+      }
+      agentStreamHub.publish(deps.streamKey, "display_content", { path: rel, source, title, content, ts: Date.now() });
       return {
         content: [{ type: "text" as const, text: `已展示资料「${title}」（${rel}）——孩子端资料面板会即时打开。` }],
         details: {},

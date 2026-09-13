@@ -31,6 +31,9 @@ const api = {
     registerListener("pi:reply_end", callback),
   onPiReplyError: (callback: (data: { childId: string; error: string }) => void) =>
     registerListener("pi:reply_error", callback),
+  // P4：服务端 agent 的 display_content 推送（资料面板自动打开；含 path/title/source/content 正文）
+  onPiDisplayContent: (callback: (data: { childId: string; path: string; title?: string; source?: string; content?: string }) => void) =>
+    registerListener("pi:display_content", callback),
 
   // ISSUE-061：场景对话会话（scene agent）事件
   onSceneReply: (callback: (data: { childId: string; courseKey: string; text: string }) => void) =>

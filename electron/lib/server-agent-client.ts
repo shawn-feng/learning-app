@@ -32,6 +32,58 @@ export interface RendererEvent {
   payload: any;
 }
 
+const TOOL_PREVIEW_LIMIT = 200;
+const TOOL_RESULT_LIMIT = 300;
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+/**
+ * 工具入参预览：对象 JSON 序列化、字符串直取，再截断。
+ * 为什么不能直接 String(args)：对象会得到 "[object Object]"（用户实踩），必须 JSON.stringify。
+ */
+export function previewArgs(args: unknown): string | undefined {
+  if (args == null) return undefined;
+  let s = "";
+  if (typeof args === "string") s = args;
+  else {
+    try {
+      s = JSON.stringify(args);
+    } catch {
+      s = String(args);
+    }
+  }
+  if (!s || s === "{}" || s === "[object Object]") return undefined;
+  return truncate(s, TOOL_PREVIEW_LIMIT);
+}
+
+/**
+ * 工具结果预览：从 { content:[{type:text}] } 或 { text } 里提取文本，兜底 JSON 序列化。
+ * 服务端工具 execute 返回 { content:[{type:"text",text}], details }，这里取正文做气泡预览。
+ */
+export function previewToolResult(result: unknown): string | undefined {
+  if (result == null) return undefined;
+  const r = result as { content?: unknown[]; text?: unknown };
+  if (Array.isArray(r.content)) {
+    let t = "";
+    for (const c of r.content) {
+      const b = c as { type?: string; text?: string };
+      if (b && b.type === "text" && typeof b.text === "string") t += b.text;
+    }
+    if (t.trim()) return truncate(t, TOOL_RESULT_LIMIT);
+  }
+  if (typeof r.text === "string" && r.text.trim()) return truncate(r.text, TOOL_RESULT_LIMIT);
+  let s = "";
+  try {
+    s = JSON.stringify(result);
+  } catch {
+    s = String(result);
+  }
+  if (!s || s === "[object Object]" || s === "{}") return undefined;
+  return truncate(s, TOOL_RESULT_LIMIT);
+}
+
 /**
  * 把一条服务端 agent 事件翻译成渲染层通道消息（纯函数，便于单测）。
  * 通道名与载荷保持与旧本地实现一致，渲染层零改动。
@@ -49,7 +101,7 @@ export function translateAgentEvent(e: AgentEvent, childId: string, kind: AgentK
           childId,
           toolCallId: e.data?.toolCallId,
           toolName: e.data?.toolName,
-          argsPreview: String(e.data?.args ?? "").slice(0, 120),
+          argsPreview: previewArgs(e.data?.args),
         },
       };
     case "tool_end":
@@ -59,7 +111,7 @@ export function translateAgentEvent(e: AgentEvent, childId: string, kind: AgentK
           childId,
           toolCallId: e.data?.toolCallId,
           toolName: e.data?.toolName,
-          result: e.data?.result,
+          resultPreview: previewToolResult(e.data?.result),
           isError: e.data?.isError === true,
         },
       };
@@ -420,8 +472,13 @@ export function bridgeChildAgentEvents(
 
   switch (e.type) {
     case "message_end": {
-      const text = messageText(e.data?.message);
+      const msg = e.data?.message;
+      const text = messageText(msg);
       if (text.trim()) send("pi:reply", { childId, text });
+      // 思考补发：流式 thinking_delta 可能因模型/竞态未到达，message_end 时用消息里的
+      // thinking 块兜底补一次完整思考（complete=true 让前端覆盖而非追加，避免重复）。
+      const thinking = contentThinking(msg?.content);
+      if (thinking) send("pi:thinking", { childId, delta: thinking, complete: true });
       break;
     }
     case "turn_end":
@@ -450,8 +507,13 @@ export function bridgeParentAgentEvents(
 
   switch (e.type) {
     case "message_end": {
-      const text = messageText(e.data?.message);
+      const msg = e.data?.message;
+      const text = messageText(msg);
       if (text.trim()) send("pi:reply", { childId, text });
+      // 思考补发：流式 thinking_delta 可能因模型/竞态未到达，message_end 时用消息里的
+      // thinking 块兜底补一次完整思考（complete=true 让前端覆盖而非追加，避免重复）。
+      const thinking = contentThinking(msg?.content);
+      if (thinking) send("pi:thinking", { childId, delta: thinking, complete: true });
       break;
     }
     case "turn_end":

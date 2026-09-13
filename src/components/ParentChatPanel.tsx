@@ -105,10 +105,10 @@ export default function ParentChatPanel() {
     window.api.onPiAgentEnd((data: any) => {
       if (data.childId === "parent") { setStopping(false); setBusy(false); }
     });
-    // 思考增量（主进程已节流）——在 working 气泡里实时展示
+    // 思考增量（主进程已节流）——在 working 气泡里实时展示；complete=true 为 message_end 兜底补发（覆盖式）
     window.api.onPiThinking((data: any) => {
       if (data.childId !== "parent") return;
-      patchWorking((m) => ({ ...m, thinking: (m.thinking || "") + data.delta }));
+      patchWorking((m) => ({ ...m, thinking: data.complete ? data.delta : (m.thinking || "") + data.delta }));
     });
     // 工具开始调用
     window.api.onPiToolStart((data: any) => {

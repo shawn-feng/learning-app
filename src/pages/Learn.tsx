@@ -463,9 +463,13 @@ export default function Learn({ child, onExit }: Props) {
   }, []);
 
   // 思考增量（已由主进程节流）
-  const handleThinking = useCallback((data: { childId: string; delta: string }) => {
+  const handleThinking = useCallback((data: { childId: string; delta: string; complete?: boolean }) => {
     if (data.childId !== childIdRef.current) return;
-    patchWorking((m) => ({ ...m, thinking: (m.thinking || "") + data.delta }));
+    // complete=true：message_end 兜底补发的完整思考 → 覆盖（避免与流式 delta 重复拼接）
+    patchWorking((m) => ({
+      ...m,
+      thinking: data.complete ? data.delta : (m.thinking || "") + data.delta,
+    }));
   }, [patchWorking]);
 
   // 工具开始调用
@@ -504,55 +508,59 @@ export default function Learn({ child, onExit }: Props) {
     }
   }, [materials]);
 
+  // 把一份资料（display_content 产物）写入 materials 列表并自动打开；场景判定内联。
+  // 旧路径（tool_end 的 result.details.panelContent）与新路径（pi:display_content 事件）共用。
+  function applyDisplayContent(panel: { filePath?: string; title?: string; content: string; isScene?: boolean }) {
+    // 场景课全托管：命中即置交棒标记并**立即激活场景会话**——不再等 iframe 的
+    // scene.ready（app 内沙箱 iframe 正文脚本可能不执行，曾导致永不跳转）。
+    const isScene =
+      panel.isScene === true ||
+      (typeof panel.content === "string" && panel.content.includes("pi-scenario"));
+    if (isScene) {
+      sceneOpenedTurnRef.current = true;
+      activateSceneFromTool(panel.filePath, panel.title);
+    }
+    const filePath = panel.filePath;
+    setMaterials((prev) => {
+      const lim = materialsLimitRef.current;
+      // ISSUE-021：同 path 重发 → 就地替换内容/标题/时间并**移到列表末尾（最新位置）**，
+      // 返回新数组引用 → 下方 materials 监听 effect 触发 → 自动重新选中该项。
+      // ⚠️ 绝不能用「完全重复就不显示」：即使内容 100% 相同，最近一次 display_content
+      // 的那份也必须重新选中并显示在最新位置（用户 2026-08-31 明确约束）。
+      // 去重仅用于避免同一轮内多份同 path 堆积成 N 条。
+      if (filePath && prev.some((m) => m.filePath === filePath)) {
+        const updated = prev.map((m) =>
+          m.filePath === filePath
+            ? { ...m, content: panel.content, title: panel.title || m.title, time: nowLabel() }
+            : m
+        );
+        const moved = updated.filter((m) => m.filePath !== filePath).concat(updated.filter((m) => m.filePath === filePath));
+        return lim > 0 ? moved.slice(-lim) : moved;
+      }
+      const id = nextId();
+      const next = [
+        ...prev,
+        {
+          id,
+          format: "html" as const,
+          content: panel.content,
+          title: panel.title,
+          time: nowLabel(),
+          filePath,
+        },
+      ];
+      return lim > 0 ? next.slice(-lim) : next;
+    });
+    // 自动打开由上方 materials 监听 effect 统一处理（新条目追加后自动选中）
+  }
+
   // 工具结束调用 + 学习资料列表更新
   const handleToolEnd = useCallback((data: any) => {
     if (data.childId !== childIdRef.current) return;
+    // display_content 旧协议兼容（tool_end 的 result.details.panelContent）；主路径已改走 pi:display_content 事件
     if (data.toolName === "display_content") {
       const panel = data.result?.details?.panelContent;
-      if (panel) {
-        // 场景课全托管：display_content 工具级判定（主进程已按 HTML 标记/主题名单给出 panel.isScene，
-        // 渲染层再按内容标记兜底）。命中即置交棒标记并**立即激活场景会话**——不再等 iframe 的
-        // scene.ready（app 内沙箱 iframe 正文脚本可能不执行，曾导致永不跳转）。
-        const isScene =
-          panel.isScene === true ||
-          (typeof panel.content === "string" && panel.content.includes("pi-scenario"));
-        if (isScene) {
-          sceneOpenedTurnRef.current = true;
-          activateSceneFromTool(panel.filePath, panel.title);
-        }
-        const filePath = panel.filePath;
-        setMaterials((prev) => {
-          const lim = materialsLimitRef.current;
-          // ISSUE-021：同 path 重发 → 就地替换内容/标题/时间并**移到列表末尾（最新位置）**，
-          // 返回新数组引用 → 下方 materials 监听 effect 触发 → 自动重新选中该项。
-          // ⚠️ 绝不能用「完全重复就不显示」：即使内容 100% 相同，最近一次 display_content
-          // 的那份也必须重新选中并显示在最新位置（用户 2026-08-31 明确约束）。
-          // 去重仅用于避免同一轮内多份同 path 堆积成 N 条。
-          if (filePath && prev.some((m) => m.filePath === filePath)) {
-            const updated = prev.map((m) =>
-              m.filePath === filePath
-                ? { ...m, content: panel.content, title: panel.title || m.title, time: nowLabel() }
-                : m
-            );
-            const moved = updated.filter((m) => m.filePath !== filePath).concat(updated.filter((m) => m.filePath === filePath));
-            return lim > 0 ? moved.slice(-lim) : moved;
-          }
-          const id = nextId();
-          const next = [
-            ...prev,
-            {
-              id,
-              format: "html" as const,
-              content: panel.content,
-              title: panel.title,
-              time: nowLabel(),
-              filePath,
-            },
-          ];
-          return lim > 0 ? next.slice(-lim) : next;
-        });
-        // 自动打开由上方 materials 监听 effect 统一处理（新条目追加后自动选中）
-      }
+      if (panel) applyDisplayContent(panel);
     }
     patchWorking((m) => ({
       ...m,
@@ -567,6 +575,17 @@ export default function Learn({ child, onExit }: Props) {
       ),
     }));
   }, [patchWorking]);
+
+  // P4：服务端 display_content 推送（pi:display_content 事件）→ 左侧资料面板自动打开
+  const handleDisplayContent = useCallback(
+    (data: { childId: string; path: string; title?: string; source?: string; content?: string }) => {
+      if (data.childId !== childIdRef.current) return;
+      const content = typeof data.content === "string" ? data.content : "";
+      if (!content) return; // 正文缺失（读取失败）时静默跳过，避免渲染空白面板
+      applyDisplayContent({ filePath: data.path, title: data.title, content });
+    },
+    []
+  );
 
   // 正式回复到达 —— 在同一个气泡里替换为正式消息
   const handleReply = useCallback((data: { childId: string; text: string }) => {
@@ -998,6 +1017,7 @@ export default function Learn({ child, onExit }: Props) {
     window.api.onPiThinking(handleThinking);
     window.api.onPiToolStart(handleToolStart);
     window.api.onPiToolEnd(handleToolEnd);
+    window.api.onPiDisplayContent(handleDisplayContent);
     window.api.onPiSessionReset(handleSessionReset);
     window.api.onPiVisionModelSwitched(handleVisionSwitched);
     window.api.onClassReminder(handleClassReminder);
@@ -1009,7 +1029,7 @@ export default function Learn({ child, onExit }: Props) {
     return () => {
       window.api.piRemoveListeners();
     };
-  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec, handleSceneReply, handleSceneReplyEnd, handleSceneReplyError]);
+  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleDisplayContent, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec, handleSceneReply, handleSceneReplyEnd, handleSceneReplyError]);
 
   // 向聊天追加一条 AI 消息（命令反馈 / 系统提示用）
   function addAiMessage(text: string) {
