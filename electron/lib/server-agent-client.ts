@@ -462,36 +462,88 @@ function safeJson(s: string): unknown {
  * 这是本地实现里 session.prompt 返回后「逐条回发 assistant 文本」的等价物。
  * @param send 渲染层通道发送函数（ipc-handlers 传入 webContents.send）
  */
-export function bridgeChildAgentEvents(
+/**
+ * 轮内文本缓冲（按会话键）：assistant 的 message_end **不再立即**发 pi:reply。
+ * 为什么：SDK 事件顺序是「assistant 消息 message_end（可能带 toolCall）→ tool_start/end → 下一条」，
+ * 一个 agent 轮有多条 assistant 消息；若第一条到达就发 pi:reply，渲染层会把工作气泡转正
+ * （workingIdRef 清空），**后续 tool_start/tool_end 被 patchWorking 全部丢弃**——
+ * 实测表现即「看不到任何工具调用，记录就完成了」（2026-09-13）。
+ * 修复：message_end 只累积文本，turn_end/agent_end（轮真正结束）时逐条回发——
+ * 与旧同步实现「prompt() 返回后逐条回发 assistant 文本」的顺序语义完全一致。
+ */
+const turnTextBuffers = new Map<string, string[]>();
+
+function bufferTurnText(key: string, text: string): void {
+  if (!text.trim()) return;
+  const buf = turnTextBuffers.get(key) ?? [];
+  buf.push(text);
+  turnTextBuffers.set(key, buf);
+}
+
+function flushTurnTexts(key: string, childId: string, send: (channel: string, payload: any) => void): void {
+  const buf = turnTextBuffers.get(key);
+  turnTextBuffers.delete(key);
+  if (!buf) return;
+  for (const t of buf) {
+    if (t.trim()) send("pi:reply", { childId, text: t });
+  }
+}
+
+function bridgeAgentEventCore(
   e: AgentEvent,
   childId: string,
+  bufferKey: string,
   send: (channel: string, payload: any) => void
 ): void {
+  // 新轮开始：清空残留缓冲（上轮异常中断未 flush 的内容不带入本轮）
+  if (e.type === "user_message") turnTextBuffers.delete(bufferKey);
+
   const base = translateAgentEvent(e, childId, "main");
-  if (base) send(base.channel, base.payload);
+  // 注意：message_end 的翻译结果（pi:message_end）也要发——但 pi:reply 的回发已推迟到
+  // turn_end（见 turnTextBuffers），这里其余事件照常转发。
+  if (base && e.type !== "message_end") send(base.channel, base.payload);
+  if (e.type === "message_end") send("pi:message_end", { childId, message: e.data?.message });
 
   switch (e.type) {
     case "message_end": {
       const msg = e.data?.message;
-      const text = messageText(msg);
-      if (text.trim()) send("pi:reply", { childId, text });
       // 思考补发：流式 thinking_delta 可能因模型/竞态未到达，message_end 时用消息里的
       // thinking 块兜底补一次完整思考（complete=true 让前端覆盖而非追加，避免重复）。
+      // 此刻工作气泡仍在（reply 尚未回发），思考能正确落到气泡上。
       const thinking = contentThinking(msg?.content);
       if (thinking) send("pi:thinking", { childId, delta: thinking, complete: true });
+      bufferTurnText(bufferKey, messageText(msg));
       break;
     }
     case "turn_end":
     case "agent_end":
+      flushTurnTexts(bufferKey, childId, send);
       send("pi:reply_end", { childId });
       break;
     case "error":
+      turnTextBuffers.delete(bufferKey);
       send("pi:reply_error", { childId, error: String(e.data?.message ?? "未知错误") });
       send("pi:reply_end", { childId });
       break;
     default:
       break;
   }
+}
+
+/**
+ * 把服务端 agent 事件流桥接到渲染层（孩子侧）——除 translateAgentEvent 的 pi:* 通道外，
+ * 额外补「最终回复气泡」语义：
+ *   message_end(assistant) → 累积文本（见 turnTextBuffers 注释）
+ *   turn_end / agent_end  → 逐条 pi:reply + pi:reply_end（本轮收束）
+ *   error                  → pi:reply_error + pi:reply_end（聊天框显式报错，而非静默转圈）
+ * @param send 渲染层通道发送函数（ipc-handlers 传入 webContents.send）
+ */
+export function bridgeChildAgentEvents(
+  e: AgentEvent,
+  childId: string,
+  send: (channel: string, payload: any) => void
+): void {
+  bridgeAgentEventCore(e, childId, `child:${childId}`, send);
 }
 
 /**
@@ -502,31 +554,7 @@ export function bridgeParentAgentEvents(
   childId: "parent" | "parent-content",
   send: (channel: string, payload: any) => void
 ): void {
-  const base = translateAgentEvent(e, childId, "parent");
-  if (base) send(base.channel, base.payload);
-
-  switch (e.type) {
-    case "message_end": {
-      const msg = e.data?.message;
-      const text = messageText(msg);
-      if (text.trim()) send("pi:reply", { childId, text });
-      // 思考补发：流式 thinking_delta 可能因模型/竞态未到达，message_end 时用消息里的
-      // thinking 块兜底补一次完整思考（complete=true 让前端覆盖而非追加，避免重复）。
-      const thinking = contentThinking(msg?.content);
-      if (thinking) send("pi:thinking", { childId, delta: thinking, complete: true });
-      break;
-    }
-    case "turn_end":
-    case "agent_end":
-      send("pi:reply_end", { childId });
-      break;
-    case "error":
-      send("pi:reply_error", { childId, error: String(e.data?.message ?? "未知错误") });
-      send("pi:reply_end", { childId });
-      break;
-    default:
-      break;
-  }
+  bridgeAgentEventCore(e, childId, `parent:${childId}`, send);
 }
 
 export { ServerError };

@@ -81,17 +81,49 @@ describe("桥：最终回复气泡语义（pi:reply / pi:reply_end）", () => {
     expect(messageText({ content: [{ type: "image", data: "x" }] })).toBe("");
     expect(messageText(null)).toBe("");
   });
-  it("assistant message_end → pi:reply（最终气泡）", () => {
+  it("message_end 不立即发 pi:reply（工作气泡不被提前转正）", () => {
     const sent = collect([
+      { id: 0, type: "user_message", data: {} },
+      { id: 1, type: "message_end", data: { message: { role: "assistant", content: [{ type: "text", text: "中间话" }] } } },
+    ]);
+    expect(sent.some((s) => s.channel === "pi:reply")).toBe(false);
+  });
+  it("turn_end 时逐条回发累积文本 + reply_end（多段文本成多气泡）", () => {
+    const sent = collect([
+      { id: 0, type: "user_message", data: {} },
       { id: 1, type: "text_delta", data: { delta: "你好" } },
-      { id: 2, type: "message_end", data: { message: { role: "assistant", content: [{ type: "text", text: "你好呀" }] } } },
+      { id: 2, type: "message_end", data: { message: { role: "assistant", content: [{ type: "text", text: "第一段" }] } } },
+      { id: 3, type: "message_end", data: { message: { role: "assistant", content: [{ type: "text", text: "第二段" }] } } },
+      { id: 4, type: "turn_end", data: {} },
+    ]);
+    const replies = sent.filter((s) => s.channel === "pi:reply");
+    expect(replies.map((r) => r.payload.text)).toEqual(["第一段", "第二段"]);
+    expect(sent[sent.length - 1]!.channel).toBe("pi:reply_end");
+  });
+  it("工具轮回归：tool_start/tool_end 在 reply 之前到达（2026-09-13 实测踩坑）", () => {
+    const sent = collect([
+      { id: 0, type: "user_message", data: {} },
+      { id: 1, type: "message_end", data: { message: { role: "assistant", content: [{ type: "text", text: "我先查一下" }, { type: "toolCall", id: "t1", name: "kb_query", arguments: {} }] } } },
+      { id: 2, type: "tool_start", data: { toolCallId: "t1", toolName: "kb_query", args: { query: "daily" } } },
+      { id: 3, type: "tool_end", data: { toolCallId: "t1", toolName: "kb_query", isError: false, result: { content: [{ type: "text", text: "查询结果" }] } } },
+      { id: 4, type: "message_end", data: { message: { role: "assistant", content: [{ type: "text", text: "查到了" }] } } },
+      { id: 5, type: "turn_end", data: {} },
+    ]);
+    const idx = (ch: string) => sent.findIndex((s) => s.channel === ch);
+    // 工具事件必须先于第一条 reply ——否则渲染层工作气泡已转正、工具调用被丢弃
+    expect(idx("pi:tool_start")).toBeGreaterThan(-1);
+    expect(idx("pi:tool_start")).toBeLessThan(idx("pi:reply"));
+    expect(idx("pi:tool_end")).toBeLessThan(idx("pi:reply"));
+    const replies = sent.filter((s) => s.channel === "pi:reply");
+    expect(replies.map((r) => r.payload.text)).toEqual(["我先查一下", "查到了"]);
+  });
+  it("user_message 重置轮缓冲（上一轮异常残留不串轮）", () => {
+    const sent = collect([
+      { id: 1, type: "message_end", data: { message: { role: "assistant", content: [{ type: "text", text: "残留" }] } } },
+      { id: 2, type: "user_message", data: {} },
       { id: 3, type: "turn_end", data: {} },
     ]);
-    const channels = sent.map((s) => s.channel);
-    expect(channels).toContain("pi:streaming");
-    expect(channels).toContain("pi:reply");
-    expect(sent.find((s) => s.channel === "pi:reply")!.payload).toEqual({ childId, text: "你好呀" });
-    expect(channels).toContain("pi:reply_end");
+    expect(sent.some((s) => s.channel === "pi:reply")).toBe(false);
   });
   it("error → pi:reply_error + pi:reply_end（聊天框显式报错）", () => {
     const sent = collect([{ id: 1, type: "error", data: { message: "No API key" } }]);
