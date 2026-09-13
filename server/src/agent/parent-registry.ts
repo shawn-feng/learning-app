@@ -28,6 +28,7 @@ import {
 import { readParentSettings } from "../worker/scheduler.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { PARENT_AGENT_TOOL_NAMES, createParentAgentTools } from "./parent-tools.js";
+import { PLAN_DOMAIN_TOOL_NAMES, createPlanDomainTools } from "./parent-plans.js";
 import { agentStreamHub } from "./stream-hub.js";
 
 const DEPS: CoreSessionDeps = {
@@ -82,14 +83,22 @@ function createGetDateTool() {
   });
 }
 
-/** 家长 agent 的 system prompt（P2 版：资料治理为主，行为规范真源接入属 P2 后续/家长 AGENTS）。 */
+/** 家长 agent 的 system prompt（P2 资料治理 + 2026-09-13 计划域三表工具）。 */
 export function buildServerParentPrompt(input: { parentId: string; workspace: string; today: string }): string {
-  return `你是「学习伙伴」家长工作台的助手，帮家长管理孩子的课程与学习资料。
+  return `你是「学习伙伴」家长工作台的助手，帮家长管理孩子的学习计划、生活计划、考核排期、课程与学习资料。
 
 ## 当前上下文
 - 家长：${input.parentId}
 - 今天：${input.today}
 - 你的工作区：${input.workspace}（read/write/edit/ls 只能在此目录内）——用于放临时产出，正式资料请用 parent_put_material 发布到真源。
+
+## 计划域（学习计划 / 生活计划 / 考核排期）
+对象一律按**孩子姓名**定位（不确定先 parent_list_children）：
+- 起草案期前先 study_plan_sources 查孩子真实课程结构，按**真实存在的课程名**排，不猜课程名；
+- study_plan_create 排「每天学什么」（一次可排多天，复习课加「复习：」前缀）；study_plan_list 看现有排期（含行 id）；study_plan_get 看某天安排；study_plan_update 删/挪天/改复习；
+- parent_plan_create 建生活计划（必须完成项，如「每天整理书包」；同天同标题自动跳过）；
+- exam_schedule_create 预约考核——courses 必须是**精确课程名**，家长说的模糊范围（「最近学的 3 课」）先查再确认，**信息不全必须问，不要猜**；
+- 改排期/建考核前先复述方案让家长确认；未学完的课系统自动顺延，不需要你手动挪。
 
 ## 课程学习资料（唯一真源）
 资料在服务端，按主题目录组织（如 lunyu/materials/lesson-01.html）。整理资料请用这些工具，不要试图用本地文件工具去改真源：
@@ -104,7 +113,8 @@ export function buildServerParentPrompt(input: { parentId: string; workspace: st
 - 动手前先列清单、复述你的整理方案，让家长知道你准备改什么（家长看不到你脑子里的计划）。
 - 不确定就查：parent_library_topics / parent_library_courses 是权威主题与课程名册。
 - 批量改动分步做，每步说明结果；删除/覆盖这类不可逆动作尤其谨慎。
-- 面向家长用简洁中文，说清「做了什么、影响哪些文件」。`;
+- 面向家长用简洁中文，说清「做了什么、影响哪些文件」。
+`;
 }
 
 async function ensureEntry(
@@ -133,7 +143,12 @@ async function ensureEntry(
     auth: settings.auth,
     appSettings: settings.appSettings,
   });
-  const customTools = [...fsTools, ...parentTools, createGetDateTool()];
+  const customTools = [
+    ...fsTools,
+    ...parentTools,
+    ...createPlanDomainTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
+    createGetDateTool(),
+  ];
 
   const systemPrompt = buildServerParentPrompt({ parentId, workspace, today: localDate() });
 
@@ -144,7 +159,12 @@ async function ensureEntry(
     cwd: workspace,
     agentDir,
     systemPrompt,
-    toolNames: [...SERVER_FS_TOOL_NAMES, ...PARENT_AGENT_TOOL_NAMES.filter((n) => !SERVER_FS_TOOL_NAMES.includes(n)), "get_date"],
+    toolNames: [
+      ...SERVER_FS_TOOL_NAMES,
+      ...PARENT_AGENT_TOOL_NAMES,
+      ...PLAN_DOMAIN_TOOL_NAMES,
+      "get_date",
+    ].filter((n, i, arr) => arr.indexOf(n) === i),
     customTools,
     sessionsDir: paths.agentSessionsDir(parentId, kind),
   });
