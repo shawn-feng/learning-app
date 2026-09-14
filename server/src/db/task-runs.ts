@@ -46,7 +46,12 @@ export interface EffectiveChildConfig {
   /** 2026-09-10：todo 域（genTime/statTime）字段保留 = 兼容历史 scheduler_config 读取 / 写入；新代码不应该再读写它。 */
   recording: { enabled: boolean; times: string[]; onNewSession: boolean };
   todo: { enabled: boolean; genTime: string; statTime: string };
-  autoNewSession: { enabled: boolean; hour: number; minute: number };
+  /**
+   * autoNewSession：hour/minute 是旧单时间点建模（兼容保留）；times 是该孩子全部分配的
+   * auto_new_session 任务时间点（2026-09-14 修复：此前 find() 只取第一个任务，同一孩子
+   * 建第二个不同时间的自动新建会话会被静默忽略——珊珊 18:30 未触发即此因）。
+   */
+  autoNewSession: { enabled: boolean; hour: number; minute: number; times?: string[] };
 }
 
 /** 记录一次执行结果。 */
@@ -226,12 +231,14 @@ export function buildEffectiveChildConfig(
       cfg.todo.genTime = gen ? gen.time : "";
       cfg.todo.statTime = stat ? stat.time : "";
     }
-    const auto = tasksFor.find((t) => t.type === "auto_new_session");
-    if (auto) {
-      const [h, m] = auto.time.split(":").map(Number);
+    const autos = tasksFor.filter((t) => t.type === "auto_new_session");
+    if (autos.length > 0) {
+      const [h, m] = autos[0].time.split(":").map(Number);
       cfg.autoNewSession.enabled = true;
       cfg.autoNewSession.hour = Number.isFinite(h) ? h : 21;
       cfg.autoNewSession.minute = Number.isFinite(m) ? m : 0;
+      // 全部时间点（多任务共存；去重排序，供 worker 逐点触发）
+      cfg.autoNewSession.times = [...new Set(autos.map((t) => t.time).filter((t) => /^\d{2}:\d{2}$/.test(t)))].sort();
     }
     result[c.id] = cfg;
   }

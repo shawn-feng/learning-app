@@ -441,22 +441,37 @@ function contentThinking(content: unknown[]): string {
 }
 
 /**
+ * 会话消息 timestamp（SDK 落盘为 ISO 字符串 / 内存消息可能为 ms 数字）→「MM-DD HH:mm」展示标签。
+ * 与渲染层 nowLabel() 同格式；取不出有效时间返回 undefined（渲染层自行兜底 now）。
+ */
+function historyTimeLabel(ts: unknown): string | undefined {
+  const ms = typeof ts === "string" ? Date.parse(ts) : typeof ts === "number" ? ts : NaN;
+  if (!Number.isFinite(ms)) return undefined;
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
  * 把服务端会话原始消息映射成前端气泡恢复用的 HistoryMessage。
  * 覆盖 user/assistant 的正文与思考；工具调用气泡的恢复（toolCall 块 + toolResult 匹配）暂不做——
  * 联调点：退出重进时工具调用记录不恢复为气泡，仅正文/思考恢复。
+ * time（2026-09-14 修复）：透传服务端消息时间戳格式化为展示标签——此前所有恢复消息都显示
+ * 「进会话时刻」（m.time 缺失 → 渲染层 nowLabel() 兜底），并非真实发生时间。
  */
-export function mapHistoryMessages(raw: Array<{ role: string; content: unknown[]; timestamp?: number }>): HistoryMessage[] {
+export function mapHistoryMessages(raw: Array<{ role: string; content: unknown[]; timestamp?: number | string }>): HistoryMessage[] {
   const out: HistoryMessage[] = [];
   for (const m of raw ?? []) {
+    const time = historyTimeLabel(m.timestamp);
     const content = Array.isArray(m.content) ? m.content : [];
     if (m.role === "user") {
       const text = contentText(content);
-      if (text) out.push({ role: "user", text });
+      if (text) out.push({ role: "user", text, ...(time ? { time } : {}) });
     } else if (m.role === "assistant") {
       const text = contentText(content);
       const thinking = contentThinking(content);
       if (text || thinking) {
-        out.push({ role: "ai", text, thinking: thinking || undefined });
+        out.push({ role: "ai", text, thinking: thinking || undefined, ...(time ? { time } : {}) });
       }
     }
     // toolResult / 其它角色不恢复为气泡（前端只展示 user/ai）
@@ -477,6 +492,20 @@ export async function getChildHistory(childId: string, session?: string, token =
 /** 重置孩子会话（服务端 newSession）。 */
 export async function resetChildSession(childId: string, session?: string, token = sessionToken()): Promise<void> {
   await serverFetch(`/agent/${encodeURIComponent(childId)}/reset`, { method: "POST", token, body: { session } });
+}
+
+/**
+ * 打开孩子会话（ISSUE-100 F1 冷路径）：服务端按「落盘会话最后一条消息的日期」裁决，
+ * 跨天自动新建会话后返回裁决后的历史——进会话加载历史一律走本入口（替代 getChildHistory），
+ * 保证用户一进来看到的就是当天会话（不会先见旧消息、发消息时突然清空）。
+ * getChildHistory（/history）保留给「回顾历史」类只读场景。
+ */
+export async function openChildSession(childId: string, session?: string, token = sessionToken()): Promise<HistoryMessage[]> {
+  const r = await serverFetch<{ messages: Array<{ role: string; content: unknown[]; timestamp?: number }> }>(
+    `/agent/${encodeURIComponent(childId)}/open`,
+    { method: "POST", token, body: { session: session ?? "main" } }
+  );
+  return mapHistoryMessages(r.messages ?? []);
 }
 
 /** 重置家长会话。 */

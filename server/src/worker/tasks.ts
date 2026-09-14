@@ -28,7 +28,7 @@ import { createWorkerKbTools, formatLocalDate } from "./kb-tools.js";
 /** 与客户端 scheduler.ts 的 SchedulerChildConfig 对齐（结构兼容，缺省字段调用方已补齐）。 */
 export interface WorkerSchedulerChildConfig {
   recording?: { enabled?: boolean; times?: string[]; onNewSession?: boolean };
-  autoNewSession?: { enabled?: boolean; hour?: number; minute?: number };
+  autoNewSession?: { enabled?: boolean; hour?: number; minute?: number; times?: string[] };
   archiveLimit?: number;
   classTimes?: Array<{ start?: string; end?: string; label?: string }>;
   classAlertMode?: string;
@@ -277,3 +277,38 @@ const recordingTask: WorkerTask = {
 };
 
 registerTask(recordingTask);
+
+// ---------- autoNewSession（ISSUE-100 F2 热路径） ----------
+
+/**
+ * 每日固定时刻自动新建会话：把旧客户端 scheduler 的 autoNewSession 定时重置职责迁到服务端
+ * （不再依赖客户端在线那一分钟才触发）。到点 resetSession（不传 kind → 该孩子 main/scene/course
+ * 全部会话释放 + 置 resetMarks），下次 /open 或首条消息即重建干净会话。
+ * 配置开关复用既有 autoNewSession（effective 配置已含，默认 enabled:false / 21:00，opt-in 语义不变）。
+ */
+const autoNewSessionTask: WorkerTask = {
+  type: "autoNewSession",
+  // 每天该点只跑一次（重启后由 catch-up 补最近一个已过期点，alreadyRanToday 去重）
+  catchUp: "latest",
+  points: (cfg) => {
+    const c = cfg.autoNewSession;
+    if (!c?.enabled) return [];
+    // 多时间点（2026-09-14 修复：同一孩子可有多个 auto_new_session 任务，此前 find() 只取第一个）
+    if (Array.isArray(c.times) && c.times.length) {
+      return c.times.filter((t) => /^\d{2}:\d{2}$/.test(t)).sort();
+    }
+    const h = typeof c.hour === "number" && c.hour >= 0 && c.hour <= 23 ? c.hour : 21;
+    const m = typeof c.minute === "number" && c.minute >= 0 && c.minute <= 59 ? c.minute : 0;
+    return [`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`];
+  },
+  run: async (ctx) => {
+    // lazy import：tasks→session-registry→scheduler→tasks 会形成静态环
+    // （session-registry 依赖 scheduler 的 readParentSettings），运行时 import() 规避；
+    // resetSession 仅在 run 运行时调用，安全。
+    const { resetSession } = await import("../agent/session-registry.js");
+    resetSession(ctx.parentId, ctx.childId);
+    return { status: "ok", message: "每日自动新建会话：已重置该孩子全部 agent 会话" };
+  },
+};
+
+registerTask(autoNewSessionTask);

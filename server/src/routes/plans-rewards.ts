@@ -337,9 +337,10 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
     }
   });
 
-  /** POST /api/v1/plans/exam —— 孩子端 agent plan_exam 工具的落库入口（孩子自请考核，安排而非发起）。
-   *  creator 固定 'child'（加分项，task_type=optional），kind='self'；考核实际发起/评分走考核页，
-   *  提交后由 worker applyExamAttempts 挂接结果（本行仅承载「哪天想考」的安排与展示）。 */
+  /** POST /api/v1/plans/exam —— 孩子端自请考核的落库入口（安排而非发起）。
+   *  creator 固定 'child'（加分项，task_type=optional），kind='custom'（2026-09-14 kind 收敛为 custom/fixed，
+   *  建单人由 creator 区分）；body.courses 写入 scope_json.courses，开考时 config 路由按范围出题。
+   *  考核实际发起/评分走考核页，提交后由 worker applyExamAttempts 挂接结果。 */
   app.post("/api/v1/plans/exam", async (req, reply) => {
     let parentId: string;
     try {
@@ -348,13 +349,16 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const body = (req.body ?? {}) as { childId?: string; title?: string; date?: string };
+    const body = (req.body ?? {}) as { childId?: string; title?: string; date?: string; courses?: string[]; note?: string };
     const childId = String(body.childId ?? "");
     const title = String(body.title ?? "").trim();
     if (!childId || !title) return reply.code(400).send({ error: "childId / title 必填" });
     if (title.length > 200) return reply.code(400).send({ error: "title 过长（≤200 字）" });
     const date = String(body.date ?? "") || new Date().toLocaleDateString("sv-SE");
     if (!validDate(date)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
+    const courses = Array.isArray(body.courses) ? body.courses.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
+    if (!courses.length) return reply.code(400).send({ error: "courses 必填（要考的精确课程名列表，≥1 门）" });
+    const note = String(body.note ?? "").trim();
     try {
       assertChildOwned(deps.db, parentId, childId);
     } catch (err) {
@@ -374,12 +378,13 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
       }
       const id = randomUUID();
       const now = new Date().toISOString();
+      const scopeJson = JSON.stringify({ courses, ...(note ? { note } : {}) });
       kb.prepare(
         `INSERT INTO exam_plans
            (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,start_at,due_at,status,
             attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-         VALUES (?,?,?,?,'child','self','','{}','conversation','',?,?, 'pending','','','','', 'optional',1,0,1,?,?)`
-      ).run(id, parentId, childId, title, `${date} 00:00:00`, `${date} 23:59:59`, now, now);
+         VALUES (?,?,?,?,'child','custom','',?,'conversation','',?,?, 'pending','','','','', 'optional',1,0,1,?,?)`
+      ).run(id, parentId, childId, title, scopeJson, `${date} 00:00:00`, `${date} 23:59:59`, now, now);
       return { ok: true, planId: id, date };
     } finally {
       kb.close();

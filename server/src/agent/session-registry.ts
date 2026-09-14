@@ -7,6 +7,8 @@
  * 多端：同一 (parentId, childId) 在进程内复用同一个 session 实例，事件经 stream-hub 广播给全部订阅者。
  * 并发：同一会话同一时刻只允许一次 prompt（`busy`），否则两个设备的输入会交错进同一上下文。
  */
+import fs from "node:fs";
+import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { Type } from "typebox";
 import {
@@ -134,6 +136,67 @@ export function sessionSlot(childId: string, kind: ChildSessionKind): string {
 }
 
 /**
+ * 目录下（递归）所有 .jsonl 会话文件里最后一条 user/assistant 消息的时间戳（ms）；
+ * 没有任何消息返回 null。条目格式与 SDK 落盘一致（type==="message"、timestamp 为 ISO 字符串），
+ * 逻辑复用旧客户端 pi-session 的同名实现（ISSUE-100：每日新建会话的日期裁决真源在服务端）。
+ */
+export function lastMessageTimestampInDir(sessionsDir: string): number | null {
+  if (!fs.existsSync(sessionsDir)) return null;
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    let list: fs.Dirent[];
+    try {
+      list = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of list) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name.endsWith(".jsonl")) files.push(full);
+    }
+  };
+  walk(sessionsDir);
+  let maxTs: number | null = null;
+  for (const f of files) {
+    let lines: string[];
+    try {
+      lines = fs.readFileSync(f, "utf-8").split("\n");
+    } catch {
+      continue;
+    }
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let entry: any;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (
+        entry?.type === "message" &&
+        entry.message &&
+        (entry.message.role === "user" || entry.message.role === "assistant")
+      ) {
+        const ts = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+        if (Number.isFinite(ts) && (maxTs === null || ts > maxTs)) maxTs = ts;
+      }
+    }
+  }
+  return maxTs;
+}
+
+/**
+ * 会话目录的最后一条消息是否落在今天（本地时区）。无任何历史消息返回 true（无需重置——
+ * continueRecent 对空目录本身就是干净会话）。
+ */
+export function isLastMessageToday(sessionsDir: string): boolean {
+  const ts = lastMessageTimestampInDir(sessionsDir);
+  if (ts === null) return true;
+  return new Date(ts).toDateString() === new Date().toDateString();
+}
+
+/**
  * 按设备能力 + 会话类型计算工具白名单（纯函数，便于测试与调试）。
  * 资料面板类工具（page_* / scene_command）只在设备声明 `material-panel` 时注册——见 caps.ts 的说明。
  */
@@ -247,6 +310,7 @@ async function ensureEntry(
       });
 
   const slot = sessionSlot(childId, kind);
+  const sessionsDir = paths.agentSessionsDir(parentId, slot);
   const handle = await createCoreSession({
     deps: CORE_SESSION_DEPS,
     runtime,
@@ -256,9 +320,11 @@ async function ensureEntry(
     systemPrompt,
     toolNames,
     customTools,
-    sessionsDir: paths.agentSessionsDir(parentId, slot),
-    // reset 后首次重建：newSession() 起一个干净会话（丢弃旧文件历史）
-    shouldAutoNewSession: () => resetMarks.has(key),
+    sessionsDir,
+    // reset 后首次重建：newSession() 起一个干净会话（丢弃旧文件历史）。
+    // 日期保险（ISSUE-100）：即便客户端漏调 /open、只在发消息时触发 ensureEntry
+    // （如服务端重启后内存实例丢失），也不会继续昨天的上下文。
+    shouldAutoNewSession: () => resetMarks.has(key) || !isLastMessageToday(sessionsDir),
     // 会话级红线（路径越界拦截 + 每轮注入日期）与客户端同一份实现
     extensionFactories: [guardExtension],
   });
@@ -470,6 +536,33 @@ export function getChildSessionHistory(parentId: string, childId: string, kind: 
     ...(m?.toolCallId != null ? { toolCallId: String(m.toolCallId) } : {}),
     ...(m?.isError != null ? { isError: !!m.isError } : {}),
   }));
+}
+
+/**
+ * 打开孩子会话（ISSUE-100 F1 冷路径）：进会话那一刻做「跨天裁决」——
+ * 落盘会话的最后一条消息不是今天 → 先 resetSession（释放内存实例 + 置 resetMarks），
+ * 再 ensureEntry（resetMarks 命中 → newSession() 起干净会话；未命中 → continueRecent 载入当天既有历史），
+ * 最后返回裁决后的历史消息。
+ *
+ * UX 裁定（2026-09-14 用户拍板）：重置必须在「进会话」时完成，**不能**放在 submitChildPrompt——
+ * 否则用户先看到昨天的消息、一发消息会话突然清空，会被误认为「会话丢了」。
+ * 客户端进会话加载历史即调本入口（/agent/:childId/open），拿到的一定是当天会话。
+ */
+export async function openChildSession(
+  deps: AgentSessionDeps,
+  parentId: string,
+  childId: string,
+  kind: ChildSessionKind = "main"
+): Promise<ReturnType<typeof getChildSessionHistory>> {
+  const paths = createCorePaths(deps.dataDir);
+  const sessionsDir = paths.agentSessionsDir(parentId, sessionSlot(childId, kind));
+  const key = keyOf(parentId, childId, kind);
+  if (!resetMarks.has(key) && !isLastMessageToday(sessionsDir)) {
+    console.log(`[agent] 会话 ${key} 最后一条消息非今天 → 每日自动新建会话（冷路径裁决）`);
+    resetSession(parentId, childId, kind);
+  }
+  await ensureEntry(deps, parentId, childId, kind);
+  return getChildSessionHistory(parentId, childId, kind);
 }
 
 /**

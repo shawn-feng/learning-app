@@ -20,6 +20,7 @@ import { Type } from "typebox";
 import type { DatabaseSync } from "node:sqlite";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
+import { buildPlanSpecEntries, inferReciteOnlyFromNote, type PlanCourseSpec } from "../assess-selection.js";
 
 export interface PlanToolsDeps {
   dataDir: string;
@@ -481,20 +482,40 @@ export function createChildStudyPlanCreateTool(deps: PlanToolsDeps) {
 
 // ---------- 考核计划（孩子自建：加分项，creator=child） ----------
 
-/** 孩子自己安排一次考核（加分项，creator=child，kind='self'；与 /plans/exam 路由一致）。 */
+/** 孩子自己安排一次考核（加分项，creator=child，kind='custom'；与 /plans/exam 路由一致）。
+ *  2026-09-14 kind 收敛：exam_plans.kind 只有 custom/fixed 两值，孩子自请也是 custom（creator 区分建单人）。 */
 export function createChildExamPlanCreateTool(deps: PlanToolsDeps) {
   return defineTool({
     name: "child_exam_plan_create",
     label: "创建自己的考核计划（加分项）",
     description:
-      "孩子自己安排**某天想考一次**（加分项，制定人=孩子自己）：例如「我想周六考一次上次学的英语课」。\n" +
-      "**参数**：`title` 必填（这次考核的名字/范围，如「英语食物课小测」）；`date` 可选（缺省=今天，YYYY-MM-DD）；`note` 可选（给自己的说明）。\n" +
-      "**语义**：这是「哪天想考」的自我安排（加分项 optional），会出现在「今日计划」里；实际考试仍在考核页进行。同日同名已存在会自动跳过。\n" +
-      "**说明**：真正的考核范围由家长安排的考核排期决定；本工具只登记孩子的自愿意向。",
+      "孩子自己安排**某天考什么**（加分项，制定人=孩子自己）：例如「我想周六考学而篇前三章」「我想明天考英语食物课」。\n" +
+      "**参数**：`title` 必填（这次考核的名字）；`courses` **必填**：要考的精确课程名数组（从孩子库里真实存在的课程名解析，\n" +
+      "孩子只说了模糊范围时先 child_library/课程列表确认到精确课名，实在解析不出再问孩子，**不要编造课程名**）；\n" +
+      "`date` 可选（缺省=今天，YYYY-MM-DD）；`note` 可选（给自己的说明）。\n" +
+      "**`methodSpec`（可选，孩子提出本次特殊考法时必传）**：`{ require?: {知识点名:题数}, exclude?: [知识点名], recitePass?: 0-100 }`。\n" +
+      "  常见知识点名：`背诵`（背原文，发音评测）、`句意白话`、`道理`、`字词`、`典故`。\n" +
+      "  例：孩子说「只想背原文/只考背诵」→ `{\"require\":{\"背诵\":1}}`；「不考字词」→ exclude 里加 `字词`。\n" +
+      "  **孩子只说「考 XX」没提特殊考法就不要传**（默认按家长设定方法出题）。\n" +
+      "**约定即契约（2026-09-14）**：创建时会把每门课「考哪些知识点、各几题」展开写进计划，出题严格按计划执行；课程没有挂知识点/题库题时创建会失败并提示（需要家长先补充考核内容）。\n" +
+      "**语义**：这是「哪天想考什么」的自我安排（加分项 optional），会出现在「今日计划」里；实际考试仍在考核页进行。同日同名已存在会自动跳过。",
     parameters: Type.Object({
-      title: Type.String({ description: "这次考核的名字/范围（如「英语食物课小测」）" }),
+      title: Type.String({ description: "这次考核的名字（如「学而篇背诵考核」）" }),
+      courses: Type.Array(Type.String({ description: "要考的精确课程名（孩子库里真实存在的课程）" }), {
+        description: "要考的课程列表（≥1 门，精确课程名）",
+      }),
       date: Type.Optional(Type.String({ description: "哪天考，YYYY-MM-DD；缺省 = 今天" })),
       note: Type.Optional(Type.String({ description: "给自己的说明（可空）" })),
+      methodSpec: Type.Optional(
+        Type.Object(
+          {
+            require: Type.Optional(Type.Record(Type.String(), Type.Number({ description: "每个知识点抽几题，缺省 1" }))),
+            exclude: Type.Optional(Type.Array(Type.String())),
+            recitePass: Type.Optional(Type.Number({ description: "背诵通过线 0-100，缺省 90" })),
+          },
+          { description: "本次特殊考法（如只考背诵），键=知识点名" }
+        )
+      ),
     }),
     execute: async (_tc, params) => {
       const title = String(params?.title ?? "").trim();
@@ -503,8 +524,38 @@ export function createChildExamPlanCreateTool(deps: PlanToolsDeps) {
       const d = String(params?.date ?? "").trim();
       const date = validDate(d) ? d : localDateStr();
       const note = String(params?.note ?? "").trim();
+      // 课程名解析：孩子给的每个条目必须落到孩子库真实课程（精确 → 包含匹配），解析不出就报错反问
+      const wanted = (Array.isArray(params?.courses) ? params.courses : [])
+        .map((x: unknown) => String(x ?? "").trim())
+        .filter(Boolean);
+      if (!wanted.length) {
+        throw new Error("child_exam_plan_create 需要 courses（要考的课程名列表）；孩子没说清考什么时请先确认，不要空范围落库");
+      }
       const kb = openKb(deps.dataDir, deps.parentId, deps.childId);
       try {
+        const all = kb.prepare("SELECT title FROM courses").all() as Array<{ title: string }>;
+        const titles = all.map((r) => r.title).filter(Boolean);
+        const courses: string[] = [];
+        const missing: string[] = [];
+        for (const w of wanted) {
+          const exact = titles.find((t) => t === w);
+          if (exact) {
+            if (!courses.includes(exact)) courses.push(exact);
+            continue;
+          }
+          const fuzzy = titles.filter((t) => t.includes(w) || w.includes(t));
+          if (fuzzy.length === 1) {
+            if (!courses.includes(fuzzy[0]!)) courses.push(fuzzy[0]!);
+          } else {
+            missing.push(fuzzy.length ? `${w}（相近：${fuzzy.slice(0, 5).join("、")}）` : w);
+          }
+        }
+        if (missing.length) {
+          throw new Error(
+            `这些课程在孩子库里确认不到，请和孩子核对后再创建：${missing.join("；")}` +
+              (courses.length ? `（已确认：${courses.join("、")}）` : "")
+          );
+        }
         const dup = kb
           .prepare(
             `SELECT id FROM exam_plans WHERE title = ? AND creator = 'child' AND active = 1 AND status = 'pending'
@@ -516,15 +567,49 @@ export function createChildExamPlanCreateTool(deps: PlanToolsDeps) {
         }
         const id = crypto.randomUUID();
         const now = new Date().toISOString();
-        const scopeJson = JSON.stringify(note ? { note } : {});
+        // methodSpec（本次特殊考法，如只考背诵）
+        const ms = params?.methodSpec as { require?: Record<string, number>; exclude?: string[]; recitePass?: number } | undefined;
+        // 兜底：孩子把「只考背诵」只写进了 note 而没转 methodSpec（note 不参与出题范围计算）→ 自动推断
+        const effSpec = ms ?? inferReciteOnlyFromNote(note);
+        const specFromNote = !ms && !!effSpec;
+        const msValid =
+          !!effSpec &&
+          ((effSpec.require && Object.keys(effSpec.require).length > 0) ||
+            (Array.isArray(effSpec.exclude) && effSpec.exclude.length > 0) ||
+            effSpec.recitePass != null);
+        // 2026-09-14 定案：**计划生成时即完整约定出题参数**——把课程展开成 [{title, kps:[{name,count}]}]；
+        // 课程必须有知识点和题库题，否则拒绝创建（出题环节只按约定抽题，不走 LLM）。
+        const pl = openParentLib(deps.dataDir, deps.parentId);
+        let entries: PlanCourseSpec[];
+        try {
+          const qmarks = courses.map(() => "?").join(",");
+          const rows = kb.prepare(`SELECT title, topic FROM courses WHERE title IN (${qmarks})`).all(...courses) as Array<{
+            title: string;
+            topic: string;
+          }>;
+          const r = buildPlanSpecEntries(pl, deps.childId, rows, msValid ? effSpec! : null);
+          if (r.missing.length) {
+            throw new Error(
+              `这门考核暂时安排不了——以下课程还没有考核内容（需要家长先在考核内容里补充知识点和题目）：${r.missing.map((m) => `${m.title}（${m.reason}）`).join("；")}`
+            );
+          }
+          entries = r.entries;
+        } finally {
+          pl.close();
+        }
+        const scopeJson = JSON.stringify({
+          courses: entries,
+          ...(note ? { note } : {}),
+          ...(msValid && effSpec?.recitePass != null ? { recitePass: Number(effSpec.recitePass) } : {}),
+        });
         kb.prepare(
           `INSERT INTO exam_plans
              (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,start_at,due_at,status,
               attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-           VALUES (?,?,?,?,'child','self','',?,'conversation','',?,?, 'pending','','','','', 'optional',1,0,1,?,?)`
+           VALUES (?,?,?,?,'child','custom','',?,'conversation','',?,?, 'pending','','','','', 'optional',1,0,1,?,?)`
         ).run(id, deps.parentId, deps.childId, title, scopeJson, `${date} 00:00:00`, `${date} 23:59:59`, now, now);
         return {
-          content: [{ type: "text" as const, text: `已为你添加考核计划「${title}」（${date}）${note ? `（${note}）` : ""}。这是加分项，到考核页参加后计分。` }],
+          content: [{ type: "text" as const, text: `已为你添加考核计划「${title}」（${date}）。出题约定：${entries.map((e) => `${e.title}（${e.kps.map((k) => `${k.name}×${k.count}`).join("、")}）`).join("；")}${note ? `；说明：${note}` : ""}${specFromNote ? "（已按说明只保留背诵）" : ""}。这是加分项，到考核页参加后计分。` }],
           details: {},
         };
       } finally {

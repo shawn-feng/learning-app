@@ -234,6 +234,30 @@ function applySignals(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): numb
   }
 
   // ---------- 生活域（recording 证据）----------
+  // ISSUE-099 RC1 兜底：AI 偶尔把 planId/planOutcome 退化成 raw 正文行（如「- planId：…」「- planOutcome：done」），
+  // 结构化列为空 → 完成判定看不见。此处从 raw 回捞并把结构化列补写回去
+  // （幂等：仅当解析结果与现有列不一致时更新；同时治愈历史脏数据行）。
+  try {
+    // daily_entries 主键是复合键 (date, block, title)，无 id 列（ISSUE-099 实测）
+    const rawRows = kb
+      .prepare(
+        "SELECT date, block, title, raw, plan_id, plan_outcome FROM daily_entries WHERE raw LIKE '%planOutcome%' OR raw LIKE '%plan_outcome%' OR raw LIKE '%planId%' OR raw LIKE '%plan_id%'"
+      )
+      .all() as Array<{ date: string; block: string; title: string; raw: string; plan_id: string; plan_outcome: string }>;
+    const fixDaily = kb.prepare("UPDATE daily_entries SET plan_id = ?, plan_outcome = ? WHERE date = ? AND block = ? AND title = ?");
+    for (const r of rawRows) {
+      const mId = r.raw.match(/plan_?id\s*[:：]\s*([0-9a-fA-F-]{16,})/i);
+      const mOut = r.raw.match(/plan_?outcome\s*[:：]\s*(done|missed|unknown)/i);
+      if (!mId && !mOut) continue;
+      const pid = (mId?.[1] ?? r.plan_id ?? "").trim();
+      const pout = (mOut?.[1] ?? r.plan_outcome ?? "").trim();
+      if ((pid && pid !== r.plan_id) || (pout && pout !== r.plan_outcome)) {
+        fixDaily.run(pid, pout, r.date, r.block, r.title);
+      }
+    }
+  } catch {
+    /* daily 表缺失则跳过兜底 */
+  }
   const evidences = kb
     .prepare("SELECT DISTINCT plan_id FROM daily_entries WHERE plan_id != '' AND plan_outcome = 'done'")
     .all() as Array<{ plan_id: string }>;

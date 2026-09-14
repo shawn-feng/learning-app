@@ -28,6 +28,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { DatabaseSync } from "node:sqlite";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
+import { buildPlanSpecEntries, inferReciteOnlyFromNote, type PlanCourseSpec } from "../assess-selection.js";
 import { runKbQuery } from "../routes/db.js";
 
 export interface PlanToolDeps {
@@ -620,16 +621,17 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
 
   const lifeUpdateTool = defineTool({
     name: "parent_life_plan_update",
-    label: "修改生活计划（删/挪天/改名）",
+    label: "修改生活计划（标完成/删/挪天/改名）",
     description:
-      "修改某孩子**已有的一条生活计划**（先 parent_life_plan_list 拿行 id）。三种动作：\n" +
+      "修改某孩子**已有的一条生活计划**（先 parent_life_plan_list 拿行 id）。四种动作：\n" +
+      "- `complete` + `id`：把该条标记为**已完成**（孩子确实做了但系统没判出来的兜底；pending/missed 均可标）\n" +
       "- `delete` + `id`：删除该条生活计划\n" +
       "- `reschedule` + `id` + `date`：把该条改到另一天（保留原截止时刻）\n" +
       "- `rename` + `id` + `title`：改事项名称\n" +
-      "家长可操作任意 creator 的行（含孩子自己创建的加分项）。改完可用 parent_study_plan_get 核对。",
+      "家长可操作任意 creator 的行（含孩子自己创建的加分项）。改完可用 parent_life_plan_list 核对。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
-      act: Type.String({ description: "动作：delete | reschedule | rename" }),
+      act: Type.String({ description: "动作：complete | delete | reschedule | rename" }),
       id: Type.String({ description: "生活计划行 id（parent_life_plan_list 返回；可传前 8 位）" }),
       date: Type.Optional(Type.String({ description: "reschedule 时必填：改到哪天 YYYY-MM-DD" })),
       title: Type.Optional(Type.String({ description: "rename 时必填：新名称" })),
@@ -637,8 +639,8 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     execute: async (_id: string, params: { childName: string; act: string; id: string; date?: string; title?: string }) => {
       const child = resolvePlanChild(db, parentId, params.childName);
       const act = String(params.act ?? "").trim();
-      if (!["delete", "reschedule", "rename"].includes(act)) {
-        throw new Error("parent_life_plan_update 的 act 仅支持 delete / reschedule / rename");
+      if (!["complete", "delete", "reschedule", "rename"].includes(act)) {
+        throw new Error("parent_life_plan_update 的 act 仅支持 complete / delete / reschedule / rename");
       }
       const wantId = String(params.id ?? "").trim();
       const all = readLifePlans(dataDir, parentId, child.id);
@@ -646,6 +648,20 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       if (!row) throw new Error("找不到生活计划行（先 parent_life_plan_list 核对行 id）");
       const kb = openKb(dataDir, parentId, child.id);
       try {
+        if (act === "complete") {
+          // ISSUE-099 F1：家长 agent 直标完成的兜底入口——recording 把生活计划判成 unknown、
+          // 或 done 信号退化成 raw 文本时，家长可在对话里一句话确认完成。
+          const nowTs = new Date().toISOString();
+          const todayStr = nowTs.slice(0, 10);
+          const r = kb
+            .prepare("UPDATE life_plans SET status='done', done_at=?, result='生活完成（家长确认）', updated_at=? WHERE id=? AND status IN ('pending','missed')")
+            .run(`${todayStr} 12:00:00`, nowTs, row.id);
+          if (r.changes === 0) return ok(`「${row.title}」已是完成状态，无需再标。`);
+          return ok(
+            `已将「${child.name}」的生活计划「${row.title}」标记为完成 ✅` +
+              (row.status === "missed" ? "（注：该条此前已判过期；积分结算为一次性，历史流水不追改）" : "")
+          );
+        }
         if (act === "delete") {
           kb.prepare("DELETE FROM life_plans WHERE id = ?").run(row.id);
           return ok(`已删除「${child.name}」的生活计划「${row.title}」。`);
@@ -677,12 +693,16 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       "为某孩子创建一次**自定义考核计划**（家长对话预约：某天考什么内容；直接写入孩子库考核计划，到当天孩子即可在考核页参加）。\n" +
       "**参数**：`childName` 必填；`scheduledAt` 考核日期（YYYY-MM-DD，按日期全天可考）；`courses` **必填**且必须是**精确课程名**数组。\n" +
       "**约束（2026-09-09 起）**：自定义考核不再做运行时选课——必须现在就把「考乡党篇最近学的 3 课」这类描述**解析成精确课程名**（可先 parent_study_plan_sources / parent_library_courses 查），信息不全必须向家长确认，**不要自行猜测**。\n" +
+      "**出题参数在创建时即完整约定（2026-09-14 定案）**：工具会把每门课展开成「考哪些知识点、各几题」写进计划（默认=主题考核方法过滤后全部知识点各 1 题）；**课程必须有知识点和题库题**，否则创建失败并提示先补充考核内容。出题环节严格按计划执行，不再有其它来源。\n" +
       "`note` 可选（给孩子的说明）。\n" +
-      "**本次方法覆盖 `methodSpec`（可选）**：当家长说「这次只考背诵 / 不考选择题 / 只考某几个知识点」等本次特殊要求时用它，只影响这一次考核、覆盖主题默认方法：\n" +
-      "  - `require`：只考这些**知识点**（键=知识点名或其 uuid，值=每个知识点抽几题，缺省 1）；留空=按主题默认（该课全部知识点）；\n" +
-      "  - `exclude`：排除这些**知识点**（键=知识点名或 uuid）；\n" +
+      "**本次方法覆盖 `methodSpec`（可选）**：当家长说「这次只考背诵 / 只考某几个知识点」等本次特殊要求时用它，只影响这一次考核：\n" +
+      "  - `require`：只考这些**知识点**（键=知识点名，值=每个知识点抽几题，缺省 1）；\n" +
+      "  - `exclude`：排除这些**知识点**（键=知识点名）；\n" +
       "  - `recitePass`：背诵/朗读题本次通过线（0-100，缺省 90）。\n" +
-      "  仅当家长明确表达本次差异时才传；不传即沿用主题方法。知识点名要与该课的知识点一致（可先 parent_study_plan_sources 看清课程，必要时问家长具体知识点）。\n" +
+      "  **⚠️ 意图必须转成 methodSpec，不能只写进 note**（note 不参与出题范围的计算）。常见说法对照：\n" +
+      "  「背诵考核 / 只背原文 / 只要背诵」→ `{\"require\":{\"背诵\":1}}`；「只考讲意思/句意」→ `{\"require\":{\"句意白话\":1}}`；\n" +
+      "  「不考字词」→ exclude `字词`；「背诵+讲道理」→ `{\"require\":{\"背诵\":1,\"道理\":1}}`。\n" +
+      "  不传且说明里含「只考背诵」类表述时，服务端会自动按只考背诵处理（并在返回里注明）。\n" +
       "同一天已有一条未考的自定义考核计划时不会重复创建（需更换内容请先取消原计划）。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
@@ -723,15 +743,48 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       const pd = (n: number) => String(n).padStart(2, "0");
       const day = `${parsedAt.getFullYear()}-${pd(parsedAt.getMonth() + 1)}-${pd(parsedAt.getDate())}`;
       const id = `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      // scope.methodSpec（可选）：本次方法覆盖（require/exclude/recitePass），读取侧见 assess-selection.ts
+      // 2026-09-14 定案：**计划生成时即完整约定出题参数**——把课程展开成 [{title, kps:[{name,count}]}]
+      // 写入 scope；课程必须有知识点且挂了题库题，否则拒绝创建（出题环节只按约定抽题，不走 LLM）。
       const methodSpec = params.methodSpec;
+      // 兜底：家长把「只考背诵」写进了 note 而没转成 methodSpec（note 不参与出题范围计算）→ 自动推断
+      const effSpec: { require?: Record<string, number>; exclude?: string[]; recitePass?: number } | null | undefined =
+        methodSpec ?? inferReciteOnlyFromNote(String(params.note ?? ""));
+      const specFromNote = !methodSpec && !!effSpec;
       const hasMethodSpec =
-        !!methodSpec && (!!methodSpec.require || (methodSpec.exclude?.length ?? 0) > 0 || methodSpec.recitePass != null);
+        !!effSpec && (!!effSpec.require || (effSpec.exclude?.length ?? 0) > 0 || effSpec.recitePass != null);
+      const pl = openParentLib(dataDir, parentId);
+      let entries: PlanCourseSpec[];
+      try {
+        const kb0 = openKb(dataDir, parentId, child.id);
+        let rows: Array<{ title: string; topic: string }>;
+        try {
+          const qmarks = courses.map(() => "?").join(",");
+          rows = kb0.prepare(`SELECT title, topic FROM courses WHERE title IN (${qmarks})`).all(...courses) as Array<{
+            title: string;
+            topic: string;
+          }>;
+        } finally {
+          kb0.close();
+        }
+        if (rows.length < courses.length) {
+          const found = new Set(rows.map((r) => r.title));
+          const notFound = courses.filter((t) => !found.has(t));
+          throw new Error(`这些课程在孩子库里不存在：${notFound.join("、")}`);
+        }
+        const r = buildPlanSpecEntries(pl, child.id, rows, hasMethodSpec ? effSpec! : null);
+        if (r.missing.length) {
+          throw new Error(
+            `无法创建考核计划——以下课程还没有考核内容（需要先挂知识点和题库题）：${r.missing.map((m) => `${m.title}（${m.reason}）`).join("；")}`
+          );
+        }
+        entries = r.entries;
+      } finally {
+        pl.close();
+      }
       const scope = JSON.stringify({
-        topics: [],
-        courses,
+        courses: entries,
         note: String(params.note ?? ""),
-        ...(hasMethodSpec ? { methodSpec } : {}),
+        ...(hasMethodSpec && effSpec?.recitePass != null ? { recitePass: Number(effSpec.recitePass) } : {}),
       });
       const kb = openKb(dataDir, parentId, child.id);
       try {
@@ -754,15 +807,16 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       }
       const ovNote = hasMethodSpec
         ? `；本次方法覆盖：${[
-            methodSpec?.require ? `只考 ${Object.keys(methodSpec.require).join("、")}` : "",
-            methodSpec?.exclude?.length ? `排除 ${methodSpec.exclude.join("、")}` : "",
-            methodSpec?.recitePass != null ? `背诵通过线 ${methodSpec.recitePass}` : "",
+            effSpec?.require ? `只考 ${Object.keys(effSpec.require).join("、")}` : "",
+            effSpec?.exclude?.length ? `排除 ${effSpec.exclude.join("、")}` : "",
+            effSpec?.recitePass != null ? `背诵通过线 ${effSpec.recitePass}` : "",
           ]
             .filter(Boolean)
-            .join("；")}`
+            .join("；")}${specFromNote ? "（依据考核说明自动识别，如与家长意图不符请取消后重排并明确传入 methodSpec）" : ""}`
         : "";
+      const perCourse = entries.map((e) => `${e.title}（${e.kps.map((k) => `${k.name}×${k.count}`).join("、")}）`).join("；");
       return ok(
-        `已为孩子「${child.name}」创建考核计划（${day}），考核课程：${courses.join("、")}${params.note ? `；说明：${params.note}` : ""}${ovNote}。到当天孩子即可在考核页参加。`
+        `已为孩子「${child.name}」创建考核计划（${day}）。出题约定：${perCourse}${params.note ? `；说明：${params.note}` : ""}${ovNote}。到当天孩子即可在考核页参加。`
       );
     },
   });

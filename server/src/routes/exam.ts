@@ -18,7 +18,7 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
-import { attachStructuredQuestions } from "../assess-selection.js";
+import { attachStructuredQuestions, attachPlanQuestions, buildPlanSpecEntries, type PlanCourseSpec } from "../assess-selection.js";
 import {
   getOrCreateKnowledgePoint,
   saveQuestion,
@@ -239,16 +239,44 @@ export function ensureTodayExamPlans(db: DatabaseSync, dataDir: string, parentId
           )
           .get(c.id, freq, day);
         if (dup) continue;
+        // 生成计划时即**完整约定出题参数**（2026-09-14 定案）：展开本窗口「必学」课程 →
+        // 每课 {title, kps:[{name,count}]} 写入 scope；没有挂知识点/题库题的课程跳过（记日志）。
+        const win = planWindowFor(freq, now.getTime());
+        let entries: PlanCourseSpec[] = [];
+        let skipped: string[] = [];
+        try {
+          const pl = openParentLib(dataDir, parentId);
+          try {
+            const { courses: planCourses } = listPlanCourseMeta(db, dataDir, parentId, c.id, win.start, win.end);
+            const must = planCourses.filter((x) => x.topicType !== "选学");
+            const cs0 = fetchCoursesWithKnowledgePoints(dataDir, parentId, c.id, must.map((x) => x.title));
+            const r = buildPlanSpecEntries(pl, c.id, cs0, null);
+            entries = r.entries;
+            skipped = r.missing.map((m) => `${m.title}（${m.reason}）`);
+          } finally {
+            pl.close();
+          }
+        } catch (e) {
+          console.warn(`[exam] 固定计划出题约定展开失败（child=${c.id}）：${(e as Error).message}`);
+          continue;
+        }
+        if (skipped.length) {
+          console.warn(`[exam] 固定考核跳过无考核内容的课程（child=${c.id}，freq=${freq}）：${skipped.join("；")}`);
+        }
+        if (!entries.length) {
+          continue; // 该孩子本周期没有任何可考课程 → 不生成空计划
+        }
         kb.prepare(
           `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
              start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-           VALUES (?,?,?,?,'parent','fixed',?,'{}','config','','?',?,'pending','',NULL,'','required',1,0,1,?,?)`
+           VALUES (?,?,?,?,'parent','fixed',?,?,'config','','?',?,'pending','',NULL,'','required',1,0,1,?,?)`
         ).run(
           `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           parentId,
           c.id,
           `固定考核（${freqLabel(freq)}）`,
           freq,
+          JSON.stringify({ courses: entries } as { courses: PlanCourseSpec[] }),
           `${day} 00:00:00`,
           `${day} 23:59:59`,
           now.toISOString(),
@@ -752,23 +780,57 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           scoringPrompt: buildScoringPrompt(),
         };
       }
-      // 自定义考核（2026-09-09 起）：范围由考核计划 scope.courses **精确决定**（家长 agent 解析确定课程名），
-      // 不再走「规则文本 → 选课 LLM」（旧的选课 prompt 两段式已废弃，见 ISSUE-054）。
+      // 自定义考核（2026-09-14 定案）：**出题参数在计划生成时已完整约定**——scope.courses 为
+      // [{title, kps:[{name,count}]}]（考哪些课程、每课考哪些知识点、各几题）。
+      // 出题环节只按约定从题库抽题，不再有结构化/非结构化之分、不走主题方法、不走 LLM。
       if (String(plan.kind) === "custom") {
-        const scopeCourses = (Array.isArray(scope.courses) ? scope.courses : [])
-          .map((x: unknown) => String(x ?? "").trim())
-          .filter(Boolean);
-        if (!scopeCourses.length) {
+        const rawCourses = Array.isArray(scope.courses) ? scope.courses : [];
+        let entries: PlanCourseSpec[];
+        const isNewFormat = rawCourses.length > 0 && typeof rawCourses[0] === "object" && Array.isArray(rawCourses[0]?.kps);
+        if (isNewFormat) {
+          entries = rawCourses as PlanCourseSpec[];
+        } else {
+          // 旧格式（字符串课程名数组 + 可选 methodSpec）→ 现场展开成完整约定（懒迁移）
+          const titles = rawCourses.map((x: unknown) => String(x ?? "").trim()).filter(Boolean);
+          if (!titles.length) {
+            return reply.code(400).send({
+              error: "该自定义考核没有确定要考的课程。请让家长（或孩子）重新安排这次考核。",
+            });
+          }
+          const pl0 = openParentLib(deps.config.dataDir, parentId);
+          let expanded: PlanCourseSpec[] = [];
+          let missing: Array<{ title: string; reason: string }> = [];
+          try {
+            const cs0 = fetchCoursesWithKnowledgePoints(deps.config.dataDir, parentId, childId, titles);
+            const r = buildPlanSpecEntries(pl0, childId, cs0, (scope as { methodSpec?: never }).methodSpec ?? null);
+            expanded = r.entries;
+            missing = r.missing;
+          } finally {
+            pl0.close();
+          }
+          if (missing.length) {
+            return reply.code(400).send({ error: `该考核计划的内容已不可用，请重新安排：${missing.map((m) => `${m.title}（${m.reason}）`).join("；")}` });
+          }
+          entries = expanded;
+        }
+        const titles = entries.map((e) => e.title);
+        const cs = fetchCoursesWithKnowledgePoints(deps.config.dataDir, parentId, childId, titles);
+        const pl = openParentLib(deps.config.dataDir, parentId);
+        let problems: Array<{ title: string; reason: string }> = [];
+        try {
+          problems = attachPlanQuestions(pl, cs, entries, Math.max(0, Number((scope as { recitePass?: unknown }).recitePass) || 90));
+        } finally {
+          pl.close();
+        }
+        if (problems.length) {
           return reply.code(400).send({
-            error: "该自定义考核没有确定要考的课程。2026-09-09 起自定义考核需由家长通过对话（家长助手）安排并明确课程；请让家长重新安排这次考核。",
+            error: `出题失败，考核内容与计划不一致：${problems.map((p) => `${p.title}（${p.reason}）`).join("；")}。请让家长重新安排这次考核。`,
           });
         }
         return {
           schedule,
           childName,
-          // 计划级考核方法（可选）：scope.methodSpec = { require:{知识点名/uuid:题数}, exclude:[...], recitePass }
-          // → 本次考核只考这些知识点（覆盖主题默认方法）；如"只考核背诵"。
-          courses: structuredCourses(scopeCourses, (scope as { methodSpec?: unknown }).methodSpec),
+          courses: cs,
           scoringPrompt: buildScoringPrompt(),
         };
       }
@@ -779,37 +841,70 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           error: "每月/每半年/每年考核已下线（2026-09-09）。这类考核请改为「自定义考核」：通过和家长助手对话说明要考的内容即可。",
         });
       }
-      // daily/weekly：内置规则 = 本周期学习计划里的「必学主题」课程全部考核（不再走选课 LLM）。
-      // 「必学」判定 = 该课主题考核类型为必学；**未标注类型**的历史主题按默认必学纳入考核
-      // （否则旧数据无类型标注会导致固定考核永远无课）；明确标了「选学」的主题课程排除。
-      // 想自定义范围（含选学/指定章节）→ 一律用自定义考核（家长 agent 定课程）。
+      // daily/weekly：固定考核计划由 worker 生成时**已把出题约定写进 scope**（每课知识点+题数，
+      // 只含已挂题库题的课程）；出题按约定直出。旧格式（scope 无约定）走窗口规则现场展开。
       {
-        const ts = new Date(String(plan.start_at ?? "")).getTime();
-        const win = planWindowFor(freq, Number.isNaN(ts) ? Date.now() : ts);
-        const { courses: planCourses, unmatched } = listPlanCourseMeta(
-          deps.db,
-          deps.config.dataDir,
-          parentId,
-          childId,
-          win.start,
-          win.end
-        );
-        const must = planCourses.filter((c) => c.topicType !== "选学");
-        if (!must.length) {
-          const hasOnlyOptional = planCourses.length > 0;
+        const rawCourses = Array.isArray(scope.courses) ? scope.courses : [];
+        const isNewFormat = rawCourses.length > 0 && typeof rawCourses[0] === "object" && Array.isArray(rawCourses[0]?.kps);
+        let entries: PlanCourseSpec[];
+        let skipped: string[] = [];
+        if (isNewFormat) {
+          entries = rawCourses as PlanCourseSpec[];
+        } else {
+          const ts = new Date(String(plan.start_at ?? "")).getTime();
+          const win = planWindowFor(freq, Number.isNaN(ts) ? Date.now() : ts);
+          const { courses: planCourses, unmatched } = listPlanCourseMeta(
+            deps.db,
+            deps.config.dataDir,
+            parentId,
+            childId,
+            win.start,
+            win.end
+          );
+          const must = planCourses.filter((c) => c.topicType !== "选学");
+          if (!must.length) {
+            const hasOnlyOptional = planCourses.length > 0;
+            return reply.code(400).send({
+              error: hasOnlyOptional
+                ? `本次固定考核窗口（${win.start} ~ ${win.end}）的学习计划里只有「选学」课程，没有默认纳入考核的「必学」课程。如需考选学内容，请用自定义考核安排。`
+                : `本次固定考核窗口（${win.start} ~ ${win.end}）的学习计划里还没有安排「必学」课程。可以让家长先在学习计划里排课，或改用自定义考核安排本次内容。`,
+            });
+          }
+          const pl0 = openParentLib(deps.config.dataDir, parentId);
+          try {
+            const cs0 = fetchCoursesWithKnowledgePoints(deps.config.dataDir, parentId, childId, must.map((c) => c.title));
+            const r = buildPlanSpecEntries(pl0, childId, cs0, null);
+            entries = r.entries;
+            skipped = r.missing.map((m) => `${m.title}（${m.reason}）`);
+          } finally {
+            pl0.close();
+          }
+          if (!entries.length) {
+            return reply.code(400).send({
+              error: `本次固定考核的课程都还没有考核内容（知识点/题库题），无法出题：${skipped.join("；")}。请先在考核内容建设中为这些课程补充知识点和题目。`,
+            });
+          }
+        }
+        const cs = fetchCoursesWithKnowledgePoints(deps.config.dataDir, parentId, childId, entries.map((e) => e.title));
+        const pl = openParentLib(deps.config.dataDir, parentId);
+        let problems: Array<{ title: string; reason: string }> = [];
+        try {
+          problems = attachPlanQuestions(pl, cs, entries, 90);
+        } finally {
+          pl.close();
+        }
+        if (problems.length) {
           return reply.code(400).send({
-            error: hasOnlyOptional
-              ? `本次固定考核窗口（${win.start} ~ ${win.end}）的学习计划里只有「选学」课程，没有默认纳入考核的「必学」课程。如需考选学内容，请用自定义考核安排。`
-              : `本次固定考核窗口（${win.start} ~ ${win.end}）的学习计划里还没有安排「必学」课程。可以让家长先在学习计划里排课，或改用自定义考核安排本次内容。`,
+            error: `出题失败，考核内容与计划不一致：${problems.map((p) => `${p.title}（${p.reason}）`).join("；")}。`,
           });
         }
         return {
           schedule,
           childName,
-          courses: structuredCourses(must.map((c) => c.title)),
+          courses: cs,
           scoringPrompt: buildScoringPrompt(),
-          // 计划里匹配不到孩子库课程的文本（供调试/提示）
-          unmatched,
+          // 生成计划时被跳过（无考核内容）的课程（供调试/提示）
+          unmatched: skipped,
         };
       }
     }
@@ -932,6 +1027,52 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     const id = `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     // 考核只按「日期」粒度：入库取该日期本地 0 点（到当天即可考）
     const day = localDateStr(dayStart(parsedAt.getTime()));
+    // 2026-09-14 定案：计划生成时即完整约定出题参数。body.scope.courses 若是字符串课程名 →
+    // 现场展开成 [{title, kps:[{name,count}]}]（没挂知识点/题库题的课 → 400 拒绝创建）。
+    const scopeIn = (body.scope ?? {}) as {
+      courses?: unknown;
+      note?: string;
+      methodSpec?: { require?: Record<string, number>; exclude?: string[]; recitePass?: number } | null;
+      recitePass?: number;
+    };
+    const rawCourses = Array.isArray(scopeIn.courses) ? scopeIn.courses : [];
+    let entries: PlanCourseSpec[];
+    if (rawCourses.length > 0 && typeof rawCourses[0] === "object" && Array.isArray((rawCourses[0] as PlanCourseSpec)?.kps)) {
+      entries = rawCourses as PlanCourseSpec[];
+    } else {
+      const titles = rawCourses.map((x: unknown) => String(x ?? "").trim()).filter(Boolean);
+      if (!titles.length) return reply.code(400).send({ error: "缺少考核课程（scope.courses）" });
+      const pl0 = openParentLib(deps.config.dataDir, parentId);
+      let expanded: PlanCourseSpec[] = [];
+      let missing: Array<{ title: string; reason: string }> = [];
+      try {
+        const kb0 = openKb(deps.config.dataDir, parentId, childId);
+        try {
+          const qmarks = titles.map(() => "?").join(",");
+          const rows = kb0
+            .prepare(`SELECT title, topic FROM courses WHERE title IN (${qmarks})`)
+            .all(...titles) as Array<{ title: string; topic: string }>;
+          const found = new Set(rows.map((r) => r.title));
+          const notFound = titles.filter((t) => !found.has(t));
+          missing = notFound.map((t) => ({ title: t, reason: "孩子库里没有这门课" }));
+          if (rows.length) {
+            const r = buildPlanSpecEntries(pl0, childId, rows, scopeIn.methodSpec ?? null);
+            expanded = r.entries;
+            missing = [...missing, ...r.missing];
+          }
+        } finally {
+          kb0.close();
+        }
+      } finally {
+        pl0.close();
+      }
+      if (missing.length) {
+        return reply.code(400).send({
+          error: `无法创建考核计划（课程必须有知识点和题库题）：${missing.map((m) => `${m.title}（${m.reason}）`).join("；")}`,
+        });
+      }
+      entries = expanded;
+    }
     const kb = openKb(deps.config.dataDir, parentId, childId);
     try {
       const dup = kb
@@ -941,11 +1082,16 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         .get(childId, day) as { id: string } | undefined;
       if (dup) return { ok: true, id: dup.id, duplicated: true };
       const now = new Date().toISOString();
+      const scopeJson = JSON.stringify({
+        courses: entries,
+        ...(scopeIn.note ? { note: String(scopeIn.note) } : {}),
+        ...(scopeIn.recitePass != null ? { recitePass: Number(scopeIn.recitePass) } : {}),
+      });
       kb.prepare(
         `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
            start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
          VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','','?',?,'pending','',NULL,'','required',1,0,1,?,?)`
-      ).run(id, parentId, childId, JSON.stringify(body.scope ?? {}), `${day} 00:00:00`, `${day} 23:59:59`, now, now);
+      ).run(id, parentId, childId, scopeJson, `${day} 00:00:00`, `${day} 23:59:59`, now, now);
       return { ok: true, id };
     } finally {
       kb.close();

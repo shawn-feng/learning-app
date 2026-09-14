@@ -97,7 +97,7 @@ export const RECORDING_PROMPT = `# 学习记录流程及要求
 
 1. 用上方【今天的生活计划】清单（每条含 「plan_id」 / 标题 / 截止 / 制定人）；
 2. 对照本次对话判断每条是否完成：**明确做了 → done；明确说没做 → missed；说不清 → unknown**；
-3. 写该事件的 daily 条目时用 kb_insert 带上 「planId」（清单里的 plan_id）与 「planOutcome」（done/missed/unknown）；批量时写在每条 entry 上；
+3. 写该事件的 daily 条目时用 kb_insert 带上 「planId」（清单里的 plan_id）与 「planOutcome」（done/missed/unknown）；批量时写在每条 entry 上。⚠️ planId/planOutcome **只能作为 kb_insert 的参数字段，严禁当作正文行写进 content**（如「- planId：…」）——写进正文系统读不到，完成判定会失效；
 4. 清单之外的自由事件照常记录，但**不带 plan_id**；
 5. **不要编造计划项、不要创建/修改计划、不要打勾**（状态由系统更新；家长可事后审计与修正）。
 

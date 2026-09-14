@@ -3,6 +3,7 @@
  *
  * - GET  /api/v1/agent/:childId/stream    SSE 事件流（token/thinking/工具/结束/错误），支持 Last-Event-ID 重放
  * - POST /api/v1/agent/:childId/prompt    提交一轮输入（等待本轮结束，增量走 stream）
+ * - POST /api/v1/agent/:childId/open      打开会话（跨天自动新建裁决 + 返回历史，ISSUE-100 F1）
  * - POST /api/v1/agent/:childId/abort     中止当前一轮（ISSUE-095；session 省略=全部会话）
  * - POST /api/v1/agent/:childId/events    页面事件上行（PiBridge 信封原样透传，累积到下一轮消息前）
  * - POST /api/v1/agent/:childId/page-result  资料页受控操作回执（requestId 配对）
@@ -16,7 +17,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { agentStreamHub, AgentStreamHub } from "../agent/stream-hub.js";
-import { submitChildPrompt, hasSession, disposeSession, resetSession, abortSession, getChildSessionHistory, type AgentSessionDeps, type ChildSessionKind } from "../agent/session-registry.js";
+import { submitChildPrompt, hasSession, disposeSession, resetSession, abortSession, getChildSessionHistory, openChildSession, type AgentSessionDeps, type ChildSessionKind } from "../agent/session-registry.js";
 import { hubFor, hubForChild } from "../agent/page-hub.js";
 import { registerCaps, parseCaps, getCaps } from "../agent/caps.js";
 
@@ -206,6 +207,29 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
     }
     const kind = (req.query as any)?.session === "scene" ? "scene" : (req.query as any)?.session?.startsWith("course:") ? (req.query as any).session : "main";
     return { messages: getChildSessionHistory(parentId, childId, kind) };
+  });
+
+  // —— 打开会话（ISSUE-100 F1 冷路径）：进会话那一刻服务端按「最后消息日期」裁决，
+  // 跨天自动新建（先重置再返回空历史），客户端拿到的一定是当天会话 ——
+  app.post("/api/v1/agent/:childId/open", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { childId } = req.params as { childId: string };
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const raw = String((req.body as any)?.session ?? "");
+    const kind = raw === "scene" || raw.startsWith("course:") ? (raw as ChildSessionKind) : "main";
+    const messages = await openChildSession(agentDeps, parentId, childId, kind);
+    return { messages };
   });
 
   app.post("/api/v1/agent/:childId/reset", async (req, reply) => {

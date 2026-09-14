@@ -169,9 +169,12 @@ function alreadyRanToday(deps: WorkerSchedulerDeps, childId: string, taskType: s
   return parseRunSet(key, today).has(point);
 }
 
-/** worker 任务类型 → 任务表类型。
- *  2026-09-10 ：todo_gen / todo_stat 已下线（计划域三表 + 动态 todolist），现在只剩 recording。 */
+/** worker 任务类型 → 任务表类型（scheduler_tasks.type 用下划线命名）。
+ *  2026-09-10 ：todo_gen / todo_stat 已下线（计划域三表 + 动态 todolist）。
+ *  2026-09-14（ISSUE-100）：新增 autoNewSession → auto_new_session 映射——不映射的话
+ *  findTaskForRun 用驼峰查不到任务行，task_runs 的 task_id/task_name 落空、任务页「最近执行」对不上。 */
 function schedulerTaskTypeFor(task: WorkerTask): string {
+  if (task.type === "autoNewSession") return "auto_new_session";
   return task.type;
 }
 

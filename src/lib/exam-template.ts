@@ -158,7 +158,7 @@ window.EXAM_DATA = ${dataJson};
   }, 1000);
   function curQ(){ return D.questions[idx]; }
   function qIndex(qid){ for(var i=0;i<D.questions.length;i++){ if(D.questions[i].id===qid) return i; } return -1; }
-  function hasAnswer(a){ return !!(a && (a.segs.length || (a.asr && String(a.asr).trim()))); }
+  function hasAnswer(a){ return !!(a && ((a.segs && a.segs.length) || (a.asr && String(a.asr).trim()))); }
   function setBtn(label, cls){
     $("micBtn").textContent = label;
     $("micBtn").className = "mic-btn" + (cls ? " " + cls : "");
@@ -194,7 +194,7 @@ window.EXAM_DATA = ${dataJson};
     var locked = !!a.locked;
     $("asr").disabled = locked;
     $("asr").value = a.asr || "";
-    $("recStatus").textContent = locked ? "" : (a.segs.length ? "已录 " + a.segs.length + " 段" : "");
+    $("recStatus").textContent = locked ? "" : ((a.segs && a.segs.length) ? "已录 " + a.segs.length + " 段" : "");
     $("play").style.display = (a.audioUrl && locked) ? "block" : "none";
     if(a.audioUrl) $("play").src = a.audioUrl;
     $("qTimer").textContent = locked ? "本题用时：" + fmtSec(a.durationMs != null ? Math.round(a.durationMs/1000) : a.sec) : "本题用时：" + fmtSec(a.sec);
@@ -308,8 +308,10 @@ window.EXAM_DATA = ${dataJson};
     answers[q.id] = a;
   }
   function updateDone(){
+    // 「已答」判定 = 已锁定 **或已有作答内容**（录音/文字）——最后一题答完孩子不会切题，
+    // 背诵/文字题在切题前都不锁定（允许多段拼接），若只认 locked，提交按钮会永远灰（BUG-2026-09-14）。
     var done = 0;
-    D.questions.forEach(function(q){ if(answers[q.id] && answers[q.id].locked) done++; });
+    D.questions.forEach(function(q){ var a = answers[q.id]; if(a && (a.locked || hasAnswer(a))) done++; });
     var pending = totalCourses > 0 ? remainingCourses : 0;
     var all = pending === 0 && done === D.questions.length;
     $("submitBtn").disabled = !all;
@@ -424,6 +426,7 @@ window.EXAM_DATA = ${dataJson};
     a.asrEdited = true;
     a.asr = $("asr").value;
     answers[q.id] = a;
+    updateDone(); // 手动输入也影响「可提交」状态（最后一题不切题场景）
     updateNav(); // 输入了内容即可进入下一题
   });
   $("prevBtn").addEventListener("click", function(){ if(idx>0){ saveCurrent(); idx--; renderQuestion(); } });
@@ -435,6 +438,17 @@ window.EXAM_DATA = ${dataJson};
     if(idx < D.questions.length - 1){ saveCurrent(); idx++; renderQuestion(); }
   });
   $("submitBtn").addEventListener("click", function(){
+    // 兜底补锁：孩子可以在最后一题停留不切题直接提交——所有「未锁但有内容」的题在此补锁
+    // （answeredAt/durationMs 与 saveCurrent 口径一致）
+    D.questions.forEach(function(q){
+      var a = answers[q.id];
+      if(a && !a.locked && hasAnswer(a)){
+        if(!a.answeredAt) a.answeredAt = Date.now();
+        if(a.sec) a.durationMs = a.sec * 1000;
+        a.locked = true;
+        answers[q.id] = a;
+      }
+    });
     saveCurrent();
     // 顺带校验：不应存在未答题（顺序作答已保证），万一有则提示并跳转
     var first = -1;
@@ -490,6 +504,7 @@ window.EXAM_DATA = ${dataJson};
           $("recStatus").textContent = "没听清，请再按住说一遍，或直接在下面输入";
         }
         updateNav();
+        updateDone(); // ASR 完成/失败都刷新「可提交」状态（最后一题不切题场景）
       }
     }
   });

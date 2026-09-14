@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **97** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **101** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -107,6 +107,10 @@
 | 095 | 家长端点「停止」agent：UI 显示「⏹ 已停止」但实际仍在运行——`pi:abort` 主进程是 no-op（注释明写"服务端尚无中止能力"），服务端 `parent-registry` 也无 abort 端点，导致家长/孩子端停止都不生效 | ✅ 已解决（2026-09-14） | 2026-09-14 | [详情](ISSUES/ISSUE-095.md) |
 | 096 | 服务端重启后家长/孩子 agent「永远思考中」：`openSse` 一次性连接断后 `agentStreams` 死句柄占位、**从不重连**（服务端日志/落盘证实回复正常、纯送达链路断）——修复：`openSse` 重写为自动重连 + `?lastEventId=` 续传，断线轮次自动补齐 | ✅ 已解决（2026-09-14） | 2026-09-14 | [详情](ISSUES/ISSUE-096.md) |
 | 097 | 家长 agent 调 `parent_build_material` 报「agent 模型未配置」，但家长设置页显示已配置——设置页走「本地 app-settings.json（旧构建）/服务端」显示已配置，而服务端 agent 读服务端 `app_settings` 取不到 `programmingModel`；当前源码三路都收口同一服务端键故正常构建不该复现，疑为线上旧客户端构建仍走本地分支导致本地/服务端存储分裂 | ✅ 已解决（2026-09-14）：核实当前链路自洽（服务端实存值 + 端到端验证）；根除残留覆盖机制——app-settings 本地文件只存 materialsLimit、保存改走 /models/app_settings 合并端点（旧实现整键推送会覆盖服务端模型配置）、reconcile 去掉模型字段补齐、未配置报错带 parentId | 2026-09-14 | [详情](ISSUES/ISSUE-097.md) |
+| 098 | 考核功能两项：①「背诵考核」配置未生效——背诵题仅由题库 `behavior:speech_recite`/语料驱动，而 LLM 出题链路被硬编码禁止生成背诵（`exam-engine.ts` L78-81），`methodSpec` 只有 `recitePass` 通过线无「只背诵」模式开关，`attachStructuredQuestions` 按知识点而非 behavior 筛题→非结构化课 `recQ=0` 不出背诵、有语料课也只是「1背诵+2~3文字」而非纯背诵；② 珊珊会话出题单次 LLM 调用 32~92s（~40s 对应论语 04:39 那次 41.3s），判分每题重建 session 致 45~104s，端到端约 1.5~2 分钟 | 🟡 待处理 | 2026-09-14 | [详情](ISSUES/ISSUE-098.md) |
+| 099 | 珊珊 life plan「洗两双袜子」完成状态不更新（仍 pending）：`summarize_conversation` 已写 daily，但 `daily_entries` 出现两行——① `洗两双袜子（孩子自定加分项）` plan_id 列正确但 **plan_outcome=unknown**；② `洗袜子` **plan_id/plan_outcome 列全空、done 信号只写在 raw 正文**（`- planOutcome：done`）；完成判定只匹配 `plan_id!='' AND plan_outcome='done'` → 两行都不中；根因=AI 把 planId/planOutcome 退化成 raw 文本（`insertMany` 仅读结构化字段）+ `unknown` 是死路无收敛/无人工覆盖 + `parent_life_plan_update` 无 complete 动作 | ✅ 已解决（2026-09-14）：F1 家长 complete 动作（pending/missed 可标 done）+ F2 applySignals raw 正文兜底回捞（治愈存量）+ F3 insertMany 正文解析与同 plan 同日去重合并 + prompt 明令禁止 planId/planOutcome 写进正文；真实数据端到端验证通过，珊珊计划已治愈为 done；F4（unknown 自动放行）维持现状防钻空子 | 2026-09-14 | [详情](ISSUES/ISSUE-099.md) |
+| 100 | agent 上移服务端后「每日新建会话省 token」机制丢失：旧客户端 `pi-session.shouldAutoNewSession`（开会话检测最后消息非当天→开新会话）已随零 agent 移除（仅存 `tmp/pi-session-old.ts`）；服务端 `session-registry.ts:261` 的 `shouldAutoNewSession` 只判 `resetMarks`（显式 reset），**不按日期**；会话 key=childId 跨天持久累积（落盘 `data/agent-sessions/<parentId>/<childId>-<slot>/`）；客户端 `scheduler.ts:552-571` 残留定点重置块但默认 `enabled:false` 且仅"客户端在线那一分钟"触发，等于失效 → token 不省 | ✅ 已解决（2026-09-14）：F1 冷路径（/open 进会话跨天裁决 + shouldAutoNewSession 日期保险）+ F2 热路径（服务端 autoNewSessionTask 到点重置，配置默认仍 opt-in）+ 客户端进会话加载切 /open；待部署 201 验证 | 2026-09-14 | [详情](ISSUES/ISSUE-100.md) |
+| 101 | 孝经/千字文「背诵」题结构已存在但数据残缺：两主题 18+30 门课每课都有「背诵」知识点 + 1 条 `speech_recite` 题；但**千字文 30 段的背诵题 answer 全是占位符 `重点字词（童趣版）`**（非原文，背诵评测据此打分→不可用），**孝经 18 章答案为真原文但实测 18 章末尾全被拼上 `重点字词读音` 噪声**（原 issue 误判仅 4 章）——并非缺知识点/缺题，而是建课时把解读误填进参考文本列 | ✅ 已解决（2026-09-14）：千字文 30 条 answer 替换为 `teaching_copy`「原文吟诵」真原文（带标点）；孝经 18 条 `REPLACE` 剔除 `重点字词读音` 噪声；已备份，待同步生产 201 | 2026-09-14 | [详情](ISSUES/ISSUE-101.md) |
 
 ## 记录格式（模板）
 

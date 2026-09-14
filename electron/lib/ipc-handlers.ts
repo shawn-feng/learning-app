@@ -5,7 +5,7 @@ import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildP
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
-import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, getChildHistory, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult } from "./server-agent-client";
+import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, openChildSession, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult } from "./server-agent-client";
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
@@ -1242,9 +1242,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       try {
         // 薄客户端：建立服务端 agent 事件流（SSE → pi:* 通道），会话由服务端持久管理。
         ensureChildStream(childId);
-        // 会话历史回填（服务端会话消息 → 前端气泡；工具调用气泡暂不恢复，见 server-agent-client 注释）
+        // 会话历史回填（ISSUE-100 F1 冷路径：走 /open，服务端跨天自动新建裁决后返回当天历史）
         const session = courseKey ? `course:${courseKey}` : "main";
-        const history = await getChildHistory(childId, session === "main" ? undefined : session).catch(() => [] as any[]);
+        const history = await openChildSession(childId, session === "main" ? undefined : session).catch(() => [] as any[]);
         // ISSUE-041：孩子打开会话时立即处理一轮云端收件箱（分配包/进度请求），不等定时轮询
         try {
           const { handleCloudInbox } = await import("./delivery");
@@ -1381,10 +1381,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // scene 会话历史：场景对话在服务端持久，此处读服务端场景会话历史（正文形式；台词重建见联调点）。
+  // scene 会话历史：场景对话在服务端持久；走 /open（ISSUE-100 F1 跨天裁决），返回当天场景会话历史。
   ipcMain.handle("scene:history", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
     try {
-      const history = await getChildHistory(childId, "scene").catch(() => [] as any[]);
+      const history = await openChildSession(childId, "scene").catch(() => [] as any[]);
       return { success: true, history: history.slice(-80) };
     } catch (err) {
       return { success: false, error: (err as Error).message };

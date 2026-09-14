@@ -421,14 +421,43 @@ export const execHandlers: Record<string, ExecHandler> = {
               );
             }
           }
+          // ISSUE-099 RC1 兜底：AI 偶尔把 planId/planOutcome 写成正文行（「- planId：…」「- planOutcome：done」）
+          // 而非 kb_insert 参数——结构化字段缺失时从正文回捞（只补缺失，不覆盖显式传参）。
+          let planId = str(e.planId || e.plan_id || "");
+          let planOutcome = str(e.planOutcome || e.plan_outcome || "");
+          if (!planId || !planOutcome) {
+            const mId = content.match(/plan_?id\s*[:：]\s*([0-9a-fA-F-]{16,})/i);
+            const mOut = content.match(/plan_?outcome\s*[:：]\s*(done|missed|unknown)/i);
+            if (mId && !planId) planId = mId[1];
+            if (mOut && !planOutcome) planOutcome = mOut[1];
+          }
+          // ISSUE-099 F3 去重：同 plan_id + 同日已有行 → 合并而非新建，防「unknown 行 + 残缺 done 行」双行冲突。
+          // 新条目 outcome=done 且旧行未 done → 升级旧行并附加新正文（保叙事）；其余情况跳过（证据行已存在）。
+          if (planId) {
+            // daily_entries 主键是复合键 (date, block, title)，无 id 列（ISSUE-099 实测）
+            const existing = db
+              .prepare("SELECT block, title, raw, plan_outcome FROM daily_entries WHERE date = ? AND plan_id = ? LIMIT 1")
+              .get(date, planId) as { block: string; title: string; raw: string; plan_outcome: string } | undefined;
+            if (existing) {
+              if (planOutcome === "done" && existing.plan_outcome !== "done") {
+                db.prepare("UPDATE daily_entries SET plan_outcome = 'done', raw = ? WHERE date = ? AND block = ? AND title = ?").run(
+                  `${existing.raw}\n\n（后续确认完成）\n${content}`,
+                  date,
+                  existing.block,
+                  existing.title
+                );
+              }
+              continue;
+            }
+          }
           const r = tx.run(
             date,
             str(e.block),
             title,
             content,
             extractTagsFromRaw(content),
-            str(e.planId || e.plan_id || ""),
-            str(e.planOutcome || e.plan_outcome || "")
+            planId,
+            planOutcome
           );
           if (r.changes > 0) inserted++;
         }

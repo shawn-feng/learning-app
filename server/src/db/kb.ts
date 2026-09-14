@@ -128,6 +128,10 @@ CREATE TABLE IF NOT EXISTS exam_plans (
 CREATE INDEX IF NOT EXISTS idx_ep_child_window ON exam_plans(child_id, status, due_at);
 CREATE INDEX IF NOT EXISTS idx_ep_creator ON exam_plans(child_id, creator, active);
 
+-- 2026-09-14 kind 收敛（幂等迁移）：exam_plans.kind 只有 custom / fixed 两值；
+-- 旧孩子自请行 kind='self' 统一归并为 'custom'（建单人由 creator='child' 区分）。
+UPDATE exam_plans SET kind = 'custom' WHERE kind = 'self';
+
 -- ===== 考核计划课程明细（范围 → 开考回填结果）=====
 CREATE TABLE IF NOT EXISTS exam_plan_courses (
   id TEXT PRIMARY KEY,

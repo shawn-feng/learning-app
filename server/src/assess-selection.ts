@@ -83,11 +83,18 @@ export function attachStructuredQuestions(
 
     const spec = (getMethodSpec(db, course.topic) as any) ?? {};
     const childSpec = spec?.perChild?.[childId] ?? spec?.default ?? {};
-    let requireMap: Record<string, number> = childSpec?.require ?? {};
+    // 主题级方法也走 resolveOverride 统一解析（键支持知识点 uuid 或名称；解析不到的忽略，
+    // require/exclude 全解析失败 → 视为未覆盖回退全考）——修复：旧数据里键是已废弃的
+    // 分类 uuid（2026-09-14 题库恢复后 KP id 全部为新值），只认 uuid 会全不命中 → 空卷"出题失败"。
+    const topicOvr = resolveOverride(db, uuid, {
+      require: childSpec?.require,
+      exclude: childSpec?.exclude,
+    });
+    let requireMap: Record<string, number> = topicOvr.used ? topicOvr.requireMap : {};
     let requireKeys = Object.keys(requireMap);
-    let exclude = new Set<string>(childSpec?.exclude ?? []);
+    let exclude = topicOvr.used ? topicOvr.exclude : new Set<string>();
     let recitePass = Math.max(0, Number(childSpec?.rules?.recitePass) || 90);
-    // 排期级覆盖（自定义考核"本次只考某知识点"等）：优先于主题方法
+    // 计划级覆盖（自定义考核"本次只考某知识点"等）：优先于主题方法
     const ovr = resolveOverride(db, uuid, override);
     if (ovr.used) {
       requireMap = ovr.requireMap;
@@ -170,6 +177,238 @@ export function attachStructuredQuestions(
       return q;
     });
   }
+}
+
+/** 把一道抽中的题映射成下发题对象（speech 行为=背诵/朗读：refText+cn_recitation；generic：口述判分）。 */
+function mapPickedToQuestion(
+  p: {
+    behavior: string;
+    knowledgePointId: string;
+    knowledgePointName: string;
+    overview: string;
+    item: { id: string; stem: string; answer: string; scoring: string | null; pointMax: number; options?: Array<{ key: string; text: string }> };
+  },
+  courseTitle: string,
+  recitePass: number,
+  counters: { textNo: number; recNo: number }
+): Record<string, unknown> {
+  const base = {
+    course: courseTitle,
+    stem: p.item.stem,
+    pointMax: p.item.pointMax || 10,
+    questionId: p.item.id, // 题库题目 uuid（落库溯源/轮换排除）
+    knowledgePointId: p.knowledgePointId, // 知识点 uuid（落库溯源）
+    knowledgePointName: p.knowledgePointName,
+  };
+  if (p.behavior.startsWith("speech")) {
+    return {
+      ...base,
+      qid: `rq${++counters.recNo}`,
+      assessMethod: "speech" as const,
+      questionType: "cn_recitation",
+      refText: p.item.answer, // 标准原文 = 题库 answer
+      recitePass, // 背诵通过线
+    };
+  }
+  const q = { ...base, qid: `q${++counters.textNo}`, scoringText: serializeScoring(p.item) } as Record<string, unknown>;
+  const opts = p.item.options ?? [];
+  if (opts.length) {
+    q.options = opts;
+    q.correctKey = correctKeyOf({ answer: p.item.answer, options: opts });
+    q.answerText = p.item.answer;
+  }
+  return q;
+}
+
+/** 排序：speech 行为（背诵/朗读）置该课最前。 */
+function speechFirst<T extends { behavior: string }>(picked: T[]): T[] {
+  return picked.sort((a, b) => Number(b.behavior.startsWith("speech")) - Number(a.behavior.startsWith("speech")));
+}
+
+// ==================== 计划级出题约定（2026-09-14 定案：计划生成时即约定全部出题参数） ====================
+
+/** 计划里单课的出题约定：考哪些知识点、每个知识点抽几题。 */
+export interface PlanKpSpec {
+  name: string;
+  count: number;
+}
+export interface PlanCourseSpec {
+  title: string;
+  kps: PlanKpSpec[];
+}
+
+/**
+ * 生成考核计划时调用：把「课程列表 + 计划级 methodSpec（可选）」展开成**完整出题约定**。
+ * - 默认 = 主题级 method_spec（按孩子过滤，如排除字词/典故）过一遍，每个知识点 1 题；
+ * - 传了 methodSpec 则覆盖主题方法（require 的键支持知识点名或 uuid，解析不到 → 记缺失，创建即失败）；
+ * - **课程必须有知识点且挂了题库题**，否则进 missing（调用方必须拒绝创建考核计划）。
+ */
+export function buildPlanSpecEntries(
+  db: DatabaseSync,
+  childId: string,
+  courses: CourseLike[],
+  methodSpec?: MethodOverride | null
+): { entries: PlanCourseSpec[]; missing: Array<{ title: string; reason: string }> } {
+  const entries: PlanCourseSpec[] = [];
+  const missing: Array<{ title: string; reason: string }> = [];
+  for (const course of courses) {
+    const title = course.title;
+    const uuid = getCourseUuid(db, course.topic, title);
+    if (!uuid) {
+      missing.push({ title, reason: "家长库中找不到该课程" });
+      continue;
+    }
+    const content = listCourseContent(db, uuid);
+    const withQ = content.items.filter((it) => it.questions.length > 0);
+    if (!withQ.length) {
+      missing.push({ title, reason: "还没有考核内容（未挂知识点或知识点未挂题库题），请先在考核内容建设中补充" });
+      continue;
+    }
+    // 计划级 methodSpec：require/exclude（键=知识点名或 uuid，严格解析）
+    let planRequire: Record<string, number> | null = null;
+    const planExclude = new Set<string>();
+    if (methodSpec && ((methodSpec.require && Object.keys(methodSpec.require).length) || (methodSpec.exclude?.length ?? 0) > 0)) {
+      const kps = listKnowledgePoints(db, uuid);
+      const byId = new Map(kps.map((k) => [k.id, k]));
+      const byName = new Map(kps.map((k) => [String(k.name).trim(), k]));
+      let bad = false;
+      if (methodSpec.require && Object.keys(methodSpec.require).length) {
+        planRequire = {};
+        for (const [k, v] of Object.entries(methodSpec.require)) {
+          const kp = byId.get(k) ?? byName.get(String(k).trim());
+          if (!kp) {
+            missing.push({ title, reason: `要求的知识点「${k}」在该课不存在（现有：${kps.map((x) => x.name).join("、")}）` });
+            bad = true;
+            break;
+          }
+          planRequire[kp.name] = Math.max(1, Number(v) || 1);
+        }
+        if (bad) continue;
+      }
+      for (const k of methodSpec.exclude ?? []) {
+        const kp = byId.get(k) ?? byName.get(String(k).trim());
+        if (!kp) {
+          missing.push({ title, reason: `要排除的知识点「${k}」在该课不存在（现有：${kps.map((x) => x.name).join("、")}）` });
+          bad = true;
+          break;
+        }
+        planExclude.add(kp.name);
+      }
+      if (bad) continue;
+    }
+    // 主题级方法（默认过滤，按孩子）
+    const spec = (getMethodSpec(db, course.topic) as any) ?? {};
+    const childSpec = spec?.perChild?.[childId] ?? spec?.default ?? {};
+    const topicOvr = resolveOverride(db, uuid, { require: childSpec?.require, exclude: childSpec?.exclude });
+    const kps: PlanKpSpec[] = [];
+    for (const it of withQ) {
+      const name = it.knowledgePointName;
+      if (planRequire) {
+        if (!(name in planRequire)) continue;
+        kps.push({ name, count: planRequire[name]! });
+        continue;
+      }
+      if (planExclude.has(name)) continue;
+      if (topicOvr.used) {
+        if (!(it.knowledgePointId in topicOvr.requireMap)) continue;
+        if (topicOvr.exclude.has(it.knowledgePointId)) continue;
+        kps.push({ name, count: Math.max(1, topicOvr.requireMap[it.knowledgePointId] ?? 1) });
+        continue;
+      }
+      kps.push({ name, count: 1 });
+    }
+    if (!kps.length) {
+      missing.push({ title, reason: "按考核方法过滤后没有可考知识点" });
+      continue;
+    }
+    entries.push({ title, kps });
+  }
+  return { entries, missing };
+}
+
+/**
+ * 出题环节调用：**严格按考核计划里的约定抽题**（不再有结构化/非结构化之分，
+ * 也不再看主题方法/LLM——计划里没约定或题库缺题都算错误）。
+ * 返回问题列表（空 = 全部课程成功）；失败课程 course.questions 置 []。
+ */
+export function attachPlanQuestions(
+  db: DatabaseSync,
+  courses: CourseLike[],
+  entries: PlanCourseSpec[],
+  recitePass = 90
+): Array<{ title: string; reason: string }> {
+  const byTitle = new Map(entries.map((e) => [e.title, e]));
+  const counters = { textNo: 0, recNo: 0 };
+  const problems: Array<{ title: string; reason: string }> = [];
+  for (const course of courses) {
+    const entry = byTitle.get(course.title);
+    if (!entry) {
+      problems.push({ title: course.title, reason: "考核计划里没有这门课的出题约定" });
+      course.questions = [];
+      continue;
+    }
+    const uuid = getCourseUuid(db, course.topic, course.title);
+    if (!uuid) {
+      problems.push({ title: course.title, reason: "家长库中找不到该课程" });
+      course.questions = [];
+      continue;
+    }
+    const content = listCourseContent(db, uuid);
+    const picked: Array<{
+      behavior: string;
+      knowledgePointId: string;
+      knowledgePointName: string;
+      overview: string;
+      item: { id: string; stem: string; answer: string; scoring: string | null; pointMax: number; options?: Array<{ key: string; text: string }> };
+    }> = [];
+    for (const kpSpec of entry.kps) {
+      const it = content.items.find(
+        (x) => x.knowledgePointName === kpSpec.name || x.knowledgePointId === kpSpec.name
+      );
+      if (!it || !it.questions.length) {
+        problems.push({ title: course.title, reason: `知识点「${kpSpec.name}」已无可用题目（考核内容可能被改动，请重新安排这次考核）` });
+        continue;
+      }
+      const pool = [...it.questions].sort((a, b) => a.seq - b.seq);
+      const want = Math.max(1, Number(kpSpec.count) || 1);
+      for (let k = 0; k < Math.min(want, pool.length); k++) {
+        const j = k + Math.floor(Math.random() * (pool.length - k));
+        const qi = pool[k];
+        pool[k] = pool[j]!;
+        pool[j] = qi!;
+        picked.push({
+          behavior: pool[k]!.behavior || "generic",
+          knowledgePointId: it.knowledgePointId,
+          knowledgePointName: it.knowledgePointName,
+          overview: it.overview,
+          item: pool[k]!,
+        });
+      }
+    }
+    if (!picked.length) {
+      if (!problems.some((p) => p.title === course.title)) {
+        problems.push({ title: course.title, reason: "没有可出的题目" });
+      }
+      course.questions = [];
+      continue;
+    }
+    course.questions = speechFirst(picked).map((p) => mapPickedToQuestion(p, course.title, recitePass, counters));
+  }
+  return problems;
+}
+/**
+ * note 文本 → methodSpec 兜底推断（确定性规则，非 LLM）：
+ * 家长/孩子把「只考背诵」写进了 note 而没传 methodSpec 时，据此自动收紧范围。
+ * 命中条件：note 含「背诵/只背」且**不含**其它考核类别词（句意/道理/翻译/字词/典故）→ 只考背诵。
+ * 返回 null = 无法推断（调用方按原样处理）。
+ */
+export function inferReciteOnlyFromNote(note: string): MethodOverride | null {
+  const t = String(note ?? "");
+  if (!t) return null;
+  const recite = /背诵|只背|背原文|背出原文/.test(t);
+  const others = /句意|道理|翻译|白话|字词|读音|典故|默写|应用/.test(t);
+  if (recite && !others) return { require: { "背诵": 1 } };
+  return null;
 }
 
 /** 选项里找与答案文本匹配的 key（判分规则用）；找不到返回 ""（判分可回退内容匹配/LLM）。 */
