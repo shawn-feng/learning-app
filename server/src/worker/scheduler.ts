@@ -24,6 +24,7 @@ import {
 import { listTasks, hhmm, type WorkerSchedulerChildConfig, type WorkerTask, type WorkerTaskCtx } from "./tasks.js";
 import { formatLocalDate } from "./kb-tools.js";
 import { expandRecurrences, runPlanStat } from "./plan-domain.js";
+import { ensureTodayExamPlans } from "../routes/exam.js";
 
 interface WorkerSchedulerDeps {
   dataDir: string;
@@ -370,6 +371,14 @@ export async function runPlanTick(deps: WorkerSchedulerDeps): Promise<void> {
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   for (const p of parents) {
     const settings = readParentSettings(deps.db, deps.dataDir, p.id);
+    // 固定考核（2026-09-14 重构）：每日/每周为配置项（exam_fixed:<parentId>），每天检查配置、
+    // 为当天生成孩子库 exam_plans 考核计划（幂等，同 child+日+freq 只生成一次；首个 plan tick 命中即生成）。
+    try {
+      const created = ensureTodayExamPlans(deps.db, deps.dataDir, p.id);
+      if (created) console.log(`[worker:plan] parent=${p.id}: 固定考核配置生成 ${created} 条考核计划（${today}）`);
+    } catch (e) {
+      console.error(`[worker:plan] exam-fixed parent=${p.id} failed:`, (e as Error).message);
+    }
     for (const childId of listChildIds(deps.db, p.id)) {
       try {
         const created = expandRecurrences(buildTodoCtx(deps, p.id, childId, {}, settings, now));

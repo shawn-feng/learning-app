@@ -70,7 +70,12 @@ async function getProgrammingSession(deps: ProgrammingDeps, cwd: string, session
       ? String(settings.appSettings["programmingModel"])
       : "";
   if (!programmingKey) {
-    throw new Error("编程 agent 未配置模型：请到「设置 → 模型配置」选择「编程 agent 模型」后重试");
+    // 带 parentId 便于诊断「设置页显示已配置但 agent 报未配置」类问题（ISSUE-097）：
+    // 立刻能看出 agent 读的是哪个家长的服务端 app_settings，是否与设置页登录账号一致。
+    throw new Error(
+      `编程 agent 未配置模型（家长 ${deps.parentId} 的服务端 app_settings 无 programmingModel）：` +
+        `请到「设置 → 模型配置」选择「编程 agent 模型」并保存后重试`
+    );
   }
   const runtime = await getWorkerRuntime(deps.dataDir, deps.parentId, settings.auth);
   const sep = programmingKey.indexOf("/");

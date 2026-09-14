@@ -1,96 +1,47 @@
+/**
+ * 本地 app-settings.json：只承载「设备本地回退」用的轻量设置（目前仅 materialsLimit）。
+ *
+ * ⚠️ ISSUE-097：模型配置（defaultModel / programmingModel / visionModel）与其它家长设置
+ * 已全部收口服务端 `<parentId>:app_settings`——设置页走 /models/app_settings 直接读写服务端，
+ * 服务端 agent（readParentSettings）读同一行，显示与生效天然一致。
+ *
+ * 历史 bug（本 issue 根因）：旧实现把模型字段也存在本地文件，保存时 `pushConfig("app_settings",
+ * 整个本地文件)` 推服务端——而服务端 /config/set 是**整键替换**，本地文件里过期/缺失的模型字段
+ * 会把服务端真源整体覆盖（表现即「设置页显示已配置、agent 报未配置」的本地/服务端存储分裂）。
+ * 因此：
+ * 1. 本地文件**只存 materialsLimit**，不再存任何模型字段；
+ * 2. 保存时不再整键推送，改走 /models/app_settings **合并端点**（只更新传入字段，绝不碰模型配置）。
+ */
 import fs from "fs";
 import { getAppSettingsPath } from "./config";
-import { pushConfig } from "./config-sync";
+import { setAppSettings } from "./server-agent-client";
 
-interface AppSettings {
-  materialsLimit: number;
-  // 用户设置的「默认模型」，格式 "provider/modelId"，如 "qwen/qwen-flash"。
-  // 这是主进程可读的唯一种源：getDefaultModel()、scheduler 定时任务、渲染侧 ModelSelector
-  // 都从这里取，避免出现「设置里改了默认模型、孩子模式仍显示 deepseek flash」的脱钩问题。
-  defaultModel?: string;
-  // 「编程 agent」模型（ISSUE-020），格式同 defaultModel："provider/modelId"。
-  // 空/未设置 = 未启用编程 agent：create_html_lesson 工具会报错并提示家长先到设置页配置。
-  programmingModel?: string;
-  // 默认视觉模型（图片上传时自动切换到的多模态模型），格式 "provider/modelId"。
-  // 空/未设置 = 回退 DEFAULT_VISION_MODEL（qwen/qwen3-vl-flash）。
-  visionModel?: string;
-}
+const DEFAULT_MATERIALS_LIMIT = 20;
 
-const DEFAULT_SETTINGS: AppSettings = {
-  materialsLimit: 20,
-};
-
-function loadSettings(): AppSettings {
-  const p = getAppSettingsPath();
-  if (!fs.existsSync(p)) return { ...DEFAULT_SETTINGS };
+function loadMaterialsLimit(): number {
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(p, "utf-8")) };
+    const v = JSON.parse(fs.readFileSync(getAppSettingsPath(), "utf-8"));
+    const n = Number(v?.materialsLimit);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MATERIALS_LIMIT;
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return DEFAULT_MATERIALS_LIMIT;
   }
 }
 
-function saveSettings(settings: AppSettings): void {
-  fs.writeFileSync(getAppSettingsPath(), JSON.stringify(settings, null, 2), "utf-8");
-  // SPLIT M8-C：配置唯一真源在服务端，保存后同步（跨设备 ≤2min 生效）
-  void pushConfig("app_settings", settings).catch(() => {});
-}
-
-// 学习资料保留数量（孩子模式左侧「学习资料」列表的上限），默认 20
+/** 学习资料保留数量（孩子模式左侧「学习资料」列表的上限），默认 20。本地文件仅作离线回退。 */
 export function getMaterialsLimit(): number {
-  const n = loadSettings().materialsLimit;
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SETTINGS.materialsLimit;
+  return loadMaterialsLimit();
 }
 
 export function setMaterialsLimit(n: number): number {
-  const settings = loadSettings();
-  const valid = Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SETTINGS.materialsLimit;
-  settings.materialsLimit = valid;
-  saveSettings(settings);
+  const valid = Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MATERIALS_LIMIT;
+  try {
+    // 本地文件顺带清掉历史遗留的模型字段（只写 materialsLimit，见文件头说明）
+    fs.writeFileSync(getAppSettingsPath(), JSON.stringify({ materialsLimit: valid }, null, 2), "utf-8");
+  } catch {
+    /* 本地写失败不阻塞——服务端是真源 */
+  }
+  // 服务端同步：走合并端点，只传 materialsLimit，绝不整键覆盖模型配置（ISSUE-097）
+  void setAppSettings({ materialsLimit: valid }).catch(() => {});
   return valid;
-}
-
-// 默认模型（"provider/modelId"）。空字符串/未设置表示「未指定，由调用方自行回退」。
-export function getDefaultModelKey(): string {
-  return loadSettings().defaultModel || "";
-}
-
-export function setDefaultModelKey(key: string): void {
-  const settings = loadSettings();
-  if (key) {
-    settings.defaultModel = key;
-  } else {
-    delete settings.defaultModel;
-  }
-  saveSettings(settings);
-}
-
-// 编程 agent 模型（"provider/modelId"）。空字符串/未设置表示「未启用」。
-export function getProgrammingModelKey(): string {
-  return loadSettings().programmingModel || "";
-}
-
-export function setProgrammingModelKey(key: string): void {
-  const settings = loadSettings();
-  if (key) {
-    settings.programmingModel = key;
-  } else {
-    delete settings.programmingModel;
-  }
-  saveSettings(settings);
-}
-
-// 默认视觉模型（"provider/modelId"）。空字符串/未设置表示「未指定，回退 DEFAULT_VISION_MODEL」。
-export function getVisionModelKey(): string {
-  return loadSettings().visionModel || "";
-}
-
-export function setVisionModelKey(key: string): void {
-  const settings = loadSettings();
-  if (key) {
-    settings.visionModel = key;
-  } else {
-    delete settings.visionModel;
-  }
-  saveSettings(settings);
 }

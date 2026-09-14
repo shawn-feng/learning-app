@@ -1,7 +1,12 @@
 /**
  * 学习考核（EXAM-REQUIREMENTS.md）——服务端：内容真源 + 存储，不跑判分 LLM。
- * - GET  /api/v1/exam/config/:childId   考核配置下发（结构化直出题或课程知识点 + assess_method + 判分 prompt）
- * - POST /api/v1/exam/attempts          提交一次考核结果（客户端判分后上报；语音经 /files/upload 先行上传，这里引用 fileId）
+ * 2026-09-14 考核域重构：exam_schedules 排期表已取消——
+ * - 每日/每周固定考核改为**配置项**（settings `exam_fixed:<parentId>`），worker 每天检查配置生成当天的
+ *   孩子库 exam_plans 考核计划行（GET 列表时幂等补跑兜底）；
+ * - 自定义考核（家长对话 / 管理面板）**直接写入孩子库 exam_plans**；
+ * - `/exam/schedules*` 路由路径保留（渲染层零改动），但语义全部改为操作 exam_plans 考核计划。
+ * - GET  /api/v1/exam/config/:childId   考核配置下发（?schedule=<exam_plans 行 id>；结构化直出题或课程知识点 + assess_method + 判分 prompt）
+ * - POST /api/v1/exam/attempts          提交一次考核结果（客户端判分后上报；语音经 /files/upload 先行上传，这里引用 fileId；scheduleId=考核计划行 id）
  * - GET  /api/v1/exam/attempts/:childId 家长查询考核记录列表（按时间倒序）
  * - GET  /api/v1/exam/course-records/:childId 每课程考核记录表（最近考核/掌握/难点/亮点/计划复习）
  * 鉴权：家长 JWT；childId 必须归属该家长。语音大文件复用 files 通道（child_id 关联）。
@@ -169,24 +174,7 @@ function getFixedConfig(db: DatabaseSync, parentId: string): FixedExamConfig {
   return cfg;
 }
 
-/** 固定考核频率档 → 周期毫秒（半年按 182 天、一年按 365 天近似，月末日不精确可接受）。 */
-function freqToMs(freq: string): number {
-  switch (freq) {
-    case "daily":
-      return 86400000;
-    case "weekly":
-      return 7 * 86400000;
-    case "monthly":
-      return 30 * 86400000;
-    case "halfyear":
-      return 182 * 86400000;
-    case "yearly":
-      return 365 * 86400000;
-    default:
-      return 7 * 86400000;
-  }
-}
-
+/** 固定考核频率档校验表（配置保存时过滤非法档；monthly+ 已下线不再生成）。 */
 const FREQ_RANK: Record<string, number> = { daily: 1, weekly: 2, monthly: 3, halfyear: 4, yearly: 5 };
 
 /** 频率档中文标签（排期标题展示）。 */
@@ -215,100 +203,88 @@ function dayStart(t: number): number {
 }
 
 /**
- * 一次性迁移：把存量考核排期的时间粒度从「具体时刻」归一到「该日期本地 0 点」。
- * 2026-09-04 起考核只按日期（用户拍板：只设考核日期、不约定时间，到当天 0 点即可考）。
- * 只改仍为 pending/started 的行（done 历史保留原样），幂等（已为 0 点则跳过）。
+ * 固定考核：配置项 → 当天考核计划生成（幂等）。
+ * 2026-09-14 重构：exam_schedules 排期表已取消——每日/每周固定考核改为**配置项**
+ * （settings `exam_fixed:<parentId>`，家长设置页维护），worker 每天（plan tick）检查配置、
+ * 为当天生成孩子库 exam_plans 考核计划行；本函数幂等（同 child+日+freq 已有 active 计划则跳过），
+ * 因此 GET 考核计划列表时也会补跑一次，兜底 worker 停机/重启场景。
+ * - daily：每天生成一条「当天可考」计划；
+ * - weekly：仅当今天是配置的周几（cfg.weekly.weekday，1=周一…7=周日）时生成；
+ * - 同日 daily+weekly 都命中 → 只保留 weekly（沿用旧「同日只留周期最长档」口径）；
+ * - monthly/halfyear/yearly 已下线（2026-09-09），不再生成。
  */
-export function normalizeExamScheduleDays(db: DatabaseSync): number {
-  const rows = db
-    .prepare("SELECT id, scheduled_at, status FROM exam_schedules WHERE status IN ('pending','started')")
-    .all() as Array<{ id: string; scheduled_at: string; status: string }>;
+export function ensureTodayExamPlans(db: DatabaseSync, dataDir: string, parentId: string): number {
+  const cfg = getFixedConfig(db, parentId);
+  const freqs = (cfg.frequencies ?? []).filter((f) => f === "daily" || f === "weekly");
+  if (!freqs.length) return 0;
+  const now = new Date();
+  const want: string[] = [];
+  if (freqs.includes("weekly")) {
+    const weekday = Number(cfg.weekly?.weekday) || 1;
+    if (weekday % 7 === now.getDay()) want.push("weekly");
+  }
+  if (freqs.includes("daily") && !want.includes("weekly")) want.push("daily");
+  if (!want.length) return 0;
+
+  const day = localDateStr(now.getTime()); // YYYY-MM-DD（本地时区）
+  const children = db.prepare("SELECT id FROM children WHERE parent_id = ?").all(parentId) as Array<{ id: string }>;
   let n = 0;
-  const upd = db.prepare("UPDATE exam_schedules SET scheduled_at = ? WHERE id = ?");
-  for (const r of rows) {
-    const ts = new Date(r.scheduled_at).getTime();
-    if (Number.isNaN(ts)) continue;
-    const ds = dayStart(ts);
-    if (ds !== ts) {
-      upd.run(new Date(ds).toISOString(), r.id);
-      n++;
+  for (const c of children) {
+    const kb = openKb(dataDir, parentId, c.id);
+    try {
+      for (const freq of want) {
+        const dup = kb
+          .prepare(
+            "SELECT id FROM exam_plans WHERE child_id = ? AND kind = 'fixed' AND freq = ? AND active = 1 AND substr(start_at,1,10) = ?"
+          )
+          .get(c.id, freq, day);
+        if (dup) continue;
+        kb.prepare(
+          `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
+             start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
+           VALUES (?,?,?,?,'parent','fixed',?,'{}','config','','?',?,'pending','',NULL,'','required',1,0,1,?,?)`
+        ).run(
+          `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          parentId,
+          c.id,
+          `固定考核（${freqLabel(freq)}）`,
+          freq,
+          `${day} 00:00:00`,
+          `${day} 23:59:59`,
+          now.toISOString(),
+          now.toISOString()
+        );
+        n++;
+      }
+    } finally {
+      kb.close();
     }
   }
   return n;
 }
 
-/**
- * 固定排期懒生成（幂等）：确保该孩子未来 HORIZON 天内有固定排期。
- * 各频率档从 anchorAt 按周期步进；同一日期多档重叠 → 只保留周期最长档（rank 最大）。
- * 已存在同 child+同日+kind=fixed 的排期则跳过（重复调用不重复生成）。
- */
-export function ensureFixedSchedules(db: DatabaseSync, parentId: string, childId: string): number {
-  const cfg = getFixedConfig(db, parentId);
-  if (!cfg.frequencies?.length) return 0;
-  const HORIZON_MS = 60 * 86400000; // 未来 60 天
-  const now = Date.now();
-  const todayDay = dayStart(now); // 今天本地 0 点
-  const byDay = new Map<number, { day: number; freq: string; rank: number }>();
-  const add = (day: number, freq: string) => {
-    const cur = byDay.get(day);
-    if (!cur || FREQ_RANK[freq] > cur.rank) byDay.set(day, { day, freq, rank: FREQ_RANK[freq] });
-  };
-  // ⚠️ 2026-09-04：考核只按「日期」粒度（用户拍板），不再约定具体时刻——排期时间都取该日本地 0 点，
-  // 只要到了这一天（0 点起）整个白天都可考核。daily/weekly 不再读取 cfg.time。
-  // 每日：今天起每天生成一个「当天可考」排期（含今天——今天 0 点已过即今天 pending，全天可考）
-  if (cfg.frequencies.includes("daily")) {
-    let d = new Date(todayDay);
-    while (d.getTime() <= now + HORIZON_MS) {
-      add(dayStart(d.getTime()), "daily");
-      d.setDate(d.getDate() + 1);
+/** 在该家长所有孩子的孩子库里定位一条考核计划（exam_plans 按 child 分库，路由只有 id 时用它）。 */
+function findExamPlanRow(
+  db: DatabaseSync,
+  dataDir: string,
+  parentId: string,
+  planId: string
+): { childId: string; row: Record<string, unknown> } | null {
+  const children = db.prepare("SELECT id FROM children WHERE parent_id = ?").all(parentId) as Array<{ id: string }>;
+  for (const c of children) {
+    const kb = openKb(dataDir, parentId, c.id);
+    try {
+      const row = kb.prepare("SELECT * FROM exam_plans WHERE id = ? AND active = 1").get(planId) as
+        | Record<string, unknown>
+        | undefined;
+      if (row) return { childId: c.id, row };
+    } catch {
+      /* 单个孩子库异常继续找下一个 */
+    } finally {
+      kb.close();
     }
   }
-  // 每周：cfg.weekly.weekday（1=周一…7=周日），该日的 0 点；今天若是该周几则含今天
-  if (cfg.frequencies.includes("weekly")) {
-    const w = cfg.weekly || {};
-    const weekday = Number(w.weekday) || 1;
-    const target = weekday % 7; // 1-7 → JS getDay（0=周日）：1→周一,7→周日
-    let d = new Date(todayDay);
-    d.setDate(d.getDate() + ((target - d.getDay() + 7) % 7));
-    while (d.getTime() <= now + HORIZON_MS) {
-      add(dayStart(d.getTime()), "weekly");
-      d.setDate(d.getDate() + 7);
-    }
-  }
-  // monthly/halfyear/yearly：保留旧 anchor 步进（兼容旧数据；UI 已不再生成这三档），时间也取日 0 点
-  const legacy = cfg.frequencies.filter((f) => f === "monthly" || f === "halfyear" || f === "yearly");
-  if (legacy.length) {
-    let anchor: number;
-    if (cfg.anchorAt) {
-      anchor = dayStart(new Date(cfg.anchorAt).getTime());
-    } else {
-      anchor = todayDay;
-    }
-    for (const freq of legacy) {
-      const step = freqToMs(freq);
-      for (let t = anchor; t <= anchor + HORIZON_MS; t += step) add(dayStart(t), freq);
-    }
-  }
-  // 只保留「还没生成」的排期（同日已存在 fixed 排期 → 跳过）；按日期排序
-  const existing = new Set(
-    (db
-      .prepare("SELECT scheduled_at FROM exam_schedules WHERE child_id = ? AND kind = 'fixed'")
-      .all(childId) as Array<{ scheduled_at: string }>).map((r) => dayStart(new Date(r.scheduled_at).getTime()))
-  );
-  const pending = Array.from(byDay.values())
-    .filter((x) => !existing.has(x.day))
-    .sort((a, b) => a.day - b.day);
-  if (!pending.length) return 0;
-  const ins = db.prepare(
-    "INSERT OR IGNORE INTO exam_schedules (id, parent_id, child_id, kind, freq, scheduled_at, scope, status, created_at) VALUES (?, ?, ?, 'fixed', ?, ?, '{}', 'pending', ?)"
-  );
-  let n = 0;
-  for (const p of pending) {
-    const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    ins.run(id, parentId, childId, p.freq, new Date(p.day).toISOString(), new Date().toISOString());
-    n++;
-  }
-  return n;
+  return null;
 }
 
 /** 某课程最近一次考核时间（从 exam_attempts.perQuestion 按 course 聚合，取最新 submitted_at）。 */
@@ -699,133 +675,6 @@ export function fetchCoursesWithKnowledgePoints(
   }
 }
 
-/** 构建某频率档的完整选课 prompt：模板（家长可编辑）+ 注入今天日期/周期范围/统计/候选清单。
- *  source="learned"（默认）：候选来自「学习/复习痕迹」，按首次学习/最近复习打周期标记；
- *  source="plan"：候选来自「家长学习计划」（study_plan_items），**计划内无论是否完成都考核**，
- *  按计划日期标注（daily=今天计划；weekly=近 7 天计划），供每日/每周固定考核使用。 */
-export function buildSelectionPrompt(
-  template: string,
-  candidates: CourseMeta[],
-  freq: string,
-  scheduledTs: number,
-  source: "learned" | "plan" = "learned"
-): string {
-  const TODAY = new Date().toISOString().slice(0, 10);
-  const scheduledDay = new Date(scheduledTs).toISOString().slice(0, 10);
-  const monthStart = scheduledDay.slice(0, 7) + "-01";
-  const planWin = source === "plan" ? planWindowFor(freq, scheduledTs) : null;
-  let RANGE: string;
-  if (planWin) RANGE = planWin.start === planWin.end ? planWin.start : planWin.start + " ~ " + planWin.end;
-  else if (freq === "daily") RANGE = TODAY;
-  else if (freq === "monthly") RANGE = monthStart + " ~ " + scheduledDay;
-  else if (freq === "custom") RANGE = "（自定义考核，选课范围由下面的规则指定，不按周期窗口）";
-  else RANGE = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10) + " ~ " + scheduledDay;
-  // 每主题统计（monthly：本月/本月前；其余：本周期窗口内；custom：全部候选；plan：窗口内计划课）
-  const byTopic = new Map<string, { name: string; month: number; prev: number; window: number }>();
-  const bump = (topic: string, name: string, key: "month" | "prev" | "window") => {
-    let e = byTopic.get(topic);
-    if (!e) {
-      e = { name, month: 0, prev: 0, window: 0 };
-      byTopic.set(topic, e);
-    }
-    e[key]++;
-  };
-  if (planWin) {
-    // 计划模式：候选即窗口内计划课，逐主题计数全部选入
-    for (const c of candidates) bump(c.topic, c.topicName, "window");
-  } else {
-    for (const c of candidates) {
-      // 2026-09-10：不再有「首次学习时间」——周期归属统一按最近学习时间（lastReview）；✅=已学无日期，归「更早」
-      const lr = c.lastReview || "";
-      const noDate = c.firstLearned === "✅";
-      if (freq === "monthly") {
-        const inMonth = lr >= monthStart && lr <= scheduledDay;
-        if (inMonth) bump(c.topic, c.topicName, "month");
-        else if (noDate || (lr !== "" && lr < monthStart)) bump(c.topic, c.topicName, "prev");
-      } else if (freq === "custom") {
-        bump(c.topic, c.topicName, "window"); // 自定义：统计全部候选，由规则决定挑多少
-      } else {
-        const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
-        if (lr >= winStart && lr <= scheduledDay) bump(c.topic, c.topicName, "window");
-      }
-    }
-  }
-  const statLines: string[] = [];
-  for (const [, e] of byTopic) {
-    if (planWin) {
-      statLines.push("[" + e.name + "] " + planWin.label + "计划 " + e.window + " 门 → 全部选入");
-    } else if (freq === "monthly") {
-      statLines.push("[" + e.name + "] 本月 " + e.month + " 门 → 选 " + Math.ceil(e.month * 0.5) + " 门；本月前 " + e.prev + " 门 → 选 " + Math.ceil(e.month * 0.25) + " 门");
-    } else if (freq === "halfyear") {
-      statLines.push("[" + e.name + "] 本周期 " + e.window + " 门 → 选 " + Math.ceil(e.window * 0.4) + " 门");
-    } else if (freq === "yearly") {
-      statLines.push("[" + e.name + "] 本周期 " + e.window + " 门 → 选 " + Math.ceil(e.window * 0.6) + " 门");
-    } else if (freq === "custom") {
-      statLines.push("[" + e.name + "] 候选 " + e.window + " 门（数量由你的规则决定）");
-    } else {
-      statLines.push("[" + e.name + "] 本周期 " + e.window + " 门 → 全部选入");
-    }
-  }
-  // 每门课周期归属标记（服务端代码精确计算，LLM 按标记挑选、不自己算日期）：
-  // daily/weekly/halfyear/yearly → ★ 本周期（窗口内）；monthly → ★ 本月 / ◐ 本月前；custom/plan → 不打标记（plan 用「计划日期」列标注）
-  const flagByTitle = new Map<string, string>();
-  if (freq !== "custom" && !planWin) {
-    for (const c of candidates) {
-      const lr = c.lastReview || "";
-      const noDate = c.firstLearned === "✅";
-      if (freq === "monthly") {
-        const inMonth = lr >= monthStart && lr <= scheduledDay;
-        if (inMonth) flagByTitle.set(c.title, "★ 本月");
-        else if (noDate || (lr !== "" && lr < monthStart)) flagByTitle.set(c.title, "◐ 本月前");
-      } else {
-        const winStart = new Date(scheduledTs - freqToMs(freq)).toISOString().slice(0, 10);
-        if (lr >= winStart && lr <= scheduledDay) flagByTitle.set(c.title, "★ 本周期");
-      }
-    }
-  }
-  const STATS = statLines.length
-    ? statLines.join("\n")
-    : planWin
-      ? "（" + planWin.label + "没有安排学习计划课程，请输出空数组）"
-      : "（本周期暂无学习/复习过的课程，请输出空数组）";
-  const CLIST = candidates
-    .map((c, i) => {
-      const parts = [
-        i + 1 + ". [" + c.topicName + "] " + c.title,
-        planWin ? "计划日期:" + (c.planDate || "-") : null,
-        "主题类型:" + (c.topicType || "-"),
-        "最近学习:" + (c.lastReview || (c.firstLearned === "✅" ? "✅（无日期）" : "-")),
-        "上次考核:" + (c.lastExamAt || "-"),
-        planWin ? null : "计划复习:" + (c.planReviewAt || "-"),
-      ].filter((x): x is string => x !== null);
-      const flag = flagByTitle.get(c.title);
-      if (flag) parts.push(flag);
-      return parts.join(" | ");
-    })
-    .join("\n");
-  // 模板（家长可编辑的规则文本）+ 统一在尾部追加「统计 + 候选清单 + 标注说明」——
-  // 模板无需自带 {{CLIST}} 占位符（旧模板若带会被替换为空），保证任何周期的 LLM 都能看到课程清单。
-  const head = template
-    .replace(/{{TODAY}}/g, TODAY)
-    .replace(/{{RANGE}}/g, RANGE)
-    .replace(/{{STATS}}/g, STATS)
-    .replace(/{{CLIST}}/g, "");
-  const legendHead = "【课程清单】每行一门：序号. [主题] 课程名" + (planWin ? " | 计划日期" : "") + " | 主题类型 | 首次学习 | 最近复习 | 引导掌握度 | 考核掌握度 | 上次考核" + (planWin ? "" : " | 计划复习") + "\n";
-  const notes = planWin
-    ? "\n\n【标注说明】\n" +
-      "- 候选课程来自家长设置的**学习计划**（按日期排期，窗口 " + RANGE + "）：**计划内的课程无论是否完成都要考核**——不要用「是否学过/复习过」过滤课程，也不要额外补录计划外的课。\n" +
-      "- 「计划日期」= 家长计划里安排的日期（窗口内排过多次的取最早一次）。家长口中的「今天学的课」= 计划日期为今天的课；「本周/近几天学的课」= 计划日期落在本窗口内的课。\n" +
-      "- 若你的规则模板里出现「★ 本周期」「学习/复习过的课程」等字眼，那是旧版规则的残留描述，请忽略，以本段说明为准。\n" +
-      "- 主题类型：必学 / 选学 / 复习 = 家长给孩子主题标注的考核选题类型。家长说的「必学课程」指主题类型=必学的主题下的课程；「只考核必学的」即只从这些课程中挑选。未标注（-）表示未设置类型。\n" +
-      "- 家长对标注一无所知，只会用日常说法（如「今天学习的课」「必学的」），请按此语义映射到「计划日期」与「主题类型」后选择。"
-    : "\n\n【标注说明】\n" +
-      "- 周期标记：★ 本周期 / ★ 本月 / ◐ 本月前 = 课程在本周期窗口内的归属（系统按学习/复习日期精确计算，你只按标记挑选，不要自己推算日期）。\n" +
-      "- 主题类型：必学 / 选学 / 复习 = 家长给孩子安排该主题时标注的考核选题类型（ISSUE-033 起与每日学习量无关——每天学什么由学习计划决定）。家长规则里说的「必学课程」指主题类型=必学的主题下的课程；「只考核必学的」即只从这些课程中挑选。未标注（-）表示该主题未设置类型。\n" +
-      "- 家长对标注一无所知，只会用日常说法（如「今天学习的课」「本周复习的课」「必学的」），请按此语义映射到上述标注后选择。";
-  return head + "\n\n【各主题选课数量】\n" + STATS + "\n\n" + legendHead + CLIST + notes;
-}
-
-
 export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
   // ===== 考核配置下发（客户端出卷/判分所需：知识点 + rubric + 判分 prompt） =====
   app.get("/api/v1/exam/config/:childId", async (req, reply) => {
@@ -843,31 +692,35 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    // 考核 v2（§14）+ v3（§14.9）：带 ?schedule=<id>
-    //  - 自定义排期（scope 指定范围）：直接返回带 rubric 的课程（家长已定范围，不经过选课 LLM）
-    //  - 固定排期第一段（无 courses 参数）：返回选课 prompt + 全部候选课程元数据 → 客户端 LLM 选课
-    //  - 固定排期第二段（courses=title1,title2）：返回选中课程（含 rubric）+ 判分 prompt
-    const scheduleId = String((req.query as { schedule?: string }).schedule || "");
+    // 考核 v2（§14）+ 2026-09-14 重构：?schedule=<exam_plans 考核计划行 id>
+    //  - 自定义考核计划（scope.courses 指定范围）：直接返回带 rubric 的课程（家长已定范围，不经过选课 LLM）
+    //  - 固定考核计划：内置规则 = 计划周期内「必学」课程全部考核（范围在开考时按学习计划窗口实时计算）
+    //  - 带 courses=title1,title2 参数：返回选中课程（含 rubric）+ 判分 prompt（第二段兼容路径）
+    const planId = String((req.query as { schedule?: string }).schedule || "");
     const coursesParam = String((req.query as { courses?: string }).courses || "");
-    if (scheduleId) {
-      const sch = deps.db
-        .prepare("SELECT * FROM exam_schedules WHERE id = ? AND child_id = ?")
-        .get(scheduleId, childId) as Record<string, unknown> | undefined;
-      if (!sch) return reply.code(404).send({ error: "排期不存在" });
+    if (planId) {
+      const kb = openKb(deps.config.dataDir, parentId, childId);
+      const plan = kb
+        .prepare("SELECT * FROM exam_plans WHERE id = ? AND child_id = ? AND active = 1")
+        .get(planId, childId) as Record<string, unknown> | undefined;
+      kb.close();
+      if (!plan) return reply.code(404).send({ error: "考核计划不存在或已取消" });
       const scope = (() => {
         try {
-          return JSON.parse(String(sch.scope || "{}"));
+          return JSON.parse(String(plan.scope_json ?? "{}"));
         } catch {
           return {};
         }
       })();
       const schedule = {
-        id: String(sch.id),
-        kind: String(sch.kind),
-        freq: String(sch.freq),
-        title: sch.kind === "custom" ? "自定义考核" : `固定考核（${freqLabel(String(sch.freq))}）`,
-        scheduledAt: String(sch.scheduled_at),
-        status: String(sch.status),
+        id: String(plan.id),
+        kind: String(plan.kind || "custom"),
+        freq: String(plan.freq ?? ""),
+        title:
+          String(plan.title || "") ||
+          (String(plan.kind) === "custom" ? "自定义考核" : `固定考核（${freqLabel(String(plan.freq))}）`),
+        scheduledAt: String(plan.start_at ?? ""),
+        status: String(plan.status ?? "pending"),
         scope,
       };
       // 孩子显示名（考核方法 assess_method 常按孩子名分段，出题 prompt 需要点名当前孩子）
@@ -899,9 +752,9 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           scoringPrompt: buildScoringPrompt(),
         };
       }
-      // 自定义考核（2026-09-09 起）：范围由排期 scope.courses **精确决定**（家长 agent 解析确定课程名），
+      // 自定义考核（2026-09-09 起）：范围由考核计划 scope.courses **精确决定**（家长 agent 解析确定课程名），
       // 不再走「规则文本 → 选课 LLM」（旧的选课 prompt 两段式已废弃，见 ISSUE-054）。
-      if (sch.kind === "custom") {
+      if (String(plan.kind) === "custom") {
         const scopeCourses = (Array.isArray(scope.courses) ? scope.courses : [])
           .map((x: unknown) => String(x ?? "").trim())
           .filter(Boolean);
@@ -913,14 +766,14 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         return {
           schedule,
           childName,
-          // 排期级考核方法（可选）：scope.methodSpec = { require:{类别名:题数}, exclude:[类别名], recitePass }
-          // → 本次考核只考这些类别（覆盖主题默认方法）；如"只考核背诵"。
+          // 计划级考核方法（可选）：scope.methodSpec = { require:{知识点名/uuid:题数}, exclude:[...], recitePass }
+          // → 本次考核只考这些知识点（覆盖主题默认方法）；如"只考核背诵"。
           courses: structuredCourses(scopeCourses, (scope as { methodSpec?: unknown }).methodSpec),
           scoringPrompt: buildScoringPrompt(),
         };
       }
-      // 固定档：仅保留 daily | weekly（monthly/halfyear/yearly 已下线，历史排期不可再考）
-      const freq = String(sch.freq || "weekly");
+      // 固定档：仅保留 daily | weekly（monthly/halfyear/yearly 已下线，历史计划不可再考）
+      const freq = String(plan.freq || "weekly");
       if (freq === "monthly" || freq === "halfyear" || freq === "yearly") {
         return reply.code(400).send({
           error: "每月/每半年/每年考核已下线（2026-09-09）。这类考核请改为「自定义考核」：通过和家长助手对话说明要考的内容即可。",
@@ -931,8 +784,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       // （否则旧数据无类型标注会导致固定考核永远无课）；明确标了「选学」的主题课程排除。
       // 想自定义范围（含选学/指定章节）→ 一律用自定义考核（家长 agent 定课程）。
       {
-        const ts = new Date(String(sch.scheduled_at)).getTime();
-        const win = planWindowFor(freq, ts);
+        const ts = new Date(String(plan.start_at ?? "")).getTime();
+        const win = planWindowFor(freq, Number.isNaN(ts) ? Date.now() : ts);
         const { courses: planCourses, unmatched } = listPlanCourseMeta(
           deps.db,
           deps.config.dataDir,
@@ -1003,7 +856,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }
   });
 
-  // ===== 考核排期 v2（§14.2）：列表（懒生成固定排期）+ 自定义创建 + 开始 + 完成 =====
+  // ===== 考核计划列表（2026-09-14 重构：exam_schedules 排期表已取消；本路由返回孩子库 exam_plans，
+  // 固定档由配置项经 worker 每天 / 本路由幂等补跑生成。响应形状与旧排期列表保持一致，渲染层零改动）=====
   app.get("/api/v1/exam/schedules/:childId", async (req, reply) => {
     let parentId: string;
     try {
@@ -1019,35 +873,42 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const generated = ensureFixedSchedules(deps.db, parentId, childId);
-    const migrated = normalizeExamScheduleDays(deps.db);
-    // 2026-09-11：`LIMIT 100` 是静默截断（超出的排期在家长端「考核计划」里直接消失、无提示）。
-    // 固定档会随时间自动生成排期（每天约 3 条），生产单孩子已到 68 条 → 约 11 天后就会撞上 100。
-    // 放宽到 1000（足够覆盖数年），仍不改响应形状。同类静默 LIMIT 问题见 ISSUES/ISSUE-072。
-    const rows = deps.db
-      .prepare("SELECT * FROM exam_schedules WHERE child_id = ? ORDER BY scheduled_at ASC LIMIT 1000")
-      .all(childId) as Array<Record<string, unknown>>;
-    const now = Date.now();
-    const schedules = rows.map((r) => ({
-      id: String(r.id),
-      kind: String(r.kind),
-      freq: String(r.freq),
-      scheduledAt: String(r.scheduled_at),
-      status: String(r.status),
-      attemptId: String(r.attempt_id ?? ""),
-      title: r.kind === "custom" ? "自定义考核" : `固定考核（${freqLabel(String(r.freq))}）`,
-      scope: (() => {
-        try {
-          return JSON.parse(String(r.scope ?? "{}"));
-        } catch {
-          return {};
-        }
-      })(),
-      pending: String(r.status) === "pending" && new Date(String(r.scheduled_at)).getTime() <= now,
-    }));
+    // 幂等补跑：确保「今天」的固定考核计划已按配置生成（正常由 worker plan tick 每天生成）
+    const generated = ensureTodayExamPlans(deps.db, deps.config.dataDir, parentId);
+    const kb = openKb(deps.config.dataDir, parentId, childId);
+    let schedules: Array<Record<string, unknown>>;
+    try {
+      const rows = kb
+        .prepare("SELECT * FROM exam_plans WHERE child_id = ? AND active = 1 ORDER BY start_at ASC LIMIT 1000")
+        .all(childId) as Array<Record<string, unknown>>;
+      const now = Date.now();
+      schedules = rows.map((r) => ({
+        id: String(r.id),
+        kind: String(r.kind || "custom"),
+        freq: String(r.freq ?? ""),
+        scheduledAt: String(r.start_at ?? ""),
+        status: String(r.status ?? "pending"),
+        attemptId: String(r.attempt_id ?? ""),
+        title:
+          String(r.title || "") ||
+          (String(r.kind) === "custom" ? "自定义考核" : `固定考核（${freqLabel(String(r.freq))}）`),
+        scope: (() => {
+          try {
+            return JSON.parse(String(r.scope_json ?? "{}"));
+          } catch {
+            return {};
+          }
+        })(),
+        pending: String(r.status) === "pending" && new Date(String(r.start_at ?? "")).getTime() <= now,
+      }));
+    } finally {
+      kb.close();
+    }
     return { generated, schedules };
   });
 
+  // 自定义考核创建（家长端管理面板；家长对话走 parent_exam_plan_create 工具，同一落库口径）：
+  // 2026-09-14 重构：直接写入孩子库 exam_plans（考核计划），不再经 exam_schedules 排期表
   app.post("/api/v1/exam/schedules", { bodyLimit: 1024 * 1024 }, async (req, reply) => {
     let parentId: string;
     try {
@@ -1068,17 +929,30 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    // 2026-09-04：自定义考核也只按日期——入库时间取该日期本地 0 点（到当天即可考）
-    const dayTs = dayStart(parsedAt.getTime());
-    deps.db
-      .prepare(
-        "INSERT INTO exam_schedules (id, parent_id, child_id, kind, freq, scheduled_at, scope, status, created_at) VALUES (?, ?, ?, 'custom', '', ?, ?, 'pending', ?)"
-      )
-      .run(id, parentId, childId, new Date(dayTs).toISOString(), JSON.stringify(body.scope ?? {}), new Date().toISOString());
-    return { ok: true, id };
+    const id = `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // 考核只按「日期」粒度：入库取该日期本地 0 点（到当天即可考）
+    const day = localDateStr(dayStart(parsedAt.getTime()));
+    const kb = openKb(deps.config.dataDir, parentId, childId);
+    try {
+      const dup = kb
+        .prepare(
+          "SELECT id FROM exam_plans WHERE child_id = ? AND kind = 'custom' AND creator = 'parent' AND active = 1 AND status = 'pending' AND substr(start_at,1,10) = ?"
+        )
+        .get(childId, day) as { id: string } | undefined;
+      if (dup) return { ok: true, id: dup.id, duplicated: true };
+      const now = new Date().toISOString();
+      kb.prepare(
+        `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
+           start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
+         VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','','?',?,'pending','',NULL,'','required',1,0,1,?,?)`
+      ).run(id, parentId, childId, JSON.stringify(body.scope ?? {}), `${day} 00:00:00`, `${day} 23:59:59`, now, now);
+      return { ok: true, id };
+    } finally {
+      kb.close();
+    }
   });
 
+  // 标记考核计划开始（孩子点「开始这次考核」）。id = exam_plans 行 id（按家长名下孩子库定位）
   app.post("/api/v1/exam/schedules/:id/start", async (req, reply) => {
     let parentId: string;
     try {
@@ -1088,15 +962,17 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       throw err;
     }
     const { id } = req.params as { id: string };
-    const row = deps.db.prepare("SELECT child_id FROM exam_schedules WHERE id = ?").get(id) as { child_id?: string } | undefined;
-    if (!row) return reply.code(404).send({ error: "排期不存在" });
+    const hit = findExamPlanRow(deps.db, deps.config.dataDir, parentId, id);
+    if (!hit) return reply.code(404).send({ error: "考核计划不存在或已取消" });
+    const kb = openKb(deps.config.dataDir, parentId, hit.childId);
     try {
-      assertChildOwned(deps.db, parentId, row.child_id!);
-    } catch (err) {
-      if (handleAuthError(err, reply)) return;
-      throw err;
+      kb.prepare("UPDATE exam_plans SET status = 'started', updated_at = ? WHERE id = ? AND status = 'pending'").run(
+        new Date().toISOString(),
+        id
+      );
+    } finally {
+      kb.close();
     }
-    deps.db.prepare("UPDATE exam_schedules SET status = 'started' WHERE id = ? AND status = 'pending'").run(id);
     return { ok: true };
   });
 
@@ -1110,21 +986,23 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }
     const { id } = req.params as { id: string };
     const attemptId = String((req.body as { attemptId?: string })?.attemptId ?? "");
-    const row = deps.db.prepare("SELECT child_id FROM exam_schedules WHERE id = ?").get(id) as { child_id?: string } | undefined;
-    if (!row) return reply.code(404).send({ error: "排期不存在" });
+    const hit = findExamPlanRow(deps.db, deps.config.dataDir, parentId, id);
+    if (!hit) return reply.code(404).send({ error: "考核计划不存在或已取消" });
+    const kb = openKb(deps.config.dataDir, parentId, hit.childId);
     try {
-      assertChildOwned(deps.db, parentId, row.child_id!);
-    } catch (err) {
-      if (handleAuthError(err, reply)) return;
-      throw err;
+      kb.prepare("UPDATE exam_plans SET status = 'done', attempt_id = ?, done_at = ?, updated_at = ? WHERE id = ?").run(
+        attemptId,
+        new Date().toISOString(),
+        new Date().toISOString(),
+        id
+      );
+    } finally {
+      kb.close();
     }
-    deps.db
-      .prepare("UPDATE exam_schedules SET status = 'done', attempt_id = ? WHERE id = ?")
-      .run(attemptId, id);
     return { ok: true };
   });
 
-  // 取消排期（家长端）：只允许取消「待考核」未开始的排期；固定排期取消后懒生成会按配置自动补
+  // 取消考核计划（家长端）：软删 exam_plans（active=0 / status='cancelled'）；已考完（done）不允许取消
   app.delete("/api/v1/exam/schedules/:id", async (req, reply) => {
     let parentId: string;
     try {
@@ -1134,19 +1012,60 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       throw err;
     }
     const { id } = req.params as { id: string };
-    const row = deps.db.prepare("SELECT child_id, status FROM exam_schedules WHERE id = ?").get(id) as
-      | { child_id?: string; status?: string }
-      | undefined;
-    if (!row) return reply.code(404).send({ error: "排期不存在" });
+    const hit = findExamPlanRow(deps.db, deps.config.dataDir, parentId, id);
+    if (!hit) return reply.code(404).send({ error: "考核计划不存在或已取消" });
+    if (String(hit.row.status) === "done") {
+      return reply.code(400).send({ error: "已考完的考核计划不能取消（避免破坏考核成绩关联）" });
+    }
+    const kb = openKb(deps.config.dataDir, parentId, hit.childId);
     try {
-      assertChildOwned(deps.db, parentId, row.child_id!);
+      kb.prepare("UPDATE exam_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
+        new Date().toISOString(),
+        id
+      );
+    } finally {
+      kb.close();
+    }
+    return { ok: true };
+  });
+
+  // 取消考核计划（家长端）：软删除孩子库 exam_plans（active=0 / status='cancelled'），历史保留供审计，不计入完成率/掌握度。
+  // 注意术语：exam_plans 是「考核计划」；实际考核场次 = 主库 exam_attempts（孩子提交后生成，含逐题记录），不受影响。
+  // 已开考完成（status='done'）的场次不允许取消。
+  app.post("/api/v1/exam/plans/:id/cancel", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
     } catch (err) {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    if (row.status !== "pending") return reply.code(400).send({ error: "只能取消「待考核」状态的排期" });
-    deps.db.prepare("DELETE FROM exam_schedules WHERE id = ?").run(id);
-    return { ok: true };
+    const { id } = req.params as { id: string };
+    const childId = String((req.body as { childId?: string })?.childId ?? "");
+    if (!childId) return reply.code(400).send({ error: "缺少 childId" });
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const kb = openKb(deps.config.dataDir, parentId, childId);
+    try {
+      const row = kb
+        .prepare("SELECT id, title, status FROM exam_plans WHERE id = ? AND child_id = ? AND active = 1")
+        .get(id, childId) as { id: string; title: string; status: string } | undefined;
+      if (!row) return reply.code(404).send({ error: "考核计划不存在或已取消" });
+      if (row.status === "done") {
+        return reply.code(400).send({ error: `场次「${row.title}」已开考完成，不能取消（成绩需保留）` });
+      }
+      kb.prepare("UPDATE exam_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
+        new Date().toISOString(),
+        row.id
+      );
+      return { ok: true };
+    } finally {
+      kb.close();
+    }
   });
 
   // ===== 固定考核配置（家长设置：频率档多选 + 每轮课程数 N + 考核时刻） =====
@@ -1199,24 +1118,14 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         else selectionPrompts[f] = s;
       }
     }
-    // 频率或时刻变化 → 重置锚点；并清掉未来「待考核」的固定排期，
-    // 避免旧锚点（不同时刻）的排期按天去重挡住新时刻排期的生成（2026-09-01 实测旧 11:26 排期挡住 20:00）
-    const changed =
-      JSON.stringify(frequencies) !== JSON.stringify(cur.frequencies) ||
-      time !== cur.time ||
-      weekly.weekday !== (cur.weekly?.weekday ?? 1) ||
-      weekly.time !== (cur.weekly?.time ?? cur.time);
-    if (changed) {
-      deps.db
-        .prepare("DELETE FROM exam_schedules WHERE kind = 'fixed' AND status = 'pending' AND scheduled_at > ?")
-        .run(new Date().toISOString());
-    }
+    // 2026-09-14 重构：固定考核是纯配置项（无排期表），改配置无需清理任何排期；
+    // 当天已生成的考核计划保留，次日起按新配置生成。
     const next: FixedExamConfig = {
       frequencies,
       courseCount,
       time,
       weekly,
-      anchorAt: changed ? "" : cur.anchorAt, // 变化时锚点置空 → 懒生成按配置重新铺排期
+      anchorAt: "", // 已无排期表，字段仅为数据兼容保留
       selectionPrompts,
     };
     deps.db
@@ -1282,14 +1191,66 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         String(body.scheduleId ?? ""),
         now
       );
+    // ===== Plan A（2026-09-13）：口语/听说题的发音测评结果落 speech_assessments（server.sqlite），
+    // 作为 exam_attempts 的明细子表，供家长端回放/审计。仅对 perQuestion 中带 speech 结果的口语题写入。 =====
+    try {
+      const perQuestion = Array.isArray(body.perQuestion) ? (body.perQuestion as Array<Record<string, unknown>>) : [];
+      const insertSpeech = deps.db.prepare(
+        `INSERT INTO speech_assessments (
+           id, parent_id, child_id, topic_key, course_name, question_type, ref_text, audio_file_id,
+           overall, pron, dimensions_json, detail_json, is_exam, exam_attempt_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const q of perQuestion) {
+        const speech = q.speech as Record<string, unknown> | undefined;
+        if (!speech || typeof speech !== "object") continue;
+        const overall = Number(speech.overall ?? speech.pron ?? 0) || 0;
+        const pron = Number(speech.pron ?? 0) || 0;
+        const dimensions = {
+          accuracy: speech.accuracy,
+          integrity: speech.integrity,
+          fluency: speech.fluency,
+          prosody: speech.prosody,
+          audioQuality: speech.audioQuality,
+        };
+        insertSpeech.run(
+          `sa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          parentId,
+          childId,
+          String(body.topic ?? ""),
+          String(q.course ?? ""),
+          String(q.questionType || q.assessMethod || ""),
+          String(q.refText ?? ""),
+          String(q.audioFileId ?? ""),
+          overall,
+          pron,
+          JSON.stringify(dimensions),
+          JSON.stringify(speech),
+          1,
+          id,
+          now
+        );
+      }
+    } catch (err) {
+      // 明细落库失败不应拖垮主流程：记日志后继续（主 attempt 已写入）。
+      req.log.warn({ err }, "写入 speech_assessments 失败（attempt 已保留）");
+    }
     // 2026-09-10 计划域：掌握度不再回写 courses（该表已无 mastery/exam_mastery 列）。
     // 掌握度 = course_progress 视图（按 exam_plan_courses / 最近一次考核聚合），此处只保留 attempt 记录。
-    // 考核 v2：关联排期 → 标记完成（done + attempt_id）
-    const scheduleId = String(body.scheduleId ?? "");
-    if (scheduleId) {
-      deps.db
-        .prepare("UPDATE exam_schedules SET status = 'done', attempt_id = ? WHERE id = ? AND child_id = ?")
-        .run(id, scheduleId, childId);
+    // 考核 v2（2026-09-14 重构）：body.scheduleId 现在携带的是孩子库 exam_plans 考核计划行 id →
+    // 提交后直接把该计划置 done 并回填 attempt_id/score；逐题明细由 worker applyExamAttempts 幂等回填 exam_plan_courses。
+    const planId = String(body.scheduleId ?? "");
+    if (planId) {
+      const kb = openKb(deps.config.dataDir, parentId, childId);
+      try {
+        kb
+          .prepare(
+            "UPDATE exam_plans SET status = 'done', attempt_id = ?, score = ?, done_at = ?, updated_at = ? WHERE id = ? AND child_id = ?"
+          )
+          .run(id, Number(body.score) || 0, String(body.submittedAt ?? now), now, planId, childId);
+      } finally {
+        kb.close();
+      }
     }
     return { ok: true, id };
   });

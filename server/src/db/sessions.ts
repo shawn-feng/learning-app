@@ -1,54 +1,12 @@
 /**
- * 会话 jsonl 增量同步的存储与索引（方案B 阶段①）。
- * - 磁盘镜像：data/sessions/<parentId>/<childId>/<file>.jsonl（与客户端 jsonl 内容一致，仅追加）
- * - 索引：server.sqlite 的 session_messages（供家长回顾查询）+ session_files（同步游标，幂等）
- * 冲突策略 = 客户端权威：同一 (file, line_index) 用 INSERT OR REPLACE 覆盖。
+ * 会话消息索引与查询（服务端唯一真源）。
+ * - 服务端 agent 把对话落盘到 data/agent-sessions/<parentId>/<childId>-<slot>/*.jsonl（9/12 迁移后客户端不再同步）。
+ * - indexAgentSessionsIntoDb 把新增 jsonl 增量写入 server.sqlite 的 session_messages（供家长回顾查询，游标去重）。
+ * - session_files 表仅记录 agent-sessions 的索引游标（child_id + file + line_count），幂等重跑安全。
  */
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ApiError } from "../auth/proxy.js";
-
-/** 服务端会话镜像目录（按 parentId/childId 隔离）。 */
-export function getSessionsDir(dataDir: string, parentId: string, childId: string): string {
-  const dir = path.join(dataDir, "sessions", parentId, childId);
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/**
- * 校验并归一会话文件的相对路径（ISSUE-051）。
- * - 客户端自 ISSUE-029 起用 posix 相对路径（如 english-<title>/xxx.jsonl）区分同名课程子会话，
- *   故允许 `a/b/c.jsonl` 这类相对路径；逐段校验防目录穿越。
- * - 拒绝：绝对路径、空段(`//`)、`.`/`..` 段、段首 `.`(隐藏)、非 `.jsonl` 结尾、总长超限。
- * - 返回 posix 相对路径（丢弃反斜杠/盘符，防御 Windows 风格穿越如 `C:\..\x`）。
- */
-export function sanitizeSessionFile(name: string): string {
-  const bad = (): never => {
-    // ISSUE-051：非法文件名属客户端输入错误 → ApiError(400)，经路由 handleAuthError 转 4xx，
-    // 不再被 fastify 兜底成 500 掩盖。
-    throw new ApiError(400, `非法会话文件名: ${String(name)}`);
-  };
-  if (typeof name !== "string" || name.length === 0 || name.length > 512) {
-    bad();
-  }
-  // 归一为 posix 分隔符，拒绝反斜杠与盘符（绝对路径 / \ 开头、Windows 反斜杠都被防住）
-  const norm = name.replace(/\\/g, "/");
-  if (norm.startsWith("/") || /^[A-Za-z]:/.test(norm)) {
-    bad();
-  }
-  const segments = norm.split("/");
-  for (const seg of segments) {
-    if (seg === "" || seg === "." || seg === ".." || seg.startsWith(".")) {
-      bad();
-    }
-    // 段内长度上限，避免超长标题撑爆路径
-    if (seg.length > 96) bad();
-  }
-  const base = segments[segments.length - 1];
-  if (!base.endsWith(".jsonl")) bad();
-  return segments.join("/");
-}
 
 /** 本地时区 YYYY-MM-DD（服务端本地时区；部署在家庭局域网，与客户端同区）。 */
 export function localDateOf(ts: number): string {
@@ -59,81 +17,7 @@ export function localDateOf(ts: number): string {
   return `${y}-${m}-${day}`;
 }
 
-export interface SyncFileAck {
-  name: string;
-  syncedBytes: number;
-  lineCount: number;
-}
-
-interface SessionFileRow {
-  synced_bytes: number;
-  line_count: number;
-}
-
 type Statement = ReturnType<DatabaseSync["prepare"]>;
-
-/**
- * 幂等追加并索引一个会话文件的增量行。
- * 客户端传 fromOffset/fromIndex 作为已同步游标；服务端以自身 session_files 记录为权威，
- * 重叠部分跳过（不重复 append），只在自身 line_count 之后的行才落盘 + 索引。
- * 返回服务端权威游标，客户端据此推进本地 sync-state（离线重连天然安全）。
- */
-export function appendAndIndexSession(
-  db: DatabaseSync,
-  dataDir: string,
-  parentId: string,
-  childId: string,
-  name: string,
-  fromOffset: number,
-  fromIndex: number,
-  lines: string[]
-): SyncFileAck {
-  const file = sanitizeSessionFile(name);
-  const row = db
-    .prepare("SELECT synced_bytes, line_count FROM session_files WHERE child_id = ? AND file = ?")
-    .get(childId, file) as SessionFileRow | undefined;
-  const synced = row ?? { synced_bytes: 0, line_count: 0 };
-
-  const dir = getSessionsDir(dataDir, parentId, childId);
-  // ISSUE-051：file 可能是 english-<title>/xxx.jsonl 子目录相对路径，须确保父目录存在
-  const full = path.join(dir, file);
-  fs.mkdirSync(path.dirname(full), { recursive: true });
-
-  // 以服务端行数为权威：只处理 index >= line_count 的行（fromIndex 落后则跳过重叠段）
-  const skip = Math.max(0, synced.line_count - fromIndex);
-  const newLines = lines.slice(skip);
-  if (newLines.length === 0) {
-    return {
-      name: file,
-      syncedBytes: fs.existsSync(full) ? fs.statSync(full).size : 0,
-      lineCount: synced.line_count,
-    };
-  }
-
-  const chunk = newLines.map((l) => (l.endsWith("\n") ? l : l + "\n")).join("");
-  fs.appendFileSync(full, chunk, "utf-8");
-
-  const insert = db.prepare(
-    `INSERT OR REPLACE INTO session_messages
-       (child_id, file, line_index, ts, date, role, text, tool_calls)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  for (let i = 0; i < newLines.length; i++) {
-    indexMessageLine(insert, childId, file, synced.line_count + i, newLines[i]);
-  }
-
-  const newBytes = fs.statSync(full).size;
-  const newLineCount = synced.line_count + newLines.length;
-  db.prepare(
-    `INSERT INTO session_files (child_id, file, synced_bytes, line_count, updated)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(child_id, file) DO UPDATE SET
-       synced_bytes = excluded.synced_bytes,
-       line_count = excluded.line_count,
-       updated = excluded.updated`
-  ).run(childId, file, newBytes, newLineCount, new Date().toISOString());
-  return { name: file, syncedBytes: newBytes, lineCount: newLineCount };
-}
 
 /** 解析单行 jsonl 消息条目并写入 session_messages（只收 user/assistant，滤 thinking，带工具调用）。 */
 function indexMessageLine(
@@ -215,12 +99,9 @@ function safeParse<T>(s: string, fallback: T): T {
 
 /**
  * 服务端读取某天对话文本（无头 worker recording + agent summarize_conversation 工具共用）。
- * 合并两个来源：
- *   1. 客户端同步镜像 data/sessions/<pid>/<cid>/（旧架构遗留，会话同步上云仍会写入）；
- *   2. 服务端 agent 持久会话 data/agent-sessions/<pid>/<cid>-<slot>/（P4 起孩子对话真实落盘处，
- *      slot = main / scene / course-*）。
- * 为什么必须合并：P4 客户端零 agent 后，孩子对话全走服务端 agent，只落 agent-sessions/；
- * 若仍只读 sessions/ 镜像会读不到 → 误报「无会话，跳过」。当天无会话返回空串。
+ * 唯一来源：服务端 agent 持久会话 data/agent-sessions/<parentId>/<childId>-<slot>/
+ * （9/12 迁移后客户端不再同步会话，所有孩子对话真实落盘于此，slot = main / scene / course-*）。
+ * 当天无会话返回空串。
  */
 export function readServerDailyConversation(
   dataDir: string,
@@ -232,9 +113,7 @@ export function readServerDailyConversation(
   const start = new Date(y, m - 1, d).getTime();
   const end = start + 24 * 3600 * 1000;
 
-  // 来源 1：客户端同步镜像（递归，english-<title>/ 等子目录内也有 jsonl）
-  const mirrorDir = path.join(dataDir, "sessions", parentId, childId);
-  // 来源 2：服务端 agent 会话（扫描 <cid>-<slot> 目录，slot=main/scene/course-*）
+  // 服务端 agent 会话（扫描 <cid>-<slot> 目录，slot=main/scene/course-*）
   const agentRoot = path.join(dataDir, "agent-sessions", parentId);
   const agentDirs: string[] = [];
   if (fs.existsSync(agentRoot)) {
@@ -245,9 +124,86 @@ export function readServerDailyConversation(
     }
   }
 
-  const msgs = collectDailyMessages([mirrorDir, ...agentDirs], start, end);
+  const msgs = collectDailyMessages(agentDirs, start, end);
   msgs.sort((a, b) => a.ts - b.ts);
   return msgs.map((m) => `${m.role === "user" ? "孩子" : "饺子"}: ${m.text}`).join("\n\n");
+}
+
+/**
+ * 服务端回看索引（9/12 迁移后唯一真源，替代原客户端同步写入）：
+ * 扫描 data/agent-sessions/<parentId>/<childId>-<slot>/*.jsonl，把新增的 user/assistant 消息
+ * 增量写入 server.sqlite 的 session_messages，供家长端「对话回顾」页读取。
+ * 幂等：复用 session_files 游标（按 child_id+file 记 line_count），仅处理游标之后的行；
+ * indexMessageLine 本身 INSERT OR REPLACE（主键 child_id+file+line_index），重复索引安全。
+ */
+export function indexAgentSessionsIntoDb(
+  db: DatabaseSync,
+  dataDir: string,
+  parentId: string,
+  childId: string
+): void {
+  const agentRoot = path.join(dataDir, "agent-sessions", parentId);
+  if (!fs.existsSync(agentRoot)) return;
+  const dirs: string[] = [];
+  for (const e of fs.readdirSync(agentRoot, { withFileTypes: true })) {
+    if (e.isDirectory() && e.name.startsWith(`${childId}-`)) {
+      dirs.push(path.join(agentRoot, e.name));
+    }
+  }
+  if (dirs.length === 0) return;
+
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO session_messages
+       (child_id, file, line_index, ts, date, role, text, tool_calls)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const getCursor = db.prepare(
+    "SELECT line_count FROM session_files WHERE child_id = ? AND file = ?"
+  );
+  const setCursor = db.prepare(
+    `INSERT INTO session_files (child_id, file, synced_bytes, line_count, updated)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(child_id, file) DO UPDATE SET
+       synced_bytes = excluded.synced_bytes,
+       line_count = excluded.line_count,
+       updated = excluded.updated`
+  );
+
+  for (const dir of dirs) {
+    const files: string[] = [];
+    const collect = (cur: string): void => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(cur, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const full = path.join(cur, e.name);
+        if (e.isDirectory()) collect(full);
+        else if (e.isFile() && e.name.endsWith(".jsonl")) files.push(full);
+      }
+    };
+    collect(dir);
+
+    for (const f of files) {
+      const fileKey = path.relative(agentRoot, f).split(path.sep).join("/");
+      const lineCount =
+        (getCursor.get(childId, fileKey) as { line_count: number } | undefined)?.line_count ?? 0;
+      let rawLines: string[];
+      try {
+        rawLines = fs.readFileSync(f, "utf-8").split("\n").filter(Boolean);
+      } catch {
+        continue;
+      }
+      if (rawLines.length <= lineCount) continue;
+      const newLines = rawLines.slice(lineCount);
+      for (let i = 0; i < newLines.length; i++) {
+        indexMessageLine(insert, childId, fileKey, lineCount + i, newLines[i]);
+      }
+      setCursor.run(childId, fileKey, fs.statSync(f).size, rawLines.length, new Date().toISOString());
+    }
+  }
 }
 
 interface DailyMsg {

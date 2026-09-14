@@ -5,26 +5,17 @@ import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildP
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
-import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, getChildHistory, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines } from "./server-agent-client";
+import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, getChildHistory, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult } from "./server-agent-client";
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, prewarmTexts, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
-import {
-  assessAudio,
-  getMaskedAssessmentConfig,
-  applyAssessmentConfigPatch,
-  loadAssessmentConfig,
-  type AssessmentProviderId,
-} from "./assessment";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
 import { dbQuery, currentSessionToken } from "./client-data";
 import { serverFetch } from "./server-client";
 import { formatLocalDate } from "./dates";
-import { syncChildSessions } from "./session-sync";
 import { listChildren } from "./child-auth";
-import { getSyncStatus, getSyncLog, readSyncLogFile } from "./sync-logger";
 import { readClientLogFile, getClientLog } from "./app-logger";
 import {
   allocateTopicToChild,
@@ -49,7 +40,7 @@ import {
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 import { readTokenLog, getTokenSummary } from "./token-stats";
-import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus, toSpeechAssessment } from "./exam";
+import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -92,8 +83,13 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle(
     "pi:page:exec:result",
-    async (_e, payload: { requestId: string; result: any }) => {
+    async (_e, payload: { childId?: string; requestId: string; result: any }) => {
       resolvePageAction(payload?.requestId ?? "", payload?.result ?? {});
+      // 服务端 agent 下发的受控操作（page_cmd）回执：把渲染层执行结果回传服务端配对 requestId。
+      // 否则服务端 scene_command 等工具会一直等到「页面无响应（10s 超时）」。
+      if (payload?.requestId) {
+        void postPageResult(payload.childId ?? "", payload.requestId, payload?.result ?? { ok: true });
+      }
       return { ok: true };
     }
   );
@@ -175,55 +171,6 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("server:set_config", async (_e, url: string) => {
     setServerUrl(typeof url === "string" ? url : "");
     return { ok: true, url: getServerUrl() };
-  });
-
-  // ---- 会话同步状态 / 日志（ISSUE-043 完善：失败可感知、可手动重试、可导出）----
-  // 当前各孩子的同步状态快照（最近同步时间 / 成败 / 连续失败数 / 连的 server / 待同步字节）
-  ipcMain.handle("sessions:syncStatus", async () => {
-    try {
-      return { success: true, status: getSyncStatus() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-  // 最近 N 条同步日志
-  ipcMain.handle("sessions:syncLog", async (_e, limit?: number) => {
-    try {
-      return { success: true, entries: getSyncLog(limit ?? 100) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-  // 手动立即同步（家长在「会话同步」面板点按钮触发）；fire-and-forget，结果看状态快照
-  ipcMain.handle("sessions:forceSync", async () => {
-    try {
-      void listChildren()
-        .then((children: any[]) => {
-          for (const c of children) void syncChildSessions(c.childId, "manual").catch(() => {});
-        })
-        .catch(() => {});
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-  // 导出同步日志到本机文件（主进程弹保存对话框）
-  ipcMain.handle("sessions:exportLog", async (e: IpcMainInvokeEvent) => {
-    try {
-      const content = readSyncLogFile();
-      if (!content) return { success: false, error: "暂无同步日志（会话同步尚未发生过）" };
-      const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
-      const res = await dialog.showSaveDialog(win!, {
-        title: "导出会话同步日志",
-        defaultPath: `session-sync-log-${new Date().toISOString().slice(0, 10)}.jsonl`,
-        filters: [{ name: "JSON Lines", extensions: ["jsonl", "log", "txt"] }],
-      });
-      if (res.canceled || !res.filePath) return { success: true, canceled: true };
-      fs.writeFileSync(res.filePath, content, "utf-8");
-      return { success: true, filePath: res.filePath };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
   });
 
   // 导出统一应用日志（client-log.jsonl）到本机（主进程弹保存对话框）——ISSUE-044
@@ -1537,8 +1484,21 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("pi:abort", async (_e: IpcMainInvokeEvent, childId: string) => {
-    // 薄客户端：服务端尚无「中止一轮」能力，此处为 no-op（联调点：服务端 agent abort）。
-    return { success: true };
+    // ISSUE-095：接通服务端中止——childId 为 "parent"/"parent-content" 时中止家长会话，
+    // 否则视为孩子 id 中止其全部会话（main/scene/course）正在跑的一轮。
+    // 服务端 session.abort() 等待 agent idle 后返回；结束经 SSE turn_end 推送，前端忙碌态正常解禁。
+    try {
+      if (childId === "parent" || childId === "parent-content") {
+        await abortParentAgent(childId);
+      } else {
+        await abortChildAgent(childId);
+      }
+      return { success: true };
+    } catch (err) {
+      // 中止失败仅记录：前端已有「已停止」UI + 5s 兜底解禁，不阻塞渲染层
+      console.error(`[pi:abort] 中止失败（${childId}）:`, (err as Error).message);
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   ipcMain.handle("pi:get_models", async () => {
@@ -1945,29 +1905,51 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   // 发音评测（智聆 / 阿里儿童）— 家长设置页配置 + 测试
+  // 2026-09-13：凭证与评测计算统一收归服务端（授权都在 server 端），主进程仅做代理转发。
   ipcMain.handle("assessment:config:get", async () => {
-    return { success: true, config: getMaskedAssessmentConfig() };
-  });
-
-  ipcMain.handle("assessment:config:set", async (_e, patch: any) => {
     try {
-      applyAssessmentConfigPatch(patch);
-      return { success: true, config: getMaskedAssessmentConfig() };
+      const data = await serverFetch<{ config: unknown }>("/assessment/config", {
+        method: "GET",
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      });
+      return { success: true, config: data.config };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
+  ipcMain.handle("assessment:config:set", async (_e, patch: any) => {
+    try {
+      const data = await serverFetch<{ config: unknown }>("/assessment/config", {
+        method: "POST",
+        body: patch,
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      });
+      return { success: true, config: data.config };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 测试：上传录音到服务端（拿 fileId）→ 调服务端 /assessment/assess 计算（无具体孩子上下文，childId 留空）
   ipcMain.handle(
     "assessment:test",
     async (_e, audio: ArrayBuffer, provider?: string, refText?: string) => {
       try {
-        const buf = Buffer.from(audio);
-        const result = await assessAudio(buf, {
-          provider: (provider as AssessmentProviderId) || undefined,
-          refText: refText || "hello",
-        });
-        return { success: true, result };
+        const childId = "";
+        const fileId = await uploadExamVoice(childId, "assessment-test.webm", audio);
+        const data = await serverFetch<{ audioFileId: string; assessmentId: string; result: unknown }>(
+          "/assessment/assess",
+          {
+            method: "POST",
+            body: { childId, audioFileId: fileId, refText: refText || "hello", provider },
+            token: currentSessionToken(),
+            timeoutMs: 60000,
+          }
+        );
+        return { success: true, result: data.result };
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
@@ -2133,8 +2115,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       }
     }
   );
-  // 口语/听说题判分（考核内）：上传语音（保留回放）→ 本地发音评测（按设置页 provider 自动分流：腾讯智聆 / 阿里声希）→ 返回维度分
-  // 评测在 app 客户端完成，不经云服务端。中文题型自动走对应引擎/corType。
+  // 口语/听说题判分（考核内）：上传语音（保留回放）→ 调服务端 /assessment/assess 计算（评测已在 server 端完成，凭证统一收归服务端）。
+  // 返回结构与旧版一致 { audioFileId, assessmentId, result }，渲染层无需改动。
   ipcMain.handle(
     "exam:assessSpeech",
     async (
@@ -2147,18 +2129,21 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       opts?: { topic?: string; course?: string; isExam?: boolean; examAttemptId?: string }
     ) => {
       try {
-        const cfg = loadAssessmentConfig();
-        if (!cfg.enabled) {
-          throw new Error("发音评测未启用，请先在「设置 → 发音评测」中开启并配置评测服务");
-        }
-        // 上传语音用于家长端回放（原功能保留，使用原始录音 buffer）
+        // 上传语音用于家长端回放（使用原始录音 buffer）
         const fileId = await uploadExamVoice(childId, name, buffer);
-        // 评测：按配置 provider 自动分流（腾讯智聆 / 阿里声希），音频内部统一转 16k wav
-        const r = await assessAudio(Buffer.from(buffer), { refText: refText || "" });
-        const assessmentId = crypto.randomUUID();
+        // 服务端评测：按配置 provider 自动分流（腾讯智聆 / 阿里声希），音频在服务端统一转 16k wav
+        const data = await serverFetch<{ audioFileId: string; assessmentId: string; result: unknown }>(
+          "/assessment/assess",
+          {
+            method: "POST",
+            body: { childId, audioFileId: fileId, refText: refText || "", provider: opts?.provider },
+            token: currentSessionToken(),
+            timeoutMs: 60000,
+          }
+        );
         return {
           success: true,
-          data: { audioFileId: fileId, assessmentId, result: toSpeechAssessment(r) },
+          data: { audioFileId: data.audioFileId, assessmentId: data.assessmentId, result: data.result },
         };
       } catch (err) {
         return { success: false, error: (err as Error).message };

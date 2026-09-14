@@ -85,6 +85,24 @@ export function registerChildrenRoutes(app: FastifyInstance, deps: ChildrenDeps)
     // 不传/非法时服务端生成。
     const { name, id: reqId, profile } = (req.body ?? {}) as { name?: string; id?: string; profile?: ChildProfilePayload };
     if (!name?.trim()) return reply.code(400).send({ error: "name 必填" });
+    // 孩子数量上限（许可 max_children）服务端兜底校验：agent 创建孩子（parent_child_create）与客户端都须遵守，
+    // 避免绕过客户端仅有的校验闸门。
+    const licRow = deps.db.prepare("SELECT license_json FROM parents WHERE id = ?").get(parentId) as
+      | { license_json?: string | null }
+      | undefined;
+    let maxChildren: number | null = null;
+    if (licRow?.license_json) {
+      try {
+        const n = Number((JSON.parse(licRow.license_json) as { max_children?: unknown }).max_children);
+        if (Number.isFinite(n) && n > 0) maxChildren = Math.floor(n);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (maxChildren != null) {
+      const cnt = (deps.db.prepare("SELECT COUNT(*) AS n FROM children WHERE parent_id = ?").get(parentId) as { n: number }).n;
+      if (cnt >= maxChildren) return reply.code(403).send({ error: `孩子数量已达上限（${maxChildren} 个）` });
+    }
     const id = reqId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reqId) ? reqId : crypto.randomUUID();
     const now = new Date().toISOString();
     const profileJson = profile ? JSON.stringify({ ...profile, createdAt: profile.createdAt ?? now }) : null;

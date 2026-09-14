@@ -3,6 +3,7 @@
  *
  * - GET  /api/v1/parent-agent/stream?kind=parent|parent-content   SSE（token 可走 ?token=）
  * - POST /api/v1/parent-agent/prompt                            提交一轮（kind 缺省 parent）
+ * - POST /api/v1/parent-agent/abort                             中止当前一轮（ISSUE-095）
  *
  * 与孩子路由（routes/agent.ts）的差异：作用域是家长而非孩子，故 childId 不出现在路径里；
  * 会话 key = `<parentId>:<kind>`，与孩子会话同在 stream-hub（按 key 天然隔离，不会串流）。
@@ -13,7 +14,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { AgentStreamHub, agentStreamHub } from "../agent/stream-hub.js";
-import { submitParentPrompt, resetParentSession, type ParentSessionKind } from "../agent/parent-registry.js";
+import { submitParentPrompt, resetParentSession, abortParentSession, type ParentSessionKind } from "../agent/parent-registry.js";
 
 interface ParentAgentDeps {
   config: ServerConfig;
@@ -124,5 +125,20 @@ export function registerParentAgentRoutes(app: FastifyInstance, deps: ParentAgen
     }
     resetParentSession(parentId, kind);
     return { ok: true };
+  });
+
+  // —— 中止当前一轮（ISSUE-095）：家长端「停止」按钮经主进程 pi:abort 打到这里 ——
+  app.post("/api/v1/parent-agent/abort", async (req, reply) => {
+    let parentId: string;
+    let kind: ParentSessionKind;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+      kind = parseKind((req.body as any)?.kind);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const aborted = await abortParentSession(parentId, kind);
+    return { ok: true, aborted };
   });
 }

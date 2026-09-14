@@ -145,11 +145,6 @@ const api = {
   sessionReviewDates: (childId: string) => ipcRenderer.invoke("sessions:reviewDates", childId),
   sessionReviewMessages: (childId: string, date: string) =>
     ipcRenderer.invoke("sessions:reviewMessages", childId, date),
-  // 会话同步状态 / 日志（ISSUE-043 完善：失败可感知、可手动重试、可导出）
-  sessionSyncStatus: () => ipcRenderer.invoke("sessions:syncStatus"),
-  sessionSyncLog: (limit?: number) => ipcRenderer.invoke("sessions:syncLog", limit),
-  sessionForceSync: () => ipcRenderer.invoke("sessions:forceSync"),
-  sessionExportLog: () => ipcRenderer.invoke("sessions:exportLog"),
   // ISSUE-044: 统一应用日志导出 / 尾部读取（诊断用）
   appExportLog: () => ipcRenderer.invoke("app:exportLog"),
   appGetLogTail: (limit?: number) => ipcRenderer.invoke("app:getLogTail", limit),
@@ -327,7 +322,7 @@ const api = {
   planSetStatus: (plan: { childId: string; planId: string; kind: string; action: string; note?: string }) =>
     ipcRenderer.invoke("plan:setStatus", plan),
 
-  // ISSUE-033：学习计划（家长端只读面板数据源；编辑走家长对话 study_plan_* 工具）
+  // ISSUE-033：学习计划（家长端只读面板数据源；编辑走家长对话 parent_study_plan_* 工具）
   studyPlanList: (childId: string, opts?: { from?: string; to?: string }) =>
     ipcRenderer.invoke("studyPlan:list", childId, opts),
   studyPlanToday: (childId: string, date?: string) =>

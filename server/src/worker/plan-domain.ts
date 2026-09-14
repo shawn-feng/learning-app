@@ -5,7 +5,7 @@
  *   1) expandRecurrences：把 plan_recurrences 命中今天的规则展开成计划行（三表之一，origin=recurrence，幂等）
  *   2) runPlanStat：三域判定 + 到期 carry + 归属日统计 + 积分结算
  *      - 学习域：daily 学习记录（标题=课程名、记录日落在计划窗口内）→ study_plans.done（并回写当天 daily 学习条目的 plan_id）
- *      - 考核域：当天考核场次 → exam_plans.done/score/attempt_id + exam_plan_courses 明细（计划期不固化题目）
+ *      - 考核域：当天提交的考核场次（exam_attempts）→ exam_plans.done/score/attempt_id + exam_plan_courses 明细（计划期不固化题目）
  *      - 生活域：daily_entries(plan_id + plan_outcome='done') → life_plans.done
  *      - 到期未完成 → missed；**复制新行到当天**（origin=carry，窗口=当天）；cancelled 不复制
  *      - 归属日统计 → reward_daily_stats（source × owner）
@@ -297,7 +297,7 @@ function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { 
   return { missed, carried };
 }
 
-/** 考核域：把当天（及未挂接的）考核场次写入 exam_plans + exam_plan_courses。 */
+/** 考核域：把当天提交的考核场次（exam_attempts）挂接到考核计划 exam_plans + exam_plan_courses。 */
 function applyExamAttempts(ctx: WorkerTaskCtx, kb: DatabaseSync): number {
   const now = nowStr(ctx.now);
   const rows = ctx.mainDb

@@ -118,7 +118,8 @@ export const DEFAULT_BACKUP_CONFIG: SchedulerBackupConfig = {
 };
 
 export const DEFAULT_EVENT_POLL_CONFIG: SchedulerEventPollConfig = {
-  enabled: true,
+  // ISSUE-088：云端消息交换（ISSUE-041 旧通道）已废弃——全部走自建服务端，默认关闭避免每 2 分钟无意义打云端。
+  enabled: false,
   intervalMinutes: 2,
 };
 

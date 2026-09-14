@@ -153,14 +153,17 @@ export async function getExamCoursesForSchedule(
   });
 }
 
-// ==================== 考核排期 v2（EXAM-REQUIREMENTS §14.2） ====================
+// ==================== 考核计划（2026-09-14 重构：exam_schedules 排期表已取消；
+// 以下函数名保留 `Schedule` 字样以维持渲染层契约，实际操作的都是孩子库 exam_plans 考核计划；
+// 固定档由服务端配置项 + worker 每天生成，自定义考核直接写入 exam_plans） ====================
 
 export interface ExamScheduleItem {
   id: string;
   kind: "fixed" | "custom";
   freq: string;
   scheduledAt: string;
-  status: "pending" | "started" | "done" | "expired";
+  /** pending 待考 / started 进行中 / done 已完成 / missed 未完成 / cancelled 已取消 */
+  status: string;
   attemptId: string;
   title: string;
   scope: Record<string, unknown>;
@@ -173,7 +176,7 @@ export interface ExamScheduleListResult {
   schedules: ExamScheduleItem[];
 }
 
-/** 取排期列表（服务端懒生成固定排期）。 */
+/** 取孩子考核计划列表（固定档计划由服务端按配置幂等补生成）。 */
 export async function getExamSchedules(childId: string): Promise<ExamScheduleListResult> {
   return serverFetch<ExamScheduleListResult>(`/exam/schedules/${encodeURIComponent(childId)}`, {
     method: "GET",
@@ -182,7 +185,7 @@ export async function getExamSchedules(childId: string): Promise<ExamScheduleLis
   });
 }
 
-/** 创建自定义考核排期（家长对话 agent 生成）。scope: {topics?, courses?, note?} */
+/** 创建自定义考核计划（家长管理面板 / 家长对话 agent 共用同一落库口径）。scope: {topics?, courses?, note?, methodSpec?} */
 export async function createExamSchedule(
   childId: string,
   scheduledAt: string,
@@ -196,7 +199,7 @@ export async function createExamSchedule(
   });
 }
 
-/** 标记排期开始（孩子点「开始这次考核」）。 */
+/** 标记考核计划开始（孩子点「开始这次考核」）。 */
 export async function startExamSchedule(id: string): Promise<{ ok: boolean }> {
   return serverFetch<{ ok: boolean }>(`/exam/schedules/${encodeURIComponent(id)}/start`, {
     method: "POST",
@@ -205,7 +208,7 @@ export async function startExamSchedule(id: string): Promise<{ ok: boolean }> {
   });
 }
 
-/** 考核完成后标记排期完成（关联 attempt_id）。 */
+/** 考核完成后标记考核计划完成（关联 attempt_id）。 */
 export async function completeExamSchedule(id: string, attemptId: string): Promise<{ ok: boolean }> {
   return serverFetch<{ ok: boolean }>(`/exam/schedules/${encodeURIComponent(id)}/complete`, {
     method: "POST",
@@ -215,7 +218,7 @@ export async function completeExamSchedule(id: string, attemptId: string): Promi
   });
 }
 
-/** 取消排期（家长端；仅待考核状态可取消；固定排期取消后会自动按配置补生成）。 */
+/** 取消考核计划（家长端；已考完不可取消，软删保留历史）。 */
 export async function cancelExamSchedule(id: string): Promise<{ ok: boolean }> {
   return serverFetch<{ ok: boolean }>(`/exam/schedules/${encodeURIComponent(id)}`, {
     method: "DELETE",
@@ -375,9 +378,7 @@ export async function getExamAudioDataUrl(fileId: string): Promise<string> {
   return `data:audio/webm;base64,${btoa(binary)}`;
 }
 
-// ==================== 口语评测（考核内口语/听说题判分，本地腾讯智聆） ====================
-
-import type { AssessmentResult } from "./assessment/types";
+// ==================== 口语评测（考核内口语/听说题判分，评测已在服务端完成） ====================
 
 /** 口语评测结果（展示所需子集，契约兼容原 SSECP 结构）。 */
 export interface SpeechAssessment {
@@ -393,26 +394,6 @@ export interface SpeechAssessment {
   cnSyllables?: { char: string; score: number; stress?: number }[];
   audioQuality?: { tipId?: number; snr?: number; clip?: number; volume?: number };
   raw?: unknown;
-}
-
-/** 将 AssessmentResult（腾讯智聆 / 阿里声希）映射为 EXAM 展示用的 SpeechAssessment（字段兼容原 SSECP 契约）。 */
-export function toSpeechAssessment(r: AssessmentResult): SpeechAssessment {
-  return {
-    provider: r.provider,
-    pron: r.score,
-    accuracy: r.accuracy,
-    integrity: r.completeness,
-    fluency: r.fluency != null ? { overall: r.fluency } : undefined,
-    prosody: undefined,
-    words: (r.words || []).map((w) => ({
-      word: w.word,
-      score: w.score,
-      dpType: w.dpType,
-      phones: (w.phones || []).map((p) => ({ phone: p.phone, score: p.score })),
-    })),
-    cnSyllables: undefined,
-    raw: r.raw,
-  };
 }
 
 /** 口语题默认算分：pron(0-100) 线性映射到 pointMax；rubric 精细映射后续扩展。 */
@@ -447,8 +428,8 @@ export function parsePeriodDays(method: string): number {
 }
 
 /**
- * 计算孩子「待考核」状态（孩子端边栏角标）：v2 改为按排期——
- * status=pending 且 scheduled_at ≤ 现在（已到点未考）的排期数 = 待考核数。
+ * 计算孩子「待考核」状态（孩子端边栏角标）：按考核计划——
+ * status=pending 且 start_at ≤ 现在（已到点未考）的考核计划数 = 待考核数。
  * 失败时静默返回 0（不打扰孩子学习）。
  */
 export async function getExamPending(

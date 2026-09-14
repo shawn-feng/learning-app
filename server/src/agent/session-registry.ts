@@ -29,7 +29,18 @@ import { getAgentPrompt } from "../db/agents.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { createSummarizeConversationTool } from "./kb-summary-tool.js";
-import { createTodayPlanTool, createParentContentTool } from "./plan-tools.js";
+import {
+  createParentContentTool,
+  createChildStudyPlanCreateTool,
+  createChildStudyPlanListTool,
+  createChildStudyPlanUpdateTool,
+  createChildExamPlanCreateTool,
+  createChildExamPlanListTool,
+  createChildExamPlanUpdateTool,
+  createChildLifePlanCreateTool,
+  createChildLifePlanListTool,
+  createChildLifePlanUpdateTool,
+} from "./plan-tools.js";
 import { createDisplayContentTool, DISPLAY_TOOL_NAME } from "./display-tool.js";
 import { PAGE_TOOL_NAMES, createPageTools } from "./page-tools.js";
 import { createProgrammingTool } from "./programming-agent.js";
@@ -133,7 +144,6 @@ export function computeChildToolNames(caps: { materialPanel: boolean }, kind: Ch
   return [
     ...SERVER_FS_TOOL_NAMES,
     "get_date",
-    "get_today_plan",
     "parent_content",
     "summarize_conversation",
     DISPLAY_TOOL_NAME,
@@ -142,6 +152,15 @@ export function computeChildToolNames(caps: { materialPanel: boolean }, kind: Ch
     "kb_query",
     "kb_insert",
     "kb_update",
+    "child_study_plan_create",
+    "child_study_plan_list",
+    "child_study_plan_update",
+    "child_exam_plan_create",
+    "child_exam_plan_list",
+    "child_exam_plan_update",
+    "child_life_plan_create",
+    "child_life_plan_list",
+    "child_life_plan_update",
   ];
 }
 
@@ -188,8 +207,16 @@ async function ensureEntry(
     ...(isScene
       ? []
       : [
-          createTodayPlanTool({ dataDir: deps.dataDir, parentId, childId }),
           createParentContentTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildStudyPlanCreateTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildStudyPlanListTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildStudyPlanUpdateTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildExamPlanCreateTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildExamPlanListTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildExamPlanUpdateTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildLifePlanCreateTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildLifePlanListTool({ dataDir: deps.dataDir, parentId, childId }),
+          createChildLifePlanUpdateTool({ dataDir: deps.dataDir, parentId, childId }),
         ]),
     ...(pageTools
       ? isScene
@@ -377,6 +404,39 @@ export async function submitChildPrompt(
 /** 某孩子是否已在服务端建过会话（供测试与调试） */
 export function hasSession(parentId: string, childId: string, kind: ChildSessionKind = "main"): boolean {
   return entries.has(keyOf(parentId, childId, kind));
+}
+
+/**
+ * 中止某孩子会话的当前一轮（ISSUE-095）：调 SDK 的 session.abort()（中止当前操作并等待 agent idle）。
+ * kind 省略时中止该孩子**全部**会话中正在跑的一轮——前端「停止」按钮只知道 childId，
+ * 不区分 main/scene/course，全量中止才不会漏（未在跑的会话为 no-op，跳过即可）。
+ * 中止后 submitChildPrompt 的 finally 会清 busy 并经 SSE 推 turn_end，客户端忙碌态正常解禁。
+ * 返回实际发生中止的会话数（0 = 没有在跑的一轮）。
+ */
+export async function abortSession(parentId: string, childId: string, kind?: ChildSessionKind): Promise<number> {
+  const targets: Array<[string, Entry]> = [];
+  if (kind) {
+    const key = keyOf(parentId, childId, kind);
+    const entry = entries.get(key);
+    if (entry) targets.push([key, entry]);
+  } else {
+    const prefix = `${parentId}:${childId}:`;
+    for (const [key, entry] of [...entries]) {
+      if (key.startsWith(prefix)) targets.push([key, entry]);
+    }
+  }
+  let aborted = 0;
+  for (const [key, entry] of targets) {
+    if (!entry.busy) continue;
+    try {
+      await entry.session.abort();
+      aborted++;
+      console.log(`[agent] 已中止会话 ${key} 的当前一轮`);
+    } catch (err) {
+      console.error(`[agent] 中止会话 ${key} 失败:`, (err as Error).message);
+    }
+  }
+  return aborted;
 }
 
 /**

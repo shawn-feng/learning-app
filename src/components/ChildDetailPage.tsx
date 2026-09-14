@@ -4,7 +4,6 @@ import IconButton from "./IconButton";
 import LearningDashboard from "./LearningDashboard";
 import StudyPlanPanel from "./StudyPlanPanel";
 import { ChildTopicsContent } from "./ChildTopicsModal";
-import { AgentPromptContent } from "./AgentPromptEditor";
 import SessionReview from "./SessionReview";
 import ExamRecords from "./ExamRecords";
 import ChildDailyPanel from "./ChildDailyPanel";
@@ -21,7 +20,6 @@ const TABS = [
   { key: "plan", label: "🗓 学习计划" },
   { key: "daily", label: "📅 每日记录" },
   { key: "topics", label: "📚 学习主题" },
-  { key: "prompt", label: "🤖 AI 提示词" },
   { key: "exam", label: "🎯 考核记录" },
   { key: "account", label: "🔑 账号密码" },
   { key: "review", label: "💬 对话回顾" },
@@ -29,8 +27,8 @@ const TABS = [
 
 /**
  * 孩子详情页（ISSUE-007）：点击孩子卡片进入，标签页组织
- * 学习进度 / 学习主题 / AI 提示词 / 账号密码，替代原弹窗方案。
- * 各 tab 复用孩子模式同一组件（LearningDashboard / 主题分配 / AgentPromptContent），
+ * 学习进度 / 学习主题 / 账号密码，替代原弹窗方案。
+ * 各 tab 复用孩子模式同一组件（LearningDashboard / 主题分配），
  * 保证家长模式与孩子模式界面/操作一致。
  */
 export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
@@ -132,16 +130,6 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
       {tab === "topics" && (
         <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
           <ChildTopicsContent child={child} />
-        </div>
-      )}
-
-      {tab === "prompt" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
-          <AgentPromptContent
-            scope="child"
-            refKey={child.childId}
-            title={`编辑 AI 提示词 — ${child.aiName || child.name}`}
-          />
         </div>
       )}
 

@@ -58,8 +58,10 @@ function readJsonSafe(p: string): Record<string, unknown> {
  * 服务端为真源（worker 直读服务端 settings 的 auth/app_settings），但客户端只在「保存」时推送，
  * 早期配置/推送失败/换服务端数据都会导致服务端缺 key → worker 报 No API key。
  * 本函数在每次拉取配置后执行「只补缺、不覆盖」：
- * - auth：本地有、服务端缺的 provider 条目 → 合并补传（服务端已有 provider 保持不变，避免多设备互相覆盖）；
- * - app_settings：本地有、服务端缺的模型字段（defaultModel/programmingModel/visionModel）→ 合并补传。
+ * - auth：本地有、服务端缺的 provider 条目 → 合并补传（服务端已有 provider 保持不变，避免多设备互相覆盖）。
+ *
+ * ISSUE-097：app_settings 的模型字段补齐已移除——模型配置收口服务端（/models/app_settings），
+ * 本地 app-settings.json 不再存模型字段（防「本地过期值补传覆盖服务端」的分裂），无补齐必要。
  */
 async function reconcileMissingSecrets(serverConfig: Record<string, unknown>): Promise<void> {
   try {
@@ -76,21 +78,6 @@ async function reconcileMissingSecrets(serverConfig: Record<string, unknown>): P
     if (authChanged && Object.keys(mergedAuth).length > 0) {
       await pushConfig("auth", mergedAuth);
       console.log("[config-sync] 已补齐服务端缺失的模型密钥:", Object.keys(mergedAuth).join(", "));
-    }
-
-    const srvAs = (serverConfig.app_settings ?? {}) as Record<string, unknown>;
-    const localAs = readJsonSafe(getAppSettingsPath());
-    const mergedAs: Record<string, unknown> = { ...srvAs };
-    let asChanged = false;
-    for (const k of ["defaultModel", "programmingModel", "visionModel"]) {
-      if (!srvAs[k] && localAs[k]) {
-        mergedAs[k] = localAs[k];
-        asChanged = true;
-      }
-    }
-    if (asChanged) {
-      await pushConfig("app_settings", mergedAs);
-      console.log("[config-sync] 已补齐服务端缺失的模型字段");
     }
   } catch (err) {
     // 服务端不可达/未登录：静默（下次轮询再试），不影响主流程

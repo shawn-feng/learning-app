@@ -126,6 +126,19 @@ export function translateAgentEvent(e: AgentEvent, childId: string, kind: AgentK
     case "display_content":
       // 资料推送：渲染层 MaterialsPanel 订阅此通道后自动打开（P4 渲染层新增，见联调点）
       return { channel: "pi:display_content", payload: { childId, ...(e.data ?? {}) } };
+    case "page_cmd":
+      // 服务端受控下行指令（scene_command / page_action / page_inspect 的统一通道）：
+      // 翻译回渲染层既有 pi:page:exec 通道（MaterialsPanel.appCmd 据此执行；执行结果经
+      // pi:page:exec:result 回传，再由 ipc-handlers 调 postPageResult 送回服务端配对 requestId）。
+      return {
+        channel: "pi:page:exec",
+        payload: {
+          childId,
+          requestId: e.data?.requestId,
+          action: e.data?.action,
+          params: e.data?.params ?? {},
+        },
+      };
     case "error":
       return { channel: "pi:error", payload: { childId, error: String(e.data?.message ?? "未知错误") } };
     default:
@@ -168,58 +181,102 @@ export interface StreamHandle {
 /**
  * 订阅某孩子的服务端 agent 事件流（SSE），把事件经 onEvent 回调交出。
  * - `caps`：设备能力串（material-panel,mic,electron），服务端据此装配工具；
- * - 自动 Last-Event-ID 重放由服务端在事件流内完成（断线重连时服务端按 `?lastEventId=` 回放，本层暂用 0）。
+ * - 自动重连 + Last-Event-ID 续传（ISSUE-095 排查发现：流只建一次、断后永不重连，
+ *   服务端重启后事件全部丢失 → 前端永远「思考中」。现断线后自动重建连接并带
+ *   lastEventId 让服务端回放缺失事件，「思考中」的那一轮也能自动恢复显示）。
  */
 export function streamChildAgent(
-  opts: { childId: string; caps?: string; onEvent: (e: AgentEvent) => void; onError?: (err: string) => void },
-  token = sessionToken()
+  opts: { childId: string; caps?: string; onEvent: (e: AgentEvent) => void; onError?: (err: string) => void }
 ): StreamHandle {
-  const base = serverBase();
   const caps = opts.caps ?? "material-panel";
-  const url = `${base}/api/v1/agent/${encodeURIComponent(opts.childId)}/stream?caps=${encodeURIComponent(caps)}&token=${encodeURIComponent(token)}`;
-  return openSse(url, opts.onEvent, opts.onError);
+  const buildUrl = () => {
+    const base = serverBase();
+    return `${base}/api/v1/agent/${encodeURIComponent(opts.childId)}/stream?caps=${encodeURIComponent(caps)}&token=${encodeURIComponent(sessionToken())}`;
+  };
+  return openSse(buildUrl, opts.onEvent, opts.onError);
 }
 
 export function streamParentAgent(
-  opts: { kind: ParentKind; onEvent: (e: AgentEvent) => void; onError?: (err: string) => void },
-  token = sessionToken()
+  opts: { kind: ParentKind; onEvent: (e: AgentEvent) => void; onError?: (err: string) => void }
 ): StreamHandle {
-  const base = serverBase();
-  const url = `${base}/api/v1/parent-agent/stream?kind=${encodeURIComponent(opts.kind)}&token=${encodeURIComponent(token)}`;
-  return openSse(url, opts.onEvent, opts.onError);
+  const buildUrl = () => {
+    const base = serverBase();
+    return `${base}/api/v1/parent-agent/stream?kind=${encodeURIComponent(opts.kind)}&token=${encodeURIComponent(sessionToken())}`;
+  };
+  return openSse(buildUrl, opts.onEvent, opts.onError);
 }
 
-function openSse(url: string, onEvent: (e: AgentEvent) => void, onError?: (err: string) => void): StreamHandle {
+/**
+ * SSE 连接（带自动重连）。
+ * - 每次（重）连接都重新构建 URL（取最新 serverBase / sessionToken / lastEventId）；
+ * - 断线/读尽 → 指数退避重连（2s 起步、逐次 +2s、上限 15s），**静默重连不报错**——
+ *   服务端会按 lastEventId 回放缺失事件，UI 自动恢复，无需打扰用户；
+ * - 仅 401/403（登录态失效，重连无意义）才回调 onError 终止。
+ */
+function openSse(buildUrl: () => string, onEvent: (e: AgentEvent) => void, onError?: (err: string) => void): StreamHandle {
   const ac = new AbortController();
   let closed = false;
+  let lastEventId = 0;
+  let attempt = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-  (async () => {
-    try {
-      const res = await fetch(url, { signal: ac.signal, headers: { Accept: "text/event-stream" } });
-      if (!res.ok || !res.body) {
-        onError?.(`流连接失败（HTTP ${res.status}）`);
-        return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      while (!closed) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const { events, rest } = parseSseChunk(buf);
-        buf = rest;
-        for (const e of events) {
-          if (e.type === "hello" || e.type === "ping") continue;
-          onEvent(e);
+  const scheduleReconnect = (reason: string) => {
+    if (closed) return;
+    attempt++;
+    const delay = Math.min(15000, 2000 * attempt);
+    console.log(`[sse] 连接中断（${reason}），${delay / 1000}s 后第 ${attempt} 次重连`);
+    retryTimer = setTimeout(connect, delay);
+  };
+
+  const connect = () => {
+    if (closed) return;
+    (async () => {
+      try {
+        let url = buildUrl();
+        if (lastEventId > 0) url += `${url.includes("?") ? "&" : "?"}lastEventId=${lastEventId}`;
+        const res = await fetch(url, { signal: ac.signal, headers: { Accept: "text/event-stream" } });
+        if (!res.ok || !res.body) {
+          if (res.status === 401 || res.status === 403) {
+            // 登录态失效：重连无意义，交由上层提示（渲染层会弹错误气泡）
+            onError?.(`流连接失败（HTTP ${res.status}）：登录态可能已失效，请重新登录`);
+            return;
+          }
+          throw new Error(`HTTP ${res.status}`);
         }
+        attempt = 0; // 连接成功，重置退避
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (!closed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const { events, rest } = parseSseChunk(buf);
+          buf = rest;
+          for (const e of events) {
+            if (e.id > 0) lastEventId = e.id; // 记录进度，断线重连后服务端从此之后回放
+            if (e.type === "hello" || e.type === "ping") continue;
+            onEvent(e);
+          }
+        }
+        // 服务端正常关闭连接（如重启）→ 重连
+        scheduleReconnect("服务端关闭连接");
+      } catch (err) {
+        if (closed) return; // 手动 close 触发的 abort，不重连
+        scheduleReconnect((err as Error).message ?? "未知错误");
       }
-    } catch (err) {
-      if (!closed) onError?.((err as Error).message ?? "流连接中断");
-    }
-  })();
+    })();
+  };
 
-  return { close: () => { closed = true; ac.abort(); } };
+  connect();
+
+  return {
+    close: () => {
+      closed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      ac.abort();
+    },
+  };
 }
 
 /** 提交孩子一轮输入（等待本轮结束；流式增量走 streamChildAgent）。 */
@@ -248,6 +305,26 @@ export async function promptParent(
     token,
     body: { text, kind: opts.kind ?? "parent" },
     timeoutMs: 120000,
+  });
+}
+
+/** 中止孩子 agent 当前一轮（ISSUE-095；session 省略=该孩子全部会话）。 */
+export async function abortChildAgent(childId: string, session?: string, token = sessionToken()): Promise<void> {
+  await serverFetch(`/agent/${encodeURIComponent(childId)}/abort`, {
+    method: "POST",
+    token,
+    body: { session },
+    timeoutMs: 30000,
+  });
+}
+
+/** 中止家长 agent 当前一轮（ISSUE-095）。 */
+export async function abortParentAgent(kind: ParentKind = "parent", token = sessionToken()): Promise<void> {
+  await serverFetch("/parent-agent/abort", {
+    method: "POST",
+    token,
+    body: { kind },
+    timeoutMs: 30000,
   });
 }
 

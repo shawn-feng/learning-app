@@ -6,7 +6,7 @@
  * 家长面板的完成态 = 服务端直接读 status/done_at 下发（不再靠客户端剥文本前缀现算）。
  * - GET    /api/v1/study-plans?childId=&date=&from=&to=  排期行列表（一课一行，date 倒序）
  * - GET    /api/v1/study-plans/today?childId=&date=       当日聚合（gen 据此生成家长 todolist；含 carry 标记）
- * - POST   /api/v1/study-plans                           创建（家长 agent study_plan_create 落库点）
+ * - POST   /api/v1/study-plans                           创建（家长 agent parent_study_plan_create 落库点）
  * - PATCH  /api/v1/study-plans/:id                        更新单行（改 date/停用/标记）
  * - DELETE /api/v1/study-plans/:id                        删除单行
  * 鉴权：家长 JWT；childId 归属校验；行归属按 parent_id。
@@ -274,7 +274,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     return { ok: true, date: day, items };
   });
 
-  // 创建（家长 agent study_plan_create / 孩子端 plan_study）。body: { childId, date, items: [{topicKey?, courseName, mode?}], creator? }
+  // 创建（家长 agent parent_study_plan_create / 孩子端 plan_study）。body: { childId, date, items: [{topicKey?, courseName, mode?}], creator? }
   // creator: 'parent'(默认,必须完成项) | 'child'(孩子自选,加分项 task_type=optional)。
   // 幂等合并（同日同课程已存在则跳过；模式不同则升级为 review 标注）。
   app.post("/api/v1/study-plans", async (req, reply) => {
@@ -369,7 +369,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     return { ok: true, inserted, skipped, date: day };
   });
 
-  // 更新单行（家长 agent study_plan_update：改 date / 改 mode / 停用）
+  // 更新单行（家长 agent parent_study_plan_update：改 date / 改 mode / 停用）
   app.patch("/api/v1/study-plans/:id", async (req, reply) => {
     let parentId: string;
     try {

@@ -99,7 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_sp_child_window ON study_plans(child_id, status, 
 CREATE INDEX IF NOT EXISTS idx_sp_course ON study_plans(course_uuid);
 CREATE INDEX IF NOT EXISTS idx_sp_creator ON study_plans(child_id, creator, active);
 
--- ===== 考核计划（场次头）=====
+-- ===== 考核计划（一行 = 一条考核计划，进「今日计划」；实际考核场次 = 主库 exam_attempts，逐题记录在其 per_question）=====
 CREATE TABLE IF NOT EXISTS exam_plans (
   id TEXT PRIMARY KEY,
   parent_id TEXT NOT NULL DEFAULT '',

@@ -283,7 +283,7 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
   });
 
   // ==================== 孩子自建生活计划（2026-09-10：制定人=孩子自己） ====================
-  /** POST /api/v1/plans/life —— 生活计划创建入口（孩子端 plan_life / 家长端 parent_plan_create 共用）。
+  /** POST /api/v1/plans/life —— 生活计划创建入口（孩子端 plan_life / 家长端 parent_life_plan_create 共用）。
    *  creator: 'child'(默认,加分项 optional) | 'parent'(必须完成项 required)；单日窗口；同 title+date 已有 pending 行则跳过（防重复）。 */
   app.post("/api/v1/plans/life", async (req, reply) => {
     let parentId: string;

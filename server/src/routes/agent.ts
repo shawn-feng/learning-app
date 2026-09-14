@@ -3,6 +3,7 @@
  *
  * - GET  /api/v1/agent/:childId/stream    SSE 事件流（token/thinking/工具/结束/错误），支持 Last-Event-ID 重放
  * - POST /api/v1/agent/:childId/prompt    提交一轮输入（等待本轮结束，增量走 stream）
+ * - POST /api/v1/agent/:childId/abort     中止当前一轮（ISSUE-095；session 省略=全部会话）
  * - POST /api/v1/agent/:childId/events    页面事件上行（PiBridge 信封原样透传，累积到下一轮消息前）
  * - POST /api/v1/agent/:childId/page-result  资料页受控操作回执（requestId 配对）
  *
@@ -15,7 +16,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { agentStreamHub, AgentStreamHub } from "../agent/stream-hub.js";
-import { submitChildPrompt, hasSession, disposeSession, resetSession, getChildSessionHistory, type AgentSessionDeps, type ChildSessionKind } from "../agent/session-registry.js";
+import { submitChildPrompt, hasSession, disposeSession, resetSession, abortSession, getChildSessionHistory, type AgentSessionDeps, type ChildSessionKind } from "../agent/session-registry.js";
 import { hubFor, hubForChild } from "../agent/page-hub.js";
 import { registerCaps, parseCaps, getCaps } from "../agent/caps.js";
 
@@ -225,6 +226,30 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
     const raw = String((req.body as any)?.session ?? "");
     resetSession(parentId, childId, raw === "scene" ? "scene" : raw.startsWith("course:") ? (raw as ChildSessionKind) : undefined);
     return { ok: true };
+  });
+
+  // —— 中止当前一轮（ISSUE-095）：前端「停止」按钮经主进程 pi:abort 打到这里 ——
+  // session 省略时中止该孩子全部会话（main/scene/course）中正在跑的一轮。
+  app.post("/api/v1/agent/:childId/abort", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { childId } = req.params as { childId: string };
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const raw = String((req.body as any)?.session ?? "");
+    const kind =
+      raw === "main" || raw === "scene" || raw.startsWith("course:") ? (raw as ChildSessionKind) : undefined;
+    const aborted = await abortSession(parentId, childId, kind);
+    return { ok: true, aborted };
   });
 
   // —— 资料页受控操作回执 ——

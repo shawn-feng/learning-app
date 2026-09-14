@@ -212,6 +212,111 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     },
   });
 
+  const upsertTopicTool = defineTool({
+    name: "parent_upsert_topic",
+    label: "写入/更新教学主题（家长库）",
+    description:
+      "把教学主题写入家长库真源（新建或覆盖）。\n\n" +
+      "**何时调用**：你设计好一个教学主题（如「论语」）后落库。name 是主键（主题中文名），topic_key 是主题目录名（如 lunyu）。\n" +
+      "**先核对再覆盖**：覆盖前先 parent_library_topics 看现有结构，避免误改家长手工维护的字段。覆盖只更新你给的字段。",
+    parameters: Type.Object({
+      name: Type.String({ description: "主题中文名（主键，如「论语」）" }),
+      topic_key: Type.String({ description: "主题目录名（如 lunyu），用于资料/课程归属" }),
+      method: Type.Optional(Type.String({ description: "教学方法说明" })),
+      assess_method: Type.Optional(Type.String({ description: "考核方法说明" })),
+      progress: Type.Optional(Type.String({ description: "进度约定/总目标说明" })),
+      rules_json: Type.Optional(Type.String({ description: "主题规则 JSON 字符串（缺省 {}）" })),
+    }),
+    execute: async (_id, params) => {
+      if (!params.name?.trim() || !params.topic_key?.trim()) throw new Error("parent_upsert_topic 需要 name + topic_key");
+      const db = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        db.prepare(
+          `INSERT INTO topics (name, topic_key, method, assess_method, progress, rules_json)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+             topic_key = excluded.topic_key,
+             method = excluded.method,
+             assess_method = excluded.assess_method,
+             progress = excluded.progress,
+             rules_json = excluded.rules_json`
+        ).run(
+          params.name,
+          params.topic_key,
+          params.method ?? "",
+          params.assess_method ?? "",
+          params.progress ?? "",
+          params.rules_json ?? "{}"
+        );
+        appendParentActivityLog(ctx, `落库主题「${params.name}」（${params.topic_key}）`);
+        return ok(`已落库主题「${params.name}」（${params.topic_key}）。`);
+      } finally {
+        db.close();
+      }
+    },
+  });
+
+  const upsertCourseTool = defineTool({
+    name: "parent_upsert_course",
+    label: "写入/更新课程（家长库）",
+    description:
+      "把课程写入家长库真源（新建或覆盖），归属到某主题。\n\n" +
+      "**何时调用**：你设计好一门课后落库。topic 是主题目录名，title 是课程名（联合主键）。\n" +
+      "课程内容（lesson_method/html_path/teaching_copy/assess_rubric）落家长库即可——孩子端学习时从家长库读取，无需单独写到孩子库。\n" +
+      "**先核对再覆盖**：覆盖前先 parent_library_courses 看现有字段，避免误改系统维护的进度字段（status/last_review/review_count）。",
+    parameters: Type.Object({
+      topic: Type.String({ description: "主题目录名（如 lunyu）" }),
+      title: Type.String({ description: "课程名" }),
+      sort_order: Type.Optional(Type.Number({ description: "排序（缺省 0）" })),
+      status: Type.Optional(Type.String({ description: "掌握状态（⬜/✅，缺省 ⬜）" })),
+      lesson_method: Type.Optional(Type.String({ description: "教学方法" })),
+      html_path: Type.Optional(Type.String({ description: "资料相对路径（如 lunyu/materials/lesson-01.html）" })),
+      teaching_copy: Type.Optional(Type.String({ description: "教学文案" })),
+      assess_rubric: Type.Optional(Type.String({ description: "考核要点" })),
+      material: Type.Optional(Type.String({ description: "教学资料附注" })),
+      send_material: Type.Optional(Type.String({ description: "要发送的学习资料" })),
+      tags: Type.Optional(Type.String({ description: "课程标签（逗号分隔）" })),
+    }),
+    execute: async (_id, params) => {
+      if (!params.topic?.trim() || !params.title?.trim()) throw new Error("parent_upsert_course 需要 topic + title");
+      const db = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        db.prepare(
+          `INSERT INTO courses (
+             topic, title, sort_order, status, last_review,
+             review_count, material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric
+           ) VALUES (?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(topic, title) DO UPDATE SET
+             sort_order = excluded.sort_order,
+             status = excluded.status,
+             material = excluded.material,
+             send_material = excluded.send_material,
+             tags = excluded.tags,
+             lesson_method = excluded.lesson_method,
+             html_path = excluded.html_path,
+             teaching_copy = excluded.teaching_copy,
+             assess_rubric = excluded.assess_rubric`
+        ).run(
+          params.topic,
+          params.title,
+          params.sort_order ?? 0,
+          params.status ?? "⬜",
+          params.material ?? "",
+          params.send_material ?? "",
+          params.tags ?? "",
+          params.lesson_method ?? "",
+          params.html_path ?? "",
+          params.teaching_copy ?? "",
+          params.assess_rubric ?? ""
+        );
+        appendParentActivityLog(ctx, `落库课程「${params.title}」（${params.topic}）`);
+        return ok(`已落库课程「${params.title}」（${params.topic}）。`);
+      } finally {
+        db.close();
+      }
+    },
+  });
+
   const imageTool = defineTool({
     name: "parent_read_image",
     label: "理解图片内容",
@@ -277,6 +382,8 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     putTool,
     topicsTool,
     coursesTool,
+    upsertTopicTool,
+    upsertCourseTool,
     imageTool,
     logTool,
     // 编程 agent（P3 上移）：家长 agent 描述需求 → 服务端编程 agent 产出 HTML 资料到真源
@@ -296,6 +403,8 @@ export const PARENT_AGENT_TOOL_NAMES = [
   "parent_put_material",
   "parent_library_topics",
   "parent_library_courses",
+  "parent_upsert_topic",
+  "parent_upsert_course",
   "parent_read_image",
   "parent_build_material",
   "log_activity",

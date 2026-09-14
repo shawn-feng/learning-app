@@ -84,7 +84,7 @@ export default function Settings() {
     const key = `${provider}/${modelId}`;
     setDefaultModel(key);
     localStorage.setItem("defaultModel", key);
-    // 写入主进程：成为 getDefaultModel()（会话建链）/ scheduler 定时任务 / ModelSelector 的唯一种源
+    // 写入服务端 app_settings（ISSUE-097：模型配置唯一真源在服务端，agent 与本页读同一行）
     const r = await window.api.piSetDefaultModel(key);
     setKeyStatus(r?.success ? `已将 ${modelId} 设为默认模型` : `默认模型保存失败: ${r?.error || ""}`);
   }

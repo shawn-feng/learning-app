@@ -20,8 +20,6 @@ import { getDataDir } from "./lib/config";
 import { initSharedSkills } from "./lib/user-init";
 import { registerIpcHandlers } from "./lib/ipc-handlers";
 import { startScheduler, runCatchUp } from "./lib/scheduler";
-import { startSessionSyncTimer, flushSessionSync } from "./lib/session-sync";
-import { startServerFeaturesSync } from "./lib/server-features";
 import { lintAllChildren } from "./lib/kb-lint";
 import { registerCustomSchemes, registerMediaProtocol, registerAssetProtocol, registerAppProtocol, setAssetDocRenderer } from "./lib/media-protocol";
 import { serveMaterialDocument } from "./lib/material-doc";
@@ -207,8 +205,6 @@ app.whenReady().then(() => {
 
   registerIpcHandlers(getMainWindow);
   startScheduler(); // 本地 cron，无网络请求，立即注册
-  startSessionSyncTimer(); // 会话增量同步兜底（每 5min 批量；每轮对话后另有即时同步）
-  startServerFeaturesSync(); // 服务端能力探测（worker 接管后本地 recording/todo 关闭，避免双跑）
 
   // 数据格式校验（SPEC 5.5）：启动时跑一次 + 运行期间每 24h。只报告不修改，
   // 报告落各孩子目录 lint-report.md；error=0 时结构健康（warning 为字段不在白名单的历史基线）。
@@ -250,5 +246,4 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   logInfo("main", "app quitting");
-  flushSessionSync(); // 退出前兜底同步一次（fire-and-forget）
 });

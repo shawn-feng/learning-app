@@ -71,3 +71,10 @@ linux-*.zip
 # 离线调研目录与抓包文件（不入仓）
 lunyu_exam/
 voice_*.csv
+
+# 临时构建/类型检查输出与调试残渣（勿提交）
+/server/build-*.txt
+/server/tsc-*.txt
+/tsc-*.txt
+/agent-tools-report.log
+/tmp-*.txt

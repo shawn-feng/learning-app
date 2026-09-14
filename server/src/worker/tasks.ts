@@ -4,7 +4,7 @@
  * - registerTask 注册；未来新增「孩子不在场时 agent 自主做事」只需实现 WorkerTask 并注册，
  *   调度器（worker/scheduler.ts）统一驱动，无需改 scheduler。
  * 首批任务：recording（每日对话总结写 daily）+ todo（Todolist 生成/统计）。
- * 数据源全部在服务端：当天对话读 data/sessions 镜像（readServerDailyConversation），
+ * 数据源全部在服务端：当天对话读服务端 agent-sessions（readServerDailyConversation，9/12 迁移后客户端不再同步会话），
  * kb 读写经 routes/db.ts 导出的 handler（runKbQuery/runKbExec），不再依赖客户端存活。
  */
 import fs from "node:fs";

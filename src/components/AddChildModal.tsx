@@ -106,7 +106,7 @@ export default function AddChildModal({ avatars, onClose, onAdded }: Props) {
           placeholder="如：恐龙、画画"
         />
 
-        <label>登录密码（仅存本地）</label>
+        <label>登录密码</label>
         <input
           type="password"
           value={password}

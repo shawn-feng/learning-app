@@ -1,10 +1,9 @@
 import { useState, useEffect } from "react";
-import { Bot, ArrowLeft, LogOut, UserPlus, MessageSquare } from "lucide-react";
+import { ArrowLeft, LogOut, UserPlus, MessageSquare } from "lucide-react";
 import IconButton from "../components/IconButton";
 import { LoadingBlock } from "../components/Loading";
 import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
-import SessionSyncPanel from "../components/SessionSyncPanel";
 import CourseManager from "../components/CourseManager";
 import QuestionBankPanel from "../components/QuestionBankPanel";
 import ParentChatPanel from "../components/ParentChatPanel";
@@ -14,7 +13,6 @@ import SchedulerTasksPanel from "../components/SchedulerTasksPanel";
 import StudyPlanPanel from "../components/StudyPlanPanel";
 import Settings from "./Settings";
 import ChildDetailPage from "../components/ChildDetailPage";
-import AgentPromptEditor from "../components/AgentPromptEditor";
 import { useChatPanel } from "../hooks/useChatPanel";
 
 interface Props {
@@ -30,12 +28,10 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [childrenLoading, setChildrenLoading] = useState(true);
   const [showAddChild, setShowAddChild] = useState(false);
   const [view, setView] = useState<
-    "children" | "courses" | "plan" | "exam" | "reward" | "scheduler" | "tokens" | "sync" | "settings" | "bank"
+    "children" | "courses" | "plan" | "exam" | "reward" | "scheduler" | "tokens" | "settings" | "bank"
   >("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
-  // 家长「AI 提示词」弹窗（scope=parent，ref 由主进程归一化为当前家长 id）
-  const [agentPrompt, setAgentPrompt] = useState<{ scope: string; ref: string; title: string } | null>(null);
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
   const parentChat = useChatPanel("parent", 360);
 
@@ -58,13 +54,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
       <div className="dashboard-header">
         <h1>家长中心</h1>
         <div className="actions">
-          <IconButton
-            icon={Bot}
-            title="家长 AI 提示词补充（追加到默认提示词末尾）"
-            onClick={() =>
-              setAgentPrompt({ scope: "parent", ref: "main", title: "家长 AI 提示词补充（追加到末尾，默认不可改）" })
-            }
-          />
           <IconButton icon={ArrowLeft} title="返回主页" onClick={onEnterChildMode} />
           <IconButton icon={LogOut} title="退出登录" onClick={onLogout} />
         </div>
@@ -174,19 +163,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
-            onClick={() => {
-              setView("sync");
-              setDetailChild(null);
-            }}
-          >
-            <div className="child-avatar">📡</div>
-            <div className="child-info">
-              <div className="name">会话同步</div>
-            </div>
-          </div>
-          <div
-            className="child-card"
-            style={{ border: "none" }}
             onClick={() => setView("settings")}
           >
             <div className="child-avatar">⚙️</div>
@@ -247,7 +223,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
                     {children.map((child) => (
-                      // ISSUE-007：卡片整体点击进入详情页（学习进度/学习主题/AI 提示词/账号密码 tabs）
+                      // ISSUE-007：卡片整体点击进入详情页（学习进度/学习主题/账号密码 tabs）
                       <div
                         key={child.childId}
                         className="child-card"
@@ -259,7 +235,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                           transition: "box-shadow .15s",
                         }}
                         onClick={() => setDetailChild(child)}
-                        title="点击查看孩子详情（学习进度 / 学习主题 / AI 提示词 / 账号密码）"
+                        title="点击查看孩子详情（学习进度 / 学习主题 / 账号密码）"
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
                           <div className="child-avatar">{child.avatar}</div>
@@ -314,8 +290,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
 
           {view === "tokens" && !detailChild && <TokenStatsPanel childrenList={children} />}
 
-          {view === "sync" && !detailChild && <SessionSyncPanel childrenList={children} />}
-
           {view === "settings" && !detailChild && <Settings />}
         </div>
 
@@ -362,14 +336,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
         />
       )}
 
-      {agentPrompt && (
-        <AgentPromptEditor
-          scope={agentPrompt.scope}
-          refKey={agentPrompt.ref}
-          title={agentPrompt.title}
-          onClose={() => setAgentPrompt(null)}
-        />
-      )}
       </div>
   );
 }

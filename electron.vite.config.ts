@@ -4,17 +4,7 @@ import { resolve } from "path";
 
 export default defineConfig({
   main: {
-    plugins: [
-      externalizeDepsPlugin({
-        exclude: [
-          "@earendil-works/pi-coding-agent",
-          "@earendil-works/pi-ai",
-          "@earendil-works/pi-agent-core",
-          "@earendil-works/pi-tui",
-          "typebox",
-        ],
-      }),
-    ],
+    plugins: [externalizeDepsPlugin()],
     build: {
       outDir: "out/main",
       emptyOutDir: true,

@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **81** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **97** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -84,13 +84,29 @@
 | 072 | 自定义考核计划需有「标题名」，家长 agent 创建时必须填入（区分 note 给孩子的说明） | 中 | 2026-09-11 | [详情](ISSUES/ISSUE-072.md) |
 | 073 | 考核内容模型切换：类别(topic_categories) → 知识点(knowledge_points)（数据已就位，差代码切换；改 API 形状，须与客户端同批） | 中 | 2026-09-11 | [详情](ISSUES/ISSUE-073.md) |
 | 074 | 家长端列表静默 LIMIT 截断（题库 2000→3575 只显示 2000 已修；排期 100→1000 已修；记录 60 待评估；题库需分页/过滤） | 中 | 2026-09-11 | [详情](ISSUES/ISSUE-074.md) |
-| 075 | 客户端推送空「固定档频率」→ 服务端**无作用域 DELETE** 掉未来排期（生产 136→18 行；**已按用户决定清空全部排期并暂时关闭考核**；修好前不得重开） | **高** | 2026-09-11 | [详情](ISSUES/ISSUE-075.md) |
+| 075 | 客户端推送空「固定档频率」→ 服务端**无作用域 DELETE** 掉未来排期（生产 136→18 行；已清空排期并暂时关闭考核）——**✅ 已随 ISSUE-094 彻底解决（2026-09-14）：exam_schedules 排期表已取消（DROP TABLE），无作用域 DELETE 代码一并删除，风险根源不存在** | ✅ 已解决（2026-09-14，随 ISSUE-094） | 2026-09-11 | [详情](ISSUES/ISSUE-075.md) |
 | 076 | 学习计划完成判定只认 `courses.last_review`（唯一写入方是 AI 手写），`last_review='-'`/无日期的课永远判不了完成（珊珊 383/613 门；todolist 7 条 pending 全因无日期） | **高** | 2026-09-11 | [详情](ISSUES/ISSUE-076.md) |
 | 077 | DeepSeek 官方模型名变更：`deepseek-v4-flash` 已下线应改 `deepseek-flash`（官方直连通道 SDK；百炼套餐快照名待核实） | 中 | 2026-09-11 | [详情](ISSUES/ISSUE-077.md) |
 | 078 | 家长上传文件后家长 agent 读不到：【附件文件】标记路径被错误剥 `parents/<pid>/` 前缀 + 聊天未透传登录家长 id（全落 `parents/default`） | ✅ 已实施 | 2026-09-12 | [详情](ISSUES/ISSUE-078.md) |
 | 079 | 家长 agent 无法整理/治理服务端课程学习资料：缺 list/read/delete/move 的 agent 工具封装（仅暴露上传） | 高 | 2026-09-12 | [详情](ISSUES/ISSUE-079.md) |
 | 080 | 设计讨论：agent 从客户端迁到 server 端——**✅已定案：不要过渡 / agent 只在 server / client 零 agent；5 项设计点全部拍板（page_* 保留并上移、TTS server 合成、提醒本地播放、硬断代、programming-agent 上移）** | **高** | 2026-09-12 | [详情](ISSUES/ISSUE-080.md) |
 | 081 | agent 服务端化：共享包 + 会话权威 + SSE + 家长/孩子/考核/编程 agent 上移 + 客户端零 agent——**✅ P0~P4 已实施（服务端 0.4.0，server_agent/parent_agent/exam_agent 特性；本地 agent 代码已删）** | 高 | 2026-09-12 | [详情](ISSUES/ISSUE-081.md) |
+| 082 | 家长 agent「parent-content」会话：注释声称"专门提示词、与通用助手解耦"，实际与 parent 共用同一 `buildServerParentPrompt`，解耦仅限会话实例/历史/流层面，提示词层面未真正解耦 | 待定 | 2026-09-13 | [详情](ISSUES/ISSUE-082.md) |
+| 083 | agent 提示词不再对用户开放编辑与查看：仅存于系统内部，孩子端 prompt 因含系统信息更不可展示，收敛 AgentPromptEditor 入口 | ✅ 已解决（2026-09-13） | 2026-09-13 | [详情](ISSUES/ISSUE-083.md) |
+| 084 | agent 工具/后端方法命名未体现目标库表，可读性差（`parent_plan_create` 实际写孩子库 life_plans，名称看不出落库）；建议统一"库简写_表名_动作"命名规范 | ✅ 已解决（2026-09-13） | 2026-09-13 | [详情](ISSUES/ISSUE-084.md) |
+| 085 | 考核场次无删除/取消操作：孩子库 `exam_plans` 全仓无 DELETE/cancel 端点（既无 agent 也无 REST），一旦生成永久留存；主库 `exam_schedules` 删除仅限 pending 状态（误排进行中无法撤） | ✅ 已解决（2026-09-13） | 2026-09-13 | [详情](ISSUES/ISSUE-085.md) |
+| 086 | 添加孩子表单密码标签「登录密码（仅存本地）」与实际实现不符：密码 bcrypt 哈希经 `POST /children` 上传并存入服务端 `children.profile_json`，登录由 `POST /children/auth` 服务端校验（多设备共享），本地仅离线回退——文案误导用户隐私预期 | ✅ 已解决（2026-09-14） | 2026-09-13 | [详情](ISSUES/ISSUE-086.md) |
+| 087 | 家长 agent 缺「添加/编辑孩子」能力（仅有只读 `parent_list_children`）；需求定调：应能添加、编辑孩子，**不应**提供删除（删除仍由家长 UI 走 REST）；另需决定 `max_children` 上限校验是否上移服务端（现仅客户端校验，agent 创建会绕过） | ✅ 已解决（2026-09-14） | 2026-09-13 | [详情](ISSUES/ISSUE-087.md) |
+| 088 | agent 上移服务端后客户端遗留死轮询/死接口：5min 会话同步仍打**已删除**的 `POST /sessions/:childId/sync`、10min `/version` 探测无消费者（`hasServerFeature` 全仓无调用）、`app-config.ts` 孤儿模块、云端 eventPoll 每 2min 打旧消息交换通道（ISSUE-041 遗留）；另 `app_settings` 客户端只剩 `materialsLimit` 有消费方 | ✅ 已解决（2026-09-14） | 2026-09-13 | [详情](ISSUES/ISSUE-088.md) |
+| 089 | `parent_upsert_topic` / `parent_upsert_course` 已定义、已进 `PARENT_AGENT_TOOL_NAMES` 白名单，但**未加入 `createParentAgentTools` 的 return 数组** → 白发白名单、工具实际不可调；家长 agent prompt 还明确指引用它们落库主题/课程 → 对话式建主题/加课当前不可行（只能走 UI REST） | ✅ 已解决（2026-09-14） | 2026-09-13 | [详情](ISSUES/ISSUE-089.md) |
+| 090 | 客户端 SSE 桥 `translateAgentEvent` **无 `page_cmd` 分支** → 场景课/资料页受控下行指令（`scene.move/act/show/highlight/update`、`page_action`）全部被丢弃，仅 `say` 台词经旁路可达 = "台词有、动作无"；回执 `page-result` 链随之失效 | ✅ 已解决（2026-09-14） | 2026-09-13 | [详情](ISSUES/ISSUE-090.md) |
+| 091 | 孩子无法通过 AI 创建「学习 / 考核」计划（只有 `child_life_plan_create`；缺 `child_study_plan_create` / `child_exam_plan_create`），与说明书 §3.4「学习/考核/生活三种计划孩子都能自己定（加分项）」不符；另 `plan_recurrences` **全仓无写入路径**（重复规则不可设置）、`/plans/exam`、`/plans/life`、`/study-plans` 三个落库 REST 成孤儿（无调用方）；数据模型与加分项计分（creator 分组）已就绪，补工具即可 | ✅ 已解决（2026-09-14） | 2026-09-13 | [详情](ISSUES/ISSUE-091.md) |
+| 092 | 自定义考核「本次方法覆盖」用户不可达：`assess-selection.ts` 的排期级 `scope.methodSpec`（require/exclude/recitePass，优先于主题级）**读取侧已实现**，但 `parent_exam_plan_create` 的 scope 只有 `{topics,courses,note}` → 家长 AI 无法表达"本次只考背诵/只考某知识点"；REST `POST /exam/schedules` 接受任意 scope 但无调用方 —— 与说明书 §3.5.1 不符 | ✅ 已解决（2026-09-14） | 2026-09-13 | [详情](ISSUES/ISSUE-092.md) |
+| 093 | 家长端发音评测「测试测评」结果展示错乱：总分 undefined、流利度 [object Object]（`AssessmentSettings.tsx` 读 `res.score`/`res.fluency`，但 `SpeechAssessment` 真契约总分是 `pron`、流利度是 `{overall}` 对象） | ✅ 已解决（2026-09-14） | 2026-09-14 | [详情](ISSUES/ISSUE-093.md) |
+| 094 | 考核域重构（用户定案）：**取消 `exam_schedules` 排期表**（DROP TABLE）——每日/每周固定考核改为**配置项**（`exam_fixed:<parentId>`），worker plan tick 每天检查配置生成当天 `exam_plans`（幂等，GET 列表兜底补跑）；**自定义考核直接写入 `exam_plans`**（agent 工具 + 管理面板同口径）；`/exam/schedules*` 路由路径保留但语义全部改为操作 `exam_plans`（渲染层零改动）；副产品：ISSUE-075 无作用域 DELETE 风险随表取消彻底消除 | ✅ 已实施（2026-09-14） | 2026-09-14 | [详情](ISSUES/ISSUE-094.md) |
+| 095 | 家长端点「停止」agent：UI 显示「⏹ 已停止」但实际仍在运行——`pi:abort` 主进程是 no-op（注释明写"服务端尚无中止能力"），服务端 `parent-registry` 也无 abort 端点，导致家长/孩子端停止都不生效 | ✅ 已解决（2026-09-14） | 2026-09-14 | [详情](ISSUES/ISSUE-095.md) |
+| 096 | 服务端重启后家长/孩子 agent「永远思考中」：`openSse` 一次性连接断后 `agentStreams` 死句柄占位、**从不重连**（服务端日志/落盘证实回复正常、纯送达链路断）——修复：`openSse` 重写为自动重连 + `?lastEventId=` 续传，断线轮次自动补齐 | ✅ 已解决（2026-09-14） | 2026-09-14 | [详情](ISSUES/ISSUE-096.md) |
+| 097 | 家长 agent 调 `parent_build_material` 报「agent 模型未配置」，但家长设置页显示已配置——设置页走「本地 app-settings.json（旧构建）/服务端」显示已配置，而服务端 agent 读服务端 `app_settings` 取不到 `programmingModel`；当前源码三路都收口同一服务端键故正常构建不该复现，疑为线上旧客户端构建仍走本地分支导致本地/服务端存储分裂 | ✅ 已解决（2026-09-14）：核实当前链路自洽（服务端实存值 + 端到端验证）；根除残留覆盖机制——app-settings 本地文件只存 materialsLimit、保存改走 /models/app_settings 合并端点（旧实现整键推送会覆盖服务端模型配置）、reconcile 去掉模型字段补齐、未配置报错带 parentId | 2026-09-14 | [详情](ISSUES/ISSUE-097.md) |
 
 ## 记录格式（模板）
 

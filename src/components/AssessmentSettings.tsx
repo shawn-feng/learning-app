@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import IconButton from "./IconButton";
 import { Save } from "lucide-react";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
+import type { SpeechAssessment } from "../../electron/lib/exam";
 
 interface AssessmentProviderDef {
   id: string;
@@ -117,13 +118,19 @@ export default function AssessmentSettings() {
         const buf = await blob.arrayBuffer();
         const r = await window.api.assessmentTest(buf, provider, "hello");
         if (r.success) {
-          const res = r.result;
+          const res = r.result as SpeechAssessment;
+          // SpeechAssessment 契约：总分权威字段是 pron（非 score），流利度是 {overall} 对象（非数字），
+          // 完整度字段名是 integrity（非 completeness）。下方读取严格对齐，避免 undefined / [object Object]。
+          const score = res.pron ?? res.overall; // 总分：优先 pron
+          const fluency = res.fluency?.overall; // 流利度：取对象中的数字
+          const integrity = res.integrity; // 完整度
+          const wordCount = res.words?.length ?? 0;
           setStatus(
-            `评测成功：总分 ${res.score} 分` +
+            `评测成功：总分 ${score ?? "未返回"} 分` +
               (res.accuracy !== undefined ? `，准确度 ${res.accuracy}` : "") +
-              (res.fluency !== undefined ? `，流利度 ${res.fluency}` : "") +
-              (res.completeness !== undefined ? `，完整度 ${res.completeness}` : "") +
-              `（${res.words.length} 个词）`
+              (fluency !== undefined ? `，流利度 ${fluency}` : "") +
+              (integrity !== undefined ? `，完整度 ${integrity}` : "") +
+              `（${wordCount} 个词）`
           );
         } else {
           setStatus(`评测失败: ${r.error}`);

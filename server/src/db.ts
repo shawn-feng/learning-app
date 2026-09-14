@@ -37,6 +37,13 @@ export function openDb(dataDir: string): DatabaseSync {
       value_json TEXT NOT NULL DEFAULT '{}',
       updated TEXT NOT NULL
     );
+    -- 发音评测服务配置（按家长隔离，AES-256-GCM 加密落盘；与服务端通用 settings/config 机制隔离，不被 /config 轮询回传）
+    CREATE TABLE IF NOT EXISTS assessment_config (
+      parent_id TEXT NOT NULL,
+      value_json TEXT NOT NULL DEFAULT '{}',
+      updated TEXT NOT NULL,
+      PRIMARY KEY (parent_id)
+    );
     CREATE TABLE IF NOT EXISTS materials (
       parent_id TEXT NOT NULL,
       id TEXT NOT NULL,
@@ -154,22 +161,11 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_exam_attempts_child ON exam_attempts(child_id, submitted_at);
-    -- 学习考核 v2（EXAM-REQUIREMENTS §14）：考核排期（固定频率生成 + 家长自定义），
-    -- kind=fixed(固定频率) | custom(家长对话生成)；scope JSON：custom= {topics[],courses[],note}，fixed= {}；
-    -- status=pending(待考核) | started(进行中) | done(已完成) | expired(过期未考)；attempt_id 关联 exam_attempts。
-    CREATE TABLE IF NOT EXISTS exam_schedules (
-      id TEXT PRIMARY KEY,
-      parent_id TEXT NOT NULL,
-      child_id TEXT NOT NULL,
-      kind TEXT NOT NULL DEFAULT 'fixed',
-      freq TEXT NOT NULL DEFAULT '',
-      scheduled_at TEXT NOT NULL,
-      scope TEXT NOT NULL DEFAULT '{}',
-      status TEXT NOT NULL DEFAULT 'pending',
-      attempt_id TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT ''
-    );
-    CREATE INDEX IF NOT EXISTS idx_exam_schedules_child ON exam_schedules(child_id, scheduled_at);
+    -- 2026-09-14 考核域重构：exam_schedules 排期表已取消——每日/每周固定考核改为配置项
+    -- （settings 键 exam_fixed:<parentId>，worker 每天检查配置生成当天考核计划）；
+    -- 自定义考核直接写孩子库 exam_plans。旧排期数据不再使用，直接清表。
+    DROP TABLE IF EXISTS exam_schedules;
+    DROP INDEX IF EXISTS idx_exam_schedules_child;
     -- 口语评测结果（SSECP 声希引擎）：考核内口语/听说题的维度分存档，供家长端在考核结果内回放/审计。
     CREATE TABLE IF NOT EXISTS speech_assessments (
       id TEXT PRIMARY KEY,

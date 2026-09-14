@@ -2,18 +2,25 @@
  * 家长 agent 的计划域工具（2026-09-13 上移补齐）：学习计划 / 生活计划 / 考核排期。
  *
  * 与旧客户端工具（P4 删除前）语义一一对应，但**不再走 HTTP 自调用**——直接读写
- * 服务端数据真源（孩子 kb 的 study_plans / life_plans + 主库 exam_schedules），
+ * 服务端数据真源（孩子 kb 的 study_plans / life_plans / exam_plans + plan_recurrences），
  * SQL 与各路由严格对齐（study-plans.ts / plans-rewards.ts / exam.ts），改路由须同步改这里。
+ * 2026-09-14 考核域重构：exam_schedules 排期表已取消——自定义考核直接写孩子库 exam_plans；
+ * 每日/每周固定考核为配置项（settings `exam_fixed:<parentId>`），worker 每天生成当天考核计划。
  *
+ * 命名约定：家长端工具一律 `parent_` 前缀；孩子端工具一律 `child_` 前缀（plan-tools.ts）。
  * 工具清单（对应旧实现）：
- *   parent_list_children   孩子名单（childName 解析的基础，也是家长 agent 基础工具）
- *   study_plan_sources     孩子课程结构（起草案期前查，只读）
- *   study_plan_create      学习计划排期（days[]，一次可排多天；「复习：」前缀 → review）
- *   study_plan_list        排期行列表（含行 id，改/删前先 list）
- *   study_plan_get         某天安排（当日聚合，含 carry 顺延与生活计划）
- *   study_plan_update      delete / reschedule / setmode
- *   parent_plan_create     生活计划（必须完成项，creator=parent，防重）
- *   exam_schedule_create   自定义考核排期（courses 必须为精确课程名）
+ *   parent_list_children      孩子名单（childName 解析的基础，也是家长 agent 基础工具）
+ *   parent_study_plan_sources     孩子课程结构（起草案期前查，只读）
+ *   parent_study_plan_create      学习计划排期（days[]，一次可排多天；「复习：」前缀 → review）
+ *   parent_study_plan_list        排期行列表（含行 id，改/删前先 list）
+ *   parent_study_plan_get         某天安排（当日聚合，含 carry 顺延与生活计划）
+ *   parent_study_plan_update      delete / reschedule / setmode
+ *   parent_life_plan_create       生活计划（必须完成项，creator=parent，防重）
+ *   parent_life_plan_list         查看孩子生活计划（行 id，改删前先 list）
+ *   parent_life_plan_update       修改生活计划（delete / reschedule / rename；家长可操作任意 creator 行）
+ *   parent_exam_plan_create       自定义考核计划（直接写孩子库 exam_plans；courses 必须为精确课程名）
+ *   parent_exam_plan_list         查看孩子考核计划（孩子库 exam_plans；行 id，改/删/开考前先 list）
+ *   parent_exam_plan_cancel       取消/删除孩子库考核计划（软删 active=0/status=cancelled，done 不可取消；实际考核场次在主库 exam_attempts）
  */
 import crypto from "node:crypto";
 import { Type } from "typebox";
@@ -58,6 +65,20 @@ function resolvePlanChild(db: DatabaseSync, parentId: string, childName: string)
   return hit;
 }
 
+/** 许可允许的最大孩子数（license_json.max_children；无/非法 → null 表示不限制）。 */
+function maxChildrenAllowed(db: DatabaseSync, parentId: string): number | null {
+  try {
+    const row = db.prepare("SELECT license_json FROM parents WHERE id = ?").get(parentId) as
+      | { license_json?: string | null }
+      | undefined;
+    const lic = row?.license_json ? (JSON.parse(row.license_json) as { max_children?: unknown }) : {};
+    const n = Number(lic.max_children);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  } catch {
+    return null;
+  }
+}
+
 interface SpRow {
   id: string;
   child_id: string;
@@ -81,6 +102,29 @@ function readStudyPlans(dataDir: string, parentId: string, childId: string): SpR
     return kb
       .prepare("SELECT * FROM study_plans ORDER BY start_at DESC, created_at ASC LIMIT 2000")
       .all() as unknown as SpRow[];
+  } finally {
+    kb.close();
+  }
+}
+
+interface LpRow {
+  id: string;
+  child_id: string;
+  title: string;
+  creator: string;
+  origin: string;
+  start_at: string;
+  due_at: string;
+  status: string;
+  done_at: string;
+}
+
+function readLifePlans(dataDir: string, parentId: string, childId: string): LpRow[] {
+  const kb = openKb(dataDir, parentId, childId);
+  try {
+    return kb
+      .prepare("SELECT * FROM life_plans WHERE active = 1 ORDER BY due_at, created_at")
+      .all() as unknown as LpRow[];
   } finally {
     kb.close();
   }
@@ -135,8 +179,117 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     },
   });
 
+  const childCreateTool = defineTool({
+    name: "parent_child_create",
+    label: "添加孩子",
+    description:
+      "为家长添加一个**孩子**（只写档案，不设密码）。\n" +
+      "**参数**：`name` 必填（孩子姓名）；可选 `aiName`（AI 伙伴名字）/ `aiEmoji`（头像表情）/ `aiPersonality`（AI 性格）/ `age`（年龄）/ `grade`（年级）/ `interests`（兴趣）。\n" +
+      "**注意**：孩子登录密码**不能**由本工具设置——请家长到「孩子管理」里为孩子设置/重置密码。受家长账号的孩子数量上限约束。",
+    parameters: Type.Object({
+      name: Type.String({ description: "孩子姓名" }),
+      aiName: Type.Optional(Type.String({ description: "AI 伙伴名字" })),
+      aiEmoji: Type.Optional(Type.String({ description: "头像表情" })),
+      aiPersonality: Type.Optional(Type.String({ description: "AI 伙伴性格" })),
+      age: Type.Optional(Type.Number({ description: "年龄" })),
+      grade: Type.Optional(Type.String({ description: "年级" })),
+      interests: Type.Optional(Type.String({ description: "兴趣" })),
+    }),
+    execute: async (_id: string, params: Record<string, unknown>) => {
+      const name = String(params.name ?? "").trim();
+      if (!name) throw new Error("parent_child_create 需要 name（孩子姓名）");
+      if (name.length > 40) throw new Error("姓名过长（≤40 字）");
+      const max = maxChildrenAllowed(db, parentId);
+      if (max != null) {
+        const cnt = (db.prepare("SELECT COUNT(*) AS n FROM children WHERE parent_id = ?").get(parentId) as { n: number }).n;
+        if (cnt >= max) throw new Error(`已到孩子数量上限（${max} 个）。如需增加请升级订阅或先删除不用的孩子。`);
+      }
+      const dup = db.prepare("SELECT id FROM children WHERE parent_id = ? AND name = ?").get(parentId, name);
+      if (dup) throw new Error(`已存在名为「${name}」的孩子（请换名字或编辑现有孩子）。`);
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const profile: Record<string, unknown> = { createdAt: now };
+      if (String(params.aiName ?? "").trim()) profile.aiName = String(params.aiName).trim();
+      if (String(params.aiEmoji ?? "").trim()) profile.aiEmoji = String(params.aiEmoji).trim();
+      if (String(params.aiPersonality ?? "").trim()) profile.aiPersonality = String(params.aiPersonality).trim();
+      if (params.age != null) profile.age = Number(params.age);
+      if (String(params.grade ?? "").trim()) profile.grade = String(params.grade).trim();
+      if (String(params.interests ?? "").trim()) profile.interests = String(params.interests).trim();
+      db.prepare(
+        "INSERT INTO children (id, parent_id, name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(id, parentId, name, JSON.stringify(profile), now, now);
+      return ok(`已添加孩子「${name}」${String(params.aiName ?? "").trim() ? `（AI 伙伴：${String(params.aiName).trim()}）` : ""}。孩子登录密码请家长到「孩子管理」里设置。`);
+    },
+  });
+
+  const childUpdateTool = defineTool({
+    name: "parent_child_update",
+    label: "编辑孩子档案",
+    description:
+      "编辑某孩子的档案（姓名 / AI 伙伴名字与性格 / 年龄 / 年级 / 兴趣）。\n" +
+      "**参数**：`childName` 必填（现有孩子姓名，用于定位）；其余可选，只改你传的字段。\n" +
+      "**注意**：不改密码（密码由家长在「孩子管理」里重置）。",
+    parameters: Type.Object({
+      childName: Type.String({ description: "现有孩子姓名（定位用）" }),
+      name: Type.Optional(Type.String({ description: "新姓名（改名）" })),
+      aiName: Type.Optional(Type.String({ description: "AI 伙伴名字" })),
+      aiEmoji: Type.Optional(Type.String({ description: "头像表情" })),
+      aiPersonality: Type.Optional(Type.String({ description: "AI 伙伴性格" })),
+      age: Type.Optional(Type.Number({ description: "年龄" })),
+      grade: Type.Optional(Type.String({ description: "年级" })),
+      interests: Type.Optional(Type.String({ description: "兴趣" })),
+    }),
+    execute: async (_id: string, params: Record<string, unknown>) => {
+      const child = resolvePlanChild(db, parentId, String(params.childName ?? ""));
+      const row = db.prepare("SELECT profile_json FROM children WHERE id = ?").get(child.id) as
+        | { profile_json?: string | null }
+        | undefined;
+      let merged: Record<string, unknown> = {};
+      if (row?.profile_json) {
+        try {
+          merged = JSON.parse(row.profile_json) as Record<string, unknown>;
+        } catch {
+          merged = {};
+        }
+      }
+      const changed: string[] = [];
+      const newName = String(params.name ?? "").trim();
+      if (newName) {
+        db.prepare("UPDATE children SET name = ?, updated_at = ? WHERE id = ?").run(newName, new Date().toISOString(), child.id);
+        changed.push(`改名「${newName}」`);
+      }
+      if (String(params.aiName ?? "").trim()) {
+        merged.aiName = String(params.aiName).trim();
+        changed.push("AI 伙伴名字");
+      }
+      if (String(params.aiEmoji ?? "").trim()) merged.aiEmoji = String(params.aiEmoji).trim();
+      if (String(params.aiPersonality ?? "").trim()) {
+        merged.aiPersonality = String(params.aiPersonality).trim();
+        changed.push("AI 性格");
+      }
+      if (params.age != null) {
+        merged.age = Number(params.age);
+        changed.push("年龄");
+      }
+      if (String(params.grade ?? "").trim()) {
+        merged.grade = String(params.grade).trim();
+        changed.push("年级");
+      }
+      if (String(params.interests ?? "").trim()) {
+        merged.interests = String(params.interests).trim();
+        changed.push("兴趣");
+      }
+      db.prepare("UPDATE children SET profile_json = ?, updated_at = ? WHERE id = ?").run(
+        JSON.stringify(merged),
+        new Date().toISOString(),
+        child.id
+      );
+      return ok(`已更新「${newName || child.name}」${changed.length ? `（${changed.join("、")}）` : "（无字段变化）"}。`);
+    },
+  });
+
   const sourcesTool = defineTool({
-    name: "study_plan_sources",
+    name: "parent_study_plan_sources",
     label: "查看孩子课程结构（起草计划用）",
     description:
       "查看某孩子的**课程结构**（只读，起草案期前先查这里，不猜课程名）：列出孩子每个主题下有哪些课、哪些还没学。\n" +
@@ -180,13 +333,13 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
   });
 
   const createTool = defineTool({
-    name: "study_plan_create",
+    name: "parent_study_plan_create",
     label: "创建学习计划排期（逐日）",
     description:
       "为某孩子创建**学习计划排期**（「每天学什么」的逐日安排，服务端真源）。一次调用可排**多天**，也可一天多课。\n" +
       "**参数**：`childName` 必填；`days` 必填数组，每项 = `date`（YYYY-MM-DD，口语「周五」先换算成日期）+ `content`（当天课程名数组，一项一课）。\n" +
       "**新学 / 复习**：库内每行带 mode 字段（new=新学 / review=复习）；排某课为复习时在内容前加「复习：」前缀（如 \"复习：论语学而篇第一章\"）。已学完的课要巩固就走复习。\n" +
-      "**用前先查**：排前先 `study_plan_sources` 查孩子真实课程名，按**真实存在的课程名**安排；空天 = 不要求学。同日同课已存在会自动跳过；未学完次日自动顺延。",
+      "**用前先查**：排前先 `parent_study_plan_sources` 查孩子真实课程名，按**真实存在的课程名**安排；空天 = 不要求学。同日同课已存在会自动跳过；未学完次日自动顺延。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       days: Type.Array(
@@ -200,7 +353,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     execute: async (_id: string, params: { childName: string; days: Array<{ date: string; content: string[] }> }) => {
       const child = resolvePlanChild(db, parentId, params.childName);
       const days = Array.isArray(params.days) ? params.days : [];
-      if (!days.length) throw new Error("study_plan_create 需要 days（至少一天的安排）");
+      if (!days.length) throw new Error("parent_study_plan_create 需要 days（至少一天的安排）");
       const created: string[] = [];
       for (const day of days) {
         const date = String(day.date ?? "").trim();
@@ -244,12 +397,12 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         }
         created.push(`${date}：新增 ${inserted.length} 项（${inserted.join("、")}）`);
       }
-      return ok(`已为「${child.name}」创建学习计划：\n${created.map((c) => `- ${c}`).join("\n")}\n（未学完会自动顺延到次日；想改某天用 study_plan_list 看当前安排）`);
+      return ok(`已为「${child.name}」创建学习计划：\n${created.map((c) => `- ${c}`).join("\n")}\n（未学完会自动顺延到次日；想改某天用 parent_study_plan_list 看当前安排）`);
     },
   });
 
   const listTool = defineTool({
-    name: "study_plan_list",
+    name: "parent_study_plan_list",
     label: "查看学习计划（排期行列表）",
     description:
       "查看某孩子的**全部生效学习计划排期行**（一课一行）：date / 课程 / mode（新学|复习）/ 完成态 / 来源（家长排 or 📋 顺延）/ **行 id**（改删某行用它）。\n" +
@@ -271,12 +424,12 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           (r) =>
             `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${r.course_name}｜${r.mode === "review" ? "复习" : "新学"}｜${r.status === "done" ? "✅ 已学" : "⬜ 待学"}${r.origin === "carry" ? "｜📋 顺延" : ""}`
         );
-      return ok(`「${child.name}」的学习计划（共 ${rows.length} 行，行 id 取前 8 位即可）：\n${lines.join("\n")}`);
+      return ok(`「${child.name}」的学习计划（共 ${rows.length} 行，行 id 取前 8 位）：\n${lines.join("\n")}`);
     },
   });
 
   const getTool = defineTool({
-    name: "study_plan_get",
+    name: "parent_study_plan_get",
     label: "查看某天学习安排",
     description:
       "查看某孩子**某一天**的学习与生活安排（当日窗口聚合；📋 = 前一天没学完自动顺延来的）。\n" +
@@ -326,18 +479,18 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
   });
 
   const updateTool = defineTool({
-    name: "study_plan_update",
+    name: "parent_study_plan_update",
     label: "修改学习计划（删/挪天/改复习）",
     description:
-      "修改某孩子**已有的一条排期**（一课一行；先 study_plan_list 拿行 id）。三种动作：\n" +
+      "修改某孩子**已有的一条排期**（一课一行；先 parent_study_plan_list 拿行 id）。三种动作：\n" +
       "- `delete` + `id`：删除该课的这条排期\n" +
       "- `reschedule` + `id` + `date`：把该课挪到另一天\n" +
       "- `setmode` + `id` + `mode`（new|review）：新学 ↔ 复习\n" +
-      "改完可用 study_plan_get 核对。",
+      "改完可用 parent_study_plan_get 核对。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       act: Type.String({ description: "动作：delete | reschedule | setmode" }),
-      id: Type.String({ description: "排期行 id（study_plan_list 返回；可传前 8 位）" }),
+      id: Type.String({ description: "排期行 id（parent_study_plan_list 返回；可传前 8 位）" }),
       date: Type.Optional(Type.String({ description: "reschedule 时必填：改到哪天 YYYY-MM-DD" })),
       mode: Type.Optional(Type.String({ description: "setmode 时必填：new=新学 / review=复习" })),
     }),
@@ -345,14 +498,14 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       const child = resolvePlanChild(db, parentId, params.childName);
       const act = String(params.act ?? "").trim();
       if (!["delete", "reschedule", "setmode"].includes(act)) {
-        throw new Error("study_plan_update 的 act 仅支持 delete / reschedule / setmode");
+        throw new Error("parent_study_plan_update 的 act 仅支持 delete / reschedule / setmode");
       }
       const wantId = String(params.id ?? "").trim();
       // 全部孩子的行里定位（行 id 可能截短；本工具按该孩子查找即可，家长只能动自己孩子的）
       let row: SpRow | undefined;
       const all = readStudyPlans(dataDir, parentId, child.id);
       row = all.find((r) => r.id === wantId || r.id.startsWith(wantId));
-      if (!row) throw new Error("找不到排期行（先 study_plan_list 核对行 id）");
+      if (!row) throw new Error("找不到排期行（先 parent_study_plan_list 核对行 id）");
       const kb = openKb(dataDir, parentId, child.id);
       try {
         if (act === "delete") {
@@ -378,7 +531,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
   });
 
   const lifeCreateTool = defineTool({
-    name: "parent_plan_create",
+    name: "parent_life_plan_create",
     label: "创建孩子生活计划（必须完成项）",
     description:
       "为孩子创建**生活计划**（必须完成项，制定人=家长）：日常任务类安排，如「每天整理书包」「周五前完成手工」「睡前阅读 20 分钟」。\n" +
@@ -398,7 +551,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     execute: async (_id: string, params: { childName: string; days: Array<{ date: string; title: string; time?: string }> }) => {
       const child = resolvePlanChild(db, parentId, params.childName);
       const days = Array.isArray(params.days) ? params.days : [];
-      if (!days.length) throw new Error("parent_plan_create 需要 days（至少一天的生活安排）");
+      if (!days.length) throw new Error("parent_life_plan_create 需要 days（至少一天的生活安排）");
       const created: string[] = [];
       for (const d of days) {
         const date = String(d.date ?? "").trim();
@@ -438,60 +591,525 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     },
   });
 
-  const examCreateTool = defineTool({
-    name: "exam_schedule_create",
-    label: "创建自定义考核排期",
+  const lifeListTool = defineTool({
+    name: "parent_life_plan_list",
+    label: "查看孩子生活计划",
     description:
-      "为某孩子创建一次**自定义考核排期**（家长对话预约：某天考什么内容；到当天孩子即可在考核页参加）。\n" +
+      "查看某孩子的**全部生效生活计划**（必须完成项 + 加分项）：title / 制定人 / 日期 / 完成态 / **行 id**（改删前先 list）。\n" +
+      "**可选过滤**：from / to（YYYY-MM-DD，含边界）。",
+    parameters: Type.Object({
+      childName: Type.String({ description: "孩子姓名" }),
+      from: Type.Optional(Type.String({ description: "只看此日期（含）之后的计划行" })),
+      to: Type.Optional(Type.String({ description: "只看此日期（含）之前的计划行" })),
+    }),
+    execute: async (_id: string, params: { childName: string; from?: string; to?: string }) => {
+      const child = resolvePlanChild(db, parentId, params.childName);
+      let rows = readLifePlans(dataDir, parentId, child.id);
+      if (params.from) rows = rows.filter((r) => (r.start_at || "").slice(0, 10) >= params.from!);
+      if (params.to) rows = rows.filter((r) => (r.due_at || "").slice(0, 10) <= params.to!);
+      if (!rows.length) return ok(`「${child.name}」当前没有生活计划。`);
+      const lines = rows
+        .slice(0, 120)
+        .map(
+          (r) =>
+            `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${r.title}｜${r.creator === "parent" ? "必须完成项" : "加分项"}｜${r.status === "done" ? "✅ 已完成" : r.status === "missed" ? "❌ 未完成" : "⬜ 待完成"}${r.origin === "carry" ? "｜📋 顺延" : ""}`
+        );
+      return ok(`「${child.name}」的生活计划（共 ${rows.length} 行，行 id 取前 8 位）：\n${lines.join("\n")}`);
+    },
+  });
+
+  const lifeUpdateTool = defineTool({
+    name: "parent_life_plan_update",
+    label: "修改生活计划（删/挪天/改名）",
+    description:
+      "修改某孩子**已有的一条生活计划**（先 parent_life_plan_list 拿行 id）。三种动作：\n" +
+      "- `delete` + `id`：删除该条生活计划\n" +
+      "- `reschedule` + `id` + `date`：把该条改到另一天（保留原截止时刻）\n" +
+      "- `rename` + `id` + `title`：改事项名称\n" +
+      "家长可操作任意 creator 的行（含孩子自己创建的加分项）。改完可用 parent_study_plan_get 核对。",
+    parameters: Type.Object({
+      childName: Type.String({ description: "孩子姓名" }),
+      act: Type.String({ description: "动作：delete | reschedule | rename" }),
+      id: Type.String({ description: "生活计划行 id（parent_life_plan_list 返回；可传前 8 位）" }),
+      date: Type.Optional(Type.String({ description: "reschedule 时必填：改到哪天 YYYY-MM-DD" })),
+      title: Type.Optional(Type.String({ description: "rename 时必填：新名称" })),
+    }),
+    execute: async (_id: string, params: { childName: string; act: string; id: string; date?: string; title?: string }) => {
+      const child = resolvePlanChild(db, parentId, params.childName);
+      const act = String(params.act ?? "").trim();
+      if (!["delete", "reschedule", "rename"].includes(act)) {
+        throw new Error("parent_life_plan_update 的 act 仅支持 delete / reschedule / rename");
+      }
+      const wantId = String(params.id ?? "").trim();
+      const all = readLifePlans(dataDir, parentId, child.id);
+      const row = all.find((r) => r.id === wantId || r.id.startsWith(wantId));
+      if (!row) throw new Error("找不到生活计划行（先 parent_life_plan_list 核对行 id）");
+      const kb = openKb(dataDir, parentId, child.id);
+      try {
+        if (act === "delete") {
+          kb.prepare("DELETE FROM life_plans WHERE id = ?").run(row.id);
+          return ok(`已删除「${child.name}」的生活计划「${row.title}」。`);
+        }
+        if (act === "reschedule") {
+          const date = String(params.date ?? "").trim();
+          if (!validDate(date)) throw new Error(`reschedule 需要 date（YYYY-MM-DD）：${date}`);
+          const oldTime = (row.start_at || "").length > 11 ? (row.start_at || "").slice(11) : "00:00:00";
+          kb.prepare("UPDATE life_plans SET start_at = ?, due_at = ?, updated_at = ? WHERE id = ?").run(
+            `${date} 00:00:00`, `${date} ${oldTime.slice(0, 8)}`, new Date().toISOString(), row.id
+          );
+          return ok(`已将「${child.name}」的生活计划「${row.title}」改到 ${date}。`);
+        }
+        const title = String(params.title ?? "").trim();
+        if (!title) throw new Error("rename 需要 title（新名称）");
+        if (title.length > 200) throw new Error("title 过长（≤200 字）");
+        kb.prepare("UPDATE life_plans SET title = ?, updated_at = ? WHERE id = ?").run(title, new Date().toISOString(), row.id);
+        return ok(`已将「${child.name}」的生活计划改名为「${title}」。`);
+      } finally {
+        kb.close();
+      }
+    },
+  });
+
+  const examCreateTool = defineTool({
+    name: "parent_exam_plan_create",
+    label: "创建自定义考核计划",
+    description:
+      "为某孩子创建一次**自定义考核计划**（家长对话预约：某天考什么内容；直接写入孩子库考核计划，到当天孩子即可在考核页参加）。\n" +
       "**参数**：`childName` 必填；`scheduledAt` 考核日期（YYYY-MM-DD，按日期全天可考）；`courses` **必填**且必须是**精确课程名**数组。\n" +
-      "**约束（2026-09-09 起）**：自定义考核不再做运行时选课——必须现在就把「考乡党篇最近学的 3 课」这类描述**解析成精确课程名**（可先 study_plan_sources / parent_library_courses 查），信息不全必须向家长确认，**不要自行猜测**。\n" +
-      "`note` 可选（给孩子的说明）。",
+      "**约束（2026-09-09 起）**：自定义考核不再做运行时选课——必须现在就把「考乡党篇最近学的 3 课」这类描述**解析成精确课程名**（可先 parent_study_plan_sources / parent_library_courses 查），信息不全必须向家长确认，**不要自行猜测**。\n" +
+      "`note` 可选（给孩子的说明）。\n" +
+      "**本次方法覆盖 `methodSpec`（可选）**：当家长说「这次只考背诵 / 不考选择题 / 只考某几个知识点」等本次特殊要求时用它，只影响这一次考核、覆盖主题默认方法：\n" +
+      "  - `require`：只考这些**知识点**（键=知识点名或其 uuid，值=每个知识点抽几题，缺省 1）；留空=按主题默认（该课全部知识点）；\n" +
+      "  - `exclude`：排除这些**知识点**（键=知识点名或 uuid）；\n" +
+      "  - `recitePass`：背诵/朗读题本次通过线（0-100，缺省 90）。\n" +
+      "  仅当家长明确表达本次差异时才传；不传即沿用主题方法。知识点名要与该课的知识点一致（可先 parent_study_plan_sources 看清课程，必要时问家长具体知识点）。\n" +
+      "同一天已有一条未考的自定义考核计划时不会重复创建（需更换内容请先取消原计划）。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       scheduledAt: Type.String({ description: "考核日期 YYYY-MM-DD（口语先换算）" }),
       courses: Type.Array(Type.String({ description: "要考核的精确课程名（必填）" })),
       note: Type.Optional(Type.String({ description: "考核内容说明（给孩子的提示，可空）" })),
+      methodSpec: Type.Optional(
+        Type.Object({
+          require: Type.Optional(
+            Type.Record(Type.String(), Type.Number(), {
+              description: "本次只考这些知识点：{知识点名或uuid: 抽题数}（缺省每个 1 题）",
+            })
+          ),
+          exclude: Type.Optional(Type.Array(Type.String(), { description: "本次排除的知识点名或 uuid" })),
+          recitePass: Type.Optional(Type.Number({ description: "背诵/朗读题本次通过线 0-100（缺省 90）" })),
+        })
+      ),
     }),
-    execute: async (_id: string, params: { childName: string; scheduledAt: string; courses: string[]; note?: string }) => {
+    execute: async (
+      _id: string,
+      params: {
+        childName: string;
+        scheduledAt: string;
+        courses: string[];
+        note?: string;
+        methodSpec?: { require?: Record<string, number>; exclude?: string[]; recitePass?: number };
+      }
+    ) => {
       const child = resolvePlanChild(db, parentId, params.childName);
       const scheduledAt = String(params.scheduledAt ?? "").trim();
-      if (!scheduledAt) throw new Error("exam_schedule_create 需要 scheduledAt（考核日期）");
+      if (!scheduledAt) throw new Error("parent_exam_plan_create 需要 scheduledAt（考核日期）");
       const courses = (params.courses ?? []).map((c) => String(c).trim()).filter(Boolean);
       if (!courses.length) {
         throw new Error("请先确定这次要考核的**具体课程**（courses）再创建：把家长说的内容范围解析成课程名（可先查孩子的课程/学习记录），或向家长确认。");
       }
       const parsedAt = new Date(scheduledAt);
       if (Number.isNaN(parsedAt.getTime())) throw new Error(`考核日期无法解析：${scheduledAt}`);
-      const d = new Date(parsedAt.getTime());
-      d.setHours(0, 0, 0, 0);
-      const id = `sch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const scope = JSON.stringify({ topics: [], courses, note: String(params.note ?? "") });
-      db.prepare(
-        "INSERT INTO exam_schedules (id, parent_id, child_id, kind, freq, scheduled_at, scope, status, created_at) VALUES (?, ?, ?, 'custom', '', ?, ?, 'pending', ?)"
-      ).run(id, parentId, child.id, new Date(d.getTime()).toISOString(), scope, new Date().toISOString());
-      return ok(`已为孩子「${child.name}」创建自定义考核排期（${scheduledAt}），考核课程：${courses.join("、")}${params.note ? `；说明：${params.note}` : ""}。到当天孩子即可在考核页参加。`);
+      const pd = (n: number) => String(n).padStart(2, "0");
+      const day = `${parsedAt.getFullYear()}-${pd(parsedAt.getMonth() + 1)}-${pd(parsedAt.getDate())}`;
+      const id = `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      // scope.methodSpec（可选）：本次方法覆盖（require/exclude/recitePass），读取侧见 assess-selection.ts
+      const methodSpec = params.methodSpec;
+      const hasMethodSpec =
+        !!methodSpec && (!!methodSpec.require || (methodSpec.exclude?.length ?? 0) > 0 || methodSpec.recitePass != null);
+      const scope = JSON.stringify({
+        topics: [],
+        courses,
+        note: String(params.note ?? ""),
+        ...(hasMethodSpec ? { methodSpec } : {}),
+      });
+      const kb = openKb(dataDir, parentId, child.id);
+      try {
+        const dup = kb
+          .prepare(
+            "SELECT id FROM exam_plans WHERE child_id = ? AND kind = 'custom' AND creator = 'parent' AND active = 1 AND status = 'pending' AND substr(start_at,1,10) = ?"
+          )
+          .get(child.id, day) as { id: string } | undefined;
+        if (dup) {
+          return ok(`「${child.name}」${day} 已有一条未考的自定义考核计划，未重复创建（需更换内容请先取消原计划）。`);
+        }
+        const now = new Date().toISOString();
+        kb.prepare(
+          `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
+             start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
+           VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','',?,?, 'pending','',NULL,'','','required',1,0,1,?,?)`
+        ).run(id, parentId, child.id, scope, `${day} 00:00:00`, `${day} 23:59:59`, now, now);
+      } finally {
+        kb.close();
+      }
+      const ovNote = hasMethodSpec
+        ? `；本次方法覆盖：${[
+            methodSpec?.require ? `只考 ${Object.keys(methodSpec.require).join("、")}` : "",
+            methodSpec?.exclude?.length ? `排除 ${methodSpec.exclude.join("、")}` : "",
+            methodSpec?.recitePass != null ? `背诵通过线 ${methodSpec.recitePass}` : "",
+          ]
+            .filter(Boolean)
+            .join("；")}`
+        : "";
+      return ok(
+        `已为孩子「${child.name}」创建考核计划（${day}），考核课程：${courses.join("、")}${params.note ? `；说明：${params.note}` : ""}${ovNote}。到当天孩子即可在考核页参加。`
+      );
+    },
+  });
+
+  const examListTool = defineTool({
+    name: "parent_exam_plan_list",
+    label: "查看孩子考核计划",
+    description:
+      "查看某孩子的**考核计划**（孩子库 exam_plans，出现在「今日计划」；含固定档配置生成的、家长自定义的、孩子自请的三类）：日期 / 类型 / 制定人 / 状态 / 行 id。\n" +
+      "**取消某条考核计划**用 parent_exam_plan_cancel。实际考核场次（孩子真正提交的考试，含逐题记录）在主库 exam_attempts，可在家长端「考核记录」查看，不受取消影响。\n" +
+      "**可选过滤**：from / to（YYYY-MM-DD，含边界）。",
+    parameters: Type.Object({
+      childName: Type.String({ description: "孩子姓名" }),
+      from: Type.Optional(Type.String({ description: "只看此日期（含）之后的考核计划" })),
+      to: Type.Optional(Type.String({ description: "只看此日期（含）之前的考核计划" })),
+    }),
+    execute: async (_id: string, params: { childName: string; from?: string; to?: string }) => {
+      const child = resolvePlanChild(db, parentId, params.childName);
+      let rows: Array<{
+        id: string;
+        title: string;
+        creator: string;
+        kind: string;
+        freq: string;
+        status: string;
+        score: number | null;
+        start_at: string;
+        scope_json: string;
+      }> = [];
+      const kb = openKb(dataDir, parentId, child.id);
+      try {
+        rows = kb
+          .prepare(
+            "SELECT id, title, creator, kind, freq, status, score, start_at, scope_json FROM exam_plans WHERE child_id = ? AND active = 1 ORDER BY start_at DESC LIMIT 500"
+          )
+          .all(child.id) as unknown as typeof rows;
+      } finally {
+        kb.close();
+      }
+      if (params.from) rows = rows.filter((r) => (r.start_at || "").slice(0, 10) >= params.from!);
+      if (params.to) rows = rows.filter((r) => (r.start_at || "").slice(0, 10) <= params.to!);
+      if (!rows.length) return ok(`「${child.name}」当前没有考核计划。`);
+      const lines = rows.slice(0, 120).map((r) => {
+        let courses = "";
+        try {
+          const sc = JSON.parse(r.scope_json || "{}") as { courses?: unknown };
+          courses = Array.isArray(sc.courses) ? sc.courses.map((x) => String(x)).join("、") : "";
+        } catch {
+          /* ignore */
+        }
+        const type = r.kind === "custom" ? "自定义" : r.kind === "fixed" ? `固定（${r.freq || "定档"}）` : r.kind || "考核";
+        const who = r.creator === "child" ? "｜孩子自请" : "";
+        const st =
+          r.status === "done"
+            ? `✅ 已完成${r.score != null ? `（${r.score} 分）` : ""}`
+            : r.status === "missed"
+              ? "❌ 未完成"
+              : r.status === "cancelled"
+                ? "🚫 已取消"
+                : "⬜ 待考";
+        return `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${type}${who}｜${r.title || "考核"}｜${st}${courses ? `｜${courses}` : ""}`;
+      });
+      return ok(
+        `「${child.name}」的考核计划（共 ${rows.length} 行，行 id 取前 8 位；取消某条用 parent_exam_plan_cancel）：\n${lines.join("\n")}`
+      );
+    },
+  });
+
+  const examCancelTool = defineTool({
+    name: "parent_exam_plan_cancel",
+    label: "取消/删除考核计划",
+    description:
+      "取消某孩子**的一条考核计划**（孩子库 exam_plans，出现在「今日计划」。实际考核场次 = 主库 exam_attempts，孩子真正提交的考试及其逐题记录，不受本工具影响）。\n" +
+      "考核计划一旦生成默认只增不删；本工具按**计划行 id**（先 parent_exam_plan_list 拿 id）做**软删除**：置 active=0、status='cancelled'，历史行保留供审计，但不再计入完成率/掌握度。\n" +
+      "已考完（status='done'）的考核计划不允许取消（保留成绩）。",
+    parameters: Type.Object({
+      childName: Type.String({ description: "孩子姓名" }),
+      id: Type.String({ description: "考核计划行 id（可传前 8 位）" }),
+    }),
+    execute: async (_id: string, params: { childName: string; id: string }) => {
+      const child = resolvePlanChild(db, parentId, params.childName);
+      const wantId = String(params.id ?? "").trim();
+      if (!wantId) throw new Error("parent_exam_plan_cancel 需要 id（考核计划行 id）");
+      const kb = openKb(dataDir, parentId, child.id);
+      try {
+        const rows = kb
+          .prepare("SELECT id, title, status FROM exam_plans WHERE child_id = ? AND active = 1")
+          .all(child.id) as unknown as Array<{ id: string; title: string; status: string }>;
+        const row = rows.find((r) => r.id === wantId || r.id.startsWith(wantId));
+        if (!row) throw new Error("找不到考核计划（active 行里匹配不到该 id）");
+        if (row.status === "done") {
+          throw new Error(`考核计划「${row.title}」已考完，不能取消（成绩需保留，可在考核记录里查看）。`);
+        }
+        kb.prepare("UPDATE exam_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
+          new Date().toISOString(),
+          row.id
+        );
+        return ok(`已取消「${child.name}」的考核计划「${row.title}」（软删除，历史保留、不计入完成率）。`);
+      } finally {
+        kb.close();
+      }
+    },
+  });
+
+  const recurrenceCreateTool = defineTool({
+    name: "parent_recurrence_create",
+    label: "创建重复计划（每日/每周固定项）",
+    description:
+      "为孩子创建**重复计划**（固定项）：系统每天按规则**自动展开成当天的计划行**，无需逐天排。\n" +
+      "**参数**：`childName` 必填；`planType`（life 生活 / study 学习）；`rule`（daily 每天 / weekly 每周，weekly 必须给 `weekday` 0=周日…6=周六）；\n" +
+      "  - planType=life：`title` 必填（要做的事，如「每天背 5 个单词」）；\n" +
+      "  - planType=study：`courses` 必填（精确课程名数组，每门课生成一条规则）；\n" +
+      "  可选：`startDate`（生效起始日，缺省今天）、`endDate`（结束日，含；缺省长期有效）。\n" +
+      "**语义**：这些是家长制定的**必须完成项**（required），展开的行当天未完成会顺延。想停用/删除规则用 parent_recurrence_update。",
+    parameters: Type.Object({
+      childName: Type.String({ description: "孩子姓名" }),
+      planType: Type.String({ description: "life（生活）| study（学习）" }),
+      rule: Type.String({ description: "daily（每天）| weekly（每周）" }),
+      weekday: Type.Optional(Type.Number({ description: "weekly 必填：0=周日 … 6=周六" })),
+      startDate: Type.Optional(Type.String({ description: "生效起始日 YYYY-MM-DD（缺省=今天）" })),
+      endDate: Type.Optional(Type.String({ description: "结束日 YYYY-MM-DD（含；缺省=长期有效）" })),
+      title: Type.Optional(Type.String({ description: "planType=life 必填：要做的事" })),
+      courses: Type.Optional(Type.Array(Type.String(), { description: "planType=study 必填：精确课程名数组" })),
+    }),
+    execute: async (
+      _id: string,
+      params: {
+        childName: string;
+        planType: string;
+        rule: string;
+        weekday?: number;
+        startDate?: string;
+        endDate?: string;
+        title?: string;
+        courses?: string[];
+      }
+    ) => {
+      const child = resolvePlanChild(db, parentId, params.childName);
+      const planType = String(params.planType ?? "").trim();
+      if (planType !== "life" && planType !== "study") throw new Error("planType 仅支持 life / study");
+      const rule = String(params.rule ?? "").trim();
+      if (rule !== "daily" && rule !== "weekly") throw new Error("rule 仅支持 daily / weekly");
+      let weekday: number | null = null;
+      if (rule === "weekly") {
+        const w = Number(params.weekday);
+        if (!Number.isInteger(w) || w < 0 || w > 6) throw new Error("weekly 需要 weekday（0=周日 … 6=周六）");
+        weekday = w;
+      }
+      const startDate = String(params.startDate ?? "").trim() || localToday();
+      if (!validDate(startDate)) throw new Error(`startDate 格式应为 YYYY-MM-DD：${startDate}`);
+      const endDate = String(params.endDate ?? "").trim();
+      if (endDate && !validDate(endDate)) throw new Error(`endDate 格式应为 YYYY-MM-DD：${endDate}`);
+
+      // 组装 payload（每类一条/多条；study 每门课一条）
+      const payloads: Array<{ label: string; payload: Record<string, unknown> }> = [];
+      if (planType === "life") {
+        const title = String(params.title ?? "").trim();
+        if (!title) throw new Error("planType=life 需要 title（要做的事）");
+        if (title.length > 200) throw new Error("title 过长（≤200 字）");
+        payloads.push({ label: title, payload: { title, creator: "parent", task_type: "required", count_in_rate: 1, points: 0 } });
+      } else {
+        const names = (params.courses ?? []).map((c) => String(c).trim()).filter(Boolean);
+        if (!names.length) throw new Error("planType=study 需要 courses（课程名数组）");
+        if (names.length > 20) throw new Error("courses 过多（≤20 门）");
+        const { titleToTopic, titleToUuid } = buildCourseLookup(dataDir, parentId);
+        const missing = names.filter((n) => !titleToTopic.has(n));
+        if (missing.length) throw new Error(`课程名不存在：${missing.join("、")}（可先 parent_study_plan_sources / parent_library_courses 核对课程名）`);
+        for (const n of names) {
+          payloads.push({
+            label: n,
+            payload: {
+              title: n,
+              course_name: n,
+              topic_key: titleToTopic.get(n) || "",
+              course_uuid: titleToUuid.get(n) || "",
+              mode: "new",
+              creator: "parent",
+              task_type: "required",
+              count_in_rate: 1,
+              points: 0,
+            },
+          });
+        }
+      }
+
+      const kb = openKb(dataDir, parentId, child.id);
+      try {
+        const existing = kb
+          .prepare("SELECT plan_type, rule, weekday, payload_json FROM plan_recurrences WHERE enabled = 1")
+          .all() as unknown as Array<{ plan_type: string; rule: string; weekday: number | null; payload_json: string }>;
+        const seen = new Set(
+          existing.map((r) => {
+            let p: Record<string, unknown> = {};
+            try {
+              p = JSON.parse(String(r.payload_json || "{}")) as Record<string, unknown>;
+            } catch {
+              /* ignore */
+            }
+            return `${r.plan_type}\u0000${r.rule}\u0000${r.weekday ?? ""}\u0000${String(p.title ?? p.course_name ?? "")}`;
+          })
+        );
+        const created: string[] = [];
+        const skipped: string[] = [];
+        for (const p of payloads) {
+          const key = `${planType}\u0000${rule}\u0000${weekday ?? ""}\u0000${p.label}`;
+          if (seen.has(key)) {
+            skipped.push(p.label);
+            continue;
+          }
+          const id = crypto.randomUUID();
+          const now = new Date().toISOString();
+          kb.prepare(
+            `INSERT INTO plan_recurrences
+               (id,parent_id,child_id,plan_type,payload_json,rule,weekday,start_date,end_date,last_expanded_date,enabled,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,'',1,?,?)`
+          ).run(id, parentId, child.id, planType, JSON.stringify(p.payload), rule, weekday, startDate, endDate, now, now);
+          seen.add(key);
+          created.push(p.label);
+        }
+        const scope = `${rule === "daily" ? "每天" : `每周${["日", "一", "二", "三", "四", "五", "六"][weekday!]}`}`;
+        const parts: string[] = [];
+        if (created.length) parts.push(`${scope}：${created.join("、")}`);
+        if (skipped.length) parts.push(`${skipped.join("、")} 已有相同规则，跳过`);
+        return ok(`已为「${child.name}」创建重复计划（${parts.join("；")}）${endDate ? `，至 ${endDate}` : ""}。系统每天会自动展开成当天计划；想停用用 parent_recurrence_list 拿 id 后 parent_recurrence_update。`);
+      } finally {
+        kb.close();
+      }
+    },
+  });
+
+  const recurrenceListTool = defineTool({
+    name: "parent_recurrence_list",
+    label: "查看重复计划规则",
+    description: "查看某孩子的**重复计划规则**（每日/每周固定项）：类型 / 规则 / 内容 / 生效期 / 启用态 / **规则 id**（停用/删除前先 list）。",
+    parameters: Type.Object({
+      childName: Type.String({ description: "孩子姓名" }),
+    }),
+    execute: async (_id: string, params: { childName: string }) => {
+      const child = resolvePlanChild(db, parentId, params.childName);
+      const kb = openKb(dataDir, parentId, child.id);
+      try {
+        const rows = kb
+          .prepare("SELECT * FROM plan_recurrences ORDER BY created_at DESC")
+          .all() as unknown as Array<Record<string, unknown>>;
+        if (!rows.length) return ok(`「${child.name}」当前没有重复计划。`);
+        const lines = rows.slice(0, 120).map((r) => {
+          let p: Record<string, unknown> = {};
+          try {
+            p = JSON.parse(String(r.payload_json || "{}")) as Record<string, unknown>;
+          } catch {
+            /* ignore */
+          }
+          const label = String(p.title ?? p.course_name ?? "（未命名）");
+          const wd = r.weekday == null ? "" : `周${["日", "一", "二", "三", "四", "五", "六"][Number(r.weekday)]}`;
+          const ruleTxt = r.rule === "daily" ? "每天" : `每周(${wd})`;
+          const period = `${String(r.start_date || "-")}~${String(r.end_date || "长期")}`;
+          return `- ${String(r.id).slice(0, 8)}｜${r.plan_type === "study" ? "学习" : "生活"}｜${ruleTxt}｜${label}｜${period}｜${Number(r.enabled) === 1 ? "启用" : "停用"}`;
+        });
+        return ok(`「${child.name}」的重复计划（共 ${rows.length} 条，id 取前 8 位）：\n${lines.join("\n")}`);
+      } finally {
+        kb.close();
+      }
+    },
+  });
+
+  const recurrenceUpdateTool = defineTool({
+    name: "parent_recurrence_update",
+    label: "停用/启用/删除重复计划规则",
+    description:
+      "修改某孩子的**重复计划规则**（先 parent_recurrence_list 拿 id）。三种动作：\n" +
+      "- `disable` + `id`：停用（不再展开新计划行，历史行保留）\n" +
+      "- `enable` + `id`：重新启用\n" +
+      "- `delete` + `id`：删除该规则",
+    parameters: Type.Object({
+      childName: Type.String({ description: "孩子姓名" }),
+      act: Type.String({ description: "动作：disable | enable | delete" }),
+      id: Type.String({ description: "规则 id（parent_recurrence_list 返回；可传前 8 位）" }),
+    }),
+    execute: async (_id: string, params: { childName: string; act: string; id: string }) => {
+      const child = resolvePlanChild(db, parentId, params.childName);
+      const act = String(params.act ?? "").trim();
+      if (!["disable", "enable", "delete"].includes(act)) throw new Error("act 仅支持 disable / enable / delete");
+      const wantId = String(params.id ?? "").trim();
+      if (!wantId) throw new Error("parent_recurrence_update 需要 id（规则 id）");
+      const kb = openKb(dataDir, parentId, child.id);
+      try {
+        const rows = kb
+          .prepare("SELECT id, plan_type, payload_json FROM plan_recurrences")
+          .all() as unknown as Array<{ id: string; plan_type: string; payload_json: string }>;
+        const row = rows.find((r) => r.id === wantId || r.id.startsWith(wantId));
+        if (!row) throw new Error("找不到重复计划规则（先 parent_recurrence_list 核对 id）");
+        let label = "（未命名）";
+        try {
+          const p = JSON.parse(String(row.payload_json || "{}")) as Record<string, unknown>;
+          label = String(p.title ?? p.course_name ?? label);
+        } catch {
+          /* ignore */
+        }
+        if (act === "delete") {
+          kb.prepare("DELETE FROM plan_recurrences WHERE id = ?").run(row.id);
+          return ok(`已删除重复计划规则「${label}」。`);
+        }
+        kb.prepare("UPDATE plan_recurrences SET enabled = ?, updated_at = ? WHERE id = ?").run(act === "enable" ? 1 : 0, new Date().toISOString(), row.id);
+        return ok(`已${act === "enable" ? "启用" : "停用"}重复计划规则「${label}」。`);
+      } finally {
+        kb.close();
+      }
     },
   });
 
   return [
     listChildrenTool,
+    childCreateTool,
+    childUpdateTool,
     sourcesTool,
     createTool,
     listTool,
     getTool,
     updateTool,
     lifeCreateTool,
+    lifeListTool,
+    lifeUpdateTool,
     examCreateTool,
+    examListTool,
+    examCancelTool,
+    recurrenceCreateTool,
+    recurrenceListTool,
+    recurrenceUpdateTool,
   ];
 }
 
 export const PLAN_DOMAIN_TOOL_NAMES = [
   "parent_list_children",
-  "study_plan_sources",
-  "study_plan_create",
-  "study_plan_list",
-  "study_plan_get",
-  "study_plan_update",
-  "parent_plan_create",
-  "exam_schedule_create",
+  "parent_child_create",
+  "parent_child_update",
+  "parent_study_plan_sources",
+  "parent_study_plan_create",
+  "parent_study_plan_list",
+  "parent_study_plan_get",
+  "parent_study_plan_update",
+  "parent_life_plan_create",
+  "parent_life_plan_list",
+  "parent_life_plan_update",
+  "parent_exam_plan_create",
+  "parent_exam_plan_list",
+  "parent_exam_plan_cancel",
+  "parent_recurrence_create",
+  "parent_recurrence_list",
+  "parent_recurrence_update",
 ];
