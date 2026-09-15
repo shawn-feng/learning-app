@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **101** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **102** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -111,6 +111,7 @@
 | 099 | 珊珊 life plan「洗两双袜子」完成状态不更新（仍 pending）：`summarize_conversation` 已写 daily，但 `daily_entries` 出现两行——① `洗两双袜子（孩子自定加分项）` plan_id 列正确但 **plan_outcome=unknown**；② `洗袜子` **plan_id/plan_outcome 列全空、done 信号只写在 raw 正文**（`- planOutcome：done`）；完成判定只匹配 `plan_id!='' AND plan_outcome='done'` → 两行都不中；根因=AI 把 planId/planOutcome 退化成 raw 文本（`insertMany` 仅读结构化字段）+ `unknown` 是死路无收敛/无人工覆盖 + `parent_life_plan_update` 无 complete 动作 | ✅ 已解决（2026-09-14）：F1 家长 complete 动作（pending/missed 可标 done）+ F2 applySignals raw 正文兜底回捞（治愈存量）+ F3 insertMany 正文解析与同 plan 同日去重合并 + prompt 明令禁止 planId/planOutcome 写进正文；真实数据端到端验证通过，珊珊计划已治愈为 done；F4（unknown 自动放行）维持现状防钻空子 | 2026-09-14 | [详情](ISSUES/ISSUE-099.md) |
 | 100 | agent 上移服务端后「每日新建会话省 token」机制丢失：旧客户端 `pi-session.shouldAutoNewSession`（开会话检测最后消息非当天→开新会话）已随零 agent 移除（仅存 `tmp/pi-session-old.ts`）；服务端 `session-registry.ts:261` 的 `shouldAutoNewSession` 只判 `resetMarks`（显式 reset），**不按日期**；会话 key=childId 跨天持久累积（落盘 `data/agent-sessions/<parentId>/<childId>-<slot>/`）；客户端 `scheduler.ts:552-571` 残留定点重置块但默认 `enabled:false` 且仅"客户端在线那一分钟"触发，等于失效 → token 不省 | ✅ 已解决（2026-09-14）：F1 冷路径（/open 进会话跨天裁决 + shouldAutoNewSession 日期保险）+ F2 热路径（服务端 autoNewSessionTask 到点重置，配置默认仍 opt-in）+ 客户端进会话加载切 /open；待部署 201 验证 | 2026-09-14 | [详情](ISSUES/ISSUE-100.md) |
 | 101 | 孝经/千字文「背诵」题结构已存在但数据残缺：两主题 18+30 门课每课都有「背诵」知识点 + 1 条 `speech_recite` 题；但**千字文 30 段的背诵题 answer 全是占位符 `重点字词（童趣版）`**（非原文，背诵评测据此打分→不可用），**孝经 18 章答案为真原文但实测 18 章末尾全被拼上 `重点字词读音` 噪声**（原 issue 误判仅 4 章）——并非缺知识点/缺题，而是建课时把解读误填进参考文本列 | ✅ 已解决（2026-09-14）：千字文 30 条 answer 替换为 `teaching_copy`「原文吟诵」真原文（带标点）；孝经 18 条 `REPLACE` 剔除 `重点字词读音` 噪声；已备份，待同步生产 201 | 2026-09-14 | [详情](ISSUES/ISSUE-101.md) |
+| 102 | 家长 agent 缺「读取孩子全部会话内容」工具：现有家长工具只覆盖资料/家长库/计划域，**无任何读孩子对话逐字稿的工具**（计划工具仅给摘要）；但底层读链路已存在且经「家长对话回顾」页验证——`db/sessions.ts` 的 `indexAgentSessionsIntoDb`/`querySessionMessages`/`listSessionDates` + `routes/sessions.ts` 的 `assertChildOwned` 归属校验。**⚠️ 本需求扩张原隐私红线「家长 agent 只读孩子数据 summary、不触碰原始对话」**——属家长授权扩张，应保留只读 + 归属校验 + 按天/限量读取 | ✅ 已实施（2026-09-15）：新增 `parent_read_child_conversation`（只读；按天 / all+days≤7；单条 600 / 总量 16000 字符截断）+ prompt 边界段 + 文档隐私边界更新；真实数据冒烟 5 例通过 | 2026-09-15 | [详情](ISSUES/ISSUE-102.md) |
 
 ## 记录格式（模板）
 

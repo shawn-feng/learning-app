@@ -60,6 +60,8 @@ server/dist/
 src/out/
 # 一次性冒烟/迁移脚本（不入仓，验证用）
 server/tmp-*.mts
+server/tmp-*.mjs
+server/tmp-*.out
 # 顶层调试脚本与临时目录（排查用）
 tmp/
 tmp-*.py
@@ -78,3 +80,16 @@ voice_*.csv
 /tsc-*.txt
 /agent-tools-report.log
 /tmp-*.txt
+
+# 2026-09-15 排查/冒烟调试残渣（勿提交）：server 根目录散落的调试脚本与输出
+/server/*.txt
+/server/check-*.mjs
+/server/chk-*.mjs
+/server/fix-*.mjs
+/server/recon*.mjs
+/build-fe.txt
+/check-seed.txt
+/pkg-scripts.txt
+/server/scripts/_verify-*.mts
+/server/scripts/check-*.mts
+/server/scripts/check-*.mjs

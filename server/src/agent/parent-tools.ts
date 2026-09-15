@@ -29,6 +29,7 @@ import {
 } from "./parent-materials.js";
 import { describeImageViaVision, imageMimeFromExt } from "./vision.js";
 import { createProgrammingTool } from "./programming-agent.js";
+import { indexAgentSessionsIntoDb, listSessionDates, querySessionMessages } from "../db/sessions.js";
 
 export interface ParentToolDeps extends MaterialCtx {
   /** 家长 agent 工作区（临时产出） */
@@ -40,6 +41,68 @@ export interface ParentToolDeps extends MaterialCtx {
 }
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+
+/** 服务端本地时区的 YYYY-MM-DD（与 db/sessions 的 localDateOf 同口径）。 */
+function todayLocal(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** 相对今天的日期（offsetDays=1 → 昨天）；本地时区，跨月/跨年由 Date 处理。 */
+function localDateOffset(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - offsetDays);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** date 参数的宽松解析：支持中文/英文口语表述（今天、昨天、today、yesterday），其余原样返回。 */
+function normalizeDateParam(raw: string): string {
+  switch (raw.trim().toLowerCase()) {
+    case "":
+    case "今天":
+    case "今日":
+    case "today":
+      return "";
+    case "昨天":
+    case "昨日":
+    case "yesterday":
+      return localDateOffset(1);
+    case "前天":
+      return localDateOffset(2);
+    default:
+      return raw.trim();
+  }
+}
+
+/**
+ * childName → { id, name, aiName }（精确匹配；找不到列出可选名，不猜）。
+ * 归属校验同 assertChildOwned 口径：只在自己名下孩子里找，找不到即拒绝。
+ */
+function resolveConvoChild(
+  db: DatabaseSync,
+  parentId: string,
+  childName: string
+): { id: string; name: string; aiName: string } {
+  const kids = db
+    .prepare("SELECT id, name, profile_json FROM children WHERE parent_id = ?")
+    .all(parentId) as Array<{ id: string; name: string; profile_json: string | null }>;
+  const name = String(childName ?? "").trim();
+  const hit = kids.find((k) => k.name === name);
+  if (!hit) {
+    const names = kids.map((k) => k.name).join("、");
+    throw new Error(`找不到孩子「${name}」${names ? `（现有孩子：${names}）` : "（名下暂无孩子）"}`);
+  }
+  let aiName = "饺子";
+  try {
+    const p = hit.profile_json ? (JSON.parse(hit.profile_json) as { aiName?: string }) : {};
+    if (typeof p.aiName === "string" && p.aiName.trim()) aiName = p.aiName.trim();
+  } catch {
+    /* profile 损坏则用默认名 */
+  }
+  return { id: hit.id, name: hit.name, aiName };
+}
 
 export function createParentAgentTools(deps: ParentToolDeps) {
   const ctx: MaterialCtx = { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
@@ -357,6 +420,97 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     },
   });
 
+  // ISSUE-102：读取孩子对话逐字稿（只读）——让家长 agent 能回答「孩子具体说了什么/学到哪」
+  const convoTool = defineTool({
+    name: "parent_read_child_conversation",
+    label: "读取孩子对话逐字稿（只读）",
+    description:
+      "读取孩子与 AI 伙伴的**原始对话逐字稿**（只读，无法修改孩子会话）。\n\n" +
+      "**何时调用**：需要了解孩子**具体说了什么**时——哪一课卡住了、哪个知识点没懂、提过什么困惑、" +
+      "学习过程与情绪如何。只要概括性进度，用 parent_study_plan_list / 家长端每日记录即可，不必读逐字稿。\n" +
+      "**参数**：`child` 孩子姓名（不确定先 parent_list_children）；`date` 可选，默认今天，" +
+      "支持 `YYYY-MM-DD`、`all`（最近若干天，由 `days` 指定，默认 3 天、最多 7 天）或口语「今天/昨天/前天」。\n" +
+      "**边界（务必遵守）**：只能读**自己名下**孩子的记录（系统按归属校验）；" +
+      "读取内容仅用于家长了解孩子学习情况——向家长汇报时**概括要点**，" +
+      "不要大段复述逐字稿原文；本工具是只读的，不提供任何改写孩子会话的能力。",
+    parameters: Type.Object({
+      child: Type.String({ description: "孩子姓名" }),
+      date: Type.Optional(
+        Type.String({ description: "YYYY-MM-DD 或 all（最近若干天）；缺省=今天" })
+      ),
+      days: Type.Optional(Type.Number({ description: "date=all 时读最近多少天（默认 3，最大 7）" })),
+    }),
+    execute: async (_id: string, params: { child: string; date?: string; days?: number }) => {
+      const child = resolveConvoChild(deps.db, deps.parentId, params.child);
+      // 与家长端「对话回顾」页同链路：先把 agent-sessions 新增消息增量索引进 session_messages，再查
+      indexAgentSessionsIntoDb(deps.db, deps.dataDir, deps.parentId, child.id);
+
+      const raw = normalizeDateParam(String(params.date ?? ""));
+      let dates: string[];
+      if (!raw || raw === "today") {
+        dates = [todayLocal()];
+      } else if (raw === "all") {
+        const n = Math.min(7, Math.max(1, Math.round(Number(params.days ?? 3)) || 3));
+        const all = listSessionDates(deps.db, child.id);
+        if (!all.length) {
+          return ok(`「${child.name}」还没有任何对话记录（服务端 agent-sessions 中没有该孩子的消息）。`);
+        }
+        dates = all.slice(0, n).map((d) => d.date);
+      } else if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        dates = [raw];
+      } else {
+        throw new Error(
+          `date 只能是 YYYY-MM-DD、all，或「今天/昨天/前天」（收到「${raw}」）——省略 date 即读今天`
+        );
+      }
+
+      const MAX_TOTAL = 16000; // 总字符上限：防止「读全部历史」灌爆上下文
+      const MAX_MSG = 600; // 单条上限
+      const blocks: string[] = [];
+      let total = 0;
+      let truncated = false;
+      let msgCount = 0;
+      for (const date of dates) {
+        const msgs = querySessionMessages(deps.db, child.id, date);
+        msgCount += msgs.length;
+        if (!msgs.length) {
+          blocks.push(`【${date}】无对话记录`);
+          continue;
+        }
+        const lines: string[] = [`【${date}】共 ${msgs.length} 条`];
+        for (const m of msgs) {
+          const who = m.role === "user" ? child.name : child.aiName;
+          let text = String(m.text ?? "").trim();
+          if (text.length > MAX_MSG) text = `${text.slice(0, MAX_MSG)}…（本条已截断）`;
+          const names = [...new Set((m.toolCalls ?? []).map((t) => t.name))].filter(Boolean);
+          const line = `${who}：${text}${names.length ? ` （调用：${names.join("、")}）` : ""}`;
+          if (total + line.length > MAX_TOTAL) {
+            truncated = true;
+            break;
+          }
+          total += line.length;
+          lines.push(line);
+        }
+        blocks.push(lines.join("\n"));
+        if (truncated) break;
+      }
+
+      if (!msgCount) {
+        const avail = listSessionDates(deps.db, child.id)
+          .slice(0, 10)
+          .map((d) => `${d.date}（${d.count} 条）`)
+          .join("、");
+        return ok(
+          `「${child.name}」在 ${dates.join("、")} 没有对话记录。` +
+            (avail ? `\n有记录的日期：${avail}（可用 date=all 或指定日期读取）` : `\n（该孩子还没有任何会话记录）`)
+        );
+      }
+      const header = `「${child.name}」的对话逐字稿（${dates.join("、")}；对孩子说话的是 AI 伙伴「${child.aiName}」）：`;
+      const footer = truncated ? "\n\n…（内容过长已截断；可指定单个日期或用 date=all + days 缩小范围）" : "";
+      return ok(`${header}\n${blocks.join("\n\n")}${footer}`);
+    },
+  });
+
   const logTool = defineTool({
     name: "log_activity",
     label: "记录家长操作",
@@ -385,6 +539,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     upsertTopicTool,
     upsertCourseTool,
     imageTool,
+    convoTool,
     logTool,
     // 编程 agent（P3 上移）：家长 agent 描述需求 → 服务端编程 agent 产出 HTML 资料到真源
     createProgrammingTool({ dataDir: deps.dataDir, db: deps.db, parentId: deps.parentId }, { scope: "parent" }),
@@ -406,6 +561,7 @@ export const PARENT_AGENT_TOOL_NAMES = [
   "parent_upsert_topic",
   "parent_upsert_course",
   "parent_read_image",
+  "parent_read_child_conversation",
   "parent_build_material",
   "log_activity",
   "get_date",

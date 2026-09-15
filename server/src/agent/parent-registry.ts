@@ -52,6 +52,13 @@ interface Entry {
 
 const entries = new Map<string, Entry>();
 
+/**
+ * 待重建标记：家长端「重置会话」后置位，下次 ensureEntry 时 newSession()（丢弃旧会话历史）。
+ * 2026-09-15：此前 resetParentSession 只释放内存实例、历史靠 continueRecent 续接——导致
+ * 「重置」后旧上下文（含模型此前的错误自我认知，如"我没有某工具"）仍在，追问时被旧答案锚住。
+ */
+const resetMarks = new Set<string>();
+
 function keyOf(parentId: string, kind: ParentSessionKind): string {
   return `${parentId}:${kind}`;
 }
@@ -115,6 +122,12 @@ export function buildServerParentPrompt(input: { parentId: string; workspace: st
 - parent_upsert_course：写课程（topic + title 联合主键 + sort_order/status/lesson_method/html_path/teaching_copy/assess_rubric）
 覆盖前先 parent_library_topics / parent_library_courses 核对现有结构；status/last_review/review_count 由系统维护，落库时一般只给初始 ⬜（或让系统更新），勿手写进度。先复述落库内容让家长确认。
 
+## 孩子的对话记录（只读，家长已授权）
+需要知道孩子**具体说了什么**时用 parent_read_child_conversation（默认读今天；date 传 all + days 可读最近几天，最多 7 天；也接受「今天/昨天/前天」）：
+- 适用：判断某课是否真学会、哪一步卡住、孩子提过什么困惑，或复盘学习过程；只要概括性进度就别读逐字稿，用计划/记录类工具即可。
+- 边界：只能读**自己名下**孩子的记录（系统按归属校验）；**只读**——不存在任何改写孩子会话的能力。
+- 汇报方式：向家长**概括要点**，不要大段复述逐字稿原文。
+
 ## 工作原则
 - 动手前先列清单、复述你的整理方案，让家长知道你准备改什么（家长看不到你脑子里的计划）。
 - 不确定就查：parent_library_topics / parent_library_courses 是权威主题与课程名册。
@@ -173,7 +186,10 @@ async function ensureEntry(
     ].filter((n, i, arr) => arr.indexOf(n) === i),
     customTools,
     sessionsDir: paths.agentSessionsDir(parentId, kind),
+    // 重置后首次重建：newSession() 起干净会话（旧 jsonl 保留为历史，不再被 continueRecent 选中）
+    shouldAutoNewSession: () => resetMarks.has(key),
   });
+  resetMarks.delete(key);
 
   const entry: Entry = { session: handle.session, busy: false, paths };
   attachStream(entry, key);
@@ -269,15 +285,23 @@ export async function abortParentSession(parentId: string, kind: ParentSessionKi
   }
 }
 
-/** 重置家长会话：释放内存实例（下次对话按 continueRecent 续接；服务端家长会话暂不做「新会话」语义）。 */
+/**
+ * 重置家长会话（真正的「新会话」语义，2026-09-15 起）：释放内存实例 **并置「待重建」标记**——
+ * 下次对话 newSession() 起干净会话（旧 jsonl 保留为历史，不再被 continueRecent 选中）。
+ * 为什么要改：此前只 dispose 实例，历史仍续接，「重置」形同虚设——旧上下文（包括模型此前
+ * 说过的错误自我认知，如"我没有某工具"）会一直把新能力盖住（ISSUE-102 实证）。
+ */
 export function resetParentSession(parentId: string, kind: ParentSessionKind = "parent"): void {
   const key = keyOf(parentId, kind);
   const entry = entries.get(key);
-  if (!entry) return;
-  try {
-    entry.session.dispose?.();
-  } catch {
-    /* 忽略 */
+  if (entry) {
+    try {
+      entry.session.dispose?.();
+    } catch {
+      /* 忽略 */
+    }
+    entries.delete(key);
   }
-  entries.delete(key);
+  resetMarks.add(key);
+  console.log(`[parent-agent] 已重置会话 ${key}（下次对话新开会话，旧历史保留为归档）`);
 }
