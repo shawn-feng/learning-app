@@ -12,10 +12,10 @@
     "python:install": "cd cloud-service && pip install -r requirements.txt",
     "test": "vitest run",
     "dist": "electron-vite build && electron-builder",
-    "dist:win": "electron-vite build && electron-builder --win",
-    "dist:win:mirror": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& electron-vite build && electron-builder --win",
-    "dist:linux": "electron-vite build && electron-builder --linux",
-    "dist:mac": "electron-vite build && electron-builder --mac",
+    "dist:win": "electron-vite build && electron-builder --win --publish never",
+    "dist:win:mirror": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& electron-vite build && electron-builder --win --publish never",
+    "dist:linux": "electron-vite build && electron-builder --linux --publish never",
+    "dist:mac": "electron-vite build && electron-builder --mac --publish never",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build"
   },
@@ -26,7 +26,7 @@
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
     "directories": {
-      "output": "dist-release-016"
+      "output": "dist"
     },
     "asar": true,
     "asarUnpack": [
