@@ -10,6 +10,8 @@
  * 月度/半年/年度不再作为固定档（由自定义考核灵活安排）。
  */
 import { useCallback, useEffect, useState } from "react";
+import { normalizePlanTopics } from "../lib/plan-scope";
+import PlanCourseList from "./PlanCourseList";
 const WEEKDAYS: Array<{ v: number; label: string }> = [
   { v: 1, label: "周一" },
   { v: 2, label: "周二" },
@@ -456,13 +458,18 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
                   if (!g) return <div style={{ color: "#aaa", fontSize: 13 }}>暂无数据</div>;
                   const sc = (g.rows[0]?.scope || {}) as {
                     note?: string;
-                    topics?: string[];
-                    courses?: string[];
+                    topics?: unknown;
+                    courses?: unknown;
+                    /** 2026-09-15 起服务端会把出题约定同步放这里（[{title,kps}]）；老服务端只有 courses */
+                    courseSpecs?: unknown;
                     prompt?: string;
                     methodSpec?: { require?: Record<string, number>; exclude?: string[]; recitePass?: number };
                   };
-                  const topics = Array.isArray(sc.topics) ? sc.topics : [];
-                  const courses = Array.isArray(sc.courses) ? sc.courses : [];
+                  const topics = normalizePlanTopics(sc.topics);
+                  // ⚠️ courses 两种格式（["课程名"] / [{title,kps}]）必须先归一化——直接渲染数组项，
+                  // 遇到对象会抛 "Objects are not valid as a React child" → 整页白屏（2026-09-15 现场）。
+                  // 归一化收在 PlanCourseList 组件内（有回归用例守着）。
+                  const courseRaw = Array.isArray(sc.courseSpecs) && sc.courseSpecs.length ? sc.courseSpecs : sc.courses;
                   const ms = sc.methodSpec || {};
                   const onlyCats = Object.keys(ms.require || {});
                   const excCats = Array.isArray(ms.exclude) ? ms.exclude : [];
@@ -491,13 +498,10 @@ export default function ExamAdminPanel({ children }: { children: any[] }) {
                         </div>
                       )}
                       <div style={{ fontSize: 13, fontWeight: 700, margin: "10px 0 6px" }}>📚 要考核的课程</div>
-                      {courses.length === 0 ? (
-                        <p style={{ color: "#b9770a", fontSize: 12, margin: 0 }}>（这次安排没有列出具体课程，请在家长助手那边重新确认课程后生成）</p>
-                      ) : (
-                        <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 8, padding: "6px 10px" }}>
-                          {courses.map((c, i) => (<div key={c} style={{ fontSize: 13, padding: "4px 0", borderBottom: i < courses.length - 1 ? "1px solid #f4f4f4" : "none" }}>{i + 1}. {c}</div>))}
-                        </div>
-                      )}
+                      <PlanCourseList
+                        courses={courseRaw}
+                        emptyHint="（这次安排没有列出具体课程，请在家长助手那边重新确认课程后生成）"
+                      />
                       <div style={{ fontSize: 13, fontWeight: 700, margin: "12px 0 6px" }}>👧 分配的孩子</div>
                       <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 8, padding: "6px 10px" }}>
                         {g.rows.map((r) => (

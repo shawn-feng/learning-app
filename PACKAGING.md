@@ -70,6 +70,13 @@ gh run list --repo shawn-feng/learning-app --limit 5
 gh run download <databaseId> --repo shawn-feng/learning-app --dir artifacts
 # 得到：linux-x64-installers / macos-dmg-x64 / macos-dmg-arm64
 ```
+> ⚠️ **一次 `gh run download` 拉全部产物可能在大传输量下被沙箱 SIGTERM 打断**（实测 deb+AppImage+dmg 合计 ~600MB 时中断，只落下部分文件）。稳妥做法：**逐个 artifact 下载**，用 `--name` 指定单件：
+> ```bash
+> gh run download <macRunId> --repo shawn-feng/learning-app --name macos-dmg-arm64 --dir artifacts/mac
+> gh run download <macRunId> --repo shawn-feng/learning-app --name macos-dmg-x64  --dir artifacts/mac
+> gh run download <linuxRunId> --repo shawn-feng/learning-app --name linux-x64-installers --dir artifacts/linux
+> ```
+> 🔏 **Windows 现已自动代码签名**：`npm run dist:win` 会在 NSIS 安装包（含 uninstaller）上跑 `signtool.exe`（环境已配证书），`signAndEditExecutable` 保持 false。无需手动签名；若签名失败会中断打包，先确认证书可用。
 
 ---
 
@@ -100,16 +107,25 @@ cd server && node scripts/build.mjs
 #    curl -s http://127.0.0.1:8788/api/v1/version   # 应含 version=0.3.x
 #    curl -s http://127.0.0.1:8788/api/v1/health    # ⚠️ 健康路由是 /api/v1/health；/health 是 404
 ```
-> ⚠️ `server/scripts/learning-server.service` 仍写 `ExecStart=/opt/learning-server/learning-server`（旧 pkg 路径），**需改为** `ExecStart=/usr/bin/node /opt/learning-server/server.cjs`，否则服务起不来。
-> 服务端数据目录：`SERVER_DATA_DIR=/opt/learning-server/data`（service 的 Environment 已设）。
+> ℹ️ **201 上的 live unit 已是 `ExecStart=/usr/bin/node /opt/learning-server/server.cjs`（2026-09-15 实测，以 root 运行），pkg 已弃用**；仓库内 `server/scripts/learning-server.service` 模板仍是旧 pkg 路径，属滞后，改不改都不影响 201。
+> 部署约定（2026-09-15 实测，停机约 6 秒）：`systemctl stop` → 备份旧 bundle 为 `server.cjs.bak-<YYYYMMDD-HHMM>` + 备份数据到 `data/backups/deploy-<ver>-<ts>/`（约 36M：`server.sqlite(+wal/shm)`、`agents.sqlite`、`kb/`、`parents/`、`*.json`、`.secret`；**不必**备份 `materials/`/`files/`）→ 传新 `server.cjs` → `daemon-reload` + `restart`。
+> 服务端数据目录：`SERVER_DATA_DIR=/opt/learning-server/data`。健康端点实际是 **`/api/v1/health`**（不是 `/health`）。
 
 ### 4.2 客户端（Ubuntu GUI）
 ```bash
-# 上传本地 deb → 201，sudo 安装：
-# echo "<201-sudo密码>" | sudo -S dpkg -i /tmp/learning-app_<ver>_amd64.deb
-# 验证：dpkg -l learning-app   →   ii  learning-app  <ver>
+# 1) 上传本地 deb → 201，然后：
+#    杀旧 GUI（进程属主=shanshan=SSH 用户，无需 sudo）：
+#    pkill -TERM -f '/opt/学习伙伴/xuexihub'; sleep 3; pkill -KILL -f '/opt/学习伙伴/xuexihub' 2>/dev/null
+# 2) 安装：
+#    echo "<201-sudo密码>" | sudo -S dpkg -i /tmp/learning-app_<ver>_amd64.deb
+# 3) 验证：dpkg -l learning-app   →   ii  learning-app  <ver>
+# 4) 远程重新拉起（桌面会话 shanshan@:0 在线即可；2026-09-15 实测成功）：
+#    DISPLAY=:0 XAUTHORITY=/home/shanshan/.Xauthority setsid nohup '/opt/学习伙伴/xuexihub' \
+#      >/tmp/xuexihub-<ver>.log 2>&1 < /dev/null & disown
 ```
-> ⚠️ **GUI 进程无法经 SSH 重启**：`dpkg -i` 覆盖了 `/opt/学习伙伴/xuexihub`，但桌面会话里的旧进程仍在内存中，SSH 杀不掉它。必须在 **201 本地**手动重启「学习伙伴」客户端，0.1.x 才会真正生效。
+> ✅ **GUI 可以远程重启**（2026-09-15 实测推翻早前"SSH 杀不掉"的结论）：进程属主是 shanshan、桌面会话在 `:0`，用上面的 `pkill` + `DISPLAY=:0` 拉起即可，5 秒后 `pgrep -c -f '/opt/学习伙伴/xuexihub'` 应回到 7 个进程。
+> 用户数据在 `/home/shanshan/.config/learning-app`，`dpkg -i` 不会动它。
+> 回滚：`/tmp` 保留历史 deb（0.1.8/0.1.9/0.1.11/0.1.13/0.1.14…），`sudo dpkg -i /tmp/learning-app_<旧ver>_amd64.deb` 后再按上面重启 GUI。
 
 ---
 

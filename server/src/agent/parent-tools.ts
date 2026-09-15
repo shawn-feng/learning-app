@@ -30,6 +30,16 @@ import {
 import { describeImageViaVision, imageMimeFromExt } from "./vision.js";
 import { createProgrammingTool } from "./programming-agent.js";
 import { indexAgentSessionsIntoDb, listSessionDates, querySessionMessages } from "../db/sessions.js";
+import {
+  getCourseUuid,
+  getOrCreateKnowledgePoint,
+  getQuestion,
+  listCourseContent,
+  listKnowledgePoints,
+  replaceCourseContent,
+  saveQuestion,
+  type CourseContent,
+} from "../db/assess-content.js";
 
 export interface ParentToolDeps extends MaterialCtx {
   /** 家长 agent 工作区（临时产出） */
@@ -380,6 +390,270 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     },
   });
 
+  // ISSUE-103：课程考核内容（知识点 + 题库 + 挂载关联）——读
+  const courseContentTool = defineTool({
+    name: "parent_library_course_content",
+    label: "查看课程的考核内容（知识点 + 题）",
+    description:
+      "查看某门课**已结构化**的考核内容：该课全部知识点（名称/详情/序号）及每个知识点下挂着的题目（题干/答案/行为/分值）。\n\n" +
+      "**何时调用**：写课程考核内容（parent_upsert_course_content）之前**必做**——那个工具是**整课替换**，" +
+      "不看现状就写会把家长手工建的知识点挂载覆盖掉。也用于回答「这门课的考点和题有哪些、有没有重复」。\n" +
+      "返回里的 `id=` 是题库题 id / 知识点 id，可在 parent_upsert_course_content 里用 questionId / knowledgePointId 复用。",
+    parameters: Type.Object({
+      topic: Type.String({ description: "主题目录名（topic_key，如 lunyu）" }),
+      title: Type.String({ description: "课程名" }),
+    }),
+    execute: async (_id: string, params: { topic: string; title: string }) => {
+      const db = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        const uuid = getCourseUuid(db, params.topic, params.title);
+        if (!uuid) {
+          return ok(
+            `课程不存在：${params.topic}/${params.title}（先用 parent_library_courses 核对该主题下的课程名）`
+          );
+        }
+        const kps = listKnowledgePoints(db, uuid);
+        const content = listCourseContent(db, uuid);
+        const qTotal = content.items.reduce((n, it) => n + it.questions.length, 0);
+        if (!kps.length && !qTotal) {
+          return ok(
+            `课程「${params.title}」（${params.topic}）尚未结构化：没有任何知识点，也没有挂题。\n` +
+              `可用 parent_upsert_course_content 写入「知识点 + 题」。`
+          );
+        }
+        const clip = (s: unknown, n: number) => {
+          const t = String(s ?? "")
+            .replace(/\s+/g, " ")
+            .trim();
+          return t.length > n ? `${t.slice(0, n)}…` : t;
+        };
+        const byKp = new Map(content.items.map((it) => [it.knowledgePointId, it]));
+        const lines: string[] = [
+          `课程「${params.title}」（${params.topic}）：${kps.length} 个知识点 / 共 ${qTotal} 道挂题`,
+        ];
+        for (const kp of kps) {
+          const it = byKp.get(kp.id);
+          const qs = it?.questions ?? [];
+          lines.push("", `【知识点】${kp.name}（id=${kp.id}）${qs.length ? "" : "（未挂题）"}`);
+          if (kp.detail) lines.push(`  说明：${clip(kp.detail, 400)}`);
+          if (it?.overview) lines.push(`  本课补充：${clip(it.overview, 200)}`);
+          qs.forEach((q, i) => {
+            lines.push(`  题 ${i + 1}（id=${q.id}｜${q.behavior || "generic"}｜${q.pointMax} 分）`);
+            lines.push(`    题干：${clip(q.stem, 300)}`);
+            lines.push(`    答案：${clip(q.answer, 300)}`);
+          });
+        }
+        // 兜底：挂载指向的知识点行不属于本课（数据异常时才会出现），也要让 agent 看见
+        for (const it of content.items) {
+          if (kps.some((k) => k.id === it.knowledgePointId)) continue;
+          lines.push("", `【知识点】${it.knowledgePointName || "(名称缺失)"}（id=${it.knowledgePointId}｜归属异常）`);
+          it.questions.forEach((q, i) =>
+            lines.push(`  题 ${i + 1}（id=${q.id}）题干：${clip(q.stem, 300)}`)
+          );
+        }
+        return ok(lines.join("\n"));
+      } finally {
+        db.close();
+      }
+    },
+  });
+
+  // ISSUE-103：课程考核内容（知识点 + 题库 + 挂载关联）——写（整课替换）
+  const upsertCourseContentTool = defineTool({
+    name: "parent_upsert_course_content",
+    label: "写入课程考核内容（知识点 + 题，整课替换）",
+    description:
+      "把一门课的考核内容写入家长库：items 每项 = 一个**知识点**（knowledgePoint 名称，或 knowledgePointId 引用已有）+ 该知识点下要考的**题目**。\n\n" +
+      "**何时调用**：家长要「给某课建考点 / 出题 / 把题挂到考点下」时——「建知识点 + 建题 + 关联」一步到位。\n" +
+      "**⚠️ items 是整课全量快照，不是增量**：本工具**替换**该课全部挂载——没写进 items 的知识点/题会从这门课移除" +
+      "（题本身还留在题库，可再用 questionId 挂回，但家长手工建的挂载关系会丢）。" +
+      "**所以必须先 parent_library_course_content 看现状、把要保留的内容一并写进 items，并向家长复述后再调用**。\n" +
+      "**题的两种给法**：① `questionId` 引用题库已有题（先 parent_library_course_content 拿 id）；" +
+      "② 内联 `stem`+`answer` 新建题库题（可带 behavior/pointMax/scoring/note/options）。\n" +
+      "**behavior**：普通题 generic；背诵 speech_recite（answer 填标准原文）；朗读 speech_read；选择题填 options=[{key,text}]。\n" +
+      "课程必须先存在（parent_upsert_course 建课）。",
+    parameters: Type.Object({
+      topic: Type.String({ description: "主题目录名（topic_key，如 lunyu）" }),
+      title: Type.String({ description: "课程名（需已存在）" }),
+      items: Type.Array(
+        Type.Object({
+          knowledgePoint: Type.Optional(
+            Type.String({ description: "知识点名称（不存在则新建，已存在则复用；按 course+name 唯一）" })
+          ),
+          knowledgePointId: Type.Optional(
+            Type.String({ description: "已有知识点 id（须属于本课）；给了它就不用 knowledgePoint" })
+          ),
+          detail: Type.Optional(Type.String({ description: "知识点详情（该考点的详细描述/考核要点）" })),
+          overview: Type.Optional(Type.String({ description: "该知识点在本课的补充说明（可空）" })),
+          questions: Type.Optional(
+            Type.Array(
+              Type.Object({
+                questionId: Type.Optional(
+                  Type.String({ description: "引用题库已有题 id；给了它则忽略下面的内联字段" })
+                ),
+                stem: Type.Optional(Type.String({ description: "题干" })),
+                answer: Type.Optional(Type.String({ description: "标准答案（背诵/朗读题为原文）" })),
+                scoring: Type.Optional(Type.String({ description: "评分说明或 JSON（可空）" })),
+                pointMax: Type.Optional(Type.Number({ description: "满分（缺省 10）" })),
+                behavior: Type.Optional(
+                  Type.String({ description: "generic / speech_recite / speech_read（缺省 generic）" })
+                ),
+                note: Type.Optional(Type.String({ description: "备注" })),
+                knowledgeSummary: Type.Optional(Type.String({ description: "知识点概要（缺省=知识点名）" })),
+                options: Type.Optional(
+                  Type.Array(Type.Object({ key: Type.String(), text: Type.String() }), {
+                    description: "选择题选项；非选择题不传",
+                  })
+                ),
+              })
+            )
+          ),
+        })
+      ),
+    }),
+    execute: async (_id, params) => {
+      const topic = String(params.topic ?? "").trim();
+      const title = String(params.title ?? "").trim();
+      if (!topic || !title) throw new Error("parent_upsert_course_content 需要 topic + title");
+      const items = Array.isArray(params.items) ? params.items : [];
+      if (!items.length) {
+        throw new Error("items 不能为空——本工具是整课替换，空数组会把该课的挂载全部清空");
+      }
+      const db = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        const uuid = getCourseUuid(db, topic, title);
+        if (!uuid) throw new Error(`课程不存在：${topic}/${title}（先用 parent_upsert_course 建课）`);
+        const before = listCourseContent(db, uuid);
+
+        // 预校验（**只读**）：先把所有错误挑干净再落笔——否则「报错但已建出孤儿知识点/题」会留在库里。
+        for (const it of items) {
+          const kpIdRaw = typeof it.knowledgePointId === "string" ? it.knowledgePointId.trim() : "";
+          const kpName = String(it.knowledgePoint ?? "").trim();
+          if (!kpIdRaw && !kpName) {
+            throw new Error("每个 item 需要 knowledgePoint（知识点名称）或 knowledgePointId");
+          }
+          if (kpIdRaw) {
+            const row = db
+              .prepare("SELECT id FROM knowledge_points WHERE id = ? AND course_uuid = ?")
+              .get(kpIdRaw, uuid);
+            if (!row) {
+              throw new Error(`知识点不存在或不属于本课：${kpIdRaw}（先用 parent_library_course_content 核对 id）`);
+            }
+          }
+          for (const qo of Array.isArray(it.questions) ? it.questions : []) {
+            const refId = typeof qo.questionId === "string" ? qo.questionId.trim() : "";
+            if (refId) {
+              if (!getQuestion(db, refId)) {
+                throw new Error(`题库题不存在：${refId}（可用 parent_library_course_content 拿正确 id）`);
+              }
+              continue;
+            }
+            const stem = String(qo.stem ?? "").trim();
+            const answer = String(qo.answer ?? "").trim();
+            if (!stem || !answer) {
+              throw new Error(
+                `知识点「${kpName || kpIdRaw}」下的内联题需要 stem + answer（或给 questionId 引用已有题）`
+              );
+            }
+          }
+        }
+
+        const replaceItems: Array<{ knowledgePointId: string; overview: string; questionIds: string[] }> = [];
+        let created = 0;
+        let linked = 0;
+        for (const it of items) {
+          // 知识点解析：knowledgePointId（须属于本课）优先，否则按名称 getOrCreate（可带 detail）
+          const kpIdRaw = typeof it.knowledgePointId === "string" ? it.knowledgePointId.trim() : "";
+          const kpName = String(it.knowledgePoint ?? "").trim();
+          const kpDetail = String(it.detail ?? "").trim();
+          let kpId: string;
+          let kpLabel: string;
+          if (kpIdRaw) {
+            const row = db
+              .prepare("SELECT id, name FROM knowledge_points WHERE id = ? AND course_uuid = ?")
+              .get(kpIdRaw, uuid) as { id: string; name: string } | undefined;
+            if (!row) {
+              throw new Error(`知识点不存在或不属于本课：${kpIdRaw}（先用 parent_library_course_content 核对 id）`);
+            }
+            kpId = kpIdRaw;
+            kpLabel = row.name;
+            if (kpDetail) getOrCreateKnowledgePoint(db, uuid, kpName || row.name, kpDetail);
+          } else if (kpName) {
+            const kp = getOrCreateKnowledgePoint(db, uuid, kpName, kpDetail);
+            kpId = kp.id;
+            kpLabel = kp.name;
+          } else {
+            throw new Error("每个 item 需要 knowledgePoint（知识点名称）或 knowledgePointId");
+          }
+
+          const qs = Array.isArray(it.questions) ? it.questions : [];
+          const qids: string[] = [];
+          for (const qo of qs) {
+            const refId = typeof qo.questionId === "string" ? qo.questionId.trim() : "";
+            if (refId) {
+              if (!getQuestion(db, refId)) {
+                throw new Error(`题库题不存在：${refId}（可用 parent_library_course_content 拿正确 id）`);
+              }
+              qids.push(refId);
+              linked++;
+              continue;
+            }
+            const stem = String(qo.stem ?? "").trim();
+            const answer = String(qo.answer ?? "").trim();
+            if (!stem || !answer) {
+              throw new Error(`知识点「${kpLabel}」下的内联题需要 stem + answer（或给 questionId 引用已有题）`);
+            }
+            const nid = saveQuestion(db, {
+              stem,
+              answer,
+              scoring: qo.scoring != null ? String(qo.scoring) : null,
+              pointMax: Number(qo.pointMax) || 10,
+              behavior: String(qo.behavior || "generic"),
+              note: qo.note != null ? String(qo.note) : "",
+              knowledgeSummary: qo.knowledgeSummary != null ? String(qo.knowledgeSummary) : kpLabel,
+              options: Array.isArray(qo.options) ? qo.options : undefined,
+            });
+            qids.push(nid);
+            created++;
+          }
+          replaceItems.push({ knowledgePointId: kpId, overview: String(it.overview ?? ""), questionIds: qids });
+        }
+
+        replaceCourseContent(db, uuid, replaceItems);
+        appendParentActivityLog(
+          ctx,
+          `写入课程考核内容「${title}」（${topic}）：${replaceItems.length} 个知识点、新建 ${created} 题、引用 ${linked} 题`
+        );
+
+        const after = listCourseContent(db, uuid);
+        const countQ = (c: CourseContent) => c.items.reduce((n, x) => n + x.questions.length, 0);
+        const pairSet = (c: CourseContent) =>
+          new Set(c.items.flatMap((x) => x.questions.map((q) => `${x.knowledgePointId}|${q.id}`)));
+        const beforePairs = pairSet(before);
+        const afterPairs = pairSet(after);
+        const droppedMounts = [...beforePairs].filter((p) => !afterPairs.has(p));
+        const afterKpIds = new Set(after.items.map((x) => x.knowledgePointId));
+        const droppedKpNames = before.items.filter((x) => !afterKpIds.has(x.knowledgePointId)).map((x) => x.knowledgePointName);
+
+        let msg =
+          `已写入课程「${title}」（${topic}）：提交 ${replaceItems.length} 个知识点｜新建题 ${created} 道｜引用已有题 ${linked} 道。\n` +
+          `本课挂载变化：${before.items.length} 个知识点 / ${countQ(before)} 道题 → ${after.items.length} 个知识点 / ${countQ(after)} 道题` +
+          `（未挂题的知识点不产生挂载行）。`;
+        if (droppedMounts.length || droppedKpNames.length) {
+          const parts: string[] = [];
+          if (droppedKpNames.length) parts.push(`知识点挂载被移除：${droppedKpNames.join("、")}`);
+          if (droppedMounts.length) parts.push(`另有 ${droppedMounts.length} 条「知识点↔题」挂载被移除`);
+          msg +=
+            `\n\n⚠️ 本次替换移除了本课原有内容（${parts.join("；")}）。` +
+            `如果这不是本意，请立即用本工具把**完整**内容重写一遍（题仍在题库中，可用 questionId 重新挂回）。`;
+        }
+        return ok(msg);
+      } finally {
+        db.close();
+      }
+    },
+  });
+
   const imageTool = defineTool({
     name: "parent_read_image",
     label: "理解图片内容",
@@ -538,6 +812,8 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     coursesTool,
     upsertTopicTool,
     upsertCourseTool,
+    courseContentTool,
+    upsertCourseContentTool,
     imageTool,
     convoTool,
     logTool,
@@ -560,6 +836,8 @@ export const PARENT_AGENT_TOOL_NAMES = [
   "parent_library_courses",
   "parent_upsert_topic",
   "parent_upsert_course",
+  "parent_library_course_content",
+  "parent_upsert_course_content",
   "parent_read_image",
   "parent_read_child_conversation",
   "parent_build_material",

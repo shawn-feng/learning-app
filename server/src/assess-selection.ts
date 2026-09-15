@@ -238,6 +238,44 @@ export interface PlanCourseSpec {
 }
 
 /**
+ * 解析考核计划 `scope_json.courses`（**两种历史格式**都要认）：
+ * - 新格式（2026-09-14 起，计划生成即约定出题参数）：`[{title, kps:[{name,count}]}]`
+ * - 旧格式（家长端 UI 早期自建排期）：`["课程名", ...]`
+ *
+ * 统一成 `PlanCourseSpec[]`（旧格式的 kps 为空数组）。非法项丢弃，绝不抛错。
+ * ⚠️ 任何要"展示课程名"的地方都必须先过本函数——旧代码用 `String(x)` 直接转对象会得到
+ * `"[object Object]"`（parent_exam_plan_list 曾如此，导致 agent 看不到考了哪些课）。
+ */
+export function parsePlanCourses(raw: unknown): PlanCourseSpec[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PlanCourseSpec[] = [];
+  for (const c of raw) {
+    if (typeof c === "string") {
+      const title = c.trim();
+      if (title) out.push({ title, kps: [] });
+      continue;
+    }
+    if (!c || typeof c !== "object") continue;
+    const o = c as { title?: unknown; kps?: unknown };
+    const title = String(o.title ?? "").trim();
+    if (!title) continue;
+    const kps: PlanKpSpec[] = (Array.isArray(o.kps) ? o.kps : [])
+      .filter((k): k is Record<string, unknown> => !!k && typeof k === "object")
+      .map((k) => ({ name: String(k.name ?? "").trim(), count: Math.max(1, Number(k.count) || 1) }))
+      .filter((k) => k.name);
+    out.push({ title, kps });
+  }
+  return out;
+}
+
+/** `课程A（背诵×1、句意白话×2）；课程B` —— 计划出题约定的一行展示文本（agent 汇报/工具输出复用）。 */
+export function formatPlanCourses(courses: PlanCourseSpec[]): string {
+  return courses
+    .map((c) => (c.kps.length ? `${c.title}（${c.kps.map((k) => `${k.name}×${k.count}`).join("、")}）` : c.title))
+    .join("；");
+}
+
+/**
  * 生成考核计划时调用：把「课程列表 + 计划级 methodSpec（可选）」展开成**完整出题约定**。
  * - 默认 = 主题级 method_spec（按孩子过滤，如排除字词/典故）过一遍，每个知识点 1 题；
  * - 传了 methodSpec 则覆盖主题方法（require 的键支持知识点名或 uuid，解析不到 → 记缺失，创建即失败）；

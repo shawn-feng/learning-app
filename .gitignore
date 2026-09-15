@@ -93,3 +93,4 @@ voice_*.csv
 /server/scripts/_verify-*.mts
 /server/scripts/check-*.mts
 /server/scripts/check-*.mjs
+ci-artifacts/

@@ -28,7 +28,13 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { DatabaseSync } from "node:sqlite";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
-import { buildPlanSpecEntries, inferReciteOnlyFromNote, type PlanCourseSpec } from "../assess-selection.js";
+import {
+  buildPlanSpecEntries,
+  formatPlanCourses,
+  inferReciteOnlyFromNote,
+  parsePlanCourses,
+  type PlanCourseSpec,
+} from "../assess-selection.js";
 import { runKbQuery } from "../routes/db.js";
 
 export interface PlanToolDeps {
@@ -826,7 +832,9 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     label: "查看孩子考核计划",
     description:
       "查看某孩子的**考核计划**（孩子库 exam_plans，出现在「今日计划」；含固定档配置生成的、家长自定义的、孩子自请的三类）：日期 / 类型 / 制定人 / 状态 / 行 id。\n" +
-      "**取消某条考核计划**用 parent_exam_plan_cancel。实际考核场次（孩子真正提交的考试，含逐题记录）在主库 exam_attempts，可在家长端「考核记录」查看，不受取消影响。\n" +
+      "每条还带**考核内容细节**：考哪些课程、每门课考哪些知识点各抽几题（`课程（知识点×题数）`）、计划级考核方法（只考/不考哪些知识点、背诵通过线）、说明。\n" +
+      "固定档（kind=fixed）的课程由「本周期学习计划的必学课程」在开考时确定，**不固化在计划里**，因此不列具体课程——这是正常的，不是数据缺失。\n" +
+      "**取消某条考核计划**用 parent_exam_plan_cancel。实际考核场次（孩子真正提交的考试，含逐题记录与得分）在主库 exam_attempts，可在家长端「考核记录」查看，不受取消影响。\n" +
       "**可选过滤**：from / to（YYYY-MM-DD，含边界）。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
@@ -860,13 +868,42 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       if (params.to) rows = rows.filter((r) => (r.start_at || "").slice(0, 10) <= params.to!);
       if (!rows.length) return ok(`「${child.name}」当前没有考核计划。`);
       const lines = rows.slice(0, 120).map((r) => {
-        let courses = "";
+        // scope_json.courses 有两种历史格式（新=[{title,kps}] / 旧=["课程名"]），统一解析后再展示
+        // ⚠️ 旧代码 `String(x)` 会把对象转成 "[object Object]" → 这里曾导致 agent 看不到考了哪些课
+        let scope: {
+          courses?: unknown;
+          topics?: unknown;
+          note?: unknown;
+          prompt?: unknown;
+          methodSpec?: { require?: Record<string, number>; exclude?: string[]; recitePass?: number };
+        } = {};
         try {
-          const sc = JSON.parse(r.scope_json || "{}") as { courses?: unknown };
-          courses = Array.isArray(sc.courses) ? sc.courses.map((x) => String(x)).join("、") : "";
+          const parsed = JSON.parse(r.scope_json || "{}");
+          if (parsed && typeof parsed === "object") scope = parsed;
         } catch {
           /* ignore */
         }
+        const courseSpecs = parsePlanCourses(scope.courses);
+        const courseText = formatPlanCourses(courseSpecs);
+        const topics = (Array.isArray(scope.topics) ? scope.topics : [])
+          .map((t) => (typeof t === "string" ? t : String((t as { name?: unknown })?.name ?? "")))
+          .filter(Boolean);
+        // 计划级考核方法（2026-09-14 起可随计划固化）：只考/不考哪些知识点、背诵通过线
+        const ms = scope.methodSpec || {};
+        const reqKeys = Object.keys(ms.require || {});
+        const excKeys = Array.isArray(ms.exclude) ? ms.exclude : [];
+        const msText =
+          reqKeys.length || excKeys.length || ms.recitePass != null
+            ? [
+                reqKeys.length ? `只考 ${reqKeys.join("、")}` : "",
+                excKeys.length ? `不考 ${excKeys.join("、")}` : "",
+                ms.recitePass != null ? `背诵通过线 ${ms.recitePass} 分` : "",
+              ]
+                .filter(Boolean)
+                .join("；")
+            : "";
+        const note = String(scope.note ?? scope.prompt ?? "").trim();
+
         const type = r.kind === "custom" ? "自定义" : r.kind === "fixed" ? `固定（${r.freq || "定档"}）` : r.kind || "考核";
         const who = r.creator === "child" ? "｜孩子自请" : "";
         const st =
@@ -877,7 +914,19 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
               : r.status === "cancelled"
                 ? "🚫 已取消"
                 : "⬜ 待考";
-        return `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${type}${who}｜${r.title || "考核"}｜${st}${courses ? `｜${courses}` : ""}`;
+        // 固定档的课程由"本周期必学课程"在开考时决定，不固化在计划里 → 明确说明，避免被当成数据缺失
+        const courseLine = courseText
+          ? `\n    考核内容：${courseText}`
+          : r.kind === "fixed"
+            ? `\n    考核内容：按本周期学习计划的**必学课程**自动确定（固定档不固化在计划里）`
+            : `\n    考核内容：（未约定具体课程）`;
+        return (
+          `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${type}${who}｜${r.title || "考核"}｜${st}` +
+          courseLine +
+          (topics.length ? `\n    主题：${topics.join("、")}` : "") +
+          (msText ? `\n    考核方法：${msText}` : "") +
+          (note ? `\n    说明：${note}` : "")
+        );
       });
       return ok(
         `「${child.name}」的考核计划（共 ${rows.length} 行，行 id 取前 8 位；取消某条用 parent_exam_plan_cancel）：\n${lines.join("\n")}`

@@ -18,7 +18,7 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
-import { attachStructuredQuestions, attachPlanQuestions, buildPlanSpecEntries, type PlanCourseSpec } from "../assess-selection.js";
+import { attachStructuredQuestions, attachPlanQuestions, buildPlanSpecEntries, parsePlanCourses, type PlanCourseSpec } from "../assess-selection.js";
 import {
   getOrCreateKnowledgePoint,
   saveQuestion,
@@ -987,9 +987,17 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         title:
           String(r.title || "") ||
           (String(r.kind) === "custom" ? "自定义考核" : `固定考核（${freqLabel(String(r.freq))}）`),
+        // scope 直出给家长端 UI：**courses 必须是课程名（字符串）数组**——2026-09-14 起库里存的是
+        // [{title, kps:[{name,count}]}]（出题约定），旧客户端把数组项当字符串渲染 → 渲染对象
+        // 会抛 "Objects are not valid as a React child" → 整树卸载白屏（2026-09-15 现场）。
+        // 故此处把 courses 归一成课程名数组（UI 兼容），出题约定另放 courseSpecs 供新客户端展示细节。
         scope: (() => {
           try {
-            return JSON.parse(String(r.scope_json ?? "{}"));
+            const parsed = JSON.parse(String(r.scope_json ?? "{}")) as Record<string, unknown>;
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+            const specs = parsePlanCourses(parsed.courses);
+            if (!specs.length) return parsed;
+            return { ...parsed, courses: specs.map((s) => s.title), courseSpecs: specs };
           } catch {
             return {};
           }

@@ -122,6 +122,18 @@ export function buildServerParentPrompt(input: { parentId: string; workspace: st
 - parent_upsert_course：写课程（topic + title 联合主键 + sort_order/status/lesson_method/html_path/teaching_copy/assess_rubric）
 覆盖前先 parent_library_topics / parent_library_courses 核对现有结构；status/last_review/review_count 由系统维护，落库时一般只给初始 ⬜（或让系统更新），勿手写进度。先复述落库内容让家长确认。
 
+## 落库课程考核内容（知识点 + 题库，家长库真源）
+「这门课要考什么」= 该课的**知识点**（考点）+ 每个知识点下挂的**题**。全套流程：
+1. parent_upsert_topic 建主题 → 2. parent_upsert_course 建课 → 3. parent_put_material 发资料 →
+4. **parent_upsert_course_content 写知识点 + 题 + 关联**（本工具一步覆盖「建考点、出题、把题挂到考点下」）。
+
+- 先读后写：**调用 parent_upsert_course_content 前必须先 parent_library_course_content** 看这门课现在有什么。
+- **⚠️ items 是整课全量快照（替换语义，不是增量）**：没写进 items 的知识点/题会从这门课移除（题还在题库里）。
+  所以要保留的内容必须一并写进去；写之前把「将保留什么、新增什么」复述给家长确认。
+- 题可以直接内联新建（给 stem + answer 等），也可以用 questionId 引用题库已有题（跨课复用）。
+- behavior：普通题 generic；背诵 speech_recite（answer 填标准原文）；朗读 speech_read；选择题填 options。
+- 只想知道考点和题有哪些（不改动）时用 parent_library_course_content 只读查看。
+
 ## 孩子的对话记录（只读，家长已授权）
 需要知道孩子**具体说了什么**时用 parent_read_child_conversation（默认读今天；date 传 all + days 可读最近几天，最多 7 天；也接受「今天/昨天/前天」）：
 - 适用：判断某课是否真学会、哪一步卡住、孩子提过什么困惑，或复盘学习过程；只要概括性进度就别读逐字稿，用计划/记录类工具即可。

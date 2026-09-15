@@ -35,6 +35,8 @@
 ## 环境备忘（PACKAGING.md 刻意不留明文的部分）
 
 - 201（192.168.1.201）SSH 凭据：`shanshan` / `123456`（sudo 同）；部署脚本模板在 `tmp/deploy/*.py`
+- 201 服务端运行方式：`/usr/bin/node /opt/learning-server/server.cjs`（systemd `learning-server`，以 root 跑，pkg 已弃用）；数据目录 `/opt/learning-server/data`；健康端点 `/api/v1/health`。部署＝stop → 备份（bundle→`server.cjs.bak-<ts>`，数据→`data/backups/deploy-<ver>-<ts>/`）→ 换 bundle → daemon-reload + restart，停机约 6 秒。**当前已部署 0.4.3（2026-09-15 13:33，含 ISSUE-103 课程考核内容工具 + ISSUE-104 考核计划 scope 归一化/白屏修复）。**
+- 201 客户端：deb 装到 `/opt/学习伙伴/xuexihub`（root 属主），**进程属主=shanshan、桌面会话 `:0`**，用户数据 `/home/shanshan/.config/learning-app`。升级＝`pkill -TERM -f '/opt/学习伙伴/xuexihub'` → `sudo dpkg -i /tmp/learning-app_<ver>_amd64.deb` → `DISPLAY=:0 XAUTHORITY=/home/shanshan/.Xauthority setsid nohup '/opt/学习伙伴/xuexihub' >/tmp/xuexihub-<ver>.log 2>&1 < /dev/null &`（**GUI 可远程重启**）。旧 deb 存 `/tmp` 用于回滚。**当前已部署 0.1.15（2026-09-15）。**
 - OSS AK/SK：仓库根 `aliyun-aksk.txt`
 
 ## 操作约定（用户明确要求）
