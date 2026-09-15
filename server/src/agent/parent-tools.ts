@@ -468,8 +468,10 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       "**⚠️ items 是整课全量快照，不是增量**：本工具**替换**该课全部挂载——没写进 items 的知识点/题会从这门课移除" +
       "（题本身还留在题库，可再用 questionId 挂回，但家长手工建的挂载关系会丢）。" +
       "**所以必须先 parent_library_course_content 看现状、把要保留的内容一并写进 items，并向家长复述后再调用**。\n" +
-      "**题的两种给法**：① `questionId` 引用题库已有题（先 parent_library_course_content 拿 id）；" +
-      "② 内联 `stem`+`answer` 新建题库题（可带 behavior/pointMax/scoring/note/options）。\n" +
+      "**题的三种给法**：① `questionId` 单独引用题库已有题（先 parent_library_course_content 拿 id），原样挂载不改题；" +
+      "② `questionId` + 内联字段（stem/answer/scoring/pointMax/behavior/note/options 任一）＝**更新该题**，只更新给出的字段，其余保留原值" +
+      "（⚠️ 更新是改题库题本身：同一道题挂在多处时会同步生效）；" +
+      "③ 内联 `stem`+`answer` 新建题库题（可带 behavior/pointMax/scoring/note/options）。\n" +
       "**behavior**：普通题 generic；背诵 speech_recite（answer 填标准原文）；朗读 speech_read；选择题填 options=[{key,text}]。\n" +
       "课程必须先存在（parent_upsert_course 建课）。",
     parameters: Type.Object({
@@ -489,7 +491,10 @@ export function createParentAgentTools(deps: ParentToolDeps) {
             Type.Array(
               Type.Object({
                 questionId: Type.Optional(
-                  Type.String({ description: "引用题库已有题 id；给了它则忽略下面的内联字段" })
+                  Type.String({
+                    description:
+                      "引用题库已有题 id；单独给出＝原样挂载，同时给出 stem/answer 等内联字段＝更新该题（只更新给出的字段）",
+                  })
                 ),
                 stem: Type.Optional(Type.String({ description: "题干" })),
                 answer: Type.Optional(Type.String({ description: "标准答案（背诵/朗读题为原文）" })),
@@ -525,6 +530,19 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         if (!uuid) throw new Error(`课程不存在：${topic}/${title}（先用 parent_upsert_course 建课）`);
         const before = listCourseContent(db, uuid);
 
+        // questionId 携带的内联字段（有任一即视为「更新该题」而非原样引用）
+        const VALID_BEHAVIORS = ["generic", "speech_recite", "speech_read"];
+        const inlineFields = (qo: any) => ({
+          stem: typeof qo.stem === "string" && qo.stem.trim() ? qo.stem.trim() : undefined,
+          answer: typeof qo.answer === "string" && qo.answer.trim() ? qo.answer.trim() : undefined,
+          scoring: qo.scoring != null ? String(qo.scoring) : undefined,
+          pointMax: qo.pointMax != null ? Number(qo.pointMax) : undefined,
+          behavior: qo.behavior != null ? String(qo.behavior).trim() : undefined,
+          note: qo.note != null ? String(qo.note) : undefined,
+          knowledgeSummary: qo.knowledgeSummary != null ? String(qo.knowledgeSummary) : undefined,
+          options: Array.isArray(qo.options) ? qo.options : undefined,
+        });
+
         // 预校验（**只读**）：先把所有错误挑干净再落笔——否则「报错但已建出孤儿知识点/题」会留在库里。
         for (const it of items) {
           const kpIdRaw = typeof it.knowledgePointId === "string" ? it.knowledgePointId.trim() : "";
@@ -546,6 +564,10 @@ export function createParentAgentTools(deps: ParentToolDeps) {
               if (!getQuestion(db, refId)) {
                 throw new Error(`题库题不存在：${refId}（可用 parent_library_course_content 拿正确 id）`);
               }
+              const f = inlineFields(qo);
+              if (f.behavior != null && !VALID_BEHAVIORS.includes(f.behavior)) {
+                throw new Error(`behavior 只能是 generic / speech_recite / speech_read，收到：${f.behavior}`);
+              }
               continue;
             }
             const stem = String(qo.stem ?? "").trim();
@@ -561,6 +583,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         const replaceItems: Array<{ knowledgePointId: string; overview: string; questionIds: string[] }> = [];
         let created = 0;
         let linked = 0;
+        let updated = 0;
         for (const it of items) {
           // 知识点解析：knowledgePointId（须属于本课）优先，否则按名称 getOrCreate（可带 detail）
           const kpIdRaw = typeof it.knowledgePointId === "string" ? it.knowledgePointId.trim() : "";
@@ -594,8 +617,31 @@ export function createParentAgentTools(deps: ParentToolDeps) {
               if (!getQuestion(db, refId)) {
                 throw new Error(`题库题不存在：${refId}（可用 parent_library_course_content 拿正确 id）`);
               }
+              const f = inlineFields(qo);
+              const hasInline = Object.values(f).some((v) => v !== undefined);
+              if (hasInline) {
+                // questionId + 内联字段 = 更新该题：只覆盖给出的字段，其余保留原值（saveQuestion 全字段覆盖，必须先读现值合并）
+                if (f.behavior != null && !VALID_BEHAVIORS.includes(f.behavior)) {
+                  throw new Error(`behavior 只能是 generic / speech_recite / speech_read，收到：${f.behavior}`);
+                }
+                const cur = getQuestion(db, refId)!;
+                saveQuestion(db, {
+                  id: refId,
+                  stem: f.stem ?? cur.stem,
+                  answer: f.answer ?? cur.answer,
+                  scoring: f.scoring !== undefined ? f.scoring : cur.scoring,
+                  pointMax: f.pointMax ?? (Number(cur.pointMax) || 10),
+                  behavior: f.behavior ?? cur.behavior,
+                  note: f.note !== undefined ? f.note : cur.note,
+                  knowledgeSummary: f.knowledgeSummary !== undefined ? f.knowledgeSummary : cur.knowledgeSummary,
+                  // options 未给出传 undefined → saveQuestion 保留库里原 options
+                  options: f.options,
+                });
+                updated++;
+              } else {
+                linked++;
+              }
               qids.push(refId);
-              linked++;
               continue;
             }
             const stem = String(qo.stem ?? "").trim();
@@ -622,7 +668,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         replaceCourseContent(db, uuid, replaceItems);
         appendParentActivityLog(
           ctx,
-          `写入课程考核内容「${title}」（${topic}）：${replaceItems.length} 个知识点、新建 ${created} 题、引用 ${linked} 题`
+          `写入课程考核内容「${title}」（${topic}）：${replaceItems.length} 个知识点、新建 ${created} 题、更新 ${updated} 题、引用 ${linked} 题`
         );
 
         const after = listCourseContent(db, uuid);
@@ -636,9 +682,12 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         const droppedKpNames = before.items.filter((x) => !afterKpIds.has(x.knowledgePointId)).map((x) => x.knowledgePointName);
 
         let msg =
-          `已写入课程「${title}」（${topic}）：提交 ${replaceItems.length} 个知识点｜新建题 ${created} 道｜引用已有题 ${linked} 道。\n` +
+          `已写入课程「${title}」（${topic}）：提交 ${replaceItems.length} 个知识点｜新建题 ${created} 道｜更新题 ${updated} 道｜引用已有题 ${linked} 道。\n` +
           `本课挂载变化：${before.items.length} 个知识点 / ${countQ(before)} 道题 → ${after.items.length} 个知识点 / ${countQ(after)} 道题` +
           `（未挂题的知识点不产生挂载行）。`;
+        if (updated > 0) {
+          msg += `\n\nℹ️ 本次更新了 ${updated} 道题库题本身（含题干/答案等）。这是全局修改：同一道题若还挂在其他课程/知识点下，改动会同步生效。`;
+        }
         if (droppedMounts.length || droppedKpNames.length) {
           const parts: string[] = [];
           if (droppedKpNames.length) parts.push(`知识点挂载被移除：${droppedKpNames.join("、")}`);
