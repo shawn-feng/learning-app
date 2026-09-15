@@ -1,6 +1,6 @@
 {
   "name": "learning-app",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "AI-guided learning app for children",
   "homepage": "https://github.com/learning-app/xuexihub",
   "main": "out/main/index.js",
@@ -15,7 +15,9 @@
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:win:mirror": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& electron-vite build && electron-builder --win",
     "dist:linux": "electron-vite build && electron-builder --linux",
-    "dist:mac": "electron-vite build && electron-builder --mac"
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build"
   },
   "build": {
     "appId": "com.learning-app.desktop",
@@ -24,7 +26,7 @@
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
     "directories": {
-      "output": "dist"
+      "output": "dist-release-016"
     },
     "asar": true,
     "asarUnpack": [
