@@ -74,3 +74,61 @@ SQLite 是嵌入式库，**没有用户/角色/GRANT**——文件级访问即�
 ## 关联
 
 - 直接诱因：2026-09-16 家长 agent「改题干始终失败」的分析与修复（`parent_upsert_course_content` 增加 questionId+内联字段=更新能力，commit `37779ef`）——该场景若当时有本提案的通道，无需改动任何服务端代码。
+
+## 数据结构与权限建议（2026-09-16 补充，基于实读代码）
+
+### 实际数据布局（三库层级）
+
+| 库 | 文件 | 内容 | 连接方式 |
+|---|---|---|---|
+| 主库 | `data/server.sqlite`（db.ts） | 全部家长共用的跨租户数据 | 服务端单例 |
+| 家长内容库 | `data/parents/<parentId>/parent.sqlite`（parent-lib.ts） | 课程库 + 题库（assess-content 三表也在其中） | 每家长一个连接 |
+| 孩子库 | `data/parents/<parentId>/kb/<childId>/kb.sqlite`（kb.ts） | 该孩子的计划/考核/积分/日常 | 每孩子一个连接 |
+| agent 内部库 | `data/agents.sqlite`（agents.ts） | prompts/prompt_history | agent 不可见 |
+
+**租户隔离已经由"文件路径"天然实现**：家长 token 解出 parentId 后只能打开自己的 parent.sqlite 与其名下孩子的 kb——这正好是权限模型的地基，新通道只需沿用 `openParentLib` / `openKb(dataDir, parentId, childId)` 的既有入口，不新增任何跨库路径。
+
+### 权限矩阵（R=只读 / W=受控写 / ✗=不可见）
+
+**主库 server.sqlite**（家长 agent 与孩子 agent 默认都**不开直连**，这是唯一跨租户的库，隔离不能靠路径而要靠代码，风险最高、收益最低）：
+
+| 表 | 家长 agent | 孩子 agent | 说明 / 必须守住的不变量 |
+|---|---|---|---|
+| parents / settings | ✗ | ✗ | 凭据与模型密钥（settings 含加密 auth），任何 agent 永不可见 |
+| children | W（经 `parent_child_create/update`，字段白名单） | ✗ | 孩子的增删改涉及其 kb 目录的建删，不允许绕过服务端 |
+| exam_attempts / speech_assessments | R | ✗* | 只能由考核提交流程写（分数与 exam_plans 配对）；*孩子查自己成绩走现有汇总工具，不给原始表 |
+| session_messages / session_files | R（仅 `parent_read_child_conversation` 这类显式授权读取） | R（仅本人） | 对话属最敏感内容，直连查询等于绕过授权边界，不给通用读 |
+| scheduler_tasks(+assignments) / task_runs / worker_state | R | ✗ | 写路径是 worker 语义，agent 写会破坏游标/重试约定 |
+| materials / files | R；写经现有 `parent_put_material`（涉及物理文件落盘，必须留服务端） | R（自己的教材） | 行记录与磁盘文件必须成对，禁直写 |
+| study_plan_items | R | ✗ | 由计划域 worker 从家长计划生成，孩子不该看见生成细节 |
+
+**家长内容库 parent.sqlite**（家长 agent 主战场，**方案 B 首批放开这里**）：
+
+| 表 | 家长 agent | 孩子 agent | 说明 |
+|---|---|---|---|
+| topics / courses / tags | R + W | R（经汇总工具） | 低风险目录数据，字段白名单写 |
+| question_bank | R + W | R（仅挂到本人考核的题） | 本次"改题干"场景的直接受益表；注意 answer/options 批量改需二次确认 |
+| knowledge_points / course_knowledge_questions | R + W | R | 挂载关系整课替换语义已存在，受控写可行；不变量=course_uuid 归属 |
+| meta | ✗ | ✗ | 迁移标记表，agent 写会破坏幂等迁移 |
+
+**孩子库 kb.sqlite**（孩子 agent 只能连**自己**的这个库；家长 agent 经 parent 工具间接写）：
+
+| 表 | 孩子 agent | 说明 |
+|---|---|---|
+| study_plans / life_plans / plan_recurrences | R + W（仅本人，现有 child_*_create/update 已是此语义） | 不变量=recurrence 展开由 worker 做，直写别碰生成游标 |
+| exam_plans / exam_plan_courses | R | **孩子对考核永远只读**——考试资格、状态机（pending→started→done）、完成回写是防作弊边界 |
+| daily_entries / topics / tags / courses | R + W（日常记录类，孩子自己的笔记） | 低风险，字段白名单写 |
+| reward_configs | R | 奖励规则是家长定的，孩子只能看 |
+| points_ledger / points_balance | R | **积分永远只读**：加分只发生在考核/任务完成的服务端流程，孩子 agent 可写=可自己发分 |
+| redemption_requests | W（仅 insert 自己的兑换申请） | 兑换审批仍归家长 |
+| redemption_items | R | 同上，规则只读 |
+| reward_daily_stats | R | 统计派生表，由 worker 维护 |
+| meta | ✗ | 同上，迁移标记 |
+
+### 从矩阵得出的实施建议
+
+1. **孩子 agent = 单库只读 + 三张白名单写表**（life/study 计划 + 兑换申请 + 日常记录），且物理上只连自己的 kb.sqlite——一次配置，覆盖孩子侧全部长尾场景，风险面极小。
+2. **家长 agent = parent.sqlite 受控读写 + 主库经现有工具**。方案 B 的 `db_describe`/`db_write` 先只注册 parent.sqlite 三张内容表（topics/courses/question_bank/knowledge_points/挂载表），这是"新场景加工具"最密集的区域（本次改题干即属此类）。
+3. **主库不进直连白名单**，理由写死在方案里：跨租户 + 凭据/对话/考核成绩三样最敏感的东西都在主库，而家长/孩子对主库的真实需求全部已被现有工具覆盖，放开没有收益。
+4. **不变量收口清单**（无论 A/B 都必须服务端强制，直连写绕不过去）：考核计划状态机与 attempt 配对、积分只增于服务端流程、recurrence 展开游标、materials 行↔文件成对、meta 迁移标记。
+5. 二次确认策略建议按**表**声明而不是按语句：`question_bank.answer`、`redemption_requests`（孩子发起）等"影响判定结果"的写入，服务端返回"已执行，但需家长/孩子知悉"的提示语，由 agent 转述。
