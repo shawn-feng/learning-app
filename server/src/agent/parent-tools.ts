@@ -40,6 +40,12 @@ import {
   saveQuestion,
   type CourseContent,
 } from "../db/assess-content.js";
+import {
+  describeTables,
+  executeWrite,
+  parentLibTableRegistry,
+  type WriteRequest,
+} from "./db-channel.js";
 
 export interface ParentToolDeps extends MaterialCtx {
   /** 家长 agent 工作区（临时产出） */
@@ -851,6 +857,67 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     },
   });
 
+  // ===== 受控数据通道（ISSUE-105 方案 B P1）：单表简单读写走注册表，复杂编排仍走上面的专用工具 =====
+  const dbSpecs = parentLibTableRegistry();
+
+  const dbDescribeTool = defineTool({
+    name: "parent_db_describe",
+    label: "查看可写数据表结构",
+    description:
+      "列出受控数据通道登记的表（家长内容库：主题/课程/标签/题库/知识点/挂载）。\n" +
+      "传 table 返回该表的列结构、必填、引用校验与操作限制；不传返回全部表清单。\n" +
+      "**何时调用**：家长要求对课程库/题库做「专用工具覆盖不了」的简单增删改前，先用它确认列名与限制。\n" +
+      "复杂流程（整课替换挂载、题目+知识点一起建）仍请用 parent_upsert_course_content。",
+    parameters: Type.Object({
+      table: Type.Optional(Type.String({ description: "表名（可省略=列出全部登记表）" })),
+    }),
+    execute: async (_id: string, params: { table?: string }) => {
+      return ok(describeTables(dbSpecs, params.table?.trim() || undefined));
+    },
+  });
+
+  const dbWriteTool = defineTool({
+    name: "parent_db_write",
+    label: "受控写数据表（单表增删改）",
+    description:
+      "对登记表执行受控 insert/update/delete（家长内容库）。列白名单 + 逐列校验 + 行数熔断 + 事务 + 审计，" +
+      "update/delete 必须带 where 等值条件（先预览影响行数）。写入敏感列（answer/options 等）后返回提示，必须向家长逐条复述。\n" +
+      "**何时调用**：家长要改/建/删单表数据（改题干、调分值、改课程资料说明等）且现有专用工具不覆盖时。\n" +
+      "**不要**用它替代 parent_upsert_course_content 的整课替换语义；不要用来批量删题（先与家长确认清单）。",
+    parameters: Type.Object({
+      table: Type.String({ description: "登记的表名（用 parent_db_describe 查询）" }),
+      op: Type.Union([Type.Literal("insert"), Type.Literal("update"), Type.Literal("delete")], {
+        description: "操作类型",
+      }),
+      rows: Type.Optional(
+        Type.Array(Type.Record(Type.String(), Type.Unknown()), {
+          description: "insert=行数组；update=要写入的列值对象（{列: 新值}）",
+        })
+      ),
+      where: Type.Optional(
+        Type.Record(Type.String(), Type.Unknown(), {
+          description: "update/delete 必填：等值条件 {列: 值}，全部须为登记列",
+        })
+      ),
+    }),
+    execute: async (_id: string, params: { table: string; op: "insert" | "update" | "delete"; rows?: Array<Record<string, unknown>>; where?: Record<string, unknown> }) => {
+      const db = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        const req: WriteRequest = { table: params.table, op: params.op, rows: params.rows, where: params.where };
+        const r = executeWrite(db, dbSpecs, req);
+        if (r.ok) {
+          appendParentActivityLog(
+            ctx,
+            `受控写 ${params.op} ${params.table}（db 通道）：${r.text.split("。")[0] || ""}`
+          );
+        }
+        return ok(r.text);
+      } finally {
+        db.close();
+      }
+    },
+  });
+
   return [
     listTool,
     readTool,
@@ -863,6 +930,8 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     upsertCourseTool,
     courseContentTool,
     upsertCourseContentTool,
+    dbDescribeTool,
+    dbWriteTool,
     imageTool,
     convoTool,
     logTool,
@@ -887,6 +956,8 @@ export const PARENT_AGENT_TOOL_NAMES = [
   "parent_upsert_course",
   "parent_library_course_content",
   "parent_upsert_course_content",
+  "parent_db_describe",
+  "parent_db_write",
   "parent_read_image",
   "parent_read_child_conversation",
   "parent_build_material",
