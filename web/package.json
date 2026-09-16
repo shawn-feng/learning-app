@@ -1,0 +1,28 @@
+{
+  "name": "learning-buddy-web",
+  "version": "0.1.13-web",
+  "private": true,
+  "type": "module",
+  "description": "学习伙伴 Web 前端（共享 ../src 渲染层 + window.api Web 适配层）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lucide-react": "^1.34.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "bcryptjs": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6"
+  }
+}

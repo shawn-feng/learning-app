@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>学习伙伴</title>
+    <!-- styles.css 由 ../../src/App.tsx 的 import "./styles.css" 随 bundle 注入（与 src/index.html 等效） -->
+    <script>
+      // 启动期错误捕获（最先执行，供生产环境排障）：window.__bootErrs 供诊断读取
+      (function () {
+        window.__bootErrs = [];
+        window.addEventListener("error", function (e) {
+          window.__bootErrs.push("error: " + String(e.message).slice(0, 300) + " @" + String(e.filename || "").slice(-40) + ":" + e.lineno);
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          window.__bootErrs.push("rejection: " + String(e.reason && e.reason.stack ? e.reason.stack : e.reason).slice(0, 300));
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

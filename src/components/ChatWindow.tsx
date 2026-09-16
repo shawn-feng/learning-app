@@ -186,6 +186,8 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   const [transcribing, setTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState("");
   const [speakingId, setSpeakingId] = useState<string | null>(null);
+  // Web 朗读代次（Phase 5）：新播报递增，被取代/取消的旧播报 resolve 后不得复位按钮态
+  const speakSeqRef = useRef(0);
   // 识别后未发送的录音（base64，webm/opus），可能有多段（多次按住说话）。
   // 发送时由主进程 voice:merge 拼接成单个音频文件（ISSUE-021）。
   const [pendingAudios, setPendingAudios] = useState<string[]>([]);
@@ -197,10 +199,19 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   const { recording, start, stop } = useAudioRecorder();
 
   // ISSUE-031：聊天框查词浮层——朗读任意文本（整段或单读音拼音串）走 edge-tts，与聊天朗读同链路
+  // Web（window.api.__web）：浏览器 speechSynthesis 代播（voiceSpeak，interrupt 语义由 shim 维护）
   const speakText = useCallback(
     async (text: string) => {
       if (!text) return;
       audioRef.current?.pause(); // 新朗读打断旧播放
+      if (window.api?.__web) {
+        try {
+          await window.api.voiceSpeak(text, { rate });
+        } catch {
+          /* 朗读失败静默 */
+        }
+        return;
+      }
       try {
         const r = await window.api.voiceTts(text, { rate });
         if (r.success && r.audio) {
@@ -601,6 +612,26 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   }
 
   async function handleSpeak(m: ChatMessage) {
+    // Web（window.api.__web，Phase 5）：浏览器 speechSynthesis 代播（interrupt 语义），
+    // 停止按钮 = voiceSpeakCancel（speak 打断）。speakSeqRef 防旧播报被取代后误复位按钮态。
+    if (window.api?.__web) {
+      if (speakingId === m.id) {
+        window.api.voiceSpeakCancel?.();
+        setSpeakingId(null);
+        return;
+      }
+      audioRef.current?.pause();
+      const seq = ++speakSeqRef.current;
+      setSpeakingId(m.id);
+      try {
+        await window.api.voiceSpeak(m.text, { rate });
+      } catch {
+        /* 朗读失败静默 */
+      } finally {
+        if (speakSeqRef.current === seq) setSpeakingId(null);
+      }
+      return;
+    }
     if (speakingId === m.id) {
       audioRef.current?.pause();
       setSpeakingId(null);

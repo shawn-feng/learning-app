@@ -278,7 +278,7 @@ export async function uploadExamVoice(
   const token = currentSessionToken();
   const form = new FormData();
   form.append("child_id", childId);
-  form.append("file", new Blob([buffer]), originalName || `voice-${Date.now()}.webm`);
+  form.append("file", new Blob([buffer as BlobPart]), originalName || `voice-${Date.now()}.webm`);
   const res = await fetch(`${base}/api/v1/files/upload`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},

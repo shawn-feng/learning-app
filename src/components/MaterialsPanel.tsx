@@ -19,6 +19,9 @@ import {
   type PageExecParams,
   type PageExecResultUplink,
 } from "../lib/page-bridge";
+// Web 版（window.api.__web）共享文档网关 URL 组装：api/token/材料 id 编解码来自 shim core
+//（纯函数模块，Electron 端仅被 web 分支引用，零行为影响）。
+import { apiUrl, getStoredToken, encodeMaterialId } from "../../web/src/shim/core/server-fetch";
 
 export interface Material {
   id: string;
@@ -66,6 +69,14 @@ function hashStr(s: string): string {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
   return String(h);
+}
+
+/**
+ * 构造指令失败回执（无 requestId 的早退/超时兜底场景）：补全 PageExecResultUplink 必填的
+ * type/requestId（requestId 用空串——该回执只经内存 resolve 交给调用方，消费方只读 ok/error）。
+ */
+function failedExec(error: string): PageExecResultUplink {
+  return { type: "page:exec:result", requestId: "", ok: false, error };
 }
 
 /**
@@ -126,6 +137,9 @@ function HtmlFrame({
         ref={iframeRef}
         className="html-frame"
         sandbox="allow-scripts allow-modals allow-forms"
+        // Web 版资料/场景页需要麦克风（场景语音球走宿主 getUserMedia，Electron 由窗口权限兜底，
+        // 无条件声明对 Electron 无害）：允许 iframe 请求麦克风设备
+        allow="microphone"
         src={src}
         title={title || "学习内容"}
         onLoad={() => {
@@ -163,11 +177,15 @@ function btoaUnicode(s: string): string {
 }
 
 /**
- * 判定资料是否可用「真实 URL 顶层文档」加载，并构造 asset:// 文档 URL。
+ * 判定资料是否可用「真实 URL 顶层文档」加载，并构造文档 URL。
  * 条件：filePath 存在、去掉 materials/ 前缀后形如 `topic/xxx/name.html`（服务端共享材料）。
  * 本地产物（outputs/ 开头）或无 filePath 的资料返回空串 → HtmlFrame 回退 dataURL 内嵌。
- * URL 语义：asset://local/parent/{parentId}/{topic}/{rest}?doc=1&font=N&v=epoch
- * parentId 仅作 URL 路径段占位（协议按 session token 定位家长，不校验段值）——用固定 "default"。
+ * URL 语义（二选一）：
+ * - Electron：asset://local/parent/{parentId}/{topic}/{rest}?doc=1&font=N&v=epoch
+ *   parentId 仅作 URL 路径段占位（协议按 session token 定位家长，不校验段值）——用固定 "default"。
+ * - Web（window.api.__web）：服务端文档网关
+ *   `{api}/materials/doc/{base64url(相对路径)}?doc=1&token=...&font=N&v=epoch`
+ *   （doc=1 语义对齐、font/v 照传；网关完成「拉 HTML→改写相对资源→注桥→text/html」）。
  */
 function resolveSharedDocUrl(
   filePath: string | undefined,
@@ -179,8 +197,16 @@ function resolveSharedDocUrl(
   if (!norm || norm.startsWith("outputs/")) return "";
   if (!/^[^/]+\/.+\.(html|htm)$/i.test(norm)) return "";
   if (norm.includes("..") || norm.includes(":")) return "";
-  const segments = norm.split("/").map((s) => encodeURIComponent(s));
   const font = typeof matFont === "number" && matFont >= 8 ? `&font=${matFont}` : "";
+  if (window.api?.__web) {
+    // 目录前缀 page 路由（2026-09-16）：token 在路径段，html 携带 <base href=.../p/<token>/<dir>/ >，
+    // 课程 JS 运行期动态拼接的相对媒体路径（如 'emma/'+x+'.mp4'）据此解析并可播（doc/:id 网关的
+    // 静态改写覆盖不到动态拼接）。relpath 逐段编码；token 走路径需 encodeURIComponent。
+    const token = encodeURIComponent(getStoredToken());
+    const segs = norm.split("/").map((s) => encodeURIComponent(s)).join("/");
+    return `${apiUrl(`/materials/p/${token}/${segs}`)}?doc=1${font}&v=${epoch}`;
+  }
+  const segments = norm.split("/").map((s) => encodeURIComponent(s));
   return `asset://local/parent/default/${segments.join("/")}?doc=1${font}&v=${epoch}`;
 }
 
@@ -274,6 +300,22 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   const speakMaterialText = useCallback(async (text: string, opts?: { queue?: boolean }) => {
     const doPlay = async (playText: string, seq: number) => {
       ttsActiveRef.current = true;
+      // Web（window.api.__web，Phase 5）：浏览器 speechSynthesis 代播（无 edge-tts MP3 合成）。
+      // 队列/打断仍由本组件的 seq+pump 状态机裁决（与 Electron 同一套）；voiceSpeak resolve
+      // （播完或被取代）后按 seq 有效性回执 page:tts:done（对齐 edge-tts blob 播完回执时机）。
+      if (window.api?.__web && window.api?.voiceSpeak) {
+        try {
+          await window.api.voiceSpeak(playText, {});
+        } catch {
+          /* 播报失败按播完收尾（回执复位页面朗读按钮，不卡队列） */
+        }
+        if (seq !== ttsSeqRef.current) return; // 已被打断（seq 失效），不接管播放链
+        iframeRef.current?.contentWindow?.postMessage({ type: "page:tts:done" }, "*");
+        ttsActiveRef.current = false;
+        ttsAudioRef.current = null;
+        pump(); // 播完一条 → 播下一条排队台词
+        return;
+      }
       try {
         const r = await window.api.voiceTts(playText, {});
         if (seq !== ttsSeqRef.current || !r.success || !r.audio) return; // 已被打断（seq 失效）
@@ -327,6 +369,11 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     ttsSeqRef.current++; // 使进行中的合成/播放回执失效
     ttsQueueRef.current = [];
     ttsActiveRef.current = false;
+    // Web：取消浏览器 speechSynthesis 播报（ttsAudioRef 恒为 null，voiceSpeakCancel 等价 pause）
+    if (window.api?.__web && window.api?.voiceSpeakCancel) {
+      window.api.voiceSpeakCancel();
+      return;
+    }
     ttsAudioRef.current?.pause();
     ttsAudioRef.current = null;
   }, []);
@@ -334,9 +381,9 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   // 使全部未完成指令失效（页面刷新/切换/面板卸载：旧页面不会再回执）
   const rejectPending = useCallback((error: string) => {
     const pending = pendingRef.current;
-    for (const [, p] of pending) {
+    for (const [rid, p] of pending) {
       clearTimeout(p.timer);
-      p.resolve({ ok: false, error });
+      p.resolve({ type: "page:exec:result", requestId: rid, ok: false, error });
     }
     pending.clear();
   }, []);
@@ -511,6 +558,8 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
           clearTimeout(p.timer);
           pendingRef.current.delete(rid as string);
           p.resolve({
+            type: "page:exec:result",
+            requestId: String(rid ?? ""),
             ok: (data as { ok?: boolean }).ok === true,
             error: (data as { error?: string }).error,
             data: (data as { data?: unknown }).data,
@@ -594,13 +643,13 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     (action: PageAction, params?: PageExecParams): Promise<PageExecResultUplink> => {
       const iframeWin = iframeRef.current?.contentWindow;
       if (!iframeWin || !readyRef.current) {
-        return Promise.resolve({ ok: false, error: "页面未就绪或已关闭" });
+        return Promise.resolve(failedExec("页面未就绪或已关闭"));
       }
       const requestId = genRequestId();
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
           pendingRef.current.delete(requestId);
-          resolve({ ok: false, error: "页面无响应（10 秒超时）" });
+          resolve({ type: "page:exec:result", requestId, ok: false, error: "页面无响应（10 秒超时）" });
         }, EXEC_TIMEOUT_MS);
         pendingRef.current.set(requestId, { resolve, timer });
         const downlink: PageExecDownlink = { type: "page:exec", requestId, action, ...(params || {}) };
@@ -626,13 +675,13 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     const sendOnce = (): Promise<PageExecResultUplink> => {
       const iframeWin = iframeRef.current?.contentWindow;
       if (!iframeWin || !readyRef.current) {
-        return Promise.resolve({ ok: false, error: "页面未就绪或已关闭" });
+        return Promise.resolve(failedExec("页面未就绪或已关闭"));
       }
       const requestId = genRequestId();
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
           pendingRef.current.delete(requestId);
-          resolve({ ok: false, error: "页面无响应（10 秒超时）" });
+          resolve({ type: "page:exec:result", requestId, ok: false, error: "页面无响应（10 秒超时）" });
         }, EXEC_TIMEOUT_MS);
         pendingRef.current.set(requestId, { resolve, timer });
         iframeWin.postMessage(
@@ -656,18 +705,18 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   const scene = useCallback(
     (command: string, params?: Record<string, unknown>): Promise<PageExecResultUplink> => {
       if (!iframeRef.current?.contentWindow) {
-        return Promise.resolve({ ok: false, error: "场景页未打开" });
+        return Promise.resolve(failedExec("场景页未打开"));
       }
       if (!readyRef.current) {
-        return Promise.resolve({ ok: false, error: "场景页加载中，请稍后再试" });
+        return Promise.resolve(failedExec("场景页加载中，请稍后再试"));
       }
       if (!isScenarioRef.current) {
-        return Promise.resolve({ ok: false, error: "当前展示的不是场景页" });
+        return Promise.resolve(failedExec("当前展示的不是场景页"));
       }
       // 场景页没有「结束」：完成由 agent 对话提示，不下发 end
       const allowed = ["say", "move", "act", "show", "hide", "highlight", "update"];
       if (!allowed.includes(command)) {
-        return Promise.resolve({ ok: false, error: `未知场景指令：${command}` });
+        return Promise.resolve(failedExec(`未知场景指令：${command}`));
       }
       // MATERIAL-BRIDGE-PROTOCOL：场景演出命令 = 标准下行 scene.<cmd>（页面 PiBridge.on 接收，
       // 执行自动回执 page:app-cmd:result；可靠性由 appCmd 的 requestId/就绪 gate/超时底座保证）

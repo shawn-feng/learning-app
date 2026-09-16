@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
 import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, TextSelect, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell } from "lucide-react";
-import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, nowTime } from "../components/ChatWindow";
+import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, type TextFileAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
@@ -151,6 +151,17 @@ async function speakReminder(text: string): Promise<void> {
   const release = () => {
     reminderSpeaking = false;
   };
+  // Web（window.api.__web，Phase 5）：浏览器 speechSynthesis 代播（voiceSpeak resolve 即播完）
+  if (window.api?.__web && window.api?.voiceSpeak) {
+    try {
+      await window.api.voiceSpeak(text, {});
+    } catch {
+      /* 播报失败静默（横幅仍会显示） */
+    } finally {
+      release();
+    }
+    return;
+  }
   try {
     const r = await window.api.voiceTts(text, {});
     if (!r.success || !r.audio) {
@@ -995,11 +1006,11 @@ export default function Learn({ child, onExit }: Props) {
         const { command, ...rest } = data.params || {};
         result = panel
           ? await panel.scene(String(command ?? ""), rest)
-          : { ok: false, error: "当前没有打开的学习资料页面" };
+          : { type: "page:exec:result", requestId: data.requestId, ok: false, error: "当前没有打开的学习资料页面" };
       } else {
         result = panel
           ? await panel.exec(data.action as PageAction, data.params || {})
-          : { ok: false, error: "当前没有打开的学习资料页面" };
+          : { type: "page:exec:result", requestId: data.requestId, ok: false, error: "当前没有打开的学习资料页面" };
       }
       try {
         await window.api.pageExecResult(childIdRef.current, data.requestId, result);

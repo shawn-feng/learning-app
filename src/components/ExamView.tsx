@@ -211,7 +211,7 @@ export default function ExamView({ childId, onExit }: Props) {
   );
 
   // ===== 流式出题：iframe 就绪后逐门生成（并发 3），按课程顺序 flush 送达 =====
-  async function beginStreaming(plan: { childId: string; topicName: string; courses: CourseConfig[] }) {
+  async function beginStreaming(plan: { childId: string; topicName: string; childName: string; courses: CourseConfig[] }) {
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     const runId = ++streamRunRef.current;
@@ -1066,7 +1066,7 @@ export default function ExamView({ childId, onExit }: Props) {
           <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
             <div style={{ fontSize: 40 }}>⏳</div>
             <div style={{ fontSize: 16, fontWeight: 600 }}>{prepText || "老师正在批改你的回答…"}</div>
-            <div style={{ color: "#6b7686", fontSize: 13 }}>{stage === "exam" ? "" : "请稍等，不要关闭窗口"}</div>
+            <div style={{ color: "#6b7686", fontSize: 13 }}>请稍等，不要关闭窗口</div>
           </div>
         )}
 

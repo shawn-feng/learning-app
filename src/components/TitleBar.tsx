@@ -3,7 +3,8 @@ import { Minus, Square, Copy, X } from "lucide-react";
 import IconButton from "./IconButton";
 
 interface MenuItem {
-  label: string;
+  /** separator 项无标题（既有 tsc 修复：separator 分隔线不强制 label） */
+  label?: string;
   action?: () => void;
   separator?: boolean;
 }
@@ -55,6 +56,8 @@ export default function TitleBar() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [maximized, setMaximized] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
+  // Web 版（window.api.__web）：浏览器窗口无最小化/最大化/关闭控制权 → 隐藏右侧窗口按钮（保留标题）
+  const isWeb = !!window.api?.__web;
 
   useEffect(() => {
     window.api.windowIsMaximized().then((m: boolean) => setMaximized(!!m));
@@ -106,29 +109,31 @@ export default function TitleBar() {
 
       <div className="title-bar-title">学习伙伴</div>
 
-      <div className="title-bar-controls">
-        <IconButton
-          icon={Minus}
-          title="最小化"
-          size={14}
-          className="tb-ctrl window-ctrl"
-          onClick={() => window.api.windowMinimize()}
-        />
-        <IconButton
-          icon={maximized ? Copy : Square}
-          title={maximized ? "还原" : "最大化"}
-          size={14}
-          className="tb-ctrl window-ctrl"
-          onClick={() => window.api.windowMaximizeToggle()}
-        />
-        <IconButton
-          icon={X}
-          title="关闭"
-          size={14}
-          className="tb-ctrl tb-close window-ctrl"
-          onClick={() => window.api.windowClose()}
-        />
-      </div>
+      {!isWeb && (
+        <div className="title-bar-controls">
+          <IconButton
+            icon={Minus}
+            title="最小化"
+            size={14}
+            className="tb-ctrl window-ctrl"
+            onClick={() => window.api.windowMinimize()}
+          />
+          <IconButton
+            icon={maximized ? Copy : Square}
+            title={maximized ? "还原" : "最大化"}
+            size={14}
+            className="tb-ctrl window-ctrl"
+            onClick={() => window.api.windowMaximizeToggle()}
+          />
+          <IconButton
+            icon={X}
+            title="关闭"
+            size={14}
+            className="tb-ctrl tb-close window-ctrl"
+            onClick={() => window.api.windowClose()}
+          />
+        </div>
+      )}
     </div>
   );
 }
