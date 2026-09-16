@@ -53,6 +53,7 @@ npm run dev                 # 开发调试：tsx src/index.ts
   - iOS：AirDrop/文件分享 crt → 设置 → 已下载的描述文件安装 → 通用 → 关于本机 → 证书信任设置 → 开启完全信任
   - 导入后**重启浏览器**，访问 `https://192.168.1.201:8443`，地址栏无警告、麦克风可用
   - **macOS**：双击 crt → 钥匙串访问选「系统」添加 → 双击该证书 → 信任栏改为「始终信任」；或命令行 `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <crt路径>`。Firefox 例外：不走系统钥匙串，需在 Firefox 设置 → 证书 → 证书颁发机构里单独导入并勾选信任
+  - **Ubuntu/Linux**：`sudo cp <crt路径> /usr/local/share/ca-certificates/learning-201-root.crt && sudo update-ca-certificates`（出现 "1 added" 即成功），重启浏览器。Firefox 新版默认读系统库；若无效在其设置 → 证书 → 证书颁发机构里单独导入并勾选信任
 
 ## 备选形态：Nginx 反向代理
 
