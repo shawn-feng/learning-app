@@ -231,3 +231,27 @@ PASS=2 FAIL=0（闻闻无进行中计划，无法断言；其数据本为空）
 4. `sudo systemctl start learning-server`，确认 `/api/v1/version` 回到 0.4.2。
 
 > 备注：**未改客户端**——老客户端连 0.4.3 已不再白屏（服务端把 `scope.courses` 归一成课程名数组）。若要看到「每课哪些知识点各几题」明细，需另行构建/发布客户端 0.1.16（已改好 `src/lib/plan-scope.ts` + `src/components/PlanCourseList.tsx`，本地构建通过）。
+
+---
+
+## 12. 增量部署：服务端 0.4.5 + 网页端同源托管（2026-09-16 09:03，已完成）
+
+**内容**：Web 前端正式部署。服务端新增 ①`@fastify/static` 同源托管 `web/dist`（目录存在即启用，无则与纯 Electron 后端行为完全一致）；②`GET /materials/p/:token/*` 目录前缀资料路由（token 走路径段 + `<base>` 注入，修复课程 JS 动态拼接与 `media://` 固化协议 URL 的音视频在网页端不可播放）；③Fastify `maxParamLength` 100→1024（JWT 路径参数 414）。配套 `web/dist`（Vite 构建，React 复用 `../src` 渲染层 + `resolve.dedupe` 单实例修复）上传至 `/opt/learning-server/web/dist`。**无 schema 变更、无人工迁移**；所有既有 API 路由行为不变（Electron 客户端零影响）。
+
+| 项 | 值 |
+|---|---|
+| 版本 | 0.4.4 → **0.4.5**（`routes/version.ts` + `server/package.json` 同步 bump） |
+| 结果 | ✅ `/api/v1/version` → **0.4.5**，features 不变；`/api/v1/health` → `{"ok":true,...}` |
+| 网页 | ✅ `http://192.168.1.201:8788/` → 200 text/html；`/assets/*` 200；启动日志含 `web frontend hosting enabled` |
+| 进程 | systemd `learning-server`，active |
+| 备份（旧 bundle） | `/opt/learning-server/server.cjs.bak-20260916-0903`（旧 0.4.4） |
+| 上传物 | `server.cjs`（17.8 MB）+ `web/dist/`（index.html + assets/，约 1.5 MB） |
+| 浏览器实测 | 局域网打开登录页正常渲染（`window.__bootErrs` 空）、test@qq.com 登录、孩子列表正常 |
+
+**回滚方式**
+1. `sudo systemctl stop learning-server`
+2. `sudo cp -a /opt/learning-server/server.cjs.bak-20260916-0903 /opt/learning-server/server.cjs`
+3. （可选移除网页）`sudo rm -rf /opt/learning-server/web`
+4. `sudo systemctl start learning-server`，确认 `/api/v1/version` 回到 0.4.4。
+
+> 备注：①本次**未改 Electron 客户端**——所有服务端改动为附加式（query token 兼容为"头优先、无头回退"），客户端直连 8788 行为不变。②局域网非 localhost 页面受浏览器策略限制**无法使用麦克风**（语音输入/发音评测），需 HTTPS 或 Chrome 白名单（见 `web/DEPLOY.md`）；localhost 不受限。③Web 端构建产物更新流程：`npm run web:build` → 同步 `web/dist/` 到 201 同路径，无需重启服务。
