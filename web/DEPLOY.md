@@ -39,6 +39,20 @@ npm run dev                 # 开发调试：tsx src/index.ts
   2. 前置一层带证书的反向代理（Caddy 自动 HTTPS 最简单），域名解析到服务器；
   3. 仅管理用设备：Chrome 地址栏 `chrome://flags/#unsafely-treat-insecure-origin-as-secure` 加入 `http://<服务器IP>:8788` 后重启浏览器。
 
+## ✅ 已部署：201 局域网 HTTPS（2026-09-16）
+
+201 上已用 **Caddy** 起了 HTTPS 反代（服务端与 Electron 客户端零改动，继续走 8788 HTTP）：
+
+- **入口：`https://192.168.1.201:8443`**（Caddy `tls internal` 自签 CA 给 IP 签证书，SAN 含 `IP:192.168.1.201`）
+- 配置：`/etc/caddy/Caddyfile`（`tls internal` + `reverse_proxy 127.0.0.1:8788`），systemd 服务 `caddy`
+- **设备首次使用需导入 CA 根证书**（每设备一次，之后浏览器完全信任无警告）：
+  - 证书已备份：`web/deploy/learning-201-root.crt`（`CN=Caddy Local Authority`，有效期至 2036）
+  - 也可从 201 下载：`/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`
+  - Windows：双击 crt → 安装证书 → 本地计算机 → 「将所有的证书都放入下列存储」→ 受信任的根证书颁发机构
+  - Android：设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书（部分机型需在 Chrome 单独开启「用户证书」信任）
+  - iOS：AirDrop/文件分享 crt → 设置 → 已下载的描述文件安装 → 通用 → 关于本机 → 证书信任设置 → 开启完全信任
+  - 导入后**重启浏览器**，访问 `https://192.168.1.201:8443`，地址栏无警告、麦克风可用
+
 ## 备选形态：Nginx 反向代理
 
 若已有 Nginx/需要多站点，可改为前端独立托管 + API 反代（同样满足同源）：
