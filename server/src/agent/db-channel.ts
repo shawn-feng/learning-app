@@ -255,6 +255,13 @@ function fail(text: string): never {
   throw new ChannelError(text);
 }
 
+/** 本地时间 YYYY-MM-DD HH:MM:SS（serverGenerated 时间戳列的填充值） */
+function localDatetime(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 /** LLM 传入值 → node:sqlite 可存类型（null/number/bigint/string/Uint8Array） */
 function sqlVal(v: unknown): null | number | bigint | string {
   if (v === null || v === undefined) return null;
@@ -301,6 +308,8 @@ export interface WriteRequest {
   rows?: Array<Record<string, unknown>>;
   /** update/delete 的等值条件（列名→值），必须命中登记列；delete/update 必填 */
   where?: Record<string, unknown>;
+  /** 服务端强制列值（insert 时覆盖 agent 传的同名列，如孩子身份），绕不过 */
+  force?: Record<string, unknown>;
 }
 
 export interface WriteResult {
@@ -367,7 +376,9 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
       if (rows.length > spec.rowLimit) {
         fail(`一次最多插入 ${spec.rowLimit} 行，收到 ${rows.length} 行`);
       }
-      for (const row of rows) {
+      for (const rawRow of rows) {
+        // 服务端强制列（如孩子身份）最后覆盖，agent 传什么都不生效
+        const row = { ...rawRow, ...(req.force ?? {}) };
         // 跨列校验先于逐列校验：比如「背诵题必须有 answer」的提示比「answer 不允许空串」更有用
         if (spec.insertInvariant) {
           const invErr = spec.insertInvariant(row);
@@ -398,7 +409,7 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
         for (const col of spec.serverGenerated ?? []) {
           if (!cols.includes(col)) {
             cols.push(col);
-            vals.push(col === "id" ? randomUUID() : null);
+            vals.push(col === "id" ? randomUUID() : localDatetime());
           }
         }
         for (const r of spec.refChecks ?? []) {
@@ -470,4 +481,253 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
 /** describe 的入口（供工具包装）：列出全部登记表或指定表的详情 */
 export function findTableSpec(specs: TableSpec[], table: string): TableSpec | undefined {
   return specs.find((s) => s.table === table);
+}
+
+// ==================== 孩子库（kb.sqlite）登记（P2）：可读 / 可写 ====================
+
+/** 可读表声明：列 → 含义（孩子 agent 的通用查询面） */
+export interface ReadableTableSpec {
+  table: string;
+  label: string;
+  desc: string;
+  columns: Record<string, string>;
+}
+
+const R = (s: string) => s;
+
+export function childKbReadableRegistry(): ReadableTableSpec[] {
+  return [
+    {
+      table: "study_plans",
+      label: "学习计划",
+      desc: "家长/系统排的学习课程任务；我自己的学习安排",
+      columns: {
+        id: R("计划 id"), topic_key: R("主题标识"), course_name: R("课程名"), mode: R("new=新学/review=复习"),
+        creator: R("创建人 parent/child"), start_at: R("开始时间"), due_at: R("截止时间"),
+        status: R("pending/started/done/cancelled"), done_at: R("完成时间"), task_type: R("required=必须/optional=加分"),
+        points: R("完成可得积分"), active: R("1=有效"),
+      },
+    },
+    {
+      table: "exam_plans",
+      label: "考核计划",
+      desc: "考核安排（只读！考核的开始/完成只能由考核流程写）",
+      columns: {
+        id: R("计划 id"), title: R("考核标题"), kind: R("fixed=固定档/custom=自定义"), freq: R("重复频率"),
+        start_at: R("考核日期"), due_at: R("截止"), status: R("pending/started/done"), attempt_id: R("成绩记录 id"),
+        score: R("得分"), done_at: R("完成时间"), points: R("积分"), scope_json: R("考核范围 JSON"),
+      },
+    },
+    {
+      table: "exam_plan_courses",
+      label: "考核课程明细",
+      desc: "每场考核计划的课程/知识点/题目范围与得分明细",
+      columns: {
+        plan_id: R("考核计划 id"), course_name: R("课程名"), knowledge_point_id: R("知识点 id"),
+        question_id: R("题目 id"), point_got: R("得分"), point_max: R("满分"), seq: R("顺序"),
+      },
+    },
+    {
+      table: "life_plans",
+      label: "生活计划",
+      desc: "生活任务（家长的必须完成项 + 我自己创建的加分项）",
+      columns: {
+        id: R("计划 id"), title: R("事项"), creator: R("parent/child"), start_at: R("开始"), due_at: R("截止"),
+        status: R("pending/started/done/cancelled"), task_type: R("required/optional"), points: R("积分"),
+        active: R("1=有效"), done_at: R("完成时间"),
+      },
+    },
+    {
+      table: "daily_entries",
+      label: "日常记录",
+      desc: "每天的学习/生活/问答/任务记录（我自己的日常本）",
+      columns: { date: R("日期 YYYY-MM-DD"), block: R("学习/生活/问答/任务"), title: R("标题"), raw: R("内容"), tags: R("标签") },
+    },
+    {
+      table: "topics",
+      label: "学习主题",
+      desc: "我在学的主题目录",
+      columns: { name: R("主题名"), topic_key: R("主题标识"), method: R("学习方法"), assess_method: R("考核方法") },
+    },
+    {
+      table: "courses",
+      label: "课程",
+      desc: "主题下的课程与学习状态",
+      columns: {
+        topic: R("主题名"), title: R("课程名"), uuid: R("课程 uuid"), status: R("学习状态标记"),
+        last_review: R("最近学习/复习时间"), review_count: R("复习次数"),
+      },
+    },
+    {
+      table: "reward_configs",
+      label: "积分规则",
+      desc: "家长定的积分/兑换规则（只读）",
+      columns: {
+        todo_tiers_json: R("每日任务积分档位 JSON"), exam_tiers_json: R("考核积分档位 JSON"),
+        optional_points: R("加分项单条积分"), child_no_deduct: R("是否不扣分"),
+      },
+    },
+    {
+      table: "points_ledger",
+      label: "积分流水",
+      desc: "每笔积分的来龙去脉（只读；积分只能由系统流程产生）",
+      columns: {
+        biz_date: R("业务日期"), type: R("类型"), amount: R("变动值"), balance_after: R("变动后余额"),
+        reason: R("原因"), source_table: R("来源表"), source_id: R("来源 id"), ts: R("时间"),
+      },
+    },
+    {
+      table: "points_balance",
+      label: "积分余额",
+      desc: "当前积分余额（只读）",
+      columns: { balance: R("余额"), updated: R("更新时间") },
+    },
+    {
+      table: "redemption_items",
+      label: "兑换商品",
+      desc: "家长发布的可兑换奖励（只读）",
+      columns: { id: R("商品 id"), name: R("名称"), cost: R("所需积分"), kind: R("类型"), enabled: R("1=上架") },
+    },
+    {
+      table: "redemption_requests",
+      label: "我的兑换申请",
+      desc: "我提交的兑换申请及审批状态（新增申请请用 child_db_write）",
+      columns: {
+        item_id: R("商品 id"), custom_desc: R("自定义奖励描述"), cost: R("消耗积分"), status: R("pending/approved/rejected/fulfilled"),
+        created_at: R("申请时间"), fulfilled_at: R("发放时间"),
+      },
+    },
+    {
+      table: "reward_daily_stats",
+      label: "每日积分统计",
+      desc: "每天计划完成率与结算积分（只读）",
+      columns: {
+        date: R("日期"), source: R("todo/exam"), required_total: R("必须项总数"), required_done: R("已完成"),
+        rate: R("完成率"), tier: R("档位"), points_awarded: R("结算积分"),
+      },
+    },
+    {
+      table: "plan_recurrences",
+      label: "重复规则",
+      desc: "周期任务的重复规则（只读；展开由系统做）",
+      columns: { plan_type: R("life/study/exam"), rule: R("daily/weekly"), weekday: R("周几"), enabled: R("1=启用") },
+    },
+  ];
+}
+
+/** 孩子可写白名单：只有日常记录与兑换申请（考核/积分/计划状态机绝不开放，见 ISSUE-105 矩阵） */
+export function childKbWritableRegistry(): TableSpec[] {
+  return [
+    {
+      table: "daily_entries",
+      label: "日常记录",
+      desc: "记一条日常（学习/生活/问答/任务）；主键 (date, block, title)，重复插入=冲突报错（改内容请用 update）",
+      ops: ["insert", "update", "delete"],
+      rowLimit: 30,
+      pk: ["date", "block", "title"],
+      insertRequired: ["date", "block", "title", "raw"],
+      insertInvariant: (row) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(row.date ?? ""))) return "date 必须是 YYYY-MM-DD 格式";
+        return null;
+      },
+      columns: {
+        date: str("日期 YYYY-MM-DD", 10),
+        block: { kind: "enum", desc: "记录分类", enumValues: ["学习", "生活", "问答", "任务"] },
+        title: str("标题（同日同分类下唯一）", 200),
+        raw: str("内容正文", 20000),
+        tags: str("标签（空格/顿号分隔，可空）", 500, { notEmpty: false }),
+      },
+    },
+    {
+      table: "redemption_requests",
+      label: "兑换申请",
+      desc: "提交兑换申请（只能新增；审批/发放由家长与系统处理）",
+      ops: ["insert"],
+      rowLimit: 5,
+      pk: ["id"],
+      serverGenerated: ["id", "created_at"],
+      insertRequired: ["cost"],
+      insertInvariant: (row) => {
+        const hasItem = String(row.item_id ?? "").trim() !== "";
+        const hasDesc = String(row.custom_desc ?? "").trim() !== "";
+        if (!hasItem && !hasDesc) return "兑换申请需要 item_id（兑换商品）或 custom_desc（自定义奖励）之一";
+        return null;
+      },
+      refChecks: [
+        { column: "item_id", refTable: "redemption_items", refColumn: "id", desc: "兑换商品不存在" },
+      ],
+      columns: {
+        child_id: str("孩子 id（服务端强制为本孩子，无需传，传了也会被覆盖）", 64, { notEmpty: false }),
+        item_id: str("兑换商品 id（redemption_items.id，与 custom_desc 二选一）", 64, { notEmpty: false }),
+        custom_desc: str("自定义奖励描述（与 item_id 二选一）", 500, { notEmpty: false }),
+        cost: { kind: "number", desc: "消耗积分（应等于商品 cost）", int: true, min: 0, max: 1000000 },
+      },
+    },
+  ];
+}
+
+/** 通用受控读：等值 where + 列裁剪 + 排序 + 行数上限（全部参数化，无自由 SQL） */
+export interface ReadRequest {
+  table: string;
+  /** 缺省=全部可读列 */
+  columns?: string[];
+  where?: Record<string, unknown>;
+  /** 排序列（须在可读列内），缺省不加 ORDER BY */
+  orderBy?: string;
+  /** 缺省正序；orderBy 给了才生效 */
+  orderDesc?: boolean;
+  limit?: number;
+}
+
+const READ_DEFAULT_LIMIT = 50;
+const READ_MAX_LIMIT = 200;
+
+export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: ReadRequest): { ok: boolean; text: string } {
+  const spec = specs.find((s) => s.table === req.table);
+  if (!spec) {
+    return { ok: false, text: `没有登记名为「${req.table}」的可读表。可用：${specs.map((s) => s.table).join("、")}` };
+  }
+  let cols = Object.keys(spec.columns);
+  if (req.columns?.length) {
+    const unknown = req.columns.filter((c) => !spec.columns[c]);
+    if (unknown.length) return { ok: false, text: `列未登记不可读：${unknown.join("、")}（用 child_db_describe 查看可用列）` };
+    cols = req.columns;
+  }
+  const whereEntries = Object.entries(req.where ?? {}).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
+  for (const [col] of whereEntries) {
+    if (!spec.columns[col]) return { ok: false, text: `where 条件列 ${col} 不可读，不能作为条件` };
+  }
+  let orderSql = "";
+  if (req.orderBy) {
+    if (!spec.columns[req.orderBy]) return { ok: false, text: `排序列 ${req.orderBy} 不可读` };
+    orderSql = ` ORDER BY ${req.orderBy} ${req.orderDesc ? "DESC" : "ASC"}`;
+  }
+  const limit = Math.max(1, Math.min(Number(req.limit) || READ_DEFAULT_LIMIT, READ_MAX_LIMIT));
+  const whereSql = whereEntries.length ? ` WHERE ${whereEntries.map(([c]) => `${c} = ?`).join(" AND ")}` : "";
+  const sql = `SELECT ${cols.join(", ")} FROM ${spec.table}${whereSql}${orderSql} LIMIT ${limit}`;
+  const rows = db.prepare(sql).all(...whereEntries.map(([, v]) => sqlVal(v)));
+  if (!rows.length) return { ok: true, text: `${spec.label}（${spec.table}）：查询结果为空。` };
+  return {
+    ok: true,
+    text: `${spec.label}（${spec.table}）：${rows.length} 行（最多返回 ${limit} 行）\n${rows.map((r) => JSON.stringify(r)).join("\n")}`,
+  };
+}
+
+/** 孩子侧 describe：可读表清单 + 可写表详情 */
+export function describeChildTables(readSpecs: ReadableTableSpec[], writeSpecs: TableSpec[], table?: string): string {
+  if (table) {
+    const w = writeSpecs.find((s) => s.table === table);
+    if (w) return describeTables(writeSpecs, table);
+    const r = readSpecs.find((s) => s.table === table);
+    if (!r) {
+      return `没有登记名为「${table}」的表。可读表：\n` + readSpecs.map((s) => `- ${s.table}（${s.label}）：${s.desc}`).join("\n");
+    }
+    return `## ${r.table}（${r.label}）【只读】\n${r.desc}\n列：\n${Object.entries(r.columns).map(([c, d]) => `- ${c}：${d}`).join("\n")}`;
+  }
+  return (
+    "可读表（用 child_db_read 查询）：\n" +
+    readSpecs.map((s) => `- ${s.table}（${s.label}）：${s.desc}`).join("\n") +
+    "\n\n可写表（用 child_db_write，允许操作见单表详情）：\n" +
+    writeSpecs.map((s) => `- ${s.table}（${s.label}）：允许 ${s.ops.join("/")}`).join("\n")
+  );
 }

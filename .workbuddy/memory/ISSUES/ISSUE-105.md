@@ -3,7 +3,7 @@
 - **类型**：设计讨论 / 架构提案
 - **优先级**：中（不阻塞现网，但持续消耗开发效率）
 - **记录时间**：2026-09-16
-- **状态**：🗣 讨论中（本文档为讨论稿，未定案、未实施）
+- **状态**：🚧 分期实施中——P1（家长受控通道）+ P2（孩子受控通道）已实现（2026-09-16，db-channel.ts / child-db-tools.ts，回归用例 30 项全绿）；**尚未部署 201**（按项目规则等用户明确指示）；P3（受控只读 SQL 评估）待观察后决定
 
 ## 背景与问题
 
@@ -70,6 +70,12 @@ SQLite 是嵌入式库，**没有用户/角色/GRANT**——文件级访问即�
 3. 失败语义：静默拒绝 + 说明原因（agent 可向家长转述），还是抛错让 agent 重试？
 4. 现有工具是否逐步退役（如 `parent_upsert_course_content` 拆薄成纯编排），还是与新通道长期并存、只在描述里互相引用？
 5. 审计与回滚：要不要提供「按审计记录反向回滚」的工具（对家长误操作很重要）？
+
+## 实施记录
+
+- **P1（2026-09-16，commit ee01047）**：`server/src/agent/db-channel.ts` 表注册表 + `parent_db_describe` / `parent_db_write`（家长内容库 6 表）；where 强制、行数熔断、事务回滚、confirm 复述提示、db_audit 审计。
+- **P2（2026-09-16）**：孩子侧 `childKbReadableRegistry`（13 张可读表：计划/考核/积分/兑换/日常等）+ 写白名单仅 `daily_entries`（增改删）与 `redemption_requests`（仅 insert，`child_id` 由执行器 `force` 强制为本孩子、created_at/id 服务端生成、item_id 引用校验）；新增 `child_db_describe` / `child_db_read` / `child_db_write`（child-db-tools.ts，session-registry 注册，非 scene 会话）。
+  - 设计取舍：study_plans/life_plans 的写继续走既有 child_*_create/update 专用工具（recurrence 展开与 creator 语义不宜通用化）；考核/积分表在任何通道都只读。
 
 ## 关联
 

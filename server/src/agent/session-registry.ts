@@ -26,6 +26,7 @@ import {
   type CorePaths,
 } from "@pi/agent-core";
 import { createWorkerKbTools } from "../worker/kb-tools.js";
+import { CHILD_DB_TOOL_NAMES, createChildDbTools } from "./child-db-tools.js";
 import { readParentSettings } from "../worker/scheduler.js";
 import { getAgentPrompt } from "../db/agents.js";
 import { openParentLib } from "../db/parent-lib.js";
@@ -224,6 +225,7 @@ export function computeChildToolNames(caps: { materialPanel: boolean }, kind: Ch
     "child_life_plan_create",
     "child_life_plan_list",
     "child_life_plan_update",
+    ...CHILD_DB_TOOL_NAMES,
   ];
 }
 
@@ -280,6 +282,7 @@ async function ensureEntry(
           createChildLifePlanCreateTool({ dataDir: deps.dataDir, parentId, childId }),
           createChildLifePlanListTool({ dataDir: deps.dataDir, parentId, childId }),
           createChildLifePlanUpdateTool({ dataDir: deps.dataDir, parentId, childId }),
+          ...createChildDbTools({ dataDir: deps.dataDir, parentId, childId }),
         ]),
     ...(pageTools
       ? isScene
