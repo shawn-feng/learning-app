@@ -8,6 +8,7 @@ cloud-service/database/
 cloud-service/storage/
 cloud-service/__pycache__/
 cloud-service/app/__pycache__/
+server/*.log
 cloud-service/*.log
 cloud-service/server*.log
 *.db

@@ -28,6 +28,29 @@ function authParent(req: { headers: Record<string, string | string[] | undefined
   }
 }
 
+/**
+ * Web 前端 Phase 0（附加式）：GET 二进制路由的宽松认证——Authorization 头优先，无头时回退
+ * ?token= query（浏览器 <img>/<audio>/<video> 标签无法携带自定义请求头）。
+ * 复用 verifySession；仅限 GET 路由使用，POST/DELETE 仍走 authParent（只认头）。
+ */
+function authParentFlexible(
+  req: { headers: Record<string, string | string[] | undefined>; query?: unknown },
+  secret: string
+): string {
+  const header = req.headers.authorization;
+  let token = typeof header === "string" ? header.replace(/^Bearer\s+/i, "").trim() : "";
+  if (!token) {
+    const q = (req.query ?? {}) as { token?: unknown };
+    token = typeof q.token === "string" ? q.token.trim() : "";
+  }
+  if (!token) throw new ApiError(401, "缺少 session token");
+  try {
+    return verifySession(token, secret).parent_id;
+  } catch {
+    throw new ApiError(401, "session 无效或已过期，请重新登录");
+  }
+}
+
 function filesRoot(dataDir: string): string {
   return path.join(dataDir, "files");
 }
@@ -118,7 +141,8 @@ export function registerFilesRoutes(app: FastifyInstance, deps: FilesDeps): void
   app.get("/api/v1/files/:id", async (req, reply) => {
     let parentId: string;
     try {
-      parentId = authParent(req, deps.config.jwtSecret);
+      // Web 前端 Phase 0：GET 二进制路由额外接受 ?token= query 认证（带头时优先用头，行为不变）
+      parentId = authParentFlexible(req, deps.config.jwtSecret);
     } catch (err) {
       if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
       throw err;
