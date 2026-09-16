@@ -55,6 +55,10 @@ export default function App() {
             setCurrentChild(child);
             setView("learn");
           }}
+          onLogout={() => {
+            window.api.authLogout();
+            setView("parent-login");
+          }}
         />
       );
       break;

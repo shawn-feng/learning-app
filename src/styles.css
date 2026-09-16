@@ -537,11 +537,19 @@ input, textarea {
   font-weight: 600;
 }
 
-/* SPLIT：主页右上角服务端设置按钮（深色渐变背景上白色半透明） */
-.child-select .home-server-btn {
+/* SPLIT：主页右上角按钮组（服务端设置 + 退出账号，深色渐变背景上白色半透明）。
+   2026-09-16 恢复主页退出入口：新家长换号登录不应被当前家长密码卡住（此前 ISSUE-017
+   移除是为防孩子误触，现以 confirmDialog 二次确认 + 低调描边样式兼顾）。 */
+.child-select .home-top-actions {
   position: absolute;
   top: 44px;
   right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.child-select .home-server-btn,
+.child-select .home-logout-btn {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -557,6 +565,10 @@ input, textarea {
 }
 .child-select .home-server-btn:hover {
   background: rgba(255, 255, 255, 0.28);
+}
+.child-select .home-logout-btn:hover {
+  background: rgba(229, 62, 62, 0.55);
+  border-color: rgba(255, 255, 255, 0.55);
 }
 .child-select.home-page {
   position: relative;

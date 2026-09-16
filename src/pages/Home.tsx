@@ -1,16 +1,19 @@
 import { useState, useEffect } from "react";
-import { Settings } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 import { LoadingBlock } from "../components/Loading";
 
 interface Props {
   email: string;
   onEnterParent: () => void;
   onEnterChild: (child: any) => void;
+  /** 2026-09-16 恢复主页退出入口：新家长直接换号登录，不应被当前家长密码卡住 */
+  onLogout: () => void;
 }
 
-// ISSUE-017: 退出登录按钮只保留在家长页（Dashboard）；主页是孩子和家长共用入口，
-// 移除退出按钮避免低龄用户误操作退出家长账号。主页不再接收 onLogout prop。
-export default function Home({ email, onEnterParent, onEnterChild }: Props) {
+// ISSUE-017：退出登录按钮曾只保留在家长页（Dashboard），主页移除以防低龄用户误操作。
+// 2026-09-16 恢复（用户需求：新家长希望直接登录，不知道当前家长密码会被卡死），
+// 以 confirmDialog 二次确认防误触——孩子误点也会被确认框拦下。
+export default function Home({ email, onEnterParent, onEnterChild, onLogout }: Props) {
   const [children, setChildren] = useState<any[]>([]);
   const [childrenLoading, setChildrenLoading] = useState(true);
   const [selectedChild, setSelectedChild] = useState<any>(null);
@@ -72,20 +75,38 @@ export default function Home({ email, onEnterParent, onEnterChild }: Props) {
     }
   }
 
+  async function handleLogout() {
+    const r = await window.api.confirmDialog({
+      title: "退出账号",
+      message: `确定要退出当前家长账号（${email || "未登录账号"}）吗？`,
+      detail: "退出后需重新输入账号密码登录，孩子数据不受影响。",
+      confirmLabel: "退出",
+      cancelLabel: "取消",
+    });
+    if (!r?.confirmed) return;
+    onLogout();
+  }
+
   return (
     <div className="child-select home-page">
-      {/* SPLIT：服务端地址设置入口（右上角，家长设置用） */}
-      <button
-        className="home-server-btn"
-        title="服务端设置"
-        onClick={() => {
-          setServerMsg("");
-          setShowServerCfg(true);
-        }}
-      >
-        <Settings size={18} />
-        <span>服务端设置</span>
-      </button>
+      {/* 主页右上角按钮组：服务端设置 + 退出账号 */}
+      <div className="home-top-actions">
+        <button
+          className="home-server-btn"
+          title="服务端设置"
+          onClick={() => {
+            setServerMsg("");
+            setShowServerCfg(true);
+          }}
+        >
+          <Settings size={18} />
+          <span>服务端设置</span>
+        </button>
+        <button className="home-logout-btn" title="退出当前家长账号" onClick={handleLogout}>
+          <LogOut size={18} />
+          <span>退出账号</span>
+        </button>
+      </div>
 
       <h1>学习伙伴</h1>
       <p style={{ color: "rgba(255,255,255,0.85)", marginTop: -20, marginBottom: 24 }}>
