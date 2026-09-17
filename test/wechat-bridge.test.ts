@@ -46,6 +46,26 @@ describe("wechat runTurn", () => {
     expect(partial.reply).toContain("工具挂了");
   });
 
+  it("onProgress 逐步回调思考/工具/作答快照", async () => {
+    const key = `t-${Math.random()}`;
+    const snaps: Array<{ thinking: string; tools: Array<{ name: string; done: boolean }>; text: string }> = [];
+    const r = await runTurn(async () => {
+      agentStreamHub.publish(key, "thinking_delta", { delta: "先查计划" });
+      agentStreamHub.publish(key, "tool_start", { toolCallId: "c1", toolName: "parent_exam_plan_list" });
+      agentStreamHub.publish(key, "tool_end", { toolCallId: "c1", toolName: "parent_exam_plan_list" });
+      agentStreamHub.publish(key, "text_delta", { delta: "闻闻今天82分" });
+      agentStreamHub.publish(key, "turn_end", {});
+      return { ok: true };
+    }, key, undefined, (p) => snaps.push({ ...p, tools: p.tools.map((t) => ({ ...t })) }));
+    expect(r.ok).toBe(true);
+    expect(snaps.length).toBeGreaterThanOrEqual(4);
+    expect(snaps.some((s) => s.thinking.includes("先查计划"))).toBe(true);
+    const toolSnap = snaps.find((s) => s.tools.length && s.tools[0].done);
+    expect(toolSnap?.tools[0].name).toBe("parent_exam_plan_list");
+    const last = snaps[snaps.length - 1];
+    expect(last.text).toBe("闻闻今天82分");
+  });
+
   it("超时返回已聚合的部分回复", async () => {
     const key = `t-${Math.random()}`;
     const r = await runTurn(async () => {

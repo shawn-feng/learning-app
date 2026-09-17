@@ -47,21 +47,53 @@ function nowStr(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-/** 提交一轮并聚合最终文本：先订阅再提交，text_delta 累积，turn_end/error 收口。 */
+/** 一轮的过程快照（供渠道做"思考中/工具调用/作答中"的实时展示） */
+export interface TurnProgress {
+  thinking: string;
+  tools: Array<{ name: string; done: boolean; error?: boolean }>;
+  text: string;
+}
+
+/** 提交一轮并聚合最终文本：先订阅再提交，text_delta 累积，turn_end/error 收口。
+ *  onProgress 给定时，每个 thinking/text/tool 事件都会带最新快照回调一次（节流由调用方负责）。 */
 export async function runTurn(
   submit: () => Promise<{ ok: boolean; error?: string }>,
   hubKey: string,
-  timeoutMs = TURN_TIMEOUT_MS
+  timeoutMs = TURN_TIMEOUT_MS,
+  onProgress?: (p: TurnProgress) => void
 ): Promise<{ ok: boolean; reply: string; error?: string }> {
   let text = "";
+  let thinking = "";
+  const tools = new Map<string, { name: string; done: boolean; error?: boolean }>();
   let finished: (() => void) | null = null;
   const done = new Promise<void>((resolve) => {
     finished = resolve;
   });
   let errorMessage: string | null = null;
+  const snapshot = (): TurnProgress => ({
+    thinking,
+    tools: [...tools.values()].map((t) => ({ ...t })),
+    text,
+  });
   const unsubscribe = agentStreamHub.subscribe(hubKey, (e) => {
     if (e.type === "text_delta") {
       text += String((e.data as any)?.delta ?? "");
+      onProgress?.(snapshot());
+    } else if (e.type === "thinking_delta") {
+      thinking += String((e.data as any)?.delta ?? "");
+      onProgress?.(snapshot());
+    } else if (e.type === "tool_start") {
+      const callId = String((e.data as any)?.toolCallId ?? "");
+      tools.set(callId, { name: String((e.data as any)?.toolName ?? "工具"), done: false });
+      onProgress?.(snapshot());
+    } else if (e.type === "tool_end") {
+      const callId = String((e.data as any)?.toolCallId ?? "");
+      const t = tools.get(callId);
+      if (t) {
+        t.done = true;
+        t.error = (e.data as any)?.isError === true;
+      }
+      onProgress?.(snapshot());
     } else if (e.type === "error") {
       errorMessage = String((e.data as any)?.message ?? "agent 出错");
       finished?.();

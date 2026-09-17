@@ -14,7 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import * as lark from "@larksuiteoapi/node-sdk";
 import { submitParentPrompt } from "../agent/parent-registry.js";
 import { submitChildPrompt } from "../agent/session-registry.js";
-import { runTurn } from "../routes/wechat.js";
+import { runTurn, type TurnProgress } from "../routes/wechat.js";
 
 export const FEISHU_SETTINGS_KEY = "channel_feishu";
 
@@ -99,6 +99,39 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
     });
   };
 
+  /** 发一条消息并返回其 message_id（用于后续 patch 编辑） */
+  const sendTextWithId = async (openId: string, text: string): Promise<string> => {
+    const r: any = await (client.im as any).v1.message.create({
+      params: { receive_id_type: "open_id" },
+      data: { receive_id: openId, msg_type: "text", content: JSON.stringify({ text }) },
+    });
+    return String(r?.data?.message_id ?? "");
+  };
+
+  /** 编辑已发送的消息（飞书 patch：仅文本/富文本） */
+  const editText = async (messageId: string, text: string): Promise<void> => {
+    await (client.im as any).v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify({ text }) },
+    });
+  };
+
+  /** 过程快照 → 展示文本（思考摘要 / 工具状态 / 作答字数） */
+  const renderProgress = (p: TurnProgress): string => {
+    const lines: string[] = [];
+    if (p.text) {
+      lines.push(`✍️ 正在整理回答…（已写 ${p.text.length} 字）`);
+      return lines.join("\n");
+    }
+    const activeTools = p.tools.filter((t) => !t.done);
+    const doneTools = p.tools.filter((t) => t.done);
+    if (p.thinking) lines.push(`💭 ${p.thinking.slice(-80)}`);
+    if (activeTools.length) lines.push(`🔧 正在调用：${activeTools.map((t) => t.name).join("、")}…`);
+    if (doneTools.length) lines.push(`✅ 已查完：${[...new Set(doneTools.map((t) => t.name))].join("、")}`);
+    if (!lines.length) lines.push("🤔 正在思考…");
+    return lines.join("\n");
+  };
+
   const upsertBindRequest = (openId: string, sample: string): "pending" | "rejected" => {
     const now = nowStr();
     deps.db
@@ -150,18 +183,62 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
           `（这条消息来自飞书。回复要求：纯文本短句、口语化、控制在一两百字内；` +
           `不要用 markdown 表格、标题、加粗，多行用换行即可。）\n\n${text}`;
         const sessionDeps = { db: deps.db, dataDir: deps.dataDir };
-        const turn =
+        const hubKey = b.role === "parent" ? `${b.parent_id}:parent` : `${b.parent_id}:${b.child_id}`;
+        const submit =
           b.role === "parent"
-            ? runTurn(() => submitParentPrompt(sessionDeps, b.parent_id, "parent", channelText), `${b.parent_id}:parent`)
-            : runTurn(
-                () => submitChildPrompt(sessionDeps, b.parent_id, b.child_id, channelText),
-                `${b.parent_id}:${b.child_id}`
-              );
-        const r = await turn;
-        await sendText(
-          openId,
-          r.ok ? r.reply : r.error?.startsWith("busy") ? "上一条还在想，稍等一下再发～" : `学习服务端暂时没能回答：${r.error ?? ""}`
-        );
+            ? () => submitParentPrompt(sessionDeps, b.parent_id, "parent", channelText)
+            : () => submitChildPrompt(sessionDeps, b.parent_id, b.child_id, channelText);
+
+        // 过程可见（与客户端一致：思考 / 工具调用 / 作答）：先发占位消息，节流 patch 同一条
+        let statusMsgId = "";
+        let lastEditAt = 0;
+        let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushEdit = async (p: TurnProgress) => {
+          if (!statusMsgId) return;
+          try {
+            await editText(statusMsgId, renderProgress(p));
+          } catch {
+            /* 编辑失败不打断主流程（如内容无变化时飞书会报错） */
+          }
+        };
+        const onProgress = (p: TurnProgress) => {
+          const now = Date.now();
+          if (now - lastEditAt < 2500) {
+            if (!pendingTimer) {
+              pendingTimer = setTimeout(() => {
+                pendingTimer = null;
+                void flushEdit(p);
+              }, 2600 - (now - lastEditAt));
+            }
+            return;
+          }
+          lastEditAt = now;
+          void flushEdit(p);
+        };
+        try {
+          statusMsgId = await sendTextWithId(openId, "🤔 正在思考…");
+          lastEditAt = Date.now();
+        } catch {
+          statusMsgId = "";
+        }
+
+        const r = await runTurn(submit, hubKey, undefined, statusMsgId ? onProgress : undefined);
+        if (pendingTimer) clearTimeout(pendingTimer);
+
+        const finalText = r.ok
+          ? r.reply
+          : r.error?.startsWith("busy")
+            ? "上一条还在想，稍等一下再发～"
+            : `学习服务端暂时没能回答：${r.error ?? ""}`;
+        if (statusMsgId) {
+          try {
+            await editText(statusMsgId, finalText);
+          } catch {
+            await sendText(openId, finalText).catch(() => undefined);
+          }
+        } else {
+          await sendText(openId, finalText).catch(() => undefined);
+        }
       } catch (err) {
         console.error("[feishu] 处理消息失败:", (err as Error)?.message || err);
       }
