@@ -1,0 +1,13 @@
+{
+  "id": "learning-bridge",
+  "name": "Learning Bridge",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "serverUrl": { "type": "string", "description": "学习服务端地址（缺省 http://127.0.0.1:8788，可用环境变量 LEARNING_SERVER_URL 覆盖）" },
+      "token": { "type": "string", "description": "连接令牌（与 server 的 WECHAT_CONNECTOR_TOKEN 一致；同机部署可留空）" }
+    },
+    "additionalProperties": false
+  },
+  "activation": { "onStartup": true }
+}

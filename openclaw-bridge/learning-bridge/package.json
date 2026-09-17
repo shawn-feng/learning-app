@@ -1,0 +1,8 @@
+{
+  "name": "learning-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "学习伙伴桥：把微信私信转发给 learning-server 的家长/孩子 agent 会话（不经过 OpenClaw 自己的 LLM）",
+  "openclaw": { "extensions": ["./index.ts"] }
+}

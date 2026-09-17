@@ -1,0 +1,171 @@
+/**
+ * 微信桥（2026-09-17）：把微信消息转给 server 内的家长/孩子 agent 会话，同步等一轮回复。
+ *
+ * 形态：201 上的 OpenClaw gateway 装微信渠道插件（@tencent-weixin/openclaw-weixin）收发微信，
+ * 配套 learning-bridge 插件用 before_agent_reply 钩子把消息 POST 到本路由；本路由
+ * 复用现有会话注册表（submitParentPrompt / submitChildPrompt）+ agentStreamHub 聚合最终文本。
+ * OpenClaw 自己的 LLM 不参与——学习服务端的 agent 是唯一大脑。
+ *
+ * 鉴权：connector 令牌（env WECHAT_CONNECTOR_TOKEN）或仅限本机回环地址（OpenClaw 与 server 同机）。
+ * 超时：默认 240s；超时返回已聚合的部分回复。
+ */
+import type { FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
+import { agentStreamHub } from "../agent/stream-hub.js";
+import { submitParentPrompt } from "../agent/parent-registry.js";
+import { submitChildPrompt } from "../agent/session-registry.js";
+import { verifySession } from "../auth/jwt.js";
+import type { ServerConfig } from "../config.js";
+
+interface Deps {
+  config: ServerConfig;
+  db: DatabaseSync;
+}
+
+function authParent(req: { headers: Record<string, string | string[] | undefined> }, secret: string): string {
+  const header = req.headers.authorization;
+  const token = typeof header === "string" ? header.replace(/^Bearer\s+/i, "").trim() : "";
+  if (!token) throw new Error("缺少 session token");
+  return verifySession(token, secret).parent_id;
+}
+
+const TURN_TIMEOUT_MS = 240_000;
+
+/** 当前请求是否通过桥接鉴权：令牌匹配，或来自本机回环。 */
+function authConnector(req: { ip?: string; headers: Record<string, string | string[] | undefined> }): boolean {
+  const token = process.env.WECHAT_CONNECTOR_TOKEN || "";
+  const given = String(req.headers["x-wechat-token"] ?? "");
+  if (token && given === token) return true;
+  const ip = String(req.ip ?? "");
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+}
+
+function nowStr(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** 提交一轮并聚合最终文本：先订阅再提交，text_delta 累积，turn_end/error 收口。 */
+export async function runTurn(
+  submit: () => Promise<{ ok: boolean; error?: string }>,
+  hubKey: string,
+  timeoutMs = TURN_TIMEOUT_MS
+): Promise<{ ok: boolean; reply: string; error?: string }> {
+  let text = "";
+  let finished: (() => void) | null = null;
+  const done = new Promise<void>((resolve) => {
+    finished = resolve;
+  });
+  let errorMessage: string | null = null;
+  const unsubscribe = agentStreamHub.subscribe(hubKey, (e) => {
+    if (e.type === "text_delta") {
+      text += String((e.data as any)?.delta ?? "");
+    } else if (e.type === "error") {
+      errorMessage = String((e.data as any)?.message ?? "agent 出错");
+      finished?.();
+    } else if (e.type === "turn_end") {
+      finished?.();
+    }
+  });
+  const timer = setTimeout(() => {
+    errorMessage = errorMessage ?? `等待超时（${Math.round(timeoutMs / 1000)}s），已返回部分回复`;
+    finished?.();
+  }, timeoutMs);
+  try {
+    const sub = await submit();
+    if (!sub.ok) {
+      return { ok: false, reply: "", error: sub.error ?? "提交失败" };
+    }
+    await done;
+  } finally {
+    clearTimeout(timer);
+    unsubscribe();
+  }
+  if (errorMessage && !text) return { ok: false, reply: "", error: errorMessage };
+  const reply = text.trim() || "（这轮没有文本回复）";
+  return { ok: true, reply: errorMessage ? `${reply}\n\n（${errorMessage}）` : reply };
+}
+
+export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
+  // —— 绑定管理（家长 JWT；绑定 = 微信号 → 家长本人 / 某个孩子）——
+  app.post("/api/v1/wechat/bindings", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch {
+      return reply.code(401).send({ error: "未登录" });
+    }
+    const body = (req.body ?? {}) as {
+      action: "add" | "remove" | "list";
+      wechatId?: string;
+      role?: "parent" | "child";
+      childId?: string;
+      label?: string;
+    };
+    const db = deps.db;
+
+    if (body.action === "list" || !body.action) {
+      const rows = db
+        .prepare("SELECT wechat_id, role, child_id, label, created_at FROM wechat_bindings WHERE parent_id = ?")
+        .all(parentId);
+      return { bindings: rows };
+    }
+
+    const wechatId = String(body.wechatId ?? "").trim();
+    if (!wechatId) return reply.code(400).send({ error: "wechatId 必填" });
+
+    if (body.action === "remove") {
+      db.prepare("DELETE FROM wechat_bindings WHERE wechat_id = ? AND parent_id = ?").run(wechatId, parentId);
+      return { ok: true };
+    }
+
+    // add
+    const role = body.role === "child" ? "child" : "parent";
+    let childId = "";
+    if (role === "child") {
+      childId = String(body.childId ?? "").trim();
+      if (!childId) return reply.code(400).send({ error: "绑定孩子需要 childId" });
+      const kid = db.prepare("SELECT id FROM children WHERE id = ? AND parent_id = ?").get(childId, parentId);
+      if (!kid) return reply.code(400).send({ error: "孩子不存在或不属于当前家长" });
+    }
+    const now = nowStr();
+    db.prepare(
+      `INSERT INTO wechat_bindings (id, wechat_id, role, parent_id, child_id, label, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?)
+       ON CONFLICT(wechat_id) DO UPDATE SET role=excluded.role, parent_id=excluded.parent_id,
+         child_id=excluded.child_id, label=excluded.label, updated_at=excluded.updated_at`
+    ).run(randomUUID(), wechatId, role, parentId, childId, String(body.label ?? ""), now, now);
+    return { ok: true };
+  });
+
+  // —— 微信消息入口（OpenClaw learning-bridge 插件调用）——
+  app.post("/api/v1/wechat/turn", async (req, reply) => {
+    if (!authConnector(req as any)) return reply.code(401).send({ error: "connector 未授权" });
+    const body = (req.body ?? {}) as { senderId?: string; text?: string };
+    const senderId = String(body.senderId ?? "").trim();
+    const text = String(body.text ?? "").trim();
+    if (!senderId || !text) return reply.code(400).send({ error: "senderId 与 text 必填" });
+
+    const b = deps.db
+      .prepare("SELECT role, parent_id, child_id FROM wechat_bindings WHERE wechat_id = ?")
+      .get(senderId) as { role: "parent" | "child"; parent_id: string; child_id: string } | undefined;
+    if (!b) {
+      return reply.code(200).send({ ok: false, code: "unbound", reply: "这个微信号还没有绑定。请家长在 App 的设置里生成绑定并把这个微信号加上。" });
+    }
+
+    const sessionDeps = { db: deps.db, dataDir: deps.config.dataDir };
+    if (b.role === "parent") {
+      const hubKey = `${b.parent_id}:parent`;
+      const r = await runTurn(() => submitParentPrompt(sessionDeps, b.parent_id, "parent", text), hubKey);
+      return reply.code(r.ok ? 200 : r.error?.startsWith("busy") ? 409 : 500).send({ ...r, code: r.ok ? "ok" : r.error?.startsWith("busy") ? "busy" : "error" });
+    }
+    const streamKey = `${b.parent_id}:${b.child_id}`;
+    const r = await runTurn(
+      () => submitChildPrompt(sessionDeps, b.parent_id, b.child_id, text),
+      streamKey
+    );
+    return reply.code(r.ok ? 200 : r.error?.startsWith("busy") ? 409 : 500).send({ ...r, code: r.ok ? "ok" : r.error?.startsWith("busy") ? "busy" : "error" });
+  });
+}

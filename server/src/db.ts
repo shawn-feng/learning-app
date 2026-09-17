@@ -32,6 +32,18 @@ export function openDb(dataDir: string): DatabaseSync {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_children_parent ON children(parent_id);
+    -- 微信绑定（微信桥，2026-09-17）：一个微信号 ↔ 家长本人或其一个孩子。
+    -- role=parent 时 child_id 为空；role=child 时 child_id 必填且归属 parent_id。
+    CREATE TABLE IF NOT EXISTS wechat_bindings (
+      id TEXT PRIMARY KEY,
+      wechat_id TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL CHECK (role IN ('parent','child')),
+      parent_id TEXT NOT NULL,
+      child_id TEXT NOT NULL DEFAULT '',
+      label TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value_json TEXT NOT NULL DEFAULT '{}',

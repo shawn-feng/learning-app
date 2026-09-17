@@ -7,6 +7,13 @@ import path from "path";
 const testDataDir = path.join(os.tmpdir(), "pi-test-data");
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // 与 server/tsconfig.json、server/scripts/build.mjs 的 @pi/agent-core 别名同源
+      // （server 测试从根 vitest 跑时需要，如 test/wechat-bridge.test.ts → routes/wechat → parent-registry）
+      "@pi/agent-core": path.resolve(__dirname, "packages/agent-core/src/index.ts"),
+    },
+  },
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",

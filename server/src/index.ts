@@ -26,6 +26,7 @@ import { registerModelRoutes } from "./routes/models.js";
 import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerStudyPlanRoutes } from "./routes/study-plans.js";
 import { registerPlanRewardRoutes } from "./routes/plans-rewards.js";
+import { registerWechatRoutes } from "./routes/wechat.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
 import { initServerLog, logInfo, logError, installServerConsoleRedirect } from "./log.js";
 
@@ -77,6 +78,7 @@ registerModelRoutes(app, { config, db });
 registerSchedulerRoutes(app, { config, db });
 registerStudyPlanRoutes(app, { config, db });
 registerPlanRewardRoutes(app, { config, db });
+registerWechatRoutes(app, { config, db });
 startWorkerScheduler({ dataDir: config.dataDir, db });
 
 // ── Web 前端静态托管（部署形态，2026-09-16）────────────────────────────────
