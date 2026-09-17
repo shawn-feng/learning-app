@@ -193,6 +193,9 @@ const api = {
   wechatBindingAdd: (payload: { wechatId: string; role: "parent" | "child"; childId?: string; label?: string }) =>
     ipcRenderer.invoke("wechat:bindingAdd", payload),
   wechatBindingRemove: (wechatId: string) => ipcRenderer.invoke("wechat:bindingRemove", wechatId),
+  wechatFeishuGet: () => ipcRenderer.invoke("wechat:feishuGet"),
+  wechatFeishuSave: (payload: { appId: string; appSecret?: string; enabled: boolean }) =>
+    ipcRenderer.invoke("wechat:feishuSave", payload),
   childSelect: (childId: string) => ipcRenderer.invoke("child:select", childId),
   childAuth: (childId: string, password: string) =>
     ipcRenderer.invoke("child:auth", childId, password),

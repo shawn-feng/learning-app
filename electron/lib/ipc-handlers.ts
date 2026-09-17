@@ -5,7 +5,7 @@ import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildP
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
-import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, openChildSession, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult } from "./server-agent-client";
+import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, openChildSession, openParentSession, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult } from "./server-agent-client";
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
@@ -41,7 +41,7 @@ import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerCon
 import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 import { readTokenLog, getTokenSummary } from "./token-stats";
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
-import { listWechatBindRequests, decideWechatBindRequest, listWechatBindings, addWechatBinding, removeWechatBinding } from "./wechat";
+import { listWechatBindRequests, decideWechatBindRequest, listWechatBindings, addWechatBinding, removeWechatBinding, getFeishuConfig, saveFeishuConfig } from "./wechat";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -297,6 +297,20 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("wechat:bindingRemove", async (_e, wechatId: string) => {
     try {
       return { success: true, data: await removeWechatBinding(wechatId) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("wechat:feishuGet", async () => {
+    try {
+      return { success: true, data: await getFeishuConfig() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("wechat:feishuSave", async (_e, payload: { appId: string; appSecret?: string; enabled: boolean }) => {
+    try {
+      return { success: true, data: await saveFeishuConfig(payload) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1303,7 +1317,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("pi:start_parent", async () => {
     try {
       ensureParentStream("parent");
-      return { success: true, history: [] };
+      // 会话历史回填（ISSUE-107：服务端 /parent-agent/open 返回现会话全部历史，家长不做跨天裁决）
+      const history = await openParentSession("parent").catch(() => [] as any[]);
+      return { success: true, history };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1477,7 +1493,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("pi:start_parent_content", async () => {
     try {
       ensureParentStream("parent-content");
-      return { success: true };
+      // 会话历史回填（ISSUE-107：同 pi:start_parent，parent-content 槽同样返回现会话全部历史）
+      const history = await openParentSession("parent-content").catch(() => [] as any[]);
+      return { success: true, history };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

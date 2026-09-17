@@ -79,17 +79,11 @@ registerSchedulerRoutes(app, { config, db });
 registerStudyPlanRoutes(app, { config, db });
 registerPlanRewardRoutes(app, { config, db });
 registerWechatRoutes(app, { config, db });
-// 飞书渠道：配置了 FEISHU_APP_ID/FEISHU_APP_SECRET 才启用（长连接，进程内直调会话）
+// 飞书渠道：设置页保存的配置（settings 表）优先，未配置时回退环境变量（长连接，进程内直调会话）
 {
-  const appId = process.env.FEISHU_APP_ID || "";
-  const appSecret = process.env.FEISHU_APP_SECRET || "";
-  if (appId && appSecret) {
-    void import("./channels/feishu.js")
-      .then(({ startFeishuChannel }) =>
-        startFeishuChannel({ db, dataDir: config.dataDir, appId, appSecret })
-      )
-      .catch((err) => console.error("[feishu] 渠道启动失败:", (err as Error)?.message || err));
-  }
+  void import("./channels/feishu.js")
+    .then(({ applyFeishuChannel }) => applyFeishuChannel({ db, dataDir: config.dataDir }))
+    .catch((err) => console.error("[feishu] 渠道启动失败:", (err as Error)?.message || err));
 }
 startWorkerScheduler({ dataDir: config.dataDir, db });
 

@@ -67,6 +67,34 @@ export async function addWechatBinding(payload: {
   });
 }
 
+export async function getFeishuConfig(): Promise<{
+  enabled: boolean;
+  appId: string;
+  hasSecret: boolean;
+  running: boolean;
+  status: string;
+  envFallback: boolean;
+}> {
+  return serverFetch("/wechat/feishu-config", {
+    method: "GET",
+    token: currentSessionToken(),
+    timeoutMs: 15000,
+  });
+}
+
+export async function saveFeishuConfig(payload: {
+  appId: string;
+  appSecret?: string;
+  enabled: boolean;
+}): Promise<{ ok?: boolean; started?: boolean; status?: string; error?: string }> {
+  return serverFetch("/wechat/feishu-config", {
+    method: "PUT",
+    token: currentSessionToken(),
+    body: payload,
+    timeoutMs: 20000,
+  });
+}
+
 export async function removeWechatBinding(wechatId: string): Promise<{ ok?: boolean; error?: string }> {
   return serverFetch("/wechat/bindings", {
     method: "POST",

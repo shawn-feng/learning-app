@@ -211,6 +211,47 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
     return { ok: true, wechatId: row.wechat_id };
   });
 
+  // —— 飞书渠道配置（家长 JWT；保存即生效，配置存 settings 表）——
+  app.get("/api/v1/wechat/feishu-config", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch {
+      return reply.code(401).send({ error: "未登录" });
+    }
+    void parentId;
+    const { readFeishuConfig, feishuStatus } = await import("../channels/feishu.js");
+    const cfg = readFeishuConfig(deps.db);
+    const st = feishuStatus();
+    return {
+      enabled: cfg?.enabled ?? false,
+      appId: cfg?.appId ?? "",
+      hasSecret: Boolean(cfg?.appSecret),
+      running: st.running,
+      status: st.status,
+      envFallback: Boolean(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET),
+    };
+  });
+
+  app.put("/api/v1/wechat/feishu-config", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch {
+      return reply.code(401).send({ error: "未登录" });
+    }
+    void parentId;
+    const body = (req.body ?? {}) as { appId?: string; appSecret?: string; enabled?: boolean };
+    const { readFeishuConfig, saveFeishuConfig, applyFeishuChannel } = await import("../channels/feishu.js");
+    const cur = readFeishuConfig(deps.db);
+    const appId = String(body.appId ?? cur?.appId ?? "").trim();
+    const appSecret = String(body.appSecret ?? cur?.appSecret ?? "").trim();
+    if (!appId || !appSecret) return reply.code(400).send({ error: "appId 与 appSecret 必填（appSecret 留空表示保持原值）" });
+    saveFeishuConfig(deps.db, { appId, appSecret, enabled: body.enabled !== false });
+    const r = applyFeishuChannel({ db: deps.db, dataDir: deps.config.dataDir });
+    return { ok: true, ...r };
+  });
+
   // —— 微信消息入口（OpenClaw learning-bridge 插件调用）——
   app.post("/api/v1/wechat/turn", async (req, reply) => {
     if (!authConnector(req as any)) return reply.code(401).send({ error: "connector 未授权" });

@@ -2,8 +2,9 @@
  * 飞书渠道（2026-09-17）：官方 SDK WebSocket 长连接收消息（无需公网回调），
  * 进程内直调家长/孩子会话（复用 runTurn 聚合回复），im/v1/messages 发回飞书。
  *
- * 配置（环境变量，二者都有才启动；缺省不启用，对现有部署零影响）：
- * - FEISHU_APP_ID / FEISHU_APP_SECRET  飞书开放平台企业自建应用凭据
+ * 配置来源（applyFeishuChannel 按此优先级）：
+ * 1. 主库 settings 表 key=channel_feishu：{appId, appSecret, enabled}——家长在设置页保存，保存即生效；
+ * 2. 回退环境变量 FEISHU_APP_ID / FEISHU_APP_SECRET（settings 未配置时）。
  *
  * 事件：im.message.receive_v1（只处理单聊 text 消息；群聊/媒体后续分期）。
  * 幂等：飞书可能重推事件，按 message_id 去重（10 分钟内存窗）。
@@ -11,57 +12,86 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import * as lark from "@larksuiteoapi/node-sdk";
-import { agentStreamHub } from "../agent/stream-hub.js";
 import { submitParentPrompt } from "../agent/parent-registry.js";
 import { submitChildPrompt } from "../agent/session-registry.js";
 import { runTurn } from "../routes/wechat.js";
 
-interface FeishuDeps {
-  db: DatabaseSync;
-  dataDir: string;
+export const FEISHU_SETTINGS_KEY = "channel_feishu";
+
+export interface FeishuChannelConfig {
   appId: string;
   appSecret: string;
+  enabled: boolean;
 }
 
-const recentMessageIds = new Set<string>();
-const recentMessageIdsAt: number[] = [];
-
-function isDuplicate(messageId: string): boolean {
-  const now = Date.now();
-  while (recentMessageIdsAt.length && now - recentMessageIdsAt[0]! > 600_000) {
-    recentMessageIdsAt.shift();
-  }
-  // 数组与 Set 同步收缩：简单起见 Set 不清理，量级（家庭使用）极小
-  if (recentMessageIds.has(messageId)) return true;
-  recentMessageIds.add(messageId);
-  recentMessageIdsAt.push(now);
-  return false;
+interface ActiveChannel {
+  ws: lark.WSClient;
+  appId: string;
 }
 
-/** 飞书 text 消息 content 是 JSON 字符串（{"text":"..."}），@提及为 @_user_1 占位 */
-function extractText(contentJson: string | undefined): string {
+let active: ActiveChannel | null = null;
+let lastStatus = "未启用";
+
+export function feishuStatus(): { running: boolean; appId: string; status: string } {
+  return { running: !!active, appId: active?.appId ?? "", status: lastStatus };
+}
+
+export function readFeishuConfig(db: DatabaseSync): FeishuChannelConfig | null {
+  const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(FEISHU_SETTINGS_KEY) as
+    | { value_json: string }
+    | undefined;
+  if (!row) return null;
   try {
-    const o = JSON.parse(String(contentJson ?? "{}")) as { text?: string };
-    return String(o.text ?? "")
-      .replace(/@_user_\d+/g, "")
-      .trim();
+    const o = JSON.parse(row.value_json) as Partial<FeishuChannelConfig>;
+    if (!o.appId || !o.appSecret) return null;
+    return { appId: String(o.appId), appSecret: String(o.appSecret), enabled: o.enabled !== false };
   } catch {
-    return "";
+    return null;
   }
 }
 
-function nowStr(): string {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+export function saveFeishuConfig(db: DatabaseSync, cfg: FeishuChannelConfig): void {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated) VALUES (?, ?, ?)").run(
+    FEISHU_SETTINGS_KEY,
+    JSON.stringify({ appId: cfg.appId, appSecret: cfg.appSecret, enabled: cfg.enabled }),
+    new Date().toISOString()
+  );
 }
 
-export function startFeishuChannel(deps: FeishuDeps): { started: boolean; reason?: string } {
-  const { db, dataDir, appId, appSecret } = deps;
-  if (!appId || !appSecret) return { started: false, reason: "未配置 FEISHU_APP_ID/FEISHU_APP_SECRET" };
+/** 停掉当前连接（配置变更/停用时调用） */
+function stopActive(): void {
+  if (!active) return;
+  try {
+    active.ws.close();
+  } catch {
+    /* 已断开则忽略 */
+  }
+  active = null;
+  lastStatus = "已停用";
+}
+
+/** 应用配置：设置有值用设置，否则回退环境变量；同 appId 已在跑则不动。 */
+export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }): {
+  started: boolean;
+  appId: string;
+  status: string;
+} {
+  const cfg = readFeishuConfig(deps.db);
+  const appId = cfg?.appId || process.env.FEISHU_APP_ID || "";
+  const appSecret = cfg?.appSecret || process.env.FEISHU_APP_SECRET || "";
+  const enabled = cfg ? cfg.enabled : Boolean(appId && appSecret);
+
+  if (!enabled || !appId || !appSecret) {
+    stopActive();
+    lastStatus = "未启用（缺少配置或未开启）";
+    return { started: false, appId, status: lastStatus };
+  }
+  if (active && active.appId === appId) {
+    return { started: true, appId, status: lastStatus };
+  }
+  stopActive();
 
   const client = new lark.Client({ appId, appSecret, domain: lark.Domain.Feishu });
-
   const sendText = async (openId: string, text: string): Promise<void> => {
     await (client.im as any).v1.message.create({
       params: { receive_id_type: "open_id" },
@@ -71,14 +101,16 @@ export function startFeishuChannel(deps: FeishuDeps): { started: boolean; reason
 
   const upsertBindRequest = (openId: string, sample: string): "pending" | "rejected" => {
     const now = nowStr();
-    db.prepare(
-      `INSERT INTO wechat_bind_requests (id, wechat_id, channel, sample_text, first_seen, last_seen, status)
-       VALUES (?,?, 'feishu', ?,?,?,'pending')
-       ON CONFLICT(channel, wechat_id) DO UPDATE SET
-         sample_text=excluded.sample_text, last_seen=excluded.last_seen,
-         status=CASE WHEN wechat_bind_requests.status='pending' THEN 'pending' ELSE wechat_bind_requests.status END`
-    ).run(randomUUID(), openId, sample.slice(0, 120), now, now);
-    const rejected = db
+    deps.db
+      .prepare(
+        `INSERT INTO wechat_bind_requests (id, wechat_id, channel, sample_text, first_seen, last_seen, status)
+         VALUES (?,?, 'feishu', ?,?,?,'pending')
+         ON CONFLICT(channel, wechat_id) DO UPDATE SET
+           sample_text=excluded.sample_text, last_seen=excluded.last_seen,
+           status=CASE WHEN wechat_bind_requests.status='pending' THEN 'pending' ELSE wechat_bind_requests.status END`
+      )
+      .run(randomUUID(), openId, sample.slice(0, 120), now, now);
+    const rejected = deps.db
       .prepare("SELECT 1 FROM wechat_bind_requests WHERE channel = 'feishu' AND wechat_id = ? AND status = 'rejected'")
       .get(openId);
     return rejected ? "rejected" : "pending";
@@ -100,7 +132,7 @@ export function startFeishuChannel(deps: FeishuDeps): { started: boolean; reason
           return;
         }
 
-        const b = db
+        const b = deps.db
           .prepare("SELECT role, parent_id, child_id FROM wechat_bindings WHERE channel = 'feishu' AND wechat_id = ?")
           .get(openId) as { role: "parent" | "child"; parent_id: string; child_id: string } | undefined;
         if (!b) {
@@ -117,20 +149,19 @@ export function startFeishuChannel(deps: FeishuDeps): { started: boolean; reason
         const channelText =
           `（这条消息来自飞书。回复要求：纯文本短句、口语化、控制在一两百字内；` +
           `不要用 markdown 表格、标题、加粗，多行用换行即可。）\n\n${text}`;
-        const sessionDeps = { db, dataDir };
-        if (b.role === "parent") {
-          const r = await runTurn(
-            () => submitParentPrompt(sessionDeps, b.parent_id, "parent", channelText),
-            `${b.parent_id}:parent`
-          );
-          await sendText(openId, r.ok ? r.reply : r.error?.startsWith("busy") ? "上一条还在想，稍等一下再发～" : `学习服务端暂时没能回答：${r.error ?? ""}`);
-          return;
-        }
-        const r = await runTurn(
-          () => submitChildPrompt(sessionDeps, b.parent_id, b.child_id, channelText),
-          `${b.parent_id}:${b.child_id}`
+        const sessionDeps = { db: deps.db, dataDir: deps.dataDir };
+        const turn =
+          b.role === "parent"
+            ? runTurn(() => submitParentPrompt(sessionDeps, b.parent_id, "parent", channelText), `${b.parent_id}:parent`)
+            : runTurn(
+                () => submitChildPrompt(sessionDeps, b.parent_id, b.child_id, channelText),
+                `${b.parent_id}:${b.child_id}`
+              );
+        const r = await turn;
+        await sendText(
+          openId,
+          r.ok ? r.reply : r.error?.startsWith("busy") ? "上一条还在想，稍等一下再发～" : `学习服务端暂时没能回答：${r.error ?? ""}`
         );
-        await sendText(openId, r.ok ? r.reply : r.error?.startsWith("busy") ? "上一条还在想，稍等一下再发～" : `学习服务端暂时没能回答：${r.error ?? ""}`);
       } catch (err) {
         console.error("[feishu] 处理消息失败:", (err as Error)?.message || err);
       }
@@ -139,15 +170,48 @@ export function startFeishuChannel(deps: FeishuDeps): { started: boolean; reason
 
   const ws = new lark.WSClient({ appId, appSecret, domain: lark.Domain.Feishu, loggerLevel: lark.LoggerLevel.warn });
   void ws.start({ eventDispatcher });
+  active = { ws, appId };
+  lastStatus = "运行中";
   console.log(`[feishu] 渠道已启动（长连接，appId=${appId.slice(0, 8)}…）`);
-  return { started: true };
+  return { started: true, appId, status: lastStatus };
 }
 
-/** 供测试：绑定查找 + 文本提取的纯逻辑导出 */
+// ---------- 纯逻辑（导出供测试） ----------
+
+/** 飞书 text 消息 content 是 JSON 字符串（{"text":"..."}），@提及为 @_user_1 占位 */
+export function extractText(contentJson: string | undefined): string {
+  try {
+    const o = JSON.parse(String(contentJson ?? "{}")) as { text?: string };
+    return String(o.text ?? "")
+      .replace(/@_user_\d+/g, "")
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
 export function feishuBindingLookup(db: DatabaseSync, openId: string) {
   return db
     .prepare("SELECT role, parent_id, child_id FROM wechat_bindings WHERE channel = 'feishu' AND wechat_id = ?")
     .get(openId) as { role: "parent" | "child"; parent_id: string; child_id: string } | undefined;
 }
 
-export const __test = { extractText, randomUUID };
+export const __test = { extractText };
+
+function isDuplicate(messageId: string): boolean {
+  const now = Date.now();
+  // 收缩过期窗口（10 分钟）
+  for (const [id, ts] of recentMessageIds) {
+    if (now - ts > 600_000) recentMessageIds.delete(id);
+  }
+  if (recentMessageIds.has(messageId)) return true;
+  recentMessageIds.set(messageId, now);
+  return false;
+}
+const recentMessageIds = new Map<string, number>();
+
+function nowStr(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}

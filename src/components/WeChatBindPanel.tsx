@@ -59,6 +59,13 @@ export default function WeChatBindPanel() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const timer = useRef<number | null>(null);
+  // 飞书渠道配置
+  const [feishuAppId, setFeishuAppId] = useState("");
+  const [feishuSecret, setFeishuSecret] = useState("");
+  const [feishuEnabled, setFeishuEnabled] = useState(false);
+  const [feishuStatus, setFeishuStatus] = useState("");
+  const [feishuHasSecret, setFeishuHasSecret] = useState(false);
+  const [feishuEnvFallback, setFeishuEnvFallback] = useState(false);
 
   const load = useCallback(async () => {
     const [rq, bd] = await Promise.all([window.api.wechatBindRequests(), window.api.wechatBindings()]);
@@ -66,16 +73,50 @@ export default function WeChatBindPanel() {
     if (bd?.success) setBindings(bd.data?.bindings || []);
   }, []);
 
+  const loadFeishu = useCallback(async () => {
+    const r = await window.api.wechatFeishuGet();
+    if (r?.success && r.data) {
+      const d = r.data as any;
+      setFeishuAppId(d.appId || "");
+      setFeishuEnabled(!!d.enabled);
+      setFeishuHasSecret(!!d.hasSecret);
+      setFeishuStatus(d.running ? "运行中" : d.status || "未运行");
+      setFeishuEnvFallback(!!d.envFallback && !d.appId);
+    }
+  }, []);
+
   useEffect(() => {
     window.api.childList().then((r: any) => {
       if (r?.success) setChildrenList(r.data || []);
     });
     load();
+    loadFeishu();
     timer.current = window.setInterval(load, 15000);
     return () => {
       if (timer.current) window.clearInterval(timer.current);
     };
-  }, [load]);
+  }, [load, loadFeishu]);
+
+  const saveFeishu = async () => {
+    setBusy(true);
+    setNotice("");
+    try {
+      const r = await window.api.wechatFeishuSave({
+        appId: feishuAppId.trim(),
+        appSecret: feishuSecret.trim() || undefined,
+        enabled: feishuEnabled,
+      });
+      if (r?.success && (r.data as any)?.ok) {
+        setFeishuSecret("");
+        await loadFeishu();
+        setNotice(`飞书配置已保存并应用（${(r.data as any)?.status || ""}）`);
+      } else {
+        setNotice(`飞书配置保存失败：${r?.error || (r?.data as any)?.error || "未知错误"}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const decide = async (req: BindRequest, action: "confirm" | "reject", role?: "parent" | "child") => {
     setBusy(true);
@@ -124,6 +165,40 @@ export default function WeChatBindPanel() {
           {notice}
         </div>
       )}
+
+      <div style={{ ...card, borderColor: "#bfe0f5", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>飞书机器人配置</span>
+          <span style={{ fontSize: 12, color: feishuStatus === "运行中" ? "#27754a" : "#98a2b0" }}>{feishuStatus}</span>
+          {feishuEnvFallback && <span style={{ fontSize: 11, color: "#b9770a" }}>（当前使用服务端环境变量中的凭据）</span>}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+          <input
+            value={feishuAppId}
+            onChange={(e) => setFeishuAppId(e.target.value)}
+            placeholder="App ID（cli_…）"
+            style={{ border: "1px solid #ddd", borderRadius: 8, padding: "7px 10px", fontSize: 13, width: 220 }}
+          />
+          <input
+            value={feishuSecret}
+            onChange={(e) => setFeishuSecret(e.target.value)}
+            placeholder={feishuHasSecret ? "App Secret 已保存，留空保持不变" : "App Secret"}
+            type="password"
+            style={{ border: "1px solid #ddd", borderRadius: 8, padding: "7px 10px", fontSize: 13, width: 240 }}
+          />
+          <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+            <input type="checkbox" checked={feishuEnabled} onChange={(e) => setFeishuEnabled(e.target.checked)} />
+            启用
+          </label>
+          <button disabled={busy} style={{ ...btn, background: "#3b6ef5", color: "#fff" }} onClick={saveFeishu}>
+            保存并应用
+          </button>
+        </div>
+        <div style={{ color: "#98a2b0", fontSize: 12 }}>
+          保存立即生效，无需重启服务端。飞书开放平台需开启机器人能力、im:message 权限，事件订阅选「长连接」并订阅
+          im.message.receive_v1。
+        </div>
+      </div>
 
       <div style={{ fontSize: 14, fontWeight: 700, margin: "6px 0 8px" }}>待确认请求（{requests.length}）</div>
       {requests.length === 0 ? (
