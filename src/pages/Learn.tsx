@@ -750,7 +750,7 @@ export default function Learn({ child, onExit }: Props) {
       sceneIntroDoneRef.current.add(ck);
       const id = nextId();
       workingIdRef.current = id;
-      setMessages((prev) => [...prev, { id, role: "ai" as const, text: "", working: true, time: nowTime() }]);
+      setMessages((prev) => [...prev, { id, role: "ai" as const, text: "", working: true, workingSince: Date.now(), time: nowTime() }]);
       setBusy(true);
       materialsPanelRef.current?.sceneAgentBusy(true);
       const ask = (lastAskTextRef.current || "").slice(0, 140);
@@ -829,7 +829,7 @@ export default function Learn({ child, onExit }: Props) {
         text: "",
         thinking: "",
         tools: [],
-        working: true,
+        working: true, workingSince: Date.now(),
         time: nowTime(),
       };
       workingIdRef.current = workingMsg.id;
@@ -1171,7 +1171,7 @@ export default function Learn({ child, onExit }: Props) {
       text: "",
       thinking: "",
       tools: [],
-      working: true,
+      working: true, workingSince: Date.now(),
       time: nowTime(),
     };
     workingIdRef.current = workingMsg.id;

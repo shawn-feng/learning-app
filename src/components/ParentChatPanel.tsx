@@ -283,7 +283,7 @@ export default function ParentChatPanel() {
         textFiles: textFiles.length ? textFiles : undefined,
         files: files.length ? files : undefined,
       },
-      { id: workingId, role: "ai", text: "", thinking: "", tools: [], working: true, time: nowTime() },
+      { id: workingId, role: "ai", text: "", thinking: "", tools: [], working: true, workingSince: Date.now(), time: nowTime() },
     ]);
     setBusy(true);
     try {

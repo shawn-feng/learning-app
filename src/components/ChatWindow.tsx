@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useReducer } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
@@ -26,6 +26,8 @@ export interface ChatMessage {
   thinking?: string;
   tools?: ToolCallState[];
   working?: boolean;
+  // 工作气泡创建时刻（毫秒）：用于显示「已等待 X 秒」，无则不显示计时（历史恢复消息等）
+  workingSince?: number;
   // 消息发送时间（用户可见的时间戳，形如 HH:mm）
   time?: string;
   // 用户上传的图片附件（dataURL 预览 + 发送给视觉模型识别）
@@ -172,6 +174,36 @@ function TraceDetails({ m }: { m: ChatMessage }) {
   );
 }
 
+/**
+ * 工作气泡的状态标签（2026-09-16）：按阶段细分提示 + 等待时长计时。
+ * - 无任何模型输出（无 thinking/无工具）→「等待模型返回…」（正是用户反馈的盲区：
+ *   prompt 已受理但模型还没吐第一个字时，此前只显示「正在思考…」，久等无反馈像卡死）；
+ * - 有思考 →「思考中…」；有工具 →「正在使用工具…」；
+ * - 有 workingSince 时显示已等待时长；≥90 秒仍无任何输出时提示可点停止按钮中止。
+ */
+function WorkingLabel({ m }: { m: ChatMessage }) {
+  const [, tick] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => {
+    if (!m.working) return;
+    const iv = setInterval(tick, 1000);
+    return () => clearInterval(iv);
+  }, [m.working]);
+  const elapsed = m.workingSince ? Math.max(0, Math.round((Date.now() - m.workingSince) / 1000)) : 0;
+  const hasOutput = (m.tools && m.tools.length > 0) || !!m.thinking;
+  const label = m.tools && m.tools.length > 0 ? "正在使用工具…" : m.thinking ? "思考中…" : "等待模型返回…";
+  const waitText = m.workingSince
+    ? `（已等待 ${elapsed >= 60 ? `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒` : `${elapsed} 秒`}）`
+    : "";
+  const slowHint = elapsed >= 90 && !hasOutput ? " · 响应较慢，可点 ⏹ 中止" : "";
+  return (
+    <span className="working-label">
+      {label}
+      {waitText}
+      {slowHint}
+    </span>
+  );
+}
+
 export default function ChatWindow({ messages, onSend, disabled, running = false, onStop, aiEmoji, rate = "+0%", childId, owner, parentId, notice }: Props) {
   // ISSUE-044 修正：家长聊天上下文（owner==="parent"）的上传/打开/读取附件走家长库 uploads，与孩子隔离
   const isParent = owner === "parent";
@@ -197,6 +229,12 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { recording, start, stop } = useAudioRecorder();
+  // Web 专属：agent SSE 流断连状态（Electron preload 无 onPiSseState → 可选调用即零分支，横条永不显示）
+  const [sseDown, setSseDown] = useState(false);
+  useEffect(() => {
+    if (typeof window.api?.onPiSseState !== "function") return;
+    return window.api.onPiSseState((d: any) => setSseDown(d?.state === "reconnecting"));
+  }, []);
 
   // ISSUE-031：聊天框查词浮层——朗读任意文本（整段或单读音拼音串）走 edge-tts，与聊天朗读同链路
   // Web（window.api.__web）：浏览器 speechSynthesis 代播（voiceSpeak，interrupt 语义由 shim 维护）
@@ -757,6 +795,11 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
       )}
 
       <div className="chat-messages" ref={messagesRef}>
+        {sseDown && (
+          <div className="chat-sse-banner">
+            ⚠ 与服务端的连接已断开，正在自动重连…断开期间的模型返回可能丢失，恢复后请重发消息。
+          </div>
+        )}
         {messages.length === 0 && (
           <div style={{ textAlign: "center", color: "#aaa", marginTop: 60 }}>
             你好！我是你的学习伙伴，想学什么都可以告诉我 😊
@@ -774,9 +817,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
                 <div className="bubble working-bubble">
                   <div className="working-header">
                     <span className="working-spinner" />
-                    <span className="working-label">
-                      {m.tools && m.tools.length > 0 ? "正在使用工具…" : "正在思考…"}
-                    </span>
+                    <WorkingLabel m={m} />
                   </div>
                   <TraceDetails m={m} />
                   {m.time && <div className="msg-time">{m.time}</div>}

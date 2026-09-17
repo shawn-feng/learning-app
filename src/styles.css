@@ -2043,6 +2043,17 @@ input, textarea {
   font-weight: 600;
 }
 
+.chat-sse-banner {
+  margin: 8px 12px 0;
+  padding: 8px 12px;
+  background: rgba(255, 193, 7, 0.14);
+  border: 1px solid rgba(255, 193, 7, 0.45);
+  border-radius: 8px;
+  color: #8a6100;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .working-spinner {
   width: 14px;
   height: 14px;

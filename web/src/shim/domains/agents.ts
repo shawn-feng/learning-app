@@ -344,6 +344,12 @@ export const agentsDomain = {
   /** onPiReplyError: (callback: (data: { childId: string; error: string }) => void) => void */
   onPiReplyError: (callback: (data: { childId: string; error: string }) => void) => subscribe("pi:reply_error", callback),
 
+  /** onPiSseState: (callback: (data: { state: "connected" | "reconnecting"; reason?: string; attempt?: number }) => void) => void
+   *  —— Web 专属扩展（Electron preload 无此方法，渲染层用可选调用 + __web 守卫）：
+   *  agent SSE 流断连/恢复的状态播报，供聊天界面显示「连接已断开，正在重连」横条。 */
+  onPiSseState: (callback: (data: { state: "connected" | "reconnecting"; reason?: string; attempt?: number }) => void) =>
+    subscribe("pi:sse_state", callback),
+
   /** onPiDisplayContent: (callback: (data: { childId: string; path: string; title?: string; source?: string; content?: string }) => void) => void —— 服务端 agent 的 display_content 推送（正文 content 已内联，透传无落盘改写） */
   onPiDisplayContent: (callback: (data: {
     childId: string;

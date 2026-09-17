@@ -410,6 +410,8 @@ function openSse(
     attempt++;
     const delay = Math.min(15000, 2000 * attempt);
     console.warn(`[web-sse] 连接中断（${reason}），${delay / 1000}s 后第 ${attempt} 次重连`);
+    // 断连状态反馈到渲染层（pi:sse_state 仅 Web 发出；渲染层可选订阅显示重连横条）
+    send("pi:sse_state", { state: "reconnecting", reason, attempt });
     retryTimer = setTimeout(connect, delay);
   };
 
@@ -430,6 +432,7 @@ function openSse(
           throw new Error(`HTTP ${res.status}`);
         }
         attempt = 0; // 连接成功，重置退避
+        send("pi:sse_state", { state: "connected" }); // 重连恢复后通知渲染层撤横条（首次建连也发，UI 幂等）
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
