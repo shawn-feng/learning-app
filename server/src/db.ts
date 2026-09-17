@@ -44,6 +44,16 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    -- 待确认的绑定请求：未绑定微信号发来消息时落一条（幂等按 wechat_id），家长在前端确认/拒绝
+    CREATE TABLE IF NOT EXISTS wechat_bind_requests (
+      id TEXT PRIMARY KEY,
+      wechat_id TEXT NOT NULL UNIQUE,
+      sample_text TEXT NOT NULL DEFAULT '',
+      first_seen TEXT NOT NULL,
+      last_seen TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','rejected')),
+      decided_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value_json TEXT NOT NULL DEFAULT '{}',

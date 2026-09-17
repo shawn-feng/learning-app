@@ -140,6 +140,77 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
     return { ok: true };
   });
 
+  // —— 待确认绑定请求（家长 JWT；前端轮询展示，确认即落 wechat_bindings）——
+  app.get("/api/v1/wechat/bind-requests", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch {
+      return reply.code(401).send({ error: "未登录" });
+    }
+    void parentId;
+    const rows = deps.db
+      .prepare(
+        "SELECT id, wechat_id, sample_text, first_seen, last_seen FROM wechat_bind_requests WHERE status = 'pending' ORDER BY last_seen DESC LIMIT 50"
+      )
+      .all();
+    return { requests: rows };
+  });
+
+  app.post("/api/v1/wechat/bind-requests/decide", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch {
+      return reply.code(401).send({ error: "未登录" });
+    }
+    const body = (req.body ?? {}) as {
+      id?: string;
+      action?: "confirm" | "reject";
+      role?: "parent" | "child";
+      childId?: string;
+      label?: string;
+    };
+    const id = String(body.id ?? "").trim();
+    const action = body.action;
+    if (!id || !action) return reply.code(400).send({ error: "id 与 action 必填" });
+    const row = deps.db
+      .prepare("SELECT wechat_id, status FROM wechat_bind_requests WHERE id = ?")
+      .get(id) as { wechat_id: string; status: string } | undefined;
+    if (!row) return reply.code(404).send({ error: "请求不存在" });
+    if (row.status !== "pending") return reply.code(409).send({ error: `该请求已处理（${row.status}）` });
+
+    if (action === "reject") {
+      deps.db
+        .prepare("UPDATE wechat_bind_requests SET status = 'rejected', decided_at = ? WHERE id = ?")
+        .run(nowStr(), id);
+      return { ok: true };
+    }
+
+    // confirm：落绑定（复用与手动添加相同的校验）
+    const role = body.role === "child" ? "child" : "parent";
+    let childId = "";
+    if (role === "child") {
+      childId = String(body.childId ?? "").trim();
+      if (!childId) return reply.code(400).send({ error: "绑定孩子需要 childId" });
+      const kid = deps.db.prepare("SELECT id FROM children WHERE id = ? AND parent_id = ?").get(childId, parentId);
+      if (!kid) return reply.code(400).send({ error: "孩子不存在或不属于当前家长" });
+    }
+    const now = nowStr();
+    deps.db
+      .prepare(
+        `INSERT INTO wechat_bindings (id, wechat_id, role, parent_id, child_id, label, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(wechat_id) DO UPDATE SET role=excluded.role, parent_id=excluded.parent_id,
+           child_id=excluded.child_id, label=excluded.label, updated_at=excluded.updated_at`
+      )
+      .run(randomUUID(), row.wechat_id, role, parentId, childId, String(body.label ?? ""), now, now);
+    deps.db
+      .prepare("UPDATE wechat_bind_requests SET status = 'confirmed', decided_at = ? WHERE id = ?")
+      .run(now, id);
+    return { ok: true, wechatId: row.wechat_id };
+  });
+
   // —— 微信消息入口（OpenClaw learning-bridge 插件调用）——
   app.post("/api/v1/wechat/turn", async (req, reply) => {
     if (!authConnector(req as any)) return reply.code(401).send({ error: "connector 未授权" });
@@ -152,7 +223,27 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
       .prepare("SELECT role, parent_id, child_id FROM wechat_bindings WHERE wechat_id = ?")
       .get(senderId) as { role: "parent" | "child"; parent_id: string; child_id: string } | undefined;
     if (!b) {
-      return reply.code(200).send({ ok: false, code: "unbound", reply: "这个微信号还没有绑定。请家长在 App 的设置里生成绑定并把这个微信号加上。" });
+      // 落一条待确认请求（幂等按 wechat_id；已拒绝的不再变回 pending，只刷新最近活跃）
+      const now = nowStr();
+      deps.db
+        .prepare(
+          `INSERT INTO wechat_bind_requests (id, wechat_id, sample_text, first_seen, last_seen, status)
+           VALUES (?,?,?,?,?,'pending')
+           ON CONFLICT(wechat_id) DO UPDATE SET
+             sample_text=excluded.sample_text, last_seen=excluded.last_seen,
+             status=CASE WHEN wechat_bind_requests.status='pending' THEN 'pending' ELSE wechat_bind_requests.status END`
+        )
+        .run(randomUUID(), senderId, text.slice(0, 120), now, now);
+      const rejected = deps.db
+        .prepare("SELECT 1 FROM wechat_bind_requests WHERE wechat_id = ? AND status = 'rejected'")
+        .get(senderId);
+      return reply.code(200).send({
+        ok: false,
+        code: "unbound",
+        reply: rejected
+          ? "这个微信号还没有绑定学习伙伴。"
+          : "这个微信号还没有绑定。家长会在 App「设置 → 微信绑定」里看到确认请求，确认后请再发一次。",
+      });
     }
 
     const sessionDeps = { db: deps.db, dataDir: deps.config.dataDir };

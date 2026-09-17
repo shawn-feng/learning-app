@@ -185,6 +185,14 @@ const api = {
   // Children
   childAdd: (data: any) => ipcRenderer.invoke("child:add", data),
   childList: () => ipcRenderer.invoke("child:list"),
+  // 微信桥：绑定请求与绑定管理
+  wechatBindRequests: () => ipcRenderer.invoke("wechat:bindRequests"),
+  wechatBindDecide: (payload: { id: string; action: "confirm" | "reject"; role?: "parent" | "child"; childId?: string; label?: string }) =>
+    ipcRenderer.invoke("wechat:bindDecide", payload),
+  wechatBindings: () => ipcRenderer.invoke("wechat:bindings"),
+  wechatBindingAdd: (payload: { wechatId: string; role: "parent" | "child"; childId?: string; label?: string }) =>
+    ipcRenderer.invoke("wechat:bindingAdd", payload),
+  wechatBindingRemove: (wechatId: string) => ipcRenderer.invoke("wechat:bindingRemove", wechatId),
   childSelect: (childId: string) => ipcRenderer.invoke("child:select", childId),
   childAuth: (childId: string, password: string) =>
     ipcRenderer.invoke("child:auth", childId, password),

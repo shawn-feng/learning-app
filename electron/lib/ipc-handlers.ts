@@ -41,6 +41,7 @@ import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerCon
 import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 import { readTokenLog, getTokenSummary } from "./token-stats";
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
+import { listWechatBindRequests, decideWechatBindRequest, listWechatBindings, addWechatBinding, removeWechatBinding } from "./wechat";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -259,6 +260,43 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       }
       const profile = await addChild(data);
       return { success: true, profile };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // —— 微信桥：绑定请求与绑定管理（家长 JWT，2026-09-17）——
+  ipcMain.handle("wechat:bindRequests", async () => {
+    try {
+      return { success: true, data: await listWechatBindRequests() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("wechat:bindDecide", async (_e, payload: { id: string; action: "confirm" | "reject"; role?: "parent" | "child"; childId?: string; label?: string }) => {
+    try {
+      return { success: true, data: await decideWechatBindRequest(payload) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("wechat:bindings", async () => {
+    try {
+      return { success: true, data: await listWechatBindings() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("wechat:bindingAdd", async (_e, payload: { wechatId: string; role: "parent" | "child"; childId?: string; label?: string }) => {
+    try {
+      return { success: true, data: await addWechatBinding(payload) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("wechat:bindingRemove", async (_e, wechatId: string) => {
+    try {
+      return { success: true, data: await removeWechatBinding(wechatId) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
