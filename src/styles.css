@@ -872,6 +872,18 @@ input, textarea {
   gap: 6px;
 }
 
+/* ISSUE-106：合并字号弹框的小节标题（「聊天字号」「资料字号」两组档位各挂一个） */
+.modal-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #667eea;
+  margin: 14px 0 6px;
+}
+
+.modal-section-label:first-of-type {
+  margin-top: 0;
+}
+
 .sidebar-section-label {
   font-size: 11px;
   color: #aaa;

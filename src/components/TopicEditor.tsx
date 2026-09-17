@@ -1,6 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "../components/ChatWindow";
 
+// ISSUE-107：历史消息 ID 生成器（与 ParentChatPanel nextId 同构）
+let msgCounter = 0;
+function nextId() {
+  return `content-msg-${Date.now()}-${msgCounter++}`;
+}
+
 interface ChildInfo {
   childId: string;
   name: string;
@@ -43,6 +49,21 @@ export default function TopicEditor() {
       .then((r: any) => {
         if (!r?.success) {
           setMessages((prev) => [...prev, { id: `ai-${Date.now()}`, role: "ai", text: `⚠️ AI 会话初始化失败：${r?.error || "未知错误"}`, time: nowTime() }]);
+          return;
+        }
+        // ISSUE-107：退出再进入时恢复内容生成会话的历史消息（parent-content 槽，不做跨天裁决）
+        if (Array.isArray(r.history) && r.history.length > 0) {
+          setMessages(
+            r.history.map((m: any) => ({
+              id: nextId(),
+              role: m.role === "user" ? "user" : "ai",
+              text: typeof m.text === "string" ? m.text : "",
+              time: m.time || nowTime(),
+              // 恢复 AI 消息的思考过程与工具调用记录（与 ParentChatPanel 同构）
+              thinking: m.role === "ai" ? m.thinking : undefined,
+              tools: m.role === "ai" ? m.tools : undefined,
+            }))
+          );
         }
       })
       .catch((e: any) => {

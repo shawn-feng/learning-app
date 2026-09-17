@@ -278,6 +278,34 @@ export function hasParentSession(parentId: string, kind: ParentSessionKind = "pa
   return entries.has(keyOf(parentId, kind));
 }
 
+/** 读取某家长会话的历史消息（原始 shape 供客户端映射；会话未建立时返回空数组）。 */
+export function getParentSessionHistory(
+  parentId: string,
+  kind: ParentSessionKind
+): Array<{ role: string; content: unknown[]; timestamp?: number | string }> {
+  const entry = entries.get(keyOf(parentId, kind));
+  if (!entry?.session?.messages) return [];
+  return entry.session.messages.map((m: any) => ({
+    role: String(m?.role ?? ""),
+    content: m?.content ?? [],
+    ...(m?.timestamp != null ? { timestamp: m.timestamp } : {}),
+  }));
+}
+
+/**
+ * 打开家长会话（ISSUE-107 冷路径）：ensureEntry（continueRecent 续接落盘会话）后返回现会话全部历史。
+ * 口径与孩子端 openChildSession 不同：家长会话**不做跨天裁决**——key 不含日期、长期持续累积
+ * （registry 刻意不按日期自动新建），家长退出重进返回的是现会话全部历史，上下文不丢。
+ */
+export async function openParentSession(
+  deps: ParentSessionDeps,
+  parentId: string,
+  kind: ParentSessionKind
+): Promise<ReturnType<typeof getParentSessionHistory>> {
+  await ensureEntry(deps, parentId, kind);
+  return getParentSessionHistory(parentId, kind);
+}
+
 /**
  * 中止家长会话的当前一轮（ISSUE-095）：调 SDK 的 session.abort()（中止当前操作并等待 agent idle）。
  * 没有在跑的一轮时为 no-op（返回 false）。中止后 submitParentPrompt 的 finally 会清 busy

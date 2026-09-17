@@ -83,6 +83,14 @@ a { color:var(--primary); text-decoration:none; }
 .plat-chip.soon { color:#94a3b8; }
 /* ---------- 页脚 ---------- */
 .footer { text-align:center; color:#94a3b8; font-size:12.5px; padding:40px 24px 30px; }
+.icp { text-align:center; font-size:12.5px; padding:20px 24px 26px; }
+.icp a { color:#94a3b8; }
+.icp a:hover { color:var(--primary); }
+.icp img { width:14px; height:14px; vertical-align:-2px; margin-right:3px; }
+.icp .sep { margin:0 8px; color:#cbd5e1; }
+.footer .icp-link { color:#94a3b8; }
+.footer .icp-link img { width:14px; height:14px; vertical-align:-2px; margin-right:3px; }
+.footer .icp-sep { margin:0 8px; color:#cbd5e1; }
 /* ---------- 登录弹层 ---------- */
 .overlay {
   position:fixed; inset:0; z-index:100; background:rgba(15,23,42,.45);
@@ -248,7 +256,7 @@ _INDEX_PAGE = """<!DOCTYPE html>
   </div>
 </section>
 
-<footer class="footer">© 2026 权益认证中台 · 为你的 App 提供认证与权益服务</footer>
+<footer class="footer">© 2026 权益认证中台 · 为你的 App 提供认证与权益服务<br><a class="icp-link" href="https://beian.miit.gov.cn/#/Integrated/recordQuery" target="_blank" rel="noopener noreferrer">赣ICP备2026020397号-1</a><span class="icp-sep">|</span><a class="icp-link" href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer"><img src="https://beian.mps.gov.cn/web/assets/logo01.6189a29f.png" alt="公安备案">赣公网安备36011102001315号</a></footer>
 
 <!-- 登录弹层 -->
 <div class="overlay" id="loginOverlay">
@@ -395,6 +403,7 @@ _ME_PAGE = """<!DOCTYPE html>
     <a class="logout" href="#" id="logout">退出登录</a>
   </div>
 </div>
+<footer class="icp"><a href="https://beian.miit.gov.cn/#/Integrated/recordQuery" target="_blank" rel="noopener noreferrer">赣ICP备2026020397号-1</a><span class="sep">|</span><a href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer"><img src="https://beian.mps.gov.cn/web/assets/logo01.6189a29f.png" alt="公安备案">赣公网安备36011102001315号</a></footer>
 <script>
 const TOKEN = new URLSearchParams(location.search).get('token') || localStorage.getItem('benefit_token');
 if (!TOKEN) { location.href = '/login'; }
@@ -606,6 +615,7 @@ _HOME_LOGIN_PAGE = """<!DOCTYPE html>
   </div>
   <p style="font-size:12px;color:#94a3b8;text-align:center;margin-top:18px">首次登录将自动创建账号 · 登录即同意《用户协议》</p>
 </div>
+<footer class="icp"><a href="https://beian.miit.gov.cn/#/Integrated/recordQuery" target="_blank" rel="noopener noreferrer">赣ICP备2026020397号-1</a><span class="sep">|</span><a href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer"><img src="https://beian.mps.gov.cn/web/assets/logo01.6189a29f.png" alt="公安备案">赣公网安备36011102001315号</a></footer>
 <script>
 // 标准 OAuth 登录：点击平台后浏览器直接跳转到抖音授权页（302），
 // 在 PC 页面扫码（或 App 内确认），授权后回跳到本站 /me。

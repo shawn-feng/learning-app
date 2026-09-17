@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, TextSelect, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, type TextFileAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
@@ -309,7 +309,7 @@ export default function Learn({ child, onExit }: Props) {
   const [showView, setShowView] = useState(false); // 切换展示页
   const [showModel, setShowModel] = useState(false); // 模型
   const [showRate, setShowRate] = useState(false); // 朗读语速
-  const [showFont, setShowFont] = useState(false); // 聊天字号
+  const [showFontPanel, setShowFontPanel] = useState(false); // 字号设置弹框（ISSUE-106：聊天字号 + 资料字号合并入口）
   const [showClass, setShowClass] = useState(false); // 今日课程
   // ISSUE-008/016：中间展示区可折叠（收起后聊天区占更多空间），学习资料/学习进度等所有展示页通用；
   // display_content 时自动展开（见下方 materials 监听 effect）
@@ -363,7 +363,7 @@ export default function Learn({ child, onExit }: Props) {
       /* 持久化失败不影响本次生效 */
     }
   };
-  const [showMatFont, setShowMatFont] = useState(false); // 资料字号弹框
+  // ISSUE-106：原 showMatFont 独立弹框开关已并入 showFontPanel，fontSize/matFontSize 与持久化不动
 
   // AI Agent settings
   const [showAiSettings, setShowAiSettings] = useState(false);
@@ -1351,20 +1351,13 @@ export default function Learn({ child, onExit }: Props) {
               <Gauge size={20} />
             </button>
 
+            {/* ISSUE-106：字号设置合并入口——一个 icon 弹出同时调聊天字号与资料字号 */}
             <button
               className="sidebar-icon-btn"
-              title={`聊天字号 ${fontSize}px`}
-              onClick={() => setShowFont(true)}
+              title={`字号（聊天 ${fontSize}px / 资料 ${matFontSize}px）`}
+              onClick={() => setShowFontPanel(true)}
             >
               <Type size={20} />
-            </button>
-
-            <button
-              className="sidebar-icon-btn"
-              title={`资料字号 ${matFontSize}px`}
-              onClick={() => setShowMatFont(true)}
-            >
-              <TextSelect size={20} />
             </button>
 
             <button
@@ -1732,11 +1725,13 @@ export default function Learn({ child, onExit }: Props) {
         </div>
       )}
 
-      {/* ISSUE-026：聊天字号弹框 */}
-      {showFont && (
-        <div className="modal-overlay" onClick={() => setShowFont(false)}>
+      {/* ISSUE-106：字号设置弹框——聊天字号 + 资料字号两组并入同一弹框（合并自 ISSUE-023 / ISSUE-030
+          的两个独立弹框；fontSize/matFontSize 两 state 与 localStorage key 不变，仅聚合 UI） */}
+      {showFontPanel && (
+        <div className="modal-overlay" onClick={() => setShowFontPanel(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>聊天字号</h2>
+            <h2>字号设置</h2>
+            <div className="modal-section-label">聊天字号</div>
             <div className="rate-grid">
               {FONT_OPTIONS.map((opt) => (
                 <button
@@ -1749,18 +1744,7 @@ export default function Learn({ child, onExit }: Props) {
                 </button>
               ))}
             </div>
-            <div className="modal-actions">
-              <button className="cancel" onClick={() => setShowFont(false)}>关闭</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ISSUE-030：资料字号弹框（与聊天字号并列，复用 rate-grid 范式；按 childId 持久化，作用域仅孩子端学习资料） */}
-      {showMatFont && (
-        <div className="modal-overlay" onClick={() => setShowMatFont(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>资料字号</h2>
+            <div className="modal-section-label">资料字号</div>
             <div className="rate-grid">
               {MAT_FONT_OPTIONS.map((opt) => (
                 <button
@@ -1774,7 +1758,7 @@ export default function Learn({ child, onExit }: Props) {
               ))}
             </div>
             <div className="modal-actions">
-              <button className="cancel" onClick={() => setShowMatFont(false)}>关闭</button>
+              <button className="cancel" onClick={() => setShowFontPanel(false)}>关闭</button>
             </div>
           </div>
         </div>

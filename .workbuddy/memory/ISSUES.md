@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **104** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **108** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -114,6 +114,10 @@
 | 102 | 家长 agent 缺「读取孩子全部会话内容」工具：现有家长工具只覆盖资料/家长库/计划域，**无任何读孩子对话逐字稿的工具**（计划工具仅给摘要）；但底层读链路已存在且经「家长对话回顾」页验证——`db/sessions.ts` 的 `indexAgentSessionsIntoDb`/`querySessionMessages`/`listSessionDates` + `routes/sessions.ts` 的 `assertChildOwned` 归属校验。**⚠️ 本需求扩张原隐私红线「家长 agent 只读孩子数据 summary、不触碰原始对话」**——属家长授权扩张，应保留只读 + 归属校验 + 按天/限量读取 | ✅ 已实施（2026-09-15）：新增 `parent_read_child_conversation`（只读；按天 / all+days≤7；单条 600 / 总量 16000 字符截断）+ prompt 边界段 + 文档隐私边界更新；真实数据冒烟 5 例通过 | 2026-09-15 | [详情](ISSUES/ISSUE-102.md) |
 | 103 | 家长 agent 管理课程时缺「知识点 + 题库」管理工具：主题/课/教学/资料已有工具（parent_upsert_topic/course、parent_put_material 等），但**无法创建课程知识点、无法创建/维护题库题、无法把题关联到知识点**——第 4、5 步只能走 UI（REST）；底层 DB（assess-content.ts 的 question_bank/knowledge_points/course_knowledge_questions + saveQuestion/getOrCreateKnowledgePoint/replaceCourseContent）与 REST（POST /assess/questions、POST /assess/courses/save）均已齐备可用，属"封装 agent 工具"缺口，非新设计 | ✅ 已解决（2026-09-15）：新增只读 `parent_library_course_content` + 写 `parent_upsert_course_content`（整课替换，含只读预校验 + 移除告警）+ prompt 段；冒烟 29/29；服务端 0.4.2 已部署 201 | 2026-09-15 | [详情](ISSUES/ISSUE-103.md) |
 | 104 | 家长端「考核管理 → 自定义考核」**白屏** + 家长 agent 查考核计划**看不到课程/细节**——同一根因：`exam_plans.scope_json.courses` 自 2026-09-14 起改为 `[{title,kps:[{name,count}]}]`（计划生成时即约定出题参数），但两个消费方仍按旧格式 `["课程名"]` 处理：① `ExamAdminPanel.tsx` 直接把数组项当 React 子节点渲染 → `Objects are not valid as a React child` → 整树卸载白屏（本地 dev 无自定义考核故不复现）；② `parent_exam_plan_list` 用 `String(x)` 转对象 → `[object Object]`，agent 看不到考了哪些课、更看不到每课考哪些知识点 | ✅ 已解决（2026-09-15）：服务端新增 `parsePlanCourses`/`formatPlanCourses` 归一化（两格式兼容）；agent 列表改为「课程（知识点×题数）+ 考核方法 + 说明」；`GET /exam/schedules/:childId` 把 courses 归一成课程名数组（老客户端不再白屏）+ 新增 `courseSpecs` 供新端展示；客户端抽 `PlanCourseList` 组件 + `src/lib/plan-scope.ts`，9 条回归用例（含"对象当子节点确实抛错"的机理对照）；**服务端 0.4.3 已部署 201（13:33）**，接口级验证 `scope.courses` 已是字符串数组 → 老客户端即不再白屏 | 2026-09-15 | [详情](ISSUES/ISSUE-104.md) |
+| 105 | 设计讨论/实施：让 agent 具备受控 SQLite 直接操作能力（db-channel 通道，终结「一个新场景加一个工具」）——P1 家长受控写 + P2 孩子受控读写已实现（回归 30 项全绿），P3 受控只读 SQL 待观察，**待部署 201** | 🚧 分期实施中 | 2026-09-16 | [详情](ISSUES/ISSUE-105.md) |
+| 106 | 孩子界面字号设置入口合并：聊天字号（Type icon）+ 资料字号（TextSelect icon）两个独立 icon/弹框收进**一个 icon 探出的页面**（弹框内分「聊天字号」「资料字号」两组档位按钮；state/持久化/CSS 变量链路不动） | ✅ 已解决（2026-09-17）：侧栏收口为一个 Type icon（title 汇总两组当前值）+ `showFontPanel` 单弹框两分组（`.modal-section-label` 新样式）；fontSize/matFontSize 与 localStorage key、CSS 变量下传链路零改动；build 通过 | 2026-09-17 | [详情](ISSUES/ISSUE-106.md) |
+| 107 | 家长聊天区域重新进入看不到当前会话历史消息——ISSUE-081 服务端化把 ISSUE-039 修复架空：`pi:start_parent` 硬编码返回 `history:[]` + 服务端无家长会话 history/open 端点（孩子端已走 `POST /agent/:childId/open`，家长端联调点未接）；落盘与 agent 上下文记忆正常，纯 UI 恢复链路断 | ✅ 已解决（2026-09-17）：服务端新增 `POST /parent-agent/open`（kind 区分 parent/parent-content；家长**不做跨天裁决**、返回现会话全部历史）+ 客户端桥 `openParentSession()`（复用 mapHistoryMessages）+ `pi:start_parent`/`pi:start_parent_content` 透传真实 history（旧服务端 404 兜底空数组，向后兼容）+ ParentChatPanel 回填零改动恢复、TopicEditor 同批接上；**服务端改动待部署 201** | 2026-09-17 | [详情](ISSUES/ISSUE-107.md) |
+| 108 | 家长界面可定制 Dashboard：家长自定义「孩子学习进度与情况」展示页，定制经家长 agent 对话完成——方案建议：声明式 widget 配置（agent 只写受控 JSON、不产 HTML）+ 客户端注册表渲染（7 类 widget 白名单，全部复用现有数据源）+ 配置存 settings 键 `dashboard`（零新表）+ `parent_dashboard_get/set` 两工具；Dashboard 新增 view 并设默认落地页 | 中（方案待拍板） | 2026-09-17 | [详情](ISSUES/ISSUE-108.md) |
 
 ## 记录格式（模板）
 

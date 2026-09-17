@@ -3,6 +3,7 @@
  *
  * - GET  /api/v1/parent-agent/stream?kind=parent|parent-content   SSE（token 可走 ?token=）
  * - POST /api/v1/parent-agent/prompt                            提交一轮（kind 缺省 parent）
+ * - POST /api/v1/parent-agent/open                              打开会话并返回全部历史（ISSUE-107）
  * - POST /api/v1/parent-agent/abort                             中止当前一轮（ISSUE-095）
  *
  * 与孩子路由（routes/agent.ts）的差异：作用域是家长而非孩子，故 childId 不出现在路径里；
@@ -14,7 +15,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { AgentStreamHub, agentStreamHub } from "../agent/stream-hub.js";
-import { submitParentPrompt, resetParentSession, abortParentSession, type ParentSessionKind } from "../agent/parent-registry.js";
+import { submitParentPrompt, resetParentSession, abortParentSession, openParentSession, type ParentSessionKind } from "../agent/parent-registry.js";
 
 interface ParentAgentDeps {
   config: ServerConfig;
@@ -111,6 +112,22 @@ export function registerParentAgentRoutes(app: FastifyInstance, deps: ParentAgen
       return reply.code(r.error?.startsWith("busy") ? 409 : 500).send({ error: r.error });
     }
     return { ok: true };
+  });
+
+  // —— 打开会话（ISSUE-107）：进聊天回填历史。家长会话不做跨天裁决（key 不含日期、长期持续
+  // 累积），返回现会话全部历史——与孩子端 /agent/:childId/open 的「跨天自动新建」口径不同。
+  app.post("/api/v1/parent-agent/open", async (req, reply) => {
+    let parentId: string;
+    let kind: ParentSessionKind;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+      kind = parseKind((req.body as any)?.kind);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const messages = await openParentSession({ db: deps.db, dataDir: deps.config.dataDir }, parentId, kind);
+    return { messages };
   });
 
   app.post("/api/v1/parent-agent/reset", async (req, reply) => {

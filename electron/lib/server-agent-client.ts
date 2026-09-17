@@ -508,6 +508,18 @@ export async function openChildSession(childId: string, session?: string, token 
   return mapHistoryMessages(r.messages ?? []);
 }
 
+/**
+ * 打开家长会话（ISSUE-107 冷路径）：服务端 ensureEntry 后返回现会话全部历史（不做跨天裁决，
+ * 家长会话长期持续累积）。与 openChildSession 对应；进家长聊天/建课引导回填历史走本入口。
+ */
+export async function openParentSession(kind: "parent" | "parent-content", token = sessionToken()): Promise<HistoryMessage[]> {
+  const r = await serverFetch<{ messages: Array<{ role: string; content: unknown[]; timestamp?: number | string }> }>(
+    "/parent-agent/open",
+    { method: "POST", token, body: { kind } }
+  );
+  return mapHistoryMessages(r.messages ?? []);
+}
+
 /** 重置家长会话。 */
 export async function resetParentSession(kind: "parent" | "parent-content", token = sessionToken()): Promise<void> {
   await serverFetch("/parent-agent/reset", { method: "POST", token, body: { kind } });
