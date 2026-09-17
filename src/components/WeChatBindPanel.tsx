@@ -8,17 +8,32 @@ import { useCallback, useEffect, useRef, useState } from "react";
 interface BindRequest {
   id: string;
   wechat_id: string;
+  channel?: string;
   sample_text: string;
   first_seen: string;
   last_seen: string;
 }
 interface Binding {
   wechat_id: string;
+  channel?: string;
   role: "parent" | "child";
   child_id: string;
   label: string;
   created_at: string;
 }
+
+const CHANNEL_LABEL: Record<string, string> = { wechat: "微信", feishu: "飞书" };
+const channelBadge = (ch?: string): React.CSSProperties => {
+  const feishu = ch === "feishu";
+  return {
+    marginLeft: 8,
+    fontSize: 11,
+    borderRadius: 999,
+    padding: "1px 8px",
+    background: feishu ? "#e8f4fd" : "#eef2ff",
+    color: feishu ? "#1a7ac4" : "#3b4cca",
+  };
+};
 
 const card: React.CSSProperties = {
   background: "#fff",
@@ -99,8 +114,9 @@ export default function WeChatBindPanel() {
     <div style={{ maxWidth: 720 }}>
       <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>📱 微信绑定</div>
       <p style={{ color: "#6b7686", fontSize: 13, margin: "0 0 14px" }}>
-        家人用微信给 ClawBot 发消息即可接入学习伙伴：未绑定的微信号会出现在下方「待确认」里，点确认并选择身份（家长 /
-        孩子）后，对方就能在微信里直接和对应的 agent 对话。孩子身份只能使用受控功能（考核与积分只读）。
+        家人用微信（发给 ClawBot）或飞书（发给学习伙伴机器人）发消息即可接入学习伙伴：未绑定的账号会出现在下方
+        「待确认」里，点确认并选择身份（家长/孩子）后，对方就能在对应渠道里直接和 agent 对话。
+        孩子身份只能使用受控功能（考核与积分只读）。
       </p>
 
       {notice && (
@@ -117,6 +133,7 @@ export default function WeChatBindPanel() {
           <div key={r.id} style={{ ...card, borderColor: "#c9d8ff" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
               <span style={{ fontWeight: 700, fontSize: 13, wordBreak: "break-all" }}>{r.wechat_id}</span>
+              <span style={channelBadge(r.channel)}>{CHANNEL_LABEL[r.channel || "wechat"] || r.channel}</span>
               <span style={{ color: "#98a2b0", fontSize: 12 }}>最近活跃 {r.last_seen}</span>
             </div>
             {r.sample_text && (
@@ -160,6 +177,7 @@ export default function WeChatBindPanel() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>
                 {b.label || (b.role === "parent" ? "家长" : "孩子")}
+                <span style={channelBadge(b.channel)}>{CHANNEL_LABEL[b.channel || "wechat"] || b.channel}</span>
                 <span
                   style={{
                     marginLeft: 8,

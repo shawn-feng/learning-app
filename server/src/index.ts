@@ -79,6 +79,18 @@ registerSchedulerRoutes(app, { config, db });
 registerStudyPlanRoutes(app, { config, db });
 registerPlanRewardRoutes(app, { config, db });
 registerWechatRoutes(app, { config, db });
+// 飞书渠道：配置了 FEISHU_APP_ID/FEISHU_APP_SECRET 才启用（长连接，进程内直调会话）
+{
+  const appId = process.env.FEISHU_APP_ID || "";
+  const appSecret = process.env.FEISHU_APP_SECRET || "";
+  if (appId && appSecret) {
+    void import("./channels/feishu.js")
+      .then(({ startFeishuChannel }) =>
+        startFeishuChannel({ db, dataDir: config.dataDir, appId, appSecret })
+      )
+      .catch((err) => console.error("[feishu] 渠道启动失败:", (err as Error)?.message || err));
+  }
+}
 startWorkerScheduler({ dataDir: config.dataDir, db });
 
 // ── Web 前端静态托管（部署形态，2026-09-16）────────────────────────────────

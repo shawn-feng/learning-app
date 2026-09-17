@@ -10,6 +10,22 @@ import crypto from "node:crypto";
 export function openDb(dataDir: string): DatabaseSync {
   const db = new DatabaseSync(path.join(dataDir, "server.sqlite"));
   db.exec("PRAGMA journal_mode = WAL;");
+  // 渠道绑定泛化（2026-09-17）：存量库幂等补 channel 列（新建库由 CREATE TABLE 直接带上）
+  {
+    const hasWechatBindings = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wechat_bindings'")
+      .get();
+    if (hasWechatBindings) {
+      const cols = db.prepare("PRAGMA table_info(wechat_bindings)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === "channel")) {
+        db.exec("ALTER TABLE wechat_bindings ADD COLUMN channel TEXT NOT NULL DEFAULT 'wechat'");
+      }
+      const reqCols = db.prepare("PRAGMA table_info(wechat_bind_requests)").all() as Array<{ name: string }>;
+      if (reqCols.length && !reqCols.some((c) => c.name === "channel")) {
+        db.exec("ALTER TABLE wechat_bind_requests ADD COLUMN channel TEXT NOT NULL DEFAULT 'wechat'");
+      }
+    }
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
@@ -32,11 +48,13 @@ export function openDb(dataDir: string): DatabaseSync {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_children_parent ON children(parent_id);
-    -- 微信绑定（微信桥，2026-09-17）：一个微信号 ↔ 家长本人或其一个孩子。
+    -- 渠道绑定（微信桥 2026-09-17 起，飞书 2026-09-17 加入）：一个渠道用户 ↔ 家长本人或其一个孩子。
     -- role=parent 时 child_id 为空；role=child 时 child_id 必填且归属 parent_id。
+    -- channel: wechat / feishu；wechat_id 存渠道侧用户 id（微信=iLink openid、飞书=open_id）
     CREATE TABLE IF NOT EXISTS wechat_bindings (
       id TEXT PRIMARY KEY,
       wechat_id TEXT NOT NULL UNIQUE,
+      channel TEXT NOT NULL DEFAULT 'wechat',
       role TEXT NOT NULL CHECK (role IN ('parent','child')),
       parent_id TEXT NOT NULL,
       child_id TEXT NOT NULL DEFAULT '',
@@ -44,16 +62,18 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
-    -- 待确认的绑定请求：未绑定微信号发来消息时落一条（幂等按 wechat_id），家长在前端确认/拒绝
+    -- 待确认的绑定请求：未绑定渠道用户发来消息时落一条（幂等按 渠道+用户id），家长在前端确认/拒绝
     CREATE TABLE IF NOT EXISTS wechat_bind_requests (
       id TEXT PRIMARY KEY,
-      wechat_id TEXT NOT NULL UNIQUE,
+      wechat_id TEXT NOT NULL,
+      channel TEXT NOT NULL DEFAULT 'wechat',
       sample_text TEXT NOT NULL DEFAULT '',
       first_seen TEXT NOT NULL,
       last_seen TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','rejected')),
       decided_at TEXT
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_wechat_bind_requests_channel_id ON wechat_bind_requests(channel, wechat_id);
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value_json TEXT NOT NULL DEFAULT '{}',

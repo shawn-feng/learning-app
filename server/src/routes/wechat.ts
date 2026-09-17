@@ -108,7 +108,7 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
 
     if (body.action === "list" || !body.action) {
       const rows = db
-        .prepare("SELECT wechat_id, role, child_id, label, created_at FROM wechat_bindings WHERE parent_id = ?")
+        .prepare("SELECT wechat_id, channel, role, child_id, label, created_at FROM wechat_bindings WHERE parent_id = ?")
         .all(parentId);
       return { bindings: rows };
     }
@@ -151,7 +151,7 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
     void parentId;
     const rows = deps.db
       .prepare(
-        "SELECT id, wechat_id, sample_text, first_seen, last_seen FROM wechat_bind_requests WHERE status = 'pending' ORDER BY last_seen DESC LIMIT 50"
+        "SELECT id, wechat_id, channel, sample_text, first_seen, last_seen FROM wechat_bind_requests WHERE status = 'pending' ORDER BY last_seen DESC LIMIT 50"
       )
       .all();
     return { requests: rows };
@@ -175,8 +175,8 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
     const action = body.action;
     if (!id || !action) return reply.code(400).send({ error: "id 与 action 必填" });
     const row = deps.db
-      .prepare("SELECT wechat_id, status FROM wechat_bind_requests WHERE id = ?")
-      .get(id) as { wechat_id: string; status: string } | undefined;
+      .prepare("SELECT wechat_id, channel, status FROM wechat_bind_requests WHERE id = ?")
+      .get(id) as { wechat_id: string; channel: string; status: string } | undefined;
     if (!row) return reply.code(404).send({ error: "请求不存在" });
     if (row.status !== "pending") return reply.code(409).send({ error: `该请求已处理（${row.status}）` });
 
@@ -199,12 +199,12 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
     const now = nowStr();
     deps.db
       .prepare(
-        `INSERT INTO wechat_bindings (id, wechat_id, role, parent_id, child_id, label, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT(wechat_id) DO UPDATE SET role=excluded.role, parent_id=excluded.parent_id,
+        `INSERT INTO wechat_bindings (id, wechat_id, channel, role, parent_id, child_id, label, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(wechat_id) DO UPDATE SET channel=excluded.channel, role=excluded.role, parent_id=excluded.parent_id,
            child_id=excluded.child_id, label=excluded.label, updated_at=excluded.updated_at`
       )
-      .run(randomUUID(), row.wechat_id, role, parentId, childId, String(body.label ?? ""), now, now);
+      .run(randomUUID(), row.wechat_id, row.channel || "wechat", role, parentId, childId, String(body.label ?? ""), now, now);
     deps.db
       .prepare("UPDATE wechat_bind_requests SET status = 'confirmed', decided_at = ? WHERE id = ?")
       .run(now, id);
@@ -227,9 +227,9 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
       const now = nowStr();
       deps.db
         .prepare(
-          `INSERT INTO wechat_bind_requests (id, wechat_id, sample_text, first_seen, last_seen, status)
-           VALUES (?,?,?,?,?,'pending')
-           ON CONFLICT(wechat_id) DO UPDATE SET
+          `INSERT INTO wechat_bind_requests (id, wechat_id, channel, sample_text, first_seen, last_seen, status)
+           VALUES (?,?, 'wechat', ?,?,?,'pending')
+           ON CONFLICT(channel, wechat_id) DO UPDATE SET
              sample_text=excluded.sample_text, last_seen=excluded.last_seen,
              status=CASE WHEN wechat_bind_requests.status='pending' THEN 'pending' ELSE wechat_bind_requests.status END`
         )
