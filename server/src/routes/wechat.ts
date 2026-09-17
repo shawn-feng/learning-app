@@ -156,14 +156,20 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
     }
 
     const sessionDeps = { db: deps.db, dataDir: deps.config.dataDir };
+    // 微信不渲染 markdown：注入渠道提示，让回复保持纯文本精炼（表格/标题/加粗在微信里是原始符号）
+    const channelText =
+      `（这条消息来自微信。回复要求：纯文本短句、口语化、控制在一两百字内；` +
+      `不要用 markdown 表格、标题、加粗、列表符号，多行用换行即可。）
+
+${text}`;
     if (b.role === "parent") {
       const hubKey = `${b.parent_id}:parent`;
-      const r = await runTurn(() => submitParentPrompt(sessionDeps, b.parent_id, "parent", text), hubKey);
+      const r = await runTurn(() => submitParentPrompt(sessionDeps, b.parent_id, "parent", channelText), hubKey);
       return reply.code(r.ok ? 200 : r.error?.startsWith("busy") ? 409 : 500).send({ ...r, code: r.ok ? "ok" : r.error?.startsWith("busy") ? "busy" : "error" });
     }
     const streamKey = `${b.parent_id}:${b.child_id}`;
     const r = await runTurn(
-      () => submitChildPrompt(sessionDeps, b.parent_id, b.child_id, text),
+      () => submitChildPrompt(sessionDeps, b.parent_id, b.child_id, channelText),
       streamKey
     );
     return reply.code(r.ok ? 200 : r.error?.startsWith("busy") ? 409 : 500).send({ ...r, code: r.ok ? "ok" : r.error?.startsWith("busy") ? "busy" : "error" });
