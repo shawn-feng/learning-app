@@ -44,8 +44,14 @@ function senderOf(ev: BridgeEvent, ctx: any): string {
     const s = typeof v === "string" ? v : asText(v);
     if (s) return s;
   }
+  // 实测（2026-09-17）：openclaw-weixin 事件里没有独立发件人字段，
+  // 发件人 id 是 sessionKey 末段（如 agent:main:openclaw-weixin:direct:<peer>），且被小写化
   const sk = String(ctx?.sessionKey ?? "");
-  if (sk) return `sk:${sk}`;
+  if (sk) {
+    const segs = sk.split(":").filter(Boolean);
+    if (segs.length >= 2) return segs[segs.length - 1];
+    return sk;
+  }
   return "";
 }
 
