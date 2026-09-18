@@ -52,9 +52,17 @@ import {
   parentReadableRegistry,
   childKbReadableRegistry,
   childKbWritableRegistry,
+  type ColumnSpec,
   type WriteRequest,
 } from "./db-channel.js";
-import { loadNamespaces, tier2Read, tier2Write, describeNamespace, type NamespaceRow } from "./tier2.js";
+import {
+  defineNamespace,
+  loadNamespaces,
+  tier2Read,
+  tier2Write,
+  describeNamespace,
+  type NamespaceRow,
+} from "./tier2.js";
 
 export interface ParentToolDeps extends MaterialCtx {
   /** 家长 agent 工作区（临时产出） */
@@ -953,12 +961,13 @@ function buildDbDescribeTool(deps: ParentToolDeps) {
   const childReadSpecs = childKbReadableRegistry();
   const childWriteSpecs = childKbWritableRegistry();
 
-  // Tier 2 namespace 注册行存家长库（会话元数据已常驻 prompt；describe 只兜底单实体详情）
+  // Tier 2 namespace 注册行存家长库（会话元数据已常驻 prompt；describe 只兜底单实体详情）。
+  // 数据管理 agent 需要看到自己提交的待确认草案 → includePending。
   const nsFor = (scope: "parent" | "child"): NamespaceRow[] => {
     try {
       const pdb = openParentLib(deps.dataDir, deps.parentId);
       try {
-        return loadNamespaces(pdb, scope);
+        return loadNamespaces(pdb, scope, { includePending: true });
       } finally {
         pdb.close();
       }
@@ -1033,8 +1042,8 @@ function buildDbDescribeTool(deps: ParentToolDeps) {
       const nsParent = nsFor("parent");
       const nsChild = nsFor("child");
       const nsList = [
-        ...nsParent.map((n) => `- ns:${n.ns}（家长库）`),
-        ...nsChild.map((n) => `- ns:${n.ns}（孩子库，只读）`),
+        ...nsParent.map((n) => `- ns:${n.ns}（家长库${n.status === "pending" ? "，待家长确认" : ""}）`),
+        ...nsChild.map((n) => `- ns:${n.ns}（孩子库，只读${n.status === "pending" ? "，待家长确认" : ""}）`),
       ].join("\n");
       return ok(
         `【家长库 parent.sqlite】用 parent_db_read / parent_db_write（不传 child）操作：\n${parentList}\n\n` +
@@ -1261,15 +1270,114 @@ function buildDbWriteTool(deps: ParentToolDeps) {
 }
 
 /**
+ * 设计器工具（F15b）：起草 Tier 2 自定义数据场景。只挂数据管理 agent（parent-data）——
+ * 运行期家长主助手/孩子 agent 无此工具（安全红线 3：注册表是设计期产物）。
+ * 产物是「待确认草案」：家长在「设置 → 自定义数据」确认后才生效，确认前任何 agent 不可见。
+ */
+function buildDefineNamespaceTool(deps: ParentToolDeps) {
+  const ctx: MaterialCtx = { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
+  return defineTool({
+    name: "define_namespace",
+    label: "起草自定义数据场景（待家长确认）",
+    description:
+      "为家长**新建**一类自定义数据（Tier 2 灵活实体），如习惯打卡、自定义练习记录、家庭读书清单等。零建表、确认后即时生效。\n" +
+      "流程：听家长描述场景 → 你设计字段（每个字段必须有清晰的中文说明）→ 调本工具提交**草案** → 告诉家长去「设置 → 自定义数据」点确认。\n" +
+      "设计约定：\\n" +
+      "- 字段名用小写英文（date/done/minutes 这类），说明用中文；场景里「关联到某门课」就加一个 ref 字段指向 courses.uuid；\\n" +
+      "- 家长说「按 XX 筛选/统计」的字段要设 filterable；\\n" +
+      "- 只能新建；已有场景的调整（加字段/停用）不归你管，引导家长去设置页。",
+    parameters: Type.Object({
+      ns: Type.String({ description: "场景名：小写字母开头，3~40 位小写字母/数字/下划线（如 piano_practice）" }),
+      scope: Type.Union([Type.Literal("parent"), Type.Literal("child")], {
+        description: "数据归属：parent=全家共享一份；child=每个孩子各记各的",
+      }),
+      label: Type.String({ description: "场景中文名（如 练琴打卡），展示给家长看" }),
+      fields: Type.Array(
+        Type.Object({
+          name: Type.String({ description: "字段名（小写英文标识符）" }),
+          kind: Type.Union([Type.Literal("string"), Type.Literal("number"), Type.Literal("enum")], {
+            description: "类型；enum 需给 values",
+          }),
+          desc: Type.String({ description: "字段中文说明（agent 与家长都靠它理解语义，必填）" }),
+          required: Type.Optional(Type.Boolean({ description: "true=记录时必填" })),
+          filterable: Type.Optional(Type.Boolean({ description: "true=可作为筛选/统计条件" })),
+          enumValues: Type.Optional(Type.Array(Type.String(), { description: "kind=enum 时的取值列表" })),
+          refTable: Type.Optional(Type.String({ description: "引用校验：目标表（如 courses），配合 refColumn" })),
+          refColumn: Type.Optional(Type.String({ description: "引用校验：目标列（如 uuid）" })),
+        }),
+        { description: "字段定义（1~20 个）" }
+      ),
+    }),
+    execute: async (
+      _id: string,
+      params: {
+        ns: string;
+        scope: "parent" | "child";
+        label: string;
+        fields: Array<{
+          name: string;
+          kind: "string" | "number" | "enum";
+          desc: string;
+          required?: boolean;
+          filterable?: boolean;
+          enumValues?: string[];
+          refTable?: string;
+          refColumn?: string;
+        }>;
+      }
+    ) => {
+      if (!params.fields?.length) throw new Error("define_namespace 需要至少一个字段（fields）");
+      if (params.fields.length > 20) throw new Error("字段最多 20 个——场景拆细不如先跑起来再说");
+      const columns: Record<string, ColumnSpec> = {};
+      const insertRequired: string[] = [];
+      const filterable: string[] = [];
+      const refs: Array<{ column: string; refTable: string; refColumn: string; desc?: string }> = [];
+      for (const f of params.fields) {
+        columns[f.name] = {
+          kind: f.kind,
+          desc: f.desc,
+          notEmpty: f.required ? true : false,
+          ...(f.kind === "enum" ? { enumValues: f.enumValues ?? [] } : {}),
+        };
+        if (f.required) insertRequired.push(f.name);
+        if (f.filterable) filterable.push(f.name);
+        if (f.refTable && f.refColumn) {
+          refs.push({ column: f.name, refTable: f.refTable, refColumn: f.refColumn, desc: `须存在于 ${f.refTable}.${f.refColumn}` });
+        }
+      }
+      const pdb = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        const r = defineNamespace(
+          pdb,
+          parentLibTableRegistry(),
+          { ns: params.ns, scope: params.scope, label: params.label, spec: { columns, insertRequired, filterable, refs } },
+          { pending: true }
+        );
+        if (r.ok) appendParentActivityLog(ctx, `提交自定义数据场景草案 ns:${params.ns}（待家长确认）`);
+        return ok(r.text);
+      } finally {
+        pdb.close();
+      }
+    },
+  });
+}
+
+/**
  * 数据管理 agent 工具集（独立 agent，parent-data 会话专用）：只暴露「统一数据 API」三件套
- * + 日期工具，不携带资料/对话/编程等家长主助手工具——与运营类家长 agent 隔离。
+ * + 设计器工具 + 日期工具，不携带资料/对话/编程等家长主助手工具——与运营类家长 agent 隔离。
  * 覆盖家长内容库全部 6 张表（topics/courses/tags/question_bank/knowledge_points/course_knowledge_questions）。
  */
 export function createDataAgentTools(deps: ParentToolDeps) {
-  return [buildDbDescribeTool(deps), buildDbReadTool(deps), buildDbWriteTool(deps)];
+  return [buildDbDescribeTool(deps), buildDbReadTool(deps), buildDbWriteTool(deps), buildDefineNamespaceTool(deps)];
 }
 
-export const DATA_AGENT_TOOL_NAMES = ["parent_db_describe", "parent_db_read", "parent_db_write", "get_date"];
+export const DATA_AGENT_TOOL_NAMES = [
+  "parent_db_describe",
+  "parent_db_read",
+  "parent_db_write",
+  "define_namespace",
+  "get_date",
+];
 
 export const PARENT_AGENT_TOOL_NAMES = [
   "read",

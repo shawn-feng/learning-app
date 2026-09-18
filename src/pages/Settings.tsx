@@ -8,6 +8,7 @@ import SchedulerSettings from "../components/SchedulerSettings";
 import BackupSettings from "../components/BackupSettings";
 import GeneralSettings from "../components/GeneralSettings";
 import WeChatBindPanel from "../components/WeChatBindPanel";
+import NamespacePanel from "../components/NamespacePanel";
 
 // ISSUE-039 + token-plan 拆分：
 // 仅保留国内/已确认的 provider，移除国外 provider（anthropic / google / openrouter / groq）。
@@ -31,7 +32,7 @@ const PROVIDERS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "voice" | "evaluation" | "vision" | "scheduler" | "wechat" | "general" | "backup">("models");
+  const [tab, setTab] = useState<"models" | "voice" | "evaluation" | "vision" | "scheduler" | "wechat" | "ns" | "general" | "backup">("models");
   const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
@@ -139,6 +140,7 @@ export default function Settings() {
             ["evaluation", "发音评测"],
             ["scheduler", "定时任务"],
             ["wechat", "微信绑定"],
+            ["ns", "自定义数据"],
             ["backup", "数据备份"],
             ["general", "通用设置"],
           ] as const
@@ -311,6 +313,7 @@ export default function Settings() {
       {tab === "backup" && <BackupSettings />}
 
       {tab === "wechat" && <WeChatBindPanel />}
+      {tab === "ns" && <NamespacePanel />}
       {tab === "general" && <GeneralSettings />}
     </div>
   );

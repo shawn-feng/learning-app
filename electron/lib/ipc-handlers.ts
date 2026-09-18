@@ -42,6 +42,7 @@ import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 import { readTokenLog, getTokenSummary } from "./token-stats";
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
 import { listWechatBindRequests, decideWechatBindRequest, listWechatBindings, addWechatBinding, removeWechatBinding, getFeishuConfig, saveFeishuConfig } from "./wechat";
+import { listNamespaces, decideNamespace, setNamespaceStatus } from "./namespaces";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -312,6 +313,29 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("wechat:feishuSave", async (_e, payload: { appId: string; appSecret?: string; enabled: boolean }) => {
     try {
       return { success: true, data: await saveFeishuConfig(payload) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // —— Tier 2 自定义数据场景（F15b：设计器草案确认 + 已生效启停）——
+  ipcMain.handle("ns:list", async () => {
+    try {
+      return { success: true, data: await listNamespaces() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("ns:decide", async (_e, payload: { ns: string; action: "confirm" | "reject" }) => {
+    try {
+      return { success: true, data: await decideNamespace(payload) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("ns:status", async (_e, payload: { ns: string; action: "disable" | "enable" }) => {
+    try {
+      return { success: true, data: await setNamespaceStatus(payload) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

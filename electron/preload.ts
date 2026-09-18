@@ -201,6 +201,9 @@ const api = {
   wechatFeishuGet: () => ipcRenderer.invoke("wechat:feishuGet"),
   wechatFeishuSave: (payload: { appId: string; appSecret?: string; enabled: boolean }) =>
     ipcRenderer.invoke("wechat:feishuSave", payload),
+  namespacesList: () => ipcRenderer.invoke("ns:list"),
+  namespaceDecide: (payload: { ns: string; action: "confirm" | "reject" }) => ipcRenderer.invoke("ns:decide", payload),
+  namespaceStatus: (payload: { ns: string; action: "disable" | "enable" }) => ipcRenderer.invoke("ns:status", payload),
   childSelect: (childId: string) => ipcRenderer.invoke("child:select", childId),
   childAuth: (childId: string, password: string) =>
     ipcRenderer.invoke("child:auth", childId, password),

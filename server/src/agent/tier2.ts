@@ -79,6 +79,8 @@ export interface NamespaceRow {
   label: string;
   spec: NamespaceSpec;
   version: number;
+  /** active=生效（默认只返回这种）；pending=待家长确认；disabled=已停用 */
+  status?: string;
 }
 
 const NS_NAME_RE = /^[a-z][a-z0-9_]{2,39}$/;
@@ -99,12 +101,18 @@ function parseSpec(json: string): NamespaceSpec | null {
   }
 }
 
-/** 从家长库读 namespace 注册行（按 scope 过滤）。坏行跳过并告警，不阻塞其它 namespace。 */
-export function loadNamespaces(pdb: DatabaseSync, scope: "parent" | "child"): NamespaceRow[] {
+/** 从家长库读 namespace 注册行（按 scope 过滤）。坏行跳过并告警，不阻塞其它 namespace。
+ *  includePending=true 时附带待确认草案（数据管理 agent 的 describe 用；运行期读写面永远只认 active）。 */
+export function loadNamespaces(
+  pdb: DatabaseSync,
+  scope: "parent" | "child",
+  opts?: { includePending?: boolean }
+): NamespaceRow[] {
+  const statusSql = opts?.includePending ? "status IN ('active','pending')" : "status = 'active'";
   let rows: Array<Record<string, unknown>>;
   try {
     rows = pdb
-      .prepare("SELECT ns, scope, label, spec_json, version FROM namespaces WHERE status = 'active' AND scope = ? ORDER BY ns")
+      .prepare(`SELECT ns, scope, label, spec_json, version, status FROM namespaces WHERE ${statusSql} AND scope = ? ORDER BY ns`)
       .all(scope) as Array<Record<string, unknown>>;
   } catch {
     return []; // namespaces 表未建（老库未迁移）= 无 Tier 2
@@ -122,6 +130,7 @@ export function loadNamespaces(pdb: DatabaseSync, scope: "parent" | "child"): Na
       label: String(r.label ?? ""),
       spec,
       version: Number(r.version) || 1,
+      status: String(r.status ?? "active"),
     });
   }
   return out;
@@ -143,9 +152,11 @@ export interface DefineNamespaceInput {
 export function defineNamespace(
   pdb: DatabaseSync,
   tier1Tables: Array<{ table: string }>,
-  input: DefineNamespaceInput
+  input: DefineNamespaceInput,
+  opts?: { pending?: boolean }
 ): { ok: boolean; text: string } {
   const { ns, scope, spec } = input;
+  const pending = opts?.pending === true;
   if (!NS_NAME_RE.test(ns)) {
     return { ok: false, text: `namespace 名 ${ns} 不合法（小写字母开头，3~40 位小写字母/数字/下划线）` };
   }
@@ -175,10 +186,18 @@ export function defineNamespace(
   const json = JSON.stringify({ columns: cols, insertRequired: spec.insertRequired ?? [], filterable, refs: spec.refs ?? [] });
   pdb.exec("BEGIN");
   try {
-    const existing = pdb.prepare("SELECT spec_json, version FROM namespaces WHERE ns = ?").get(ns) as
-      | { spec_json: string; version: number }
+    const existing = pdb.prepare("SELECT spec_json, version, status FROM namespaces WHERE ns = ?").get(ns) as
+      | { spec_json: string; version: number; status: string }
       | undefined;
     if (existing) {
+      if (pending) {
+        pdb.exec("ROLLBACK");
+        return {
+          ok: false,
+          text: `namespace ${ns} 已存在（${existing.status === "pending" ? "待确认草案" : existing.status === "active" ? "已生效" : "已停用"}）。` +
+            `设计器只能新建场景；已有场景的调整请告知家长在「设置 → 自定义数据」处理，或换一个 ns 名。`,
+        };
+      }
       const old = parseSpec(existing.spec_json);
       if (!old) {
         pdb.exec("ROLLBACK");
@@ -206,11 +225,25 @@ export function defineNamespace(
       return { ok: true, text: `namespace ${ns} 已演进到 v${existing.version + 1}（只加字段）。` };
     }
     pdb.prepare(
-      "INSERT INTO namespaces (ns, scope, label, spec_json, version) VALUES (?, ?, ?, ?, 1)"
-    ).run(ns, scope, input.label ?? "", json);
+      "INSERT INTO namespaces (ns, scope, label, spec_json, version, status) VALUES (?, ?, ?, ?, 1, ?)"
+    ).run(ns, scope, input.label ?? "", json, pending ? "pending" : "active");
     pdb.exec("COMMIT");
-    writeAudit(pdb, { table: `ns:${ns}`, op: "insert", where: { ns }, rowCount: 1, summary: `defineNamespace 新建 ${ns}（scope=${scope}）` });
-    return { ok: true, text: `namespace ${ns} 已创建（scope=${scope}，${colNames.length} 字段）。` };
+    writeAudit(pdb, {
+      table: `ns:${ns}`,
+      op: "insert",
+      where: { ns },
+      rowCount: 1,
+      summary: pending
+        ? `defineNamespace 提交草案 ${ns}（scope=${scope}，待家长确认）`
+        : `defineNamespace 新建 ${ns}（scope=${scope}）`,
+    });
+    return {
+      ok: true,
+      text: pending
+        ? `草案 ns:${ns}（scope=${scope}，${colNames.length} 字段）已提交，**待家长在「设置 → 自定义数据」确认后生效**。` +
+          `生效前任何 agent 都查不到也写不进这个实体。请告知家长去确认。`
+        : `namespace ${ns} 已创建（scope=${scope}，${colNames.length} 字段）。`,
+    };
   } catch (e) {
     try {
       pdb.exec("ROLLBACK");
@@ -219,6 +252,52 @@ export function defineNamespace(
     }
     return { ok: false, text: `defineNamespace 失败：${(e as Error).message}` };
   }
+}
+
+// ==================== 生命周期：确认 / 拒绝 / 停用 / 启用（家长确认关，F15b） ====================
+
+/** 确认草案：pending → active（再校验一次 spec 可解析）。 */
+export function confirmNamespace(pdb: DatabaseSync, ns: string): { ok: boolean; text: string } {
+  const row = pdb.prepare("SELECT status, spec_json FROM namespaces WHERE ns = ?").get(ns) as
+    | { status: string; spec_json: string }
+    | undefined;
+  if (!row) return { ok: false, text: `namespace ${ns} 不存在` };
+  if (row.status !== "pending") return { ok: false, text: `namespace ${ns} 状态为 ${row.status}，无需确认` };
+  if (!parseSpec(row.spec_json)) return { ok: false, text: `namespace ${ns} 的 spec 损坏，请拒绝后重新提交` };
+  pdb.prepare("UPDATE namespaces SET status = 'active', updated_at = datetime('now','localtime') WHERE ns = ?").run(ns);
+  writeAudit(pdb, { table: `ns:${ns}`, op: "update", where: { ns, action: "confirm" }, rowCount: 1, summary: `家长确认生效 ${ns}` });
+  return { ok: true, text: `ns:${ns} 已生效，所有 agent 立即可用。` };
+}
+
+/** 拒绝草案：pending → 删除该行。 */
+export function rejectNamespace(pdb: DatabaseSync, ns: string): { ok: boolean; text: string } {
+  const row = pdb.prepare("SELECT status FROM namespaces WHERE ns = ?").get(ns) as { status: string } | undefined;
+  if (!row) return { ok: false, text: `namespace ${ns} 不存在` };
+  if (row.status !== "pending") return { ok: false, text: `namespace ${ns} 不是待确认草案（当前 ${row.status}），不能拒绝；如需下线请停用` };
+  pdb.prepare("DELETE FROM namespaces WHERE ns = ?").run(ns);
+  writeAudit(pdb, { table: `ns:${ns}`, op: "delete", where: { ns, action: "reject" }, rowCount: 1, summary: `家长拒绝草案 ${ns}` });
+  return { ok: true, text: `草案 ns:${ns} 已拒绝并删除。` };
+}
+
+/** 停用/启用已生效的 namespace（停用后 loadNamespaces 不再返回，运行期 agent 立即不可见）。 */
+export function setNamespaceStatus(
+  pdb: DatabaseSync,
+  ns: string,
+  status: "active" | "disabled"
+): { ok: boolean; text: string } {
+  const row = pdb.prepare("SELECT status FROM namespaces WHERE ns = ?").get(ns) as { status: string } | undefined;
+  if (!row) return { ok: false, text: `namespace ${ns} 不存在` };
+  if (row.status === "pending") return { ok: false, text: `namespace ${ns} 是待确认草案，请先确认或拒绝` };
+  if (row.status === status) return { ok: true, text: `ns:${ns} 已经是 ${status} 状态。` };
+  pdb.prepare("UPDATE namespaces SET status = ?, updated_at = datetime('now','localtime') WHERE ns = ?").run(status, ns);
+  writeAudit(pdb, {
+    table: `ns:${ns}`,
+    op: "update",
+    where: { ns, action: status },
+    rowCount: 1,
+    summary: `家长${status === "disabled" ? "停用" : "启用"} ${ns}`,
+  });
+  return { ok: true, text: `ns:${ns} 已${status === "disabled" ? "停用" : "启用"}。` };
 }
 
 // ==================== 读 ====================
@@ -321,8 +400,9 @@ export function tier2Read(db: DatabaseSync, ns: NamespaceRow, req: { columns?: s
 
 /** Tier 2 单 namespace 的 describe 输出（§6.3：Tier 2 元数据出口） */
 export function describeNamespace(ns: NamespaceRow): string {
+  const statusText = ns.status === "pending" ? "【待家长确认——生效前任何 agent 不可见】" : ns.status === "disabled" ? "【已停用】" : "";
   const lines = [
-    `## ns:${ns.ns}（${ns.label}）【Tier 2 灵活实体 · scope=${ns.scope} · v${ns.version}】`,
+    `## ns:${ns.ns}（${ns.label}）【Tier 2 灵活实体 · scope=${ns.scope} · v${ns.version}】${statusText}`,
     `存于 entities(ns='${ns.ns}')，data_json 一行一实体；读 parent_db_read / child_db_read 用 table="ns:${ns.ns}"。`,
     "字段：",
   ];

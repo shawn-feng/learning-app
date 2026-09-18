@@ -35,6 +35,9 @@ import {
   tier2Read,
   tier2Write,
   describeNamespace,
+  confirmNamespace,
+  rejectNamespace,
+  setNamespaceStatus,
 } from "../server/src/agent/tier2";
 import { buildDataChannelBlocks, buildChildSelfBlock } from "../server/src/agent/registry-prompt";
 import {
@@ -438,6 +441,87 @@ describe("WP8/F10-b：assess-content 收编后行为不变", () => {
     const xueer = all.find((q) => q.stem.includes("学而时习之"))!;
     expect(xueer.contexts.length).toBe(1);
     expect(xueer.contexts[0]).toMatchObject({ topic: "lunyu", course: "学而篇", knowledgePoint: "背诵" });
+    db.close();
+  });
+});
+
+describe("WP9/F15b：草案确认关（设计器 → 家长确认 → 生效）", () => {
+  const NS_SPEC = {
+    columns: {
+      date: { kind: "string" as const, desc: "打卡日期" },
+      done: { kind: "number" as const, desc: "1=完成" },
+    },
+    insertRequired: ["date"],
+    filterable: ["date"],
+  };
+
+  it("草案默认不可见（运行面只认 active），确认后才生效；拒绝即删除", () => {
+    const db = freshParentLib();
+    // 提交草案
+    const propose = defineNamespace(
+      db,
+      parentLibTableRegistry(),
+      { ns: "piano_practice", scope: "parent", label: "练琴打卡", spec: NS_SPEC },
+      { pending: true }
+    );
+    expect(propose.ok, propose.text).toBe(true);
+    expect(propose.text).toContain("确认后生效");
+    // 运行面（默认 load）看不到；includePending 才能看到
+    expect(loadNamespaces(db, "parent")).toHaveLength(0);
+    const withPending = loadNamespaces(db, "parent", { includePending: true });
+    expect(withPending).toHaveLength(1);
+    expect(withPending[0].status).toBe("pending");
+    expect(withPending[0].label).toBe("练琴打卡");
+
+    // 家长确认 → active，运行面立即可见可用
+    const confirmed = confirmNamespace(db, "piano_practice");
+    expect(confirmed.ok, confirmed.text).toBe(true);
+    const active = loadNamespaces(db, "parent");
+    expect(active).toHaveLength(1);
+    const ns = active[0];
+    const ins = tier2Write(db, ns, { op: "insert", rows: [{ date: "2026-09-19", done: 1 }] });
+    expect(ins.ok, ins.text).toBe(true);
+
+    // 再提交同名草案被拒（设计器只能新建）
+    const dup = defineNamespace(
+      db,
+      parentLibTableRegistry(),
+      { ns: "piano_practice", scope: "parent", label: "练琴打卡", spec: NS_SPEC },
+      { pending: true }
+    );
+    expect(dup.ok).toBe(false);
+    expect(dup.text).toContain("已存在");
+
+    // 停用 → 运行面立即不可见；启用恢复
+    expect(setNamespaceStatus(db, "piano_practice", "disable").ok).toBe(true);
+    expect(loadNamespaces(db, "parent")).toHaveLength(0);
+    expect(setNamespaceStatus(db, "piano_practice", "active").ok).toBe(true);
+    expect(loadNamespaces(db, "parent")).toHaveLength(1);
+    db.close();
+  });
+
+  it("拒绝草案删除该行；非 pending 不能确认/拒绝；pending 不能直接停用", () => {
+    const db = freshParentLib();
+    defineNamespace(
+      db,
+      parentLibTableRegistry(),
+      { ns: "reading_list", scope: "parent", label: "读书清单", spec: NS_SPEC },
+      { pending: true }
+    );
+    expect(setNamespaceStatus(db, "reading_list", "disable").ok).toBe(false);
+    expect(confirmNamespace(db, "reading_list").ok).toBe(true);
+    expect(rejectNamespace(db, "reading_list").ok).toBe(false); // 已 active，不能拒绝
+    expect(confirmNamespace(db, "reading_list").ok).toBe(false); // 已 active，无需确认
+
+    defineNamespace(
+      db,
+      parentLibTableRegistry(),
+      { ns: "sketch_book", scope: "child", label: "画画本", spec: NS_SPEC },
+      { pending: true }
+    );
+    const rejected = rejectNamespace(db, "sketch_book");
+    expect(rejected.ok, rejected.text).toBe(true);
+    expect(loadNamespaces(db, "child", { includePending: true })).toHaveLength(0);
     db.close();
   });
 });

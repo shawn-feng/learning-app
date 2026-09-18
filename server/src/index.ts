@@ -27,6 +27,7 @@ import { registerSchedulerRoutes } from "./routes/scheduler.js";
 import { registerStudyPlanRoutes } from "./routes/study-plans.js";
 import { registerPlanRewardRoutes } from "./routes/plans-rewards.js";
 import { registerWechatRoutes } from "./routes/wechat.js";
+import { registerNamespaceRoutes } from "./routes/namespaces.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
 import { initServerLog, logInfo, logError, installServerConsoleRedirect } from "./log.js";
 
@@ -79,6 +80,7 @@ registerSchedulerRoutes(app, { config, db });
 registerStudyPlanRoutes(app, { config, db });
 registerPlanRewardRoutes(app, { config, db });
 registerWechatRoutes(app, { config, db });
+registerNamespaceRoutes(app, { config, db });
 // 飞书渠道：设置页保存的配置（settings 表）优先，未配置时回退环境变量（长连接，进程内直调会话）
 {
   void import("./channels/feishu.js")
