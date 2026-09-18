@@ -25,6 +25,8 @@ export interface ChildPromptInput {
   agentRules?: string;
   /** 课程会话专用上下文（课程名/教法/考核方法/资料路径）；主会话为空 */
   courseBlock?: string;
+  /** 受控数据通道元数据（F7：表/列/ns 紧凑清单，读操作零 describe）；缺省不注入 */
+  dbTablesBlock?: string;
 }
 
 export function buildServerChildPrompt(input: ChildPromptInput): string {
@@ -52,6 +54,7 @@ export function buildServerChildPrompt(input: ChildPromptInput): string {
 - 不闲聊无关话题；孩子跑题时温和拉回学习。
 
 ${input.courseBlock ? `## 本次课程\n${input.courseBlock}\n` : ""}
+${input.dbTablesBlock ? `## 我的数据表清单（列名以此为准，读操作不用先查结构）\n${input.dbTablesBlock}\n` : ""}
 ${input.agentRules ? `## 家长设定的额外规范\n${input.agentRules}\n` : ""}`;
 }
 

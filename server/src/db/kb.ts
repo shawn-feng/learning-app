@@ -5,6 +5,7 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { ensureTier2Schema } from "../agent/tier2.js";
 
 export const KB_SCHEMA_TABLES = `
 CREATE TABLE IF NOT EXISTS daily_entries (
@@ -339,6 +340,11 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   backfillTopicLearnType(db); // learn_type 回填：rules_json.type（必学/选学/复习）→ 枚举
   db.exec(KB_PLAN_SCHEMA_TABLES); // 计划域 + 积分域（2026-09-10）
   ensureDailyPlanColumns(db);
+  // 2026-09-18 F14：todo_items / child_todo_stats 是 2026-09-10 计划域重构后的废弃死表
+  //（数据已迁三张计划表 + reward_daily_stats），不再登记进任何读面，直接 DROP（幂等）
+  db.exec("DROP TABLE IF EXISTS todo_items;");
+  db.exec("DROP TABLE IF EXISTS child_todo_stats;");
+  ensureTier2Schema(db, false); // Tier 2 灵活实体数据行（scope=child 的 namespace 注册在家长库，F15a，幂等）
   db.exec(KB_SCHEMA_VIEWS);
   db.exec(KB_PLAN_SCHEMA_VIEWS);
   return db;

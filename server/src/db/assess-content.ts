@@ -10,6 +10,14 @@
  */
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { buildPathQuery, parentLibPaths } from "../agent/db-channel.js";
+
+/** F10-b：取一条已登记路径（JOIN 链唯一真源在注册表）；找不到 = 注册表被破坏，直接抛错暴露问题 */
+function registeredPath(name: string) {
+  const p = parentLibPaths().find((x) => x.name === name);
+  if (!p) throw new Error(`路径 ${name} 未在注册表登记（db-channel.parentLibPaths）`);
+  return p;
+}
 
 // ==================== Schema（幂等） ====================
 
@@ -183,20 +191,22 @@ export function listTopicKnowledgePoints(
   db: DatabaseSync,
   topic: string
 ): Array<KnowledgePointRow & { courseTitle: string }> {
+  // F10-b：JOIN 链走注册表路径 topic_knowledge_points（结果键为裸列名）
+  const { sql, params } = buildPathQuery(registeredPath("topic_knowledge_points"), {
+    where: { "courses.topic": topic },
+    orderBy: "courses.sort_order, courses.title, knowledge_points.seq",
+    limit: 500,
+  });
   const rows = db
-    .prepare(
-      `SELECT kp.id, kp.course_uuid AS courseUuid, kp.name, kp.detail, kp.seq, c.title AS courseTitle
-       FROM knowledge_points kp JOIN courses c ON c.uuid = kp.course_uuid
-       WHERE c.topic = ? ORDER BY c.sort_order, c.title, kp.seq, kp.rowid`
-    )
-    .all(topic) as Array<Record<string, unknown>>;
+    .prepare(sql)
+    .all(...params) as Array<Record<string, unknown>>;
   return rows.map((r) => ({
     id: String(r.id),
-    courseUuid: String(r.courseUuid),
+    courseUuid: String(r.course_uuid),
     name: String(r.name),
     detail: String(r.detail ?? ""),
     seq: Number(r.seq) || 0,
-    courseTitle: String(r.courseTitle),
+    courseTitle: String(r.title),
   }));
 }
 
@@ -320,60 +330,56 @@ export function replaceCourseContent(
 
 /** 某课全部挂载内容（知识点→题），按挂载顺序输出。 */
 export function listCourseContent(db: DatabaseSync, courseUuid: string): CourseContent {
+  // F10-b：JOIN 链走注册表路径 course_content_rows；rowid 保挂载插入序（replaceCourseContent 按展示序写入）
+  const { sql, params } = buildPathQuery(registeredPath("course_content_rows"), {
+    where: { "course_knowledge_questions.course_id": courseUuid },
+    orderBy: "course_knowledge_questions.rowid",
+    limit: 500,
+  });
   const rows = db
-    .prepare(
-      `SELECT ckq.knowledge_point_id AS kpid, kp.name AS kpname, kp.detail AS kpdetail, ckq.overview AS overview,
-              ckq.question_id AS qid, ckq.seq AS seq,
-              qb.stem AS stem, qb.answer AS answer, qb.scoring AS scoring, qb.point_max AS pointMax,
-              qb.behavior AS qbehavior, qb.note AS qnote, qb.knowledge_summary AS qks, qb.options AS qopts
-       FROM course_knowledge_questions ckq
-       JOIN knowledge_points kp ON kp.id = ckq.knowledge_point_id
-       JOIN question_bank qb    ON qb.id = ckq.question_id
-       WHERE ckq.course_id = ?
-       ORDER BY ckq.rowid`
-    )
-    .all(courseUuid) as Array<{
-    kpid: string;
-    kpname: string;
-    kpdetail: string;
+    .prepare(sql)
+    .all(...params) as Array<{
+    knowledge_point_id: string;
+    name: string;
+    detail: string;
     overview: string;
-    qid: string;
     seq: number;
+    question_id: string;
     stem: string;
     answer: string;
     scoring: string | null;
-    pointMax: number;
-    qbehavior: string;
-    qnote: string;
-    qks: string;
-    qopts: string;
+    point_max: number;
+    behavior: string;
+    note: string;
+    knowledge_summary: string;
+    options: string;
   }>;
   const items: CourseContentItem[] = [];
   const byKp = new Map<string, CourseContentItem>();
   for (const r of rows) {
-    let item = byKp.get(r.kpid);
+    let item = byKp.get(r.knowledge_point_id);
     if (!item) {
       item = {
-        knowledgePointId: r.kpid,
-        knowledgePointName: r.kpname,
-        detail: r.kpdetail ?? "",
+        knowledgePointId: r.knowledge_point_id,
+        knowledgePointName: r.name,
+        detail: r.detail ?? "",
         overview: r.overview,
         questions: [],
       };
-      byKp.set(r.kpid, item);
+      byKp.set(r.knowledge_point_id, item);
       items.push(item);
     }
     item.questions.push({
-      id: r.qid,
+      id: r.question_id,
       stem: r.stem,
       answer: r.answer,
       scoring: r.scoring,
-      pointMax: r.pointMax,
+      pointMax: r.point_max,
       seq: r.seq,
-      behavior: r.qbehavior || "generic",
-      note: r.qnote ?? "",
-      knowledgeSummary: r.qks ?? "",
-      options: parseOptions(r.qopts),
+      behavior: r.behavior || "generic",
+      note: r.note ?? "",
+      knowledgeSummary: r.knowledge_summary ?? "",
+      options: parseOptions(r.options),
     });
   }
   return { courseId: courseUuid, items };
@@ -407,16 +413,20 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
     knowledgeSummary: string;
     options: string;
   }>;
-  const ctx = db
-    .prepare(
-      `SELECT ckq.question_id AS qid, c.topic AS topic, c.title AS course,
-              COALESCE(kp.name, '') AS knowledgePoint
-       FROM course_knowledge_questions ckq
-       JOIN courses c ON c.uuid = ckq.course_id
-       LEFT JOIN knowledge_points kp ON kp.id = ckq.knowledge_point_id
-       ORDER BY ckq.rowid`
-    )
-    .all() as Array<{ qid: string; topic: string; course: string; knowledgePoint: string }>;
+  const ctx = (() => {
+    // F10-b：挂载反查走注册表路径 bank_question_contexts（kp/courses 均 LEFT JOIN，与原语义一致）
+    const { sql, params } = buildPathQuery(registeredPath("bank_question_contexts"), {
+      orderBy: "course_knowledge_questions.rowid",
+      limit: 5000,
+    });
+    const rows = db.prepare(sql).all(...params) as Array<{
+      question_id: string;
+      topic: string | null;
+      title: string | null;
+      name: string | null;
+    }>;
+    return rows.map((c) => ({ qid: c.question_id, topic: c.topic ?? "", course: c.title ?? "", knowledgePoint: c.name ?? "" }));
+  })();
   const ctxMap = new Map<string, Array<{ topic: string; course: string; knowledgePoint: string }>>();
   for (const c of ctx) {
     const arr = ctxMap.get(c.qid) || [];

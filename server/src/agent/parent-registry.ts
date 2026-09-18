@@ -27,6 +27,7 @@ import {
 } from "@pi/agent-core";
 import { readParentSettings } from "../worker/scheduler.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
+import { buildDataChannelBlocks } from "./registry-prompt.js";
 import { PARENT_AGENT_TOOL_NAMES, DATA_AGENT_TOOL_NAMES, createParentAgentTools, createDataAgentTools } from "./parent-tools.js";
 import { PLAN_DOMAIN_TOOL_NAMES, createPlanDomainTools } from "./parent-plans.js";
 import { agentStreamHub } from "./stream-hub.js";
@@ -91,7 +92,7 @@ function createGetDateTool() {
 }
 
 /** 家长 agent 的 system prompt（P2 资料治理 + 2026-09-13 计划域三表工具）。 */
-export function buildServerParentPrompt(input: { parentId: string; workspace: string; today: string }): string {
+export function buildServerParentPrompt(input: { parentId: string; workspace: string; today: string; tablesBlock?: string }): string {
   return `你是「学习伙伴」家长工作台的助手，帮家长管理孩子的学习计划、生活计划、考核排期、课程与学习资料。
 
 ## 当前上下文
@@ -141,10 +142,13 @@ export function buildServerParentPrompt(input: { parentId: string; workspace: st
 - 汇报方式：向家长**概括要点**，不要大段复述逐字稿原文。
 
 ## 通用数据查询（受控数据通道）
-需要查「专用工具覆盖不到」的表数据时，用 parent_db_describe 看结构 → parent_db_read 查询：
-- 不传 child=查家长内容库（topics/courses/tags/question_bank/knowledge_points/course_knowledge_questions）；
-- 传 child=孩子姓名=查该**孩子库**（study_plans/exam_plans/life_plans/daily_entries/points_ledger/courses 进度等）；
-- parent_db_write 同理（孩子库仅 daily_entries / redemption_requests 可写）。改动前先复述。
+需要查「专用工具覆盖不到」的表数据时用 parent_db_read（只读）/ parent_db_write（受控写，改动前先复述）：
+- 不传 child=查家长内容库；传 child=孩子姓名=查该**孩子库**（仅 daily_entries / redemption_requests 可写）；
+- countOnly=true 只返回命中行数（「有没有/有几条」别拉整表）；
+- 多跳关联（如「某主题下全部题」）传 path=路径名一次查询（路径清单见下方元数据）；
+- 表/列/路径清单已列在下方元数据里，**读操作不需要先 describe**。
+
+${input.tablesBlock ?? ""}
 
 ## 工作原则
 - 动手前先列清单、复述你的整理方案，让家长知道你准备改什么（家长看不到你脑子里的计划）。
@@ -155,28 +159,28 @@ export function buildServerParentPrompt(input: { parentId: string; workspace: st
 }
 
 /** 数据管理 agent 的 system prompt（独立 agent：统一数据 API 操作家长内容库全部表）。 */
-export function buildServerDataAgentPrompt(input: { parentId: string; today: string }): string {
+export function buildServerDataAgentPrompt(input: { parentId: string; today: string; tablesBlock?: string }): string {
   return `你是「学习伙伴」家长工作台的**数据管理助手**，专门用一套「统一数据 API」帮家长查看与维护课程内容库（家长库真源）。
 
-## 你的工具（只有 3 个，覆盖家长内容库全部表）
-- parent_db_describe：查看登记表的表名、列、必填、引用校验、操作限制（先调它确认能查/能改什么）。
-- parent_db_read：**只读查询**任意登记表（主题/课程/标签/题库/知识点/挂载）。支持等值 where + 列裁剪 + 排序 + 行数上限，SQL 在库内执行，不会把整表拉进上下文。
+## 你的工具（只有 3 个，覆盖两套库的全部登记表）
+- parent_db_read：**只读查询**。支持等值 where + 列裁剪 + 排序 + 行数上限；countOnly=true 只数行数；path=路径名一次查多跳关联。SQL 在库内执行，返回体超字符预算会自动截断并提示。
 - parent_db_write：受控 insert/update/delete（列白名单 + 校验 + 行数熔断 + 事务 + 审计，update/delete 必须带 where）。
+- parent_db_describe：查单表/路径/ns 的列结构与校验规则（写操作前确认必填与引用校验用；读操作通常不需要——清单已在下方元数据）。
 
 ## 当前上下文
 - 家长：${input.parentId}
 - 今天：${input.today}
 
-## 你能操作的表
-两套库都可查，由 **child 参数**切换：
-- **家长内容库 parent.sqlite**（parent_db_read/write 不传 child）：topics（主题）/ courses（课程）/ tags（标签）/ question_bank（题库题）/ knowledge_points（知识点）/ course_knowledge_questions（课程-知识点-题 挂载桥）。
-- **孩子库 kb（每个孩子一个库）**：传 child=孩子名/孩子id 即查该孩子库——study_plans（学习计划）/ exam_plans（考核计划）/ exam_plan_courses（考核课程明细）/ life_plans（生活计划）/ daily_entries（日常记录）/ topics / courses（课程进度）/ reward_configs（积分规则）/ points_ledger（积分流水）/ points_balance（积分余额）/ redemption_items（兑换商品）/ redemption_requests（兑换申请）/ reward_daily_stats（每日积分统计）/ plan_recurrences（重复规则）。孩子库除 daily_entries、redemption_requests 可写外，其余只读。
+## 表 / 路径 / 灵活实体清单（元数据，读操作零 describe）
+两套库由 **child 参数**切换：不传 child=家长库；传 child=孩子名=该孩子库（除 daily_entries、redemption_requests 外只读）。
+ns:开头的表是 Tier 2 灵活实体（家长可写；孩子库的只读）。
 
-parent_db_describe 不传 table 时会把两套库全部列出并标注来源；先调它确认要查的表在哪个库、要传什么 child。
+${input.tablesBlock ?? ""}
 
 ## 工作原则
-- 动手前先 parent_db_describe 看清表结构（注意 [家长库]/[孩子库] 标注与 child 要求）；查询用 parent_db_read，不要臆造列名。查孩子库务必带 child。
-- 多跳关联（如「某主题下所有题」「某孩子待完成的学习计划」）用 parent_db_read 分步查：先查该主题的 courses，再查 knowledge_points，再查挂载桥与 question_bank，最后在回复里汇总——并说明这是分步拼装。
+- 列名以元数据清单为准，不要臆造；猜错列名/值域时错误信息会直接给出可用列或取值样例，按提示一次纠正。
+- 多跳关联（如「某主题下所有题」）优先传 path=路径名一次查询；没有登记路径的关联才分步查并说明是分步拼装。
+- 「有没有/有几条」用 countOnly=true，不要拉行数。
 - 写操作前先向家长复述「要改哪张表、哪几行、改成什么」；update/delete 务必给 where 缩小到精确行（按主键最稳），避免误伤其它行。
 - 写入了敏感列（如 question_bank.answer / options）必须逐条向家长复述改动内容。
 - 批量/危险操作（批量删题、清空挂载、改孩子日常记录）先列清单取得家长同意，再执行。
@@ -213,7 +217,12 @@ async function ensureEntry(
       appSettings: settings.appSettings,
     });
     const customTools = [...dataTools, createGetDateTool()];
-    const systemPrompt = buildServerDataAgentPrompt({ parentId, today: localDate() });
+    const blocks = buildDataChannelBlocks(deps.dataDir, parentId);
+    const systemPrompt = buildServerDataAgentPrompt({
+      parentId,
+      today: localDate(),
+      tablesBlock: `${blocks.parentBlock}\n\n${blocks.childBlock}`,
+    });
     const handle = await createCoreSession({
       deps: DEPS,
       runtime,
@@ -251,7 +260,13 @@ async function ensureEntry(
     createGetDateTool(),
   ];
 
-  const systemPrompt = buildServerParentPrompt({ parentId, workspace, today: localDate() });
+  const blocks = buildDataChannelBlocks(deps.dataDir, parentId);
+  const systemPrompt = buildServerParentPrompt({
+    parentId,
+    workspace,
+    today: localDate(),
+    tablesBlock: `${blocks.parentBlock}\n\n${blocks.childBlock}`,
+  });
 
   const handle = await createCoreSession({
     deps: DEPS,

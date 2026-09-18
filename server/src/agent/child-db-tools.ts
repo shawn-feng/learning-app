@@ -13,6 +13,7 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { openKb } from "../db/kb.js";
+import { openParentLib } from "../db/parent-lib.js";
 import {
   childKbReadableRegistry,
   childKbWritableRegistry,
@@ -22,6 +23,7 @@ import {
   type ReadRequest,
   type WriteRequest,
 } from "./db-channel.js";
+import { loadNamespaces, tier2Read, describeNamespace, type NamespaceRow } from "./tier2.js";
 
 export interface ChildDbToolDeps {
   dataDir: string;
@@ -31,21 +33,46 @@ export interface ChildDbToolDeps {
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
+/** 孩子 scope 的 Tier 2 namespace（注册行存家长库；孩子侧一律只读） */
+function childNamespaces(deps: ChildDbToolDeps): NamespaceRow[] {
+  try {
+    const pdb = openParentLib(deps.dataDir, deps.parentId);
+    try {
+      return loadNamespaces(pdb, "child");
+    } finally {
+      pdb.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
 export function createChildDbTools(deps: ChildDbToolDeps) {
   const readSpecs = childKbReadableRegistry();
   const writeSpecs = childKbWritableRegistry();
+  const nsRows = childNamespaces(deps);
 
   const describeTool = defineTool({
     name: "child_db_describe",
     label: "查看我的数据表",
     description:
       "列出我的数据库里可查询/可写入的表（学习计划、考核计划、积分流水、日常记录、兑换等）与每列含义。\n" +
-      "传 table 看单表详情；不传看全部清单。查数据前不确定列名时先看这个。",
+      "表清单也已在本会话系统提示的元数据块里（读操作通常不用先调它）；传 table 看单表详情（含 ns:开头的灵活实体）。",
     parameters: Type.Object({
-      table: Type.Optional(Type.String({ description: "表名（可省略=列出全部）" })),
+      table: Type.Optional(Type.String({ description: "表名或 ns:灵活实体名（可省略=列出全部）" })),
     }),
     execute: async (_id: string, params: { table?: string }) => {
-      return ok(describeChildTables(readSpecs, writeSpecs, params.table?.trim() || undefined));
+      const table = params.table?.trim() || undefined;
+      if (table?.startsWith("ns:")) {
+        const ns = nsRows.find((n) => `ns:${n.ns}` === table);
+        if (ns) return ok(describeNamespace(ns));
+        return ok(`没有名为 ${table} 的灵活实体（清单见系统提示）。`);
+      }
+      if (table) return ok(describeChildTables(readSpecs, writeSpecs, table));
+      const nsLines = nsRows.map((n) => `- ns:${n.ns}（${n.label}，只读）: ${Object.keys(n.spec.columns).join(", ")}`).join("\n");
+      return ok(
+        describeChildTables(readSpecs, writeSpecs) + (nsLines ? `\n\n【灵活实体 Tier 2】table 用 ns:名称（只读）：\n${nsLines}` : "")
+      );
     },
   });
 
@@ -53,18 +80,50 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
     name: "child_db_read",
     label: "查询我的数据",
     description:
-      "查询自己数据库里的表：学习/考核计划、积分流水与余额、兑换商品与申请、日常记录、课程进度等。\n" +
-      "等值条件查询（如 where={status:\"pending\"}），支持选列、排序、限制行数（默认 50，最多 200）。\n" +
+      "查询自己数据库里的表：学习/考核计划、积分流水与余额、兑换商品与申请、日常记录、课程进度等；table 也支持 ns:开头的灵活实体（只读）。\n" +
+      "等值条件查询（如 where={status:\"pending\"}），支持选列、排序、限制行数（默认 50，最多 200）；" +
+      "countOnly=true 只返回命中行数（「有没有/几条」用这个）。返回体超字符预算会自动截断。\n" +
       "查「今天要做什么」请优先用 child_study_plan_list / child_exam_plan_list / child_life_plan_list（带今日窗口语义）。",
     parameters: Type.Object({
-      table: Type.String({ description: "表名（用 child_db_describe 查询可用表）" }),
+      table: Type.String({ description: "表名或 ns:灵活实体名（清单见系统提示）" }),
       columns: Type.Optional(Type.Array(Type.String(), { description: "只查这些列（缺省=全部可读列）" })),
       where: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "等值条件，如 {status:\"pending\"}" })),
       orderBy: Type.Optional(Type.String({ description: "排序列" })),
       orderDesc: Type.Optional(Type.Boolean({ description: "是否倒序（缺省正序）" })),
       limit: Type.Optional(Type.Number({ description: "返回行数上限（缺省 50，最大 200）" })),
+      countOnly: Type.Optional(Type.Boolean({ description: "true=只返回命中行数" })),
     }),
-    execute: async (_id: string, params: { table: string; columns?: string[]; where?: Record<string, unknown>; orderBy?: string; orderDesc?: boolean; limit?: number }) => {
+    execute: async (
+      _id: string,
+      params: {
+        table: string;
+        columns?: string[];
+        where?: Record<string, unknown>;
+        orderBy?: string;
+        orderDesc?: boolean;
+        limit?: number;
+        countOnly?: boolean;
+      }
+    ) => {
+      if (params.table.startsWith("ns:")) {
+        const ns = nsRows.find((n) => `ns:${n.ns}` === params.table);
+        if (!ns) return ok(`没有名为 ${params.table} 的灵活实体（清单见系统提示）。`);
+        const db = openKb(deps.dataDir, deps.parentId, deps.childId);
+        try {
+          return ok(
+            tier2Read(db, ns, {
+              columns: params.columns,
+              where: params.where,
+              orderBy: params.orderBy,
+              orderDesc: params.orderDesc,
+              limit: params.limit,
+              countOnly: params.countOnly,
+            }).text
+          );
+        } finally {
+          db.close();
+        }
+      }
       const db = openKb(deps.dataDir, deps.parentId, deps.childId);
       try {
         const req: ReadRequest = {
@@ -74,6 +133,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
           orderBy: params.orderBy,
           orderDesc: params.orderDesc,
           limit: params.limit,
+          countOnly: params.countOnly,
         };
         const r = executeRead(db, readSpecs, req);
         return ok(r.text);
@@ -88,7 +148,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
     label: "写入我的数据（白名单表）",
     description:
       "只对白名单表写入：daily_entries（日常记录，可增/改/删）、redemption_requests（兑换申请，只能新增）。\n" +
-      "考核计划、积分、奖励规则等不允许写——积分只能由考核/任务流程产生。\n" +
+      "考核计划、积分、奖励规则、灵活实体（ns:）等不允许写——积分只能由考核/任务流程产生。\n" +
       "update/delete 必须带 where 等值条件；兑换申请的 child_id 由服务端自动填，不用传。",
     parameters: Type.Object({
       table: Type.String({ description: "白名单表名：daily_entries / redemption_requests" }),

@@ -46,12 +46,15 @@ import {
   describeChildTables,
   executeWrite,
   executeRead,
+  executePathRead,
+  parentLibPaths,
   parentLibTableRegistry,
   parentReadableRegistry,
   childKbReadableRegistry,
   childKbWritableRegistry,
   type WriteRequest,
 } from "./db-channel.js";
+import { loadNamespaces, tier2Read, tier2Write, describeNamespace, type NamespaceRow } from "./tier2.js";
 
 export interface ParentToolDeps extends MaterialCtx {
   /** 家长 agent 工作区（临时产出） */
@@ -946,23 +949,73 @@ export function createParentAgentTools(deps: ParentToolDeps) {
 
 function buildDbDescribeTool(deps: ParentToolDeps) {
   const parentSpecs = parentLibTableRegistry();
+  const parentPaths = parentLibPaths();
   const childReadSpecs = childKbReadableRegistry();
   const childWriteSpecs = childKbWritableRegistry();
+
+  // Tier 2 namespace 注册行存家长库（会话元数据已常驻 prompt；describe 只兜底单实体详情）
+  const nsFor = (scope: "parent" | "child"): NamespaceRow[] => {
+    try {
+      const pdb = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        return loadNamespaces(pdb, scope);
+      } finally {
+        pdb.close();
+      }
+    } catch {
+      return [];
+    }
+  };
+
   return defineTool({
     name: "parent_db_describe",
-    label: "查看可写数据表结构",
+    label: "查看数据表/路径结构",
     description:
-      "列出受控数据通道登记的全部表：①家长内容库（parent.sqlite）；②孩子库（kb，每个孩子一个库）。\n" +
-      "传 table 返回该表的列结构、必填、引用校验与操作限制；不传返回全部表清单（标注来源库）。\n" +
-      "**何时调用**：要对课程库/题库/孩子库做「专用工具覆盖不了」的简单增删改/查询前，先用它确认表名、列名与限制。\n" +
-      "复杂流程（整课替换挂载、题目+知识点一起建）仍请用父助手的 parent_upsert_course_content。\n" +
-      "孩子库表需要传 child（孩子姓名或 id）才能 read/write，见 parent_db_read / parent_db_write 的 child 参数。",
+      "查登记表的列结构、必填、引用校验、路径详情与 Tier 2 灵活实体字段。\n" +
+      "系统提示里已带**全部表/路径/ns 清单**（读操作通常不需要本工具）；本工具用于写操作前确认必填/引用校验/行数熔断、查枚举值域、看 Tier 2 实体字段详情。\n" +
+      "传 table=表名或 ns:名称 返回单表详情；传 path=路径名 返回该路径的可过滤/可返回列；不传返回全部清单。\n" +
+      "复杂流程（整课替换挂载、题目+知识点一起建）仍请用 parent_upsert_course_content。",
     parameters: Type.Object({
-      table: Type.Optional(Type.String({ description: "表名（可省略=列出全部登记表）" })),
+      table: Type.Optional(Type.String({ description: "表名或 ns:灵活实体名（可省略=列出全部）" })),
+      path: Type.Optional(Type.String({ description: "路径名（如 topic_questions）；传了返回该路径详情" })),
     }),
-    execute: async (_id: string, params: { table?: string }) => {
+    execute: async (_id: string, params: { table?: string; path?: string }) => {
       const table = params.table?.trim() || undefined;
+      const pathName = params.path?.trim() || undefined;
+      if (pathName) {
+        const p = parentPaths.find((x) => x.name === pathName);
+        if (!p) return ok(`没有登记名为「${pathName}」的路径。可用：${parentPaths.map((x) => x.name).join("、")}`);
+        return ok(
+          [
+            `## 路径 ${p.name}（${p.label}）`,
+            p.desc,
+            `主体表 ${p.select}；跳链：${p.hops.map((h) => `${h.optional ? "LEFT " : ""}JOIN ${h.table}`).join(" → ")}`,
+            `可过滤列：${p.filterable.join("、")}`,
+            `可返回列：${p.returns.join("、")}`,
+            `单次行数上限：${p.rowLimit}`,
+          ].join("\n")
+        );
+      }
       if (table) {
+        if (table.startsWith("ns:")) {
+          const name = table.slice(3);
+          const ns = nsFor("parent").find((n) => n.ns === name) ?? nsFor("child").find((n) => n.ns === name);
+          if (ns) return ok(describeNamespace(ns));
+          return ok(`没有名为 ${table} 的灵活实体（当前可用清单见系统提示元数据块）。`);
+        }
+        const p = parentPaths.find((x) => x.name === table);
+        if (p) {
+          return ok(
+            [
+              `## 路径 ${p.name}（${p.label}）`,
+              p.desc,
+              `主体表 ${p.select}；跳链：${p.hops.map((h) => `${h.optional ? "LEFT " : ""}JOIN ${h.table}`).join(" → ")}`,
+              `可过滤列：${p.filterable.join("、")}`,
+              `可返回列：${p.returns.join("、")}`,
+              `单次行数上限：${p.rowLimit}`,
+            ].join("\n")
+          );
+        }
         const w = parentSpecs.find((s) => s.table === table);
         if (w) return ok(describeTables(parentSpecs, table));
         const r = childReadSpecs.find((s) => s.table === table);
@@ -973,14 +1026,23 @@ function buildDbDescribeTool(deps: ParentToolDeps) {
         );
       }
       const parentList = parentSpecs
-        .map((s) => `- ${s.table}（${s.label}）：${s.desc}（允许 ${s.ops.join("/")}）`)
+        .map((s) => `- ${s.table}（${s.label}）：${s.desc}（允许 ${s.ops.join("/") || "只读"}）`)
         .join("\n");
       const childList = childReadSpecs.map((s) => `- ${s.table}（${s.label}）：${s.desc}`).join("\n");
+      const pathList = parentPaths.map((p) => `- ${p.name}（${p.label}）：${p.desc}`).join("\n");
+      const nsParent = nsFor("parent");
+      const nsChild = nsFor("child");
+      const nsList = [
+        ...nsParent.map((n) => `- ns:${n.ns}（家长库）`),
+        ...nsChild.map((n) => `- ns:${n.ns}（孩子库，只读）`),
+      ].join("\n");
       return ok(
         `【家长库 parent.sqlite】用 parent_db_read / parent_db_write（不传 child）操作：\n${parentList}\n\n` +
+          `【家长库命名路径】parent_db_read 传 path=名称（多跳关联一次查询）：\n${pathList}\n\n` +
           `【孩子库 kb（每个孩子一个库）】用 parent_db_read / parent_db_write 传 child=孩子名 操作；` +
           `除 daily_entries、redemption_requests 可写外，其余只读：\n${childList}\n\n` +
-          `传 table 查某表列结构；例如 parent_db_read({table:'study_plans', child:'孩子名'}) 查某孩子学习计划。`
+          (nsList ? `【Tier 2 灵活实体】parent_db_read 的 table 用 ns:名称：\n${nsList}\n\n` : "") +
+          `传 table / path 查详情；例如 parent_db_read({path:'topic_questions', where:{'courses.topic':'lunyu'}})。`
       );
     },
   });
@@ -988,46 +1050,109 @@ function buildDbDescribeTool(deps: ParentToolDeps) {
 
 function buildDbReadTool(deps: ParentToolDeps) {
   const parentReadSpecs = parentReadableRegistry();
+  const parentPaths = parentLibPaths();
   const childReadSpecs = childKbReadableRegistry();
   return defineTool({
     name: "parent_db_read",
-    label: "通用查询数据表（只读）",
+    label: "通用查询数据表/路径（只读）",
     description:
-      "对受控数据通道登记的表做**只读**查询。不传 child=查家长内容库（主题/课程/标签/题库/知识点/挂载）；" +
-      "传 child=孩子名/孩子id=查该**孩子库**（学习计划/考核计划/积分流水/日常记录/课程进度等）。\n" +
-      "WHERE 等值条件 + 列裁剪 + 排序 + 行数上限全部参数化，**SQL 在数据库内执行**（不会把整张表拉进上下文）。\n" +
-      "**何时调用**：想看某表/某条件下有哪些数据（如「论语主题下所有课程」「某知识点挂的题」「某孩子待完成的学习计划」），且现有专用工具不覆盖时。\n" +
-      "先用 parent_db_describe 看表名（标注 [家长库]/[孩子库]）与可用列；查孩子库务必带 child。\n" +
+      "对受控数据通道登记的表做**只读**查询。表清单/列清单/路径清单已在本会话系统提示的元数据块里，**读操作不需要先 describe**。\n" +
+      "不传 child=查家长内容库；传 child=孩子名/id=查该**孩子库**；table 支持 ns:前缀的灵活实体（Tier 2）。\n" +
+      "传 path=路径名 可一次拿到多跳关联结果（如 topic_questions=某主题下全部题），与 table 二选一（path 仅家长库，与 child 互斥）。\n" +
+      "countOnly=true 只返回命中行数（「有没有/有几条」用这个，别拉行）。等值 where + 列裁剪 + 排序 + 行数上限全部参数化在库内执行；" +
+      "返回体超字符预算会自动截断并提示。\n" +
       "（只读工具——改数据请用 parent_db_write；读孩子对话逐字稿请用 parent_read_child_conversation）",
     parameters: Type.Object({
-      table: Type.String({ description: "登记的表名（用 parent_db_describe 查询；孩子库表需配合 child 参数）" }),
+      table: Type.Optional(
+        Type.String({ description: "登记的表名或 ns:灵活实体名（清单见系统提示；与 path 二选一；孩子库表配合 child）" })
+      ),
+      path: Type.Optional(Type.String({ description: "路径名（如 topic_questions）；仅家长库，与 table/child 互斥" })),
       child: Type.Optional(
-        Type.String({ description: "孩子姓名或 id；传了就查该孩子库（kb），不传查家长库（parent.sqlite）。孩子库表见 describe" })
+        Type.String({ description: "孩子姓名或 id；传了就查该孩子库（kb），不传查家长库（parent.sqlite）" })
       ),
       columns: Type.Optional(Type.Array(Type.String(), { description: "只返回的列（缺省=全部可读列）" })),
       where: Type.Optional(
-        Type.Record(Type.String(), Type.Unknown(), { description: "等值过滤条件 {列: 值}，全部须为登记列" })
+        Type.Record(Type.String(), Type.Unknown(), { description: "等值过滤条件 {列: 值}；路径查询用 表.列 全限定名" })
       ),
       orderBy: Type.Optional(Type.String({ description: "排序列（须为可读列）" })),
       orderDesc: Type.Optional(Type.Boolean({ description: "true=降序（缺省升序）" })),
       limit: Type.Optional(Type.Number({ description: "最多返回行数（缺省 50，最大 200）" })),
+      countOnly: Type.Optional(Type.Boolean({ description: "true=只返回命中行数（F6）" })),
     }),
     execute: async (
       _id: string,
-      params: { table: string; child?: string; columns?: string[]; where?: Record<string, unknown>; orderBy?: string; orderDesc?: boolean; limit?: number }
+      params: {
+        table?: string;
+        path?: string;
+        child?: string;
+        columns?: string[];
+        where?: Record<string, unknown>;
+        orderBy?: string;
+        orderDesc?: boolean;
+        limit?: number;
+        countOnly?: boolean;
+      }
     ) => {
+      const base = {
+        columns: params.columns,
+        where: params.where,
+        orderBy: params.orderBy,
+        orderDesc: params.orderDesc,
+        limit: params.limit,
+        countOnly: params.countOnly,
+      };
+      if (params.path) {
+        if (params.child) return ok("path 查询仅支持家长库，与 child 参数互斥（去掉 child 或改用 table）。");
+        if (params.table) return ok("path 与 table 二选一，不要同时传。");
+        const db = openParentLib(deps.dataDir, deps.parentId);
+        try {
+          const r = executePathRead(db, parentPaths, { path: params.path, ...base });
+          return ok(r.text);
+        } finally {
+          db.close();
+        }
+      }
+      if (!params.table) return ok("table 与 path 至少传一个。");
       if (params.child) {
         const kid = resolveConvoChild(deps.db, deps.parentId, params.child);
+        if (params.table.startsWith("ns:")) {
+          // 孩子侧 Tier 2 一律只读（安全红线 5）；ns 注册行在家长库，scope=child
+          let nsRow: NamespaceRow | undefined;
+          const pdb = openParentLib(deps.dataDir, deps.parentId);
+          try {
+            nsRow = loadNamespaces(pdb, "child").find((n) => `ns:${n.ns}` === params.table);
+          } finally {
+            pdb.close();
+          }
+          if (!nsRow) return ok(`没有名为 ${params.table} 的灵活实体（清单见系统提示）。`);
+          const db = openKb(deps.dataDir, deps.parentId, kid.id);
+          try {
+            const r = tier2Read(db, nsRow, base);
+            return ok(r.text);
+          } finally {
+            db.close();
+          }
+        }
         const db = openKb(deps.dataDir, deps.parentId, kid.id);
         try {
-          const r = executeRead(db, childReadSpecs, {
-            table: params.table,
-            columns: params.columns,
-            where: params.where,
-            orderBy: params.orderBy,
-            orderDesc: params.orderDesc,
-            limit: params.limit,
-          });
+          const r = executeRead(db, childReadSpecs, { table: params.table, ...base });
+          return ok(r.text);
+        } finally {
+          db.close();
+        }
+      }
+      if (params.table.startsWith("ns:")) {
+        let nsRow: NamespaceRow | undefined;
+        const pdb = openParentLib(deps.dataDir, deps.parentId);
+        try {
+          nsRow = loadNamespaces(pdb, "parent").find((n) => `ns:${n.ns}` === params.table);
+        } finally {
+          pdb.close();
+        }
+        if (!nsRow) return ok(`没有名为 ${params.table} 的灵活实体（清单见系统提示）。`);
+        const db = openParentLib(deps.dataDir, deps.parentId);
+        try {
+          const r = tier2Read(db, nsRow, base);
           return ok(r.text);
         } finally {
           db.close();
@@ -1035,14 +1160,7 @@ function buildDbReadTool(deps: ParentToolDeps) {
       }
       const db = openParentLib(deps.dataDir, deps.parentId);
       try {
-        const r = executeRead(db, parentReadSpecs, {
-          table: params.table,
-          columns: params.columns,
-          where: params.where,
-          orderBy: params.orderBy,
-          orderDesc: params.orderDesc,
-          limit: params.limit,
-        });
+        const r = executeRead(db, parentReadSpecs, { table: params.table, ...base });
         return ok(r.text);
       } finally {
         db.close();
@@ -1059,13 +1177,13 @@ function buildDbWriteTool(deps: ParentToolDeps) {
     name: "parent_db_write",
     label: "受控写数据表（单表增删改）",
     description:
-      "对登记表执行受控 insert/update/delete。不传 child=写家长内容库；传 child=孩子名/孩子id=写该**孩子库**（仅 daily_entries、redemption_requests 两张白名单表可写）。\n" +
+      "对登记表执行受控 insert/update/delete。不传 child=写家长内容库；传 child=孩子名/id=写该**孩子库**（仅 daily_entries、redemption_requests 白名单表）。\n" +
+      "table 支持 ns:前缀的灵活实体（Tier 2，仅家长库；孩子侧 ns 只读）。\n" +
       "列白名单 + 逐列校验 + 行数熔断 + 事务 + 审计，update/delete 必须带 where 等值条件（先预览影响行数）。" +
       "写入敏感列（answer/options 等）后返回提示，必须向家长逐条复述。\n" +
-      "**何时调用**：家长要改/建/删单表数据（改题干、调分值、改课程资料说明、给孩子加一条日常记录等）且现有专用工具不覆盖时。\n" +
-      "**不要**用它替代 parent_upsert_course_content 的整课替换语义；不要用来批量删题（先与家长确认清单）。孩子库只开放白名单表，考核/积分/奖励规则等不开放写。",
+      "**不要**用它替代 parent_upsert_course_content 的整课替换语义；孩子库考核/积分/奖励规则等不开放写。",
     parameters: Type.Object({
-      table: Type.String({ description: "登记的表名（用 parent_db_describe 查询；孩子库表需配合 child 参数）" }),
+      table: Type.String({ description: "登记的表名或 ns:灵活实体名（清单见系统提示；孩子库表需配合 child 参数）" }),
       child: Type.Optional(
         Type.String({ description: "孩子姓名或 id；传了就写该孩子库（kb），不传写家长库。孩子库仅 daily_entries/redemption_requests 可写" })
       ),
@@ -1089,6 +1207,9 @@ function buildDbWriteTool(deps: ParentToolDeps) {
     ) => {
       if (params.child) {
         const kid = resolveConvoChild(deps.db, deps.parentId, params.child);
+        if (params.table.startsWith("ns:")) {
+          return ok("孩子库的灵活实体（Tier 2）只读，不开放写（安全红线：孩子侧数据以读为主）。");
+        }
         const db = openKb(deps.dataDir, deps.parentId, kid.id);
         try {
           // 兑换申请：child_id 强制为该孩子（执行器侧覆盖，agent 传什么都不生效）
@@ -1104,6 +1225,21 @@ function buildDbWriteTool(deps: ParentToolDeps) {
           return ok(r.text);
         } finally {
           db.close();
+        }
+      }
+      if (params.table.startsWith("ns:")) {
+        // Tier 2 灵活实体写（家长库 entities 表；ns 注册行同库）
+        const pdb = openParentLib(deps.dataDir, deps.parentId);
+        try {
+          const nsRow = loadNamespaces(pdb, "parent").find((n) => `ns:${n.ns}` === params.table);
+          if (!nsRow) return ok(`没有名为 ${params.table} 的灵活实体（清单见系统提示）。`);
+          const r = tier2Write(pdb, nsRow, { op: params.op, rows: params.rows, where: params.where });
+          if (r.ok) {
+            appendParentActivityLog(ctx, `受控写 ${params.op} ${params.table}（Tier 2）：${r.text.split("。")[0] || ""}`);
+          }
+          return ok(r.text);
+        } finally {
+          pdb.close();
         }
       }
       const db = openParentLib(deps.dataDir, deps.parentId);

@@ -31,6 +31,7 @@ import { readParentSettings } from "../worker/scheduler.js";
 import { getAgentPrompt } from "../db/agents.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
+import { buildChildSelfBlock } from "./registry-prompt.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { createSummarizeConversationTool } from "./kb-summary-tool.js";
 import {
@@ -311,6 +312,7 @@ async function ensureEntry(
         now: localTime(),
         agentRules,
         courseBlock: kind.startsWith("course:") ? courseContextBlock(deps, parentId, childId, kind.slice("course:".length)) : "",
+        dbTablesBlock: buildChildSelfBlock(deps.dataDir, parentId),
       });
 
   const slot = sessionSlot(childId, kind);
