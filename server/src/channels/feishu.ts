@@ -151,6 +151,37 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
     return lines.join("\n");
   };
 
+  /** 卡片构造（实测 2026-09-18：schema 2.0 元素只认 tag 不认 type；collapsible_panel 去除装饰属性才可通过解析） */
+  const mkThinkingCard = (progressText: string) => ({
+    schema: "2.0",
+    config: { update_multi: true },
+    body: { direction: "vertical", elements: [{ tag: "markdown", content: progressText || "🤔 正在思考…" }] },
+  });
+  const mkFinalCard = (answer: string, processMd: string) => ({
+    schema: "2.0",
+    config: { update_multi: true },
+    body: {
+      direction: "vertical",
+      elements: [
+        { tag: "markdown", content: answer },
+        { tag: "hr" },
+        {
+          tag: "collapsible_panel",
+          expanded: false,
+          header: { title: { tag: "plain_text", content: "查看思考过程" } },
+          elements: [{ tag: "markdown", content: processMd || "（无）" }],
+        },
+      ],
+    },
+  });
+  /** patch 卡片内容 */
+  const patchCard = async (messageId: string, card: Record<string, unknown>): Promise<void> => {
+    await (client.im as any).v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+  };
+
   const upsertBindRequest = (openId: string, sample: string): "pending" | "rejected" => {
     const now = nowStr();
     deps.db
@@ -208,14 +239,14 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
             ? () => submitParentPrompt(sessionDeps, b.parent_id, "parent", channelText)
             : () => submitChildPrompt(sessionDeps, b.parent_id, b.child_id, channelText);
 
-        // 过程可见（与客户端一致：思考 / 工具调用 / 作答）：先发占位消息，节流 patch 同一条
+        // 过程可见（与客户端一致：思考 / 工具调用 / 作答）：先发卡片占位，节流 patch 同一张卡片
         let statusMsgId = "";
         let lastEditAt = 0;
         let pendingTimer: ReturnType<typeof setTimeout> | null = null;
         const flushEdit = async (p: TurnProgress) => {
           if (!statusMsgId) return;
           try {
-            await editText(statusMsgId, renderProgress(p));
+            await patchCard(statusMsgId, mkThinkingCard(renderProgress(p)));
           } catch {
             /* 编辑失败不打断主流程（如内容无变化时飞书会报错） */
           }
@@ -235,7 +266,7 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
           void flushEdit(p);
         };
         try {
-          statusMsgId = await sendTextWithId(openId, "🤔 正在思考…");
+          statusMsgId = await sendCard(openId, mkThinkingCard("🤔 正在思考…"));
           lastEditAt = Date.now();
         } catch {
           statusMsgId = "";
@@ -255,7 +286,7 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
             ? "上一条还在想，稍等一下再发～"
             : `学习服务端暂时没能回答：${r.error ?? ""}`;
 
-        // 有过程记录且成功：删掉过程气泡，发「回答 + 可折叠思考过程」卡片
+        // 有过程记录且成功：把过程气泡 patch 成「回答 + 可折叠思考过程」最终卡片
         const p = progressHolder.current;
         const hasProcess = !!(p && (p.tools.length || p.thinking.trim()));
         if (r.ok && hasProcess && statusMsgId) {
@@ -266,49 +297,20 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
           if (thinkCap) parts.push(`**💭 思考**` + NL + thinkCap);
           if (toolLines) parts.push(`**🛠 工具调用**` + NL + toolLines);
           const processMd = parts.join(NL + NL);
-          const card = {
-            schema: "2.0",
-            config: { update_multi: true },
-            body: {
-              direction: "vertical",
-              elements: [
-                { type: "markdown", content: finalText },
-                { type: "hr" },
-                {
-                  type: "collapsible_panel",
-                  expanded: false,
-                  header: {
-                    title: { tag: "plain_text", content: "查看思考过程" },
-                    vertical_align: "center",
-                    background_style: "blue",
-                  },
-                  vertical_spacing: "8px",
-                  padding: "8px 12px",
-                  border: { type: "plain" },
-                  background_style: "default",
-                  elements: [{ type: "markdown", content: processMd || "（无）" }],
-                },
-              ],
-            },
-          };
-          // 先发卡片，成功再删过程气泡；卡片失败退回纯文本
           try {
-            await sendCard(openId, card);
-            await deleteMessage(statusMsgId).catch(() => undefined);
+            await patchCard(statusMsgId, mkFinalCard(finalText, processMd));
           } catch {
-            try {
-              await editText(statusMsgId, finalText);
-            } catch {
-              await sendText(openId, finalText).catch(() => undefined);
-              if (processMd) await sendText(openId, `—— 思考过程 ——${NL}${processMd}`).catch(() => undefined);
-            }
+            // 卡片更新失败：删占位，改发两条纯文本兜底
+            await deleteMessage(statusMsgId).catch(() => undefined);
+            await sendText(openId, finalText).catch(() => undefined);
+            if (processMd) await sendText(openId, `—— 思考过程 ——${NL}${processMd}`).catch(() => undefined);
           }
           return;
         }
 
         if (statusMsgId) {
           try {
-            await editText(statusMsgId, finalText);
+            await patchCard(statusMsgId, mkFinalCard(finalText, ""));
           } catch {
             await sendText(openId, finalText).catch(() => undefined);
           }
