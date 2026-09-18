@@ -18,7 +18,7 @@ export function sessionToken(): string {
 }
 
 export type AgentKind = "main" | "scene" | `course:${string}`;
-export type ParentKind = "parent" | "parent-content";
+export type ParentKind = "parent" | "parent-content" | "parent-data";
 
 export interface AgentEvent {
   id: number;
@@ -521,7 +521,7 @@ export async function openParentSession(kind: "parent" | "parent-content", token
 }
 
 /** 重置家长会话。 */
-export async function resetParentSession(kind: "parent" | "parent-content", token = sessionToken()): Promise<void> {
+export async function resetParentSession(kind: ParentKind, token = sessionToken()): Promise<void> {
   await serverFetch("/parent-agent/reset", { method: "POST", token, body: { kind } });
 }
 
@@ -669,7 +669,7 @@ export function bridgeChildAgentEvents(
  */
 export function bridgeParentAgentEvents(
   e: AgentEvent,
-  childId: "parent" | "parent-content",
+  childId: "parent" | "parent-content" | "parent-data",
   send: (channel: string, payload: any) => void
 ): void {
   bridgeAgentEventCore(e, childId, `parent:${childId}`, send);

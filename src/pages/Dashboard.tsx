@@ -28,7 +28,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [childrenLoading, setChildrenLoading] = useState(true);
   const [showAddChild, setShowAddChild] = useState(false);
   const [view, setView] = useState<
-    "children" | "courses" | "plan" | "exam" | "reward" | "scheduler" | "tokens" | "settings" | "bank"
+    "children" | "courses" | "plan" | "exam" | "reward" | "scheduler" | "tokens" | "settings" | "bank" | "dataagent"
   >("children");
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
@@ -170,6 +170,19 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
               <div className="name">设置</div>
             </div>
           </div>
+          <div
+            className="child-card"
+            style={{ border: "none" }}
+            onClick={() => {
+              setView("dataagent");
+              setDetailChild(null);
+            }}
+          >
+            <div className="child-avatar">🗃️</div>
+            <div className="child-info">
+              <div className="name">数据管理</div>
+            </div>
+          </div>
 
         </div>
 
@@ -291,6 +304,9 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           {view === "tokens" && !detailChild && <TokenStatsPanel childrenList={children} />}
 
           {view === "settings" && !detailChild && <Settings />}
+
+          {/* 独立「数据管理 agent」：统一数据 API 操作家长内容库全部表（parent-data 会话） */}
+          {view === "dataagent" && !detailChild && <ParentChatPanel childId="parent-data" />}
         </div>
 
         {/* 右：家长-Agent 常驻聊天（ISSUE-050），可折叠 + 拖拽调宽 */}

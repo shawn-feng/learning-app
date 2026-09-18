@@ -145,7 +145,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       })
     );
   };
-  const ensureParentStream = (kind: "parent" | "parent-content") => {
+  const ensureParentStream = (kind: "parent" | "parent-content" | "parent-data") => {
     const key = `parent:${kind}`;
     if (agentStreams.has(key)) return;
     agentStreams.set(
@@ -164,6 +164,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   let childBusy = false;
   let parentBusy = false;
   let parentContentBusy = false;
+  let parentDataBusy = false;
 
   // SPLIT：服务端连接配置（纯服务端模式必需）
   ipcMain.handle("server:get_config", async () => {
@@ -1614,6 +1615,45 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("pi:reset_parent", async () => {
     try {
       await resetParentSessionServer("parent");
+      return { success: true, history: [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- 独立「数据管理 agent」会话（parent-data）：统一数据 API 操作家长内容库全部表 ----
+  ipcMain.handle("pi:start_parent_data", async () => {
+    try {
+      ensureParentStream("parent-data");
+      const history = await openParentSession("parent-data").catch(() => [] as any[]);
+      return { success: true, history };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("pi:prompt_parent_data", async (_e: IpcMainInvokeEvent, text: string) => {
+    if (parentDataBusy) {
+      return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
+    }
+    parentDataBusy = true;
+    try {
+      ensureParentStream("parent-data");
+      await promptParent(text, { kind: "parent-data" });
+      return { success: true };
+    } catch (err) {
+      console.error(`[pi:prompt_parent_data] error:`, (err as Error).message);
+      _e.sender.send("pi:reply_error", { childId: "parent-data", error: friendlyError((err as Error).message) });
+      _e.sender.send("pi:reply_end", { childId: "parent-data" });
+      return { success: false, error: (err as Error).message };
+    } finally {
+      parentDataBusy = false;
+    }
+  });
+
+  ipcMain.handle("pi:reset_parent_data", async () => {
+    try {
+      await resetParentSessionServer("parent-data");
       return { success: true, history: [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };

@@ -16,6 +16,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { DatabaseSync } from "node:sqlite";
 import { resolveWithin } from "@pi/agent-core";
 import { openParentLib } from "../db/parent-lib.js";
+import { openKb } from "../db/kb.js";
 import {
   appendParentActivityLog,
   deleteMaterial,
@@ -42,8 +43,13 @@ import {
 } from "../db/assess-content.js";
 import {
   describeTables,
+  describeChildTables,
   executeWrite,
+  executeRead,
   parentLibTableRegistry,
+  parentReadableRegistry,
+  childKbReadableRegistry,
+  childKbWritableRegistry,
   type WriteRequest,
 } from "./db-channel.js";
 
@@ -858,34 +864,160 @@ export function createParentAgentTools(deps: ParentToolDeps) {
   });
 
   // ===== 受控数据通道（ISSUE-105 方案 B P1）：单表简单读写走注册表，复杂编排仍走上面的专用工具 =====
-  const dbSpecs = parentLibTableRegistry();
+  const dbDescribeTool = buildDbDescribeTool(deps);
+  const dbReadTool = buildDbReadTool(deps);
+  const dbWriteTool = buildDbWriteTool(deps);
 
-  const dbDescribeTool = defineTool({
+  return [
+    listTool,
+    readTool,
+    deleteTool,
+    moveTool,
+    putTool,
+    topicsTool,
+    coursesTool,
+    upsertTopicTool,
+    upsertCourseTool,
+    courseContentTool,
+    upsertCourseContentTool,
+    dbDescribeTool,
+    dbReadTool,
+    dbWriteTool,
+    imageTool,
+    convoTool,
+    logTool,
+    // 编程 agent（P3 上移）：家长 agent 描述需求 → 服务端编程 agent 产出 HTML 资料到真源
+    createProgrammingTool({ dataDir: deps.dataDir, db: deps.db, parentId: deps.parentId }, { scope: "parent" }),
+  ];
+}
+
+// ==================== 受控数据通道：可复用 builder（家长主助手 + 数据管理 agent 共用） ====================
+
+function buildDbDescribeTool(deps: ParentToolDeps) {
+  const parentSpecs = parentLibTableRegistry();
+  const childReadSpecs = childKbReadableRegistry();
+  const childWriteSpecs = childKbWritableRegistry();
+  return defineTool({
     name: "parent_db_describe",
     label: "查看可写数据表结构",
     description:
-      "列出受控数据通道登记的表（家长内容库：主题/课程/标签/题库/知识点/挂载）。\n" +
-      "传 table 返回该表的列结构、必填、引用校验与操作限制；不传返回全部表清单。\n" +
-      "**何时调用**：家长要求对课程库/题库做「专用工具覆盖不了」的简单增删改前，先用它确认列名与限制。\n" +
-      "复杂流程（整课替换挂载、题目+知识点一起建）仍请用 parent_upsert_course_content。",
+      "列出受控数据通道登记的全部表：①家长内容库（parent.sqlite）；②孩子库（kb，每个孩子一个库）。\n" +
+      "传 table 返回该表的列结构、必填、引用校验与操作限制；不传返回全部表清单（标注来源库）。\n" +
+      "**何时调用**：要对课程库/题库/孩子库做「专用工具覆盖不了」的简单增删改/查询前，先用它确认表名、列名与限制。\n" +
+      "复杂流程（整课替换挂载、题目+知识点一起建）仍请用父助手的 parent_upsert_course_content。\n" +
+      "孩子库表需要传 child（孩子姓名或 id）才能 read/write，见 parent_db_read / parent_db_write 的 child 参数。",
     parameters: Type.Object({
       table: Type.Optional(Type.String({ description: "表名（可省略=列出全部登记表）" })),
     }),
     execute: async (_id: string, params: { table?: string }) => {
-      return ok(describeTables(dbSpecs, params.table?.trim() || undefined));
+      const table = params.table?.trim() || undefined;
+      if (table) {
+        const w = parentSpecs.find((s) => s.table === table);
+        if (w) return ok(describeTables(parentSpecs, table));
+        const r = childReadSpecs.find((s) => s.table === table);
+        if (r) return ok(describeChildTables(childReadSpecs, childWriteSpecs, table));
+        return ok(
+          `没有登记名为「${table}」的表。\n家长库表：${parentSpecs.map((s) => s.table).join("、")}\n` +
+            `孩子库表（需传 child=孩子名）：${childReadSpecs.map((s) => s.table).join("、")}`
+        );
+      }
+      const parentList = parentSpecs
+        .map((s) => `- ${s.table}（${s.label}）：${s.desc}（允许 ${s.ops.join("/")}）`)
+        .join("\n");
+      const childList = childReadSpecs.map((s) => `- ${s.table}（${s.label}）：${s.desc}`).join("\n");
+      return ok(
+        `【家长库 parent.sqlite】用 parent_db_read / parent_db_write（不传 child）操作：\n${parentList}\n\n` +
+          `【孩子库 kb（每个孩子一个库）】用 parent_db_read / parent_db_write 传 child=孩子名 操作；` +
+          `除 daily_entries、redemption_requests 可写外，其余只读：\n${childList}\n\n` +
+          `传 table 查某表列结构；例如 parent_db_read({table:'study_plans', child:'孩子名'}) 查某孩子学习计划。`
+      );
     },
   });
+}
 
-  const dbWriteTool = defineTool({
+function buildDbReadTool(deps: ParentToolDeps) {
+  const parentReadSpecs = parentReadableRegistry();
+  const childReadSpecs = childKbReadableRegistry();
+  return defineTool({
+    name: "parent_db_read",
+    label: "通用查询数据表（只读）",
+    description:
+      "对受控数据通道登记的表做**只读**查询。不传 child=查家长内容库（主题/课程/标签/题库/知识点/挂载）；" +
+      "传 child=孩子名/孩子id=查该**孩子库**（学习计划/考核计划/积分流水/日常记录/课程进度等）。\n" +
+      "WHERE 等值条件 + 列裁剪 + 排序 + 行数上限全部参数化，**SQL 在数据库内执行**（不会把整张表拉进上下文）。\n" +
+      "**何时调用**：想看某表/某条件下有哪些数据（如「论语主题下所有课程」「某知识点挂的题」「某孩子待完成的学习计划」），且现有专用工具不覆盖时。\n" +
+      "先用 parent_db_describe 看表名（标注 [家长库]/[孩子库]）与可用列；查孩子库务必带 child。\n" +
+      "（只读工具——改数据请用 parent_db_write；读孩子对话逐字稿请用 parent_read_child_conversation）",
+    parameters: Type.Object({
+      table: Type.String({ description: "登记的表名（用 parent_db_describe 查询；孩子库表需配合 child 参数）" }),
+      child: Type.Optional(
+        Type.String({ description: "孩子姓名或 id；传了就查该孩子库（kb），不传查家长库（parent.sqlite）。孩子库表见 describe" })
+      ),
+      columns: Type.Optional(Type.Array(Type.String(), { description: "只返回的列（缺省=全部可读列）" })),
+      where: Type.Optional(
+        Type.Record(Type.String(), Type.Unknown(), { description: "等值过滤条件 {列: 值}，全部须为登记列" })
+      ),
+      orderBy: Type.Optional(Type.String({ description: "排序列（须为可读列）" })),
+      orderDesc: Type.Optional(Type.Boolean({ description: "true=降序（缺省升序）" })),
+      limit: Type.Optional(Type.Number({ description: "最多返回行数（缺省 50，最大 200）" })),
+    }),
+    execute: async (
+      _id: string,
+      params: { table: string; child?: string; columns?: string[]; where?: Record<string, unknown>; orderBy?: string; orderDesc?: boolean; limit?: number }
+    ) => {
+      if (params.child) {
+        const kid = resolveConvoChild(deps.db, deps.parentId, params.child);
+        const db = openKb(deps.dataDir, deps.parentId, kid.id);
+        try {
+          const r = executeRead(db, childReadSpecs, {
+            table: params.table,
+            columns: params.columns,
+            where: params.where,
+            orderBy: params.orderBy,
+            orderDesc: params.orderDesc,
+            limit: params.limit,
+          });
+          return ok(r.text);
+        } finally {
+          db.close();
+        }
+      }
+      const db = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        const r = executeRead(db, parentReadSpecs, {
+          table: params.table,
+          columns: params.columns,
+          where: params.where,
+          orderBy: params.orderBy,
+          orderDesc: params.orderDesc,
+          limit: params.limit,
+        });
+        return ok(r.text);
+      } finally {
+        db.close();
+      }
+    },
+  });
+}
+
+function buildDbWriteTool(deps: ParentToolDeps) {
+  const dbSpecs = parentLibTableRegistry();
+  const childSpecs = childKbWritableRegistry();
+  const ctx: MaterialCtx = { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
+  return defineTool({
     name: "parent_db_write",
     label: "受控写数据表（单表增删改）",
     description:
-      "对登记表执行受控 insert/update/delete（家长内容库）。列白名单 + 逐列校验 + 行数熔断 + 事务 + 审计，" +
-      "update/delete 必须带 where 等值条件（先预览影响行数）。写入敏感列（answer/options 等）后返回提示，必须向家长逐条复述。\n" +
-      "**何时调用**：家长要改/建/删单表数据（改题干、调分值、改课程资料说明等）且现有专用工具不覆盖时。\n" +
-      "**不要**用它替代 parent_upsert_course_content 的整课替换语义；不要用来批量删题（先与家长确认清单）。",
+      "对登记表执行受控 insert/update/delete。不传 child=写家长内容库；传 child=孩子名/孩子id=写该**孩子库**（仅 daily_entries、redemption_requests 两张白名单表可写）。\n" +
+      "列白名单 + 逐列校验 + 行数熔断 + 事务 + 审计，update/delete 必须带 where 等值条件（先预览影响行数）。" +
+      "写入敏感列（answer/options 等）后返回提示，必须向家长逐条复述。\n" +
+      "**何时调用**：家长要改/建/删单表数据（改题干、调分值、改课程资料说明、给孩子加一条日常记录等）且现有专用工具不覆盖时。\n" +
+      "**不要**用它替代 parent_upsert_course_content 的整课替换语义；不要用来批量删题（先与家长确认清单）。孩子库只开放白名单表，考核/积分/奖励规则等不开放写。",
     parameters: Type.Object({
-      table: Type.String({ description: "登记的表名（用 parent_db_describe 查询）" }),
+      table: Type.String({ description: "登记的表名（用 parent_db_describe 查询；孩子库表需配合 child 参数）" }),
+      child: Type.Optional(
+        Type.String({ description: "孩子姓名或 id；传了就写该孩子库（kb），不传写家长库。孩子库仅 daily_entries/redemption_requests 可写" })
+      ),
       op: Type.Union([Type.Literal("insert"), Type.Literal("update"), Type.Literal("delete")], {
         description: "操作类型",
       }),
@@ -900,7 +1032,29 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         })
       ),
     }),
-    execute: async (_id: string, params: { table: string; op: "insert" | "update" | "delete"; rows?: Array<Record<string, unknown>>; where?: Record<string, unknown> }) => {
+    execute: async (
+      _id: string,
+      params: { table: string; child?: string; op: "insert" | "update" | "delete"; rows?: Array<Record<string, unknown>>; where?: Record<string, unknown> }
+    ) => {
+      if (params.child) {
+        const kid = resolveConvoChild(deps.db, deps.parentId, params.child);
+        const db = openKb(deps.dataDir, deps.parentId, kid.id);
+        try {
+          // 兑换申请：child_id 强制为该孩子（执行器侧覆盖，agent 传什么都不生效）
+          const force = params.table === "redemption_requests" ? { child_id: kid.id } : undefined;
+          const req: WriteRequest = { table: params.table, op: params.op, rows: params.rows, where: params.where, force };
+          const r = executeWrite(db, childSpecs, req);
+          if (r.ok) {
+            appendParentActivityLog(
+              ctx,
+              `受控写 ${params.op} ${params.table}（孩子 ${kid.name} 库）：${r.text.split("。")[0] || ""}`
+            );
+          }
+          return ok(r.text);
+        } finally {
+          db.close();
+        }
+      }
       const db = openParentLib(deps.dataDir, deps.parentId);
       try {
         const req: WriteRequest = { table: params.table, op: params.op, rows: params.rows, where: params.where };
@@ -917,28 +1071,18 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       }
     },
   });
-
-  return [
-    listTool,
-    readTool,
-    deleteTool,
-    moveTool,
-    putTool,
-    topicsTool,
-    coursesTool,
-    upsertTopicTool,
-    upsertCourseTool,
-    courseContentTool,
-    upsertCourseContentTool,
-    dbDescribeTool,
-    dbWriteTool,
-    imageTool,
-    convoTool,
-    logTool,
-    // 编程 agent（P3 上移）：家长 agent 描述需求 → 服务端编程 agent 产出 HTML 资料到真源
-    createProgrammingTool({ dataDir: deps.dataDir, db: deps.db, parentId: deps.parentId }, { scope: "parent" }),
-  ];
 }
+
+/**
+ * 数据管理 agent 工具集（独立 agent，parent-data 会话专用）：只暴露「统一数据 API」三件套
+ * + 日期工具，不携带资料/对话/编程等家长主助手工具——与运营类家长 agent 隔离。
+ * 覆盖家长内容库全部 6 张表（topics/courses/tags/question_bank/knowledge_points/course_knowledge_questions）。
+ */
+export function createDataAgentTools(deps: ParentToolDeps) {
+  return [buildDbDescribeTool(deps), buildDbReadTool(deps), buildDbWriteTool(deps)];
+}
+
+export const DATA_AGENT_TOOL_NAMES = ["parent_db_describe", "parent_db_read", "parent_db_write", "get_date"];
 
 export const PARENT_AGENT_TOOL_NAMES = [
   "read",
@@ -957,6 +1101,7 @@ export const PARENT_AGENT_TOOL_NAMES = [
   "parent_library_course_content",
   "parent_upsert_course_content",
   "parent_db_describe",
+  "parent_db_read",
   "parent_db_write",
   "parent_read_image",
   "parent_read_child_conversation",

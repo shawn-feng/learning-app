@@ -127,6 +127,11 @@ const api = {
   piReset: (childId: string) => ipcRenderer.invoke("pi:reset", childId),
   // ISSUE-042：家长会话重置
   piResetParent: () => ipcRenderer.invoke("pi:reset_parent"),
+  // 独立「数据管理 agent」会话（parent-data）：统一数据 API 操作家长内容库全部表
+  piStartParentData: () => ipcRenderer.invoke("pi:start_parent_data"),
+  piPromptParentData: (text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) =>
+    ipcRenderer.invoke("pi:prompt_parent_data", text, images || []),
+  piResetParentData: () => ipcRenderer.invoke("pi:reset_parent_data"),
   // Token 统计读取（ISSUE-010）：汇总 / 最近日志（childId 缺省为家长全局）
   getTokenSummary: (childId?: string) => ipcRenderer.invoke("token:summary", childId || null),
   getTokenList: (childId?: string, limit?: number) =>

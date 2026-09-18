@@ -23,7 +23,11 @@ function stripInstructions(text: string): string {
  * 事件处理模式与 SkillEditor 一致：思考/工具/正式回复都更新到同一个 working 气泡；
  * ChatWindow 传 owner="parent"，附件上传/打开走 data/parents/<pid>/uploads/（ISSUE-044）。
  */
-export default function ParentChatPanel() {
+export default function ParentChatPanel({
+  childId = "parent",
+}: {
+  childId?: "parent" | "parent-content" | "parent-data";
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false); // ISSUE-068：停止中锁，保持发送禁用直到 SDK 真正 idle
@@ -32,6 +36,26 @@ export default function ParentChatPanel() {
   const [parentId, setParentId] = useState<string>("");
   // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡）
   const workingIdRef = useRef<string | null>(null);
+
+  // 按 childId 选择对应的家长会话桥（默认主助手 parent；数据管理 agent 用 parent-data）
+  const startParentSession = () =>
+    childId === "parent-data"
+      ? window.api.piStartParentData()
+      : childId === "parent-content"
+        ? window.api.piStartParentContent()
+        : window.api.piStartParent();
+  const promptParentSession = (
+    text: string,
+    images?: Array<{ type: "image"; mimeType: string; data: string }>
+  ) =>
+    childId === "parent-data"
+      ? window.api.piPromptParentData(text, images)
+      : childId === "parent-content"
+        ? window.api.piPromptParentContent(text)
+        : window.api.piPromptParent(text, images);
+  const abortParentSession = () => window.api.piAbort(childId);
+  const resetParentSession = () =>
+    childId === "parent-data" ? window.api.piResetParentData() : window.api.piResetParent();
 
   useEffect(() => {
     // ISSUE-078：取当前登录家长 id（未登录返回 ""，ChatWindow 仍兜底 default）
@@ -54,9 +78,8 @@ export default function ParentChatPanel() {
 
   useEffect(() => {
     // ISSUE-037：会话初始化结果显式检查，失败提示，禁止静默吞错
-    window.api
-      .piStartParent()
-      .then((r: any) => {
+      startParentSession()
+        .then((r: any) => {
         if (!r?.success) {
           setMessages((prev) => [
             ...prev,
@@ -90,7 +113,7 @@ export default function ParentChatPanel() {
   useEffect(() => {
     // 流式文本：working 气泡期间累积（working 态不显示正文，reply 时整体替换）
     window.api.onPiStreaming((data: any) => {
-      if (data.childId !== "parent") return;
+      if (data.childId !== childId) return;
       setMessages((prev) => {
         const clone = [...prev];
         const last = clone[clone.length - 1];
@@ -103,16 +126,16 @@ export default function ParentChatPanel() {
       });
     });
     window.api.onPiAgentEnd((data: any) => {
-      if (data.childId === "parent") { setStopping(false); setBusy(false); }
+      if (data.childId === childId) { setStopping(false); setBusy(false); }
     });
     // 思考增量（主进程已节流）——在 working 气泡里实时展示；complete=true 为 message_end 兜底补发（覆盖式）
     window.api.onPiThinking((data: any) => {
-      if (data.childId !== "parent") return;
+      if (data.childId !== childId) return;
       patchWorking((m) => ({ ...m, thinking: data.complete ? data.delta : (m.thinking || "") + data.delta }));
     });
     // 工具开始调用
     window.api.onPiToolStart((data: any) => {
-      if (data.childId !== "parent") return;
+      if (data.childId !== childId) return;
       const call: ToolCallState = {
         id: data.toolCallId || `tool-${Date.now()}`,
         name: data.toolName,
@@ -123,7 +146,7 @@ export default function ParentChatPanel() {
     });
     // 工具结束调用：更新对应工具状态
     window.api.onPiToolEnd((data: any) => {
-      if (data.childId !== "parent") return;
+      if (data.childId !== childId) return;
       patchWorking((m) => ({
         ...m,
         tools: (m.tools || []).map((t) =>
@@ -135,7 +158,7 @@ export default function ParentChatPanel() {
     });
     // 正式回复：替换 working 气泡为最终文本（与孩子聊天界面一致）
     window.api.onPiReply((data: any) => {
-      if (data.childId !== "parent") return;
+      if (data.childId !== childId) return;
       const id = workingIdRef.current;
       workingIdRef.current = null;
       setMessages((prev) => {
@@ -155,11 +178,11 @@ export default function ParentChatPanel() {
       setBusy(false);
     });
     window.api.onPiReplyEnd((data: any) => {
-      if (data.childId === "parent") { setStopping(false); setBusy(false); }
+      if (data.childId === childId) { setStopping(false); setBusy(false); }
     });
     // 回复错误：替换 working 气泡为错误提示（不再静默）
     window.api.onPiReplyError((data: any) => {
-      if (data.childId !== "parent") return;
+      if (data.childId !== childId) return;
       const id = workingIdRef.current;
       workingIdRef.current = null;
       setMessages((prev) => {
@@ -183,7 +206,7 @@ export default function ParentChatPanel() {
       setStopping(false);
       setBusy(false);
     });
-  }, [patchWorking]);
+  }, [patchWorking, childId]);
 
   // ISSUE-042：家长会话管理命令（对齐 Learn.tsx:645-694）
   const COMMANDS: Record<string, { desc: string }> = {
@@ -206,7 +229,7 @@ export default function ParentChatPanel() {
   async function runResetCommand() {
     setBusy(true);
     try {
-      const r = await window.api.piResetParent();
+      const r = await resetParentSession();
       if (r?.success) {
         setMessages([
           { id: nextId(), role: "ai", text: "✅ 会话已重置，重新开始吧！有什么需要帮忙的？😊", time: nowTime() },
@@ -289,8 +312,8 @@ export default function ParentChatPanel() {
     try {
       // ISSUE-037：带 images 参数发送（对齐 pi:prompt）
       const r: any = sdkImages.length
-        ? await window.api.piPromptParent(promptText, sdkImages)
-        : await window.api.piPromptParent(promptText);
+        ? await promptParentSession(promptText, sdkImages)
+        : await promptParentSession(promptText);
       // ISSUE-037：主进程把错误包在返回值里（{success:false}）而不是抛异常——必须显式检查
       if (!r?.success) {
         const id = workingIdRef.current;
@@ -337,7 +360,7 @@ export default function ParentChatPanel() {
       );
     }
     try {
-      await window.api.piAbort("parent");
+      await abortParentSession();
     } catch {
       /* abort 失败忽略 */
     }
@@ -350,7 +373,7 @@ export default function ParentChatPanel() {
 
   return (
     <div className="parent-chat-panel">
-      <div className="parent-chat-title">家长助手</div>
+      <div className="parent-chat-title">{childId === "parent-data" ? "数据管理助手" : "家长助手"}</div>
       {/* ISSUE-078：透传登录家长真实 id —— 上传/打开/读取附件落到 data/parents/<真实pid>/uploads/，
           与家长 agent 提示词「当前家长」目录一致；未登录时 parentId 为空，ChatWindow 兜底 default */}
       <ChatWindow messages={messages} onSend={handleSend} disabled={busy || stopping} running={busy || stopping} onStop={handleStop} owner="parent" parentId={parentId} />

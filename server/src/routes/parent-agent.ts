@@ -43,8 +43,9 @@ function authParent(
 function parseKind(v: unknown): ParentSessionKind {
   const s = String(v ?? "").trim();
   if (s === "parent-content") return "parent-content";
+  if (s === "parent-data") return "parent-data";
   if (s === "parent" || s === "") return "parent";
-  throw new ApiError(400, "kind 只能是 parent 或 parent-content");
+  throw new ApiError(400, "kind 只能是 parent、parent-content 或 parent-data");
 }
 
 function handleAuthError(err: unknown, reply: any): boolean {

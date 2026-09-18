@@ -666,6 +666,48 @@ export function childKbWritableRegistry(): TableSpec[] {
   ];
 }
 
+/**
+ * 家长内容库「可读面」派生：从写登记表（parentLibTableRegistry）直接映射出只读面，
+ * 避免两份列清单各写一遍、互相漂移。读与写共用同一套列定义（单一真源）。
+ * 服务端的统一读原语 parent_db_read 走这张表（ISSUE-110 盲区修复：家长侧此前只有写，没有通用读）。
+ */
+export function parentReadableRegistry(): ReadableTableSpec[] {
+  return parentLibTableRegistry().map((s) => ({
+    table: s.table,
+    label: s.label,
+    desc: s.desc,
+    columns: Object.fromEntries(
+      Object.entries(s.columns).map(([col, c]) => {
+        const kind =
+          c.kind === "enum" ? `枚举 ${c.enumValues!.join("/")}` : c.kind + (c.maxLen ? `(≤${c.maxLen}字)` : "");
+        const flags = [c.notEmpty === false ? "可空" : "必填", c.confirm ? "⚠写入后须向家长复述" : ""]
+          .filter(Boolean)
+          .join("，");
+        return [col, `${kind}：${c.desc}（${flags}）`];
+      })
+    ),
+  }));
+}
+
+/** 家长库 describe：可读表清单 + 可写表详情（统一读工具 parent_db_read 用）。 */
+export function describeParentTables(readSpecs: ReadableTableSpec[], writeSpecs: TableSpec[], table?: string): string {
+  if (table) {
+    const w = writeSpecs.find((s) => s.table === table);
+    if (w) return describeTables(writeSpecs, table);
+    const r = readSpecs.find((s) => s.table === table);
+    if (!r) {
+      return `没有登记名为「${table}」的表。可读/写表：\n` + writeSpecs.map((s) => `- ${s.table}（${s.label}）：${s.desc}`).join("\n");
+    }
+    return `## ${r.table}（${r.label}）【可读】\n${r.desc}\n列：\n${Object.entries(r.columns).map(([c, d]) => `- ${c}：${d}`).join("\n")}`;
+  }
+  return (
+    "可读表（用 parent_db_read 查询）：\n" +
+    readSpecs.map((s) => `- ${s.table}（${s.label}）：${s.desc}`).join("\n") +
+    "\n\n可写表（用 parent_db_write，允许操作见单表详情）：\n" +
+    writeSpecs.map((s) => `- ${s.table}（${s.label}）：允许 ${s.ops.join("/")}`).join("\n")
+  );
+}
+
 /** 通用受控读：等值 where + 列裁剪 + 排序 + 行数上限（全部参数化，无自由 SQL） */
 export interface ReadRequest {
   table: string;
