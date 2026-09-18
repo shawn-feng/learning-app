@@ -317,7 +317,7 @@ function nsColSql(ns: NamespaceRow, col: string): string | null {
 }
 
 /** Tier 2 受控读（语义与 executeRead 对齐：预算/截断/countOnly/自愈） */
-export function tier2Read(db: DatabaseSync, ns: NamespaceRow, req: { columns?: string[]; where?: Record<string, unknown>; orderBy?: string; orderDesc?: boolean; limit?: number; countOnly?: boolean }): { ok: boolean; text: string } {
+export function tier2Read(db: DatabaseSync, ns: NamespaceRow, req: { columns?: string[]; where?: Record<string, unknown>; orderBy?: string; orderDesc?: boolean; limit?: number; offset?: number; countOnly?: boolean }): { ok: boolean; text: string } {
   const dataCols = Object.keys(ns.spec.columns);
   const allCols = [...NS_META_COLS, "data", ...dataCols];
   let cols = ["id", "data", "created_at", "updated_at"];
@@ -345,11 +345,17 @@ export function tier2Read(db: DatabaseSync, ns: NamespaceRow, req: { columns?: s
   const whereSql = whereSqlParts.length ? ` AND ${whereSqlParts.join(" AND ")}` : "";
   let orderSql = "";
   if (req.orderBy) {
-    const ob = nsColSql(ns, req.orderBy);
+    // ORDER BY 不能用带 AS 的 SELECT 别名表达式，用裸 json 路径
+    const ob = (NS_META_COLS as readonly string[]).includes(req.orderBy)
+      ? req.orderBy
+      : req.orderBy in ns.spec.columns
+        ? jsonPath(req.orderBy)
+        : null;
     if (!ob) return { ok: false, text: `排序字段 ${req.orderBy} 未登记（可用：${allCols.join("、")}）` };
     orderSql = ` ORDER BY ${ob} ${req.orderDesc ? "DESC" : "ASC"}`;
   }
   const limit = Math.max(1, Math.min(Number(req.limit) || T2_READ_DEFAULT_LIMIT, T2_READ_MAX_LIMIT));
+  const offset = Math.max(0, Math.floor(Number(req.offset) || 0));
 
   if (req.countOnly) {
     const n = (db.prepare(`SELECT COUNT(*) AS n FROM entities WHERE ns = ?${whereSql}`).get(ns.ns, ...whereVals) as { n: number }).n;
@@ -357,7 +363,7 @@ export function tier2Read(db: DatabaseSync, ns: NamespaceRow, req: { columns?: s
   }
 
   const selectSql = cols.map((c) => nsColSql(ns, c)).join(", ");
-  const sql = `SELECT ${selectSql} FROM entities WHERE ns = ?${whereSql}${orderSql} LIMIT ${limit}`;
+  const sql = `SELECT ${selectSql} FROM entities WHERE ns = ?${whereSql}${orderSql} LIMIT ${limit} OFFSET ${offset}`;
   const rawRows = db.prepare(sql).all(ns.ns, ...whereVals) as Array<Record<string, unknown>>;
   if (!rawRows.length) {
     // F2 自愈：空结果给可过滤字段的实际取值样例

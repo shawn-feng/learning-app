@@ -1068,8 +1068,8 @@ function buildDbReadTool(deps: ParentToolDeps) {
       "对受控数据通道登记的表做**只读**查询。表清单/列清单/路径清单已在本会话系统提示的元数据块里，**读操作不需要先 describe**。\n" +
       "不传 child=查家长内容库；传 child=孩子名/id=查该**孩子库**；table 支持 ns:前缀的灵活实体（Tier 2）。\n" +
       "传 path=路径名 可一次拿到多跳关联结果（如 topic_questions=某主题下全部题），与 table 二选一（path 仅家长库，与 child 互斥）。\n" +
-      "countOnly=true 只返回命中行数（「有没有/有几条」用这个，别拉行）。等值 where + 列裁剪 + 排序 + 行数上限全部参数化在库内执行；" +
-      "返回体超字符预算会自动截断并提示。\n" +
+      "countOnly=true 只返回命中行数（「有没有/有几条」用这个，别拉行）。要拉全量大列表时用 orderBy + limit + offset 翻页（单次最多 200 行）。" +
+      "等值 where + 列裁剪 + 排序 + 分页全部参数化在库内执行；返回体超字符预算会自动截断并提示。\n" +
       "（只读工具——改数据请用 parent_db_write；读孩子对话逐字稿请用 parent_read_child_conversation）",
     parameters: Type.Object({
       table: Type.Optional(
@@ -1085,8 +1085,9 @@ function buildDbReadTool(deps: ParentToolDeps) {
       ),
       orderBy: Type.Optional(Type.String({ description: "排序列（须为可读列）" })),
       orderDesc: Type.Optional(Type.Boolean({ description: "true=降序（缺省升序）" })),
-      limit: Type.Optional(Type.Number({ description: "最多返回行数（缺省 50，最大 200）" })),
-      countOnly: Type.Optional(Type.Boolean({ description: "true=只返回命中行数（F6）" })),
+      limit: Type.Optional(Type.Number({ description: "单次最多返回行数（缺省 50，最大 200）" })),
+      offset: Type.Optional(Type.Number({ description: "跳过前 N 行（配合 limit/orderBy 分页拉全量；分页必须带 orderBy）" })),
+      countOnly: Type.Optional(Type.Boolean({ description: "true=只返回命中行数" })),
     }),
     execute: async (
       _id: string,
@@ -1099,6 +1100,7 @@ function buildDbReadTool(deps: ParentToolDeps) {
         orderBy?: string;
         orderDesc?: boolean;
         limit?: number;
+        offset?: number;
         countOnly?: boolean;
       }
     ) => {

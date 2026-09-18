@@ -525,3 +525,66 @@ describe("WP9/F15b：草案确认关（设计器 → 家长确认 → 生效）"
     db.close();
   });
 });
+
+describe("分页：offset 拉全量", () => {
+  it("executeRead：offset 跳行 + 返回头带行区间提示", () => {
+    const db = freshParentLib();
+    const r = executeRead(db, parentReadableRegistry(), {
+      table: "courses",
+      where: { topic: "lunyu" },
+      columns: ["title"],
+      orderBy: "sort_order",
+      limit: 1,
+      offset: 1,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain("为政篇");
+    expect(r.text).not.toContain("学而篇");
+    expect(r.text).toContain("第 2 ~ 2 行");
+    db.close();
+  });
+
+  it("executePathRead：offset 翻页", () => {
+    const db = freshParentLib();
+    const page1 = executePathRead(db, parentLibPaths(), {
+      path: "topic_questions",
+      where: { "courses.topic": "lunyu" },
+      columns: ["question_bank.stem"],
+      orderBy: "question_bank.id",
+      limit: 1,
+    });
+    const page2 = executePathRead(db, parentLibPaths(), {
+      path: "topic_questions",
+      where: { "courses.topic": "lunyu" },
+      columns: ["question_bank.stem"],
+      orderBy: "question_bank.id",
+      limit: 1,
+      offset: 1,
+    });
+    for (const p of [page1, page2]) expect(p.ok, p.text).toBe(true);
+    // 两页拿到不同的题
+    const t1 = page1.text.includes("学而时习之") ? "学而时习之" : "有朋自远方来";
+    const t2 = page2.text.includes("学而时习之") ? "学而时习之" : "有朋自远方来";
+    expect(t1).not.toBe(t2);
+    // 已达单次上限时提示翻页
+    expect(page1.text).toContain("翻页");
+    db.close();
+  });
+
+  it("tier2Read：offset 翻页", () => {
+    const db = freshParentLib();
+    defineNamespace(db, parentLibTableRegistry(), {
+      ns: "page_test",
+      scope: "parent",
+      label: "翻页测试",
+      spec: { columns: { date: { kind: "string", desc: "日期" } }, insertRequired: ["date"], filterable: ["date"] },
+    });
+    const ns = loadNamespaces(db, "parent").find((n) => n.ns === "page_test")!;
+    const wr = tier2Write(db, ns, { op: "insert", rows: [{ date: "2026-09-17" }, { date: "2026-09-18" }] });
+    expect(wr.ok, wr.text).toBe(true);
+    const p2 = tier2Read(db, ns, { orderBy: "date", limit: 1, offset: 1 });
+    expect(p2.text).toContain("2026-09-18");
+    expect(p2.text).not.toContain("2026-09-17");
+    db.close();
+  });
+});

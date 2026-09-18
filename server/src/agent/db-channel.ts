@@ -574,6 +574,8 @@ export interface PathReadRequest {
   orderBy?: string;
   orderDesc?: boolean;
   limit?: number;
+  /** 跳过前 N 行（配合 limit/orderBy 分页拉全量） */
+  offset?: number;
   countOnly?: boolean;
 }
 
@@ -601,7 +603,7 @@ function assertPathValid(p: RegistryPath): void {
 export function buildPathQuery(
   path: RegistryPath,
   req: Omit<PathReadRequest, "path">
-): { sql: string; params: Array<null | number | bigint | string>; selectCols: string[] } {
+): { sql: string; params: Array<null | number | bigint | string>; selectCols: string[]; limit: number } {
   assertPathValid(path);
   const whereEntries = Object.entries(req.where ?? {}).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
   for (const [col] of whereEntries) {
@@ -628,12 +630,14 @@ export function buildPathQuery(
   const whereSql = whereEntries.length ? ` WHERE ${whereEntries.map(([c]) => `${c} = ?`).join(" AND ")}` : "";
   const orderSql = req.orderBy ? ` ORDER BY ${req.orderBy} ${req.orderDesc ? "DESC" : "ASC"}` : "";
   const params = whereEntries.map(([, v]) => sqlVal(v));
-  if (req.countOnly) {
-    return { sql: `SELECT COUNT(*) AS n FROM ${path.select} ${joinSql}${whereSql}`.replace(/\s+/g, " "), params, selectCols };
-  }
   const limit = Math.max(1, Math.min(Number(req.limit) || 20, path.rowLimit, READ_MAX_LIMIT));
-  const sql = `SELECT ${selectCols.join(", ")} FROM ${path.select} ${joinSql}${whereSql}${orderSql} LIMIT ${limit}`.replace(/\s+/g, " ");
-  return { sql, params, selectCols };
+  if (req.countOnly) {
+    return { sql: `SELECT COUNT(*) AS n FROM ${path.select} ${joinSql}${whereSql}`.replace(/\s+/g, " "), params, selectCols, limit };
+  }
+  const offset = Math.max(0, Math.floor(Number(req.offset) || 0));
+  const pageSql = ` LIMIT ${limit} OFFSET ${offset}`;
+  const sql = `SELECT ${selectCols.join(", ")} FROM ${path.select} ${joinSql}${whereSql}${orderSql}${pageSql}`.replace(/\s+/g, " ");
+  return { sql, params, selectCols, limit };
 }
 
 /** 路径读执行器：与 executeRead 同级出口（预算/截断/自愈语义一致） */
@@ -664,7 +668,13 @@ export function executePathRead(db: DatabaseSync, paths: RegistryPath[], req: Pa
       text: `路径 ${path.name}（${path.label}）：已返前 ${returned} 行 / 共 ${total} 行（超字符预算截断）。请收窄 where 或用 columns 选列。\n${body}`,
     };
   }
-  return { ok: true, text: `路径 ${path.name}（${path.label}）：${rows.length} 行\n${body}` };
+  return {
+    ok: true,
+    text:
+      `路径 ${path.name}（${path.label}）：${rows.length} 行` +
+      (rows.length >= built.limit ? `（已达单次上限；拉全量请带 orderBy + offset 翻页）` : "") +
+      `\n${body}`,
+  };
 }
 
 /** 家长库命名路径登记（先注册高频路径，R1：按需增长） */
@@ -1078,6 +1088,8 @@ export interface ReadRequest {
   /** 缺省正序；orderBy 给了才生效 */
   orderDesc?: boolean;
   limit?: number;
+  /** 跳过前 N 行（配合 limit/orderBy 分页拉全量；分页必须带 orderBy，否则顺序不稳定） */
+  offset?: number;
   /** true=只返回命中行数（同套 where 编译 SELECT COUNT(*)，F6） */
   countOnly?: boolean;
 }
@@ -1140,6 +1152,7 @@ export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: R
     orderSql = ` ORDER BY ${req.orderBy} ${req.orderDesc ? "DESC" : "ASC"}`;
   }
   const limit = Math.max(1, Math.min(Number(req.limit) || READ_DEFAULT_LIMIT, READ_MAX_LIMIT));
+  const offset = Math.max(0, Math.floor(Number(req.offset) || 0));
   const whereSql = whereEntries.length ? ` WHERE ${whereEntries.map(([c]) => `${c} = ?`).join(" AND ")}` : "";
   const whereVals = whereEntries.map(([, v]) => sqlVal(v));
 
@@ -1148,7 +1161,8 @@ export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: R
     return { ok: true, text: `${spec.label}（${spec.table}）：命中 ${n} 行。` };
   }
 
-  const sql = `SELECT ${cols.join(", ")} FROM ${spec.table}${whereSql}${orderSql} LIMIT ${limit}`;
+  const pageSql = ` LIMIT ${limit} OFFSET ${offset}`;
+  const sql = `SELECT ${cols.join(", ")} FROM ${spec.table}${whereSql}${orderSql}${pageSql}`;
   const rows = db.prepare(sql).all(...whereVals) as Array<Record<string, unknown>>;
   if (!rows.length) {
     // F2 自愈：空结果时给条件列的实际取值样例，帮 agent 一次纠正值选错
@@ -1178,9 +1192,14 @@ export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: R
         `取全文请收窄 where、用 columns 选列或减小 limit。\n${body}`,
     };
   }
+  const orderNote = req.orderBy ? `，排序 ${req.orderBy}（翻页时排序键必须一致）` : "";
+  const header =
+    offset > 0
+      ? `${spec.label}（${spec.table}）：第 ${offset + 1} ~ ${offset + rows.length} 行${orderNote}（单次最多 ${limit} 行）`
+      : `${spec.label}（${spec.table}）：${rows.length} 行（最多返回 ${limit} 行${rows.length === limit ? `；未拉完可用 orderBy + offset 翻页${orderNote}` : ""}）`;
   return {
     ok: true,
-    text: `${spec.label}（${spec.table}）：${rows.length} 行（最多返回 ${limit} 行）\n${body}`,
+    text: `${header}\n${body}`,
   };
 }
 

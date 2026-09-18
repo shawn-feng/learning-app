@@ -90,7 +90,8 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       where: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "等值条件，如 {status:\"pending\"}" })),
       orderBy: Type.Optional(Type.String({ description: "排序列" })),
       orderDesc: Type.Optional(Type.Boolean({ description: "是否倒序（缺省正序）" })),
-      limit: Type.Optional(Type.Number({ description: "返回行数上限（缺省 50，最大 200）" })),
+      limit: Type.Optional(Type.Number({ description: "单次最多返回行数（缺省 50，最大 200）" })),
+      offset: Type.Optional(Type.Number({ description: "跳过前 N 行（配合 limit/orderBy 分页拉全量）" })),
       countOnly: Type.Optional(Type.Boolean({ description: "true=只返回命中行数" })),
     }),
     execute: async (
@@ -102,6 +103,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
         orderBy?: string;
         orderDesc?: boolean;
         limit?: number;
+        offset?: number;
         countOnly?: boolean;
       }
     ) => {
@@ -117,6 +119,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
               orderBy: params.orderBy,
               orderDesc: params.orderDesc,
               limit: params.limit,
+              offset: params.offset,
               countOnly: params.countOnly,
             }).text
           );
@@ -133,6 +136,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
           orderBy: params.orderBy,
           orderDesc: params.orderDesc,
           limit: params.limit,
+          offset: params.offset,
           countOnly: params.countOnly,
         };
         const r = executeRead(db, readSpecs, req);
