@@ -98,7 +98,7 @@ export function parentLibTableRegistry(): TableSpec[] {
     {
       table: "courses",
       label: "课程",
-      desc: "主题下的课程；主键 (topic, title)，topic 必须是 topics.name 已有值",
+      desc: "主题下的课程（纯课程内容）；主键 (topic, title)，topic 必须是 topics.name 已有值；学习进度在孩子库，这里没有 status 字段",
       ops: ["insert", "update", "delete"],
       rowLimit: 50,
       pk: ["topic", "title"],
@@ -108,9 +108,6 @@ export function parentLibTableRegistry(): TableSpec[] {
         topic: str("所属主题名（topics.name）", 100),
         title: str("课程名", 200),
         sort_order: { kind: "number", desc: "排序序号", int: true, min: 0, max: 100000 },
-        status: str("学习状态标记（⬜/✅ 等）", 10, { notEmpty: false }),
-        last_review: str("最近复习日期 YYYY-MM-DD", 20, { notEmpty: false }),
-        review_count: { kind: "number", desc: "复习次数", int: true, min: 0, max: 100000 },
         material: str("资料路径/说明", 2000, { notEmpty: false }),
         send_material: str("下发资料说明", 2000, { notEmpty: false }),
         tags: str("标签（顿号分隔）", 500, { notEmpty: false }),
@@ -546,16 +543,17 @@ export function childKbReadableRegistry(): ReadableTableSpec[] {
     {
       table: "topics",
       label: "学习主题",
-      desc: "我在学的主题目录",
-      columns: { name: R("主题名"), topic_key: R("主题标识"), method: R("学习方法"), assess_method: R("考核方法") },
+      desc: "我在学的主题目录（learn_type：required=必学 / optional=选学 / review=复习）",
+      columns: { name: R("主题名"), topic_key: R("主题标识"), learn_type: R("required/optional/review"), rules_json: R("孩子级规则 JSON") },
     },
     {
       table: "courses",
       label: "课程",
-      desc: "主题下的课程与学习状态",
+      desc: "主题下的课程与我的学习状态（教学内容在家长库，这里只有进度）",
       columns: {
-        topic: R("主题名"), title: R("课程名"), uuid: R("课程 uuid"), status: R("学习状态标记"),
-        last_review: R("最近学习/复习时间"), review_count: R("复习次数"),
+        topic: R("主题名"), topic_key: R("主题标识"), title: R("课程名"), uuid: R("课程 uuid"),
+        sort_order: R("排序"), status: R("学习状态标记"),
+        last_review: R("最近学习/复习时间"), review_count: R("复习次数"), tags: R("标签"),
       },
     },
     {

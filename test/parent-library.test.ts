@@ -129,19 +129,20 @@ describe("ISSUE-029 家长库（主题统一管理 + 快照分配，SPLIT 服务
     expect(r1.copied).toBe(0); // 已存在 → 不覆盖
     expect(r1.existing).toBe(1);
 
-    // 验证孩子库课程进度仍在、内容字段已补齐（lesson_method/html_path）
+    // 验证孩子库课程进度仍在；2026-09-18 库域分工后孩子库 courses 只剩进度域字段
+    //（mastery 早已下线；material/lesson_method/html_path 等教学内容真源在家长库，经 kb.courses.get 实时读）
     const rows = await dbQuery<any[]>("kb.courses.list", { child_id: CHILD, topic: "lunyu" });
     const c = rows.find((r) => r.title === "论语学而篇第一章")!;
     expect(c.status).toBe("✅"); // 进度未丢
-    expect(c.mastery).toBe("良好");
-    expect(c.lesson_method).toBe("朗读"); // 内容已从父库快照补齐
-    expect(c.html_path).toContain("lunyu/论语学而篇第一章.html");
-    // teaching_copy 随快照拷贝（本用例父库课未传 teachingCopy，故为空）
-    expect(c.teaching_copy).toBe("");
-    // 用户拍板（2026-09-04）：主题级教学方法**不快照**进孩子库（method 恒为空串）——
+    expect(c.topic_key).toBe("lunyu"); // topic_key 真引用已回填
+    expect(c.mastery).toBeUndefined();
+    expect(c.lesson_method).toBeUndefined();
+    expect(c.html_path).toBeUndefined();
+    expect(c.teaching_copy).toBeUndefined();
+    // 用户拍板（2026-09-04）：主题级教学方法**不快照**进孩子库——2026-09-18 起该列已删，
     // 教法真源始终在家长库，孩子端经服务端 kb.courses.get / parent_content 实时读家长库。
     const kt = await dbQuery<any[]>("kb.topics.list", { child_id: CHILD });
-    expect(kt.find((m: any) => m.name === "论语")?.method).toBe("");
+    expect(kt.find((m: any) => m.name === "论语")?.method).toBeUndefined();
   });
 
   it("getParentContentForChild 从家长库取 method/teachingCopy；未分配主题拒绝", async () => {

@@ -29,6 +29,7 @@ import { createWorkerKbTools } from "../worker/kb-tools.js";
 import { CHILD_DB_TOOL_NAMES, createChildDbTools } from "./child-db-tools.js";
 import { readParentSettings } from "../worker/scheduler.js";
 import { getAgentPrompt } from "../db/agents.js";
+import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { createSummarizeConversationTool } from "./kb-summary-tool.js";
@@ -343,28 +344,44 @@ async function ensureEntry(
 }
 
 /**
- * 课程会话的上下文块：该课的教法/考核方法/资料路径（均取自家长库真源）。
+ * 课程会话的上下文块：该课的教法/考核方法/资料路径取自家长库真源，
+ * 学习状态（⬜/✅/最近学习）取自孩子库（2026-09-18 库域分工后两域分离）。
  * 拿不到课程记录时不编造，显式说明——避免模型凭课程名猜教学内容。
  */
 function courseContextBlock(deps: AgentSessionDeps, parentId: string, childId: string, courseTitle: string): string {
   try {
+    // 孩子库：该课的学习进度（行不存在 = 未分配该课）
+    let statusLine = "";
+    try {
+      const kb = openKb(deps.dataDir, parentId, childId);
+      try {
+        const c = kb
+          .prepare("SELECT topic, status, last_review FROM courses WHERE title = ? LIMIT 1")
+          .get(courseTitle) as { topic?: string; status?: string; last_review?: string } | undefined;
+        if (c) statusLine = `- 状态：${c.status ?? "-"}｜最近学习：${c.last_review || "-"}｜主题：${c.topic ?? "-"}`;
+      } finally {
+        kb.close();
+      }
+    } catch {
+      /* 孩子库读不到不阻塞教学上下文 */
+    }
     const lib = openParentLib(deps.dataDir, parentId);
     try {
       const row = lib
         .prepare(
-          `SELECT topic, lesson_method, teach_copy, assess_rubric, html_path, status, last_review
+          `SELECT topic, lesson_method, teaching_copy, assess_rubric, html_path
            FROM courses WHERE title = ? LIMIT 1`
         )
         .get(courseTitle) as
-        | { topic?: string; lesson_method?: string; teach_copy?: string; assess_rubric?: string; html_path?: string; status?: string; last_review?: string }
+        | { topic?: string; lesson_method?: string; teaching_copy?: string; assess_rubric?: string; html_path?: string }
         | undefined;
       if (!row) return `本课「${courseTitle}」在家长库中未找到（可能有名字差异），请先与家长确认课程名再开始。`;
       const lines = [
         `- 课程：${courseTitle}（主题 ${row.topic ?? "-"}）`,
-        `- 状态：${row.status ?? "-"}｜最近学习：${row.last_review || "-"}`,
+        statusLine,
         row.html_path ? `- 已有资料：${row.html_path}（可用 display_content 展示）` : "",
         row.lesson_method ? `- 教法（怎么上）：${row.lesson_method}` : "",
-        row.teach_copy ? `- 教学文案要点：${row.teach_copy.slice(0, 800)}` : "",
+        row.teaching_copy ? `- 教学文案要点：${row.teaching_copy.slice(0, 800)}` : "",
         row.assess_rubric ? `- 考核要点：${row.assess_rubric.slice(0, 500)}` : "",
       ].filter(Boolean);
       return lines.join("\n");

@@ -126,7 +126,8 @@ export async function ackDeliveries(childId: string, ids: string[]): Promise<voi
 export async function buildProgressSummary(childId: string): Promise<any> {
   // SPLIT：孩子 kb 在服务端唯一真源，汇总走 kb RPC（不再读本地 kb.sqlite，2026-08-30 修复）
   const [topics, courses] = await Promise.all([
-    dbQuery<Array<{ name: string; topic_key: string; progress: string }>>("kb.topics.list", { child_id: childId }).catch(() => []),
+    // 2026-09-18 库域分工：topics 已无 progress 列（进度看 topic_progress 聚合），云端摘要 progress 字段占位为空
+    dbQuery<Array<{ name: string; topic_key: string }>>("kb.topics.list", { child_id: childId }).catch(() => []),
     dbQuery<Array<Record<string, unknown>>>("kb.courses.list", { child_id: childId }).catch(() => []),
   ]);
   if (!topics?.length && !courses?.length) return null; // 孩子未学习过
@@ -142,7 +143,7 @@ export async function buildProgressSummary(childId: string): Promise<any> {
       name: t.name,
       // 注：云端摘要 JSON 字段名沿用 `file`（与 cloud-service API 契约兼容），值取 topic_key（纯拼音主题键）
       file: t.topic_key,
-      progress: t.progress || "",
+      progress: "",
       courses: cs.length,
       done: cs.filter((c) => String(c.status) === "✅").length,
     };

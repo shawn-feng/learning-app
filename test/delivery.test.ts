@@ -192,12 +192,11 @@ describe("分配包（跨机课程分发，只传数据）", () => {
   });
 
   it("applyAllocPackage：写入家长库 + 孩子库合并，已有课程进度保留", async () => {
-    // 预置孩子进度（第一章 ✅/熟练）——服务端 kb 已由 beforeAll 写入
+    // 预置孩子进度（第一章 ✅）——服务端 kb 已由 beforeAll 写入
     const before = (
       await dbQuery<any[]>("kb.courses.list", { child_id: CHILD_ID, topic: "lunyu" })
     ).find((c) => c.title === "学而篇第一章")!;
     expect(before.status).toBe("✅");
-    expect(before.mastery).toBe("熟练");
 
     const pkg = await buildAllocPackage("lunyu");
     await applyAllocPackage(CHILD_ID, pkg);
@@ -206,13 +205,16 @@ describe("分配包（跨机课程分发，只传数据）", () => {
     const topics = await dbQuery<any[]>("parent_lib.topics.list", {});
     const topic = topics.find((t) => t.topic_key === "lunyu")!;
     expect(topic.method).toContain("三步吟诵法");
-    // ② 孩子库：第一章进度保留（✅/熟练），material 被补齐，第二章新增
+    // ①b 2026-09-18 库域分工：教学内容（material 等）落在家长库 courses（真源）
+    const pCourses = await dbQuery<any[]>("parent_lib.courses.list", { topic: "lunyu" });
+    expect(pCourses.find((c) => c.title === "学而篇第一章")?.material).toContain("学而时习之");
+    // ② 孩子库：第一章进度保留（✅），第二章新增；教学字段不再进孩子库（mastery 早已下线）
     const rows = await dbQuery<any[]>("kb.courses.list", { child_id: CHILD_ID, topic: "lunyu" });
     const row1 = rows.find((c) => c.title === "学而篇第一章")!;
     const row2 = rows.find((c) => c.title === "学而篇第二章")!;
     expect(row1.status).toBe("✅");
-    expect(row1.mastery).toBe("熟练");
-    expect(row1.material).toContain("学而时习之");
+    expect(row1.mastery).toBeUndefined();
+    expect(row1.material).toBeUndefined();
     expect(row2.status).toBe("⬜");
   });
 

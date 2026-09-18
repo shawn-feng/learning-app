@@ -102,7 +102,8 @@ function resolveKbTopicKey(db: DatabaseSync, input: string): string {
   return seg.replace(/\.md$/i, "");
 }
 
-/** 课程字段白名单（对齐 COURSE_FIELD_MAP）。 */
+/** 课程字段白名单（对齐 COURSE_FIELD_MAP）。2026-09-18 库域分工：教学字段（material/lesson_method/html_path/
+ *  teaching_copy/send_material）已从孩子库 courses 下线——真源在家长库，此处不再支持写字段入口。 */
 const COURSE_FIELD_MAP: Record<string, string> = {
   状态: "status",
   掌握状态: "status",
@@ -110,18 +111,8 @@ const COURSE_FIELD_MAP: Record<string, string> = {
   复习时间: "last_review",
   上次复习: "last_review",
   复习次数: "review_count",
-  教学资料: "material",
-  学习资料: "send_material",
-  要发送的学习资料: "send_material",
   tags: "tags",
   标签: "tags",
-  课时方法: "lesson_method",
-  每课教学方法: "lesson_method",
-  html地址: "html_path",
-  html_path: "html_path",
-  学习资料地址: "html_path",
-  教学文案: "teaching_copy",
-  teaching_copy: "teaching_copy",
 };
 // 2026-09-10 计划域：掌握度已不在 courses 表（改由 course_progress 视图取「最近一次考核」得分率），
 // 故「掌握度 / 首次学习 / 考核掌握度」等字段别名一并移除——写入会直接报字段不支持（不再静默落空）。
@@ -229,7 +220,7 @@ export const queryHandlers: Record<string, QueryHandler> = {
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
       return db
-        .prepare("SELECT name, topic_key, method, progress, rules_json FROM topics ORDER BY topic_key")
+        .prepare("SELECT name, topic_key, learn_type, rules_json FROM topics ORDER BY topic_key")
         .all();
     } finally {
       db.close();
@@ -239,10 +230,10 @@ export const queryHandlers: Record<string, QueryHandler> = {
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
+      // 2026-09-18 库域分工：courses 只剩进度域字段（教学字段真源在家长库，经 kb.courses.get 读）
       const topic = str(args.topic, "");
       const sql =
-        "SELECT topic, title, sort_order, status, last_review, " +
-        "review_count, material, send_material, tags, lesson_method, html_path, teaching_copy " +
+        "SELECT topic, topic_key, title, uuid, sort_order, status, last_review, review_count, tags " +
         "FROM courses " +
         (topic ? "WHERE topic = ? " : "") +
         "ORDER BY topic, sort_order, title";
@@ -252,9 +243,8 @@ export const queryHandlers: Record<string, QueryHandler> = {
     }
   },
   // ISSUE-029 任务2：精确取某课教学内容（英语课子会话 systemPrompt 注入用，客户端会话前远程预取）。
-  // 课程行（进度/teaching_copy 快照）从孩子库取——行存在即代表该主题已分配给孩子；
-  // 主题级教学方法**不快照**（用户 2026-09-04 拍板）：真源始终在家长库 topics.method，此处实时读——
-  // 教法优先课程级 lesson_method（若家长填充过），为空时回家长库取主题级 method。
+  // 2026-09-18 库域分工：孩子库只判定「该主题已分配 + 行存在」（进度域），教学内容全部实时读家长库真源
+  //（课程级 lesson_method/teaching_copy/html_path/material/send_material + 主题级 method 兜底），响应 shape 不变。
   "kb.courses.get": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const topic = str(args.topic);
@@ -263,33 +253,36 @@ export const queryHandlers: Record<string, QueryHandler> = {
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
       const row = db
-        .prepare(
-          "SELECT topic, title, lesson_method, teaching_copy, html_path, material, send_material " +
-            "FROM courses WHERE topic = ? AND title = ?"
-        )
-        .get(topic, title) as Record<string, unknown> | undefined;
+        .prepare("SELECT topic, topic_key, title FROM courses WHERE (topic = ? OR topic_key = ?) AND title = ? LIMIT 1")
+        .get(topic, topic, title) as { topic?: string; topic_key?: string; title?: string } | undefined;
       if (!row) return null;
-      let method = String(row.lesson_method ?? "");
-      if (!method) {
-        const pdb = openParentLib(ctx.dataDir, ctx.parentId);
-        try {
-          const t = pdb.prepare("SELECT method FROM topics WHERE topic_key = ?").get(topic) as
+      const topicKey = String(row.topic_key || resolveKbTopicKey(db, topic));
+      const pdb = openParentLib(ctx.dataDir, ctx.parentId);
+      try {
+        const c = pdb
+          .prepare("SELECT lesson_method, teaching_copy, html_path, material, send_material FROM courses WHERE topic = ? AND title = ? LIMIT 1")
+          .get(topicKey, title) as
+          | { lesson_method?: string; teaching_copy?: string; html_path?: string; material?: string; send_material?: string }
+          | undefined;
+        let method = String(c?.lesson_method ?? "");
+        if (!method) {
+          const t = pdb.prepare("SELECT method FROM topics WHERE topic_key = ?").get(topicKey) as
             | { method?: string }
             | undefined;
           method = String(t?.method ?? "");
-        } finally {
-          pdb.close();
         }
+        return {
+          topic: row.topic,
+          title: row.title,
+          lesson_method: method,
+          teaching_copy: String(c?.teaching_copy ?? ""),
+          html_path: String(c?.html_path ?? ""),
+          material: String(c?.material ?? ""),
+          send_material: String(c?.send_material ?? ""),
+        };
+      } finally {
+        pdb.close();
       }
-      return {
-        topic: row.topic,
-        title: row.title,
-        lesson_method: method,
-        teaching_copy: row.teaching_copy,
-        html_path: row.html_path,
-        material: row.material,
-        send_material: row.send_material,
-      };
     } finally {
       db.close();
     }
@@ -348,10 +341,11 @@ export const queryHandlers: Record<string, QueryHandler> = {
   "parent_lib.courses.list": (ctx, args) => {
     const db = openParentLib(ctx.dataDir, ctx.parentId);
     try {
+      // 2026-09-18 库域分工：家长库 courses 只剩课程内容（进度/状态真源在孩子库）
       const topic = str(args.topic, "");
       const sql =
-        "SELECT topic, title, sort_order, status, last_review, " +
-        "review_count, material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric " +
+        "SELECT topic, title, sort_order, " +
+        "material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric " +
         "FROM courses " +
         (topic ? "WHERE topic = ? " : "") +
         "ORDER BY topic, sort_order, title";
@@ -361,13 +355,63 @@ export const queryHandlers: Record<string, QueryHandler> = {
     }
   },
   "parent_lib.progress.list": (ctx) => {
-    // 家长库主题进度（topic_progress 视图：learned/total/next/updated），供家长页列表聚合
-    const db = openParentLib(ctx.dataDir, ctx.parentId);
+    // 2026-09-18 库域分工：家长库 topic_progress 视图已退役（进度字段已从家长库删除）。
+    // 家长页主题进度 = 内容域（total：家长库课程数，稳定）+ 学习域（learned/next/updated：实时聚合名下所有孩子的孩子库）。
+    let pdb: DatabaseSync | null = null;
     try {
-      return db.prepare("SELECT * FROM topic_progress ORDER BY topic").all();
-    } finally {
-      db.close();
+      pdb = openParentLib(ctx.dataDir, ctx.parentId);
+    } catch {
+      pdb = null;
     }
+    const merged = new Map<string, { topic: string; learned: number; total: number; next: string; updated: string }>();
+    // 内容域：每个家长库主题的课程总数（未分配给任何孩子也显示 total）
+    if (pdb) {
+      try {
+        const totals = pdb
+          .prepare("SELECT topic, COUNT(*) AS total FROM courses GROUP BY topic")
+          .all() as Array<{ topic: string; total: number }>;
+        for (const t of totals) {
+          merged.set(t.topic, { topic: t.topic, learned: 0, total: Number(t.total) || 0, next: "", updated: "" });
+        }
+      } finally {
+        pdb.close();
+      }
+    }
+    // 学习域：跨孩子聚合 topic_progress（learned 求和、total 取最大兜底、next 首个非空、updated 最新）
+    const kids = ctx.mainDb
+      .prepare("SELECT id FROM children WHERE parent_id = ? ORDER BY created_at")
+      .all(ctx.parentId) as Array<{ id: string }>;
+    for (const k of kids) {
+      let kb: DatabaseSync;
+      try {
+        kb = openKb(ctx.dataDir, ctx.parentId, k.id);
+      } catch {
+        continue;
+      }
+      try {
+        const rows = kb.prepare("SELECT * FROM topic_progress ORDER BY topic").all() as Array<{
+          topic: string;
+          learned: number;
+          total: number;
+          next: string;
+          updated: string;
+        }>;
+        for (const r of rows) {
+          const cur = merged.get(r.topic);
+          if (!cur) {
+            merged.set(r.topic, { ...r });
+          } else {
+            cur.learned += Number(r.learned) || 0;
+            cur.total = Math.max(cur.total, Number(r.total) || 0);
+            if (!cur.next && r.next) cur.next = r.next;
+            if (r.updated > cur.updated) cur.updated = r.updated;
+          }
+        }
+      } finally {
+        kb.close();
+      }
+    }
+    return [...merged.values()].sort((a, b) => a.topic.localeCompare(b.topic));
   },
   "parent_lib.tags.list": (ctx, args) => {
     // 家长库标签定义表（课程标签下拉源）
@@ -511,24 +555,33 @@ export const execHandlers: Record<string, ExecHandler> = {
     }
   },
   "kb.topics.upsert": (ctx, args) => {
+    // 2026-09-18 库域分工：孩子库 topics = 主题分配表（name/topic_key/learn_type/rules_json）；
+    // method/progress 列已删。learn_type 取显式参数；未传时从 rules_json.type 中文值推导（老客户端兼容）。
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
+      let rulesJson = str(args.rules_json, "{}");
+      const zhMap: Record<string, string> = { 必学: "required", 选学: "optional", 复习: "review" };
+      let learnType = str(args.learn_type);
+      if (!learnType) {
+        try {
+          const zh = String(JSON.parse(rulesJson || "{}")?.type ?? "");
+          learnType = zhMap[zh] ?? "";
+        } catch {
+          learnType = "";
+        }
+      } else {
+        learnType = zhMap[learnType] ?? (["required", "optional", "review"].includes(learnType) ? learnType : "");
+      }
+      const hasRules = args.rules_json !== undefined;
       db.prepare(
-        `INSERT INTO topics (name, topic_key, method, progress, rules_json)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO topics (name, topic_key, learn_type, rules_json)
+         VALUES (?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            topic_key = excluded.topic_key,
-           method = excluded.method,
-           progress = excluded.progress,
-           rules_json = excluded.rules_json`
-      ).run(
-        str(args.name),
-        str(args.topic_key),
-        str(args.method),
-        str(args.progress),
-        str(args.rules_json, "{}")
-      );
+           learn_type = CASE WHEN ? != '' THEN ? ELSE topics.learn_type END,
+           rules_json = CASE WHEN ? THEN excluded.rules_json ELSE topics.rules_json END`
+      ).run(str(args.name), str(args.topic_key), learnType || "required", rulesJson, learnType, learnType, hasRules ? 1 : 0);
       return { ok: true };
     } finally {
       db.close();
@@ -551,39 +604,31 @@ export const execHandlers: Record<string, ExecHandler> = {
     }
   },
   "kb.courses.upsert": (ctx, args) => {
+    // 2026-09-18 库域分工：孩子库 courses 只存进度域字段；教学字段参数（material 等）即使老客户端传了也忽略
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
+      const topicKey = str(args.topic_key) || resolveKbTopicKey(db, str(args.topic));
       db.prepare(
-        `INSERT INTO courses (
-           topic, title, uuid, sort_order, status, last_review,
-           review_count, material, send_material, tags, lesson_method, html_path, teaching_copy
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO courses (topic, topic_key, title, uuid, sort_order, status, last_review, review_count, tags)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(topic, title) DO UPDATE SET
+           topic_key = excluded.topic_key,
            sort_order = excluded.sort_order,
            status = excluded.status,
            last_review = excluded.last_review,
            review_count = excluded.review_count,
-           material = excluded.material,
-           send_material = excluded.send_material,
-           tags = excluded.tags,
-           lesson_method = excluded.lesson_method,
-           html_path = excluded.html_path,
-           teaching_copy = excluded.teaching_copy`
+           tags = excluded.tags`
       ).run(
         str(args.topic),
+        topicKey,
         str(args.title),
         resolveCourseUuid(ctx.dataDir, ctx.parentId, str(args.topic), str(args.title)),
         num(args.sort_order),
         str(args.status),
         str(args.last_review),
         num(args.review_count),
-        str(args.material),
-        str(args.send_material),
-        str(args.tags),
-        str(args.lesson_method),
-        str(args.html_path),
-        str(args.teaching_copy)
+        str(args.tags)
       );
       return { ok: true };
     } finally {
@@ -591,7 +636,7 @@ export const execHandlers: Record<string, ExecHandler> = {
     }
   },
   "kb.courses.insert": (ctx, args) => {
-    // 对齐 insertCourse：已有同 (topic,title) 返回 ok:false；sort_order 自动取最大 +1
+    // 对齐 insertCourse：已有同 (topic,title) 返回 ok:false；sort_order 自动取最大 +1；教学字段一律不收
     const childId = requireChildId(ctx, args);
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
@@ -603,22 +648,17 @@ export const execHandlers: Record<string, ExecHandler> = {
         .get(topic) as { m: number };
       const r = db
         .prepare(
-          `INSERT OR IGNORE INTO courses (
-             topic, title, uuid, sort_order, status, material, send_material, tags, lesson_method, html_path, teaching_copy
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT OR IGNORE INTO courses (topic, topic_key, title, uuid, sort_order, status, tags)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
+          topic,
           topic,
           str(args.title),
           resolveCourseUuid(ctx.dataDir, ctx.parentId, topic, str(args.title)),
           max.m + 1,
           str(args.status),
-          str(args.material),
-          str(args.send_material),
-          str(args.tags),
-          str(args.lesson_method),
-          str(args.html_path),
-          str(args.teaching_copy)
+          str(args.tags)
         );
       return { ok: r.changes > 0 };
     } finally {
@@ -751,18 +791,17 @@ export const execHandlers: Record<string, ExecHandler> = {
     }
   },
   "parent_lib.courses.upsert": (ctx, args) => {
+    // 2026-09-18 库域分工：家长库 courses 只存课程内容；进度/状态字段（status/last_review/review_count）
+    // 已下线——学习进度由孩子库承载，老调用方传了也忽略。
     const db = openParentLib(ctx.dataDir, ctx.parentId);
     try {
       db.prepare(
         `INSERT INTO courses (
-           topic, title, sort_order, status, last_review,
-           review_count, material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           topic, title, sort_order,
+           material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(topic, title) DO UPDATE SET
            sort_order = excluded.sort_order,
-           status = excluded.status,
-           last_review = excluded.last_review,
-           review_count = excluded.review_count,
            material = excluded.material,
            send_material = excluded.send_material,
            tags = excluded.tags,
@@ -774,9 +813,6 @@ export const execHandlers: Record<string, ExecHandler> = {
         str(args.topic),
         str(args.title),
         num(args.sort_order),
-        str(args.status),
-        str(args.last_review),
-        num(args.review_count),
         str(args.material),
         str(args.send_material),
         str(args.tags),

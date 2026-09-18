@@ -241,6 +241,54 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     },
   });
 
+  // 2026-09-18 库域分工：家长库不再存学习进度——家长侧看进度改为实时聚合名下孩子的孩子库。
+  // 返回 { byTopicKey: 主题→{learned,total}，byCourseTitle: 课程标题→{done,seen,lastReview} }
+  function familyProgress(): {
+    byTopicKey: Map<string, { learned: number; total: number }>;
+    byCourseTitle: Map<string, { done: number; seen: number; lastReview: string }>;
+  } {
+    const byTopicKey = new Map<string, { learned: number; total: number }>();
+    const byCourseTitle = new Map<string, { done: number; seen: number; lastReview: string }>();
+    let kids: Array<{ id: string }> = [];
+    try {
+      kids = deps.db.prepare("SELECT id FROM children WHERE parent_id = ?").all(deps.parentId) as Array<{ id: string }>;
+    } catch {
+      return { byTopicKey, byCourseTitle };
+    }
+    for (const k of kids) {
+      let kb: DatabaseSync;
+      try {
+        kb = openKb(deps.dataDir, deps.parentId, k.id);
+      } catch {
+        continue;
+      }
+      try {
+        const agg = kb
+          .prepare("SELECT topic, learned, total FROM topic_progress")
+          .all() as Array<{ topic: string; learned: number; total: number }>;
+        for (const r of agg) {
+          const cur = byTopicKey.get(r.topic) ?? { learned: 0, total: 0 };
+          cur.learned += Number(r.learned) || 0;
+          cur.total = Math.max(cur.total, Number(r.total) || 0);
+          byTopicKey.set(r.topic, cur);
+        }
+        const cs = kb
+          .prepare("SELECT title, status, last_review FROM courses")
+          .all() as Array<{ title: string; status: string; last_review: string }>;
+        for (const c of cs) {
+          const cur = byCourseTitle.get(c.title) ?? { done: 0, seen: 0, lastReview: "" };
+          cur.seen += 1;
+          if (c.status === "✅") cur.done += 1;
+          if (c.last_review && c.last_review > cur.lastReview) cur.lastReview = c.last_review;
+          byCourseTitle.set(c.title, cur);
+        }
+      } finally {
+        kb.close();
+      }
+    }
+    return { byTopicKey, byCourseTitle };
+  }
+
   const topicsTool = defineTool({
     name: "parent_library_topics",
     label: "查看教学主题与进度",
@@ -253,15 +301,18 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         const rows = db
           .prepare(
             `SELECT t.name, t.topic_key, t.method,
-                    (SELECT COUNT(*) FROM courses c WHERE c.topic = t.topic_key) AS total,
-                    (SELECT COUNT(*) FROM courses c WHERE c.topic = t.topic_key AND c.status='✅') AS learned
+                    (SELECT COUNT(*) FROM courses c WHERE c.topic = t.topic_key) AS total
              FROM topics t ORDER BY t.topic_key`
           )
-          .all() as Array<{ name: string; topic_key: string; method: string; total: number; learned: number }>;
+          .all() as Array<{ name: string; topic_key: string; method: string; total: number }>;
         if (!rows.length) return ok("（家长库暂无教学主题）");
+        const progress = familyProgress();
         return ok(
           rows
-            .map((r) => `- ${r.name}（${r.topic_key}）：已学 ${r.learned}/${r.total}${r.method ? `｜方法：${r.method}` : ""}`)
+            .map((r) => {
+              const learned = progress.byTopicKey.get(r.topic_key)?.learned ?? 0;
+              return `- ${r.name}（${r.topic_key}）：已学 ${learned}/${r.total}${r.method ? `｜方法：${r.method}` : ""}`;
+            })
             .join("\n")
         );
       } finally {
@@ -273,7 +324,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
   const coursesTool = defineTool({
     name: "parent_library_courses",
     label: "查看主题下的课程",
-    description: "列出某主题下的课程（标题/状态/资料路径）。改资料前用它核对课程与资料的对应关系。",
+    description: "列出某主题下的课程（标题/学习进度/资料路径）。改资料前用它核对课程与资料的对应关系。",
     parameters: Type.Object({
       topic: Type.String({ description: "主题目录名（topic_key，如 lunyu）" }),
     }),
@@ -281,14 +332,17 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       const db = openParentLib(deps.dataDir, deps.parentId);
       try {
         const rows = db
-          .prepare(
-            `SELECT title, status, last_review, html_path FROM courses WHERE topic = ? ORDER BY sort_order, title`
-          )
-          .all(params.topic) as Array<{ title: string; status: string; last_review: string; html_path: string }>;
+          .prepare(`SELECT title, html_path FROM courses WHERE topic = ? ORDER BY sort_order, title`)
+          .all(params.topic) as Array<{ title: string; html_path: string }>;
         if (!rows.length) return ok(`主题「${params.topic}」下没有课程（可用 parent_library_topics 核对 topic 名）`);
+        const progress = familyProgress();
         return ok(
           rows
-            .map((r) => `- ${r.title}｜${r.status}｜最近 ${r.last_review || "-"}｜${r.html_path || "无资料"}`)
+            .map((r) => {
+              const p = progress.byCourseTitle.get(r.title);
+              const prog = p ? `✅${p.done}/${p.seen}｜最近 ${p.lastReview || "-"}` : "未开始";
+              return `- ${r.title}｜${prog}｜${r.html_path || "无资料"}`;
+            })
             .join("\n")
         );
       } finally {
@@ -348,12 +402,11 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       "把课程写入家长库真源（新建或覆盖），归属到某主题。\n\n" +
       "**何时调用**：你设计好一门课后落库。topic 是主题目录名，title 是课程名（联合主键）。\n" +
       "课程内容（lesson_method/html_path/teaching_copy/assess_rubric）落家长库即可——孩子端学习时从家长库读取，无需单独写到孩子库。\n" +
-      "**先核对再覆盖**：覆盖前先 parent_library_courses 看现有字段，避免误改系统维护的进度字段（status/last_review/review_count）。",
+      "学习进度/状态不归家长库管（2026-09-18 库域分工后已下线，进度由孩子库承载），没有 status 字段可写。",
     parameters: Type.Object({
       topic: Type.String({ description: "主题目录名（如 lunyu）" }),
       title: Type.String({ description: "课程名" }),
       sort_order: Type.Optional(Type.Number({ description: "排序（缺省 0）" })),
-      status: Type.Optional(Type.String({ description: "掌握状态（⬜/✅，缺省 ⬜）" })),
       lesson_method: Type.Optional(Type.String({ description: "教学方法" })),
       html_path: Type.Optional(Type.String({ description: "资料相对路径（如 lunyu/materials/lesson-01.html）" })),
       teaching_copy: Type.Optional(Type.String({ description: "教学文案" })),
@@ -368,12 +421,11 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       try {
         db.prepare(
           `INSERT INTO courses (
-             topic, title, sort_order, status, last_review,
-             review_count, material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric
-           ) VALUES (?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?, ?)
+             topic, title, sort_order,
+             material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(topic, title) DO UPDATE SET
              sort_order = excluded.sort_order,
-             status = excluded.status,
              material = excluded.material,
              send_material = excluded.send_material,
              tags = excluded.tags,
@@ -385,7 +437,6 @@ export function createParentAgentTools(deps: ParentToolDeps) {
           params.topic,
           params.title,
           params.sort_order ?? 0,
-          params.status ?? "⬜",
           params.material ?? "",
           params.send_material ?? "",
           params.tags ?? "",

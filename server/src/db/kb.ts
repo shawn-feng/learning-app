@@ -18,8 +18,11 @@ CREATE TABLE IF NOT EXISTS daily_entries (
 CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_entries(date);
 CREATE INDEX IF NOT EXISTS idx_daily_block ON daily_entries(block);
 
+-- 2026-09-18 库域分工：courses = 纯学习进度表（教学字段真源在家长库，副本已删）；
+-- topic_key 为真引用（→ topics.topic_key），topic 保留作显示名。
 CREATE TABLE IF NOT EXISTS courses (
   topic TEXT NOT NULL,
+  topic_key TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL,
   uuid TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0,
@@ -28,21 +31,18 @@ CREATE TABLE IF NOT EXISTS courses (
   -- 掌握度 = course_progress 视图（最近一次考核）；学习状态 = 最近学习时间（last_review 语义扩展）
   last_review TEXT NOT NULL DEFAULT '',
   review_count INTEGER NOT NULL DEFAULT 0,
-  material TEXT NOT NULL DEFAULT '',
-  send_material TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
-  lesson_method TEXT NOT NULL DEFAULT '',
-  html_path TEXT NOT NULL DEFAULT '',
-  teaching_copy TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (topic, title)
 );
 CREATE INDEX IF NOT EXISTS idx_courses_topic ON courses(topic, sort_order);
+CREATE INDEX IF NOT EXISTS idx_courses_topic_key ON courses(topic_key);
 
+-- 2026-09-18：topics = 孩子的主题分配表（name/topic_key 关联家长库 + learn_type 必学/选学 + 孩子级规则）；
+-- 教学方法 method / 主题进度 progress 已删（真源在家长库 / topic_progress 视图）
 CREATE TABLE IF NOT EXISTS topics (
   name TEXT PRIMARY KEY,
   topic_key TEXT NOT NULL,
-  method TEXT NOT NULL DEFAULT '',
-  progress TEXT NOT NULL DEFAULT '',
+  learn_type TEXT NOT NULL DEFAULT 'required',
   rules_json TEXT NOT NULL DEFAULT '{}'
 );
 
@@ -328,14 +328,86 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   } catch {
     // 忽略
   }
+  // 2026-09-18 库域分工迁移（幂等）：老库补 topic_key / learn_type 列——必须先于 schema 建索引，
+  // 否则 CREATE INDEX idx_courses_topic_key 在缺列的老库上直接报错
+  ensureCourseDomainColumns(db);
   db.exec(KB_SCHEMA_TABLES);
-  dropLegacyCourseColumns(db); // mastery/exam_mastery/first_learned（必须在建视图前，视图不再引用它们）
+  dropLegacyCourseColumns(db); // mastery/exam_mastery/first_learned + 教学字段副本（material/lesson_method 等，真源在家长库）
+  dropLegacyTopicColumns(db); // topics.method / topics.progress（教学方法真源家长库；进度看 topic_progress 视图）
   ensureCourseUuidColumn(db);
+  backfillCourseTopicKey(db); // topic_key 回填：courses.topic → topics（name/topic_key 双匹配），孤儿行回退自身
+  backfillTopicLearnType(db); // learn_type 回填：rules_json.type（必学/选学/复习）→ 枚举
   db.exec(KB_PLAN_SCHEMA_TABLES); // 计划域 + 积分域（2026-09-10）
   ensureDailyPlanColumns(db);
   db.exec(KB_SCHEMA_VIEWS);
   db.exec(KB_PLAN_SCHEMA_VIEWS);
   return db;
+}
+
+/**
+ * 2026-09-18 库域分工（幂等）：courses 加 topic_key（真引用 → topics.topic_key）、topics 加 learn_type
+ * （required=必学 / optional=选学 / review=复习，缺省 required）。只加列不回填——回填在 schema/删列之后统一做。
+ */
+function ensureCourseDomainColumns(db: DatabaseSync): void {
+  try {
+    const cCols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (cCols.length && !cCols.includes("topic_key")) {
+      db.exec("ALTER TABLE courses ADD COLUMN topic_key TEXT NOT NULL DEFAULT ''");
+    }
+  } catch {
+    /* courses 不存在则忽略（新库由 CREATE TABLE 直接带上） */
+  }
+  try {
+    const tCols = (db.prepare("PRAGMA table_info(topics)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (tCols.length && !tCols.includes("learn_type")) {
+      db.exec("ALTER TABLE topics ADD COLUMN learn_type TEXT NOT NULL DEFAULT 'required'");
+    }
+  } catch {
+    /* topics 不存在则忽略 */
+  }
+}
+
+/** topic_key 回填（幂等）：按 topics.name 或 topics.topic_key 匹配 courses.topic；两处都没有时回退 topic 自身。 */
+function backfillCourseTopicKey(db: DatabaseSync): void {
+  try {
+    const cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!cols.includes("topic_key")) return;
+    db.exec(`
+      UPDATE courses SET topic_key = COALESCE(
+        (SELECT t.topic_key FROM topics t WHERE t.name = courses.topic OR t.topic_key = courses.topic LIMIT 1),
+        topic)
+      WHERE topic_key = '' OR topic_key IS NULL
+    `);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** learn_type 回填（幂等）：老数据把主题类型存在 rules_json.type（必学/选学/复习），迁到专列；只迁仍为缺省的行。 */
+function backfillTopicLearnType(db: DatabaseSync): void {
+  const zhMap: Record<string, string> = { 必学: "required", 选学: "optional", 复习: "review" };
+  try {
+    const rows = db.prepare("SELECT name, learn_type, rules_json FROM topics").all() as Array<{
+      name: string;
+      learn_type: string;
+      rules_json: string;
+    }>;
+    for (const r of rows) {
+      if (r.learn_type && r.learn_type !== "required") continue; // 已显式设置过，不覆盖
+      let type = "";
+      try {
+        type = String(JSON.parse(r.rules_json || "{}")?.type ?? "");
+      } catch {
+        continue;
+      }
+      const mapped = zhMap[type] ?? (["required", "optional", "review"].includes(type) ? type : "");
+      if (mapped && mapped !== r.learn_type) {
+        db.prepare("UPDATE topics SET learn_type = ? WHERE name = ?").run(mapped, r.name);
+      }
+    }
+  } catch {
+    /* topics 不存在则忽略 */
+  }
 }
 
 /** 孩子库 courses 加 uuid（幂等）：课程真引用，供计划表/考核明细/课程进度视图 join。 */
@@ -372,9 +444,9 @@ function ensureDailyPlanColumns(db: DatabaseSync): void {
 }
 
 /**
- * 孩子库 courses 旧列下线（幂等，2026-09-10 计划域）：
- * 删除 mastery / exam_mastery / first_learned —— 掌握度改由 course_progress 视图取「最近一次考核」，
- * 学习状态只报最近学习时间（last_review）。删列前先删依赖 first_learned 的视图，删后重建。
+ * 孩子库 courses 旧列下线（幂等）：2026-09-10 删 mastery/exam_mastery/first_learned；
+ * 2026-09-18 库域分工再删教学字段副本 material/send_material/lesson_method/html_path/teaching_copy
+ * —— 教学内容真源在家长库，孩子端经 kb.courses.get / parent_content 实时读。
  */
 function dropLegacyCourseColumns(db: DatabaseSync): void {
   let cols: string[] = [];
@@ -383,13 +455,40 @@ function dropLegacyCourseColumns(db: DatabaseSync): void {
   } catch {
     return; // courses 不存在则忽略
   }
-  const targets = ["mastery", "exam_mastery", "first_learned"].filter((c) => cols.includes(c));
+  const targets = [
+    "mastery",
+    "exam_mastery",
+    "first_learned",
+    "material",
+    "send_material",
+    "lesson_method",
+    "html_path",
+    "teaching_copy",
+  ].filter((c) => cols.includes(c));
   if (!targets.length) return;
   db.exec("DROP VIEW IF EXISTS topic_progress;");
   for (const c of targets) {
     try {
       db.exec(`ALTER TABLE courses DROP COLUMN ${c}`);
-      console.log(`[kb] courses 删列 ${c}（2026-09-10 计划域：掌握度口径改为最近一次考核）`);
+      console.log(`[kb] courses 删列 ${c}（2026-09-10 计划域 / 2026-09-18 库域分工：真源在家长库）`);
+    } catch {
+      /* SQLite 版本不支持 DROP COLUMN 则保留（读取侧已不使用） */
+    }
+  }
+}
+
+/** 孩子库 topics 旧列下线（幂等，2026-09-18）：method（教学方法，真源家长库）/ progress（见 topic_progress 视图）。 */
+function dropLegacyTopicColumns(db: DatabaseSync): void {
+  let cols: string[] = [];
+  try {
+    cols = (db.prepare("PRAGMA table_info(topics)").all() as Array<{ name: string }>).map((c) => c.name);
+  } catch {
+    return; // topics 不存在则忽略
+  }
+  for (const c of ["method", "progress"].filter((x) => cols.includes(x))) {
+    try {
+      db.exec(`ALTER TABLE topics DROP COLUMN ${c}`);
+      console.log(`[kb] topics 删列 ${c}（2026-09-18 库域分工：真源在家长库/进度视图）`);
     } catch {
       /* SQLite 版本不支持 DROP COLUMN 则保留（读取侧已不使用） */
     }

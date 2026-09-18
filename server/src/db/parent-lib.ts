@@ -17,14 +17,12 @@ CREATE TABLE IF NOT EXISTS topics (
   rules_json TEXT NOT NULL DEFAULT '{}'
 );
 
+-- 2026-09-18 库域分工：courses = 纯课程内容表；学习进度/状态（status/last_review/review_count）
+-- 已删——进度真源在孩子库 courses（每个孩子各自的状态），家长端进度聚合实时读孩子库。
 CREATE TABLE IF NOT EXISTS courses (
   topic TEXT NOT NULL,
   title TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT '⬜',
-  -- 2026-09-10 计划域：mastery/first_learned 已删除（掌握度=最近一次考核；学习状态=最近学习时间）
-  last_review TEXT NOT NULL DEFAULT '',
-  review_count INTEGER NOT NULL DEFAULT 0,
   material TEXT NOT NULL DEFAULT '',
   send_material TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
@@ -48,25 +46,6 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `;
 
-export const PARENT_SCHEMA_VIEWS = `
-CREATE VIEW IF NOT EXISTS topic_progress AS
-SELECT
-  topic,
-  COUNT(*) AS total,
-  SUM(CASE WHEN status = '✅' THEN 1 ELSE 0 END) AS learned,
-  COALESCE(
-    (SELECT c2.title FROM courses c2 WHERE c2.topic = courses.topic AND c2.status != '✅'
-     ORDER BY c2.sort_order, c2.title LIMIT 1),
-    ''
-  ) AS next,
-  COALESCE(
-    MAX(CASE WHEN last_review IN ('', '-') THEN NULL ELSE last_review END),
-    ''
-  ) AS updated
-FROM courses
-GROUP BY topic;
-`;
-
 export function openParentLib(dataDir: string, parentId: string): DatabaseSync {
   const dir = path.join(dataDir, "parents", parentId);
   fs.mkdirSync(dir, { recursive: true });
@@ -75,14 +54,16 @@ export function openParentLib(dataDir: string, parentId: string): DatabaseSync {
   db.exec(PARENT_SCHEMA_TABLES);
   ensureParentColumns(db);
   ensureAssessContentSchema(db); // 考核内容结构化 v2：courses.uuid/topics.method_spec/三张新表（幂等）
-  dropLegacyCourseColumns(db); // 2026-09-10：mastery/first_learned 下线（先于建视图）
-  db.exec(PARENT_SCHEMA_VIEWS);
+  dropLegacyCourseColumns(db); // 2026-09-18 库域分工：status/last_review/review_count 下线（进度真源在孩子库）
+  // topic_progress 视图随进度字段一起退役（建立在 status/last_review 上）；家长端进度改读孩子库聚合
+  db.exec("DROP VIEW IF EXISTS topic_progress;");
   return db;
 }
 
 /**
- * 家长库 courses 旧列下线（幂等，2026-09-10 计划域）：删 mastery / first_learned。
- * 先删依赖 first_learned 的 topic_progress 视图，删列后由 PARENT_SCHEMA_VIEWS 重建。
+ * 家长库 courses 旧列下线（幂等）：2026-09-10 删 mastery/first_learned；
+ * 2026-09-18 库域分工删 status/last_review/review_count（学习进度/状态，真源=孩子库 courses）。
+ * 先删依赖这些列的 topic_progress 视图（openParentLib 尾部统一 DROP，本函数只在删列前兜底）。
  */
 function dropLegacyCourseColumns(db: DatabaseSync): void {
   let cols: string[] = [];
@@ -91,13 +72,15 @@ function dropLegacyCourseColumns(db: DatabaseSync): void {
   } catch {
     return;
   }
-  const targets = ["mastery", "first_learned"].filter((c) => cols.includes(c));
+  const targets = ["mastery", "first_learned", "status", "last_review", "review_count"].filter((c) =>
+    cols.includes(c)
+  );
   if (!targets.length) return;
   db.exec("DROP VIEW IF EXISTS topic_progress;");
   for (const c of targets) {
     try {
       db.exec(`ALTER TABLE courses DROP COLUMN ${c}`);
-      console.log(`[parent-lib] courses 删列 ${c}（2026-09-10 计划域）`);
+      console.log(`[parent-lib] courses 删列 ${c}（2026-09-10 计划域 / 2026-09-18 库域分工）`);
     } catch {
       /* 忽略：版本不支持则保留（读取侧已不使用） */
     }

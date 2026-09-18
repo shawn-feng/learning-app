@@ -498,9 +498,8 @@ export async function allocateTopicToChild(
       child_id: childId,
       name: topicRow.name,
       topic_key: topicRow.topic_key,
-      // 主题级教学方法不快照（真源家长库，实时读）——见上方注释
-      method: "",
-      progress: "",
+      // 2026-09-18 库域分工：孩子库 topics 只存分配（learn_type 缺省必学）；教学方法/进度不快照（真源家长库）
+      learn_type: "required",
       rules_json: topicRow.rules_json || "{}",
     });
   }
@@ -509,17 +508,13 @@ export async function allocateTopicToChild(
   let existing = 0;
   for (const c of pCourses ?? []) {
     const cur = existingMap.get(String(c.title));
+    // 2026-09-18 库域分工：孩子库 courses 只存进度域字段；教学内容（material/lesson_method 等）不再复制
     const base = {
       child_id: childId,
       topic: topicDir,
       title: String(c.title),
       sort_order: Number(c.sort_order) || 0,
-      material: String(c.material ?? ""),
-      send_material: String(c.send_material ?? ""),
       tags: String(c.tags ?? ""),
-      lesson_method: String(c.lesson_method ?? ""),
-      html_path: String(c.html_path ?? ""),
-      teaching_copy: String(c.teaching_copy ?? ""),
     };
     if (cur) {
       // 已存在（孩子有进度）：内容字段补齐，进度/掌握度保留
@@ -543,32 +538,35 @@ export async function allocateTopicToChild(
   return { copied, existing };
 }
 
-/** 孩子已分配的主题清单（SPLIT：读服务端 kb.topics.list）。用于孩子管理页展示「已添加的主题」。 */
+/** 孩子已分配的主题清单（SPLIT：读服务端 kb.topics.list）。用于孩子管理页展示「已添加的主题」。
+ *  2026-09-18：类型真源为 topics.learn_type（required/optional/review），展示时转中文；旧 rules_json.type 兜底。 */
+const LEARN_TYPE_ZH: Record<string, string> = { required: "必学", optional: "选学", review: "复习" };
 export async function listChildAllocatedTopics(
   childId: string
 ): Promise<Array<{ name: string; topicKey: string; daily: string; type: string }>> {
-  const rows = await dbQuery<Array<{ name: string; topic_key: string; rules_json: string }>>(
+  const rows = await dbQuery<Array<{ name: string; topic_key: string; learn_type: string; rules_json: string }>>(
     "kb.topics.list",
     { child_id: childId }
   ).catch(() => []);
   return (rows ?? []).map((r) => {
     let daily = "";
-    let type = "";
+    let legacyType = "";
     try {
       const parsed = JSON.parse(r.rules_json || "{}") as { daily?: string; type?: string };
       daily = parsed.daily || "";
-      type = parsed.type || "";
+      legacyType = parsed.type || "";
     } catch {
       /* 损坏的 rules_json 视为空 */
     }
+    const type = LEARN_TYPE_ZH[r.learn_type] ?? legacyType;
     return { name: r.name, topicKey: r.topic_key, daily, type };
   });
 }
 
 /**
  * 设置孩子某主题的「主题类型」+ 清空遗留 daily（ISSUE-031/ISSUE-033，SPLIT：写服务端 kb.topics.upsert）。
- * 写入孩子 kb topics.rules_json 的 `type`（必学/选学/复习，考核选题标注）；`daily`（旧「每天学习量」）
- * 已停用（ISSUE-033：每天学什么由学习计划 study_plans 决定）——daily 参数保留仅为调用方传 "" 清掉历史遗留值。
+ * 2026-09-18 库域分工：类型真源 = topics.learn_type（required/optional/review）；rules_json.type 同步镜像
+ * 一份中文值（老客户端 0.1.15 只认它）。`daily`（旧「每天学习量」）已停用——参数保留仅为调用方传 "" 清历史值。
  * 主题不存在则忽略。
  */
 export async function setChildTopicDaily(
@@ -591,12 +589,12 @@ export async function setChildTopicDaily(
   }
   parsed.daily = daily;
   parsed.type = type;
+  const enumMap: Record<string, string> = { 必学: "required", 选学: "optional", 复习: "review" };
   await dbExec("kb.topics.upsert", {
     child_id: childId,
     name: row.name,
     topic_key: row.topic_key,
-    method: "",
-    progress: "",
+    learn_type: enumMap[type] ?? "",
     rules_json: JSON.stringify(parsed),
   });
   return true;

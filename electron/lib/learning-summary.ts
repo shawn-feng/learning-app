@@ -47,8 +47,8 @@ function percent(learned: number, total: number): number {
 interface TopicsRow {
   name: string;
   topic_key: string;
-  method: string;
-  progress: string;
+  /** 2026-09-18 库域分工：required=必学 / optional=选学 / review=复习（旧 method/progress 字段已下线） */
+  learn_type?: string;
   rules_json: string;
 }
 interface ProgressRow {
@@ -182,6 +182,7 @@ export function getLearningSummary(childId: string): LearningSummary {
     } catch {
       rules = {};
     }
+    const LEARN_TYPE_ZH: Record<string, string> = { required: "必学", optional: "选学", review: "复习" };
     return {
       name: t.name,
       topicKey: t.topic_key,
@@ -191,7 +192,8 @@ export function getLearningSummary(childId: string): LearningSummary {
       next,
       updated,
       // rules_json.daily（每日目标）已停用（ISSUE-033：学习计划 study_plans 是唯一每日安排源）
-      type: rules.type || "",
+      // 2026-09-18：类型真源 topics.learn_type；旧 rules_json.type 兜底
+      type: (t.learn_type && LEARN_TYPE_ZH[t.learn_type]) || rules.type || "",
     };
   });
 
@@ -259,8 +261,8 @@ export async function getTopicProgress(childId: string, topic: string): Promise<
       firstLearned: "", // 已下线
       lastReview: c.last_review,
       reviewCount: c.review_count,
-      material: c.material,
-      sendMaterial: c.send_material,
+      material: String(c.material ?? ""), // 2026-09-18 库域分工：教学字段已从孩子库下线，恒为空
+      sendMaterial: String(c.send_material ?? ""),
       tags: c.tags,
     })),
   };

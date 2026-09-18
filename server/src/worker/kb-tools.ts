@@ -177,7 +177,7 @@ export function createWorkerKbTools(b: WorkerBindings) {
     description:
       "向 SQLite 知识库插入新条目，内容不进上下文。\n" +
       "**table: \"daily\"**：`date` + `block`（学习/生活/问答/任务）+ `content`（### 标题开头 + 字段行；生活事件含 `- 标签：诚实,亲情` 行，自动解析）。**批量推荐**：同一天多条用 `entries: [{block, content}, ...]` 一次写入（单事务，重复自动跳过）。\n" +
-      "**table: \"course\"**：新增课程，`topic`（主题目录名）+ `title`（课程名）；可选 status/material/sendMaterial/tags。\n" +
+      "**table: \"course\"**：新增课程，`topic`（主题目录名）+ `title`（课程名）；可选 status/tags。教学内容（资料/教法/文案）归家长库管，这里只建课程条目与进度。\n" +
       "**计划证据（2026-09-10 计划域）**：daily 条目可带 `planId`（系统注入的当天生活计划 id）与 `planOutcome`（done=对话中明确完成 / missed=明确没做 / unknown=说不清）；" +
       "批量时写在每条 entry 上（entry.planId / entry.planOutcome）。系统据 daily 的 planId+planOutcome 更新生活计划状态——**不要自己改计划表、也不要做勾选**。",
     parameters: Type.Object({
@@ -201,8 +201,6 @@ export function createWorkerKbTools(b: WorkerBindings) {
       topic: Type.Optional(Type.String({ description: "course：主题目录名（如 lunyu）" })),
       title: Type.Optional(Type.String({ description: "course：新课程名" })),
       status: Type.Optional(Type.String({ description: "course：初始掌握状态（⬜/✅）" })),
-      material: Type.Optional(Type.String({ description: "course：教学资料" })),
-      sendMaterial: Type.Optional(Type.String({ description: "course：要发送的学习资料" })),
       tags: Type.Optional(Type.String({ description: "course：课程标签（逗号分隔）" })),
     }),
     execute: async (_tc, params) => {
@@ -230,8 +228,6 @@ export function createWorkerKbTools(b: WorkerBindings) {
           topic: params.topic,
           title: params.title,
           status: params.status,
-          material: params.material,
-          send_material: params.sendMaterial,
           tags: params.tags,
         });
         return ok(r.ok ? `已新增课程「${params.title}」。` : `课程「${params.title}」已存在，未重复插入。`);
@@ -245,7 +241,7 @@ export function createWorkerKbTools(b: WorkerBindings) {
     label: "更新知识库字段（SQL）",
     description:
       "更新知识库已有条目字段。\n" +
-      "**table: \"course\"**：按 `topic` + `title` 更新课程，`fields: [{field, value}, ...]` 批量（状态/掌握状态/最近复习/复习时间/上次复习/复习次数(+1 自增)/教学资料/学习资料/tags）。掌握度=最近一次考核得分率由系统计算，勿手写；learned/next/updated 为视图自动计算，勿手动更新。\n" +
+      "**table: \"course\"**：按 `topic` + `title` 更新课程，`fields: [{field, value}, ...]` 批量（状态/掌握状态/最近复习/复习时间/上次复习/复习次数(+1 自增)/tags）。掌握度=最近一次考核得分率由系统计算，勿手写；learned/next/updated 为视图自动计算，勿手动更新；教学资料/教法等教学字段归家长库，这里改不了。\n" +
       "**table: \"daily\"**：按 `date` + `block` + `title` 更新，`field` + `value`（字段缺失自动追加；field=标签 时同步 tags 列）。",
     parameters: Type.Object({
       table: Type.String({ description: "更新目标：course | daily" }),
