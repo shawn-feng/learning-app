@@ -229,6 +229,38 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
           return;
         }
 
+        // —— 斜杠命令（不进会话，直接操作服务端）——
+        if (text.startsWith("/")) {
+          const cmd = text.slice(1).trim().toLowerCase();
+          const sessionDeps = { db: deps.db, dataDir: deps.dataDir };
+          if (cmd === "reset" || cmd === "new" || cmd === "重置") {
+            if (b.role === "parent") {
+              void import("../agent/parent-registry.js").then(({ resetParentSession }) => {
+                resetParentSession(b.parent_id, "parent");
+                void sendText(openId, "已重置 ✅ 家长会话已清空，开始全新对话。").catch(() => undefined);
+              });
+            } else {
+              void import("../agent/session-registry.js").then(({ resetSession }) => {
+                resetSession(b.parent_id, b.child_id, "main");
+                void sendText(openId, "已重置 ✅ 会话已清空，开始全新对话。").catch(() => undefined);
+              });
+            }
+            return;
+          }
+          if (cmd === "help" || cmd === "帮助") {
+            await sendText(
+              openId,
+              "可用命令：\n/reset（或 /new）— 重置会话，开始全新对话\n/help — 显示本帮助\n\n其余内容都会直接发给学习伙伴。"
+            );
+            return;
+          }
+          await sendText(
+            openId,
+            `未知命令「${text.slice(0, 20)}」。可用：/reset 重置会话、/help 帮助；想正常聊天直接输入内容即可。`
+          );
+          return;
+        }
+
         const channelText =
           `（这条消息来自飞书。回复要求：纯文本短句、口语化、控制在一两百字内；` +
           `不要用 markdown 表格、标题、加粗，多行用换行即可。）\n\n${text}`;
