@@ -379,6 +379,7 @@ function courseContextBlock(deps: AgentSessionDeps, parentId: string, childId: s
 /** 把 SDK 事件映射为流事件（与客户端 attachSessionEvents 的事件面保持一致）。 */
 function attachStream(entry: Entry, key: string): void {
   entry.session.subscribe((event: any) => {
+    markSessionActivity(key);
     switch (event?.type) {
       case "message_update": {
         const ame = event.assistantMessageEvent;
@@ -433,6 +434,14 @@ export interface SubmitResult {
  * - 页面事件（若有）按客户端既有语义附在本轮消息前（ISSUE-015）；
  * - 会话忙时直接返回 busy，由前端提示「上一轮还在回答」，不排队（避免上下文交错）。
  */
+// —— 挂死看门狗（2026-09-18，与 parent-registry 同一套参数）：任何事件刷新活跃时间，
+// 超过 IDLE 无事件判定挂死 → abort + error 事件告知前端。
+const SESSION_IDLE_TIMEOUT_MS = 240_000;
+const sessionActivity = new Map<string, number>();
+function markSessionActivity(key: string): void {
+  sessionActivity.set(key, Date.now());
+}
+
 export async function submitChildPrompt(
   deps: AgentSessionDeps,
   parentId: string,
@@ -452,7 +461,24 @@ export async function submitChildPrompt(
   if (!prompt) return { ok: false, error: "空消息" };
 
   entry.busy = true;
+  markSessionActivity(key);
   agentStreamHub.publish(streamKey, "user_message", { text: prompt, pageEvents: opts.pendingPageEvents ?? "", session: kind });
+  // 挂死看门狗：模型 API 偶发挂起时 prompt 永不返回也不报错 → busy 永久占用。
+  // 超过 IDLE 无任何事件即 abort + error 事件告知前端。
+  const watchdogActivity = { fired: false };
+  const watchdog = setInterval(() => {
+    if (watchdogActivity.fired) return;
+    const last = sessionActivity.get(key) ?? Date.now();
+    if (Date.now() - last <= SESSION_IDLE_TIMEOUT_MS) return;
+    watchdogActivity.fired = true;
+    clearInterval(watchdog);
+    console.error(`[agent] 会话 ${key} 超过 ${SESSION_IDLE_TIMEOUT_MS / 1000}s 无任何事件，判定挂死，中止本轮`);
+    agentStreamHub.publish(streamKey, "error", {
+      message: `模型服务超过 ${SESSION_IDLE_TIMEOUT_MS / 1000} 秒无响应，已自动中止本轮。请重试；多次出现请检查模型服务。`,
+      session: kind,
+    });
+    void entry.session.abort().catch(() => undefined);
+  }, 5000);
   // 异步执行整轮（提交即返回）：一轮 agent 可能带长工具链（summarize_conversation 实测 3 分钟+），
   // 若 POST 同步等整轮结束，客户端 2 分钟超时会把**成功轮**误报成「无法连接服务端」。
   // 结束/错误统一经 SSE（turn_end / error）推送——渲染层的忙碌态本就由 pi:reply_end 驱动。
@@ -460,9 +486,12 @@ export async function submitChildPrompt(
     try {
       await entry.session.prompt(prompt);
     } catch (err) {
-      const message = (err as Error)?.message ?? String(err);
-      agentStreamHub.publish(streamKey, "error", { message, session: kind });
+      if (!watchdogActivity.fired) {
+        const message = (err as Error)?.message ?? String(err);
+        agentStreamHub.publish(streamKey, "error", { message, session: kind });
+      }
     } finally {
+      clearInterval(watchdog);
       entry.busy = false;
       agentStreamHub.publish(streamKey, "turn_end", { session: kind });
     }

@@ -210,8 +210,16 @@ async function ensureEntry(
   return entry;
 }
 
+// —— 挂死看门狗共用：任何会话事件（思考/文本/工具/结束）都会刷新活跃时间 ——
+const SESSION_IDLE_TIMEOUT_MS = 240_000;
+const activityBySession = new Map<string, number>();
+function markSessionActivity(key: string): void {
+  activityBySession.set(key, Date.now());
+}
+
 function attachStream(entry: Entry, key: string): void {
   entry.session.subscribe((event: any) => {
+    markSessionActivity(key);
     switch (event?.type) {
       case "message_update": {
         const ame = event.assistantMessageEvent;
@@ -258,15 +266,35 @@ export async function submitParentPrompt(
   const key = keyOf(parentId, kind);
   entry.busy = true;
   agentStreamHub.publish(key, "user_message", { text: prompt });
+  // —— 挂死看门狗（2026-09-18）：模型 API 偶发连接挂起时 prompt 永不返回也不报错，
+  // 会话 busy 永久占用、客户端无限转圈。任何事件都刷新活跃时间；超过 IDLE 无事件
+  // 即视为挂死 → abort 当前一轮（finally 会恢复 busy）+ 经 error 事件告知前端。
+  const activity = { fired: false };
+  markSessionActivity(key);
+  const watchdog = setInterval(() => {
+    if (activity.fired) return;
+    const last = activityBySession.get(key) ?? Date.now();
+    if (Date.now() - last <= SESSION_IDLE_TIMEOUT_MS) return;
+    activity.fired = true;
+    clearInterval(watchdog);
+    console.error(`[parent-agent] 会话 ${key} 超过 ${SESSION_IDLE_TIMEOUT_MS / 1000}s 无任何事件，判定挂死，中止本轮`);
+    agentStreamHub.publish(key, "error", {
+      message: `模型服务超过 ${SESSION_IDLE_TIMEOUT_MS / 1000} 秒无响应，已自动中止本轮。请重试；多次出现请检查模型服务。`,
+    });
+    void entry.session.abort().catch(() => undefined);
+  }, 5000);
   // 异步执行整轮（提交即返回）：与孩子侧同因——长工具轮若被 POST 同步等待，会撞客户端超时
   // 把成功轮误报成「无法连接服务端」。结束/错误经 SSE（turn_end / error）推送。
   void (async () => {
     try {
       await entry.session.prompt(prompt);
     } catch (err) {
-      const message = (err as Error)?.message ?? String(err);
-      agentStreamHub.publish(key, "error", { message });
+      if (!activity.fired) {
+        const message = (err as Error)?.message ?? String(err);
+        agentStreamHub.publish(key, "error", { message });
+      }
     } finally {
+      clearInterval(watchdog);
       entry.busy = false;
       agentStreamHub.publish(key, "turn_end", {});
     }
