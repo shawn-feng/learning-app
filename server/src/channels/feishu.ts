@@ -309,14 +309,31 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
           progressHolder.current = p;
           onProgress(p);
         };
-        const r = await runTurn(submit, hubKey, undefined, statusMsgId ? onProgressWrapped : undefined);
+        const r = await runTurn(
+          submit,
+          hubKey,
+          undefined,
+          statusMsgId ? onProgressWrapped : undefined,
+          // 超时先中止会话当前一轮：释放 busy（挂死的模型调用不会自己结束），会话恢复可用
+          async () => {
+            if (b.role === "parent") {
+              const { abortParentSession } = await import("../agent/parent-registry.js");
+              await abortParentSession(b.parent_id, "parent");
+            } else {
+              const { abortSession } = await import("../agent/session-registry.js");
+              await abortSession(b.parent_id, b.child_id, "main");
+            }
+          }
+        );
         if (pendingTimer) clearTimeout(pendingTimer);
 
         const finalText = r.ok
           ? r.reply
           : r.error?.startsWith("busy")
             ? "上一条还在想，稍等一下再发～"
-            : `学习服务端暂时没能回答：${r.error ?? ""}`;
+            : r.error?.startsWith("等待超时")
+              ? "这一轮想得太久，已经帮你中止了。请重新问一次试试；如果总是这样，发 /reset 重置会话。"
+              : `学习服务端暂时没能回答：${r.error ?? ""}`;
 
         // 有过程记录且成功：把过程气泡 patch 成「回答 + 可折叠思考过程」最终卡片
         const p = progressHolder.current;

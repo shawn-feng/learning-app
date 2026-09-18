@@ -55,12 +55,14 @@ export interface TurnProgress {
 }
 
 /** 提交一轮并聚合最终文本：先订阅再提交，text_delta 累积，turn_end/error 收口。
- *  onProgress 给定时，每个 thinking/text/tool 事件都会带最新快照回调一次（节流由调用方负责）。 */
+ *  onProgress 给定时，每个 thinking/text/tool 事件都会带最新快照回调一次（节流由调用方负责）。
+ *  onTimeout 给定时，超时先回调它（渠道用 session.abort() 解除会话卡死），再收口返回部分回复。 */
 export async function runTurn(
   submit: () => Promise<{ ok: boolean; error?: string }>,
   hubKey: string,
   timeoutMs = TURN_TIMEOUT_MS,
-  onProgress?: (p: TurnProgress) => void
+  onProgress?: (p: TurnProgress) => void,
+  onTimeout?: () => void | Promise<void>
 ): Promise<{ ok: boolean; reply: string; error?: string }> {
   let text = "";
   let thinking = "";
@@ -95,15 +97,22 @@ export async function runTurn(
       }
       onProgress?.(snapshot());
     } else if (e.type === "error") {
-      errorMessage = String((e.data as any)?.message ?? "agent 出错");
+      errorMessage = errorMessage ?? String((e.data as any)?.message ?? "agent 出错");
       finished?.();
     } else if (e.type === "turn_end") {
       finished?.();
     }
   });
   const timer = setTimeout(() => {
-    errorMessage = errorMessage ?? `等待超时（${Math.round(timeoutMs / 1000)}s），已返回部分回复`;
-    finished?.();
+    errorMessage = errorMessage ?? `等待超时（${Math.round(timeoutMs / 1000)}s）`;
+    void (async () => {
+      try {
+        await onTimeout?.();
+      } catch (err) {
+        console.error("[wechat] 超时中止会话失败:", (err as Error)?.message || err);
+      }
+      finished?.();
+    })();
   }, timeoutMs);
   try {
     const sub = await submit();
