@@ -116,6 +116,25 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
     });
   };
 
+  /** 删除自己发的消息（过程气泡用完即删） */
+  const deleteMessage = async (messageId: string): Promise<void> => {
+    const imv1 = (client.im as any).v1.message;
+    if (typeof imv1.delete === "function") {
+      await imv1.delete({ path: { message_id: messageId } });
+    } else if (typeof imv1.del === "function") {
+      await imv1.del({ path: { message_id: messageId } });
+    }
+  };
+
+  /** 发卡片消息（interactive）。返回 message_id。 */
+  const sendCard = async (openId: string, card: Record<string, unknown>): Promise<string> => {
+    const r: any = await (client.im as any).v1.message.create({
+      params: { receive_id_type: "open_id" },
+      data: { receive_id: openId, msg_type: "interactive", content: JSON.stringify(card) },
+    });
+    return String(r?.data?.message_id ?? "");
+  };
+
   /** 过程快照 → 展示文本（思考摘要 / 工具状态 / 作答字数） */
   const renderProgress = (p: TurnProgress): string => {
     const lines: string[] = [];
@@ -222,7 +241,12 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
           statusMsgId = "";
         }
 
-        const r = await runTurn(submit, hubKey, undefined, statusMsgId ? onProgress : undefined);
+        const progressHolder: { current: TurnProgress | null } = { current: null };
+        const onProgressWrapped = (p: TurnProgress) => {
+          progressHolder.current = p;
+          onProgress(p);
+        };
+        const r = await runTurn(submit, hubKey, undefined, statusMsgId ? onProgressWrapped : undefined);
         if (pendingTimer) clearTimeout(pendingTimer);
 
         const finalText = r.ok
@@ -230,6 +254,58 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
           : r.error?.startsWith("busy")
             ? "上一条还在想，稍等一下再发～"
             : `学习服务端暂时没能回答：${r.error ?? ""}`;
+
+        // 有过程记录且成功：删掉过程气泡，发「回答 + 可折叠思考过程」卡片
+        const p = progressHolder.current;
+        const hasProcess = !!(p && (p.tools.length || p.thinking.trim()));
+        if (r.ok && hasProcess && statusMsgId) {
+          const NL = String.fromCharCode(10);
+          const toolLines = p!.tools.map((t) => `- 🔧 ${t.name} ${t.error ? "✗ 出错" : "✓"}`).join(NL);
+          const thinkCap = p!.thinking.length > 2500 ? p!.thinking.slice(0, 2500) + NL + "…（过长截断）" : p!.thinking.trim();
+          const parts: string[] = [];
+          if (thinkCap) parts.push(`**💭 思考**` + NL + thinkCap);
+          if (toolLines) parts.push(`**🛠 工具调用**` + NL + toolLines);
+          const processMd = parts.join(NL + NL);
+          const card = {
+            schema: "2.0",
+            config: { update_multi: true },
+            body: {
+              direction: "vertical",
+              elements: [
+                { type: "markdown", content: finalText },
+                { type: "hr" },
+                {
+                  type: "collapsible_panel",
+                  expanded: false,
+                  header: {
+                    title: { tag: "plain_text", content: "查看思考过程" },
+                    vertical_align: "center",
+                    background_style: "blue",
+                  },
+                  vertical_spacing: "8px",
+                  padding: "8px 12px",
+                  border: { type: "plain" },
+                  background_style: "default",
+                  elements: [{ type: "markdown", content: processMd || "（无）" }],
+                },
+              ],
+            },
+          };
+          // 先发卡片，成功再删过程气泡；卡片失败退回纯文本
+          try {
+            await sendCard(openId, card);
+            await deleteMessage(statusMsgId).catch(() => undefined);
+          } catch {
+            try {
+              await editText(statusMsgId, finalText);
+            } catch {
+              await sendText(openId, finalText).catch(() => undefined);
+              if (processMd) await sendText(openId, `—— 思考过程 ——${NL}${processMd}`).catch(() => undefined);
+            }
+          }
+          return;
+        }
+
         if (statusMsgId) {
           try {
             await editText(statusMsgId, finalText);
