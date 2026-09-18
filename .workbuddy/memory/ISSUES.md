@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **108** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **110** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -118,6 +118,8 @@
 | 106 | 孩子界面字号设置入口合并：聊天字号（Type icon）+ 资料字号（TextSelect icon）两个独立 icon/弹框收进**一个 icon 探出的页面**（弹框内分「聊天字号」「资料字号」两组档位按钮；state/持久化/CSS 变量链路不动） | ✅ 已解决（2026-09-17）：侧栏收口为一个 Type icon（title 汇总两组当前值）+ `showFontPanel` 单弹框两分组（`.modal-section-label` 新样式）；fontSize/matFontSize 与 localStorage key、CSS 变量下传链路零改动；build 通过 | 2026-09-17 | [详情](ISSUES/ISSUE-106.md) |
 | 107 | 家长聊天区域重新进入看不到当前会话历史消息——ISSUE-081 服务端化把 ISSUE-039 修复架空：`pi:start_parent` 硬编码返回 `history:[]` + 服务端无家长会话 history/open 端点（孩子端已走 `POST /agent/:childId/open`，家长端联调点未接）；落盘与 agent 上下文记忆正常，纯 UI 恢复链路断 | ✅ 已解决（2026-09-17）：服务端新增 `POST /parent-agent/open`（kind 区分 parent/parent-content；家长**不做跨天裁决**、返回现会话全部历史）+ 客户端桥 `openParentSession()`（复用 mapHistoryMessages）+ `pi:start_parent`/`pi:start_parent_content` 透传真实 history（旧服务端 404 兜底空数组，向后兼容）+ ParentChatPanel 回填零改动恢复、TopicEditor 同批接上；**服务端改动待部署 201** | 2026-09-17 | [详情](ISSUES/ISSUE-107.md) |
 | 108 | 家长界面可定制 Dashboard：家长自定义「孩子学习进度与情况」展示页，定制经家长 agent 对话完成——方案建议：声明式 widget 配置（agent 只写受控 JSON、不产 HTML）+ 客户端注册表渲染（7 类 widget 白名单，全部复用现有数据源）+ 配置存 settings 键 `dashboard`（零新表）+ `parent_dashboard_get/set` 两工具；Dashboard 新增 view 并设默认落地页 | 中（方案待拍板） | 2026-09-17 | [详情](ISSUES/ISSUE-108.md) |
+| 109 | 家长 agent db 通道需能读主库 `exam_attempts` 表（成绩/逐题/错题/巩固建议）——家长侧现无任何考核成绩读取工具（prompt 只能引导去 UI）；且家长侧 db 通道只有 describe+write、**无 `parent_db_read`**（孩子侧三件套齐全）。方案：新增 `parent_db_read`（补齐对称性）+ 主库受控只读登记表（exam_attempts 第一张，强制 parent_id/child_id 归属过滤、只读、行数上限+审计、JSON 大列截断）——「主库不进直连白名单」原则的首个受控豁免，仅此一张、仅读 | 中 | 2026-09-17 | [详情](ISSUES/ISSUE-109.md) |
+| 110 | 盘点：`parent_db_*` 工具能操作哪些表？——`parent_db_describe`/`parent_db_write` 均基于 `parentLibTableRegistry()`（db-channel.ts L79），**只能操作家长内容库 parent.sqlite 的 6 张表**：topics/courses/tags/question_bank/knowledge_points/course_knowledge_questions（均 insert/update/delete，带列白名单+外键校验+行数熔断+审计+敏感列二次确认）。爆破半径严格限定课程内容，**不触达孩子库/计划/积分/成绩/会话**。缺口：parent 侧**无 `parent_db_read`**（只能 describe+write），读内容只能走专用 `parent_library_*` 或 UI；主库 `exam_attempts` 读取仍无工具（ISSUE-109 覆盖） | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-110.md) |
 
 ## 记录格式（模板）
 

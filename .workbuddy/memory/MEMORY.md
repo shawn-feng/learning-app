@@ -15,9 +15,15 @@
 | **ISSUES.md** | `.workbuddy/memory/` | 问题清单（2026-08-30 SPLIT 架构起重新编号） |
 | ISSUES-archive-2026-08-30.md | `.workbuddy/memory/` | 旧一体化架构时期的 ISSUE-001~052 归档 |
 | **DESIGN-server-agent-migration-2026-09-12.md** | 仓库根 | agent 上移定案（**必须切服务端、客户端零 agent、不做过渡/门控**）+ 目标架构 + 契约 + 阶段验收 |
+| **DESIGN-generic-entity-api-2026-09-18.md** | 仓库根 | **⭐ 通用实体数据 API 设计稿（namespace 注册表 + 统一数据三工具）**：C1~C5 契约 + 安全红线 + 注册表 `refs`/`paths` 设计 + 三库布局 + `parent-data` 独立 agent + **现状审计（仅 C1 达标）** + 漂移实测 + F13/F14/F2/F1/F7/F10/F10-b 实施顺序。**该机制后续所有改动以此稿为准**（落地后需回写技术实现文档 §8） |
+
+> **索引校正（2026-09-18 实测）**：下列旧索引条目在当前工作树中**已不存在**——`ARCHITECTURE.md`、`EXAM-ARCHITECTURE.md`、`SPLIT-REQUIREMENTS.md`、`DESIGN-SPLIT.md`、`SPLIT-DATA-STRUCTURE.md`、`REQUIREMENTS.md`、`EXAM-REQUIREMENTS.md`、`ENGLISH-AGENT-REQUIREMENTS.md`、`PARENT-AGENT-REQUIREMENTS.md`、`RESEARCH-*`、`DESIGN-english-scene-courses-*`、`DESIGN-reward-points-*`、`DESIGN-plan-domain-rewrite-*`、`DESIGN-server-agent-migration-*`、`需求盘点-三大需求场景分析-*`、`调研笔记-叶圣陶语文方法论.md`。当前仓库根实际存在的文档只有：`技术实现文档-功能实现与数据流转-2026-09-13.md`、`MATERIAL-BRIDGE-PROTOCOL.md`、`PACKAGING.md`、`WEB-前端设计方案与实施规划-2026-09-15.md`、`DEPLOY-201-server-0.4.1-迁移方案-2026-09-15.md`、`学习伙伴-用户使用说明书.md`、`DESIGN-generic-entity-api-2026-09-18.md`。**下述「需求/设计/调研文档」列表仅作历史线索保留，勿据其判断文件存在性。**
 
 ## 需求 / 设计 / 调研文档（仓库根）
 
+> ⚠ 2026-09-18 起：本节多数条目在当前工作树中**已不存在**（见上方「索引校正」）。新增文档请以实际存在为准。
+
+- **`DESIGN-generic-entity-api-2026-09-18.md`** —— **⭐ 通用实体数据 API 设计稿（当前生效）**：见上表
 - `SPLIT-REQUIREMENTS.md` / `DESIGN-SPLIT.md` / `SPLIT-DATA-STRUCTURE.md` —— 客户端+服务端拆分架构的需求、设计与数据结构
 - `REQUIREMENTS.md` / `EXAM-REQUIREMENTS.md` / `ENGLISH-AGENT-REQUIREMENTS.md` / `PARENT-AGENT-REQUIREMENTS.md` —— 各模块需求
 - `RESEARCH-aliyun-ssecp-child-assessment-2026-09-07.md`、`DESIGN-ssecp-speech-assessment-2026-09-07.md`、`RESEARCH-pronunciation-assessment-2026-08-31.md` —— 语音/发音评测调研与设计

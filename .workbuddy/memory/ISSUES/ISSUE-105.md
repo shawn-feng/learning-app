@@ -89,7 +89,7 @@ SQLite 是嵌入式库，**没有用户/角色/GRANT**——文件级访问即�
 |---|---|---|---|
 | 主库 | `data/server.sqlite`（db.ts） | 全部家长共用的跨租户数据 | 服务端单例 |
 | 家长内容库 | `data/parents/<parentId>/parent.sqlite`（parent-lib.ts） | 课程库 + 题库（assess-content 三表也在其中） | 每家长一个连接 |
-| 孩子库 | `data/parents/<parentId>/kb/<childId>/kb.sqlite`（kb.ts） | 该孩子的计划/考核/积分/日常 | 每孩子一个连接 |
+| 孩子库 | `data/kb/<parentId>/<childId>.sqlite`（kb.ts） | 该孩子的计划/考核/积分/日常 | 每孩子一个连接 |
 | agent 内部库 | `data/agents.sqlite`（agents.ts） | prompts/prompt_history | agent 不可见 |
 
 **租户隔离已经由"文件路径"天然实现**：家长 token 解出 parentId 后只能打开自己的 parent.sqlite 与其名下孩子的 kb——这正好是权限模型的地基，新通道只需沿用 `openParentLib` / `openKb(dataDir, parentId, childId)` 的既有入口，不新增任何跨库路径。
