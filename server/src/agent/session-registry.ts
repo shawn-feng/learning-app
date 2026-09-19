@@ -30,6 +30,7 @@ import { CHILD_DB_TOOL_NAMES, createChildDbTools } from "./child-db-tools.js";
 import { readParentSettings } from "../worker/scheduler.js";
 import { getAgentPrompt } from "../db/agents.js";
 import { openKb } from "../db/kb.js";
+import { clearDisplayLog } from "../db/displays.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { buildChildSelfBlock } from "./registry-prompt.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
@@ -254,7 +255,7 @@ async function ensureEntry(
   } as any);
   const workspace = paths.childWorkspaceDir(parentId, childId);
   const fsTools = createServerFsTools(workspace);
-  const displayTool = createDisplayContentTool({ dataDir: deps.dataDir, parentId, childId, streamKey: streamKeyOf(parentId, childId) });
+  const displayTool = createDisplayContentTool({ dataDir: deps.dataDir, parentId, childId, streamKey: streamKeyOf(parentId, childId), sessionKey: kind });
   const programmingTool = createProgrammingTool({ dataDir: deps.dataDir, db: deps.db, parentId }, { scope: "child", childId });
 
   // 设备能力协商（P3）：资料面板类工具只在「对端确实有资料面板」时注册。
@@ -334,6 +335,15 @@ async function ensureEntry(
     // 会话级红线（路径越界拦截 + 每轮注入日期）与客户端同一份实现
     extensionFactories: [guardExtension],
   });
+  // ISSUE-113：新会话（/reset、跨天自动新建、或首次进入且旧会话非今天）→ 清该会话的展示登记，
+  // 左侧资料列表随会话走（重进保留、重置清空）
+  if (resetMarks.has(key) || !isLastMessageToday(sessionsDir)) {
+    try {
+      clearDisplayLog(deps.dataDir, parentId, childId, kind);
+    } catch {
+      /* 清理失败不影响会话建立 */
+    }
+  }
   resetMarks.delete(key);
 
   const entry: Entry = { session: handle.session, busy: false, paths };

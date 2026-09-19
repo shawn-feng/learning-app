@@ -229,7 +229,20 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
     const raw = String((req.body as any)?.session ?? "");
     const kind = raw === "scene" || raw.startsWith("course:") ? (raw as ChildSessionKind) : "main";
     const messages = await openChildSession(agentDeps, parentId, childId, kind);
-    return { messages };
+    // ISSUE-113：一并返回该会话的展示登记（左侧资料列表回填；跨天/重置后已随新会话清空）
+    let materialsLimit = 20;
+    let materials: Array<Record<string, unknown>> = [];
+    try {
+      const { readParentSettings } = await import("../worker/scheduler.js");
+      const { listDisplays } = await import("../db/displays.js");
+      const settings = readParentSettings(deps.db, deps.config.dataDir, parentId);
+      const lim = Number((settings.appSettings as any)?.materialsLimit);
+      if (Number.isFinite(lim) && lim > 0) materialsLimit = lim;
+      materials = listDisplays(deps.config.dataDir, parentId, childId, kind, materialsLimit);
+    } catch {
+      materials = []; // 登记读取失败不阻断历史回填
+    }
+    return { messages, materials };
   });
 
   app.post("/api/v1/agent/:childId/reset", async (req, reply) => {
@@ -248,7 +261,15 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       throw err;
     }
     const raw = String((req.body as any)?.session ?? "");
-    resetSession(parentId, childId, raw === "scene" ? "scene" : raw.startsWith("course:") ? (raw as ChildSessionKind) : undefined);
+    const kind = raw === "scene" ? ("scene" as ChildSessionKind) : raw.startsWith("course:") ? (raw as ChildSessionKind) : undefined;
+    resetSession(parentId, childId, kind);
+    // ISSUE-113：展示登记随会话重置清空（与客户端 pi:reset 返回 materials:[] 语义对齐）
+    try {
+      const { clearDisplayLog } = await import("../db/displays.js");
+      clearDisplayLog(deps.config.dataDir, parentId, childId, kind);
+    } catch {
+      /* 清理失败不影响重置 */
+    }
     return { ok: true };
   });
 

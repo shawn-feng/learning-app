@@ -14,6 +14,7 @@ import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { createCorePaths, resolveWithin } from "@pi/agent-core";
 import { materialsRoot } from "../db/materials.js";
+import { registerDisplay } from "../db/displays.js";
 import { agentStreamHub } from "./stream-hub.js";
 
 export interface DisplayToolDeps {
@@ -21,6 +22,8 @@ export interface DisplayToolDeps {
   parentId: string;
   childId: string;
   streamKey: string;
+  /** 会话种类（main / course:<key> / scene）：登记按会话走，重进回填、/reset 清空（ISSUE-113） */
+  sessionKey: string;
 }
 
 const REMOTE_PREFIX = "materials/";
@@ -77,7 +80,16 @@ export function createDisplayContentTool(deps: DisplayToolDeps) {
       } catch {
         content = "";
       }
-      agentStreamHub.publish(deps.streamKey, "display_content", { path: rel, source, title, content, ts: Date.now() });
+      const ts = Date.now();
+      agentStreamHub.publish(deps.streamKey, "display_content", { path: rel, source, title, content, ts });
+      // ISSUE-113：登记到孩子库（会话重进回填左侧资料列表）；失败不影响推送
+      try {
+        registerDisplay(deps.dataDir, deps.parentId, deps.childId, deps.sessionKey, {
+          path: rel, title, source, content, ts,
+        });
+      } catch (err) {
+        console.warn(`[display_content] 登记失败（不影响推送）：${(err as Error).message}`);
+      }
       return {
         content: [{ type: "text" as const, text: `已展示资料「${title}」（${rel}）——孩子端资料面板会即时打开。` }],
         details: {},

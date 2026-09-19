@@ -1321,7 +1321,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         ensureChildStream(childId);
         // 会话历史回填（ISSUE-100 F1 冷路径：走 /open，服务端跨天自动新建裁决后返回当天历史）
         const session = courseKey ? `course:${courseKey}` : "main";
-        const history = await openChildSession(childId, session === "main" ? undefined : session).catch(() => [] as any[]);
+        const open = await openChildSession(childId, session === "main" ? undefined : session).catch(
+          () => ({ messages: [] as any[], materials: [] })
+        );
+        const history = open.messages;
         // ISSUE-041：孩子打开会话时立即处理一轮云端收件箱（分配包/进度请求），不等定时轮询
         try {
           const { handleCloudInbox } = await import("./delivery");
@@ -1331,8 +1334,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
             })
             .catch(() => {});
         } catch { /* 忽略 */ }
-        // 历史与资料改由服务端会话/display_content 推送驱动；此处返回空（联调点：会话历史回填）
-        return { success: true, history, materials: [], materialsLimit: getMaterialsLimit() };
+        // 历史与资料由服务端会话驱动（ISSUE-100 历史 + ISSUE-113 展示登记），进会话一并回填
+        return { success: true, history, materials: open.materials, materialsLimit: getMaterialsLimit() };
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
@@ -1463,7 +1466,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // scene 会话历史：场景对话在服务端持久；走 /open（ISSUE-100 F1 跨天裁决），返回当天场景会话历史。
   ipcMain.handle("scene:history", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
     try {
-      const history = await openChildSession(childId, "scene").catch(() => [] as any[]);
+      const history = (await openChildSession(childId, "scene").catch(() => ({ messages: [] as any[], materials: [] }))).messages;
       return { success: true, history: history.slice(-80) };
     } catch (err) {
       return { success: false, error: (err as Error).message };

@@ -7,7 +7,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureTier2Schema } from "../agent/tier2.js";
 
-export const KB_SCHEMA_TABLES = `
+/** 展示登记（ISSUE-113）：display_content 推送后按 (会话种类, path) upsert 一条，
+ *  会话重进时回填左侧资料列表（按 ts 升序=出现顺序），/reset 或跨天新会话时清空。 */
+export const DISPLAY_DDL = `
+CREATE TABLE IF NOT EXISTS display_contents (
+  child_key TEXT NOT NULL,
+  path TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (child_key, path)
+);`;
+
+const KB_SCHEMA_TABLES = `
 CREATE TABLE IF NOT EXISTS daily_entries (
   date TEXT NOT NULL,
   block TEXT NOT NULL,
@@ -345,6 +358,7 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   db.exec("DROP TABLE IF EXISTS todo_items;");
   db.exec("DROP TABLE IF EXISTS child_todo_stats;");
   ensureTier2Schema(db, false); // Tier 2 灵活实体数据行（scope=child 的 namespace 注册在家长库，F15a，幂等）
+  db.exec(DISPLAY_DDL); // 展示登记（ISSUE-113，幂等）
   db.exec(KB_SCHEMA_VIEWS);
   db.exec(KB_PLAN_SCHEMA_VIEWS);
   return db;
