@@ -9,6 +9,16 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { DatabaseSync } from "node:sqlite";
 import { runKbQuery, runKbExec } from "../routes/db.js";
+import { openKb } from "../db/kb.js";
+import { openParentLib } from "../db/parent-lib.js";
+import {
+  resolveEmbedding,
+  embedTexts,
+  searchCourseCandidatesForChild,
+  vectorThreshold,
+  parentLibCacheKey,
+  VECTOR_TOP_K,
+} from "../agent/embeddings.js";
 
 export interface WorkerBindings {
   dataDir: string;
@@ -111,20 +121,21 @@ export function createWorkerKbTools(b: WorkerBindings) {
     name: "kb_query",
     label: "SQL 查询知识库",
     description:
-      "从 SQLite 查询知识库数据（daily 记录 / 主题进度 / 标签定义），只返回目标内容，省 token。\n" +
+      "从 SQLite 查询知识库数据（daily 记录 / 课程查找 / 主题进度 / 标签定义），只返回目标内容，省 token。\n" +
       "query 类型：\n" +
       "- `daily`：查 daily 记录。`date`（YYYY-MM-DD）或 `month`（YYYY-MM）+ `block`（学习/生活/问答/任务）+ `title` + `tag` + `listOnly`。\n" +
       "- `topics`：查主题清单与进度摘要（无需其它参数）。\n" +
       "- `progress`：查某主题进度，`topic` 必填（拼音目录名或中文名）+ `tag`（课程标签过滤）+ `listOnly`。\n" +
+      "- `course`：**按课程名找课**（记 daily 前对齐课程名用）。`title` 必填（课程名，精确或口语化如「学而第一」均可）+ `topic`（可选，限定主题）。精确找不到时会自动做语义查找并返回候选（只提示，写入时仍需用候选的准确课程名）。\n" +
       "- `tags`：查标签定义（词表 + 判断标准），`tag`（缺省=全部）。",
     parameters: Type.Object({
-      query: Type.String({ description: "查询类型：daily | topics | progress | tags" }),
+      query: Type.String({ description: "查询类型：daily | topics | progress | course | tags" }),
       date: Type.Optional(Type.String({ description: "daily 查询：精确日期 YYYY-MM-DD" })),
       month: Type.Optional(Type.String({ description: "daily 查询：月份聚合 YYYY-MM" })),
       block: Type.Optional(Type.String({ description: "daily 查询：区块（学习/生活/问答/任务）" })),
-      title: Type.Optional(Type.String({ description: "daily 查询：条目标题精确匹配" })),
+      title: Type.Optional(Type.String({ description: "daily：条目标题精确匹配；course：课程名（精确或口语化）" })),
       listOnly: Type.Optional(Type.Boolean({ description: "true 只返回标题清单" })),
-      topic: Type.Optional(Type.String({ description: "progress 查询：主题键（lunyu 或 论语）" })),
+      topic: Type.Optional(Type.String({ description: "progress：主题键或中文名；course：限定主题（可选）" })),
       tag: Type.Optional(Type.String({ description: "标签过滤" })),
     }),
     execute: async (_tc, params) => {
@@ -193,13 +204,71 @@ export function createWorkerKbTools(b: WorkerBindings) {
           }
           return ok(lines.join("\n"));
         }
+        case "course": {
+          const titleInput = String(params.title ?? "").trim();
+          if (!titleInput) throw new Error("kb_query course 需要 title 参数（课程名，精确或口语化均可）");
+          const kbDb = openKb(b.dataDir, b.parentId, b.childId);
+          try {
+            // ① 精确查找（孩子库；topic 可选限定）
+            const exactRows = kbDb
+              .prepare(
+                `SELECT topic, topic_key, title, status, last_review FROM courses
+                 WHERE title = ? ${params.topic ? "AND (topic_key = ? OR topic = ?)" : ""} LIMIT 1`
+              )
+              .all(...(params.topic ? [titleInput, params.topic, params.topic] : [titleInput])) as Array<
+              Record<string, unknown>
+            >;
+            if (exactRows.length) {
+              const c = exactRows[0];
+              return ok(
+                `找到课程：${c.title}（主题 ${c.topic}），状态 ${c.status}，最近学习 ${c.last_review || "无"}。`
+              );
+            }
+            // ② 精确落空 → 向量候选（跨库查家长库向量；按孩子已分配主题过滤；未配置则静默跳过）
+            let hint: string | null = null;
+            try {
+              const { readParentSettings } = await import("./scheduler.js");
+              const settings = await readParentSettings(b.mainDb, b.dataDir, b.parentId);
+              const resolved = resolveEmbedding(settings.auth);
+              if (resolved) {
+                const [qv] = await embedTexts(resolved, [titleInput]);
+                const pdb = openParentLib(b.dataDir, b.parentId);
+                try {
+                  const candidates = searchCourseCandidatesForChild(pdb, kbDb, qv, {
+                    topK: VECTOR_TOP_K,
+                    threshold: vectorThreshold(settings.appSettings),
+                    cacheKey: parentLibCacheKey(b.dataDir, b.parentId),
+                  });
+                  if (candidates.length) {
+                    const lines = candidates.map(
+                      (c, i) => `${i + 1}. ${c.text}（主题 ${String(c.pk.topic)}，相似度 ${c.score.toFixed(3)}）`
+                    );
+                    hint =
+                      `精确匹配无数据：「${titleInput}」。\n` +
+                      `以下为向量检索候选（相似度降序），请判断选哪一个；确定后记 daily 请使用候选的准确课程名：\n${lines.join("\n")}`;
+                  } else {
+                    hint = `精确匹配无数据：「${titleInput}」，语义查找也没有达标候选。可先 kb_query {query:"topics"} 确认主题，再按主题浏览课程。`;
+                  }
+                } finally {
+                  pdb.close();
+                }
+              }
+            } catch {
+              hint = null; // 向量服务失败 → 静默降级
+            }
+            const fallback = hint ?? `精确匹配无数据：「${titleInput}」。可先 kb_query {query:"topics"} 确认主题，再按主题浏览课程，或与家长确认课程名。`;
+            return ok(`课程（courses）：查询结果为空。\n${fallback}`);
+          } finally {
+            kbDb.close();
+          }
+        }
         case "tags": {
           const defs = query<Array<{ tag: string; dimension: string; criteria: string }>>("kb.tags.list", {});
           const filtered = params.tag ? defs.filter((d) => d.tag === params.tag) : defs;
           return ok(`${params.tag ? `标签「${params.tag}」定义：` : ""}${tagsToMarkdownLite(filtered)}`);
         }
         default:
-          throw new Error(`kb_query 支持 query: daily | topics | progress | tags（当前: ${params.query}）`);
+          throw new Error(`kb_query 支持 query: daily | topics | progress | course | tags（当前: ${params.query}）`);
       }
     },
   });

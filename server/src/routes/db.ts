@@ -462,7 +462,8 @@ export const execHandlers: Record<string, ExecHandler> = {
             const valid = db.prepare("SELECT 1 FROM courses WHERE title = ?").get(title);
             if (!valid) {
               throw new Error(
-                `学习记录标题「${title}」不是有效的课程名。请用 courses 表里存在的准确课程名作为标题（格式 ### 课程名）重写本条记录，不要加「（复习）」等后缀。`
+                `学习记录标题「${title}」不是有效的课程名。请用 courses 表里存在的准确课程名作为标题（格式 ### 课程名）重写本条记录，不要加「（复习）」等后缀。` +
+                  `记不准课程名时，可先用 kb_query {query:"course", title:"…"} 语义查找（返回候选中选准确课程名）。`
               );
             }
           }

@@ -178,19 +178,24 @@ export type LookupResult =
 export const VECTOR_TOP_K = 5;
 export const VECTOR_DEFAULT_THRESHOLD = 0.6;
 
-/** 向量缓存（键 = 库句柄标记|表|列；嵌入写入后失效）。值 = row_pk → 向量。 */
+/** 向量缓存（键 = 稳定命名空间|表|列；嵌入写入后失效）。值 = row_pk → 向量。 */
 const vectorCache = new Map<string, Map<string, Float32Array>>();
 
 let dbSeq = 0;
-/** 给库句柄打缓存命名空间标记（node:sqlite 不公开文件路径，句柄级自增 id 即可）。 */
-function embKey(db: DatabaseSync, table: string, column: string): string {
+/** 无 stableKey 时的兜底：句柄级标记（同一句柄内缓存有效；跨句柄不共享——调用方应传 stableKey）。 */
+function handleKey(db: DatabaseSync): string {
   if (!(db as any).__embKey) (db as any).__embKey = `h${++dbSeq}`;
-  return `${(db as any).__embKey}|${table}|${column}`;
+  return (db as any).__embKey;
 }
 
-/** 载入某 (表,列) 的全部向量（内存缓存）。 */
-function loadVectors(db: DatabaseSync, table: string, column: string): Map<string, Float32Array> {
-  const key = embKey(db, table, column);
+/**
+ * 载入某 (表,列) 的全部向量（内存缓存）。
+ * stableKey：跨句柄的稳定命名空间（如 `pdb:<dataDir>|<parentId>`）——库句柄每次打开都是新的，
+ * 句柄级键会让缓存永不命中、失效也失效（ISSUE-111 复盘）；给了 stableKey 的调用方必须用
+ * 同一 stableKey 调 invalidateVectorCache。
+ */
+function loadVectors(db: DatabaseSync, table: string, column: string, stableKey?: string): Map<string, Float32Array> {
+  const key = stableKey ? `${stableKey}|${table}|${column}` : `${handleKey(db)}|${table}|${column}`;
   let m = vectorCache.get(key);
   if (!m) {
     m = new Map<string, Float32Array>();
@@ -203,17 +208,21 @@ function loadVectors(db: DatabaseSync, table: string, column: string): Map<strin
   return m;
 }
 
-export function invalidateVectorCache(db: DatabaseSync, table?: string, column?: string): void {
-  const prefix = (db as any).__embKey ? `${(db as any).__embKey}|` : null;
-  if (!prefix) return;
+/** 按稳定命名空间失效缓存（省略 table/column 时清该库全部列）。 */
+export function invalidateVectorCache(stablePrefix: string, table?: string, column?: string): void {
   for (const key of [...vectorCache.keys()]) {
-    if (!key.startsWith(prefix)) continue;
+    if (!key.startsWith(`${stablePrefix}|`)) continue;
     if (table && column) {
-      if (key === `${(db as any).__embKey}|${table}|${column}`) vectorCache.delete(key);
+      if (key === `${stablePrefix}|${table}|${column}`) vectorCache.delete(key);
     } else {
       vectorCache.delete(key);
     }
   }
+}
+
+/** 统一的稳定命名空间（家长库维度）。 */
+export function parentLibCacheKey(dataDir: string, parentId: string): string {
+  return `pdb:${dataDir}|${parentId}`;
 }
 
 /** 查业务表当前文本（按 pk）；行已删 → null。 */
@@ -250,7 +259,7 @@ export async function lookupWithFallback(
   table: string,
   column: string,
   value: string,
-  opts?: { topK?: number; threshold?: number }
+  opts?: { topK?: number; threshold?: number; cacheKey?: string }
 ): Promise<LookupResult> {
   const ec = embeddedColumn(table, column);
   if (!ec) return { kind: "miss", query: value };
@@ -268,7 +277,7 @@ export async function lookupWithFallback(
   // ③ 向量 top-K 候选
   try {
     const [qv] = await embedTexts(resolved, [value]);
-    const vectors = loadVectors(db, table, column);
+    const vectors = loadVectors(db, table, column, opts?.cacheKey);
     const threshold = opts?.threshold ?? VECTOR_DEFAULT_THRESHOLD;
     const topK = opts?.topK ?? VECTOR_TOP_K;
     const scored: VectorCandidate[] = [];
@@ -301,8 +310,8 @@ export function formatCandidates(result: Extract<LookupResult, { kind: "candidat
 
 // ==================== 写路径：惰性嵌入 ====================
 
-/** upsert 一条向量（写后失效缓存）。 */
-function upsertVector(db: DatabaseSync, ec: EmbeddedColumn, rowPk: string, model: string, vec: Float32Array, hash: string): void {
+/** upsert 一条向量（写后失效缓存；stablePrefix 为该家长库的稳定命名空间）。 */
+function upsertVector(db: DatabaseSync, ec: EmbeddedColumn, rowPk: string, model: string, vec: Float32Array, hash: string, stablePrefix: string): void {
   db.prepare(
     `INSERT INTO embeddings (table_name, row_pk, column_name, model, dim, vector, source_hash)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -310,7 +319,7 @@ function upsertVector(db: DatabaseSync, ec: EmbeddedColumn, rowPk: string, model
        model = excluded.model, dim = excluded.dim, vector = excluded.vector,
        source_hash = excluded.source_hash, updated_at = datetime('now','localtime')`
   ).run(ec.table, rowPk, ec.column, model, vec.length, vectorToBlob(vec), hash);
-  invalidateVectorCache(db, ec.table, ec.column);
+  invalidateVectorCache(stablePrefix, ec.table, ec.column);
 }
 
 /** 判断写操作是否触及登记列（insert 的行键 / update 的 where 行存在即可 —— update 简化为行级失效）。 */
@@ -363,7 +372,7 @@ export function markStale(ctx: EmbedContext, table: string, pkVals: Array<null |
                 // 行已删 → 删向量
                 const rowPk = JSON.stringify(job.pkVals);
                 pdb.prepare("DELETE FROM embeddings WHERE table_name = ? AND row_pk = ? AND column_name = ?").run(ec.table, rowPk, ec.column);
-                invalidateVectorCache(pdb, ec.table, ec.column);
+                invalidateVectorCache(parentLibCacheKey(ctx.dataDir, ctx.parentId), ec.table, ec.column);
                 continue;
               }
               const text = String(row[ec.column] ?? "");
@@ -374,7 +383,7 @@ export function markStale(ctx: EmbedContext, table: string, pkVals: Array<null |
                 .get(ec.table, rowPk, ec.column) as { source_hash: string; model: string } | undefined;
               if (exist && exist.source_hash === hash && exist.model === resolved.model) continue; // 未变化
               const [vec] = await embedTexts(resolved, [text]);
-              upsertVector(pdb, ec, rowPk, resolved.model, vec, hash);
+              upsertVector(pdb, ec, rowPk, resolved.model, vec, hash, parentLibCacheKey(ctx.dataDir, ctx.parentId));
             } finally {
               pdb.close();
             }
@@ -423,4 +432,87 @@ export async function candidatesHintText(
   } catch {
     return null; // 任何异常 → 静默跳过（不阻断业务流）
   }
+}
+
+// ==================== 孩子侧跨库候选（kb_query 用，ISSUE-111 二期） ====================
+
+/** 孩子已分配的 topic_key 集合。 */
+function childAllocatedTopicKeys(kb: DatabaseSync): Set<string> {
+  const rows = kb.prepare("SELECT topic_key FROM topics").all() as Array<{ topic_key: string }>;
+  return new Set(rows.map((r) => r.topic_key).filter(Boolean));
+}
+
+/**
+ * 课程名候选（跨库）：在**家长库** courses.title 向量里检索，候选按孩子视野过滤——
+ * 主题必须在孩子已分配清单里、且孩子库真实存在这门课。向量数据不重复建（孩子库 ⊆ 家长库）。
+ */
+export function searchCourseCandidatesForChild(
+  pdb: DatabaseSync,
+  kb: DatabaseSync,
+  queryVec: Float32Array,
+  opts?: { topK?: number; threshold?: number; cacheKey?: string }
+): VectorCandidate[] {
+  const threshold = opts?.threshold ?? VECTOR_DEFAULT_THRESHOLD;
+  const topK = opts?.topK ?? VECTOR_TOP_K;
+  const allocated = childAllocatedTopicKeys(kb);
+  const vectors = loadVectors(pdb, "courses", "title", opts?.cacheKey);
+  const scored: Array<{ rowPk: string; score: number }> = [];
+  for (const [rowPk, vec] of vectors) {
+    const score = cosine(queryVec, vec);
+    if (score >= threshold) scored.push({ rowPk, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const out: VectorCandidate[] = [];
+  for (const s of scored) {
+    if (out.length >= topK) break;
+    let vals: Array<null | number | bigint | string>;
+    try {
+      vals = JSON.parse(s.rowPk) as Array<null | number | bigint | string>;
+    } catch {
+      continue;
+    }
+    const topic = String(vals[0] ?? "");
+    const title = String(vals[1] ?? "");
+    if (!allocated.has(topic)) continue; // 孩子未分配该主题
+    const exists = kb.prepare("SELECT 1 FROM courses WHERE topic = ? AND title = ?").get(topic, title);
+    if (!exists) continue; // 孩子库没有这门课
+    out.push({ pk: { topic, title }, text: title, score: s.score });
+  }
+  return out;
+}
+
+/** 主题名候选（跨库）：家长库 topics.name 向量检索，过滤到孩子已分配的主题。 */
+export function searchTopicCandidatesForChild(
+  pdb: DatabaseSync,
+  kb: DatabaseSync,
+  queryVec: Float32Array,
+  opts?: { topK?: number; threshold?: number; cacheKey?: string }
+): VectorCandidate[] {
+  const threshold = opts?.threshold ?? VECTOR_DEFAULT_THRESHOLD;
+  const topK = opts?.topK ?? VECTOR_TOP_K;
+  const allocated = childAllocatedTopicKeys(kb);
+  const vectors = loadVectors(pdb, "topics", "name", opts?.cacheKey);
+  const scored: Array<{ rowPk: string; score: number }> = [];
+  for (const [rowPk, vec] of vectors) {
+    const score = cosine(queryVec, vec);
+    if (score >= threshold) scored.push({ rowPk, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const out: VectorCandidate[] = [];
+  for (const s of scored) {
+    if (out.length >= topK) break;
+    let vals: Array<null | number | bigint | string>;
+    try {
+      vals = JSON.parse(s.rowPk) as Array<null | number | bigint | string>;
+    } catch {
+      continue;
+    }
+    const name = String(vals[0] ?? "");
+    const tKey = kb
+      .prepare("SELECT topic_key FROM topics WHERE name = ? LIMIT 1")
+      .get(name) as { topic_key?: string } | undefined;
+    if (!tKey?.topic_key || !allocated.has(tKey.topic_key)) continue; // 孩子未分配
+    out.push({ pk: { name, topic_key: tKey.topic_key }, text: `${name}（${tKey.topic_key}）`, score: s.score });
+  }
+  return out;
 }
