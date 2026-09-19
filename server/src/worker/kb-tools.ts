@@ -158,22 +158,32 @@ export function createWorkerKbTools(b: WorkerBindings) {
           return ok(lines.join("\n"));
         }
         case "progress": {
-          if (!params.topic) throw new Error("kb_query progress 需要 topic 参数（中文名或 topic_key 均可，如 论语 / lunyu）");
+          const topicInput = String(params.topic ?? "").trim();
+          if (!topicInput) throw new Error("kb_query progress 需要 topic 参数（中文名或 topic_key 均可，如 论语 / lunyu）");
           const agg = query<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>("kb.progress.list", {});
           // 2026-09-19：topic 参数兼容中文名/topic_key —— 视图与 courses.topic 存的都是 topic_key，
           // 中文名需先经 topics 表解析（此前原样匹配，中文名会得到「已学 0/0」的假结果）
           const topics = query<Array<{ name: string; topic_key: string }>>("kb.topics.list", {});
-          const topicKey = resolveTopicInput(topics, params.topic);
-          const hit = topics.find((t) => t.topic_key === topicKey);
+          if (!topics.length) return ok("该孩子还没有分配任何学习主题。");
+          const hit = topics.find((t) => t.topic_key === topicInput)
+            ?? topics.find((t) => t.name === topicInput)
+            ?? topics.find((t) => String(t.topic_key).includes(topicInput) || topicInput.includes(t.topic_key) || t.name.includes(topicInput));
+          if (!hit) {
+            // 2026-09-19：查不到主题 → 明确报「没有找到」并列出可用主题（不再误报「暂无进度记录」）
+            return ok(
+              `没有找到主题「${topicInput}」。可用主题：${topics.map((t) => `${t.name}（${t.topic_key}）`).join("、")}。请确认主题名后重试。`
+            );
+          }
+          const topicKey = hit.topic_key;
           const rows = query<Array<{ topic: string; title: string; status: string; tags: string }>>("kb.courses.list", { topic: topicKey });
           let courses = rows;
           if (params.tag) courses = courses.filter((c) => c.tags?.includes(params.tag!));
           const progress = agg.find((p) => p.topic === topicKey);
           if (!courses.length && !progress) {
-            return ok(`主题「${params.topic}」暂无进度记录。`);
+            return ok(`主题「${hit.name}」（${topicKey}）还没有课程或进度记录。`);
           }
           const lines: string[] = [];
-          lines.push(`主题「${hit?.name ?? params.topic}」（${topicKey}）：已学 ${progress?.learned ?? 0}/${progress?.total ?? 0}${progress?.next?.trim() ? `，下一课「${progress.next.trim()}」` : ""}`);
+          lines.push(`主题「${hit.name}」（${topicKey}）：已学 ${progress?.learned ?? 0}/${progress?.total ?? 0}${progress?.next?.trim() ? `，下一课「${progress.next.trim()}」` : ""}`);
           if (!params.listOnly) {
             for (const c of courses) {
               lines.push(`- ${c.status} ${c.title}${c.tags ? `（${c.tags}）` : ""}`);

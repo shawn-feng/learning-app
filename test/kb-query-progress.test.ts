@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openKb } from "../server/src/db/kb";
-import { resolveTopicInput } from "../server/src/worker/kb-tools";
+import { createWorkerKbTools, resolveTopicInput } from "../server/src/worker/kb-tools";
 import { queryHandlers } from "../server/src/routes/db";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-progress-"));
@@ -30,7 +30,7 @@ afterAll(() => {
 
 function seed() {
   const db = openKb(dataDir, parentId, childId);
-  db.exec("INSERT INTO topics (name, topic_key, learn_type) VALUES ('论语', 'lunyu', 'required')");
+  db.exec("INSERT OR IGNORE INTO topics (name, topic_key, learn_type) VALUES ('论语', 'lunyu', 'required')");
   const rows: Array<[string, string]> = [
     ["论语学而篇第一章", "✅"],
     ["论语学而篇第二章", "✅"],
@@ -39,13 +39,20 @@ function seed() {
   let i = 0;
   for (const [title, status] of rows) {
     db.prepare(
-      "INSERT INTO courses (topic, topic_key, title, sort_order, status, last_review) VALUES ('lunyu','lunyu',?,?,?,?)"
+      "INSERT OR IGNORE INTO courses (topic, topic_key, title, sort_order, status, last_review) VALUES ('lunyu','lunyu',?,?,?,?)"
     ).run(title, ++i, status, status === "✅" ? "2026-09-10" : "");
   }
   db.close();
 }
 
 describe("kb_query progress：topic 入参双兼容", () => {
+  const tools = createWorkerKbTools({ dataDir, mainDb, parentId, childId });
+  const kbQuery = tools.find((t) => t.name === "kb_query")!;
+  async function run(params: Record<string, unknown>): Promise<string> {
+    const r = (await kbQuery.execute("test", params as any)) as { content: Array<{ text: string }> };
+    return r.content[0].text;
+  }
+
   it("resolveTopicInput：key 精确 / name 精确 / 包含 / 不中回退", () => {
     const topics = [
       { name: "论语", topic_key: "lunyu" },
@@ -72,5 +79,19 @@ describe("kb_query progress：topic 入参双兼容", () => {
     // 修复前行为对照：原样传中文名 → 0 行（证明根因与修复有效性）
     const before = queryHandlers["kb.courses.list"](ctx, { child_id: childId, topic: "论语" }) as Array<any>;
     expect(before.length).toBe(0);
+  });
+
+  it("工具级：中文名查出真实进度；不存在的主题返回「没有找到 + 可用主题清单」", async () => {
+    seed();
+    const byName = await run({ query: "progress", topic: "论语" });
+    expect(byName).toContain("已学 2/3");
+    expect(byName).toContain("论语学而篇第一章");
+    const byKey = await run({ query: "progress", topic: "lunyu", listOnly: true });
+    expect(byKey).toContain("已学 2/3");
+    const notFound = await run({ query: "progress", topic: "不存在的主题" });
+    expect(notFound).toContain("没有找到主题「不存在的主题」");
+    expect(notFound).toContain("可用主题");
+    expect(notFound).toContain("论语（lunyu）");
+    expect(notFound).toContain("请确认主题名后重试");
   });
 });
