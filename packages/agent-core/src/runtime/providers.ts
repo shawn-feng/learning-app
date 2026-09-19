@@ -95,6 +95,52 @@ const QWEN_DEEPSEEK_MODELS: ProviderModelConfig[] = [
   },
 ];
 
+// ==================== DeepSeek 官方平台（platform.deepseek.com）====================
+// 注意与上面「百炼渠道的 DeepSeek V4 系」区分：百炼模型用阿里云 key（qwen/qwen-tokenplan），
+// 本 provider 用 DeepSeek 官方平台的 key（auth.deepseek）。
+
+const DEEPSEEK_OFFICIAL_MODELS: ProviderModelConfig[] = [
+  {
+    id: "deepseek-flash",
+    name: "DeepSeek Flash (官方)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+    compat: {
+      thinkingFormat: "deepseek",
+      supportsDeveloperRole: false,
+      requiresReasoningContentOnAssistantMessages: true,
+    },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+  {
+    id: "deepseek-v4-pro",
+    name: "DeepSeek V4 Pro (官方)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 65536,
+    compat: {
+      thinkingFormat: "deepseek",
+      supportsDeveloperRole: false,
+      requiresReasoningContentOnAssistantMessages: true,
+    },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+];
+
+const DEEPSEEK_PROVIDER: ProviderConfig = {
+  name: "DeepSeek · 官方平台",
+  baseUrl: "https://api.deepseek.com/v1",
+  api: "openai-completions",
+  models: DEEPSEEK_OFFICIAL_MODELS,
+};
+
 const QWEN_VL_MODELS: ProviderModelConfig[] = [
   {
     id: "qwen3-vl-flash",
@@ -211,6 +257,7 @@ type AugProviderConfig = ProviderConfig & { embedding?: ProviderEmbeddingCapabil
 export const PROVIDER_REGISTRATIONS: Array<[string, AugProviderConfig]> = [
   ["qwen", QWEN_PROVIDER],
   ["qwen-tokenplan", QWEN_TOKENPLAN_PROVIDER],
+  ["deepseek", DEEPSEEK_PROVIDER],
   ["minimax", MINIMAX_PROVIDER],
   ["mimo", MIMO_PROVIDER],
   ["mimo-tokenplan", MIMO_TOKENPLAN_PROVIDER],
