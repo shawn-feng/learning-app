@@ -29,6 +29,22 @@ function tagsToMarkdownLite(defs: Array<{ tag: string; dimension: string; criter
   return defs.map((d) => `- ${d.tag}（${d.dimension}）：${d.criteria}`).join("\n");
 }
 
+/** topic 入参解析（2026-09-19）：孩子库视图/courses.topic 存的都是 topic_key，
+ *  中文名需经 topics 表解析。匹配顺序：key 精确 → name 精确 → 双向包含。都不中则原样返回。 */
+export function resolveTopicInput(
+  topics: Array<{ name: string; topic_key: string }>,
+  input: string
+): string {
+  const input_ = String(input ?? "").trim();
+  if (!input_) return input_;
+  return (
+    topics.find((t) => t.topic_key === input_)?.topic_key
+    ?? topics.find((t) => t.name === input_)?.topic_key
+    ?? topics.find((t) => String(t.topic_key).includes(input_) || input_.includes(t.topic_key) || t.name.includes(input_))?.topic_key
+    ?? input_
+  );
+}
+
 function dailyToMarkdownLite(
   entries: Array<{ date: string; block: string; title: string; raw: string; tags: string }>,
   listOnly?: boolean
@@ -126,31 +142,38 @@ export function createWorkerKbTools(b: WorkerBindings) {
           return ok(`${scope}记录：\n${dailyToMarkdownLite(entries, params.listOnly)}`);
         }
         case "topics": {
-          const topics = query<Array<{ name: string; topic_key: string; rules_json: string }>>("kb.topics.list", {});
+          const topics = query<Array<{ name: string; topic_key: string; learn_type?: string; rules_json: string }>>("kb.topics.list", {});
           const agg = query<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>("kb.progress.list", {});
           if (!topics.length) return ok("暂无学习主题。");
           const lines: string[] = ["主题清单："];
+          const TYPE_ZH: Record<string, string> = { required: "必学", optional: "选学", review: "复习" };
           for (const t of topics) {
             const p = agg.find((x) => x.topic === t.topic_key);
             let rules: Record<string, string> = {};
             try { rules = JSON.parse(t.rules_json || "{}"); } catch { rules = {}; }
-            // rules_json.daily（每日目标）已停用（ISSUE-033）：每天学什么以学习计划为准，勿再注入旧目标
-            const type = rules.type ? `（${rules.type}）` : "";
-            lines.push(`- ${t.name}${type}（${t.topic_key}）：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${p?.next?.trim() ? `，下一课「${p.next.trim()}」` : ""}`);
+            // 2026-09-19：主题类型真源 = topics.learn_type（P1 库域分工）；旧 rules_json.type 兜底
+            const type = (t.learn_type && TYPE_ZH[t.learn_type]) || rules.type || "";
+            lines.push(`- ${t.name}${type ? `（${type}）` : ""}（${t.topic_key}）：已学 ${p?.learned ?? 0}/${p?.total ?? 0}${p?.next?.trim() ? `，下一课「${p.next.trim()}」` : ""}`);
           }
           return ok(lines.join("\n"));
         }
         case "progress": {
-          if (!params.topic) throw new Error("kb_query progress 需要 topic 参数（如 lunyu）");
+          if (!params.topic) throw new Error("kb_query progress 需要 topic 参数（中文名或 topic_key 均可，如 论语 / lunyu）");
           const agg = query<Array<{ topic: string; learned: number; total: number; next: string; updated: string }>>("kb.progress.list", {});
-          const rows = query<Array<{ topic: string; title: string; status: string; tags: string }>>("kb.courses.list", { topic: params.topic });
+          // 2026-09-19：topic 参数兼容中文名/topic_key —— 视图与 courses.topic 存的都是 topic_key，
+          // 中文名需先经 topics 表解析（此前原样匹配，中文名会得到「已学 0/0」的假结果）
+          const topics = query<Array<{ name: string; topic_key: string }>>("kb.topics.list", {});
+          const topicKey = resolveTopicInput(topics, params.topic);
+          const hit = topics.find((t) => t.topic_key === topicKey);
+          const rows = query<Array<{ topic: string; title: string; status: string; tags: string }>>("kb.courses.list", { topic: topicKey });
           let courses = rows;
           if (params.tag) courses = courses.filter((c) => c.tags?.includes(params.tag!));
-          if (!courses.length && !agg.length) {
+          const progress = agg.find((p) => p.topic === topicKey);
+          if (!courses.length && !progress) {
             return ok(`主题「${params.topic}」暂无进度记录。`);
           }
           const lines: string[] = [];
-          lines.push(`主题「${params.topic}」：已学 ${agg.find((p) => p.topic === params.topic)?.learned ?? 0}/${agg.find((p) => p.topic === params.topic)?.total ?? 0}`);
+          lines.push(`主题「${hit?.name ?? params.topic}」（${topicKey}）：已学 ${progress?.learned ?? 0}/${progress?.total ?? 0}${progress?.next?.trim() ? `，下一课「${progress.next.trim()}」` : ""}`);
           if (!params.listOnly) {
             for (const c of courses) {
               lines.push(`- ${c.status} ${c.title}${c.tags ? `（${c.tags}）` : ""}`);
