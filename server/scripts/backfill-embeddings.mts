@@ -21,9 +21,16 @@ import {
 import { DatabaseSync } from "node:sqlite";
 
 const DATA = join(process.cwd(), "data");
-const argParent = process.argv.find((a) => a.startsWith("--parent"))?.split("=")[1]
-  ?? process.argv[process.argv.indexOf("--parent") + 1]
-  ?? null;
+// --parent <id> 或 --parent=<id>；修复：原写法在未传参时 argv[indexOf+1] 会取到 argv[0]
+//（node 可执行路径），被误当成 parent id 导致真实家长被跳过（2026-09-19 部署实测踩坑）
+const argv = process.argv.slice(2);
+const parentFlagIdx = argv.findIndex((a) => a === "--parent" || a.startsWith("--parent="));
+let argParent: string | null = null;
+if (parentFlagIdx >= 0) {
+  const a = argv[parentFlagIdx];
+  argParent = a.startsWith("--parent=") ? a.slice("--parent=".length) : (argv[parentFlagIdx + 1] ?? null);
+  if (!argParent) throw new Error("--parent 需要一个家长 id 参数");
+}
 
 const mainDb = new DatabaseSync(join(DATA, "server.sqlite"));
 
@@ -39,6 +46,7 @@ if (argParent) {
 let totalEmbedded = 0;
 let totalSkipped = 0;
 
+async function main() {
 for (const parentId of parents) {
   let settings: { auth: Record<string, unknown> };
   try {
@@ -99,5 +107,10 @@ for (const parentId of parents) {
   }
   db.close();
 }
-mainDb.close();
-console.log(`\n完成：新嵌入 ${totalEmbedded} 行，跳过（已最新）${totalSkipped} 行`);
+  mainDb.close();
+  console.log(`\n完成：新嵌入 ${totalEmbedded} 行，跳过（已最新）${totalSkipped} 行`);
+}
+main().catch((e) => {
+  console.error("backfill 失败：", (e as Error).message);
+  process.exit(1);
+});
