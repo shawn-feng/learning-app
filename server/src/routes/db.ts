@@ -16,6 +16,7 @@ import {
   saveAgentPrompt,
 } from "../db/agents.js";
 import { openParentLib } from "../db/parent-lib.js";
+import { markStale } from "../agent/embeddings.js";
 
 interface RpcContext {
   dataDir: string;
@@ -785,6 +786,8 @@ export const execHandlers: Record<string, ExecHandler> = {
         str(args.progress),
         str(args.rules_json, "{}")
       );
+      // ISSUE-111：name 是登记的向量列 → 写后异步重嵌入（fire-and-forget）
+      markStale({ db: ctx.mainDb, dataDir: ctx.dataDir, parentId: ctx.parentId }, "topics", [str(args.name)]);
       return { ok: true };
     } finally {
       db.close();
@@ -821,6 +824,8 @@ export const execHandlers: Record<string, ExecHandler> = {
         str(args.teaching_copy),
         str(args.assess_rubric)
       );
+      // ISSUE-111：title 是登记的向量列 → 写后异步重嵌入（fire-and-forget）
+      markStale({ db: ctx.mainDb, dataDir: ctx.dataDir, parentId: ctx.parentId }, "courses", [str(args.topic), str(args.title)]);
       return { ok: true };
     } finally {
       db.close();

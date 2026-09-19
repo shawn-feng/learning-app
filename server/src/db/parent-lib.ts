@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureAssessContentSchema } from "./assess-content.js";
 import { ensureTier2Schema } from "../agent/tier2.js";
+import { ensureEmbeddingsSchema } from "../agent/embeddings.js";
 
 export const PARENT_SCHEMA_TABLES = `
 CREATE TABLE IF NOT EXISTS topics (
@@ -59,6 +60,7 @@ export function openParentLib(dataDir: string, parentId: string): DatabaseSync {
   // topic_progress 视图随进度字段一起退役（建立在 status/last_review 上）；家长端进度改读孩子库聚合
   db.exec("DROP VIEW IF EXISTS topic_progress;");
   ensureTier2Schema(db, true); // Tier 2 灵活实体：entities + namespaces 注册行（F15a，幂等）
+  ensureEmbeddingsSchema(db); // 向量旁表（ISSUE-111：courses.title / topics.name，幂等）
   return db;
 }
 

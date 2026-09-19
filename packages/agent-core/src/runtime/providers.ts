@@ -122,11 +122,13 @@ const QWEN_VL_MODELS: ProviderModelConfig[] = [
   },
 ];
 
-const QWEN_PROVIDER: ProviderConfig = {
+const QWEN_PROVIDER: ProviderConfig & { embedding?: ProviderEmbeddingCapability } = {
   name: "通义千问 (Qwen) · 按量付费",
   baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   api: "openai-completions",
   models: [...QWEN_MODELS, ...QWEN_VL_MODELS, ...QWEN_DEEPSEEK_MODELS],
+  // 内置向量化模型（ISSUE-111）：端点 = baseUrl + /embeddings（OpenAI 兼容），用户零配置
+  embedding: { model: "text-embedding-v4", dimensions: 1024 },
 };
 
 const QWEN_TOKENPLAN_PROVIDER: ProviderConfig = {
@@ -195,7 +197,18 @@ const MIMO_TOKENPLAN_PROVIDER: ProviderConfig = {
 };
 
 /** 服务端 provider 注册表（国内 provider；与客户端白名单一致，无国外 provider）。 */
-export const PROVIDER_REGISTRATIONS: Array<[string, ProviderConfig]> = [
+/** provider 内置向量化能力声明（ISSUE-111）：声明的厂商由数据通道自动用于「精确匹配落空 → 向量检索兜底」，
+ *  用户零配置（复用该 provider 已配置的 API key）；未声明的厂商 = 不支持，设置页据此提示。 */
+export interface ProviderEmbeddingCapability {
+  /** 内置 embedding 模型名（如 text-embedding-v4） */
+  model: string;
+  /** 向量维度（缺省 1024）；实际以 API 返回为准并记入旁表 */
+  dimensions?: number;
+}
+
+type AugProviderConfig = ProviderConfig & { embedding?: ProviderEmbeddingCapability };
+
+export const PROVIDER_REGISTRATIONS: Array<[string, AugProviderConfig]> = [
   ["qwen", QWEN_PROVIDER],
   ["qwen-tokenplan", QWEN_TOKENPLAN_PROVIDER],
   ["minimax", MINIMAX_PROVIDER],
@@ -227,6 +240,14 @@ export function listProviderModels(): Array<{ provider: string; id: string; name
   }
   return out;
 }
+
+/** 读取某 provider 的内置向量化能力；未声明 = 不支持（undefined）。 */
+export function getProviderEmbedding(providerId: string): ProviderEmbeddingCapability | undefined {
+  return PROVIDER_REGISTRATIONS.find(([pid]) => pid === providerId)?.[1]?.embedding;
+}
+
+/** 支持 embedding 的 provider id（按解析优先级排序）。 */
+export const EMBEDDING_PROVIDER_PRIORITY = ["qwen"];
 
 /** 兜底默认模型（与客户端一致：token-plan 套餐内的 deepseek flash 定点快照）。 */
 export const WORKER_DEFAULT_PROVIDER = "qwen-tokenplan";

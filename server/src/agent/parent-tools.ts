@@ -63,6 +63,12 @@ import {
   describeNamespace,
   type NamespaceRow,
 } from "./tier2.js";
+import {
+  markStale,
+  candidatesHintText,
+  embeddedColumn,
+  type EmbedContext,
+} from "./embeddings.js";
 
 export interface ParentToolDeps extends MaterialCtx {
   /** 家长 agent 工作区（临时产出） */
@@ -399,6 +405,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
           params.rules_json ?? "{}"
         );
         appendParentActivityLog(ctx, `落库主题「${params.name}」（${params.topic_key}）`);
+        markEmbeddedWrite(deps, "topics", [params.name]);
         return ok(`已落库主题「${params.name}」（${params.topic_key}）。`);
       } finally {
         db.close();
@@ -457,6 +464,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
           params.assess_rubric ?? ""
         );
         appendParentActivityLog(ctx, `落库课程「${params.title}」（${params.topic}）`);
+        markEmbeddedWrite(deps, "courses", [params.topic, params.title]);
         return ok(`已落库课程「${params.title}」（${params.topic}）。`);
       } finally {
         db.close();
@@ -482,8 +490,11 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       try {
         const uuid = getCourseUuid(db, params.topic, params.title);
         if (!uuid) {
+          // ISSUE-111：精确匹配落空 → 向量候选（只提示不代入；未配置时静默跳过）
+          const hint = await candidatesHintText(embCtx(deps), "courses", params.title);
           return ok(
-            `课程不存在：${params.topic}/${params.title}（先用 parent_library_courses 核对该主题下的课程名）`
+            `课程不存在：${params.topic}/${params.title}（先用 parent_library_courses 核对该主题下的课程名）` +
+              (hint ? `\n\n${hint}` : "")
           );
         }
         const kps = listKnowledgePoints(db, uuid);
@@ -601,7 +612,10 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       const db = openParentLib(deps.dataDir, deps.parentId);
       try {
         const uuid = getCourseUuid(db, topic, title);
-        if (!uuid) throw new Error(`课程不存在：${topic}/${title}（先用 parent_upsert_course 建课）`);
+        if (!uuid) {
+          const hint = await candidatesHintText(embCtx(deps), "courses", title);
+          throw new Error(`课程不存在：${topic}/${title}（先用 parent_upsert_course 建课）${hint ? `\n\n${hint}` : ""}`);
+        }
         const before = listCourseContent(db, uuid);
 
         // questionId 携带的内联字段（有任一即视为「更新该题」而非原样引用）
@@ -955,6 +969,16 @@ export function createParentAgentTools(deps: ParentToolDeps) {
 
 // ==================== 受控数据通道：可复用 builder（家长主助手 + 数据管理 agent 共用） ====================
 
+/** 向量兜底的上下文（ISSUE-111）：主库读 settings + 家长身份定位库文件 */
+function embCtx(deps: ParentToolDeps): EmbedContext {
+  return { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
+}
+
+/** 写成功后标记嵌入队列（触及登记列才生效；fire-and-forget）。 */
+function markEmbeddedWrite(deps: ParentToolDeps, table: string, pkVals: Array<null | number | bigint | string>): void {
+  if (embeddedColumn(table)) markStale(embCtx(deps), table, pkVals);
+}
+
 function buildDbDescribeTool(deps: ParentToolDeps) {
   const parentSpecs = parentLibTableRegistry();
   const parentPaths = parentLibPaths();
@@ -1172,7 +1196,13 @@ function buildDbReadTool(deps: ParentToolDeps) {
       const db = openParentLib(deps.dataDir, deps.parentId);
       try {
         const r = executeRead(db, parentReadSpecs, { table: params.table, ...base });
-        return ok(r.text);
+        // ISSUE-111：登记列精确落空 → 附向量候选（只提示不代入；未配置时静默跳过）
+        let hint: string | null = null;
+        if (r.ok && r.missedEmbedded?.length) {
+          const m = r.missedEmbedded[0];
+          hint = await candidatesHintText(embCtx(deps), m.table, m.value, { column: m.column });
+        }
+        return ok(hint ? `${r.text}\n\n${hint}` : r.text);
       } finally {
         db.close();
       }
@@ -1262,6 +1292,20 @@ function buildDbWriteTool(deps: ParentToolDeps) {
             ctx,
             `受控写 ${params.op} ${params.table}（db 通道）：${r.text.split("。")[0] || ""}`
           );
+          // ISSUE-111：写触及登记列 → 异步重嵌入（fire-and-forget，不阻塞返回）
+          if (embeddedColumn(params.table)) {
+            const ec = embeddedColumn(params.table)!;
+            const sources: Array<Record<string, unknown>> =
+              params.op === "insert" ? (params.rows ?? []) : [{ ...(params.where ?? {}) }];
+            for (const src of sources) {
+              const pkVals = ec.pkCols.map((c) => (src[c] ?? null) as null);
+              if (pkVals.every((v) => v !== null)) markStale(embCtx(deps), params.table, pkVals);
+            }
+          }
+        } else if (r.missedRef) {
+          // ISSUE-111：引用落空 → 向量候选（只提示不代入）
+          const hint = await candidatesHintText(embCtx(deps), r.missedRef.refTable, r.missedRef.value);
+          if (hint) return ok(`${r.text}\n\n${hint}`);
         }
         return ok(r.text);
       } finally {

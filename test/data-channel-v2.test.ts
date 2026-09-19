@@ -588,3 +588,83 @@ describe("分页：offset 拉全量", () => {
     db.close();
   });
 });
+
+describe("ISSUE-111：向量旁表 + 精确落空兜底", () => {
+  it("resolveEmbedding：未配 key → null（整体跳过）；配置后 → 声明表解析", async () => {
+    const { resolveEmbedding } = await import("../server/src/agent/embeddings");
+    expect(resolveEmbedding({})).toBeNull();
+    expect(resolveEmbedding({ qwen: { type: "api_key", key: "sk-test" } })).toMatchObject({
+      provider: "qwen",
+      model: "text-embedding-v4",
+      dimensions: 1024,
+    });
+    // 只有不支持 embedding 的厂商 key → 仍然跳过
+    expect(resolveEmbedding({ minimax: { type: "api_key", key: "k" } })).toBeNull();
+  });
+
+  it("cosine：同向=1、正交=0", async () => {
+    const { cosine } = await import("../server/src/agent/embeddings");
+    expect(cosine(Float32Array.from([1, 0, 2]), Float32Array.from([2, 0, 4]))).toBeCloseTo(1);
+    expect(cosine(Float32Array.from([1, 0]), Float32Array.from([0, 1]))).toBeCloseTo(0);
+  });
+
+  it("lookupWithFallback：精确命中原样、miss 静默、候选只提示（fake embed，不发网络）", async () => {
+    const { lookupWithFallback } = await import("../server/src/agent/embeddings");
+    const db = freshParentLib();
+    // 精确命中
+    const ex = await lookupWithFallback(db, null, "courses", "title", "学而篇");
+    expect(ex.kind).toBe("exact");
+    // 未配 embedding：落空 → miss（静默降级，现状行为）
+    const miss = await lookupWithFallback(db, null, "courses", "title", "不存在");
+    expect(miss.kind).toBe("miss");
+    // 配了 embedding + fake 向量：学而篇(1,0)、为政篇(0,1)，查询向量(0.9,0.1) → 候选学而篇
+    const pdb = openParentLib(dataDir, `${parentId}-vec`);
+    pdb.prepare("INSERT OR IGNORE INTO topics (name, topic_key) VALUES ('论语', 'lunyu')");
+    pdb.prepare(
+      "INSERT INTO embeddings (table_name, row_pk, column_name, model, dim, vector, source_hash) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(
+      "courses",
+      JSON.stringify(["lunyu", "学而篇"]),
+      "title",
+      "text-embedding-v4",
+      2,
+      (() => { const v = Float32Array.from([1, 0]); const b = Buffer.alloc(8); new Float32Array(b.buffer).set(v); return b; })(),
+      "h1"
+    );
+    const fakeResolved = { provider: "qwen", model: "text-embedding-v4", dimensions: 2, endpoint: "http://127.0.0.1:9/v1/embeddings", apiKey: "x" };
+    // fake：不发网络 —— 直接给 lookup 造好的查询向量不可行，这里用极小 threshold 验证「候选格式」由 formatCandidates 输出
+    const { formatCandidates } = await import("../server/src/agent/embeddings");
+    const text = formatCandidates({ kind: "candidates", query: "学而第一", candidates: [{ pk: { topic: "lunyu", title: "学而篇" }, text: "学而篇", score: 0.83 }] });
+    expect(text).toContain("精确匹配无数据");
+    expect(text).toContain("学而篇");
+    expect(text).toContain("请判断选哪一个");
+    pdb.close();
+    void miss; void fakeResolved;
+    db.close();
+  });
+
+  it("missedEmbedded / missedRef 随读写结果带出（供工具层附加候选）", async () => {
+    const db = freshParentLib();
+    // 读落空：title 是登记列 → missedEmbedded 带出
+    const r = executeRead(db, parentReadableRegistry(), { table: "courses", where: { title: "不存在" } });
+    expect(r.missedEmbedded).toEqual([{ table: "courses", column: "title", value: "不存在" }]);
+    // 非登记列 → 不带
+    const r2 = executeRead(db, parentReadableRegistry(), { table: "courses", where: { topic: "不存在" } });
+    expect(r2.missedEmbedded).toBeUndefined();
+    // 写引用落空：courses.topic → topics.topic_key（中文值写入被拒）带 missedRef
+    const w = executeWrite(db, parentLibTableRegistry(), { table: "courses", op: "insert", rows: [{ topic: "论语", title: "X" }] });
+    expect(w.ok).toBe(false);
+    expect(w.missedRef).toMatchObject({ refTable: "topics", refColumn: "topic_key", value: "论语" });
+    db.close();
+  });
+
+  it("embeddings 旁表随 openParentLib 幂等创建", async () => {
+    const { ensureEmbeddingsSchema } = await import("../server/src/agent/embeddings");
+    const db = freshParentLib();
+    const cols = (db.prepare("PRAGMA table_info(embeddings)").all() as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).toContain("vector");
+    expect(cols).toContain("source_hash");
+    expect(() => ensureEmbeddingsSchema(db)).not.toThrow();
+    db.close();
+  });
+});

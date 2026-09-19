@@ -15,6 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { embeddedColumn } from "./embeddings.js";
 
 // ==================== 注册表类型 ====================
 
@@ -378,6 +379,8 @@ export interface WriteResult {
   text: string;
   /** confirm 列命中提示（有则 agent 必须向家长复述） */
   confirmHints: string[];
+  /** ISSUE-111：引用校验落空的（目标表, 目标列, 值）——调用方可用向量候选追加提示（只提示不代入） */
+  missedRef?: { refTable: string; refColumn: string; value: unknown };
 }
 
 export function validateValue(col: string, c: ColumnSpec, v: unknown): string | null {
@@ -427,6 +430,7 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
   }
 
   const confirmHints: string[] = [];
+  let missedRef: WriteResult["missedRef"];
   db.exec("BEGIN");
   try {
     let affected = 0;
@@ -477,7 +481,11 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
           const v = row[r.column];
           if (v === undefined || v === null || String(v) === "") continue; // 可空引用交由列校验/表约束兜底
           const hit = db.prepare(`SELECT 1 FROM ${r.refTable} WHERE ${r.refColumn} = ?`).get(sqlVal(v));
-          if (!hit) fail(`${r.desc}：${r.column}=${String(v)}（须存在于 ${r.refTable}.${r.refColumn}）`);
+          if (!hit) {
+            // ISSUE-111：记录落空引用（调用方可附向量候选；只提示不代入）
+            missedRef = { refTable: r.refTable, refColumn: r.refColumn, value: v };
+            fail(`${r.desc}：${r.column}=${String(v)}（须存在于 ${r.refTable}.${r.refColumn}）`);
+          }
         }
         const placeholders = cols.map(() => "?").join(", ");
         db.prepare(`INSERT INTO ${spec.table} (${cols.join(", ")}) VALUES (${placeholders})`).run(...vals);
@@ -537,7 +545,7 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
     return { ok: true, text, confirmHints };
   } catch (e: any) {
     db.exec("ROLLBACK");
-    if (e instanceof ChannelError) return { ok: false, text: e.message, confirmHints: [] };
+    if (e instanceof ChannelError) return { ok: false, text: e.message, confirmHints: [], missedRef };
     return { ok: false, text: `执行失败（已回滚）：${String(e?.message || e)}`, confirmHints: [] };
   }
 }
@@ -1125,7 +1133,7 @@ export function renderRowsBudget(
   return [lines.join("\n"), false, rows.length];
 }
 
-export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: ReadRequest): { ok: boolean; text: string } {
+export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: ReadRequest): { ok: boolean; text: string; missedEmbedded?: { table: string; column: string; value: unknown }[] } {
   const spec = specs.find((s) => s.table === req.table);
   if (!spec) {
     return { ok: false, text: `没有登记名为「${req.table}」的可读表。可用：${specs.map((s) => s.table).join("、")}` };
@@ -1166,6 +1174,11 @@ export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: R
   const rows = db.prepare(sql).all(...whereVals) as Array<Record<string, unknown>>;
   if (!rows.length) {
     // F2 自愈：空结果时给条件列的实际取值样例，帮 agent 一次纠正值选错
+    // ISSUE-111：登记了向量的列同时记入 missedEmbedded，调用方可附向量候选（只提示不代入）
+    const missedEmbedded: Array<{ table: string; column: string; value: unknown }> = [];
+    for (const [col, value] of whereEntries) {
+      if (embeddedColumn(spec.table, col)) missedEmbedded.push({ table: spec.table, column: col, value });
+    }
     const samples: string[] = [];
     for (const [col] of whereEntries) {
       try {
@@ -1180,6 +1193,7 @@ export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: R
     return {
       ok: true,
       text: `${spec.label}（${spec.table}）：查询结果为空。${samples.length ? `\n${samples.join("\n")}` : ""}`,
+      missedEmbedded: missedEmbedded.length ? missedEmbedded : undefined,
     };
   }
   const [body, truncated, returned] = renderRowsBudget(rows);

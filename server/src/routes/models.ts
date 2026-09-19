@@ -17,7 +17,7 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { getServerSecret, encryptJson, decryptJson } from "../crypto.js";
 import { bumpConfigRevision } from "../db.js";
-import { listProviderModels, getWorkerRuntime } from "@pi/agent-core";
+import { listProviderModels, getWorkerRuntime, PROVIDER_REGISTRATIONS, getProviderEmbedding } from "@pi/agent-core";
 import { readParentSettings } from "../worker/scheduler.js";
 
 interface ModelsDeps {
@@ -153,7 +153,18 @@ export function registerModelRoutes(app: FastifyInstance, deps: ModelsDeps): voi
     }
     const appSettings = (readSetting(parentId, "app_settings") as Record<string, unknown>) ?? {};
     const auth = (readSetting(parentId, "auth") as Record<string, any>) ?? {};
-    const providers = Object.keys(auth).map((p) => ({ provider: p, hasKey: !!(auth[p] as any)?.key }));
+    // ISSUE-111：合并注册表全量 provider（含未配 key 的）+ 向量化能力提示（provider 内置声明，零配置）
+    const merged = new Map<string, boolean>();
+    for (const pid of PROVIDER_REGISTRATIONS.map(([pid]) => pid)) merged.set(pid, !!(auth as any)[pid]?.key);
+    for (const pid of Object.keys(auth)) if (!merged.has(pid)) merged.set(pid, !!(auth as any)[pid]?.key);
+    const providers = [...merged.entries()].map(([provider, hasKey]) => {
+      const cap = getProviderEmbedding(provider);
+      return {
+        provider,
+        hasKey,
+        embedding: cap ? { supported: true, model: cap.model } : { supported: false },
+      };
+    });
     return { appSettings, providers };
   });
 }
