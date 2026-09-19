@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **110** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **112** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -120,6 +120,8 @@
 | 108 | 家长界面可定制 Dashboard：家长自定义「孩子学习进度与情况」展示页，定制经家长 agent 对话完成——方案建议：声明式 widget 配置（agent 只写受控 JSON、不产 HTML）+ 客户端注册表渲染（7 类 widget 白名单，全部复用现有数据源）+ 配置存 settings 键 `dashboard`（零新表）+ `parent_dashboard_get/set` 两工具；Dashboard 新增 view 并设默认落地页 | 中（方案待拍板） | 2026-09-17 | [详情](ISSUES/ISSUE-108.md) |
 | 109 | 家长 agent db 通道需能读主库 `exam_attempts` 表（成绩/逐题/错题/巩固建议）——家长侧现无任何考核成绩读取工具（prompt 只能引导去 UI）；且家长侧 db 通道只有 describe+write、**无 `parent_db_read`**（孩子侧三件套齐全）。方案：新增 `parent_db_read`（补齐对称性）+ 主库受控只读登记表（exam_attempts 第一张，强制 parent_id/child_id 归属过滤、只读、行数上限+审计、JSON 大列截断）——「主库不进直连白名单」原则的首个受控豁免，仅此一张、仅读 | 中 | 2026-09-17 | [详情](ISSUES/ISSUE-109.md) |
 | 110 | 盘点：`parent_db_*` 工具能操作哪些表？——`parent_db_describe`/`parent_db_write` 均基于 `parentLibTableRegistry()`（db-channel.ts L79），**只能操作家长内容库 parent.sqlite 的 6 张表**：topics/courses/tags/question_bank/knowledge_points/course_knowledge_questions（均 insert/update/delete，带列白名单+外键校验+行数熔断+审计+敏感列二次确认）。爆破半径严格限定课程内容，**不触达孩子库/计划/积分/成绩/会话**。缺口：parent 侧**无 `parent_db_read`**（只能 describe+write），读内容只能走专用 `parent_library_*` 或 UI；主库 `exam_attempts` 读取仍无工具（ISSUE-109 覆盖） | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-110.md) |
+| 111 | SQLite 向量旁表 + 「精确匹配落空 → 向量检索兜底」：LLM 记错课程/主题名时 `WHERE =` 查不到 → 只能全表列出肉眼匹配（courses 600+ 行，上下文爆炸）。方案：`embeddings` 旁表（业务表零变更、JS 内存余弦，sqlite-vec 缓议）+ 首批向量化 `courses.title`/`topics.name` + 新增 embedding 模型配置键 + 写路径异步重嵌入/backfill + 收口 `lookupWithFallback`（精确命中原样返回；0 行 → top-K 候选并明确标注「精确匹配无数据，以下为向量检索返回，请判断选哪一个」，只提示不代入；服务不可用静默降级） | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-111.md) |
+| 112 | ✅ 已解决（2026-09-19）：计入积分的考核得分率为 0（珊珊 9/10 被记 0% 误扣 15 分）——根因=09-14 考核 v2 提交路由先行置 `exam_plans.done+attempt_id`，worker `applyExamAttempts` 仅凭 attempt_id 判重跳过 → `exam_plan_courses` 从未回填 → `computeExamRate` 分母 0 → rate 恒 0。修复：幂等判据改为「attempt_id 匹配且明细已有行」+ computeExamRate 无明细时回退主库 per_question 求和 + 空明细告警；存量治愈脚本回填明细并重算流水（09-17 改 +10 良好、09-14/15 金额不变仅 rate 修正），回归测试 3 用例 | 高 | 2026-09-17 | [详情](ISSUES/ISSUE-112.md) |
 
 ## 记录格式（模板）
 

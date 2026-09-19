@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { openKb } from "../db/kb.js";
 import type { WorkerTaskCtx } from "./tasks.js";
 import { formatLocalDate } from "./kb-tools.js";
+import { logWarn } from "../log.js";
 
 type Status = "pending" | "done" | "missed" | "cancelled";
 
@@ -343,7 +344,12 @@ function applyExamAttempts(ctx: WorkerTaskCtx, kb: DatabaseSync): number {
     const hasPlan = kb.prepare("SELECT attempt_id FROM exam_plans WHERE id = ?").get(planId) as
       | { attempt_id?: string }
       | undefined;
-    if (hasPlan?.attempt_id === a.id) continue; // 已挂接（幂等）
+    // 幂等判据 = attempt_id 匹配 **且逐题明细已回填**。仅凭 attempt_id 判重会踩空：
+    // 2026-09-14 考核 v2 起，提交路由（routes/exam.ts）先行置 done + attempt_id，
+    // worker 再跑到这里时若直接 continue，exam_plan_courses 永远为空 →
+    // computeExamRate 分母 0 → 得分率恒 0%（ISSUE-112）。
+    const coursesFilled = !!kb.prepare("SELECT 1 FROM exam_plan_courses WHERE plan_id = ? LIMIT 1").get(planId);
+    if (hasPlan?.attempt_id === a.id && coursesFilled) continue; // 已挂接且明细已回填（幂等）
     if (!hasPlan) {
       kb.prepare(
         `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
@@ -366,6 +372,10 @@ function applyExamAttempts(ctx: WorkerTaskCtx, kb: DatabaseSync): number {
       pq = JSON.parse(a.per_question) as Array<Record<string, unknown>>;
     } catch {
       pq = [];
+    }
+    if (!pq.length) {
+      // ISSUE-112 ②：明细为空此前静默吞掉，得分率会退化成 0 且无从排查——打警告留痕。
+      logWarn("plan-domain", `考核 attempt ${a.id} per_question 为空，无法回填逐题明细（该场得分率将按 0 计）`);
     }
     let seq = 0;
     const ins = kb.prepare(
@@ -422,14 +432,38 @@ function computeGroupStats(
   return { total, done, missed, optionalDone, rate: total ? done / total : 0 };
 }
 
-/** 考核组得分率（Σ得分/Σ满分，仅归属日=当天的已完成场次）。 */
-function computeExamRate(kb: DatabaseSync, owner: string, date: string): GroupStat {
+/** 主库 attempt 逐题求和（ISSUE-112 ① 兜底数据源）：exam_plan_courses 缺明细时用它还原 Σgot/Σmax。 */
+function attemptDetailSums(mainDb: DatabaseSync, attemptId: string | null | undefined): { g: number; m: number } {
+  if (!attemptId) return { g: 0, m: 0 };
+  const row = mainDb.prepare("SELECT per_question FROM exam_attempts WHERE id = ?").get(attemptId) as
+    | { per_question?: string }
+    | undefined;
+  if (!row?.per_question) return { g: 0, m: 0 };
+  let pq: Array<Record<string, unknown>> = [];
+  try {
+    pq = JSON.parse(row.per_question) as Array<Record<string, unknown>>;
+  } catch {
+    return { g: 0, m: 0 };
+  }
+  let g = 0;
+  let m = 0;
+  for (const q of pq) {
+    g += Number(q.pointGot) || 0;
+    m += Number(q.pointMax) || 0;
+  }
+  return { g, m };
+}
+
+/** 考核组得分率（Σ得分/Σ满分，仅归属日=当天的已完成场次）。
+ *  口径兜底（ISSUE-112 ①）：exam_plan_courses 无明细/全 NULL（分母 0）时，回退用主库
+ *  attempt 逐题求和——得到分率与真实成绩脱节、9/10 被记 0% 触发扣分档。 */
+function computeExamRate(kb: DatabaseSync, mainDb: DatabaseSync, owner: string, date: string): GroupStat {
   const plans = kb
     .prepare(
-      `SELECT id FROM exam_plans WHERE creator = ? AND active = 1 AND count_in_rate = 1
+      `SELECT id, attempt_id FROM exam_plans WHERE creator = ? AND active = 1 AND count_in_rate = 1
          AND ( (status='done' AND substr(done_at,1,10) = ?) OR (status='missed' AND substr(due_at,1,10) = ?) )`
     )
-    .all(owner, date, date) as Array<{ id: string }>;
+    .all(owner, date, date) as Array<{ id: string; attempt_id: string | null }>;
   if (!plans.length) return { total: 0, done: 0, missed: 0, optionalDone: 0, rate: 0 };
   let got = 0;
   let max = 0;
@@ -437,8 +471,15 @@ function computeExamRate(kb: DatabaseSync, owner: string, date: string): GroupSt
     const agg = kb
       .prepare("SELECT COALESCE(SUM(point_got),0) AS g, COALESCE(SUM(point_max),0) AS m FROM exam_plan_courses WHERE plan_id = ?")
       .get(p.id) as { g: number; m: number };
-    got += Number(agg?.g) || 0;
-    max += Number(agg?.m) || 0;
+    let g = Number(agg?.g) || 0;
+    let m = Number(agg?.m) || 0;
+    if (m === 0) {
+      const fb = attemptDetailSums(mainDb, p.attempt_id);
+      g = fb.g;
+      m = fb.m;
+    }
+    got += g;
+    max += m;
   }
   return { total: plans.length, done: plans.length, missed: 0, optionalDone: 0, rate: max > 0 ? got / max : 0 };
 }
@@ -477,8 +518,8 @@ export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: strin
     return {
       parentTodo,
       childTodo,
-      parentExam: computeExamRate(kb, "parent", date),
-      childExam: computeExamRate(kb, "child", date),
+      parentExam: computeExamRate(kb, ctx.mainDb, "parent", date),
+      childExam: computeExamRate(kb, ctx.mainDb, "child", date),
     };
   };
   const mergeTodo = (a: GroupStat, b: GroupStat): GroupStat => {
