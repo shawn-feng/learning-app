@@ -202,6 +202,12 @@ const api = {
   wechatFeishuSave: (payload: { appId: string; appSecret?: string; enabled: boolean }) =>
     ipcRenderer.invoke("wechat:feishuSave", payload),
   namespacesList: () => ipcRenderer.invoke("ns:list"),
+  mistakeReport: (payload: { childId: string; kind: "unknown_word" | "wrong_question" | "weak_point"; content: string; detail?: string; source?: string; course?: string }) =>
+    ipcRenderer.invoke("mistake:report", payload),
+  mistakesList: (payload: { childId: string; status?: string; kind?: string; limit?: number }) =>
+    ipcRenderer.invoke("mistake:list", payload),
+  mistakeAction: (payload: { childId: string; id: string; action: "mastered" | "dismiss" | "reopen" }) =>
+    ipcRenderer.invoke("mistake:action", payload),
   namespaceDecide: (payload: { ns: string; action: "confirm" | "reject" }) => ipcRenderer.invoke("ns:decide", payload),
   namespaceStatus: (payload: { ns: string; action: "disable" | "enable" }) => ipcRenderer.invoke("ns:status", payload),
   childSelect: (childId: string) => ipcRenderer.invoke("child:select", childId),

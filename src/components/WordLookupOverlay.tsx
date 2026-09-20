@@ -44,9 +44,21 @@ export const WordLookupOverlay = forwardRef<HTMLDivElement, {
   state: LookupState;
   onSpeak: (text: string) => void;
   onClose: () => void;
-}>(function WordLookupOverlay({ state, onSpeak, onClose }, ref) {
+  /** ISSUE-114 C2：查词自动上报（查=不会的最强信号）。传了就在浮层展示时上报一次。 */
+  onReport?: (text: string, pinyin: string, meaning: string) => void;
+}>(function WordLookupOverlay({ state, onSpeak, onClose, onReport }, ref) {
   const estH = estimateHeight(state.entries);
   const { x, y } = clampPos(state.x, state.y, estH);
+  const reportedKey = `${state.text}@${state.x},${state.y}`;
+  const lastReportedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onReport || !state.text.trim()) return;
+    if (lastReportedRef.current === reportedKey) return; // 同一浮层实例不重复上报
+    lastReportedRef.current = reportedKey;
+    const pinyin = state.entries.map((e) => e.pinyin).filter(Boolean).join(" ");
+    const meaning = state.entries.map((e) => e.meaning).filter(Boolean).join("；");
+    onReport(state.text.trim(), pinyin, meaning);
+  }, [reportedKey]);
   return (
     <div
       ref={ref}

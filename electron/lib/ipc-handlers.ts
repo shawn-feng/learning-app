@@ -43,6 +43,7 @@ import { readTokenLog, getTokenSummary } from "./token-stats";
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
 import { listWechatBindRequests, decideWechatBindRequest, listWechatBindings, addWechatBinding, removeWechatBinding, getFeishuConfig, saveFeishuConfig } from "./wechat";
 import { listNamespaces, decideNamespace, setNamespaceStatus } from "./namespaces";
+import { mistakeReport, mistakesList, mistakeAction } from "./mistakes";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
 import {
   queuePageEvent,
@@ -319,6 +320,29 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   // —— Tier 2 自定义数据场景（F15b：设计器草案确认 + 已生效启停）——
+  // —— 错题/生字本（ISSUE-114）：查词上报 / 清单 / 掌握与忽略 ——
+  ipcMain.handle("mistake:report", async (_e, payload: { childId: string; kind: "unknown_word" | "wrong_question" | "weak_point"; content: string; detail?: string; source?: string; course?: string }) => {
+    try {
+      return { success: true, data: await mistakeReport(payload.childId, payload) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("mistake:list", async (_e, payload: { childId: string; status?: string; kind?: string; limit?: number }) => {
+    try {
+      return { success: true, data: await mistakesList(payload.childId, payload) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("mistake:action", async (_e, payload: { childId: string; id: string; action: "mastered" | "dismiss" | "reopen" }) => {
+    try {
+      return { success: true, data: await mistakeAction(payload.childId, payload.id, payload.action) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("ns:list", async () => {
     try {
       return { success: true, data: await listNamespaces() };

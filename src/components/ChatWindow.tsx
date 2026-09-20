@@ -1064,6 +1064,12 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
           state={wordLookup.state}
           onSpeak={wordLookup.onSpeak}
           onClose={wordLookup.close}
+          onReport={(text, pinyin, meaning) => {
+            if (!childId) return;
+            void window.api
+              .mistakeReport({ childId, kind: "unknown_word", content: text, detail: [pinyin, meaning].filter(Boolean).join("："), source: "lookup" })
+              .catch(() => {});
+          }}
         />
       )}
     </div>

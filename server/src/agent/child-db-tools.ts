@@ -14,6 +14,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
+import { listMistakes, setMistakeStatus, upsertMistake, type MistakeStatus } from "../db/mistakes.js";
 import {
   childKbReadableRegistry,
   childKbWritableRegistry,
@@ -181,7 +182,103 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
     },
   });
 
-  return [describeTool, readTool, writeTool];
+  // —— 错题/生字本（ISSUE-114 C1）：孩子 agent 记录/查看/关闭自己的漏洞信号 ——
+  const mistakeTool = defineTool({
+    name: "child_mistake_log",
+    label: "错题本（记录/查看/掌握）",
+    description:
+      "把学习中的「漏洞信号」记入错题本，或查看/关闭已有条目。\n\n" +
+      "**何时记录（只认明确漏洞信号，先教学后记录）**：\n" +
+      "1. 孩子明确说出做错题的经历（「昨天有道题做错了」「这道题我上次就不会」「又错了」）→ kind=wrong_question，记题干摘要 + 卡住点 + 本次讲解要点；\n" +
+      "2. 孩子在聊天里问字词读音/释义（「这个字念什么」）→ kind=unknown_word，content=字词，detail=读音释义；\n" +
+      "3. 孩子表达稳定的薄弱点（「最怕应用题」「课文总背不住」，反复或明确说学不好）→ kind=weak_point。\n\n" +
+      "**不要调用**：提问学习内容本身 ≠ 不会（「什么是比喻句」是求知）；考核错题系统自动同步、不要手动记；口误玩笑；本轮已经记过。\n" +
+      "**时序**：先共情 + 讲解，讲解完成后的同轮收尾时静默记录，可轻带一句「已帮你记到错题本」并顺势提供类似练习。\n\n" +
+      "action=log：content（题干摘要或字词，同内容自动合并计数）+ detail（正解/释义/讲解要点）+ kind + course（可选主题中文名）；\n" +
+      "action=list：查看错题本（可按 kind/status 过滤，缺省 open）；\n" +
+      "action=master：孩子确认掌握（先小题验证再标）→ status=mastered；action=dismiss：记错/重复 → status=dismissed（id 从 list 取）。",
+    parameters: Type.Object({
+      action: Type.Union(
+        [Type.Literal("log"), Type.Literal("list"), Type.Literal("master"), Type.Literal("dismiss")],
+        { description: "log=记录 / list=查看 / master=标掌握 / dismiss=不算了" }
+      ),
+      kind: Type.Optional(
+        Type.Union(
+          [Type.Literal("wrong_question"), Type.Literal("unknown_word"), Type.Literal("weak_point")],
+          { description: "log 必填：wrong_question=错题 / unknown_word=生字词 / weak_point=薄弱点" }
+        )
+      ),
+      content: Type.Optional(Type.String({ description: "log 必填：题干摘要或字词（同内容自动合并计数）" })),
+      detail: Type.Optional(Type.String({ description: "log 可选：正解 / 释义 / 卡住点 / 讲解要点" })),
+      course: Type.Optional(Type.String({ description: "log 可选：关联主题/课程名（如 论语）" })),
+      id: Type.Optional(Type.String({ description: "master/dismiss 必填：条目 id（list 里取）" })),
+      status: Type.Optional(Type.String({ description: "list 可选：open（缺省）/ mastered / dismissed" })),
+    }),
+    execute: async (
+      _id: string,
+      params: {
+        action: "log" | "list" | "master" | "dismiss";
+        kind?: "wrong_question" | "unknown_word" | "weak_point";
+        content?: string;
+        detail?: string;
+        course?: string;
+        id?: string;
+        status?: string;
+      }
+    ) => {
+      if (params.action === "log") {
+        const row = upsertMistake(deps.dataDir, deps.parentId, deps.childId, {
+          kind: params.kind ?? "weak_point",
+          content: String(params.content ?? ""),
+          detail: String(params.detail ?? ""),
+          source: "conversation",
+          course_ref: String(params.course ?? ""),
+        });
+        return ok(
+          `已记入错题本（第 ${row.count} 次）：${row.content}。` +
+            (row.count > 1 ? "反复出现说明还没掌握，教学时可优先复习。" : "")
+        );
+      }
+      if (params.action === "list") {
+        const status = ["open", "mastered", "dismissed"].includes(String(params.status))
+          ? (params.status as MistakeStatus)
+          : "open";
+        const rows = listMistakes(deps.dataDir, deps.parentId, deps.childId, {
+          status: status as MistakeStatus,
+          limit: 30,
+        });
+        if (!rows.length) return ok(`错题本（${status}）暂时是空的。`);
+        const KIND_ZH: Record<string, string> = { wrong_question: "错题", unknown_word: "生字词", weak_point: "薄弱点" };
+        return ok(
+          `错题本（${status}，${rows.length} 条）：\n` +
+            rows
+              .map(
+                (r) =>
+                  `- [${r.id}] ${KIND_ZH[r.kind] ?? r.kind}：${r.content}${r.count > 1 ? `（${r.count} 次）` : ""}${r.detail ? `｜${r.detail.slice(0, 80)}` : ""}`
+              )
+              .join("\n")
+        );
+      }
+      if (!params.id) throw new Error(`${params.action} 需要 id（先 action=list 获取）`);
+      const done = setMistakeStatus(
+        deps.dataDir,
+        deps.parentId,
+        deps.childId,
+        params.id,
+        params.action === "master" ? "mastered" : "dismissed"
+      );
+      return done
+        ? ok(params.action === "master" ? "已标为掌握 ✅ 继续保持！" : "已标记忽略。")
+        : ok("条目不存在（可能已被处理），用 action=list 核对。");
+    },
+  });
+
+  return [describeTool, readTool, writeTool, mistakeTool];
 }
 
-export const CHILD_DB_TOOL_NAMES = ["child_db_describe", "child_db_read", "child_db_write"];
+export const CHILD_DB_TOOL_NAMES = [
+  "child_db_describe",
+  "child_db_read",
+  "child_db_write",
+  "child_mistake_log",
+];

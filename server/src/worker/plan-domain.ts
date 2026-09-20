@@ -17,6 +17,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { openKb } from "../db/kb.js";
+import { upsertMistake, examMistakeSynced } from "../db/mistakes.js";
 import type { WorkerTaskCtx } from "./tasks.js";
 import { formatLocalDate } from "./kb-tools.js";
 import { logWarn } from "../log.js";
@@ -389,6 +390,30 @@ function applyExamAttempts(ctx: WorkerTaskCtx, kb: DatabaseSync): number {
         q.pointGot != null ? Number(q.pointGot) : null, q.pointMax != null ? Number(q.pointMax) : null,
         q.pointGot != null ? Number(q.pointGot) : null, seq++, now
       );
+      // ISSUE-114 C3：错题同步进错题本（source=exam，天然带 question_id/knowledge_point 引用；
+      // (source_ref, question_id) 幂等哨兵防重复挂接时刷次数）
+      const got = q.pointGot != null ? Number(q.pointGot) : null;
+      const max = q.pointMax != null ? Number(q.pointMax) : null;
+      if (got != null && max != null && max > 0 && got < max) {
+        const qid = String(q.questionId ?? "");
+        try {
+          if (!examMistakeSynced(ctx.dataDir, ctx.parentId, ctx.childId, a.id, qid)) {
+            const kpId = String(q.knowledgePointId ?? "");
+            upsertMistake(ctx.dataDir, ctx.parentId, ctx.childId, {
+              kind: "wrong_question",
+              content: `${a.title || "考核"}·${q.course ?? ""}·${kpId || "题目"}（${got}/${max}）`,
+              detail: String(q.aiComment ?? ""),
+              source: "exam",
+              source_ref: a.id,
+              question_id: qid,
+              course_ref: String(q.course ?? ""),
+              knowledge_point_id: kpId,
+            });
+          }
+        } catch {
+          /* 同步失败不影响考核挂接 */
+        }
+      }
     }
     n++;
   }

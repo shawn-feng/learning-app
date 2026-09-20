@@ -9,6 +9,33 @@ import { ensureTier2Schema } from "../agent/tier2.js";
 
 /** 展示登记（ISSUE-113）：display_content 推送后按 (会话种类, path) upsert 一条，
  *  会话重进时回填左侧资料列表（按 ts 升序=出现顺序），/reset 或跨天新会话时清空。 */
+/** 错题/生字本（ISSUE-114）：单表 kind 区分（错题/生字/薄弱点），
+ *  去重 UNIQUE(content,kind,course_ref) 落空 count+1（重复出现=未掌握的证据）；
+ *  knowledge_point_id 为逻辑引用（家长库跨文件无 FK）+ name 快照防悬挂；
+ *  错题是孩子私有学习数据——题库只被 question_id 引用，永不反向写入。 */
+export const MISTAKE_DDL = `
+CREATE TABLE IF NOT EXISTS mistake_book (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('wrong_question','unknown_word','weak_point')),
+  content TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'conversation',
+  source_ref TEXT NOT NULL DEFAULT '',
+  question_id TEXT NOT NULL DEFAULT '',
+  course_ref TEXT NOT NULL DEFAULT '',
+  knowledge_point_id TEXT NOT NULL DEFAULT '',
+  knowledge_point_name TEXT NOT NULL DEFAULT '',
+  count INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','mastered','dismissed')),
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  mastered_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_mistake_dedup ON mistake_book(content, kind, course_ref);
+`;
+
 export const DISPLAY_DDL = `
 CREATE TABLE IF NOT EXISTS display_contents (
   child_key TEXT NOT NULL,
@@ -359,6 +386,7 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   db.exec("DROP TABLE IF EXISTS child_todo_stats;");
   ensureTier2Schema(db, false); // Tier 2 灵活实体数据行（scope=child 的 namespace 注册在家长库，F15a，幂等）
   db.exec(DISPLAY_DDL); // 展示登记（ISSUE-113，幂等）
+  db.exec(MISTAKE_DDL); // 错题/生字本（ISSUE-114，幂等）
   db.exec(KB_SCHEMA_VIEWS);
   db.exec(KB_PLAN_SCHEMA_VIEWS);
   return db;

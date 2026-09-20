@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell, BookMarked } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, type TextFileAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
 import TodoModal from "../components/TodoModal";
+import MistakeBookModal from "../components/MistakeBookModal";
 import MyRemindersModal from "../components/MyRemindersModal";
 import ExamView from "../components/ExamView";
 import { useChatPanel } from "../hooks/useChatPanel";
@@ -380,6 +381,7 @@ export default function Learn({ child, onExit }: Props) {
   const [changePwdMsg, setChangePwdMsg] = useState("");
   // ISSUE-025：今日计划（Todolist）弹框
   const [showTodo, setShowTodo] = useState(false);
+  const [showMistakes, setShowMistakes] = useState(false);
   // ISSUE-047 方案A：孩子端「我的提醒」弹框（独立于计划；提醒不一定是"要做的事"）
   const [showReminders, setShowReminders] = useState(false);
   // 学习考核（EXAM-REQUIREMENTS.md）：锁定考试视图开关（true 时全屏覆盖，考试中不可退出）
@@ -1420,6 +1422,13 @@ export default function Learn({ child, onExit }: Props) {
             </button>
             <button
               className="sidebar-btn"
+              title="我的错题本"
+              onClick={() => setShowMistakes(true)}
+            >
+              <BookMarked size={18} className="sidebar-btn-icon" />
+            </button>
+            <button
+              className="sidebar-btn"
               title="AI 伙伴设置"
               onClick={() => {
                 setAiSettingsMsg("");
@@ -1462,6 +1471,7 @@ export default function Learn({ child, onExit }: Props) {
             </div>
           ) : view === "materials" ? (
             <MaterialsPanel
+              childId={child.childId}
               ref={materialsPanelRef}
               materials={materials}
               selectedId={selectedMaterialId}
@@ -1639,6 +1649,7 @@ export default function Learn({ child, onExit }: Props) {
         </div>
       )}
 
+      {showMistakes && <MistakeBookModal childId={child.childId} onClose={() => setShowMistakes(false)} />}
       {showTodo && (
         <TodoModal
           childId={child.childId}

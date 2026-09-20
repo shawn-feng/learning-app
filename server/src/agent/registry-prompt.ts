@@ -19,6 +19,7 @@ import {
   type RegistryPath,
 } from "./db-channel.js";
 import { loadNamespaces, tier2AsReadable, type NamespaceRow } from "./tier2.js";
+import { listMistakes } from "../db/mistakes.js";
 
 /** 紧凑表清单：一行一表，列名平铺；refs 以 列→表.列 标注（模型靠它理解关系，不用查） */
 function compactTableLines(readSpecs: ReadableTableSpec[]): string[] {
@@ -102,8 +103,9 @@ export function buildDataChannelBlocks(dataDir: string, parentId: string): DataC
   return { parentBlock, childBlock };
 }
 
-/** 孩子 agent 自己视角的元数据块（只含自己的库 + 自己的写面） */
-export function buildChildSelfBlock(dataDir: string, parentId: string): string {
+/** 孩子 agent 自己视角的元数据块（只含自己的库 + 自己的写面 + 错题本摘要）。
+ *  childId 传入时附带 open 状态错题摘要（ISSUE-114 复习触达：AI 老师在对话里自然掺入）。 */
+export function buildChildSelfBlock(dataDir: string, parentId: string, childId?: string): string {
   let childNs: NamespaceRow[] = [];
   try {
     const pdb = openParentLib(dataDir, parentId);
@@ -115,11 +117,30 @@ export function buildChildSelfBlock(dataDir: string, parentId: string): string {
   } catch {
     /* 同上 */
   }
+  let mistakeLines: string[] = [];
+  if (childId) {
+    try {
+      const rows = listMistakes(dataDir, parentId, childId, { status: "open", limit: 8 });
+      const KIND_ZH: Record<string, string> = { wrong_question: "错题", unknown_word: "生字词", weak_point: "薄弱点" };
+      mistakeLines = rows.map((r) => {
+        const day = String(r.last_seen).slice(5, 10);
+        return `- [${KIND_ZH[r.kind] ?? r.kind}] ${r.content}${r.count > 1 ? `（${r.count} 次，最近 ${day}）` : `（${day}）`}`;
+      });
+    } catch {
+      /* 读不到不阻塞 prompt 组装 */
+    }
+  }
   return [
     "【我的数据表】",
     ...compactTableLines(childKbReadableRegistry()),
     "【我可写的表】",
     ...compactWriteLines(childKbWritableRegistry()),
     ...(childNs.length ? ["【灵活实体 Tier 2】（只读；table 用 ns:名称）", ...compactNsLines(childNs)] : []),
+    ...(mistakeLines.length
+      ? [
+          "【错题本 · 待复习】（教学时在合适课时自然掺入复习；孩子说会了先小题验证再 child_mistake_log action=master）",
+          ...mistakeLines,
+        ]
+      : []),
   ].join("\n");
 }

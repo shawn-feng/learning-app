@@ -313,7 +313,7 @@ async function ensureEntry(
         now: localTime(),
         agentRules,
         courseBlock: kind.startsWith("course:") ? courseContextBlock(deps, parentId, childId, kind.slice("course:".length)) : "",
-        dbTablesBlock: buildChildSelfBlock(deps.dataDir, parentId),
+        dbTablesBlock: buildChildSelfBlock(deps.dataDir, parentId, childId),
       });
 
   const slot = sessionSlot(childId, kind);

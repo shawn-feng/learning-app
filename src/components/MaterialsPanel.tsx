@@ -50,6 +50,8 @@ interface Props {
   onSceneVoice?: (text: string, data: ArrayBuffer) => void;
   /** ISSUE-061：场景语音录入错误/失败提示（太短、没听清、ASR 未配置等）——必须让孩子看到，不静默 */
   onSceneMicNotice?: (msg: string) => void;
+  /** ISSUE-114：孩子 id（查词自动上报错题本用） */
+  childId?: string;
 }
 
 const EXEC_TIMEOUT_MS = 10000;
@@ -241,7 +243,7 @@ function sceneReadyText(manifest: unknown): string {
 }
 
 const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function MaterialsPanel(
-  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse, matFontSize = 16, onSceneActive, onSceneVoice, onSceneMicNotice },
+  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse, matFontSize = 16, onSceneActive, onSceneVoice, onSceneMicNotice, childId },
   ref
 ) {
   const selected = materials.find((m) => m.id === selectedId);
@@ -846,7 +848,17 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         )}
         {/* ISSUE-017：查词浮层（fixed 定位，点击外部空白/Esc/滚动关闭） */}
         {lookup && (
-          <WordLookupOverlay state={lookup} onSpeak={speakMaterialText} onClose={closeLookup} />
+          <WordLookupOverlay
+            state={lookup}
+            onSpeak={speakMaterialText}
+            onClose={closeLookup}
+            onReport={(text, pinyin, meaning) => {
+              if (!childId) return;
+              void window.api
+                .mistakeReport({ childId, kind: "unknown_word", content: text, detail: [pinyin, meaning].filter(Boolean).join("："), source: "lookup" })
+                .catch(() => {});
+            }}
+          />
         )}
       </div>
     );
