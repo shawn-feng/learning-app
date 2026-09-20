@@ -114,8 +114,8 @@ export interface GenerateHtmlLessonInput {
   /** 需求描述：结构、内容、交互要求等 */
   requirement: string;
   /**
-   * 输出路径：`materials/<topic>/<file>.html` → 家长资料真源；
-   * 其它（如 `outputs/x.html`）→ 该家长工作区。仅允许 .html/.htm。
+   * 输出路径：家长侧 = **资料根相对路径** `<topic>/<file>.html`（恒落资料真源，兼容旧 `materials/` 前缀）；
+   * 孩子侧 = 相对孩子工作区（如 `outputs/x.html`）。仅允许 .html/.htm。
    */
   outputPath: string;
   sessionKey?: string;
@@ -129,31 +129,61 @@ export interface GenerateHtmlLessonResult {
   title: string;
 }
 
+/**
+ * 输出路径路由（纯函数，便于测试）。
+ * - **家长侧（workspaceRoot 未传，parent_build_material）**：恒落资料真源 `<dataDir>/materials/<parentId>/`，
+ *   path 为**资料根相对路径** `<topic>/<文件>.html`（与 parent_put_material/list/read 同一语法）；
+ *   兼容旧的 `materials/` 虚拟前缀写法（剥掉，ISSUE-118：此前非 materials 前缀会静默落到
+ *   家长工作区——不可穿管、无管理入口，已废除）。topic 段（第一级目录）与 /materials/upload 同规则
+ *   （`^[a-zA-Z0-9_-]+$`），中文标题需先落一个合法 topic 目录。
+ * - **孩子侧（workspaceRoot 已传，create_html_lesson）**：`materials/` 前缀 → 资料真源（保留既有行为）；
+ *   其它（如 `outputs/x.html`）→ 该孩子工作区。仅允许 .html/.htm。
+ */
+export function resolveLessonOutputPath(
+  deps: ProgrammingDeps,
+  outputPath: string,
+  workspaceRoot?: string
+): { base: string; resolved: string; relPath: string } {
+  const paths = createCorePaths(deps.dataDir);
+  const raw = String(outputPath ?? "").trim();
+  if (!/\.html?$/i.test(raw)) {
+    throw new Error(`编程 agent 只产出 .html/.htm 文件（当前: ${raw}）`);
+  }
+  const parentScope = workspaceRoot === undefined;
+  const isMaterial = raw.startsWith("materials/");
+  if (parentScope) {
+    const relInBase = raw.replace(/^materials\//, "");
+    const topic = relInBase.split("/")[0] ?? "";
+    if (!/^[a-zA-Z0-9_-]+$/.test(topic)) {
+      throw new Error(
+        `path 须为资料根相对路径 <topic>/<文件>.html，topic（第一级目录）仅允许字母/数字/_/-，收到：${raw}` +
+          `（示例：materials/lunyu/lesson-01.html 或 lunyu/lesson-01.html → topic=lunyu）`
+      );
+    }
+    const base = materialsRoot(deps.dataDir, deps.parentId);
+    const resolved = resolveWithin(base, relInBase);
+    return { base, resolved, relPath: `materials/${relInBase}` };
+  }
+  const base = isMaterial ? materialsRoot(deps.dataDir, deps.parentId) : workspaceRoot;
+  const relInBase = isMaterial ? raw.slice("materials/".length) : raw;
+  let resolved: string;
+  try {
+    resolved = resolveWithin(base!, relInBase);
+  } catch (err) {
+    throw new Error(`输出路径超出允许范围：${raw}（${(err as Error).message}）`);
+  }
+  return { base: base!, resolved, relPath: isMaterial ? `materials/${relInBase}` : relInBase };
+}
+
 /** 生成/修改一份 HTML 资料并落盘（含沙箱校验与落盘校验）。
- * @param workspaceRoot 非 materials 输出的落盘根（家长调用时=家长工作区；孩子调用时=孩子工作区）；
- *                      不传时默认家长工作区。
+ * @param workspaceRoot 非 materials 输出的落盘根（孩子调用时=孩子工作区）；不传时=家长侧，恒落资料真源。
  */
 export async function generateHtmlLesson(
   deps: ProgrammingDeps,
   input: GenerateHtmlLessonInput,
   workspaceRoot?: string
 ): Promise<GenerateHtmlLessonResult> {
-  const paths = createCorePaths(deps.dataDir);
-  const isMaterial = input.outputPath.startsWith("materials/");
-  const base = isMaterial
-    ? materialsRoot(deps.dataDir, deps.parentId)
-    : workspaceRoot ?? paths.childWorkspaceDir(deps.parentId, "parent");
-  const relInBase = isMaterial ? input.outputPath.slice("materials/".length) : input.outputPath;
-  let resolved: string;
-  try {
-    resolved = resolveWithin(base, relInBase);
-  } catch (err) {
-    throw new Error(`输出路径超出允许范围：${input.outputPath}（${(err as Error).message}）`);
-  }
-  const ext = path.extname(resolved).toLowerCase();
-  if (ext !== ".html" && ext !== ".htm") {
-    throw new Error(`编程 agent 只产出 .html/.htm 文件（当前: ${input.outputPath}）`);
-  }
+  const { base, resolved } = resolveLessonOutputPath(deps, input.outputPath, workspaceRoot);
 
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const session = await getProgrammingSession(deps, base, input.sessionKey ?? input.outputPath);
@@ -185,7 +215,8 @@ export async function generateHtmlLesson(
   console.log(
     `[programming-agent] 生成完成 ${input.outputPath}（${fs.statSync(resolved).size}B，耗时 ${elapsed}s）`
   );
-  return { path: resolved, relPath: isMaterial ? `materials/${relInBase}` : relInBase, title: input.title };
+  const { relPath } = resolveLessonOutputPath(deps, input.outputPath, workspaceRoot);
+  return { path: resolved, relPath, title: input.title };
 }
 
 /** 释放全部编程会话（重启/测试清理）。 */
@@ -223,14 +254,14 @@ export function createProgrammingTool(
         "**注意**：只产出 HTML 文件，具体落盘位置由系统决定；产出后可用 display_content 展示给孩子。"
       : "让编程 agent 按需求制作/修改一份 HTML 学习资料，并写入课程资料真源。\n\n" +
         "**何时调用**：需要给某课生成互动练习页、绘本页、小游戏时（家长描述好需求与交互）。\n" +
-        "**path**：资料真源相对路径，如 `materials/lunyu/lesson-01.html`（必须以 .html/.htm 结尾）。\n" +
+        "**path**：资料真源相对路径 `<topic>/<文件>.html`，如 `lunyu/lesson-01.html`（与 parent_put_material 同语法；兼容旧 `materials/` 前缀写法）。必须以 .html/.htm 结尾。\n" +
         "**注意**：编程 agent 未配置模型时会明确报错，需家长先到设置页选择「编程 agent 模型」。",
     parameters: Type.Object({
       title: Type.String({ description: "资料标题（如「论语学而篇 互动练习」）" }),
       requirement: Type.String({ description: "需求描述：内容、结构、交互要求（越具体越好）" }),
       path: isChild
         ? Type.Optional(Type.String({ description: "输出相对路径（缺省 outputs/<标题>.html）" }))
-        : Type.String({ description: "输出路径（相对资料根，如 materials/<topic>/<文件>.html）" }),
+        : Type.String({ description: "资料真源相对路径 <topic>/<文件>.html（如 lunyu/lesson-01.html，与 parent_put_material 同语法）" }),
     }),
     execute: async (_id: string, params: any) => {
       const title = String(params?.title ?? "").trim();
