@@ -159,6 +159,9 @@ CREATE TABLE IF NOT EXISTS exam_plans (
   score REAL,
   result TEXT NOT NULL DEFAULT '',
   done_at TEXT NOT NULL DEFAULT '',
+  -- ISSUE-115（2026-09-19）：当天重考标准（家长自然语言，如「错两题以上当天原题重考」）。
+  -- ''=不重考；有值=评分结束后按该标准经 LLM 生成当天重考计划（服务端强制生成的计划本字段为 ''，防连环重考）。
+  retake TEXT NOT NULL DEFAULT '',
   task_type TEXT NOT NULL DEFAULT 'required',
   count_in_rate INTEGER NOT NULL DEFAULT 1,
   points INTEGER NOT NULL DEFAULT 0,
@@ -380,6 +383,7 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   backfillTopicLearnType(db); // learn_type 回填：rules_json.type（必学/选学/复习）→ 枚举
   db.exec(KB_PLAN_SCHEMA_TABLES); // 计划域 + 积分域（2026-09-10）
   ensureDailyPlanColumns(db);
+  ensureExamRetakeColumn(db); // ISSUE-115：exam_plans 加 retake（幂等，2026-09-19）
   // 2026-09-18 F14：todo_items / child_todo_stats 是 2026-09-10 计划域重构后的废弃死表
   //（数据已迁三张计划表 + reward_daily_stats），不再登记进任何读面，直接 DROP（幂等）
   db.exec("DROP TABLE IF EXISTS todo_items;");
@@ -467,6 +471,18 @@ function ensureCourseUuidColumn(db: DatabaseSync): void {
     }
   } catch {
     /* courses 不存在则忽略 */
+  }
+}
+
+/** ISSUE-115（幂等）：exam_plans 加 retake（当天重考标准）。新建库由 CREATE TABLE 直接带上，老库这里补列。 */
+function ensureExamRetakeColumn(db: DatabaseSync): void {
+  try {
+    const cols = (db.prepare("PRAGMA table_info(exam_plans)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (cols.length && !cols.includes("retake")) {
+      db.exec("ALTER TABLE exam_plans ADD COLUMN retake TEXT NOT NULL DEFAULT ''");
+    }
+  } catch {
+    /* exam_plans 不存在则忽略 */
   }
 }
 

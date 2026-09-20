@@ -74,6 +74,9 @@ export const GENERATION_SYSTEM_PROMPT =
 export const SCORING_SYSTEM_PROMPT =
   `你是儿童学习考核的评估老师。你根据家长写的考核要点严格、温和地评判孩子的口述回答，只输出 JSON，不输出其它文字。`;
 
+export const RETAKE_SYSTEM_PROMPT =
+  `你是儿童学习考核的排课助手。考核评分结束后，你根据家长设定的「当天重考标准」和本次评分结果，设计当天的重考考核计划：只输出 JSON，不输出任何其它文字。`;
+
 export const GENERATION_PER_COURSE_RULES =
   `题目要覆盖该课「考核要点」里的全部知识点（原文背诵/字词/句意/道理应用等都要考到），可一课多题（每课 2~4 题，题量由该课知识点数量决定，不设全局题量上限）。` +
   `贴近 6~12 岁孩子，语气亲切，题目要贴合知识点详情里描述的考核期望。` +
@@ -221,7 +224,8 @@ export function extractJson(text: string): any {
 
 // ==================== 会话与审计 ====================
 
-function lastAssistantText(session: any): string {
+/** 取会话最后一轮 assistant 文本（导出供重考计划生成的多轮对话复用，ISSUE-115）。 */
+export function lastAssistantText(session: any): string {
   const msgs: Array<any> = session?.messages ?? [];
   let text = "";
   for (const m of msgs) {
@@ -254,8 +258,9 @@ export function auditExamEvent(
   }
 }
 
-/** 建一个一次性内存会话（考核的 LLM 环节都用它：不落盘、不注入项目 prompt）。 */
-async function createExamSession(deps: ExamEngineDeps, systemPrompt: string) {
+/** 建一个一次性内存会话（考核的 LLM 环节都用它：不落盘、不注入项目 prompt）。
+ *  导出供重考计划生成复用（ISSUE-115）——同会话多轮追问实现错误反馈重试环。 */
+export async function createExamSession(deps: ExamEngineDeps, systemPrompt: string) {
   const settings = readParentSettings(deps.db, deps.dataDir, deps.parentId);
   const runtime = await getWorkerRuntime(deps.dataDir, deps.parentId, settings.auth);
   const model = pickWorkerModel(runtime, settings.appSettings);

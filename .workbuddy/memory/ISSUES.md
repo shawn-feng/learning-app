@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **112** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **115** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -122,6 +122,9 @@
 | 110 | 盘点：`parent_db_*` 工具能操作哪些表？——`parent_db_describe`/`parent_db_write` 均基于 `parentLibTableRegistry()`（db-channel.ts L79），**只能操作家长内容库 parent.sqlite 的 6 张表**：topics/courses/tags/question_bank/knowledge_points/course_knowledge_questions（均 insert/update/delete，带列白名单+外键校验+行数熔断+审计+敏感列二次确认）。爆破半径严格限定课程内容，**不触达孩子库/计划/积分/成绩/会话**。缺口：parent 侧**无 `parent_db_read`**（只能 describe+write），读内容只能走专用 `parent_library_*` 或 UI；主库 `exam_attempts` 读取仍无工具（ISSUE-109 覆盖） | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-110.md) |
 | 111 | SQLite 向量旁表 + 「精确匹配落空 → 向量检索兜底」：LLM 记错课程/主题名时 `WHERE =` 查不到 → 只能全表列出肉眼匹配（courses 600+ 行，上下文爆炸）。方案：`embeddings` 旁表（业务表零变更、JS 内存余弦，sqlite-vec 缓议）+ 首批向量化 `courses.title`/`topics.name` + 新增 embedding 模型配置键 + 写路径异步重嵌入/backfill + 收口 `lookupWithFallback`（精确命中原样返回；0 行 → top-K 候选并明确标注「精确匹配无数据，以下为向量检索返回，请判断选哪一个」，只提示不代入；服务不可用静默降级） | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-111.md) |
 | 112 | ✅ 已解决（2026-09-19）：计入积分的考核得分率为 0（珊珊 9/10 被记 0% 误扣 15 分）——根因=09-14 考核 v2 提交路由先行置 `exam_plans.done+attempt_id`，worker `applyExamAttempts` 仅凭 attempt_id 判重跳过 → `exam_plan_courses` 从未回填 → `computeExamRate` 分母 0 → rate 恒 0。修复：幂等判据改为「attempt_id 匹配且明细已有行」+ computeExamRate 无明细时回退主库 per_question 求和 + 空明细告警；存量治愈脚本回填明细并重算流水（09-17 改 +10 良好、09-14/15 金额不变仅 rate 修正），回归测试 3 用例 | 高 | 2026-09-17 | [详情](ISSUES/ISSUE-112.md) |
+| 113 | 孩子会话重进后左侧资料列表清空（对话还在、资料没了）——display_content 只推不存（SSE fire-and-forget，无登记）+ `pi:start_child` 硬编码返回 `materials:[]`（ipc-handlers.ts:1335「联调点」历史已由 ISSUE-100 接上、资料至今没人接）；客户端回填逻辑健在恒拿空数组。方案 A：display_tool 推送后持久化 `{path,title,source,ts}` 登记（/reset 清空，与 materials:[] 语义对齐）+ `/open` 一并返回 + 薄桥回填；备选 B 扫会话 toolCall 重建（否决：耦合 jsonl 结构、跨天语义模糊） | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-113.md) |
+| 114 | 错题/生字跟踪：把孩子的「漏洞信号」（对话口述错题、不认识的字）结构化沉淀为可复习的错题本——需求分析盘点四类信号源（对话口述流失/查词浮层不留痕/考核 wrong_questions 无闭环/口语评测二期）；方案：孩子 kb 新表 `mistake_book`（kind/status/count 去重）+ 三采集渠道（agent 新工具 `child_mistake_log` + 查词浮层自动上报 + 考核错题同步）+ 孩子端 icon 弹框/家长端 widget + 复习闭环（教学 prompt 注入 open 错题、验证后标 mastered）；明确不做 LLM 全文扫描自动判错。**设计问答已定（2026-09-18）：知识点可选关联（逻辑引用+名称快照，按知识点聚合薄弱视图）；不进题库（孩子 kb 私有数据 ≠ 家长共享内容库，撞 ISSUE-105 边界；错题经 question_id 引用原题做重做，统计可反向供出题参考）；C1 调用时机已定（只认明确漏洞信号：口述错题/对话问字词/稳定薄弱点，反面清单防滥用，先教学后静默记录）** | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-114.md) |
+| 115 | ✅ 已实施（2026-09-19）：考核当天重考——`exam_plans` 加 `retake` 字段（幂等迁移，''=不重考，值为重考标准自然语言）；提交路由置 done 后同步钩子（`exam-retake.ts`）：LLM（复用考核会话）按标准+评分摘要生成重考计划 JSON → schema+课程/知识点校验 → 错误反馈重试环（3 轮/100s 预算）→ 按现有口径创建当天计划（origin=retake、确定性 id 幂等）；服务端强制 retake=''（防连环）、count_in_rate 按设置 `exam_retake:<parentId>` 默认不计入（fixed-config 路由已带字段）、失败不丢分仅告警；agent 工具/创建路由加 retake 参数，客户端提交超时 120s+报告页重考提示条；测试 14 用例。待定已落：fixed 首批不做录入入口（custom 先行）。遗留：面板设置开关控件 | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-115.md) |
 
 ## 记录格式（模板）
 

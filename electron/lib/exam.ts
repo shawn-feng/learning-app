@@ -300,13 +300,17 @@ export async function uploadExamVoice(
   return id;
 }
 
-/** 提交一次考核结果（客户端判分后上报；perQuestion 内 audioFileId 已由上传获得）。 */
-export async function submitExamAttempt(payload: ExamAttemptPayload): Promise<{ ok: boolean; id: string }> {
-  return serverFetch<{ ok: boolean; id: string }>("/exam/attempts", {
+/** 提交一次考核结果（客户端判分后上报；perQuestion 内 audioFileId 已由上传获得）。
+ *  ISSUE-115：原考核计划设了 retake 时，服务端会在本次请求内同步生成当天重考计划（一次 LLM 调用，
+ *  最长 ~100s），故超时对齐判分调用（120s）；响应含 retake 字段（重考计划创建结果/失败原因）。 */
+export async function submitExamAttempt(
+  payload: ExamAttemptPayload
+): Promise<{ ok: boolean; id: string; retake?: { triggered: boolean; planId?: string; created?: boolean; note?: string } }> {
+  return serverFetch("/exam/attempts", {
     method: "POST",
     body: payload,
     token: currentSessionToken(),
-    timeoutMs: 30000,
+    timeoutMs: 120000,
   });
 }
 

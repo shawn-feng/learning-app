@@ -701,6 +701,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       "**约束（2026-09-09 起）**：自定义考核不再做运行时选课——必须现在就把「考乡党篇最近学的 3 课」这类描述**解析成精确课程名**（可先 parent_study_plan_sources / parent_library_courses 查），信息不全必须向家长确认，**不要自行猜测**。\n" +
       "**出题参数在创建时即完整约定（2026-09-14 定案）**：工具会把每门课展开成「考哪些知识点、各几题」写进计划（默认=主题考核方法过滤后全部知识点各 1 题）；**课程必须有知识点和题库题**，否则创建失败并提示先补充考核内容。出题环节严格按计划执行，不再有其它来源。\n" +
       "`note` 可选（给孩子的说明）。\n" +
+      "`retake` 可选（**当天重考标准**，ISSUE-115）：家长的自然的语言描述，如「错两题以上当天原题重考」「背诵题不对的当天重新背诵」。**有值 = 考核评分结束后按该标准自动安排当天重考**（评分后经 LLM 生成重考计划，孩子当天考核页可见）；不传或空 = 不重考。家长说「考完错的当天再考一次」类需求时必须转成这个参数，不要只写进 note。\n" +
       "**本次方法覆盖 `methodSpec`（可选）**：当家长说「这次只考背诵 / 只考某几个知识点」等本次特殊要求时用它，只影响这一次考核：\n" +
       "  - `require`：只考这些**知识点**（键=知识点名，值=每个知识点抽几题，缺省 1）；\n" +
       "  - `exclude`：排除这些**知识点**（键=知识点名）；\n" +
@@ -715,6 +716,12 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       scheduledAt: Type.String({ description: "考核日期 YYYY-MM-DD（口语先换算）" }),
       courses: Type.Array(Type.String({ description: "要考核的精确课程名（必填）" })),
       note: Type.Optional(Type.String({ description: "考核内容说明（给孩子的提示，可空）" })),
+      retake: Type.Optional(
+        Type.String({
+          description:
+            "当天重考标准（自然语言，如「错两题以上当天原题重考」）。有值=评分结束后按标准自动安排当天重考；不传=不重考",
+        })
+      ),
       methodSpec: Type.Optional(
         Type.Object({
           require: Type.Optional(
@@ -734,6 +741,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         scheduledAt: string;
         courses: string[];
         note?: string;
+        retake?: string;
         methodSpec?: { require?: Record<string, number>; exclude?: string[]; recitePass?: number };
       }
     ) => {
@@ -803,11 +811,13 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           return ok(`「${child.name}」${day} 已有一条未考的自定义考核计划，未重复创建（需更换内容请先取消原计划）。`);
         }
         const now = new Date().toISOString();
+        // ISSUE-115：retake = 当天重考标准（自然语言）；''=不重考
+        const retake = String(params.retake ?? "").trim();
         kb.prepare(
           `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
-             start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-           VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','',?,?, 'pending','',NULL,'','','required',1,0,1,?,?)`
-        ).run(id, parentId, child.id, scope, `${day} 00:00:00`, `${day} 23:59:59`, now, now);
+             start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at,retake)
+           VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','',?,?, 'pending','',NULL,'','','required',1,0,1,?,?,?)`
+        ).run(id, parentId, child.id, scope, `${day} 00:00:00`, `${day} 23:59:59`, now, now, retake);
       } finally {
         kb.close();
       }

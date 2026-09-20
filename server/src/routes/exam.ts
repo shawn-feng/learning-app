@@ -18,6 +18,7 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
+import { getRetakeCountInRate, maybeCreateRetakePlan, setRetakeCountInRate } from "../exam-retake.js";
 import { attachStructuredQuestions, attachPlanQuestions, buildPlanSpecEntries, parsePlanCourses, type PlanCourseSpec } from "../assess-selection.js";
 import {
   getOrCreateKnowledgePoint,
@@ -1020,7 +1021,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const body = (req.body ?? {}) as { childId?: string; scheduledAt?: string; scope?: unknown };
+    const body = (req.body ?? {}) as { childId?: string; scheduledAt?: string; scope?: unknown; retake?: string };
     const childId = String(body.childId ?? "").trim();
     const scheduledAt = String(body.scheduledAt ?? "").trim();
     if (!childId || !scheduledAt) return reply.code(400).send({ error: "缺少 childId 或 scheduledAt" });
@@ -1095,11 +1096,13 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         ...(scopeIn.note ? { note: String(scopeIn.note) } : {}),
         ...(scopeIn.recitePass != null ? { recitePass: Number(scopeIn.recitePass) } : {}),
       });
+      // ISSUE-115：retake = 当天重考标准（自然语言）；''=不重考
+      const retake = String(body.retake ?? "").trim();
       kb.prepare(
         `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
-           start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-         VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','','?',?,'pending','',NULL,'','required',1,0,1,?,?)`
-      ).run(id, parentId, childId, scopeJson, `${day} 00:00:00`, `${day} 23:59:59`, now, now);
+           start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at,retake)
+         VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','','?',?,'pending','',NULL,'','required',1,0,1,?,?,?)`
+      ).run(id, parentId, childId, scopeJson, `${day} 00:00:00`, `${day} 23:59:59`, now, now, retake);
       return { ok: true, id };
     } finally {
       kb.close();
@@ -1231,7 +1234,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    return { config: getFixedConfig(deps.db, parentId) };
+    // ISSUE-115：重考是否计入评分档（家长维度设置项，默认不计入）
+    return { config: getFixedConfig(deps.db, parentId), retakeCountInRate: getRetakeCountInRate(deps.db, parentId) };
   });
 
   app.post("/api/v1/exam/fixed-config", async (req, reply) => {
@@ -1248,6 +1252,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       time?: string;
       weekly?: { weekday?: number; time?: string };
       selectionPrompts?: Record<string, string>;
+      retakeCountInRate?: boolean;
     };
     const cur = getFixedConfig(deps.db, parentId);
     const frequencies = Array.isArray(body.frequencies)
@@ -1285,7 +1290,11 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     deps.db
       .prepare("INSERT OR REPLACE INTO settings (key, value_json, updated) VALUES (?, ?, ?)")
       .run(`exam_fixed:${parentId}`, JSON.stringify(next), new Date().toISOString());
-    return { ok: true, config: next };
+    // ISSUE-115：重考是否计入评分档（传了才改；默认不计入）
+    if (typeof body.retakeCountInRate === "boolean") {
+      setRetakeCountInRate(deps.db, parentId, body.retakeCountInRate);
+    }
+    return { ok: true, config: next, retakeCountInRate: getRetakeCountInRate(deps.db, parentId) };
   });
 
   // ===== 提交一次考核结果（客户端判分后上报；语音 fileId 由 /files/upload 先行拿到） =====
@@ -1406,7 +1415,32 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         kb.close();
       }
     }
-    return { ok: true, id };
+    // ISSUE-115 重考钩子（同步串入评分环节）：原计划 retake 有值 → 评分落库后立即生成当天重考计划。
+    // 可能耗时一次 LLM 调用（错误反馈重试上限 3 轮，总预算 100s）——客户端提交超时已放宽到 120s。
+    // 绝不影响评分结果：钩子内部吞掉一切错误，失败信息折叠进 retake.note（日志同步告警）。
+    let retakeInfo: Awaited<ReturnType<typeof maybeCreateRetakePlan>> | undefined;
+    if (planId) {
+      try {
+        retakeInfo = await maybeCreateRetakePlan({
+          dataDir: deps.config.dataDir,
+          db: deps.db,
+          parentId,
+          childId,
+          planId,
+          attemptId: id,
+          examTitle: String(body.title ?? ""),
+          score: Number(body.score) || 0,
+          perQuestion: body.perQuestion ?? [],
+        });
+      } catch (err) {
+        req.log.warn({ err }, "重考计划生成异常（评分已落库，不影响本次成绩）");
+        retakeInfo = { triggered: true, created: false, note: "重考计划生成异常，请人工创建" };
+      }
+      if (retakeInfo.triggered && !retakeInfo.created && retakeInfo.note) {
+        req.log.warn({ planId, note: retakeInfo.note }, "重考计划未创建");
+      }
+    }
+    return { ok: true, id, retake: retakeInfo };
   });
 
   // ===== 家长查询考核记录列表（倒序；limit 默认 50） =====

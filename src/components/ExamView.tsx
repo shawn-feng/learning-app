@@ -104,6 +104,8 @@ export default function ExamView({ childId, onExit }: Props) {
   const [scoringPrompt, setScoringPrompt] = useState("");
   const [report, setReport] = useState<ScoredResult | null>(null);
   const [reportTitle, setReportTitle] = useState("");
+  // ISSUE-115：重考钩子结果提示（提交响应 retake 字段；''=无提示）
+  const [retakeHint, setRetakeHint] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
   // 口语题报告回放：fileId → data URL（点击「听我的背诵」时按需拉取）
   const [speechAudio, setSpeechAudio] = useState<Record<string, string>>({});
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -573,6 +575,11 @@ export default function ExamView({ childId, onExit }: Props) {
       if (!sub?.success) throw new Error(sub?.error || "提交失败");
       const attemptId = sub.data?.id || "";
       await window.api.examScheduleComplete(currentSchedule.id, attemptId).catch(() => undefined);
+      // ISSUE-115：评分结束即重考判定完成——报告页告知重考计划结果（生成失败也不影响本次成绩展示）
+      const rk = sub.data?.retake as { triggered?: boolean; created?: boolean; note?: string } | undefined;
+      if (rk?.triggered && rk.created) setRetakeHint({ text: "已按重考标准生成今天的重考考核，请稍后在「今日考核」中参加。", tone: "ok" });
+      else if (rk?.triggered && rk.note && !rk.note.includes("无需重考")) setRetakeHint({ text: `重考计划未能自动生成（${rk.note}），请家长在家长端安排。`, tone: "warn" });
+      else setRetakeHint(null);
 
       setReport({
         perQuestion,
@@ -1081,6 +1088,23 @@ export default function ExamView({ childId, onExit }: Props) {
               </div>
               {report.overall && <p style={{ color: "#333", fontSize: 14, marginBottom: 0 }}>{report.overall}</p>}
             </div>
+
+            {retakeHint && (
+              <div
+                style={{
+                  background: retakeHint.tone === "ok" ? "#e8f7ee" : "#fdecea",
+                  border: `1px solid ${retakeHint.tone === "ok" ? "#bfe8cd" : "#f5c6c0"}`,
+                  color: retakeHint.tone === "ok" ? "#1e7e46" : "#c0392b",
+                  borderRadius: 10,
+                  padding: "10px 14px",
+                  fontSize: 13,
+                  marginBottom: 14,
+                }}
+              >
+                {retakeHint.tone === "ok" ? "🔁 " : "⚠️ "}
+                {retakeHint.text}
+              </div>
+            )}
 
             <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e6eaf0", padding: 20, marginBottom: 14 }}>
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>📝 逐题评估</div>
