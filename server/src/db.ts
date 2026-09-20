@@ -26,6 +26,17 @@ export function openDb(dataDir: string): DatabaseSync {
       }
     }
   }
+  // ISSUE-116（2026-09-19）：scheduler_tasks 幂等补 instruction 列（custom 任务的自然语言指令；
+  // 新建库由 CREATE TABLE 直接带上，老库这里补）
+  {
+    const hasTasks = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduler_tasks'").get();
+    if (hasTasks) {
+      const taskCols = db.prepare("PRAGMA table_info(scheduler_tasks)").all() as Array<{ name: string }>;
+      if (!taskCols.some((c) => c.name === "instruction")) {
+        db.exec("ALTER TABLE scheduler_tasks ADD COLUMN instruction TEXT");
+      }
+    }
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
@@ -143,7 +154,7 @@ export function openDb(dataDir: string): DatabaseSync {
       id TEXT PRIMARY KEY,
       parent_id TEXT NOT NULL,
       name TEXT NOT NULL,
-      type TEXT NOT NULL,             -- recording | auto_new_session | reminder（todo_gen / todo_stat 已下线，仅留作历史行说明）
+      type TEXT NOT NULL,             -- recording | auto_new_session | reminder | custom（todo_gen / todo_stat 已下线，仅留作历史行说明）
       time TEXT NOT NULL,             -- HH:mm（daily/weekly/interval 用；once 也填目标时刻便于展示）
       extra_json TEXT NOT NULL DEFAULT '{}',
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -151,6 +162,8 @@ export function openDb(dataDir: string): DatabaseSync {
       owner TEXT NOT NULL DEFAULT 'parent',   -- parent | child（孩子 agent 创建则为 child）
       frequency TEXT NOT NULL DEFAULT 'daily', -- once | daily | weekly | interval
       reminder_text TEXT,             -- 到点语音播报的提醒内容（reminder 类型用）
+      -- ISSUE-116：自定义任务的自然语言指令（type=custom 用；到点由服务端无头 agent 执行）
+      instruction TEXT,
       weekday INTEGER,                -- weekly：0=周日..6=周六
       interval_minutes INTEGER,       -- interval：每隔 N 分钟
       voice INTEGER NOT NULL DEFAULT 1, -- 1=语音播报 0=仅通知

@@ -12,13 +12,14 @@
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
-export type SchedulerTaskType = "recording" | "todo_gen" | "todo_stat" | "auto_new_session" | "reminder";
+export type SchedulerTaskType = "recording" | "todo_gen" | "todo_stat" | "auto_new_session" | "reminder" | "custom";
 
 /** 家长中心「定时任务」页可创建的任务类型（todo_gen / todo_stat 已下线，不再创建）。 */
 export const SCHEDULER_TASK_TYPES: SchedulerTaskType[] = [
   "recording",
   "auto_new_session",
   "reminder",
+  "custom",
 ];
 
 export interface SchedulerTaskRow {
@@ -118,6 +119,8 @@ export interface TaskWithAssignments {
   extra: Record<string, unknown>;
   enabled: boolean;
   owner: "parent" | "child";
+  /** ISSUE-116：custom 任务的自然语言指令（其余类型为 null） */
+  instruction: string | null;
   createdAt: string;
   updatedAt: string;
   assignments: Array<{ childId: string; enabled: boolean }>;
@@ -154,6 +157,7 @@ export function listTasksWithAssignments(db: DatabaseSync, parentId: string): Ta
       extra,
       enabled: t.enabled === 1,
       owner: (t.owner as "parent" | "child") ?? "parent",
+      instruction: (t as unknown as { instruction?: string | null }).instruction ?? null,
       createdAt: t.created_at,
       updatedAt: t.updated_at,
       assignments: assigns.map((a) => ({ childId: a.child_id, enabled: a.enabled === 1 })),

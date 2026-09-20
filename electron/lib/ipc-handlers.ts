@@ -846,7 +846,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  ipcMain.handle("scheduler:task:create", async (_e, payload: { name: string; type: string; time: string; extra?: Record<string, unknown> }) => {
+  ipcMain.handle("scheduler:task:create", async (_e, payload: { name: string; type: string; time: string; extra?: Record<string, unknown>; instruction?: string }) => {
     try {
       const token = currentSessionToken();
       if (!token) return { success: false, error: "未登录" };

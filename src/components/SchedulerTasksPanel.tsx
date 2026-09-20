@@ -11,12 +11,14 @@ interface ChildItem {
 interface SchedulerTask {
   id: string;
   name: string;
-  type: "recording" | "auto_new_session" | "reminder";
+  type: "recording" | "auto_new_session" | "reminder" | "custom";
   time: string;
   extra: Record<string, unknown>;
   enabled: boolean;
   /** ISSUE-047：parent | child（孩子 agent 自建的提醒 task） */
   owner?: "parent" | "child";
+  /** ISSUE-116：custom 任务的自然语言指令 */
+  instruction?: string | null;
   createdAt: string;
   updatedAt: string;
   assignments: Array<{ childId: string; enabled: boolean }>;
@@ -55,6 +57,12 @@ const TYPE_META: Record<SchedulerTask["type"], { label: string; icon: string; hi
     icon: "🔔",
     hint: "孩子通过对话设置的定时提醒（到点语音播报；家长可在此关闭/删除）",
   },
+  // ISSUE-116：自定义任务——自然语言指令到点由服务端无头 agent 执行
+  custom: {
+    label: "自定义任务",
+    icon: "🤖",
+    hint: "用自然语言描述要做的事（如「查今天天气，创建未来7天每天07:00的天气播报提醒」），到点由 AI 自动执行；可查天气/建提醒/写学习记录",
+  },
 };
 
 const RUN_STATUS: Record<string, { label: string; color: string }> = {
@@ -84,12 +92,13 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
   const [busy, setBusy] = useState(false);
   // 新建任务表单
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState<{ name: string; type: SchedulerTask["type"]; time: string; onNewSession: boolean }>({
-    name: "",
-    type: "recording",
-    time: "21:00",
-    onNewSession: false,
-  });
+  const [form, setForm] = useState<{
+    name: string;
+    type: SchedulerTask["type"];
+    time: string;
+    onNewSession: boolean;
+    instruction: string;
+  }>({ name: "", type: "recording", time: "21:00", onNewSession: false, instruction: "" });
   // 分配弹窗
   const [assignFor, setAssignFor] = useState<SchedulerTask | null>(null);
 
@@ -160,10 +169,11 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
         type: form.type,
         time: form.time,
         extra: form.type === "recording" ? { onNewSession: form.onNewSession } : {},
+        ...(form.type === "custom" ? { instruction: form.instruction.trim() } : {}),
       });
       if (res?.success) {
         setShowCreate(false);
-        setForm({ name: "", type: "recording", time: "21:00", onNewSession: false });
+        setForm({ name: "", type: "recording", time: "21:00", onNewSession: false, instruction: "" });
         await load();
         await pushEffectiveConfig();
       } else {
@@ -284,6 +294,18 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                 每次新建会话前，自动总结之前的会话
               </label>
             )}
+            {form.type === "custom" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: 13, color: "#666" }}>任务指令（自然语言，写清楚做什么、产出什么）：</span>
+                <textarea
+                  value={form.instruction}
+                  onChange={(e) => setForm((f) => ({ ...f, instruction: e.target.value }))}
+                  placeholder="例：查一下今天的天气，然后创建提醒任务：未来 7 天每天 07:00 播报当天天气（一次性建 7 条）"
+                  rows={3}
+                  style={{ padding: "8px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd", resize: "vertical" }}
+                />
+              </div>
+            )}
             <div style={{ fontSize: 12, color: "#999", lineHeight: 1.6 }}>{TYPE_META[form.type].hint}</div>
             <div style={{ display: "flex", gap: 8 }}>
               <button
@@ -353,6 +375,15 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                     </span>
                   )}
                 </div>
+
+                {task.type === "custom" && task.instruction && (
+                  <div
+                    style={{ fontSize: 12, color: "#555", background: "#f7f8fc", borderRadius: 8, padding: "6px 10px", lineHeight: 1.5 }}
+                    title={task.instruction}
+                  >
+                    📋 {task.instruction.length > 60 ? `${task.instruction.slice(0, 60)}…` : task.instruction}
+                  </div>
+                )}
 
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 12 }}>
                   <span style={{ color: "#888" }}>已分配：</span>

@@ -97,8 +97,9 @@ const CORE_SESSION_DEPS: CoreSessionDeps = {
  * 服务端无头 ephemeral 会话（与客户端 createEphemeralSession 同构）：
  * noContextFiles + noSkills + inMemory + systemPromptOverride，cwd 用家长 kb 目录，
  * agentDir 用 .worker/agent 隔离目录。会话创建细节统一在 packages/agent-core/sessions.ts。
+ * 导出供 ISSUE-116 自定义任务执行复用。
  */
-async function createWorkerEphemeralSession(
+export async function createWorkerEphemeralSession(
   ctx: WorkerTaskCtx,
   systemPrompt: string,
   toolNames: string[],

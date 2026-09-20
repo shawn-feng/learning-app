@@ -25,6 +25,7 @@ import { listTasks, hhmm, type WorkerSchedulerChildConfig, type WorkerTask, type
 import { formatLocalDate } from "./kb-tools.js";
 import { expandRecurrences, runPlanStat } from "./plan-domain.js";
 import { ensureTodayExamPlans } from "../routes/exam.js";
+import { runCustomTasksTick } from "./custom-tasks.js";
 
 interface WorkerSchedulerDeps {
   dataDir: string;
@@ -74,14 +75,18 @@ export function startWorkerScheduler(deps: WorkerSchedulerDeps): void {
     try { await runPlanTick(deps); } catch (e) { console.error("[worker] plan tick failed:", (e as Error).message); }
     try { await runStatTick(deps); } catch (e) { console.error("[worker] stat tick failed:", (e as Error).message); }
     try { await runWorkerTick(deps); } catch (e) { console.error("[worker] tick failed:", (e as Error).message); }
+    // ISSUE-116：custom 任务（自然语言指令）到点无头执行（内部异步，不阻塞下一 tick）
+    try { await runCustomTasksTick(deps); } catch (e) { console.error("[worker] custom tick failed:", (e as Error).message); }
   });
   // 启动补跑：服务端重启/掉线 → plan/stat 游标自愈（下一 tick 重试），recording 按 catchUp 补跑（不阻塞启动）
   setTimeout(async () => {
     try { await runPlanTick(deps); } catch (e) { console.error("[worker] plan catch-up failed:", (e as Error).message); }
     try { await runStatTick(deps); } catch (e) { console.error("[worker] stat catch-up failed:", (e as Error).message); }
     try { await runWorkerCatchUp(deps); } catch (e) { console.error("[worker] catch-up failed:", (e as Error).message); }
+    // ISSUE-116：custom 的 daily/weekly 到点未跑（停机跨过触发时刻）由触发判定自动当日补跑一次
+    try { await runCustomTasksTick(deps); } catch (e) { console.error("[worker] custom catch-up failed:", (e as Error).message); }
   }, 3000);
-  console.log("[worker] 无头 worker 调度器已启动（每2分钟：plan(carry+gen)/stat 游标驱动 + recording 定时）");
+  console.log("[worker] 无头 worker 调度器已启动（每2分钟：plan(carry+gen)/stat 游标驱动 + recording 定时 + custom 自定义任务）");
 }
 
 /**

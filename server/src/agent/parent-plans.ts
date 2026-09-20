@@ -1186,6 +1186,89 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     },
   });
 
+  // ISSUE-116：自定义定时任务——家长自然语言指令，到点由服务端无头 agent 执行（owner 恒 parent）
+  const customTaskCreateTool = defineTool({
+    name: "parent_scheduler_task_create",
+    label: "创建自定义定时任务",
+    description:
+      "创建**自定义定时任务**：家长用自然语言描述要 agent 周期性完成的事，到点由服务端无头执行（例：每天 6 点查天气并给孩子建 7 天天气播报提醒）。\n" +
+      "**参数**：`childName` 必填（执行对象/产物归属孩子）；`name` 任务名；`instruction` 必填（自然语言指令，写清楚做什么、产出什么）；\n" +
+      "`time` HH:mm（daily/weekly 触发时刻）；`frequency` daily（默认）| weekly | once | interval；weekly 需 `weekday`（0=周日..6=周六）；interval 需 `intervalMinutes`；once 需 `fireAt`（ISO）。\n" +
+      "**能力边界（执行会话工具白名单）**：可查天气（weather_query）、给孩子创建定时提醒（create_reminders，到点语音播报）、读写孩子 daily 记录；\n" +
+      "**不能**操作积分/考核/学习计划。指令里涉及「未来 N 天提醒」要写明**一次性批量创建**。\n" +
+      "同一天执行失败不重试（次日正常）；执行结果可在任务面板查看。",
+    parameters: Type.Object({
+      childName: Type.String({ description: "孩子姓名（执行对象）" }),
+      name: Type.String({ description: "任务名称（如「每日天气播报」）" }),
+      instruction: Type.String({ description: "自然语言指令（写清楚做什么、产出什么，如「查今天天气，创建未来7天每天07:00的天气播报提醒」）" }),
+      time: Type.String({ description: "触发时刻 HH:mm（daily/weekly 用）" }),
+      frequency: Type.Optional(Type.String({ description: "daily（默认）| weekly | once | interval" })),
+      weekday: Type.Optional(Type.Number({ description: "weekly：0=周日..6=周六" })),
+      intervalMinutes: Type.Optional(Type.Number({ description: "interval：每隔 N 分钟" })),
+      fireAt: Type.Optional(Type.String({ description: "once：目标时间 ISO" })),
+    }),
+    execute: async (
+      _id: string,
+      params: {
+        childName: string;
+        name: string;
+        instruction: string;
+        time: string;
+        frequency?: string;
+        weekday?: number;
+        intervalMinutes?: number;
+        fireAt?: string;
+      }
+    ) => {
+      const child = resolvePlanChild(db, parentId, params.childName);
+      const name = String(params.name ?? "").trim();
+      const instruction = String(params.instruction ?? "").trim();
+      const time = String(params.time ?? "").trim();
+      if (!name) throw new Error("parent_scheduler_task_create 需要 name（任务名称）");
+      if (!instruction) throw new Error("parent_scheduler_task_create 需要 instruction（自然语言指令）");
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error(`time 格式应为 HH:mm：${time}`);
+      const frequency = (["daily", "weekly", "once", "interval"] as const).includes(params.frequency as never)
+        ? (params.frequency as "daily" | "weekly" | "once" | "interval")
+        : "daily";
+      if (frequency === "weekly" && !(Number(params.weekday) >= 0 && Number(params.weekday) <= 6)) {
+        throw new Error("weekly 需提供 weekday（0=周日..6=周六）");
+      }
+      if (frequency === "interval" && !(Number(params.intervalMinutes) > 0)) {
+        throw new Error("interval 需提供 intervalMinutes（>0）");
+      }
+      if (frequency === "once" && !params.fireAt) throw new Error("once 需提供 fireAt（ISO 目标时间）");
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      db
+        .prepare(
+          `INSERT INTO scheduler_tasks (id, parent_id, name, type, time, extra_json, enabled, owner, frequency,
+             weekday, interval_minutes, fire_at, instruction, created_at, updated_at)
+           VALUES (?, ?, ?, 'custom', ?, '{}', 1, 'parent', ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          parentId,
+          name,
+          time,
+          frequency,
+          frequency === "weekly" ? Number(params.weekday) : null,
+          frequency === "interval" ? Number(params.intervalMinutes) : null,
+          frequency === "once" ? String(params.fireAt) : null,
+          instruction,
+          now,
+          now
+        );
+      db
+        .prepare(
+          "INSERT INTO scheduler_task_assignments (task_id, child_id, enabled, created_at) VALUES (?, ?, 1, ?)"
+        )
+        .run(id, child.id, now);
+      return ok(
+        `已创建自定义定时任务「${name}」（${frequency}${frequency === "weekly" ? ` 周${"日一二三四五六"[Number(params.weekday)] ?? ""}` : ""} ${time}，执行对象：${child.name}）。到点由服务端无头执行，执行结果可在任务面板查看。`
+      );
+    },
+  });
+
   return [
     listChildrenTool,
     childCreateTool,
@@ -1204,6 +1287,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     recurrenceCreateTool,
     recurrenceListTool,
     recurrenceUpdateTool,
+    customTaskCreateTool,
   ];
 }
 
@@ -1225,4 +1309,5 @@ export const PLAN_DOMAIN_TOOL_NAMES = [
   "parent_recurrence_create",
   "parent_recurrence_list",
   "parent_recurrence_update",
+  "parent_scheduler_task_create",
 ];

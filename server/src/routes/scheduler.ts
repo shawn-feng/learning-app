@@ -80,11 +80,12 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const { name, type, time, extra } = (req.body ?? {}) as {
+    const { name, type, time, extra, instruction } = (req.body ?? {}) as {
       name?: string;
       type?: string;
       time?: string;
       extra?: Record<string, unknown>;
+      instruction?: string;
     };
     if (!name?.trim()) return reply.code(400).send({ error: "任务名称必填" });
     if (!type || !(SCHEDULER_TASK_TYPES as string[]).includes(type)) {
@@ -95,13 +96,18 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       return reply.code(400).send({ error: "reminder 类型请使用 POST /api/v1/scheduler/reminders" });
     }
     if (!validTime(time)) return reply.code(400).send({ error: "time 必填（HH:mm）" });
+    // ISSUE-116：custom 任务必带自然语言指令（owner 恒 parent——执行权限大，不给孩子建）
+    const instr = String(instruction ?? "").trim();
+    if (type === "custom" && !instr) {
+      return reply.code(400).send({ error: "custom 类型需要 instruction（自然语言任务指令）" });
+    }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     deps.db
       .prepare(
-        "INSERT INTO scheduler_tasks (id, parent_id, name, type, time, extra_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)"
+        "INSERT INTO scheduler_tasks (id, parent_id, name, type, time, extra_json, enabled, instruction, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"
       )
-      .run(id, parentId, name.trim(), type, time, JSON.stringify(extra ?? {}), now, now);
+      .run(id, parentId, name.trim(), type, time, JSON.stringify(extra ?? {}), type === "custom" ? instr : null, now, now);
     return { ok: true, task: listTasksWithAssignments(deps.db, parentId).find((t) => t.id === id) };
   });
 
@@ -118,11 +124,12 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       .prepare("SELECT 1 FROM scheduler_tasks WHERE id = ? AND parent_id = ?")
       .get(id, parentId);
     if (!row) return reply.code(403).send({ error: "无权访问该任务" });
-    const { name, time, enabled, extra } = (req.body ?? {}) as {
+    const { name, time, enabled, extra, instruction } = (req.body ?? {}) as {
       name?: string;
       time?: string;
       enabled?: boolean;
       extra?: Record<string, unknown>;
+      instruction?: string;
     };
     if (name !== undefined && !String(name).trim()) return reply.code(400).send({ error: "任务名称不能为空" });
     if (time !== undefined && !validTime(time)) return reply.code(400).send({ error: "time 格式应为 HH:mm" });
@@ -131,17 +138,21 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       time: string;
       extra_json: string;
       enabled: number;
+      type: string;
+      instruction: string | null;
     };
     const nextName = name !== undefined ? String(name).trim() : cur.name;
     const nextTime = time !== undefined ? (time as string) : cur.time;
     const nextEnabled = enabled !== undefined ? (enabled ? 1 : 0) : cur.enabled;
-    let nextExtra = cur.extra_json;
-    if (extra !== undefined) nextExtra = JSON.stringify(extra);
+    const nextExtra = extra !== undefined ? JSON.stringify(extra) : cur.extra_json;
+    // ISSUE-116：custom 任务可改指令（非 custom 行忽略该字段）
+    const nextInstruction =
+      cur.type === "custom" && instruction !== undefined ? String(instruction).trim() : (cur.instruction ?? null);
     deps.db
       .prepare(
-        "UPDATE scheduler_tasks SET name = ?, time = ?, extra_json = ?, enabled = ?, updated_at = ? WHERE id = ?"
+        "UPDATE scheduler_tasks SET name = ?, time = ?, extra_json = ?, enabled = ?, instruction = ?, updated_at = ? WHERE id = ?"
       )
-      .run(nextName, nextTime, nextExtra, nextEnabled, new Date().toISOString(), id);
+      .run(nextName, nextTime, nextExtra, nextEnabled, nextInstruction, new Date().toISOString(), id);
     return { ok: true };
   });
 

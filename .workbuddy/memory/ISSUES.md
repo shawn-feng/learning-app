@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **115** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **116** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -125,6 +125,7 @@
 | 113 | 孩子会话重进后左侧资料列表清空（对话还在、资料没了）——display_content 只推不存（SSE fire-and-forget，无登记）+ `pi:start_child` 硬编码返回 `materials:[]`（ipc-handlers.ts:1335「联调点」历史已由 ISSUE-100 接上、资料至今没人接）；客户端回填逻辑健在恒拿空数组。方案 A：display_tool 推送后持久化 `{path,title,source,ts}` 登记（/reset 清空，与 materials:[] 语义对齐）+ `/open` 一并返回 + 薄桥回填；备选 B 扫会话 toolCall 重建（否决：耦合 jsonl 结构、跨天语义模糊） | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-113.md) |
 | 114 | 错题/生字跟踪：把孩子的「漏洞信号」（对话口述错题、不认识的字）结构化沉淀为可复习的错题本——需求分析盘点四类信号源（对话口述流失/查词浮层不留痕/考核 wrong_questions 无闭环/口语评测二期）；方案：孩子 kb 新表 `mistake_book`（kind/status/count 去重）+ 三采集渠道（agent 新工具 `child_mistake_log` + 查词浮层自动上报 + 考核错题同步）+ 孩子端 icon 弹框/家长端 widget + 复习闭环（教学 prompt 注入 open 错题、验证后标 mastered）；明确不做 LLM 全文扫描自动判错。**设计问答已定（2026-09-18）：知识点可选关联（逻辑引用+名称快照，按知识点聚合薄弱视图）；不进题库（孩子 kb 私有数据 ≠ 家长共享内容库，撞 ISSUE-105 边界；错题经 question_id 引用原题做重做，统计可反向供出题参考）；C1 调用时机已定（只认明确漏洞信号：口述错题/对话问字词/稳定薄弱点，反面清单防滥用，先教学后静默记录）** | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-114.md) |
 | 115 | ✅ 已实施（2026-09-19）：考核当天重考——`exam_plans` 加 `retake` 字段（幂等迁移，''=不重考，值为重考标准自然语言）；提交路由置 done 后同步钩子（`exam-retake.ts`）：LLM（复用考核会话）按标准+评分摘要生成重考计划 JSON → schema+课程/知识点校验 → 错误反馈重试环（3 轮/100s 预算）→ 按现有口径创建当天计划（origin=retake、确定性 id 幂等）；服务端强制 retake=''（防连环）、count_in_rate 按设置 `exam_retake:<parentId>` 默认不计入（fixed-config 路由已带字段）、失败不丢分仅告警；agent 工具/创建路由加 retake 参数，客户端提交超时 120s+报告页重考提示条；测试 14 用例。待定已落：fixed 首批不做录入入口（custom 先行）。遗留：面板设置开关控件 | 中 | 2026-09-18 | [详情](ISSUES/ISSUE-115.md) |
+| 116 | ✅ 已实施（2026-09-19）：定时任务新增「自定义任务」——`scheduler_tasks` 加 type='custom' + `instruction` 列（幂等迁移，owner 恒 parent）；worker tick（每 2 分钟）触发判定沿 last_fired_at 幂等（daily/weekly 到点当日首次命中即跑、once/interval 原生），触发占位后**异步**逐孩子跑独立无头 ephemeral 会话（白名单 get_date/kb 读写 + **weather_query**[Open-Meteo 免 key 7 天预报] + **create_reminders**[source 标记滚动替换+精确去重]）+ 5 分钟看门狗 → 摘要写 task_runs；关键语义：「未来 N 天各播一次」引导建 N 条 once（daily 会每天全量重复播）；面板 + `parent_scheduler_task_create` 工具入口；测试 13 用例。四个待拍板全部落地（白名单/Open-Meteo/5min/source 标记） | 中 | 2026-09-19 | [详情](ISSUES/ISSUE-116.md) |
 
 ## 记录格式（模板）
 
