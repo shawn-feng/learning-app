@@ -126,6 +126,16 @@ class PlatformProvider(abc.ABC):
                 raise PlatformError(f"{self.platform} API error: {body.get('data', {})}")
             return body.get("data", {})
 
+    async def _post_json(self, path: str, params: dict, json_body: dict) -> dict:
+        """新式 OpenAPI 调用：access_token/open_id 走 query，业务参数走 JSON body（如 POST /video/data/）"""
+        async with httpx.AsyncClient(base_url=self.api_base, timeout=15) as client:
+            resp = await client.post(path, params=params, json=json_body)
+            resp.raise_for_status()
+            body = self._parse_json(resp)
+            if str(body.get("data", {}).get("error_code", 0)) != "0":
+                raise PlatformError(f"{self.platform} API error: {body.get('data', {})}")
+            return body.get("data", {})
+
     async def _get(self, path: str, params: dict) -> dict:
         async with httpx.AsyncClient(base_url=self.api_base, timeout=15) as client:
             resp = await client.get(path, params=params)

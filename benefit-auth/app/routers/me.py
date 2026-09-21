@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..database import get_db, new_id, get_platform_account
+from ..database import get_db, new_id, get_platform_account, upsert_video_interactions
 from ..deps import get_current_user
 from ..verifiers import get_verifier
 from ..platforms import get_provider, is_supported, PlatformError
@@ -129,6 +129,102 @@ async def my_videos(platform: str, cursor: int = 0, user_id: str = Depends(get_c
     except PlatformError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"platform": platform, "videos": data.get("list", []), "cursor": data.get("cursor"), "has_more": data.get("has_more")}
+
+
+@router.get("/{platform}/videos/stats")
+async def videos_stats(platform: str, ids: str, user_id: str = Depends(get_current_user), db=Depends(get_db)):
+    """批量查询视频互动统计（点赞数/评论数/播放/分享，需 video.data scope）"""
+    if not is_supported(platform):
+        raise HTTPException(status_code=404, detail=f"unsupported platform: {platform}")
+    provider = get_provider(platform)
+    account = await get_platform_account(db, user_id, platform)
+    if not account:
+        raise HTTPException(status_code=404, detail="尚未绑定该平台账号，请先登录/绑定")
+    granted = (account.get("scopes") or "").split(",")
+    if "video.data" not in granted:
+        raise HTTPException(status_code=403, detail="未授权视频数据权限（video.data），请升级授权")
+    account = await _ensure_valid_token(db, account, provider)
+    item_ids = [s.strip() for s in (ids or "").split(",") if s.strip()][:20]
+    try:
+        data = await provider.video_data(account["access_token"], account["platform_user_id"], item_ids)
+    except PlatformError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    stats = {}
+    for row in data.get("list") or []:
+        st = row.get("statistics") or {}
+        stats[row.get("item_id") or ""] = {
+            "like_count": st.get("like_count", 0),
+            "comment_count": st.get("comment_count", 0),
+            "play_count": st.get("play_count", 0),
+            "share_count": st.get("share_count", 0),
+        }
+    return {"stats": stats}
+
+
+@router.get("/{platform}/videos/{item_id}/comments")
+async def video_comments(platform: str, item_id: str, cursor: int = 0, count: int = 20,
+                         user_id: str = Depends(get_current_user), db=Depends(get_db)):
+    """查询视频评论列表（互动用户，需 video.comment scope）。
+
+    每条评论返回评论者可获得的身份字段（open_id / 昵称 / 头像，抖音号以平台实际返回为准），
+    并与中台已绑定的平台账号 open_id 匹配：matched_user 命中即定位到具体中台用户。
+    所有评论幂等落库 video_interactions，供后续数据分析与追溯。
+    """
+    if not is_supported(platform):
+        raise HTTPException(status_code=404, detail=f"unsupported platform: {platform}")
+    provider = get_provider(platform)
+    account = await get_platform_account(db, user_id, platform)
+    if not account:
+        raise HTTPException(status_code=404, detail="尚未绑定该平台账号，请先登录/绑定")
+    granted = (account.get("scopes") or "").split(",")
+    if "video.comment" not in granted:
+        raise HTTPException(status_code=403, detail="未授权评论管理权限（video.comment），请升级授权")
+    account = await _ensure_valid_token(db, account, provider)
+    try:
+        data = await provider.comment_list(
+            account["access_token"], account["platform_user_id"], item_id, cursor, count)
+    except PlatformError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    comments = []
+    for c in data.get("list") or []:
+        u = c.get("user") or {}
+        comments.append({
+            "comment_id": c.get("id") or c.get("cid") or c.get("comment_id") or "",
+            "interactor_open_id": u.get("open_id") or c.get("open_id") or "",
+            "douyin_no": u.get("douyin_no") or u.get("unique_id") or u.get("douyin_id") or "",
+            "nickname": u.get("nickname") or u.get("nick_name") or "",
+            "avatar_url": u.get("avatar") or u.get("avatar_url") or "",
+            "content": c.get("text") or c.get("content") or "",
+            "digg_count": c.get("digg_count") or 0,
+            "reply_count": c.get("reply_comment_total") or c.get("reply_count") or 0,
+            "create_time": c.get("create_time"),
+            "_raw": json.dumps(c, ensure_ascii=False),
+        })
+
+    await upsert_video_interactions(db, user_id, platform, item_id, comments)
+    await db.commit()
+
+    # 用 open_id 匹配本中台已绑定的用户 → 定位互动用户
+    open_ids = [c["interactor_open_id"] for c in comments if c["interactor_open_id"]]
+    matched = {}
+    if open_ids:
+        ph = ",".join("?" * len(open_ids))
+        rows = await db.execute_fetchall(
+            f"SELECT user_id, open_id, nickname FROM platform_accounts WHERE platform=? AND open_id IN ({ph})",
+            [platform] + open_ids,
+        )
+        for r in rows:
+            matched[r["open_id"]] = {"user_id": r["user_id"], "nickname": r["nickname"]}
+    for c in comments:
+        c["matched_user"] = matched.get(c["interactor_open_id"])
+        c["is_author"] = bool(c["interactor_open_id"]) and c["interactor_open_id"] == account["platform_user_id"]
+    return {
+        "comments": comments,
+        "cursor": data.get("cursor"),
+        "has_more": data.get("has_more", False),
+        "total": data.get("total"),
+    }
 
 
 # ---------- 任务列表（按 App 分组，含我的状态） ----------

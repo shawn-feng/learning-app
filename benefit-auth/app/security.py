@@ -27,6 +27,27 @@ def verify_secret(raw: str, stored: str) -> bool:
         return False
 
 
+PBKDF2_ITERATIONS = 120_000
+
+
+def hash_password(raw: str) -> str:
+    """用户登录口令哈希：PBKDF2-HMAC-SHA256，存储格式 pbkdf2_sha256$iter$salt$hash"""
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", raw.encode(), salt.encode(), PBKDF2_ITERATIONS).hex()
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${digest}"
+
+
+def verify_password(raw: str, stored: str) -> bool:
+    try:
+        algo, iters, salt, digest = stored.split("$", 3)
+        if algo != "pbkdf2_sha256":
+            return False
+        calc = hashlib.pbkdf2_hmac("sha256", raw.encode(), salt.encode(), int(iters)).hex()
+        return secrets.compare_digest(calc, digest)
+    except Exception:
+        return False
+
+
 def gen_app_credentials() -> tuple[str, str]:
     """生成 app_id / app_secret"""
     app_id = "app_" + secrets.token_hex(8)

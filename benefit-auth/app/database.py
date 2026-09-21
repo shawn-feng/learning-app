@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE,
+    password_hash TEXT,                     -- 账号密码登录（平台扫码用户为空）
     nickname TEXT DEFAULT '',
     avatar_url TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
@@ -111,6 +112,27 @@ CREATE TABLE IF NOT EXISTS whitelist (
     granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(platform, platform_user_id)
 );
+
+-- 视频互动记录（授权用户视频下的评论者，用于互动数据分析与用户定位）
+CREATE TABLE IF NOT EXISTS video_interactions (
+    id TEXT PRIMARY KEY,                -- 平台评论 id（前缀平台名保证全局唯一，如 douyin:<cid>）
+    owner_user_id TEXT NOT NULL,        -- 视频作者 = 本中台授权用户
+    platform TEXT NOT NULL DEFAULT 'douyin',
+    item_id TEXT NOT NULL,              -- 视频 item_id
+    interaction_type TEXT NOT NULL DEFAULT 'comment',
+    interactor_open_id TEXT DEFAULT '', -- 互动用户在该应用下的 open_id（本应用内稳定唯一）
+    douyin_no TEXT DEFAULT '',          -- 抖音号（平台若返回则记录）
+    nickname TEXT DEFAULT '',
+    avatar_url TEXT DEFAULT '',
+    content TEXT DEFAULT '',            -- 评论内容
+    digg_count INTEGER DEFAULT 0,       -- 该评论获赞数
+    reply_count INTEGER DEFAULT 0,      -- 该评论回复数
+    interacted_at DATETIME,             -- 评论时间（平台秒级时间戳转 ISO）
+    fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    raw TEXT DEFAULT ''                 -- 平台原始 JSON（字段名以实际返回为准，全量留存便于分析）
+);
+CREATE INDEX IF NOT EXISTS idx_video_interactions_item ON video_interactions(platform, item_id);
+CREATE INDEX IF NOT EXISTS idx_video_interactions_interactor ON video_interactions(interactor_open_id);
 """
 
 
@@ -144,6 +166,14 @@ async def _migrate(db):
     cols3 = {r["name"] for r in (await db.execute_fetchall("PRAGMA table_info(apps)"))}
     if "redirect_uris" not in cols3:
         await db.execute("ALTER TABLE apps ADD COLUMN redirect_uris TEXT DEFAULT ''")
+
+    cols4 = {r["name"] for r in (await db.execute_fetchall("PRAGMA table_info(users)"))}
+    if "password_hash" not in cols4:
+        await db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
+    cols5 = {r["name"] for r in (await db.execute_fetchall("PRAGMA table_info(video_interactions)"))}
+    if "raw" not in cols5:
+        await db.execute("ALTER TABLE video_interactions ADD COLUMN raw TEXT DEFAULT ''")
 
 
 def now_iso() -> str:
@@ -240,3 +270,42 @@ async def is_whitelisted(db, platform: str, platform_user_id: str) -> bool:
         (platform, platform_user_id),
     )
     return bool(rows)
+
+
+# ---------------- 视频互动记录 ----------------
+async def upsert_video_interactions(db, owner_user_id: str, platform: str, item_id: str,
+                                    comments: list[dict]):
+    """把评论列表写入/更新到 video_interactions（按平台评论 id 幂等）。
+
+    每条 comment 规范化后含：comment_id / interactor_open_id / douyin_no / nickname /
+    avatar_url / content / digg_count / reply_count / create_time(秒级时间戳)。
+    """
+    from datetime import datetime, timezone
+    for c in comments or []:
+        cid = f"{platform}:{c.get('comment_id') or ''}"
+        if not c.get("comment_id"):
+            continue
+        ts = c.get("create_time")
+        interacted_at = (
+            datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+            if ts else None
+        )
+        await db.execute(
+            """INSERT INTO video_interactions
+               (id, owner_user_id, platform, item_id, interaction_type, interactor_open_id,
+                douyin_no, nickname, avatar_url, content, digg_count, reply_count, interacted_at, fetched_at, raw)
+               VALUES (?,?,?,?,'comment',?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 content=excluded.content, digg_count=excluded.digg_count,
+                 reply_count=excluded.reply_count, nickname=excluded.nickname,
+                 avatar_url=excluded.avatar_url, douyin_no=excluded.douyin_no,
+                 fetched_at=CURRENT_TIMESTAMP, raw=excluded.raw""",
+            (
+                cid, owner_user_id, platform, item_id,
+                c.get("interactor_open_id") or "", c.get("douyin_no") or "",
+                c.get("nickname") or "", c.get("avatar_url") or "",
+                c.get("content") or "", int(c.get("digg_count") or 0),
+                int(c.get("reply_count") or 0), interacted_at,
+                c.get("_raw") or "",
+            ),
+        )

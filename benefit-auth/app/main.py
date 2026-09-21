@@ -3,11 +3,12 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from .database import init_db
-from .routers import apps, me, oauth
+from .routers import account, apps, me, oauth
 from .pages import login_page, me_page
 
 app = FastAPI(title="Benefit Auth Center", version="0.2.0")
 
+app.include_router(account.router)
 app.include_router(apps.router)
 app.include_router(me.router)
 app.include_router(oauth.router)
