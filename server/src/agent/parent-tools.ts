@@ -11,12 +11,20 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { DatabaseSync } from "node:sqlite";
-import { resolveWithin } from "@pi/agent-core";
 import { openParentLib } from "../db/parent-lib.js";
 import { openKb } from "../db/kb.js";
+import {
+  isImageAttachment,
+  isTextAttachment,
+  looksLikeAttachmentRef,
+  missingRemoteHint,
+  resolveAttachmentRef,
+  UploadRefError,
+} from "./upload-ref.js";
 import {
   appendParentActivityLog,
   deleteMaterial,
@@ -81,6 +89,19 @@ export interface ParentToolDeps extends MaterialCtx {
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
+/** 有界读文本（最多 200KB，避免大附件整份读进内存）。 */
+function readTextHead(abs: string, maxBytes = 200 * 1024): string {
+  const fd = fs.openSync(abs, "r");
+  try {
+    const len = Math.max(1, Math.min(maxBytes, 200 * 1024));
+    const buf = Buffer.alloc(len);
+    const n = fs.readSync(fd, buf, 0, len, 0);
+    return buf.subarray(0, n).toString("utf-8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** 服务端本地时区的 YYYY-MM-DD（与 db/sessions 的 localDateOf 同口径）。 */
 function todayLocal(): string {
   const d = new Date();
@@ -141,6 +162,42 @@ function resolveConvoChild(
     /* profile 损坏则用默认名 */
   }
   return { id: hit.id, name: hit.name, aiName };
+}
+
+/** 家长名下全部孩子（按创建时间；供跨孩子批量动作使用，如课程改名联动）。 */
+function childrenOf(db: DatabaseSync, parentId: string): Array<{ id: string; name: string }> {
+  return db
+    .prepare("SELECT id, name FROM children WHERE parent_id = ? ORDER BY created_at, name")
+    .all(parentId) as unknown as Array<{ id: string; name: string }>;
+}
+
+/** 家长库 topics：topic_key ↔ 中文名 双向解析（家长库 courses.topic 存的是 topic_key）。 */
+function parentTopicIndex(pdb: DatabaseSync): {
+  byKey: Map<string, { topic_key: string; name: string }>;
+  resolve: (raw: string) => { topic_key: string; name: string } | undefined;
+} {
+  const rows = pdb.prepare("SELECT name, topic_key FROM topics").all() as unknown as Array<{
+    name: string;
+    topic_key: string;
+  }>;
+  const byKey = new Map(rows.map((r) => [String(r.topic_key), { topic_key: String(r.topic_key), name: String(r.name) }]));
+  const byName = new Map(rows.map((r) => [String(r.name), { topic_key: String(r.topic_key), name: String(r.name) }]));
+  return {
+    byKey,
+    resolve: (raw: string) => {
+      const k = String(raw ?? "").trim();
+      return byKey.get(k) ?? byName.get(k);
+    },
+  };
+}
+
+
+/**
+ * 孩子是否已分配该主题（只核对、不代分配——「分配主题」是家长的决定，工具不越界）。
+ * 仅 `parent_rename_course` 用它提醒「改到未分配主题后孩子看不到」。
+ */
+function childHasTopic(kb: DatabaseSync, name: string, topicKey: string): boolean {
+  return !!kb.prepare("SELECT 1 FROM topics WHERE topic_key = ? OR name = ?").get(topicKey, name);
 }
 
 export function createParentAgentTools(deps: ParentToolDeps) {
@@ -437,11 +494,13 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       if (!params.topic?.trim() || !params.title?.trim()) throw new Error("parent_upsert_course 需要 topic + title");
       const db = openParentLib(deps.dataDir, deps.parentId);
       try {
+        // uuid 显式写入（新行）：跨库关联的锚点（ISSUE-123），不让新课程留 NULL uuid 窗口；
+        // ON CONFLICT 分支**不动 uuid**（改名/覆盖不得改变关联锚点，改名请用 parent_rename_course）。
         db.prepare(
           `INSERT INTO courses (
-             topic, title, sort_order,
+             topic, title, uuid, sort_order,
              material, send_material, tags, lesson_method, html_path, teaching_copy, assess_rubric
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(topic, title) DO UPDATE SET
              sort_order = excluded.sort_order,
              material = excluded.material,
@@ -454,6 +513,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         ).run(
           params.topic,
           params.title,
+          randomUUID(),
           params.sort_order ?? 0,
           params.material ?? "",
           params.send_material ?? "",
@@ -468,6 +528,373 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         return ok(`已落库课程「${params.title}」（${params.topic}）。`);
       } finally {
         db.close();
+      }
+    },
+  });
+
+  // ==================== ISSUE-123：家长库课程 ↔ 孩子库课程 的同步与改名（uuid 为锚点） ====================
+  // 背景（2026-09-18 库域分工）：孩子库 courses 只剩「进度 + 显示引用」两域字段，教学真源在家长库；
+  // 唯一写入口本来是「分配时」一次性写入，此后没有定时同步 → 家长改课程名/新加课后孩子库不跟随。
+  // 本组工具补上「按 uuid 同步」的手动/可重复动作，永不触碰孩子进度字段。
+
+  /** 按 uuid 把家长库所选课程同步到某孩子库（补 uuid / 更新显示排序 / 归并 / 新增），进度字段一概不动。 */
+  const syncCoursesTool = defineTool({
+    name: "parent_sync_courses_to_child",
+    label: "把家长库课程同步到孩子库（按 uuid）",
+    description:
+      "把孩子库的课程行与**家长库真源**对齐（一次一个孩子）：补齐缺失关联、更新课程显示名/排序、补上家长库新加而孩子库还没有的课。\n\n" +
+      "**⚠️ 同步范围 = 该孩子**已分配**的主题**（孩子能不能看到某课完全由「主题是否分配给他」决定）。" +
+      "**没有分配给他的主题，整体跳过**：不写入、也不代分配（分配主题是家长的决定，请在家长端操作）——本次跳过了哪些主题会在返回里列出。\n" +
+      "**何时调用**：① 家长改过课程名或调整过主题内课程；② 家长库给**已分配主题**新加了课、但孩子那边找不到（考核创建报「课程在孩子库里不存在」就是此症）；" +
+      "③ 定期体检孩子库与家长库是否对齐。**幂等**：已对齐的内容不会重复改动。\n" +
+      "**边界（重要）**：孩子的学习进度（status/last_review/review_count/tags）**一概不动**；不删任何行（家长库已删的课，孩子库进度行保留为孤儿并列入汇报）；不改孩子级主题规则；不新增主题分配。\n" +
+      "**参数**：`child` 必填（一次一个孩子，多孩子多次调用）；`topic` 可选（主题目录名或中文名，只同步该主题——若该主题未分配给孩子会被拒绝并说明）；`titles` 可选（只同步这些课程名）。",
+    parameters: Type.Object({
+      child: Type.String({ description: "孩子姓名" }),
+      topic: Type.Optional(Type.String({ description: "只同步该主题（topic_key 或主题中文名）；不传=全部课程" })),
+      titles: Type.Optional(Type.Array(Type.String(), { description: "只同步这些课程名；不传=该范围内全部" })),
+    }),
+    execute: async (_id, params) => {
+      const child = resolveConvoChild(deps.db, deps.parentId, params.child);
+      const pdb = openParentLib(deps.dataDir, deps.parentId);
+      const kb = openKb(deps.dataDir, deps.parentId, child.id);
+      try {
+        const topicsIdx = parentTopicIndex(pdb);
+        // ⚠️ **同步边界 = 该孩子已分配的主题**（2026-09-21 用户纠正）：
+        // 孩子能不能看到某课完全由「主题是否分配给他」决定（`kb.topics.list` → 按 topic_key 逐主题列课）。
+        // 把未分配主题的课程写进孩子库 ① 孩子根本看不到 ② 一旦日后分配该主题，会一次性冒出上百门「没分配过」的课，
+        // 属于脏数据。所以同步**只在已分配主题内进行**，未分配主题只汇报、不写入（更不代分配——那是家长的决定）。
+        const childTopicRows = kb.prepare("SELECT name, topic_key FROM topics").all() as unknown as Array<{
+          name: string;
+          topic_key: string;
+        }>;
+        const assignedKeys = new Set(childTopicRows.map((t) => String(t.topic_key)));
+        const assignedNames = new Set(childTopicRows.map((t) => String(t.name)));
+        /** 家长库某主题是否已分配给该孩子（家长库 topic_key ↔ 孩子库 topic_key/中文名）。 */
+        const isAssigned = (parentTopicKey: string, parentTopicName?: string): boolean => {
+          if (assignedKeys.has(parentTopicKey)) return true;
+          if (parentTopicName && (assignedNames.has(parentTopicName) || assignedKeys.has(parentTopicName))) return true;
+          return false;
+        };
+        const assignedOf = (parentKey: string): { topic_key: string; name: string } | undefined => {
+          const meta = topicsIdx.byKey.get(parentKey);
+          return isAssigned(parentKey, meta?.name) ? (meta ?? { topic_key: parentKey, name: parentKey }) : undefined;
+        };
+        const assignedList = [...topicsIdx.byKey.values()].filter((t) => isAssigned(t.topic_key, t.name));
+        if (!assignedList.length) {
+          return ok(
+            `「${child.name}」还没有分配任何学习主题（孩子库 topics 为空），无从同步。\n` +
+              `请先在家长端给孩子分配主题——分配时会把该主题下的课程一并写入孩子库。`
+          );
+        }
+
+        const topicArg = String(params.topic ?? "").trim();
+        let topicKeyFilter = "";
+        if (topicArg) {
+          const hit = topicsIdx.resolve(topicArg);
+          if (!hit) {
+            const names = [...topicsIdx.byKey.values()].map((t) => `${t.name}(${t.topic_key})`).join("、");
+            return ok(`家长库里没有主题「${topicArg}」${names ? `（现有：${names}）` : "（家长库暂无主题）"}`);
+          }
+          if (!isAssigned(hit.topic_key, hit.name)) {
+            return ok(
+              `主题「${hit.name}（${hit.topic_key}）」**没有分配给「${child.name}」**，不能同步（同步只在已分配主题内进行）。\n` +
+                `该孩子已分配的主题：${assignedList.map((t) => `${t.name}(${t.topic_key})`).join("、")}\n` +
+                `要让他学这个主题，请先在家长端给他分配主题（分配时课程会一并写入）。`
+            );
+          }
+          topicKeyFilter = hit.topic_key;
+        }
+        const titleFilter = new Set(
+          (Array.isArray(params.titles) ? params.titles : []).map((t) => String(t).trim()).filter(Boolean)
+        );
+        const allParent = pdb
+          .prepare("SELECT topic, title, sort_order, uuid FROM courses ORDER BY topic, sort_order, title")
+          .all() as unknown as Array<{ topic: string; title: string; sort_order: number; uuid: string }>;
+        // 白名单：家长库全部主题里，**未分配**给该孩子的 → 只汇报不写入
+        const skippedTopics = [...topicsIdx.byKey.values()]
+          .filter((t) => !isAssigned(t.topic_key, t.name))
+          .map((t) => ({
+            name: t.name,
+            key: t.topic_key,
+            courses: allParent.filter((c) => String(c.topic) === t.topic_key).length,
+          }))
+          .filter((t) => t.courses > 0);
+        const parentCourses = allParent.filter(
+          (c) =>
+            !!assignedOf(String(c.topic)) &&
+            (!topicKeyFilter || String(c.topic) === topicKeyFilter) &&
+            (!titleFilter.size || titleFilter.has(String(c.title)))
+        );
+        if (!parentCourses.length) {
+          return ok(
+            `已经分配的主题（${assignedList.map((t) => `${t.name}(${t.topic_key})`).join("、")}）下没有符合条件的课程` +
+              `（孩子「${child.name}」未做任何改动）。` +
+              (titleFilter.size ? `\n请用 parent_library_courses 核对课程名。` : "")
+          );
+        }
+        const parentByKey = new Map(allParent.map((c) => [`${String(c.topic)}|${String(c.title)}`, c]));
+
+        // ---- 步骤 1：补孩子库缺失的 uuid（按 (topic,title) 在同主题内解析 → 同时修 ISSUE-123 R3）----
+        const childRows = kb
+          .prepare("SELECT rowid AS rid, topic, topic_key, title, uuid, sort_order FROM courses")
+          .all() as unknown as Array<{
+          rid: number;
+          topic: string;
+          topic_key: string;
+          title: string;
+          uuid: string | null;
+          sort_order: number;
+        }>;
+        const byUuid = new Map<string, (typeof childRows)[number]>();
+        for (const r of childRows) if (r.uuid) byUuid.set(String(r.uuid), r);
+        let uuidFilled = 0;
+        // 同样只在**已分配主题**内补 uuid（未分配主题的行不属于本次同步范围，只汇报不动）
+        for (const r of childRows.filter((x) => !x.uuid && !!assignedOf(String(x.topic_key || x.topic)))) {
+          const p = parentByKey.get(`${r.topic}|${r.title}`);
+          if (!p?.uuid) continue; // 解析不到 → 留到孤儿清单里汇报，不动
+          kb.prepare("UPDATE courses SET uuid = ? WHERE rowid = ?").run(String(p.uuid), r.rid);
+          r.uuid = String(p.uuid);
+          byUuid.set(String(p.uuid), r);
+          uuidFilled++;
+        }
+
+        // ---- 步骤 2：按 uuid 三态同步（进度字段一概不写）----
+        let inserted = 0;
+        let updated = 0;
+        let merged = 0;
+        let unchanged = 0;
+        const conflicts: string[] = [];
+        for (const p of parentCourses) {
+          const topic = String(p.topic);
+          const title = String(p.title);
+          const uuid = String(p.uuid);
+          const sortOrder = Number(p.sort_order) || 0;
+          const topicMeta = topicsIdx.byKey.get(topic) ?? { topic_key: topic, name: topic };
+          const hit = byUuid.get(uuid);
+          if (hit) {
+            if (String(hit.topic) === topic && String(hit.title) === title && Number(hit.sort_order) === sortOrder) {
+              unchanged++;
+              continue;
+            }
+            // 显示名/主题/排序变了 → 只改这四列；改名前先查是否与既有行主键冲突
+            const clash = kb
+              .prepare("SELECT uuid FROM courses WHERE topic = ? AND title = ? AND COALESCE(uuid,'') <> ?")
+              .get(topic, title, uuid) as { uuid?: string } | undefined;
+            if (clash) {
+              conflicts.push(`「${topic}/${title}」与孩子库另一行（uuid ${String(clash.uuid).slice(0, 8)}）撞名，已跳过`);
+              continue;
+            }
+            kb.prepare("UPDATE courses SET topic = ?, topic_key = ?, title = ?, sort_order = ? WHERE uuid = ?").run(
+              topic,
+              topicMeta.topic_key,
+              title,
+              sortOrder,
+              uuid
+            );
+            updated++;
+            continue;
+          }
+          // uuid 未命中：撞上同 (topic,title) 的旧行 → 归并（补 uuid + 更新显示字段，不新建重复行）
+          const legacy = kb
+            .prepare("SELECT rowid AS rid, uuid FROM courses WHERE topic = ? AND title = ?")
+            .get(topic, title) as { rid: number; uuid?: string | null } | undefined;
+          if (legacy) {
+            if (legacy.uuid) {
+              conflicts.push(
+                `孩子库「${topic}/${title}」已有行但 uuid 不同（家长库该课 uuid ${uuid.slice(0, 8)}）——可能是「删旧建新」导致，未改动，请人工确认是否同一门课`
+              );
+              continue;
+            }
+            kb.prepare("UPDATE courses SET uuid = ?, topic_key = ?, sort_order = ? WHERE rowid = ?").run(
+              uuid,
+              topicMeta.topic_key,
+              sortOrder,
+              legacy.rid
+            );
+            merged++;
+            continue;
+          }
+          kb.prepare(
+            `INSERT INTO courses (topic, topic_key, title, uuid, sort_order, status, last_review, review_count, tags)
+             VALUES (?, ?, ?, ?, ?, '⬜', '', 0, '')`
+          ).run(topic, topicMeta.topic_key, title, uuid, sortOrder);
+          inserted++;
+        }
+
+        // ---- 步骤 3：汇报（含孤儿行 / 主题未分配）----
+        // 孤儿行 = 既按 uuid 也对不上 (topic,title) 的孩子库行（家长库已删/改名未保 uuid）——只汇报，不动
+        const parentUuids = new Set(allParent.map((c) => String(c.uuid)));
+        const orphanSeen = new Set<string>();
+        const orphanList: string[] = [];
+        for (const r of childRows) {
+          const byUuidHit = !!r.uuid && parentUuids.has(String(r.uuid));
+          const byKeyHit = parentByKey.has(`${r.topic}|${r.title}`);
+          if (byUuidHit || byKeyHit) continue;
+          const k = `${r.topic}|${r.title}`;
+          if (orphanSeen.has(k)) continue;
+          orphanSeen.add(k);
+          orphanList.push(`${r.topic}/${r.title}`);
+        }
+        // 孩子库里属于「未分配主题」的存量行（历史遗留/早先误同步）：只汇报，不动
+        const strayRows = childRows.filter((r) => !assignedOf(String(r.topic_key || r.topic)));
+        const lines = [
+          `已把家长库课程同步到「${child.name}」的孩子库（**同步范围＝已分配给该孩子的主题**）：`,
+          `- 已分配主题 ${assignedList.length} 个：${assignedList.map((t) => `${t.name}(${t.topic_key})`).join("、")}`,
+          `- 本次检查这些主题下的课程 ${parentCourses.length} 门；新增 ${inserted} 门｜更新显示/排序 ${updated} 门｜归并旧行 ${merged} 行｜补 uuid ${uuidFilled} 行｜无需改动 ${unchanged} 门`,
+        ];
+        if (conflicts.length) {
+          lines.push(`- ⚠️ 跳过 ${conflicts.length} 项（需人工确认）：\n    ${conflicts.slice(0, 10).join("\n    ")}`);
+        }
+        if (orphanList.length) {
+          lines.push(
+            `- ⚠️ 孩子库里有 ${orphanList.length} 门课在家长库找不到（进度已保留为孤儿行，未改动）：` +
+              `${orphanList.slice(0, 10).join("、")}${orphanList.length > 10 ? ` …等 ${orphanList.length} 门` : ""}`
+          );
+        }
+        if (skippedTopics.length) {
+          const total = skippedTopics.reduce((s, t) => s + t.courses, 0);
+          lines.push(
+            `- ⏭️ **未分配的主题已整体跳过**（不写入，也不代分配）——${skippedTopics.length} 个主题、共 ${total} 门课：` +
+              skippedTopics
+                .slice(0, 8)
+                .map((t) => `${t.name}(${t.key}) ${t.courses} 门`)
+                .join("、") +
+              (skippedTopics.length > 8 ? ` …等 ${skippedTopics.length} 个主题` : "") +
+              `\n    想让某个孩子学这些主题，请先在家长端给他**分配主题**（分配时课程一并写入）。`
+          );
+        }
+        if (strayRows.length) {
+          const uniq = [...new Set(strayRows.map((r) => `${r.topic}/${r.title}`))];
+          lines.push(
+            `- ℹ️ 孩子库里另有 ${strayRows.length} 行属于未分配主题（孩子看不到；历史遗留，本次未改动）：` +
+              `${uniq.slice(0, 5).join("、")}${uniq.length > 5 ? ` …等 ${uniq.length} 行` : ""}`
+          );
+        }
+        lines.push(`（孩子的学习进度一概未改动。）`);
+        appendParentActivityLog(
+          ctx,
+          `同步课程到「${child.name}」：新增 ${inserted}、更新 ${updated}、归并 ${merged}、补 uuid ${uuidFilled}`
+        );
+        return ok(lines.join("\n"));
+      } finally {
+        kb.close();
+        pdb.close();
+      }
+    },
+  });
+
+  /**
+   * 课程改名/换主题：**保 uuid**（ISSUE-123 的同步锚点），并联动所有孩子库的显示名。
+   * 旧做法（parent_upsert_course 改 title）是 (topic,title) 主键 upsert = 新建一行新 uuid，
+   * 孩子库进度行再也对不上 → 本工具是唯一正确的改名入口。
+   */
+  const renameCourseTool = defineTool({
+    name: "parent_rename_course",
+    label: "课程改名/换主题（保 uuid + 联动孩子库）",
+    description:
+      "给家长库里的课程**改名**（或换到别的主题），**uuid 保持不变**，并同步更新所有孩子库中该课程的显示名——孩子的学习进度原样保留。\n\n" +
+      "**何时调用**：家长要「把这门课换个名字 / 挪到别的主题」时。\n" +
+      "**⚠️ 改名不要用 parent_upsert_course**：它是 (topic,title) 主键 upsert，改 title 等于**新建一行、新 uuid**，旧行残留，" +
+      "孩子库那条进度就永久对不上了（ISSUE-123 R1）。本工具是唯一正确的改名入口。\n" +
+      "**参数**：topic + title 定位现有课程（改名前可先 parent_library_courses 核对）；new_title 新名字；new_topic 可选（换主题，接受 topic_key 或中文名）。",
+    parameters: Type.Object({
+      topic: Type.String({ description: "现有课程的所属主题（topic_key 或中文名）" }),
+      title: Type.String({ description: "现有课程名" }),
+      new_title: Type.String({ description: "新课程名" }),
+      new_topic: Type.Optional(Type.String({ description: "可选：换到该主题（topic_key 或中文名）；不传=主题不变" })),
+    }),
+    execute: async (_id, params) => {
+      const oldTitle = String(params.title ?? "").trim();
+      const newTitle = String(params.new_title ?? "").trim();
+      if (!oldTitle || !newTitle) throw new Error("parent_rename_course 需要 title + new_title");
+      if (oldTitle === newTitle && !String(params.new_topic ?? "").trim()) {
+        return ok("新旧课程名相同，无需改名。");
+      }
+      const pdb = openParentLib(deps.dataDir, deps.parentId);
+      try {
+        const topicsIdx = parentTopicIndex(pdb);
+        const oldTopicArg = String(params.topic ?? "").trim();
+        const oldTopicMeta = topicsIdx.resolve(oldTopicArg);
+        const oldTopicKey = oldTopicMeta?.topic_key ?? oldTopicArg;
+        const row = pdb
+          .prepare("SELECT topic, title, uuid FROM courses WHERE topic = ? AND title = ?")
+          .get(oldTopicKey, oldTitle) as { topic: string; title: string; uuid?: string | null } | undefined;
+        if (!row) {
+          const near = pdb
+            .prepare("SELECT topic, title FROM courses WHERE topic = ? ORDER BY title LIMIT 20")
+            .all(oldTopicKey) as unknown as Array<{ topic: string; title: string }>;
+          return ok(
+            `家长库「${oldTopicKey}」下没有课程「${oldTitle}」（该主题现有：${near.map((c) => c.title).join("、") || "无"}）`
+          );
+        }
+        const uuid = String(row.uuid ?? "");
+        if (!uuid) throw new Error("该课程缺 uuid（家长库应已自动回填），请重新打开家长库后重试");
+
+        let newTopicKey = oldTopicKey;
+        if (String(params.new_topic ?? "").trim()) {
+          const t = topicsIdx.resolve(String(params.new_topic).trim());
+          if (!t) return ok(`家长库里没有主题「${params.new_topic}」`);
+          newTopicKey = t.topic_key;
+        }
+        const occupied = pdb
+          .prepare("SELECT uuid FROM courses WHERE topic = ? AND title = ? AND uuid <> ?")
+          .get(newTopicKey, newTitle, uuid);
+        if (occupied) {
+          return ok(`家长库「${newTopicKey}」下已有同名课程「${newTitle}」，改名会撞名——请换个名字，或先把那门课处理掉。`);
+        }
+
+        // 1) 先在每个孩子库按**旧名字**补 uuid（改正名前才解析得到），再按 uuid 改显示名
+        const kids = childrenOf(deps.db, deps.parentId);
+        const perChild: string[] = [];
+        let childTouched = 0;
+        for (const k of kids) {
+          const kb = openKb(deps.dataDir, deps.parentId, k.id);
+          try {
+            const back = kb
+              .prepare("UPDATE courses SET uuid = ? WHERE (uuid IS NULL OR uuid = '') AND topic = ? AND title = ?")
+              .run(uuid, oldTopicKey, oldTitle);
+            const clash = kb
+              .prepare("SELECT uuid FROM courses WHERE topic = ? AND title = ? AND COALESCE(uuid,'') <> ?")
+              .get(newTopicKey, newTitle, uuid);
+            if (clash) {
+              perChild.push(`${k.name}：跳过（已有同名课「${newTitle}」，uuid 不同）`);
+              continue;
+            }
+            const upd = kb
+              .prepare("UPDATE courses SET topic = ?, topic_key = ?, title = ? WHERE uuid = ?")
+              .run(newTopicKey, newTopicKey, newTitle, uuid);
+            // 未分配该主题 → 提醒（不代分配）
+            const tName = topicsIdx.byKey.get(newTopicKey)?.name ?? newTopicKey;
+            const hasTopic = childHasTopic(kb, tName, newTopicKey);
+            const n = Number(upd.changes) + Number(back.changes);
+            if (n > 0) childTouched++;
+            perChild.push(
+              `${k.name}：更新 ${upd.changes} 行${Number(back.changes) ? `、补 uuid ${back.changes} 行` : ""}` +
+                (hasTopic ? "" : `（⚠️ 该孩子未分配主题 ${tName}，课程暂时看不到）`)
+            );
+          } finally {
+            kb.close();
+          }
+        }
+        // 2) 家长库改名（uuid 原地不动；知识点挂在 course_uuid 上，不受影响）
+        pdb.prepare("UPDATE courses SET topic = ?, title = ? WHERE topic = ? AND title = ?").run(
+          newTopicKey,
+          newTitle,
+          oldTopicKey,
+          oldTitle
+        );
+        appendParentActivityLog(ctx, `课程改名「${oldTitle}」→「${newTitle}」（${oldTopicKey} → ${newTopicKey}）`);
+        markEmbeddedWrite(deps, "courses", [newTopicKey, newTitle]);
+        return ok(
+          `已改名：家长库「${oldTitle}」→「${newTitle}」${newTopicKey !== oldTopicKey ? `（主题 ${oldTopicKey} → ${newTopicKey}）` : ""}，` +
+            `uuid 保持不变（知识点/考核内容仍挂在同一门课上）。\n` +
+            `孩子库联动（受影响孩子 ${childTouched} 个，进度未改动）：\n  ${perChild.join("\n  ")}\n` +
+            `⚠️ 提醒：已生成的考核计划 scope 里保存的是**当时的课程名**，改名后这些旧计划可能取不到课程，` +
+            `请在家长端核对/重排相关考核，或用 parent_exam_plan_list 查看。`
+        );
+      } finally {
+        pdb.close();
       }
     },
   });
@@ -795,19 +1222,28 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     name: "parent_read_image",
     label: "理解图片内容",
     description:
-      "用视觉模型读一张图片（教材扫描页/截图/图示），返回画面描述与图中文字。\n\n" +
+      "用视觉模型读一张图片（教材扫描页/截图/图示/家长聊天里发的作业图），返回画面描述与图中文字。\n\n" +
       "**何时调用**：需要知道图片/扫描件里到底写了什么（起草教学文案前常需要）。\n" +
-      "参数 path 用材料相对路径（如 lunyu/media/page1.jpg）；图片需是 png/jpg/webp/gif/bmp 等常见格式。",
+      "**path 两种来源**：\n" +
+      "① 材料库相对路径（如 lunyu/media/page1.jpg，来自 parent_list_materials）；\n" +
+      "② **家长聊天里上传的图片**——把消息里 `【附件图片：文件名|引用】` 中的**引用值原样填入**" +
+      "（形如 `files/<id>`、裸 id 或 `parents/<pid>/uploads/xxx.jpg`）。不要自己拼路径、也不要换成 materials/ 前缀。\n" +
+      "图片需是 png/jpg/webp/gif/bmp 等常见格式；非图片附件用 parent_read_upload。",
     parameters: Type.Object({
-      path: Type.String({ description: "图片的材料相对路径" }),
+      path: Type.String({ description: "图片引用：材料相对路径，或聊天附件标记里的引用值（原样填入）" }),
       question: Type.Optional(Type.String({ description: "想让模型重点回答的问题（缺省=描述并识别全部文字）" })),
     }),
     execute: async (_id: string, params: { path: string; question?: string }) => {
       let abs: string;
-      // 材料真源优先；也允许读家长上传目录（uploads/ 前缀），二者都在沙箱内解析
+      // ISSUE-124：材料真源、家长聊天附件（服务端 files 通道 / 客户端本机上传区）都在沙箱内解析
       const rel = String(params.path ?? "").trim();
-      if (rel.startsWith("uploads/") || rel.startsWith("files/")) {
-        abs = resolveWithin(deps.dataDir, rel.replace(/^files\//, "files/"));
+      if (looksLikeAttachmentRef(rel)) {
+        try {
+          abs = resolveAttachmentRef(deps, rel).abs;
+        } catch (err) {
+          if (err instanceof UploadRefError && err.kind === "missing-remote") return ok(missingRemoteHint(err, rel));
+          throw err;
+        }
       } else {
         abs = materialAbsPath(ctx, rel);
       }
@@ -828,6 +1264,57 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         params.question
       );
       return ok(`【${params.path}】\n${text}`);
+    },
+  });
+
+  // ISSUE-124：读家长聊天里上传的**非图片**附件（txt/md/csv/json…），补齐「附件标记只能读图」的缺口
+  const uploadTool = defineTool({
+    name: "parent_read_upload",
+    label: "读取聊天附件（非图片）",
+    description:
+      "读取家长在聊天框上传的**非图片附件**的内容（txt / md / csv / json / xml / html 等文本类返回正文，超 200KB 截断）。\n\n" +
+      "**何时调用**：家长消息里出现 `【附件文件：文件名|引用】` 且你需要看文件里写了什么时。\n" +
+      "**ref 参数**：把标记中的**引用值原样填入**（形如 `files/<id>`、裸 id 或 `parents/<pid>/uploads/文件名`）；" +
+      "不要自己拼路径、也不要换成 materials/ 前缀。\n" +
+      "图片请用 parent_read_image（有视觉模型能识别图中文字）；pdf/word 等二进制只返回元数据——" +
+      "若家长发来的是这类文件，请请他改用文字或截图说明。",
+    parameters: Type.Object({
+      ref: Type.String({ description: "附件标记里的引用值（原样填入）" }),
+    }),
+    execute: async (_id: string, params: { ref: string }) => {
+      const raw = String(params.ref ?? "").trim();
+      if (!looksLikeAttachmentRef(raw)) {
+        return ok(
+          `「${raw}」看起来不是聊天附件引用。附件引用长这样：` +
+            "`files/<id>`、裸 id（如 `0f3a…`）或 `parents/<家长id>/uploads/文件名`——" +
+            "请把消息里 `【附件文件：…|…】` 的**后半段**原样传进来。"
+        );
+      }
+      let abs: string;
+      try {
+        abs = resolveAttachmentRef(deps, raw).abs;
+      } catch (err) {
+        if (err instanceof UploadRefError && err.kind === "missing-remote") return ok(missingRemoteHint(err, raw));
+        throw err;
+      }
+      const stat = fs.statSync(abs);
+      const name = path.basename(abs);
+      const sizeMb = (stat.size / 1024 / 1024).toFixed(2);
+      if (isImageAttachment(name)) {
+        return ok(`${name} 是图片（${stat.size} 字节），请改用 parent_read_image 读它（能识别图中文字）。`);
+      }
+      if (!isTextAttachment(name)) {
+        return ok(
+          `${name}：${imageMimeFromExt(name)} 类型（${stat.size} 字节 ≈ ${sizeMb}MB），不是文本类附件，无法直接返回正文。\n` +
+            `请如实告诉家长：这类文件（pdf/word/压缩包等）服务端读不了内容，请改用文字描述，或截图后用图片方式发送。`
+        );
+      }
+      if (stat.size > 200 * 1024) {
+        return ok(
+          `${name}（${stat.size} 字节）超过 200KB，只读前 200KB：\n\n${readTextHead(abs, 200 * 1024)}\n\n（已截断）`
+        );
+      }
+      return ok(`${name}（${stat.size} 字节）：\n\n${readTextHead(abs, stat.size)}`);
     },
   });
 
@@ -954,12 +1441,15 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     coursesTool,
     upsertTopicTool,
     upsertCourseTool,
+    renameCourseTool,
+    syncCoursesTool,
     courseContentTool,
     upsertCourseContentTool,
     dbDescribeTool,
     dbReadTool,
     dbWriteTool,
     imageTool,
+    uploadTool,
     convoTool,
     logTool,
     // 编程 agent（P3 上移）：家长 agent 描述需求 → 服务端编程 agent 产出 HTML 资料到真源
@@ -1448,12 +1938,15 @@ export const PARENT_AGENT_TOOL_NAMES = [
   "parent_library_courses",
   "parent_upsert_topic",
   "parent_upsert_course",
+  "parent_rename_course",
+  "parent_sync_courses_to_child",
   "parent_library_course_content",
   "parent_upsert_course_content",
   "parent_db_describe",
   "parent_db_read",
   "parent_db_write",
   "parent_read_image",
+  "parent_read_upload",
   "parent_read_child_conversation",
   "parent_build_material",
   "log_activity",

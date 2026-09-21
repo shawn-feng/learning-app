@@ -89,7 +89,9 @@ const api = {
   // 读取已落盘的上传文件内容（base64），用于历史消息播放语音录音
   readUpload: (childId: string, relPath: string) =>
     ipcRenderer.invoke("file:read_upload", childId, relPath),
-  // 家长聊天框上传落盘（ISSUE-044 修正）：保存到 data/parents/<parentId>/uploads/，与孩子隔离
+  // 家长聊天框上传落盘（ISSUE-044 修正）：保存到 data/parents/<parentId>/uploads/，与孩子隔离。
+  // ISSUE-124：同时上传到服务端 files 通道，返回 ref（`files/<id>`，服务端 agent 可读的引用）；
+  // uploadError 非空表示上送失败（本机已落盘，但家长助手读不到这份附件）。
   saveParentUpload: (parentId: string, name: string, mime: string, data: ArrayBuffer) =>
     ipcRenderer.invoke("file:save_upload_parent", { parentId, name, mime, data }),
   // 用本地默认程序打开家长 uploads 目录内已落盘的上传文件

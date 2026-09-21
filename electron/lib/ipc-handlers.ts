@@ -13,7 +13,7 @@ import crypto from "crypto";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, prewarmTexts, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
 import { dbQuery, currentSessionToken } from "./client-data";
-import { serverFetch } from "./server-client";
+import { serverFetch, uploadFileToServer } from "./server-client";
 import { formatLocalDate } from "./dates";
 import { listChildren } from "./child-auth";
 import { readClientLogFile, getClientLog } from "./app-logger";
@@ -1932,10 +1932,29 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         }
         fs.writeFileSync(full, Buffer.from(payload.data));
         pruneUploads(uploadsDir);
+        // ISSUE-124：家长 agent 跑在服务端，读不到本机 data/parents/<pid>/uploads/ 里的文件——
+        // 顺带把附件上传到服务端大文件通道，ref（`files/<id>`）就是服务端 agent 能读到的引用；
+        // 聊天标记优先用 ref，本机打开/预览仍用 path。上传失败不阻断本机落盘，但要如实告诉用户。
+        let ref = "";
+        let uploadError: string | undefined;
+        try {
+          const id = await uploadFileToServer(
+            finalName,
+            payload.mime,
+            Buffer.from(payload.data),
+            currentSessionToken()
+          );
+          ref = `files/${id}`;
+        } catch (err) {
+          uploadError = `附件未上传到服务端（${(err as Error).message}），家长助手可能读不到这份附件`;
+          console.warn(`[file:save_upload_parent] 服务端上传失败（本机已落盘）:`, (err as Error).message);
+        }
         return {
           success: true,
           // 相对路径（相对 data/），统一正斜杠，便于前端展示/后续读取
           path: path.join("parents", payload.parentId, "uploads", finalName).replace(/\\/g, "/"),
+          ref,
+          uploadError,
           size: Buffer.byteLength(payload.data),
         };
       } catch (err) {

@@ -88,6 +88,52 @@ export async function serverFetch<T = unknown>(
 }
 
 /**
+ * 上传文件到服务端大文件通道（POST /api/v1/files/upload，multipart）。
+ * ISSUE-124：家长 agent 跑在服务端，读不到家长本机落盘的附件——上传后拿到 file id，
+ * 它既是「服务端可读引用」（agent 侧 parent_read_image / parent_read_upload 认得 `files/<id>`），
+ * 也是家长自己回看/下载附件的凭据。服务端存 `<dataDir>/files/<parentId>/<uuid><ext>`。
+ * 未配置服务端地址 / 网络失败 / 非 2xx → 抛 ServerError（调用方自行决定降级）。
+ */
+export async function uploadFileToServer(
+  name: string,
+  mime: string,
+  data: ArrayBuffer | Buffer,
+  token: string,
+  timeoutMs = 30000
+): Promise<string> {
+  const base = serverBase();
+  const form = new FormData();
+  const safeName = String(name || "file").slice(0, 120) || "file";
+  form.append("file", new Blob([data as BlobPart], mime ? { type: mime } : undefined), safeName);
+
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/v1/files/upload`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    throw new ServerError(0, describeFetchError(e, timeoutMs));
+  }
+  if (!res.ok) {
+    let detail = `附件上传失败 (HTTP ${res.status})`;
+    try {
+      const b = (await res.json()) as { error?: string };
+      if (b?.error) detail = b.error;
+    } catch {
+      /* 保留默认 */
+    }
+    throw new ServerError(res.status, detail);
+  }
+  const body = (await res.json()) as { file?: { id?: string } };
+  const id = body.file?.id;
+  if (!id) throw new ServerError(0, "附件上传失败：服务端未返回 file id");
+  return id;
+}
+
+/**
  * 二进制下载（ISSUE-003：备份 zip）。返回 Buffer（Node 环境 fetch → arrayBuffer）。
  * 非 2xx 抛 ServerError（语义同 serverFetch）。
  */

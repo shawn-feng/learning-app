@@ -27,19 +27,34 @@ interface RpcContext {
 /**
  * 计划域 S2（2026-09-10）：按课程名从**家长库**取课程 uuid —— 孩子库 courses.uuid / 计划行 course_uuid 的真源。
  * 家长库 courses.uuid 在 openParentLib 时幂等回填；查不到返回 ""（课程可能已删）。
+ *
+ * **2026-09-21（ISSUE-123 R3）**：原先 (topic,title) 落空后按 **title 单字段全局 LIMIT 1** 兜底，
+ * 跨主题重名课会**静默连错 uuid**；现已收窄为**同主题内**匹配（即只做精确匹配）。
+ * 为避免调用方传中文主题名而失配（家长库 `courses.topic` 存的是 `topic_key`），
+ * topic 参数同时接受 `topic_key` 与主题中文名，两者都会尝试。
  */
 function resolveCourseUuid(dataDir: string, parentId: string, topic: string, title: string): string {
   try {
     const pdb = openParentLib(dataDir, parentId);
     try {
-      const byTopic = pdb.prepare("SELECT uuid FROM courses WHERE topic = ? AND title = ?").get(topic, title) as
-        | { uuid?: string }
-        | undefined;
-      if (byTopic?.uuid) return String(byTopic.uuid);
-      const byTitle = pdb.prepare("SELECT uuid FROM courses WHERE title = ? LIMIT 1").get(title) as
-        | { uuid?: string }
-        | undefined;
-      return byTitle?.uuid ? String(byTitle.uuid) : "";
+      const t = String(topic ?? "").trim();
+      const y = String(title ?? "").trim();
+      if (!y) return "";
+      // topic 允许 topic_key 或主题中文名 → 都试一遍
+      const keys = new Set<string>([t]);
+      const topicRow = pdb
+        .prepare("SELECT topic_key, name FROM topics WHERE topic_key = ? OR name = ?")
+        .get(t, t) as { topic_key?: string; name?: string } | undefined;
+      if (topicRow?.topic_key) keys.add(String(topicRow.topic_key));
+      if (topicRow?.name) keys.add(String(topicRow.name));
+      for (const k of keys) {
+        if (!k) continue;
+        const row = pdb.prepare("SELECT uuid FROM courses WHERE topic = ? AND title = ?").get(k, y) as
+          | { uuid?: string }
+          | undefined;
+        if (row?.uuid) return String(row.uuid);
+      }
+      return "";
     } finally {
       pdb.close();
     }
