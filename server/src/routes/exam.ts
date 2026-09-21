@@ -1021,7 +1021,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const body = (req.body ?? {}) as { childId?: string; scheduledAt?: string; scope?: unknown; retake?: string };
+    const body = (req.body ?? {}) as { childId?: string; scheduledAt?: string; scope?: unknown; name?: string; retake?: string };
     const childId = String(body.childId ?? "").trim();
     const scheduledAt = String(body.scheduledAt ?? "").trim();
     if (!childId || !scheduledAt) return reply.code(400).send({ error: "缺少 childId 或 scheduledAt" });
@@ -1041,6 +1041,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     const scopeIn = (body.scope ?? {}) as {
       courses?: unknown;
       note?: string;
+      name?: string;
       methodSpec?: { require?: Record<string, number>; exclude?: string[]; recitePass?: number } | null;
       recitePass?: number;
     };
@@ -1084,12 +1085,15 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }
     const kb = openKb(deps.config.dataDir, parentId, childId);
     try {
+      // ISSUE-121：同日多场考核靠**名字**区分——去重收窄为「同日同名」，不同名可并存；
+      // duplicated=true 语义变为「同日同名已有未考计划」（面板需如实提示，不再静默吞内容）
+      const examName = String(body.name ?? scopeIn.name ?? "").trim() || "自定义考核";
       const dup = kb
         .prepare(
-          "SELECT id FROM exam_plans WHERE child_id = ? AND kind = 'custom' AND creator = 'parent' AND active = 1 AND status = 'pending' AND substr(start_at,1,10) = ?"
+          "SELECT id FROM exam_plans WHERE child_id = ? AND kind = 'custom' AND creator = 'parent' AND active = 1 AND status = 'pending' AND substr(start_at,1,10) = ? AND title = ?"
         )
-        .get(childId, day) as { id: string } | undefined;
-      if (dup) return { ok: true, id: dup.id, duplicated: true };
+        .get(childId, day, examName) as { id: string } | undefined;
+      if (dup) return { ok: true, id: dup.id, duplicated: true, name: examName };
       const now = new Date().toISOString();
       const scopeJson = JSON.stringify({
         courses: entries,
@@ -1101,9 +1105,9 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       kb.prepare(
         `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
            start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at,retake)
-         VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','','?',?,'pending','',NULL,'','required',1,0,1,?,?,?)`
-      ).run(id, parentId, childId, scopeJson, `${day} 00:00:00`, `${day} 23:59:59`, now, now, retake);
-      return { ok: true, id };
+         VALUES (?,?,?,?,'parent','custom','',?,'conversation','','?',?,'pending','',NULL,'','required',1,0,1,?,?,?)`
+      ).run(id, parentId, childId, examName, scopeJson, `${day} 00:00:00`, `${day} 23:59:59`, now, now, retake);
+      return { ok: true, id, name: examName };
     } finally {
       kb.close();
     }

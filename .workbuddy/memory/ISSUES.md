@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **118** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **121** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -128,6 +128,9 @@
 | 116 | ✅ 已实施（2026-09-19）：定时任务新增「自定义任务」——`scheduler_tasks` 加 type='custom' + `instruction` 列（幂等迁移，owner 恒 parent）；worker tick（每 2 分钟）触发判定沿 last_fired_at 幂等（daily/weekly 到点当日首次命中即跑、once/interval 原生），触发占位后**异步**逐孩子跑独立无头 ephemeral 会话（白名单 get_date/kb 读写 + **weather_query**[Open-Meteo 免 key 7 天预报] + **create_reminders**[source 标记滚动替换+精确去重]）+ 5 分钟看门狗 → 摘要写 task_runs；关键语义：「未来 N 天各播一次」引导建 N 条 once（daily 会每天全量重复播）；面板 + `parent_scheduler_task_create` 工具入口；测试 13 用例。四个待拍板全部落地（白名单/Open-Meteo/5min/source 标记） | 中 | 2026-09-19 | [详情](ISSUES/ISSUE-116.md) |
 | 117 | agent 工具并发调用——**框架已支持并行**（SDK `executeToolCalls` 默认 `executeToolCallsParallel`，`toolExecution ?? "parallel"`，服务端未覆盖、无工具声明 sequential——已核实到 bundle 源码级）；`parent_build_material` 每调用独立编程会话（key=parentId:path）不同 path 天然并发安全。**实际串行根因=模型一轮只发一个调用**。方案：①新增批量工具 `parent_build_material_batch`（Promise.all 框架强制并发+上限 3+逐份成败汇总，绕开模型习惯，推荐）②prompt/工具描述鼓励同消息多调用（辅助）。注意 rate limit/成本放大、同 path 仍串行复用会话 | 中 | 2026-09-19 | [详情](ISSUES/ISSUE-117.md) |
 | 118 | 调查：家长 agent 穿管 materials 时创建的 HTML 落到哪——**三处落点**：①资料真源 `<dataDir>/materials/<parentId>/<topic>/…`（parent_put_material/parent_build_material，正规主路径）；②孩子工作区 `workspaces/<parentId>/<childId>/outputs/…`；③~~家长会话工作区（不可穿管）~~ **P-a ✅ 已修复（2026-09-19）**：根因=parent_build_material 对非 `materials/` 前缀路径静默落家长工作区，且前缀语法与同族工具（parent_put_material 用根相对路径）不一致——已重构 `resolveLessonOutputPath`：家长侧恒落真源+根相对路径语法（兼容旧前缀）+topic 校验，测试 7 用例。穿管=display_content 读正文内联推 SSE + 登记 display_contents 表（无文件副本）。遗留：P-b 落点边界文档化；P-c 测试家长 76 目录污染 | 低-中 | 2026-09-19 | [详情](ISSUES/ISSUE-118.md) |
+| 119 | 背诵题打分链路梳理：**纯发音评测引擎分线性映射，不经 LLM**——题库直出（refText=原文/recitePass 通过线默认 90/pointMax 默认 10）→ 多段录音合并 WAV → 服务端评测（**实际用阿里声希 SSECP**：中文背诵走 cn.pred.score 长文本免拆段，81=声希 overall 合成分；腾讯 SOE=SuggestedScore 为代码兜底）→ toSpeechAssessment（pron=score）→ 客户端 `pointGot=round(total/100×pointMax)`、`correct=total≥pass`。**引擎分本身是黑盒**（声希内部对准确/完整/流利加权合成，权重不公开，我方仅可控 precision=1.0）。**三个注意点**：①`overall??pron` 双字段残留（映射从不设 overall，误导）②得分与通过两条线（9 分但 correct=false 可能，影响错题本/重考口径）③评测失败软失败记 0 分无区分 | 低 | 2026-09-19 | [详情](ISSUES/ISSUE-119.md) |
+| 120 | 家长/孩子 agent 共用「知识库」：孩子聊天问历史/自然现象等事实问题时 agent 检索高相关可信知识再答（家长供料圈定内容边界，不联网）；家长提供视频/网页/PDF 自动摄取为可检索知识。方案：`knowledge_docs`（状态机 pending→ingested）+`knowledge_chunks`（分块+向量 BLOB），**向量复用 ISSUE-111 已落地的 embeddings 基建**（首个纯语义消费方）；摄取管线 PDF 抽文本/网页正文提取/**视频 ffmpeg 抽音轨+ASR 转写**（两者均已有能力）；孩子 agent 只读 `knowledge_search`（prompt 教触发时机）+ 家长 agent 管理 tools；二期 LLM 清洗结构化条目/混合检索。待拍板：存放位置（knowledge.sqlite vs parent.sqlite 表）/ASR 通道/分块参数。**检索已调研 Obsidian（2026-09-21）：主路线（结构分块+本地向量+余弦）与 Smart Connections 同构已验证；吸收①结构感知分块替代纯定长 ②混合检索（FTS5 BM25+向量）维持二期但融合排序单列验收（Copilot #1799 教训）③链接图一跳扩展（反链思想，二期，chunks 预留 entities 字段）** | 中 | 2026-09-21 | [详情](ISSUES/ISSUE-120.md) |
+| 121 | ✅ 已解决（2026-09-21 拍板 B+命名）：自定义考核取名 + 同日多场——`parent_exam_plan_create` 加 `name` 参数、INSERT 落库 title（不再硬编码「自定义考核」）；两处守卫（agent 工具 + `POST /exam/schedules`，后者收 `body.name`/`scope.name`）去重收窄为**同日同名**（对齐孩子自请语义），不同名未考计划同天并存；孩子端 todayOpen 列表渲染无单条假设、computeExamRate 多条 done 同天合并求和均不受影响。**附带发现**：面板 ExamAdminPanel 新建/编辑表单已是死代码（无 JSX 引用、scope 格式残留 ISSUE-104 前），面板创建入口实际不存在，考核创建只剩 agent 对话一路——恢复 UI 需按 courses 口径重做（新 issue 候选）。测试 4 用例 | 中 | 2026-09-21 | [详情](ISSUES/ISSUE-121.md) |
 
 ## 记录格式（模板）
 

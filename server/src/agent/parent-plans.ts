@@ -710,11 +710,17 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       "  「背诵考核 / 只背原文 / 只要背诵」→ `{\"require\":{\"背诵\":1}}`；「只考讲意思/句意」→ `{\"require\":{\"句意白话\":1}}`；\n" +
       "  「不考字词」→ exclude `字词`；「背诵+讲道理」→ `{\"require\":{\"背诵\":1,\"道理\":1}}`。\n" +
       "  不传且说明里含「只考背诵」类表述时，服务端会自动按只考背诵处理（并在返回里注明）。\n" +
-      "同一天已有一条未考的自定义考核计划时不会重复创建（需更换内容请先取消原计划）。",
+      "`name` 可选（**考核名称**，ISSUE-121）：如「论语学而篇背诵考核」「数学口算周测」。**同一天可以有多场考核，靠名字区分**（如上午语文背诵、下午数学口测）；同一天**同名**的未考计划不会重复创建（需更换内容请先取消原计划，或换一个名字）。不传缺省「自定义考核」——**建议都取名字**，孩子端按名字识别是哪场考核。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       scheduledAt: Type.String({ description: "考核日期 YYYY-MM-DD（口语先换算）" }),
       courses: Type.Array(Type.String({ description: "要考核的精确课程名（必填）" })),
+      name: Type.Optional(
+        Type.String({
+          description:
+            "考核名称（如「论语学而篇背诵考核」）。同一天可多场考核，靠名字区分；同日同名未考计划不会重复创建。缺省「自定义考核」",
+        })
+      ),
       note: Type.Optional(Type.String({ description: "考核内容说明（给孩子的提示，可空）" })),
       retake: Type.Optional(
         Type.String({
@@ -740,6 +746,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         childName: string;
         scheduledAt: string;
         courses: string[];
+        name?: string;
         note?: string;
         retake?: string;
         methodSpec?: { require?: Record<string, number>; exclude?: string[]; recitePass?: number };
@@ -802,13 +809,17 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       });
       const kb = openKb(dataDir, parentId, child.id);
       try {
+        // ISSUE-121：同日多场考核靠**名字**区分——去重收窄为「同日同名」，不同名可并存
+        const title = String(params.name ?? "").trim() || "自定义考核";
         const dup = kb
           .prepare(
-            "SELECT id FROM exam_plans WHERE child_id = ? AND kind = 'custom' AND creator = 'parent' AND active = 1 AND status = 'pending' AND substr(start_at,1,10) = ?"
+            "SELECT id FROM exam_plans WHERE child_id = ? AND kind = 'custom' AND creator = 'parent' AND active = 1 AND status = 'pending' AND substr(start_at,1,10) = ? AND title = ?"
           )
-          .get(child.id, day) as { id: string } | undefined;
+          .get(child.id, day, title) as { id: string } | undefined;
         if (dup) {
-          return ok(`「${child.name}」${day} 已有一条未考的自定义考核计划，未重复创建（需更换内容请先取消原计划）。`);
+          return ok(
+            `「${child.name}」${day} 已有同名未考考核计划「${title}」，未重复创建（换一个名字可同天多场；需更换内容请先取消原计划）。`
+          );
         }
         const now = new Date().toISOString();
         // ISSUE-115：retake = 当天重考标准（自然语言）；''=不重考
@@ -816,8 +827,8 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         kb.prepare(
           `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
              start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at,retake)
-           VALUES (?,?,?,'自定义考核','parent','custom','',?,'conversation','',?,?, 'pending','',NULL,'','','required',1,0,1,?,?,?)`
-        ).run(id, parentId, child.id, scope, `${day} 00:00:00`, `${day} 23:59:59`, now, now, retake);
+           VALUES (?,?,?,?,'parent','custom','',?,'conversation','',?,?, 'pending','',NULL,'','','required',1,0,1,?,?,?)`
+        ).run(id, parentId, child.id, title, scope, `${day} 00:00:00`, `${day} 23:59:59`, now, now, retake);
       } finally {
         kb.close();
       }
@@ -831,8 +842,9 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
             .join("；")}${specFromNote ? "（依据考核说明自动识别，如与家长意图不符请取消后重排并明确传入 methodSpec）" : ""}`
         : "";
       const perCourse = entries.map((e) => `${e.title}（${e.kps.map((k) => `${k.name}×${k.count}`).join("、")}）`).join("；");
+      const examTitle = String(params.name ?? "").trim() || "自定义考核";
       return ok(
-        `已为孩子「${child.name}」创建考核计划（${day}）。出题约定：${perCourse}${params.note ? `；说明：${params.note}` : ""}${ovNote}。到当天孩子即可在考核页参加。`
+        `已为孩子「${child.name}」创建考核计划「${examTitle}」（${day}）。出题约定：${perCourse}${params.note ? `；说明：${params.note}` : ""}${ovNote}。到当天孩子即可在考核页参加。`
       );
     },
   });
