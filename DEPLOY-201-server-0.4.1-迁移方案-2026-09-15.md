@@ -230,7 +230,88 @@ PASS=2 FAIL=0（闻闻无进行中计划，无法断言；其数据本为空）
 3. （无 schema 变更，一般无需回数据）如需：`sudo cp -a /opt/learning-server/data/backups/deploy-0.4.3-20260915-1333/. /opt/learning-server/data/`
 4. `sudo systemctl start learning-server`，确认 `/api/v1/version` 回到 0.4.2。
 
+---
+
+## 12. 后续增量部署（0.5.0 系列 → 0.5.1）
+
+> 0.4.3 之后的部署记录：**0.5.0 / 0.5.0b / 0.5.0c（2026-09-19~21）** 的经过见 `.workbuddy/memory/2026-09-21.md`，结果文件在 `tmp/deploy/deploy-050*-result.txt`（含 ISSUE-112 存量治愈、116 自定义定时任务、118 `parent_build_material` 恒落真源、121 考核取名+同日多场、122 db 通道 update 修复）。本节只记最近一次。
+
+### 12.1 服务端 0.5.1（2026-09-21 14:54，ISSUE-123 已完成）
+
+**内容**：家长 agent 新增 `parent_rename_course`（改名保 uuid + 联动全部孩子库显示名）与 `parent_sync_courses_to_child`（按 uuid 三态对齐家长库课程，幂等、不碰孩子进度）；`resolveCourseUuid` 收窄为同主题匹配（修 R3）；`parent_upsert_course` 新行显式写入 uuid。**纯代码变更，无 schema 变更。**
+
+| 项 | 值 |
+|---|---|
+| 版本 | 0.5.0 → **0.5.1**（`routes/version.ts` + `server/package.json`） |
+| 结果 | ✅ `/api/v1/version` → **0.5.1**；`/api/v1/health` → `{"ok":true,"uptime":4,"db":"ok"}`；`ERR_COUNT=0`；feishu 渠道、worker、监听 8788 均正常 |
+| 停机时长 | 约 **3 秒**（14:54:37 stop → 14:54:40 started） |
+| 备份（旧 bundle） | `/opt/learning-server/server.cjs.bak-20260921-1454` |
+| 备份（数据） | `/opt/learning-server/data/backups/deploy-0.5.1-20260921-1454/`（**44 M，13 项 / 12 个顶层条目 —— 已实测非空**，见下"教训"） |
+| 包内自查 | `grep -o`：`0.5.1`×1、`parent_rename_course`×4、`parent_sync_courses_to_child`×3 |
+
+**⚠️ 教训（09-21 已踩，务必遵守）**：`sudo bash -c "...$D..."` 里的 `$D` 会被**外层 shell 提前展开成空** → `mkdir` 短路 → **备份静默空操作**（0.5.0b/0.5.0c 两次都中招）。现在把多步脚本**上传成 `.sh` 再 `sudo bash /tmp/x.sh <args>`**，且脚本自己回显 `BAK_ITEMS` / `BAK_FILES_AT_DST` / `BAK_SIZE`，部署脚本断言 `BAK_OK`。
+
+**只读 dry-run 探针（真实数据，`probe-sync-diff-051.mjs`，0 写入）**：证明 R2 是真实存在的，也预告了首次同步会改什么——
+```
+家长=test@qq.com｜孩子=闻闻,珊珊          （家长库课程 1344 门）
+
+【闻闻】孩子库 1198 行 → 同步将：新增 147｜更新显示/排序 30｜归并 0｜补 uuid 0
+  孤儿行 1（lunyu/测试课程，uuid 空且按名字解析不到）｜同名不同 uuid 冲突 0
+  主题未分配 6：english、taodi、xiaojing、xiaozhuan、lianzhi、xiguan
+【珊珊】孩子库 1329 行 → 同步将：新增 15｜更新显示/排序 31｜归并 0｜补 uuid 0
+  孤儿行 0｜冲突 0｜主题未分配 3：feizhougu、other、wenwen_chinese
+```
+> 「新增」= 家长库有、孩子库没有的课（闻闻缺 147 门，正是 ISSUE-123 R2 症状）；「更新显示/排序」= 已有行但课程名/排序与家长库不一致（**只改显示，进度不动**）；「主题未分配」= 课程同步后孩子仍看不到，需家长端给孩子分配该主题。
+
+**回滚方式**
+1. `sudo systemctl stop learning-server`
+2. `sudo cp -a /opt/learning-server/server.cjs.bak-20260921-1454 /opt/learning-server/server.cjs`
+3. （无 schema 变更）如需回数据：`sudo cp -a /opt/learning-server/data/backups/deploy-0.5.1-20260921-1454/. /opt/learning-server/data/`
+4. `sudo systemctl start learning-server`，确认 `/api/v1/version` 回到 0.5.0。
+
+> 备注：**未改客户端**（服务端变更向后兼容）。新工具对家长 agent 即时可用——注意别在**已有会话**里问「你有没有这个工具」（历史可能锚住模型否认，ISSUE-102 教训）。
+
+### 12.2 服务端 0.5.2（2026-09-21 15:24，ISSUE-123 同步范围修正，已完成）
+
+**内容**：用户报「同步工具不能全部同步，有些学习主题没分配给孩子（如非洲鼓没分给珊珊）」→ 首版 `parent_sync_courses_to_child` 默认范围＝家长库全量，越界。**修正：同步范围＝该孩子已分配的主题**；`topic` 传未分配主题直接拒绝；孩子无任何分配主题拒绝执行；补 uuid 也限范围内；返回分三类列明「已分配主题/未分配主题整体跳过（主题+门数）/孩子库存量未分配主题行」。`parent_rename_course` 不受限（只改已存在的行）。**纯代码变更，无 schema 变更。**
+
+| 项 | 值 |
+|---|---|
+| 版本 | 0.5.1 → **0.5.2** |
+| 结果 | ✅ `/api/v1/version` → **0.5.2**；health `{"ok":true,"uptime":4,"db":"ok"}`；`ERR_COUNT=0` |
+| 停机时长 | 约 **3 秒**（15:24:29 stop → 15:24:32 started） |
+| 备份（旧 bundle） | `/opt/learning-server/server.cjs.bak-20260921-1524` |
+| 备份（数据） | `data/backups/deploy-0.5.2-20260921-1524/`（44 M / 13 项，实测非空） |
+| 包内自查 | `grep -o`：`0.5.2`×1、`assignedOf`×4、`strayRows`×4、`skippedTopics`×7、`parent_sync_courses_to_child`×3 |
+
+**部署后只读复核（数据未被本次部署改动）**：闻闻「未分配主题存量行 147 / 范围内新增 0」、珊珊「15 / 0」——与部署前完全一致。**用户明确决定"暂时不删除"这 162 行**（全部无进度痕迹，孩子看不到，留着不影响使用）。
+
+**回滚方式**
+1. `sudo systemctl stop learning-server`
+2. `sudo cp -a /opt/learning-server/server.cjs.bak-20260921-1524 /opt/learning-server/server.cjs`
+3. （无 schema 变更）如需回数据：`sudo cp -a /opt/learning-server/data/backups/deploy-0.5.2-20260921-1524/. /opt/learning-server/data/`
+4. `sudo systemctl start learning-server`，确认 `/api/v1/version` 回到 0.5.1。
+
 > 备注：**未改客户端**——老客户端连 0.4.3 已不再白屏（服务端把 `scope.courses` 归一成课程名数组）。若要看到「每课哪些知识点各几题」明细，需另行构建/发布客户端 0.1.16（已改好 `src/lib/plan-scope.ts` + `src/components/PlanCourseList.tsx`，本地构建通过）。
+
+---
+
+### 12.3 服务端 0.5.3（2026-09-21 18:24，ISSUE-124 家长附件读取 + ISSUE-126 模型热切换/错误可见化，已完成）
+
+**内容**：①ISSUE-124 家长聊天附件读取链路（`/files/upload` 上送 + `resolveAttachmentRef` 引用解析 + `parent_read_image`/`parent_read_upload` 接通，详见 `ISSUES/ISSUE-124.md`）；②ISSUE-126 会话模型热切换与错误可见化（新增 `agent/model-sync.ts`：每轮提交前 `syncSessionModel` 对比默认模型 → SDK `setModel` 原地热切换；`attachStream` 识别 `stopReason:"error"` 转 error 事件 + `friendlyModelError` 可读文案；客户端空回复兜底随下次客户端包发布，详见 `ISSUES/ISSUE-126.md`）。无 schema 变更、无人工迁移。
+
+| 项 | 值 |
+|---|---|
+| 版本 | 0.5.2 → **0.5.3** |
+| 结果 | ✅ `/api/v1/version` → 0.5.3；`/api/v1/health` → `{"ok":true,"uptime":4,"db":"ok"}`；启动日志 ERR_COUNT=0 |
+| 包内自查 | `syncSessionModel`×3、`friendlyModelError`×3、`resolveAttachmentRef`×3（新逻辑确认在包内） |
+| 备份（bundle） | `/opt/learning-server/server.cjs.bak-20260921-1824`（旧 0.5.2） |
+| 备份（数据） | `/opt/learning-server/data/backups/deploy-0.5.3-20260921-1824/`（44M，12 文件，BAK_OK） |
+| 只读探活 | `models/settings` 200（defaultModel=mimo-tokenplan/mimo-v2.5）、`models/check mimo-tokenplan` 200 |
+| 脚本 | `tmp/deploy/deploy_server_053.py`（复用 `deploy051_backup.sh`）；结果 `tmp/deploy/deploy-053-result.txt` |
+| 客户端 | **未改**——老客户端即可获得「切模型即时生效 + 模型错误可见」；ISSUE-126 的 C 兜底与 ISSUE-124 客户端改动随下次客户端打包（0.1.20 包不含） |
+
+**回滚方式**：`sudo systemctl stop learning-server` → `sudo cp -a /opt/learning-server/server.cjs.bak-20260921-1824 /opt/learning-server/server.cjs` → `sudo systemctl start learning-server`（数据可用 deploy-0.5.3-20260921-1824 备份恢复）。
 
 ---
 
