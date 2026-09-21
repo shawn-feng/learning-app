@@ -791,9 +791,26 @@ export default function Learn({ child, onExit }: Props) {
 
   // 学习 agent 回复收尾（pi:reply_end）
   const handleReplyEnd = useCallback(() => {
+    const id = workingIdRef.current;
     workingIdRef.current = null;
     setStopping(false);
     setBusy(false);
+    // ISSUE-126 兜底：本轮结束但工作气泡没收到任何回复（模型 429 额度用尽/服务异常、
+    // 或空轮中止）→ 置为提示文案，不再永远「等待模型返回」。
+    // 正常轮 pi:reply 先到（handleReply 已清 workingIdRef），不会进这个分支。
+    if (id) {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== id || !m.working) return m;
+          if (m.text || (m.tools && m.tools.length > 0)) return { ...m, working: false };
+          return {
+            ...m,
+            working: false,
+            text: "⚠️ 本轮没有收到回复（可能已中止，或模型额度用尽/服务异常），可以再试一次。",
+          };
+        })
+      );
+    }
     // 场景课全托管：本工作轮学习 agent 刚打开过场景资料 → 课程收尾后由场景伙伴开场接管
     if (sceneOpenedTurnRef.current && sceneModeRef.current) {
       sceneOpenedTurnRef.current = false;
@@ -883,10 +900,25 @@ export default function Learn({ child, onExit }: Props) {
 
   const handleSceneReplyEnd = useCallback((data: { childId: string }) => {
     if (data.childId !== childIdRef.current) return;
+    const id = workingIdRef.current;
     workingIdRef.current = null;
     setStopping(false);
     setBusy(false);
     materialsPanelRef.current?.sceneAgentBusy(false);
+    // ISSUE-126 兜底：同主会话——空轮收尾不再永久「等待模型返回」
+    if (id) {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== id || !m.working) return m;
+          if (m.text || (m.tools && m.tools.length > 0)) return { ...m, working: false };
+          return {
+            ...m,
+            working: false,
+            text: "⚠️ 本轮没有收到回复（可能已中止，或模型额度用尽/服务异常），可以再试一次。",
+          };
+        })
+      );
+    }
   }, []);
 
   const handleSceneReplyError = useCallback((data: { childId: string; error: string }) => {

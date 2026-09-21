@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ChatWindow, { type ChatMessage, type ToolCallState, nowTime } from "./ChatWindow";
+import { attachmentMarker } from "../lib/attachment-ref";
 
 // ISSUE-039：历史消息 ID 生成器（与 Learn.tsx nextId 同构）
 let msgCounter = 0;
@@ -178,7 +179,26 @@ export default function ParentChatPanel({
       setBusy(false);
     });
     window.api.onPiReplyEnd((data: any) => {
-      if (data.childId === childId) { setStopping(false); setBusy(false); }
+      if (data.childId !== childId) return;
+      setStopping(false);
+      setBusy(false);
+      // ISSUE-126 兜底：轮次结束但工作气泡没收到任何回复（模型 429 额度用尽/服务异常）
+      // → 置为提示文案，不再永远转圈。正常轮 onPiReply 先到（已清 workingIdRef）。
+      const id = workingIdRef.current;
+      workingIdRef.current = null;
+      if (id) {
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== id || !m.working) return m;
+            if (m.text || (m.tools && m.tools.length > 0)) return { ...m, working: false };
+            return {
+              ...m,
+              working: false,
+              text: "⚠️ 本轮没有收到回复（可能已中止，或模型额度用尽/服务异常），可以再试一次。",
+            };
+          })
+        );
+      }
     });
     // 回复错误：替换 working 气泡为错误提示（不再静默）
     window.api.onPiReplyError((data: any) => {
@@ -278,15 +298,16 @@ export default function ParentChatPanel({
     // 相对 data/ 的全路径（parents/<pid>/uploads/xxx），直接透传即可命中。
     // 此前剥掉 parents/<pid>/ 前缀 → 标记变成 uploads/xxx → agent 去读 data/uploads/xxx（不存在）→ 第一轮找不到文件。
     // 图片【附件图片】与文件【附件文件】走同一 toRel，一并修好。
-    const toRel = (p?: string) => (p ? p : "未保存");
+    // ISSUE-124：家长 agent 跑在服务端，本机路径它读不到——主进程已把附件上传到服务端 files 通道，
+    // attachmentMarker 会优先用服务端引用（ref，如 `files/<id>`），无 ref 时才退回本机相对路径。
     for (const img of images) {
-      parts.push(`【附件图片：${img.name}|${toRel(img.path)}】`);
+      parts.push(attachmentMarker("图片", img.name, img));
     }
     for (const f of textFiles) {
-      parts.push(`【附件文件：${f.name}|${toRel(f.path)}】`);
+      parts.push(attachmentMarker("文件", f.name, f));
     }
     for (const f of files) {
-      parts.push(`【附件文件：${f.name}|${toRel(f.path)}】`);
+      parts.push(attachmentMarker("文件", f.name, f));
     }
     const promptText = parts.join("\n");
     // dataURL → SDK ImageContent（剥离前缀，内联 base64 发送）

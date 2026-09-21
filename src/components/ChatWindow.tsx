@@ -44,6 +44,12 @@ export interface ImageAttachment {
   mime: string;
   name: string;
   path?: string;
+  /**
+   * 服务端可读的附件引用（ISSUE-124）：家长聊天走服务端 agent，附件必须能被服务端读到——
+   * 主进程落盘后顺带把文件上传到服务端 files 通道，这里存服务端返回的引用（如 `files/<id>`）。
+   * 发给 agent 的标记用 ref（优先），本机打开/预览仍用 path。
+   */
+  ref?: string;
 }
 
 /** 用户上传的文本类文件（txt/md）：直接读取全文，随消息一起进上下文 */
@@ -51,6 +57,8 @@ export interface TextFileAttachment {
   name: string;
   content: string;
   path?: string;
+  /** 服务端可读的附件引用（ISSUE-124，语义同 ImageAttachment.ref） */
+  ref?: string;
 }
 
 // ISSUE-036：通用文件附件（任意类型，仅落盘 + 路径引用，不读内容）
@@ -58,6 +66,8 @@ export interface FileAttachment {
   name: string;
   path?: string;
   mime: string;
+  /** 服务端可读的附件引用（ISSUE-124，语义同 ImageAttachment.ref） */
+  ref?: string;
 }
 
 /** handleSend 的扩展选项：图片 / 文本文件随文本一起发出 */
@@ -410,7 +420,9 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   }
 
   // 落盘上传文件：孩子上下文 → data/children/<childId>/uploads/；家长上下文（ISSUE-044）→ data/parents/<pid>/uploads/
-  async function persistUpload(file: File): Promise<string | undefined> {
+  // ISSUE-124：家长上下文额外把文件上传到服务端 files 通道（家长 agent 跑在服务端，读不到本机文件），
+  // 返回 { path(本机相对路径，用于打开/预览), ref(服务端可读引用，用于发给 agent 的标记), uploadError }
+  async function persistUpload(file: File): Promise<{ path?: string; ref?: string; uploadError?: string }> {
     try {
       const buf = await file.arrayBuffer();
       const name = file.name;
@@ -418,10 +430,22 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
       const r: any = isParent
         ? await window.api.saveParentUpload(pid, name, mime, buf)
         : await window.api.saveUpload(childId as string, name, mime, buf);
-      return r?.success ? (r.path as string) : undefined;
+      if (!r?.success) return {};
+      return {
+        path: r.path as string | undefined,
+        ref: (r.ref as string | undefined) || undefined,
+        uploadError: (r.uploadError as string | undefined) || undefined,
+      };
     } catch {
-      return undefined;
+      return {};
     }
+  }
+
+  /** 附件落盘+上送服务端的公共收尾：失败时把原因显示在输入框下方（不阻断发送） */
+  async function persistUploadForPending(file: File) {
+    const saved = await persistUpload(file).catch(() => ({}) as { path?: string; ref?: string; uploadError?: string });
+    if (saved.uploadError) setFileError(saved.uploadError);
+    return saved;
   }
 
   // 点击气泡里的附件：调用本地默认程序打开落盘文件（仅当已落盘，path 存在）
@@ -448,8 +472,8 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         try {
           const dataUrl = await readFileAsDataURL(f);
           // 落盘持久化（失败不阻断，仍可用 dataURL 预览/发送）
-          const saved = await persistUpload(f).catch(() => undefined);
-          setPendingImages((p) => [...p, { dataUrl, mime: f.type, name: f.name, path: saved }]);
+          const saved = await persistUploadForPending(f);
+          setPendingImages((p) => [...p, { dataUrl, mime: f.type, name: f.name, path: saved.path, ref: saved.ref }]);
         } catch (err: any) {
           setFileError(`读取图片失败：${f.name}${err?.name ? `（${err.name}）` : ""}`);
         }
@@ -458,8 +482,8 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
       } else if (f.type === "text/plain" || /\.(txt|md)$/i.test(f.name)) {
         try {
           const content = await readFileAsText(f);
-          const saved = await persistUpload(f).catch(() => undefined);
-          setPendingTextFiles((p) => [...p, { name: f.name, content, path: saved }]);
+          const saved = await persistUploadForPending(f);
+          setPendingTextFiles((p) => [...p, { name: f.name, content, path: saved.path, ref: saved.ref }]);
         } catch (err: any) {
           setFileError(`读取文件失败：${f.name}${err?.name ? `（${err.name}）` : ""}`);
         }
@@ -467,12 +491,15 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         // ISSUE-036：任意文件类型兜底——先尝试读取文本内容（json/csv/xml 等），失败则仅落盘引用
         try {
           const content = await readFileAsText(f);
-          const saved = await persistUpload(f).catch(() => undefined);
-          setPendingTextFiles((p) => [...p, { name: f.name, content, path: saved }]);
+          const saved = await persistUploadForPending(f);
+          setPendingTextFiles((p) => [...p, { name: f.name, content, path: saved.path, ref: saved.ref }]);
         } catch {
           // 二进制文件读不了文本，仅落盘 + 引用
-          const saved = await persistUpload(f).catch(() => undefined);
-          setPendingFiles((p) => [...p, { name: f.name, path: saved, mime: f.type || "application/octet-stream" }]);
+          const saved = await persistUploadForPending(f);
+          setPendingFiles((p) => [
+            ...p,
+            { name: f.name, path: saved.path, ref: saved.ref, mime: f.type || "application/octet-stream" },
+          ]);
         }
       }
     }

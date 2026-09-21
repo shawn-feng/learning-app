@@ -52,6 +52,7 @@ import { PAGE_TOOL_NAMES, createPageTools } from "./page-tools.js";
 import { createProgrammingTool } from "./programming-agent.js";
 import { getCaps } from "./caps.js";
 import { buildServerChildPrompt, buildServerScenePrompt } from "./prompt.js";
+import { friendlyModelError, syncSessionModel } from "./model-sync.js";
 import { agentStreamHub, AgentStreamHub } from "./stream-hub.js";
 import { learningGuardExtension as guardExtension } from "@pi/agent-core";
 
@@ -436,6 +437,14 @@ function attachStream(entry: Entry, key: string): void {
         break;
       case "message_end":
         if (event.message?.role === "assistant") {
+          // ISSUE-126：模型 API 失败（429 额度/401 key/网络错误）时 SDK 不 emit error 事件，
+          // 只记 stopReason:"error" + errorMessage 的空 assistant 消息。转成 error 事件告知前端，
+          // 否则客户端只会收到 turn_end，工作气泡永远卡「等待模型返回」。
+          if (event.message.stopReason === "error") {
+            const raw = String(event.message.errorMessage || event.message.error || "模型调用失败");
+            agentStreamHub.publish(key, "error", { message: friendlyModelError(raw) });
+            break;
+          }
           agentStreamHub.publish(key, "message_end", { message: event.message });
         }
         break;
@@ -483,6 +492,10 @@ export async function submitChildPrompt(
   if (entry.busy) {
     return { ok: false, error: "busy：上一轮还在回答，请稍候" };
   }
+  // ISSUE-126：设置里换了默认模型 → 对现有会话原地热切换（历史保留，不销毁重建）；
+  // 切换失败（典型：新 provider 没配 key）→ 本轮不发送，把原因明确返回给前端。
+  const synced = await syncSessionModel(deps, parentId, entry.session, "agent");
+  if (!synced.ok) return { ok: false, error: synced.error };
   const key = keyOf(parentId, childId, kind);
   const streamKey = streamKeyOf(parentId, childId);
   const evtPrefix = opts.pendingPageEvents ? `[页面事件] ${opts.pendingPageEvents}\n` : "";

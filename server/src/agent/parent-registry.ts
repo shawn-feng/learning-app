@@ -28,6 +28,7 @@ import {
 import { readParentSettings } from "../worker/scheduler.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { buildDataChannelBlocks } from "./registry-prompt.js";
+import { friendlyModelError, syncSessionModel } from "./model-sync.js";
 import { PARENT_AGENT_TOOL_NAMES, DATA_AGENT_TOOL_NAMES, createParentAgentTools, createDataAgentTools } from "./parent-tools.js";
 import { PLAN_DOMAIN_TOOL_NAMES, createPlanDomainTools } from "./parent-plans.js";
 import { agentStreamHub } from "./stream-hub.js";
@@ -116,12 +117,32 @@ export function buildServerParentPrompt(input: { parentId: string; workspace: st
 - parent_put_material：写入/覆盖（发布你生成的资料）
 - parent_delete_material：**默认只演练**，会返回将删除清单；必须先把清单复述给家长并取得同意，再带 confirm=true 真正删除
 - parent_read_image：读教材扫描页/截图里的内容
+- parent_read_upload：读家长聊天里上传的**非图片**附件（txt/md/csv/json 等）的正文
+
+## 家长在聊天里上传的图片 / 文件（附件）
+家长上传附件后，他的消息里会出现标记：\`【附件图片：文件名|引用】\`、\`【附件文件：文件名|引用】\`。
+- 把**引用值原样**传给 \`parent_read_image\`（图片）或 \`parent_read_upload\`（其他文件）——这是唯一正确读法。
+- **不要**自己拼路径、也不要换成 materials/ 前缀，更不要去试 \`uploads/\`、\`parents/\` 等文件系统路径：
+  资料库与上传区是两个隔离区域，试了只会白跑一圈（现场就是这么失败的）。
+- 工具说读不到时（会把原因说清楚）如实转述给家长（例如：附件只在他的电脑上，需升级客户端后重发，或改用文字/截图说明），**不要反复试探别的路径**。
 
 ## 落库主题与课程（家长库真源）
 设计好教学主题/课程后，用工具直接写入家长库真源（孩子学习时从家长库读取，落库即对孩子可见）：
 - parent_upsert_topic：写主题（name 主键 + topic_key 目录名 + method/assess_method/progress）
-- parent_upsert_course：写课程（topic + title 联合主键 + sort_order/status/lesson_method/html_path/teaching_copy/assess_rubric）
-覆盖前先 parent_library_topics / parent_library_courses 核对现有结构；status/last_review/review_count 由系统维护，落库时一般只给初始 ⬜（或让系统更新），勿手写进度。先复述落库内容让家长确认。
+- parent_upsert_course：写课程（topic + title 联合主键 + sort_order/lesson_method/html_path/teaching_copy/assess_rubric）
+覆盖前先 parent_library_topics / parent_library_courses 核对现有结构；**学习进度不在家长库**（2026-09-18 库域分工后已下线，进度归孩子库），落库时不要写进度字段。先复述落库内容让家长确认。
+
+## 课程改名与「家长库 → 孩子库」同步（家长库是课程真源）
+孩子库里的课程行是**分配时的快照**（uuid 为关联锚点），之后不会自动跟随家长库变化——家长改课程名或新加课后，孩子那边可能还是旧名字、或干脆没有这门课。两个工具处理这件事：
+- **parent_rename_course**：课程**改名/换主题**只能用它。它会保住 uuid 并同步更新所有孩子库的显示名，孩子进度原样保留。
+  **⚠️ 改名绝不能用 parent_upsert_course**——那是 (topic,title) 主键 upsert，改 title 等于新建一行、新 uuid，旧行残留，孩子库的进度就永久对不上了。
+- **parent_sync_courses_to_child**：把家长库课程对齐到某个孩子库（补缺失关联、更新显示名/排序、补上家长库新加而孩子库还没有的课）。
+  **⚠️ 范围只到「已分配给这个孩子的主题」**：没分配给他的主题整体跳过（不写入、不代分配）。因为孩子能不能看到某课，完全由「主题是否分配给他」决定——把未分配主题的课程塞进孩子库，孩子看不到，日后一分配又会一次性冒出上百门没分配过的课。
+  家长想让孩子学某个主题 → 先让他在家长端**分配主题**（分配时课程会一并写入），不要指望同步工具代劳。
+  **何时用**：家长改过课程结构后；某**已分配主题**下家长库新加了课但孩子那边找不到（「考核时说课程在孩子库里不存在」就是此症）；或定期体检。
+  **特点**：幂等、永不改孩子的学习进度、不删任何行（家长库已删的课列出来交家长决定）。一次一个孩子（child 参数传孩子姓名），多个孩子就多次调用。
+  返回里会列出「跳过了哪些未分配主题、各多少门课」——**如实转述给家长**，别只说「已同步」。
+- 汇报时把「新增/更新多少门、哪些对不上需要人工确认、哪些主题还没分配给孩子」如实说给家长，不要只说"已同步"。
 
 ## 落库课程考核内容（知识点 + 题库，家长库真源）
 「这门课要考什么」= 该课的**知识点**（考点）+ 每个知识点下挂的**题**。全套流程：
@@ -326,7 +347,17 @@ function attachStream(entry: Entry, key: string): void {
         });
         break;
       case "message_end":
-        if (event.message?.role === "assistant") agentStreamHub.publish(key, "message_end", { message: event.message });
+        if (event.message?.role === "assistant") {
+          // ISSUE-126：模型 API 失败（429 额度/401 key/网络错误）时 SDK 不 emit error 事件，
+          // 只记 stopReason:"error" + errorMessage 的空 assistant 消息。转成 error 事件告知前端，
+          // 否则客户端只会收到 turn_end，工作气泡永远卡「等待模型返回」。
+          if (event.message.stopReason === "error") {
+            const raw = String(event.message.errorMessage || event.message.error || "模型调用失败");
+            agentStreamHub.publish(key, "error", { message: friendlyModelError(raw) });
+            break;
+          }
+          agentStreamHub.publish(key, "message_end", { message: event.message });
+        }
         break;
       case "agent_end":
         agentStreamHub.publish(key, "agent_end", {});
@@ -348,6 +379,10 @@ export async function submitParentPrompt(
 ): Promise<{ ok: boolean; error?: string }> {
   const entry = await ensureEntry(deps, parentId, kind);
   if (entry.busy) return { ok: false, error: "busy：上一轮还在回答，请稍候" };
+  // ISSUE-126：设置里换了默认模型 → 对现有会话原地热切换（历史保留，不销毁重建）；
+  // 切换失败（典型：新 provider 没配 key）→ 本轮不发送，把原因明确返回给前端。
+  const synced = await syncSessionModel(deps, parentId, entry.session, "parent-agent");
+  if (!synced.ok) return { ok: false, error: synced.error };
   const prompt = String(text ?? "").trim();
   if (!prompt) return { ok: false, error: "空消息" };
   const key = keyOf(parentId, kind);
