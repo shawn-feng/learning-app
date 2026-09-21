@@ -159,7 +159,10 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       table: Type.String({ description: "白名单表名：daily_entries / redemption_requests" }),
       op: Type.Union([Type.Literal("insert"), Type.Literal("update"), Type.Literal("delete")], { description: "操作类型" }),
       rows: Type.Optional(
-        Type.Array(Type.Record(Type.String(), Type.Unknown()), { description: "insert=行数组；update=要写入的列值对象" })
+        Type.Union([Type.Array(Type.Record(Type.String(), Type.Unknown())), Type.Record(Type.String(), Type.Unknown())], {
+          description:
+            "insert=行数组 [{列:值},…]（单行也可直接传 {列:值} 对象）；update=列值对象 {列: 新值}（兼容 [{列:值}] 单元素数组）",
+        })
       ),
       where: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), { description: "update/delete 必填：等值条件" })
@@ -167,7 +170,12 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
     }),
     execute: async (
       _id: string,
-      params: { table: string; op: "insert" | "update" | "delete"; rows?: Array<Record<string, unknown>>; where?: Record<string, unknown> }
+      params: {
+        table: string;
+        op: "insert" | "update" | "delete";
+        rows?: Array<Record<string, unknown>> | Record<string, unknown>;
+        where?: Record<string, unknown>;
+      }
     ) => {
       const db = openKb(deps.dataDir, deps.parentId, deps.childId);
       try {

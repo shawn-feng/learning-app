@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **121** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **122** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -131,6 +131,7 @@
 | 119 | 背诵题打分链路梳理：**纯发音评测引擎分线性映射，不经 LLM**——题库直出（refText=原文/recitePass 通过线默认 90/pointMax 默认 10）→ 多段录音合并 WAV → 服务端评测（**实际用阿里声希 SSECP**：中文背诵走 cn.pred.score 长文本免拆段，81=声希 overall 合成分；腾讯 SOE=SuggestedScore 为代码兜底）→ toSpeechAssessment（pron=score）→ 客户端 `pointGot=round(total/100×pointMax)`、`correct=total≥pass`。**引擎分本身是黑盒**（声希内部对准确/完整/流利加权合成，权重不公开，我方仅可控 precision=1.0）。**三个注意点**：①`overall??pron` 双字段残留（映射从不设 overall，误导）②得分与通过两条线（9 分但 correct=false 可能，影响错题本/重考口径）③评测失败软失败记 0 分无区分 | 低 | 2026-09-19 | [详情](ISSUES/ISSUE-119.md) |
 | 120 | 家长/孩子 agent 共用「知识库」：孩子聊天问历史/自然现象等事实问题时 agent 检索高相关可信知识再答（家长供料圈定内容边界，不联网）；家长提供视频/网页/PDF 自动摄取为可检索知识。方案：`knowledge_docs`（状态机 pending→ingested）+`knowledge_chunks`（分块+向量 BLOB），**向量复用 ISSUE-111 已落地的 embeddings 基建**（首个纯语义消费方）；摄取管线 PDF 抽文本/网页正文提取/**视频 ffmpeg 抽音轨+ASR 转写**（两者均已有能力）；孩子 agent 只读 `knowledge_search`（prompt 教触发时机）+ 家长 agent 管理 tools；二期 LLM 清洗结构化条目/混合检索。待拍板：存放位置（knowledge.sqlite vs parent.sqlite 表）/ASR 通道/分块参数。**检索已调研 Obsidian（2026-09-21）：主路线（结构分块+本地向量+余弦）与 Smart Connections 同构已验证；吸收①结构感知分块替代纯定长 ②混合检索（FTS5 BM25+向量）维持二期但融合排序单列验收（Copilot #1799 教训）③链接图一跳扩展（反链思想，二期，chunks 预留 entities 字段）** | 中 | 2026-09-21 | [详情](ISSUES/ISSUE-120.md) |
 | 121 | ✅ 已解决（2026-09-21 拍板 B+命名）：自定义考核取名 + 同日多场——`parent_exam_plan_create` 加 `name` 参数、INSERT 落库 title（不再硬编码「自定义考核」）；两处守卫（agent 工具 + `POST /exam/schedules`，后者收 `body.name`/`scope.name`）去重收窄为**同日同名**（对齐孩子自请语义），不同名未考计划同天并存；孩子端 todayOpen 列表渲染无单条假设、computeExamRate 多条 done 同天合并求和均不受影响。**附带发现**：面板 ExamAdminPanel 新建/编辑表单已是死代码（无 JSX 引用、scope 格式残留 ISSUE-104 前），面板创建入口实际不存在，考核创建只剩 agent 对话一路——恢复 UI 需按 courses 口径重做（新 issue 候选）。测试 4 用例 | 中 | 2026-09-21 | [详情](ISSUES/ISSUE-121.md) |
+| 122 | ✅ 已修复（2026-09-21）：`parent_db_write` 的 update 恒报「列 0 未登记」（schema 强制 rows 数组、执行器期望对象的自相矛盾，update 语义整体不可用）——修复三件套：①schema 改 `Type.Union([行数组, 列值对象])`（parent_db_write/child_db_write/Tier2WriteRequest 同批）②执行器双向兼容：新增 `normalizeWriteRows`，update 数组取首元素（多元素拒绝提示按 where 逐条）、insert 对象视为单行，`executeWrite` 与 `tier2Write` 全改走归一 ③`digitColHint`：纯数字列名报错附形状自愈提示；连带修正 parent-tools 重嵌入对单行对象 rows 的取主键。测试 8 用例。**未上 201**（当日 0.5.0b 部署在先，随下次发版） | 高 | 2026-09-21 | [详情](ISSUES/ISSUE-122.md) |
 
 ## 记录格式（模板）
 

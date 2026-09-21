@@ -1232,8 +1232,9 @@ function buildDbWriteTool(deps: ParentToolDeps) {
         description: "操作类型",
       }),
       rows: Type.Optional(
-        Type.Array(Type.Record(Type.String(), Type.Unknown()), {
-          description: "insert=行数组；update=要写入的列值对象（{列: 新值}）",
+        Type.Union([Type.Array(Type.Record(Type.String(), Type.Unknown())), Type.Record(Type.String(), Type.Unknown())], {
+          description:
+            "insert=行数组 [{列:值},…]（单行也可直接传 {列:值} 对象）；update=列值对象 {列: 新值}（兼容 [{列:值}] 单元素数组）",
         })
       ),
       where: Type.Optional(
@@ -1244,7 +1245,13 @@ function buildDbWriteTool(deps: ParentToolDeps) {
     }),
     execute: async (
       _id: string,
-      params: { table: string; child?: string; op: "insert" | "update" | "delete"; rows?: Array<Record<string, unknown>>; where?: Record<string, unknown> }
+      params: {
+        table: string;
+        child?: string;
+        op: "insert" | "update" | "delete";
+        rows?: Array<Record<string, unknown>> | Record<string, unknown>;
+        where?: Record<string, unknown>;
+      }
     ) => {
       if (params.child) {
         const kid = resolveConvoChild(deps.db, deps.parentId, params.child);
@@ -1295,8 +1302,10 @@ function buildDbWriteTool(deps: ParentToolDeps) {
           // ISSUE-111：写触及登记列 → 异步重嵌入（fire-and-forget，不阻塞返回）
           if (embeddedColumn(params.table)) {
             const ec = embeddedColumn(params.table)!;
+            // ISSUE-122：rows 现在可能是单行对象（insert 兼容形状）——统一成数组再取主键
+            const insertRows = Array.isArray(params.rows) ? params.rows : params.rows ? [params.rows] : [];
             const sources: Array<Record<string, unknown>> =
-              params.op === "insert" ? (params.rows ?? []) : [{ ...(params.where ?? {}) }];
+              params.op === "insert" ? insertRows : [{ ...(params.where ?? {}) }];
             for (const src of sources) {
               const pkVals = ec.pkCols.map((c) => (src[c] ?? null) as null);
               if (pkVals.every((v) => v !== null)) markStale(embCtx(deps), params.table, pkVals);

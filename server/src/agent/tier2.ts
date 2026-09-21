@@ -15,6 +15,8 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  digitColHint,
+  normalizeWriteRows,
   sqlVal,
   validateValue,
   writeAudit,
@@ -454,8 +456,9 @@ export function tier2AsTableSpecs(rows: NamespaceRow[]): TableSpec[] {
 
 export interface Tier2WriteRequest {
   op: "insert" | "update" | "delete";
-  /** insert=行数组（字段=spec.columns）；update=要写的字段值对象 */
-  rows?: Array<Record<string, unknown>>;
+  /** insert=行数组（字段=spec.columns）；update=要写的字段值对象。
+   *  ISSUE-122：两种形状执行器都兼容（数组 update 取首元素、对象 insert 视为单行）。 */
+  rows?: Array<Record<string, unknown>> | Record<string, unknown>;
   /** update/delete 必填：id 或可过滤字段等值条件 */
   where?: Record<string, unknown>;
 }
@@ -505,7 +508,9 @@ export function tier2Write(db: DatabaseSync, ns: NamespaceRow, req: Tier2WriteRe
   try {
     let affected = 0;
     if (req.op === "insert") {
-      const rows = Array.isArray(req.rows) ? req.rows : [];
+      const { list, error } = normalizeWriteRows("insert", req.rows);
+      if (error) return withRollback(error);
+      const rows = list;
       if (!rows.length) return withRollback("insert 需要至少一行 rows");
       if (rows.length > 50) return withRollback("一次最多插入 50 行");
       const ins = db.prepare(
@@ -540,11 +545,13 @@ export function tier2Write(db: DatabaseSync, ns: NamespaceRow, req: Tier2WriteRe
       if (cntRow.n === 0) return withRollback("where 未命中任何行（可用字段取值请先 read 确认）");
       if (cntRow.n > 50) return withRollback(`where 命中 ${cntRow.n} 行，超过单次 50 行熔断`);
       if (req.op === "update") {
-        const sets = Object.entries(req.rows ?? {});
+        const { values, error } = normalizeWriteRows("update", req.rows);
+        if (error) return withRollback(error);
+        const sets = Object.entries(values);
         if (!sets.length) return withRollback("update 需要提供要写入的字段值对象（rows）");
         for (const [col, value] of sets) {
           const c = spec.columns[col];
-          if (!c) return withRollback(`字段 ${col} 未登记。ns:${ns.ns} 可用字段：${colNames.join("、")}`);
+          if (!c) return withRollback(`字段 ${col} 未登记。ns:${ns.ns} 可用字段：${colNames.join("、")}${digitColHint(col)}`);
           const err = validateValue(col, c, value);
           if (err) return withRollback(err);
           if (c.confirm) confirmHints.push(c.desc);

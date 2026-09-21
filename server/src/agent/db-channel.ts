@@ -366,12 +366,49 @@ export function describeTables(specs: TableSpec[], table?: string): string {
 export interface WriteRequest {
   table: string;
   op: "insert" | "update" | "delete";
-  /** insert=要插入的行数组；update=要写入的列值对象 */
-  rows?: Array<Record<string, unknown>>;
+  /** insert=要插入的行数组；update=要写入的列值对象（{列: 新值}）。
+   *  ISSUE-122：两种形状执行器都兼容——历史上 schema 只许数组、说明却要求 update 传对象，
+   *  自相矛盾导致 update 恒报「列 0 未登记」（数组下标被当列名）。 */
+  rows?: Array<Record<string, unknown>> | Record<string, unknown>;
   /** update/delete 的等值条件（列名→值），必须命中登记列；delete/update 必填 */
   where?: Record<string, unknown>;
   /** 服务端强制列值（insert 时覆盖 agent 传的同名列，如孩子身份），绕不过 */
   force?: Record<string, unknown>;
+}
+
+/**
+ * ISSUE-122：rows 形状归一。insert 期望行数组、update 期望列值对象；两种实际形状都容忍：
+ * - 数组：insert 原样；update 取首元素（多元素=一次改多行，拒绝并提示按 where 逐条）；
+ * - 对象：insert 视为单行；update 原样。
+ * 纯 schema 修复不够（历史会话/调用方已习惯传数组），执行器双向兼容才是治本。
+ */
+export function normalizeWriteRows(
+  op: "insert" | "update" | "delete",
+  rows: unknown
+): { list: Array<Record<string, unknown>>; values: Record<string, unknown>; error?: string } {
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  if (op === "insert") {
+    if (Array.isArray(rows)) return { list: rows as Array<Record<string, unknown>>, values: {} };
+    if (isObj(rows)) return { list: [rows], values: rows };
+    return { list: [], values: {} };
+  }
+  if (Array.isArray(rows)) {
+    if (rows.length === 0) return { list: [], values: {} };
+    if (rows.length > 1 || !isObj(rows[0])) {
+      return {
+        list: [],
+        values: {},
+        error: "update 的 rows 应为 {列: 值} 对象（一次只改一行；多行请按 where 逐条调用）",
+      };
+    }
+    return { list: [], values: rows[0] };
+  }
+  return { list: [], values: isObj(rows) ? rows : {} };
+}
+
+/** 「列 N 未登记」且 N 为纯数字 → rows 被按数组下标解析过的自愈提示（ISSUE-122 ③）。 */
+export function digitColHint(col: string): string {
+  return /^\d+$/.test(col) ? "（rows 被按数组下标解析成列名——update 的 rows 应为 {列: 值} 对象，insert 为行数组）" : "";
 }
 
 export interface WriteResult {
@@ -436,8 +473,10 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
     let affected = 0;
 
     if (req.op === "insert") {
-      const rows = Array.isArray(req.rows) ? req.rows : [];
-      if (!rows.length) fail("insert 需要至少一行 rows");
+      const { list, error } = normalizeWriteRows("insert", req.rows);
+      if (error) fail(error);
+      const rows = list;
+      if (!rows.length) fail("insert 需要至少一行 rows（行数组 [{列:值},…]；单行也可直接传 {列:值} 对象）");
       if (rows.length > spec.rowLimit) {
         fail(`一次最多插入 ${spec.rowLimit} 行，收到 ${rows.length} 行`);
       }
@@ -504,13 +543,15 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
         fail(`where 条件命中 ${cntRow.n} 行，超过单次上限 ${spec.rowLimit} 行；请缩小条件（如按主键逐条）`);
       }
       if (req.op === "update") {
-        const sets = Object.entries(req.rows ?? {});
-        if (!sets.length) fail("update 需要给出要写入的列值（rows 传对象）");
+        const { values, error } = normalizeWriteRows("update", req.rows);
+        if (error) fail(error);
+        const sets = Object.entries(values);
+        if (!sets.length) fail("update 需要给出要写入的列值（rows 传 {列: 值} 对象）");
         for (const [col, value] of sets) {
           const c = spec.columns[col];
           if (!c) {
-            // F2 自愈：写列名错直接回可写列清单
-            fail(`列 ${col} 未登记，不能写。${spec.table} 可写列：${Object.keys(spec.columns).join("、")}`);
+            // F2 自愈：写列名错直接回可写列清单；纯数字列名附加形状自愈提示（ISSUE-122 ③）
+            fail(`列 ${col} 未登记，不能写。${spec.table} 可写列：${Object.keys(spec.columns).join("、")}${digitColHint(col)}`);
           }
           const err = validateValue(col, c, value);
           if (err) fail(err);
