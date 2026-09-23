@@ -12,6 +12,7 @@
  *   in-flight 内存锁防两个 tick 并发跑同一 (任务, 孩子)。
  */
 import type { DatabaseSync } from "node:sqlite";
+import path from "node:path";
 import { readParentSettings } from "./scheduler.js";
 import { createWorkerEphemeralSession, hhmm, type WorkerTaskCtx } from "./tasks.js";
 import { createWorkerKbTools, formatLocalDate } from "./kb-tools.js";
@@ -21,9 +22,20 @@ import {
   createWeatherTool,
   WEEKDAY_ZH,
 } from "./custom-task-tools.js";
+// ISSUE-135 P4：掌握闭环归纳工具（掌握分析类自定义任务用）+ 通用数据读写（家长库/孩子库）
+import { createMasteryTools, ensureDefaultMasteryTask, MASTERY_TOOL_NAMES } from "./mastery-tools.js";
+import { createDataAgentTools } from "../agent/parent-tools.js";
 import { recordTaskRun } from "../db/task-runs.js";
 
 const EXEC_TIMEOUT_MS = 5 * 60_000; // 待拍板③：单次执行上限 5 分钟（看门狗）
+
+/** 通用数据通道暴露给自定义任务的三个工具（Tier 2 建 namespace 不开放给定时任务）。 */
+const CUSTOM_TASK_DATA_TOOL_NAMES = ["parent_db_describe", "parent_db_read", "parent_db_write"];
+
+/** 自定义任务暴露的工具名**并集**：SDK 的 tools 白名单对自定义工具同样生效，漏登记 = 工具静默不可见。 */
+export function customTaskToolNames(): string[] {
+  return Array.from(new Set([...CUSTOM_TASK_TOOL_NAMES, ...MASTERY_TOOL_NAMES, ...CUSTOM_TASK_DATA_TOOL_NAMES]));
+}
 
 interface CustomTaskRow {
   id: string;
@@ -98,7 +110,11 @@ const CUSTOM_TASK_SYSTEM_PROMPT =
   `约定：\n` +
   `- create_reminders 创建的提醒会按时刻推送到孩子设备语音播报；同任务下次运行会自动替换上次未播报的提醒（replace 默认 true），按指令批量创建即可。\n` +
   `- 频率选型：「每天/工作日固定播」→ daily/weekly；「未来 N 天各播一次」→ 一次性创建 N 条 once（每条 fireAt=对应日期时刻）；不要把未来多天建成 daily（会每天全部重复播）。\n` +
-  `- 天气等查询工具失败时不要编造数据，如实汇报失败原因。`;
+  `- 天气等查询工具失败时不要编造数据，如实汇报失败原因。\n` +
+  `- 需要查/改数据时：家长内容库与孩子库（传 child=孩子名）都能用 parent_db_read / parent_db_write（先 parent_db_describe 看列）；` +
+  `只要读少量列、带等值条件，避免把整表读进上下文。\n` +
+  `- 若指令是**学习情况分析/掌握度归纳**类：用 mastery_todo_list 看待归纳范围 → mastery_plan_context 取素材 → ` +
+  `mastery_save_records 写知识点结果 → mastery_save_course_mastery 写课程掌握与教学建议；不要自己手写这些表的 SQL。`;
 
 function buildCustomTaskPrompt(instruction: string, childName: string, now: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -156,10 +172,22 @@ export async function executeCustomTask(
       };
       const customTools = [
         ...createWorkerKbTools(ctx),
+        ...createMasteryTools({ dataDir: deps.dataDir, parentId, childId }),
+        ...createDataAgentTools({
+          db: deps.db,
+          dataDir: deps.dataDir,
+          parentId,
+          workspaceDir: path.join(deps.dataDir, "workspaces", parentId),
+          agentDir: path.join(deps.dataDir, ".worker", "agent", parentId, childId),
+          auth: settings.auth,
+          appSettings: settings.appSettings,
+        }),
         createWeatherTool(deps.db, parentId),
         createRemindersTool(deps.db, parentId, childId, task.id),
       ];
-      const sess = await createWorkerEphemeralSession(ctx, CUSTOM_TASK_SYSTEM_PROMPT, CUSTOM_TASK_TOOL_NAMES, customTools);
+      // 白名单是「工具名并集」：SDK 的 tools 白名单对自定义工具同样生效，漏登记 = 工具静默不可见。
+      const toolNames = customTaskToolNames();
+      const sess = await createWorkerEphemeralSession(ctx, CUSTOM_TASK_SYSTEM_PROMPT, toolNames, customTools);
       session = sess;
       const prompt = buildCustomTaskPrompt(instruction, childRow?.name ?? childId, now);
       // 看门狗：整轮超时 → abort → error（不重试当天，last_fired_at 已占位）
@@ -224,6 +252,12 @@ export async function runCustomTasksTick(
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   let fired = 0;
   for (const p of parents) {
+    // ISSUE-135 P4：保证默认「学习情况分析」任务存在（不依赖家长打开 UI；幂等）
+    try {
+      ensureDefaultMasteryTask(deps.db, p.id);
+    } catch (e) {
+      console.error(`[worker:custom] seed default mastery task parent=${p.id} failed:`, (e as Error).message);
+    }
     let tasks: CustomTaskRow[];
     try {
       tasks = deps.db

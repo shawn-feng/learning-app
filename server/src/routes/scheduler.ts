@@ -26,6 +26,8 @@ import {
   type ReminderFrequency,
   type ReminderOwner,
 } from "../db/task-runs.js";
+// ISSUE-135 P4：默认「学习情况分析」自定义任务（掌握闭环归纳）
+import { ensureDefaultMasteryTask } from "../worker/mastery-tools.js";
 
 interface SchedulerDeps {
   config: ServerConfig;
@@ -69,9 +71,14 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       if (handleAuthError(err, reply)) return;
       throw err;
     }
+    // ISSUE-135 P4：默认「学习情况分析」自定义任务（幂等播种；家长删掉不再重建）
+    try {
+      ensureDefaultMasteryTask(deps.db, parentId);
+    } catch (e) {
+      req.log.warn({ e }, "播种默认掌握分析任务失败（不影响任务列表）");
+    }
     return { tasks: listTasksWithAssignments(deps.db, parentId) };
   });
-
   app.post("/api/v1/scheduler/tasks", async (req, reply) => {
     let parentId: string;
     try {

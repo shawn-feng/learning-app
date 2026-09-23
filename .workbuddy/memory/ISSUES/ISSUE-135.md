@@ -3,7 +3,7 @@
 - **类型**：需求 / 架构（计划域 + 考核域重构 + 新增掌握闭环）
 - **优先级**：中-高（家长最核心诉求：学完/考完能看见"到底掌握了什么"，并据此安排下一次）
 - **记录时间**：2026-09-22（设计定稿 2026-09-23；08:20 按用户"废弃 attempts"决定改写为 v2 方案）
-- **状态**：🚧 **P0-a 已实施（2026-09-23）**：考核结果重构完成（孩子库三层 + 评测存档 + 主库 `exam_attempts` 退场 + 读取侧全切 + worker 收窄 + P0 结构 + P1 防硬删）；P0-b/P2/P3/P4/P5 未开工。**未部署**（需用户明确同意）
+- **状态**：🚧 **P0-a + P4（含 P3 学习侧抽取）已实施（2026-09-23）**：① 考核结果重构（孩子库三层 + 评测存档 + 主库 `exam_attempts` 退场 + 读取侧全切 + worker 收窄 + P0 结构 + P1 防硬删）；② 掌握闭环归纳**改为自定义任务**（默认「学习情况分析」每天 21:30 + 4 个 `mastery_*` 工具，见 §4.3）。剩余：P0-b 回填脚本、P2 概要 LLM 润色、P5 消费侧。**未部署**（需用户明确同意）
 
 ---
 
@@ -251,22 +251,40 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 5. worker `applyExamAttempts`：职责收窄为**幂等兜底**（离线/失败补写），不再从主库读 `per_question`。
 6. **规则可算**（不依赖 LLM 即产出结构化记录），LLM 只润色描述 → P2 上线即有数据。
 
-### 4.3 每日分析任务 `progressAnalysis`（第 3 环，D9）
-```ts
-type: "progressAnalysis"
-points(cfg) => cfg.analysis?.enabled === false ? [] : (cfg.analysis?.times?.length ? cfg.analysis.times : ["21:30"])
-catchUp: "latest"
-```
-**配置链路（走既有「定时任务」体系）**：`db/task-runs.ts` 的 `SchedulerTaskType` + `SCHEDULER_TASK_TYPES` 加 `progress_analysis`；`buildEffectiveChildConfig()` 按 `recording` 的多时间点模式解析 `analysis:{enabled,times[]}`；`worker/tasks.ts` 的 `WorkerSchedulerChildConfig` 加 `analysis?`；`worker/scheduler.ts:schedulerTaskTypeFor()` 加映射；**首次迁移幂等插一条 @21:30 启用任务行**（分配给孩子）；客户端「定时任务」页类型下拉加「学习情况分析」（复用现有表单）。
+### 4.3 每日分析任务：**用「自定义任务」实现**（第 3 环，D9；2026-09-23 用户拍板改向）
 
-**运行步骤（幂等）**：
-1. **找待归纳计划**：`study_plans`/`exam_plans` 中 `status='done'` 且 `knowledge_point_records` 无对应 `plan_id` 的计划 → 天然支持补跑与历史回填。
-2. 逐计划抽取结果（§4.1/§4.2）。
-3. 累进知识点：对涉及的每个 `knowledge_point_id` 读其全部 records → LLM 生成 `mastery_desc`（最开始/中间/最新）+ 定 `level` + 计数 → UPSERT `knowledge_point_progress`。
-4. 累进课程：汇总该课所有知识点 level + 读 `mistake_book` 未掌握项 → LLM 生成课程 `mastery_desc` 与 `teaching_advice` → UPDATE 孩子库 `courses` 四列。
-5. **按课程一次批量调用**（不是每知识点一次）。
+> ⭐ **改向**：不再新增 worker 任务类型 `progressAnalysis`、不做 `SchedulerTaskType` / 有效配置 / 客户端类型下拉那套配置链路 ——
+> **复用 app 已有的「自定义任务」（ISSUE-116）**：一条 `type='custom'` 的定时任务，任务内容是**自然语言指令**，到点由无头 agent 按指令**调用工具**完成。
+> 下方"原方案"整体作废（留档对照）。
 
-**LLM 成本口径（举例）**：一天 2 个学习计划 + 1 次考核（含 2 课）→ 去重 3 门课 → **当天只调 3 次**；同一天同课既学又考只调 1 次；无学习/考核则 0 次。单次输入 ≈ 6~8k token（知识点清单 + 本次学习素材 + 本次考核素材 + 历史记录摘要 + `mistake_book` 证据 + 输出契约）、输出 ≈ 1~1.2k → 3 门课合计 ≈ 2~2.4 万 / 3~3.6k token。对照 09-21 家长助手实测（input 132 万 + 缓存读 1813 万）**不到 2%**。
+**落地形态**
+- **默认任务**：`ensureDefaultMasteryTask()` 幂等播种一条 —— 名称「学习情况分析」/ `type='custom'` / 每天 **21:30** / 启用 / `owner='parent'`，
+  并分配给该家长现有孩子；**只播种一次**（settings 标记 `mastery_task_seeded:<parentId>`，家长删掉后不再重建），
+  家长可在「定时任务」页改时刻 / 改指令 / 停用 —— 这就是 D9 说的"家长可配置"。
+  播种点两处（幂等）：`GET /api/v1/scheduler/tasks`（打开 UI 即见）+ worker 的自定义任务 tick（不依赖打开 UI）。
+- **执行链路（复用 ISSUE-116）**：`executeCustomTask()` 起无头 ephemeral 会话（每孩子一轮、5 分钟看门狗），
+  工具面 = 原有定制任务工具 ＋ **4 个掌握工具**（新增 `server/src/worker/mastery-tools.ts`）＋ **通用数据读写** `parent_db_read/write`（`child=` 作用域，管理口径）。
+- **指令（自然语言，父级可改）**：`DEFAULT_MASTERY_TASK_INSTRUCTION` —— 先 `mastery_todo_list` 看待归纳范围 →
+  逐计划 `mastery_plan_context` 取素材 → 判断每个知识点 solid/partial/weak 并 `mastery_save_records` 写回（含学习计划 `result_summary`）→
+  逐课 `mastery_save_course_mastery` 写 `mastery_level` / `mastery_desc` / `teaching_advice` 与知识点累计 → 两三句话汇报。
+
+**工具分工（LLM 负责判断与措辞，工具负责确定性取数与写回）**
+
+| 工具 | 读写 | 做什么 |
+|---|---|---|
+| `mastery_todo_list` | 读 | 待归纳的学习计划（`done` 且无 records）+ 最近有动静、需要刷新掌握的课程；`days` 默认 3，传 0 = 全量补跑 |
+| `mastery_plan_context` | 读 | 一次给全素材：知识点 id 清单（写回要用）、计划窗口内学习记录原文、已有记录、历史掌握、`mistake_book` 未掌握项 |
+| `mastery_save_records` | 写 | `knowledge_point_records` UPSERT（`(source,plan_id,course_uuid,kp_id)` 幂等）+ `study_plans.result_summary`；非法 kp id / outcome 如实报错且不写 |
+| `mastery_save_course_mastery` | 写 | `courses` 掌握四列 + `knowledge_point_progress`；**学/考次数与最近档位由工具按记录实时统计**，模型只给 level 与叙述 |
+
+> **原方案（作废留档）**：`type:"progressAnalysis"` + `cfg.analysis:{enabled,times[]}` + `schedulerTaskTypeFor()` 映射 + 首次迁移插任务行 + 客户端类型下拉；
+> 运行步骤写"找待归纳计划 → 逐计划抽取 → 累进知识点 → 累进课程 → 按课程一次批量调用"。改向自定义任务后：**步骤由指令表达、由工具执行**，
+> 规则性部分（取数与计数）仍在代码里 —— 与"规则可算、LLM 只润色"的初衷一致。
+
+**成本口径变化**：原方案按"一天 3 门课 = 3 次 LLM 调用"估算（单次输入 6~8k token）；自定义任务版由 agent 自主多轮
+（每计划：1 次取素材 + 1 次写回；每课：1 次写回），**轮次多于原方案**，但换来可配置、可解释、家长可自己写同类任务；
+指令里已限定"只处理 `mastery_todo_list` 返回的范围，不要翻全库"以约束成本。
+
 
 **反哺闭环（D4）**：`teaching_advice` 只写 `courses.teaching_advice`（孩子库），**从不回写** `topics.method` / `courses.lesson_method` / `method_spec`。
 
@@ -307,8 +325,8 @@ catchUp: "latest"
 | **P0-b** | 回填 `knowledge_point_records`（从明细/旧 attempts 数据按 `(plan_id,course_uuid,kp_id)` 聚合）→ 校验行数与 Σgot/Σmax | 是 |
 | **P1** | §6 两处硬删保护 | 是（小改） |
 | **P2** | 考核侧写入规则化（`exam_course_results` + records；规则聚合不依赖 LLM） | 是（上线即有数据） |
-| **P3** | 学习侧写入（会话/daily → LLM 抽取课程概要 + 知识点情况） | 是 |
-| **P4** | `progressAnalysis` 任务 + 累计自然语言描述 + `teaching_advice` + 配置链路（含默认任务行、客户端下拉） | 是 |
+| **P3** | ✅ **已并入 P4 的自定义任务指令**（第 2 步：逐计划取素材 → `mastery_save_records` 写 `records(source='study')` + `study_plans.result_summary`） | 是 |
+| **P4** | ✅ **已实施（2026-09-23，自定义任务版，见 §4.3）**：默认「学习情况分析」自定义任务（每天 21:30、幂等播种、家长可改/停用）+ 4 个 `mastery_*` 工具（取数/写回）+ 通用 `parent_db_read/write` 接入自定义任务 agent；**不新增 worker 任务类型、不动客户端** | 是 |
 | **P5** | 消费侧（家长 agent 读工具 / `kb.courses.get` 扩展 + 课程子会话注入 / 家长界面） | 分批 |
 
 **验收**
@@ -399,6 +417,7 @@ catchUp: "latest"
 | 2026-09-23 08:27 | **D13**：查证 `speech_assessments` 是**题级**（一行一题，`routes/exam.ts:1375` 循环写）但**缺 `question_id`**、且**全仓无读取方**（纯存档）⇒ 定案**搬到孩子库 + 补 `plan_id`/`course_uuid`/`question_id`**，与 `exam_plan_courses` 按 `(plan_id,course_uuid,question_id)` 关联（新增 §3.7） |
 | 2026-09-23 08:31 | **旧数据处置定案：不迁、直接废弃**。实测对照确认：**结构数据（课程/知识点/题目/得分）确实都在 `exam_plan_courses`**，但题级富信息（83 条 `aiComment` / 55 条 `asrText` / 46 条 `audioFileId` / 25 条 `speech`）只在 `exam_attempts` → 经用户确认视为可放弃的早期数据（09-01~09-17，同一孩子）、执行 `DROP TABLE`。另新增 §8.5 两条实测发现：**明细表老数据有重复行**（行数=逐题数×2，因 `question_id` 为空导致去重键失效）+ **`knowledgePointId` 仅 31/83 有值**。**待拍板清零，P0-a 可开工** |
 | 2026-09-23 10:10 | ✅ **P0-a 已实施**（+ P0 结构 + P1 防硬删），见 §11 实施记录 |
+| 2026-09-23 11:15 | ⭐ **P4 改向并实施**：掌握闭环归纳**不再新增 worker 任务类型**，改为复用「自定义任务」—— 默认「学习情况分析」（每天 21:30，幂等播种、家长可改/停用）+ 自然语言指令 + 4 个 `mastery_*` 工具（取数/写回）+ 通用 `parent_db_read/write`；P3 学习侧抽取并入该任务指令。§4.3 重写、§7 的 P3/P4 行更新、新增 §11.4 |
 
 ---
 
@@ -420,15 +439,17 @@ catchUp: "latest"
 | 10 | **P1 计划不可硬删**：`parent_study_plan_update` act=delete 与 `DELETE /api/v1/study-plans/:id` 遇 `done`/`missed` 行改软删（`active=0, status='cancelled'`）；`readStudyPlans` 加 `active=1 AND status != 'cancelled'` 过滤，避免取消行仍出现在 agent 列表 | `agent/parent-plans.ts` + `routes/study-plans.ts` |
 | 11 | **数据访问注册表同步**：`exam_plan_courses` 列清单更新（去 `score`、补新列）+ 新增 4 张表的登记 + `courses`/`study_plans` 新列登记 —— `probe:registry-drift` 实测**无漂移** | `agent/db-channel.ts` |
 | 12 | **测试**：新增 `test/issue135-exam-results.test.ts`（5 用例：写全三层 / 幂等 / 知识点回退 / 结构收敛与视图 / worker 兜底不覆盖）；改写 `test/issue112-exam-rate.test.ts` 到新口径（结算 90% / 幂等 / 单库兜底） | `test/` |
+| 13 | **P4：掌握闭环归纳改为「自定义任务 + 自然语言指令 + 工具」**（用户 2026-09-23 拍板）：新增 `server/src/worker/mastery-tools.ts`（4 个 `mastery_*` 工具 + `ensureDefaultMasteryTask` 默认任务播种 + `DEFAULT_MASTERY_TASK_INSTRUCTION` 指令）；`worker/custom-tasks.ts` 给自定义任务 agent 接入掌握工具与通用读写（白名单并集 `customTaskToolNames()`）+ 系统提示补充；`routes/scheduler.ts` 列表接口幂等播种默认任务；**未新增 worker 任务类型、未改客户端** | `worker/mastery-tools.ts`（新）/ `worker/custom-tasks.ts` / `routes/scheduler.ts` |
 
 **验证**：`tsc --noEmit` 0 错；`node scripts/build.mjs` 构建通过（bundle 已含改动，版本号仍 0.5.5）；`probe:registry-drift` 无漂移；相关 7 个测试文件 56 用例全绿；全量 481 用例中 458 通过、15 失败、8 跳过 —— **失败清单与本改动无关**（assessment / assess-guide / event-poll-config / kb-sqlite(旧 electron 版) / page-bridge / sync / token-stats / english-course-session，均为既有失败）。
 
 ### 11.2 未做（后续阶段）
 
+
 - **P0-b**：回填 `knowledge_point_records`（从现有明细/旧 attempts 聚合）+ 行数与 Σgot/Σmax 校验脚本。
 - **P2**：考核概要与知识点 `summary` 的 LLM 润色（现状为规则文案，已可上线）。
-- **P3**：学习侧写入（`applySignals` 后由 LLM 抽取课程概要 → `study_plans.result_summary` + `knowledge_point_records(source='study')`）。
-- **P4**：`progressAnalysis` 定时任务（默认 @21:30）+ `knowledge_point_progress` 累计叙述 + `courses.teaching_advice` + 配置链路与客户端下拉。
+- ~~**P3**：学习侧写入~~ → ✅ 已并入 P4 的自定义任务指令（见 §4.3）。
+- ~~**P4**：`progressAnalysis` 定时任务~~ → ✅ 已实施，但形态改为**自定义任务**（见 §4.3、§11.4）。
 - **P5**：消费侧（家长 agent 读工具 / `kb.courses.get` 扩展 + 课程子会话注入 / 家长界面知识点级展开）。
 
 ### 11.3 实施中的取舍与实测（供复核）
@@ -438,3 +459,13 @@ catchUp: "latest"
 3. **课程 uuid 回填是必要动作**：本地实测 1764 个孩子库 / 2992 行课程里 **296 行 `uuid` 为空**，不回填会让明细/概要/知识点流水与课程失联（视图 join 不上）。
 4. **`exam_attempts` 的 DROP 写在 `db.ts` 建表 SQL 里**（跟随 `exam_schedules` / `materials` 的既有下线写法）：服务端启动即幂等执行，不需要单独迁移脚本；本地 dev 库已在探针运行时执行过一次。
 5. **`attempt_ref` 语义微调**：DDL 注释写"迁移溯源"，实现里同时存**本次提交的 attempt id**（即写入 `exam_plans.attempt_id` 的那个），供考核记录界面按计划匹配；DDL 注释已同步说明。
+
+
+### 11.4 P4 实施要点（自定义任务版，2026-09-23 下午）
+
+1. **形态**：`type='custom'` 定时任务 + 自然语言指令（`DEFAULT_MASTERY_TASK_INSTRUCTION`）+ 工具；默认每天 21:30、启用、分配给现有孩子。
+2. **默认任务只播种一次**：settings `mastery_task_seeded:<parentId>`；家长删掉后不再重建（尊重家长选择）；已存在的分配行不动（家长停用= `enabled=0`，行还在），新增孩子会补分配。
+3. **工具面 = 原有定制任务工具 ∪ 4 个 `mastery_*` ∪ `parent_db_describe/read/write`**；白名单是并集（SDK 的 `tools` 白名单对自定义工具同样生效，漏登记 = 工具静默不可见），已用 `customTaskToolNames()` 固化并被单测锁住。
+4. **agent 判断 vs 工具确定性**：知识点档位/课程 level/累计叙述由 LLM 产出；**学考次数、最近档位与得分率、知识点名快照、课程归属、幂等 UPSERT** 全由工具算/校验（模型编造的 kp id 或非法枚举会被拒并如实报告，不落库）。
+5. **顺带修掉两个真问题**（都是单测逼出来的）：① `cut()` 会补省略号，`cut(date,10)` 拼进 SQL 日期比较永远匹配不上 → 拆出 `dayOf()` 专供日期；② `exam_plans` **没有 `topic_key` 列**（只有 `exam_plan_courses`/`exam_course_results`/`knowledge_point_records` 有），原打算照抄 study_plans 的取法会直接报错。
+6. **未做**：P2（考核概要/知识点 summary 的 LLM 润色 —— 现状规则文案已可用）；家长端知识点级展开（P5）。
