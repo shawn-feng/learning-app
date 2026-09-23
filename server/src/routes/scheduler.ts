@@ -27,7 +27,7 @@ import {
   type ReminderOwner,
 } from "../db/task-runs.js";
 // ISSUE-135 P4：默认「学习情况分析」自定义任务（掌握闭环归纳）
-import { ensureDefaultMasteryTask } from "../worker/mastery-tools.js";
+import { MASTERY_TASK_TEMPLATE, createMasteryTask } from "../worker/mastery-tools.js";
 
 interface SchedulerDeps {
   config: ServerConfig;
@@ -71,13 +71,20 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    // ISSUE-135 P4：默认「学习情况分析」自定义任务（幂等播种；家长删掉不再重建）
-    try {
-      ensureDefaultMasteryTask(deps.db, parentId);
-    } catch (e) {
-      req.log.warn({ e }, "播种默认掌握分析任务失败（不影响任务列表）");
-    }
+    // 2026-09-23：此处**不再自动播种**掌握分析任务（家长没设过却出现一条会花 LLM 调用的定时任务）。
+    // 现在只在家长显式添加时创建；可用的推荐配置见 GET /api/v1/scheduler/task-templates。
     return { tasks: listTasksWithAssignments(deps.db, parentId) };
+  });
+
+  /** 推荐任务模板（只读）：给 UI 展示「一键添加／二次确认」用，**不会创建任何行**。 */
+  app.get("/api/v1/scheduler/task-templates", async (req, reply) => {
+    try {
+      authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    return { templates: [MASTERY_TASK_TEMPLATE] };
   });
   app.post("/api/v1/scheduler/tasks", async (req, reply) => {
     let parentId: string;
@@ -87,13 +94,26 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const { name, type, time, extra, instruction } = (req.body ?? {}) as {
+    const { name, type, time, extra, instruction, template } = (req.body ?? {}) as {
       name?: string;
       type?: string;
       time?: string;
       extra?: Record<string, unknown>;
       instruction?: string;
+      template?: string;
     };
+    // 推荐模板一键添加（家长显式动作）：用固定 id 幂等创建 —— 重复点不会建出多条同义任务。
+    if (template) {
+      if (template !== MASTERY_TASK_TEMPLATE.key) {
+        return reply.code(400).send({ error: `未知模板: ${template}（可用: ${MASTERY_TASK_TEMPLATE.key}）` });
+      }
+      const r = createMasteryTask(deps.db, parentId);
+      return {
+        ok: true,
+        created: r.created,
+        task: listTasksWithAssignments(deps.db, parentId).find((t) => t.id === r.taskId),
+      };
+    }
     if (!name?.trim()) return reply.code(400).send({ error: "任务名称必填" });
     if (!type || !(SCHEDULER_TASK_TYPES as string[]).includes(type)) {
       return reply.code(400).send({ error: `type 仅支持: ${SCHEDULER_TASK_TYPES.join(" / ")}` });

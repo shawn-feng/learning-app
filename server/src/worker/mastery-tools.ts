@@ -137,43 +137,54 @@ function resolveCourse(kb: DatabaseSync, parent: DatabaseSync, uuidOrName: strin
   return { uuid: String(row?.uuid ?? ""), title: String(row?.title ?? key), topicKey: String(row?.topic_key ?? "") };
 }
 
-// ==================== 默认任务（D9：默认自动建一条、家长可改/停用） ====================
+// ==================== 掌握分析任务（模板 + 显式创建；**不再自动播种**） ====================
 
-/** 默认任务 id（确定性，便于幂等播种）。 */
+/** 掌握分析任务的确定性 id 前缀（家长显式添加时用固定 id，重复点不会建出多条）。 */
 export const DEFAULT_MASTERY_TASK_ID_PREFIX = "task_mastery_";
-/** 默认时刻（家长可在「定时任务」页改；这是产品默认值，不是硬编码业务规则）。 */
+/** 任务名（模板默认值）。 */
+export const DEFAULT_MASTERY_TASK_NAME = "学习情况分析";
+/** 默认时刻（模板默认值；家长可在「定时任务」页改）。 */
 export const DEFAULT_MASTERY_TASK_TIME = "21:30";
 
 /**
- * 幂等保证「学习情况分析」这条自定义任务存在（type=custom / 每天 21:30 / 启用），并把现有孩子都分配上。
- * - **只播种一次**（settings 标记 `mastery_task_seeded:<parentId>`）：家长删掉后不再自动重建（尊重家长选择）；
- * - 已存在的分配行不动（家长停用某个孩子时只是 enabled=0，行还在 → 不会被重新拉起）；
- * - 新增孩子会被补上分配（家长若已删除该孩子的那行分配，则会重新补一次——属边界，可接受）。
+ * 掌握分析任务模板：**只作为可用的推荐配置提供，服务端不再自动创建**。
+ *
+ * 2026-09-23 变更（用户明确要求）：此前这条任务由 worker tick + `GET /scheduler/tasks` **自动播种**，
+ * 结果家长「并没有设置过定时任务」却会在列表里看到一条每天 21:30 触发、会花 LLM 调用的任务。
+ * 现改为：**只有家长显式添加时才创建**（`POST /scheduler/tasks` 带 `template` 字段，或在 UI 里手填），
+ * 模板文本经 `GET /scheduler/task-templates` 暴露，供 UI 一键填表/二次确认。
  */
-export function ensureDefaultMasteryTask(db: DatabaseSync, parentId: string): void {
+export const MASTERY_TASK_TEMPLATE = {
+  key: "mastery_analysis",
+  name: DEFAULT_MASTERY_TASK_NAME,
+  time: DEFAULT_MASTERY_TASK_TIME,
+  frequency: "daily",
+  description: "汇总孩子当天/最近的学习与考核结果，更新知识点掌握情况与下一次的教学建议。",
+  instruction: DEFAULT_MASTERY_TASK_INSTRUCTION,
+} as const;
+
+/**
+ * 显式创建「学习情况分析」自定义任务（type=custom / 每天 21:30 / 启用 / owner=parent）并分配给现有孩子。
+ * 幂等：同一家长重复调用不会建出多条（固定 id）；已存在的分配行不动；新增孩子会被补上分配。
+ * 返回 `created=false` 表示该任务本来就存在（家长之前已添加，或又被调用了一次）。
+ */
+export function createMasteryTask(db: DatabaseSync, parentId: string): { taskId: string; created: boolean } {
   const taskId = `${DEFAULT_MASTERY_TASK_ID_PREFIX}${parentId}`;
   const now = new Date().toISOString();
-  const seeded = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(`mastery_task_seeded:${parentId}`) as
-    | { value_json?: string }
-    | undefined;
-  if (!seeded?.value_json) {
+  const existing = db.prepare("SELECT 1 FROM scheduler_tasks WHERE id = ?").get(taskId);
+  if (!existing) {
     db.prepare(
       `INSERT OR IGNORE INTO scheduler_tasks
          (id, parent_id, name, type, time, extra_json, enabled, owner, frequency, instruction, created_at, updated_at)
        VALUES (?, ?, ?, 'custom', ?, '{}', 1, 'parent', 'daily', ?, ?, ?)`
-    ).run(taskId, parentId, "学习情况分析", DEFAULT_MASTERY_TASK_TIME, DEFAULT_MASTERY_TASK_INSTRUCTION, now, now);
-    db.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated) VALUES (?, ?, ?)").run(
-      `mastery_task_seeded:${parentId}`,
-      JSON.stringify({ at: now, taskId }),
-      now
-    );
+    ).run(taskId, parentId, DEFAULT_MASTERY_TASK_NAME, DEFAULT_MASTERY_TASK_TIME, DEFAULT_MASTERY_TASK_INSTRUCTION, now, now);
   }
-  if (!db.prepare("SELECT 1 FROM scheduler_tasks WHERE id = ?").get(taskId)) return; // 家长删过 → 不再补分配
   const kids = db.prepare("SELECT id FROM children WHERE parent_id = ?").all(parentId) as Array<{ id: string }>;
   const ins = db.prepare(
     "INSERT OR IGNORE INTO scheduler_task_assignments (task_id, child_id, enabled, created_at) VALUES (?, ?, 1, ?)"
   );
   for (const k of kids) ins.run(taskId, k.id, now);
+  return { taskId, created: !existing };
 }
 
 // ==================== 工具 ====================

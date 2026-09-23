@@ -23,7 +23,8 @@ import {
   WEEKDAY_ZH,
 } from "./custom-task-tools.js";
 // ISSUE-135 P4：掌握闭环归纳工具（掌握分析类自定义任务用）+ 通用数据读写（家长库/孩子库）
-import { createMasteryTools, ensureDefaultMasteryTask, MASTERY_TOOL_NAMES } from "./mastery-tools.js";
+// 注意：**不再 import 默认任务播种** —— 掌握分析任务改为家长显式添加（见 mastery-tools.ts 的 MASTERY_TASK_TEMPLATE）。
+import { createMasteryTools, MASTERY_TOOL_NAMES } from "./mastery-tools.js";
 import { createDataAgentTools } from "../agent/parent-tools.js";
 import { recordTaskRun } from "../db/task-runs.js";
 
@@ -252,12 +253,6 @@ export async function runCustomTasksTick(
   const parents = deps.db.prepare("SELECT id FROM parents").all() as Array<{ id: string }>;
   let fired = 0;
   for (const p of parents) {
-    // ISSUE-135 P4：保证默认「学习情况分析」任务存在（不依赖家长打开 UI；幂等）
-    try {
-      ensureDefaultMasteryTask(deps.db, p.id);
-    } catch (e) {
-      console.error(`[worker:custom] seed default mastery task parent=${p.id} failed:`, (e as Error).message);
-    }
     let tasks: CustomTaskRow[];
     try {
       tasks = deps.db

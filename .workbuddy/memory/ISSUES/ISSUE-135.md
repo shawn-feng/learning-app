@@ -258,10 +258,15 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 > 下方"原方案"整体作废（留档对照）。
 
 **落地形态**
-- **默认任务**：`ensureDefaultMasteryTask()` 幂等播种一条 —— 名称「学习情况分析」/ `type='custom'` / 每天 **21:30** / 启用 / `owner='parent'`，
-  并分配给该家长现有孩子；**只播种一次**（settings 标记 `mastery_task_seeded:<parentId>`，家长删掉后不再重建），
-  家长可在「定时任务」页改时刻 / 改指令 / 停用 —— 这就是 D9 说的"家长可配置"。
-  播种点两处（幂等）：`GET /api/v1/scheduler/tasks`（打开 UI 即见）+ worker 的自定义任务 tick（不依赖打开 UI）。
+- **⭐ 2026-09-23 修订：任务改为「家长显式添加」，不再自动创建**。原实现由 worker tick + `GET /scheduler/tasks` 幂等
+  **自动播种**一条「学习情况分析」——用户反馈「我并没有设置定时任务，为什么会自己出现一条 21:30 的？」（确实会自己冒出来，
+  且到点会花 LLM 调用）。现改为：
+  - 服务端**任何读写接口都不自动建行**（`ensureDefaultMasteryTask` 已删除，`mastery_task_seeded:*` 标记机制一并去掉）；
+  - 提供**模板** `MASTERY_TASK_TEMPLATE`（key `mastery_analysis` / 名称「学习情况分析」/ 每天 `21:30` / `daily` / 完整指令），
+    经 `GET /api/v1/scheduler/task-templates` 只读暴露，供 UI「一键添加 / 二次确认」用；
+  - 家长显式添加走 `POST /api/v1/scheduler/tasks`（body `{ template: "mastery_analysis" }`）→ `createMasteryTask()`：
+    **固定 id `task_mastery_<parentId>`**（重复点不会建出多条）+ 幂等补分配现有孩子；也可完全手填（name/type=custom/time/instruction）。
+- **执行链路（复用 ISSUE-116）**
 - **执行链路（复用 ISSUE-116）**：`executeCustomTask()` 起无头 ephemeral 会话（每孩子一轮、5 分钟看门狗），
   工具面 = 原有定制任务工具 ＋ **4 个掌握工具**（新增 `server/src/worker/mastery-tools.ts`）＋ **通用数据读写** `parent_db_read/write`（`child=` 作用域，管理口径）。
 - **指令（自然语言，父级可改）**：`DEFAULT_MASTERY_TASK_INSTRUCTION` —— 先 `mastery_todo_list` 看待归纳范围 →
@@ -326,7 +331,7 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 | **P1** | §6 两处硬删保护 | 是（小改） |
 | **P2** | 考核侧写入规则化（`exam_course_results` + records；规则聚合不依赖 LLM） | 是（上线即有数据） |
 | **P3** | ✅ **已并入 P4 的自定义任务指令**（第 2 步：逐计划取素材 → `mastery_save_records` 写 `records(source='study')` + `study_plans.result_summary`） | 是 |
-| **P4** | ✅ **已实施（2026-09-23，自定义任务版，见 §4.3）**：默认「学习情况分析」自定义任务（每天 21:30、幂等播种、家长可改/停用）+ 4 个 `mastery_*` 工具（取数/写回）+ 通用 `parent_db_read/write` 接入自定义任务 agent；**不新增 worker 任务类型、不动客户端** | 是 |
+| **P4** | ✅ **已实施（2026-09-23，自定义任务版，见 §4.3；同日修订为不自动创建）**：掌握分析任务**模板化 + 家长显式添加**（`GET /task-templates` 只读模板；`POST /tasks {template}` 显式创建、固定 id 幂等）+ 4 个 `mastery_*` 工具（取数/写回）+ 通用 `parent_db_read/write` 接入自定义任务 agent；**不新增 worker 任务类型、不动客户端** | 是 |
 | **P5** | 消费侧（家长 agent 读工具 / `kb.courses.get` 扩展 + 课程子会话注入 / 家长界面） | 分批 |
 
 **验收**
@@ -419,6 +424,7 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 | 2026-09-23 10:10 | ✅ **P0-a 已实施**（+ P0 结构 + P1 防硬删），见 §11 实施记录 |
 | 2026-09-23 11:15 | ⭐ **P4 改向并实施**：掌握闭环归纳**不再新增 worker 任务类型**，改为复用「自定义任务」—— 默认「学习情况分析」（每天 21:30，幂等播种、家长可改/停用）+ 自然语言指令 + 4 个 `mastery_*` 工具（取数/写回）+ 通用 `parent_db_read/write`；P3 学习侧抽取并入该任务指令。§4.3 重写、§7 的 P3/P4 行更新、新增 §11.4 |
 | 2026-09-23 11:40 | ⚠️ **部署 0.5.6 暴露读取侧 500**（`no such column: topic_key`，路由 handler 无测试覆盖）→ **0.5.7 修复并重新部署**：SELECT 去 `topic_key`（改从 `exam_course_results` 取）、静默 catch 改留痕 warn、**新增路由级冒烟测试 `test/issue135-exam-routes.test.ts`（7 用例）**；端到端验证全 200。详见 §11.5 |
+| 2026-09-23 12:05 | ⭐ **修订：掌握分析任务不再自动创建**（用户反馈「我没设置定时任务，为什么 21:30 会自动触发」）。删除 worker tick + 列表接口的自动播种与 `mastery_task_seeded` 标记；改为 `MASTERY_TASK_TEMPLATE` + `GET /task-templates`（只读）+ `POST /tasks {template}` 显式添加（固定 id 幂等）。新增 `test/issue135-scheduler-task-template.test.ts`（6 用例）；部署 0.5.8 并删除 201 上已存在的任务行，跨 tick 复查未被重建。详见 §11.6 |
 
 ---
 
@@ -440,7 +446,7 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 | 10 | **P1 计划不可硬删**：`parent_study_plan_update` act=delete 与 `DELETE /api/v1/study-plans/:id` 遇 `done`/`missed` 行改软删（`active=0, status='cancelled'`）；`readStudyPlans` 加 `active=1 AND status != 'cancelled'` 过滤，避免取消行仍出现在 agent 列表 | `agent/parent-plans.ts` + `routes/study-plans.ts` |
 | 11 | **数据访问注册表同步**：`exam_plan_courses` 列清单更新（去 `score`、补新列）+ 新增 4 张表的登记 + `courses`/`study_plans` 新列登记 —— `probe:registry-drift` 实测**无漂移** | `agent/db-channel.ts` |
 | 12 | **测试**：新增 `test/issue135-exam-results.test.ts`（5 用例：写全三层 / 幂等 / 知识点回退 / 结构收敛与视图 / worker 兜底不覆盖）；改写 `test/issue112-exam-rate.test.ts` 到新口径（结算 90% / 幂等 / 单库兜底） | `test/` |
-| 13 | **P4：掌握闭环归纳改为「自定义任务 + 自然语言指令 + 工具」**（用户 2026-09-23 拍板）：新增 `server/src/worker/mastery-tools.ts`（4 个 `mastery_*` 工具 + `ensureDefaultMasteryTask` 默认任务播种 + `DEFAULT_MASTERY_TASK_INSTRUCTION` 指令）；`worker/custom-tasks.ts` 给自定义任务 agent 接入掌握工具与通用读写（白名单并集 `customTaskToolNames()`）+ 系统提示补充；`routes/scheduler.ts` 列表接口幂等播种默认任务；**未新增 worker 任务类型、未改客户端** | `worker/mastery-tools.ts`（新）/ `worker/custom-tasks.ts` / `routes/scheduler.ts` |
+| 13 | **P4：掌握闭环归纳改为「自定义任务 + 自然语言指令 + 工具」**（用户 2026-09-23 拍板）：新增 `server/src/worker/mastery-tools.ts`（4 个 `mastery_*` 工具 + `createMasteryTask` 显式创建（初版为 `ensureDefaultMasteryTask` 自动播种，已按用户要求移除，见 §11.6） + `DEFAULT_MASTERY_TASK_INSTRUCTION` 指令）；`worker/custom-tasks.ts` 给自定义任务 agent 接入掌握工具与通用读写（白名单并集 `customTaskToolNames()`）+ 系统提示补充；`routes/scheduler.ts` 新增 `GET /task-templates` + `POST /tasks {template}` 显式创建；**未新增 worker 任务类型、未改客户端** | `worker/mastery-tools.ts`（新）/ `worker/custom-tasks.ts` / `routes/scheduler.ts` |
 
 **验证**：`tsc --noEmit` 0 错；`node scripts/build.mjs` 构建通过（bundle 已含改动，版本号仍 0.5.5）；`probe:registry-drift` 无漂移；相关 7 个测试文件 56 用例全绿；全量 481 用例中 458 通过、15 失败、8 跳过 —— **失败清单与本改动无关**（assessment / assess-guide / event-poll-config / kb-sqlite(旧 electron 版) / page-bridge / sync / token-stats / english-course-session，均为既有失败）。
 
@@ -465,7 +471,7 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 ### 11.4 P4 实施要点（自定义任务版，2026-09-23 下午）
 
 1. **形态**：`type='custom'` 定时任务 + 自然语言指令（`DEFAULT_MASTERY_TASK_INSTRUCTION`）+ 工具；默认每天 21:30、启用、分配给现有孩子。
-2. **默认任务只播种一次**：settings `mastery_task_seeded:<parentId>`；家长删掉后不再重建（尊重家长选择）；已存在的分配行不动（家长停用= `enabled=0`，行还在），新增孩子会补分配。
+2. ~~**默认任务只播种一次**：settings `mastery_task_seeded:<parentId>`；家长删掉后不再重建。~~ → **已于 2026-09-23 修订**：整套自动播种（含标记机制）移除，改为模板 + 家长显式添加，见 §11.6。
 3. **工具面 = 原有定制任务工具 ∪ 4 个 `mastery_*` ∪ `parent_db_describe/read/write`**；白名单是并集（SDK 的 `tools` 白名单对自定义工具同样生效，漏登记 = 工具静默不可见），已用 `customTaskToolNames()` 固化并被单测锁住。
 4. **agent 判断 vs 工具确定性**：知识点档位/课程 level/累计叙述由 LLM 产出；**学考次数、最近档位与得分率、知识点名快照、课程归属、幂等 UPSERT** 全由工具算/校验（模型编造的 kp id 或非法枚举会被拒并如实报告，不落库）。
 5. **顺带修掉两个真问题**（都是单测逼出来的）：① `cut()` 会补省略号，`cut(date,10)` 拼进 SQL 日期比较永远匹配不上 → 拆出 `dayOf()` 专供日期；② `exam_plans` **没有 `topic_key` 列**（只有 `exam_plan_courses`/`exam_course_results`/`knowledge_point_records` 有），原打算照抄 study_plans 的取法会直接报错。
@@ -501,3 +507,35 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 - 部署脚本模板：`tmp/deploy/deploy_057.sh`（+ `deploy_server_057.py`）+ 结构核对 `tmp/deploy/verify_056.js` + 接口核对 `tmp/deploy/verify_056_api.js`。
 
 **仍未验证**：P4 的「学习情况分析」自定义任务**尚未真实跑过一次**（工具白名单/agent 调工具/写库链路端到端未验）。
+
+### 11.6 修订：掌握分析任务改为「显式添加」（2026-09-23 12:00，用户反馈）
+
+**用户反馈**：「学习情况分析用定时任务，为什么会在 21 点 30 分自动触发？我还没有设置定时任务。」
+
+**这确实是设计问题**：P4 初版做了「默认任务 + 家长可配」，服务端**主动替家长创建**了一条会花 LLM 调用的定时任务。
+播种点两处（任一命中即出现）：worker 每 2 分钟的 custom tick（**不依赖打开 App**）+ `GET /api/v1/scheduler/tasks`。
+
+**修订内容（0.5.8）**
+
+| 项 | 修订前 | 修订后 |
+|---|---|---|
+| 任务创建 | 服务端自动播种（worker tick + 列表接口） | **只有家长显式添加才创建**（任何接口都不自动建行） |
+| 幂等机制 | settings 标记 `mastery_task_seeded:<pid>`（只播一次、删后不重建） | 删除标记机制；改由**固定 id `task_mastery_<pid>`** 保证重复添加不产生多条 |
+| 配置可得性 | 任务行自带完整指令 | `GET /api/v1/scheduler/task-templates` 只读返回 `MASTERY_TASK_TEMPLATE`（key/name/time/frequency/description/instruction），供 UI 一键填表 |
+| 显式添加入口 | — | `POST /api/v1/scheduler/tasks` body `{ template: "mastery_analysis" }` → `createMasteryTask()`（幂等 + 补分配）；未知模板 400；也可手填创建 |
+| 工具面 | 不变 | 不变（`mastery_*` + `parent_db_*` 对**所有** custom 任务可用 —— 家长自建的自定义任务同样能做掌握分析） |
+
+**代码**：`worker/mastery-tools.ts`（`ensureDefaultMasteryTask` → `createMasteryTask`；新增 `MASTERY_TASK_TEMPLATE` / `DEFAULT_MASTERY_TASK_NAME`）、
+`worker/custom-tasks.ts`（tick 去掉播种）、`routes/scheduler.ts`（GET 去掉播种 + 新增 `GET /task-templates` + POST 支持 `template`）。
+
+**测试**：`test/issue135-mastery-task.test.ts` 用例②改写为「不调用就没有 → 显式添加才建 → 同 id 幂等 → 可删除后重建 → 新孩子补分配」；
+新增 `test/issue135-scheduler-task-template.test.ts`（6 用例，真 fastify inject）：①列表不会自动建 ②模板只读不建行 ③显式添加 created=true ④重复添加 created=false ⑤未知模板 400 ⑥缺 token 401。
+
+**部署与验证（201，0.5.8）**：先换 bundle（去掉播种）再删任务行（顺序关键：反了会被旧版 tick 在 2 分钟内重建）；
+删掉原 `task_mastery_86a84278…` + `mastery_task_seeded:*` 标记后，**跨过一个 worker tick（135s）复查 custom 仍为 0**；
+接口验证：列表 custom=0（两次）→ 模板 200（指令 1000 字、不建行）→ 显式添加 created=true → 重复添加 false → 未知模板 400 → 删除后回到 0。
+bundle 备份 `server.cjs.bak-20260923-1205`（本次无 schema 变更，未重复备份数据）。
+
+**⚠️ 前端待办（未做）**：客户端「定时任务」页目前没有「推荐任务」入口，家长要添加只能手填名称/时刻/整段指令。
+要让「一键添加」在 App 里可用，需改 `src/components/SchedulerTasksPanel.tsx`（拉 `GET /task-templates` 展示卡片 → 点一次调 `POST /tasks {template}` → 二次确认）
+并重打客户端包（当前 201 客户端 0.1.15）。本次未改前端（用户只要求「删掉它 + 不要自动播种」）。

@@ -3,8 +3,9 @@
  *
  * 覆盖：
  * ① 工具面契约：自定义任务的工具白名单必须含 4 个 mastery_* + 3 个 parent_db_*（漏登记 = 工具静默不可见）；
- * ② 默认任务播种：type=custom / 每天 21:30 / 启用 / owner=parent / 带自然语言指令 + 分配现有孩子；
- *    二次调用幂等；家长删除后不再重建（settings 标记）；新增孩子会补分配；
+ * ② 掌握分析任务**不再自动创建**（2026-09-23 用户要求）：不调用就没有这条任务；家长显式添加（createMasteryTask /
+ *    POST /scheduler/tasks {template:"mastery_analysis"}）才建 —— type=custom / 每天 21:30 / 启用 / owner=parent /
+ *    带自然语言指令 + 分配现有孩子；同 id 幂等（重复添加不新增行）；新增孩子补分配；
  * ③ mastery_todo_list：列出待归纳学习计划 + 需刷新掌握的课程；无事时给出「无需更新」；
  * ④ mastery_plan_context：素材齐（知识点 id 清单 / 学习记录原文 / 历史掌握 / 错题本）；
  * ⑤ mastery_save_records：写知识点流水（幂等覆盖）+ 学习计划 result_summary；非法 kp / outcome 被拒并报告；
@@ -21,7 +22,7 @@ import { getCourseUuid, getOrCreateKnowledgePoint, saveQuestion, linkQuestionToK
 import { upsertMistake } from "../server/src/db/mistakes";
 import {
   createMasteryTools,
-  ensureDefaultMasteryTask,
+  createMasteryTask,
   MASTERY_TOOL_NAMES,
   DEFAULT_MASTERY_TASK_TIME,
   DEFAULT_MASTERY_TASK_INSTRUCTION,
@@ -135,11 +136,19 @@ describe("ISSUE-135 P4 掌握闭环（自定义任务 + 工具）", () => {
     expect(tools.map((t: any) => t.name).sort()).toEqual([...MASTERY_TOOL_NAMES].sort());
   });
 
-  it("② 默认任务播种：custom/21:30/启用/带指令 + 分配现有孩子；幂等；删后不重建；新孩子补分配", () => {
-    ensureDefaultMasteryTask(mainDb, parentId);
+  it("② 掌握分析任务：**不自动创建**；家长显式添加才建（custom/21:30/启用/带指令 + 分配孩子、幂等、新孩子补分配）", () => {
+    // ① 不再自动播种（2026-09-23 用户要求）：没有任何调用 → 列表里不该出现
+    const before = mainDb
+      .prepare("SELECT COUNT(*) AS c FROM scheduler_tasks WHERE parent_id = ? AND type = 'custom'")
+      .get(parentId) as { c: number };
+    expect(before.c).toBe(0);
+
+    // ② 显式添加（等价于 POST /scheduler/tasks { template: "mastery_analysis" }）
+    const r1 = createMasteryTask(mainDb, parentId);
+    expect(r1.created).toBe(true);
     const t = mainDb
-      .prepare("SELECT id, name, type, time, enabled, owner, frequency, instruction FROM scheduler_tasks WHERE parent_id = ? AND type = 'custom'")
-      .get(parentId) as Record<string, unknown>;
+      .prepare("SELECT id, name, type, time, enabled, owner, frequency, instruction FROM scheduler_tasks WHERE id = ?")
+      .get(r1.taskId) as Record<string, unknown>;
     expect(t.name).toBe("学习情况分析");
     expect(t.type).toBe("custom");
     expect(t.time).toBe(DEFAULT_MASTERY_TASK_TIME);
@@ -155,18 +164,21 @@ describe("ISSUE-135 P4 掌握闭环（自定义任务 + 工具）", () => {
     expect(assigns.map((a) => a.child_id)).toEqual([childId]);
     expect(Number(assigns[0]!.enabled)).toBe(1);
 
-    // 二次调用：不新增行
-    ensureDefaultMasteryTask(mainDb, parentId);
+    // ③ 重复添加（固定 id）：不新增行，返回 created=false
+    const r2 = createMasteryTask(mainDb, parentId);
+    expect(r2.created).toBe(false);
+    expect(r2.taskId).toBe(r1.taskId);
     const n1 = (mainDb.prepare("SELECT COUNT(*) AS c FROM scheduler_tasks WHERE parent_id = ? AND type='custom'").get(parentId) as { c: number }).c;
     expect(n1).toBe(1);
 
-    // 家长删除后不再重建（尊重家长选择）
-    mainDb.prepare("DELETE FROM scheduler_tasks WHERE id = ?").run(t.id);
-    ensureDefaultMasteryTask(mainDb, parentId);
-    const n2 = (mainDb.prepare("SELECT COUNT(*) AS c FROM scheduler_tasks WHERE parent_id = ? AND type='custom'").get(parentId) as { c: number }).c;
-    expect(n2).toBe(0);
+    // ④ 家长删掉后可以再次添加（显式动作 → 允许重建；但不会因重复点击而多建）
+    mainDb.prepare("DELETE FROM scheduler_tasks WHERE id = ?").run(r1.taskId);
+    expect(createMasteryTask(mainDb, parentId).created).toBe(true);
+    expect(
+      (mainDb.prepare("SELECT COUNT(*) AS c FROM scheduler_tasks WHERE parent_id = ? AND type='custom'").get(parentId) as { c: number }).c
+    ).toBe(1);
 
-    // 换一个家长（未播种过）验证新孩子会被补分配
+    // ⑤ 另一个家长：显式添加后新孩子会被补分配（幂等）
     const pid2 = "parent-135m2";
     const cid2 = "child-135m2";
     mainDb
@@ -175,10 +187,14 @@ describe("ISSUE-135 P4 掌握闭环（自定义任务 + 工具）", () => {
     mainDb
       .prepare("INSERT INTO children (id,parent_id,name,created_at,updated_at) VALUES (?,?,?,?,?)")
       .run(cid2, pid2, "闻闻", new Date().toISOString(), new Date().toISOString());
-    ensureDefaultMasteryTask(mainDb, pid2);
-    const tid2 = `task_mastery_${pid2}`;
-    ensureDefaultMasteryTask(mainDb, pid2);
-    const a2 = mainDb.prepare("SELECT child_id FROM scheduler_task_assignments WHERE task_id = ?").all(tid2) as Array<{ child_id: string }>;
+    expect(
+      (mainDb.prepare("SELECT COUNT(*) AS c FROM scheduler_tasks WHERE parent_id = ? AND type='custom'").get(pid2) as { c: number }).c
+    ).toBe(0); // 未显式添加 → 仍然没有
+    createMasteryTask(mainDb, pid2);
+    createMasteryTask(mainDb, pid2);
+    const a2 = mainDb.prepare("SELECT child_id FROM scheduler_task_assignments WHERE task_id = ?").all(`task_mastery_${pid2}`) as Array<{
+      child_id: string;
+    }>;
     expect(a2.map((x) => x.child_id)).toEqual([cid2]);
   });
 
