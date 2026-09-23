@@ -316,6 +316,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     const titleToTopic = new Map<string, string>();
     // 计划域 S1（2026-09-10）：同时反查课程 uuid（course_uuid = 计划行对课程的真引用，替代按名匹配）
     const titleToUuid = new Map<string, string>();
+    let libOk = false; // ISSUE-123：家长库可用才做课程名硬校验（不可用时沿用旧行为留空）
     try {
       const pdb = openParentLib(deps.config.dataDir, parentId);
       try {
@@ -329,11 +330,20 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
           if (t && !titleToTopic.has(t)) titleToTopic.set(t, r.topic);
           if (t && r.uuid && !titleToUuid.has(t)) titleToUuid.set(t, String(r.uuid));
         }
+        libOk = true;
       } finally {
         pdb.close();
       }
     } catch {
       /* 家长库不可用时 topic_key 留空 */
+    }
+    // ISSUE-123：课程名必须是课程库真实存在的——查不到的计划永远无法被 daily 学习记录
+    // 按 course_name 匹配完成 → missed 顺延 + 拖累完成率扣分。家长库不可用时跳过校验（旧行为）。
+    if (libOk) {
+      const missing = [...new Set(parsed.map((it) => (it.courseName ?? "").trim()).filter((n) => n && !titleToTopic.has(n)))];
+      if (missing.length) {
+        return reply.code(400).send({ error: `这些课程在课程库中不存在，请核对后再排：${missing.join("、")}` });
+      }
     }
     const inserted: string[] = [];
     const skipped: string[] = [];
@@ -429,11 +439,26 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     const found = findPlanAcrossChildren(deps.config.dataDir ?? "", deps.db, parentId, id);
     if (!found) return reply.code(403).send({ error: "无权访问该排期行" });
     const kb = openKb(deps.config.dataDir ?? "", parentId, found.childId);
+    let softDeleted = false;
     try {
-      kb.prepare("DELETE FROM study_plans WHERE id = ?").run(id);
+      // ISSUE-135 D2/P1：已完成/已错过的计划行**禁止硬删** —— knowledge_point_records.plan_id 与
+      // exam_course_results.plan_id 都指向计划行，硬删会让这次学习/考核的结果记录失联成孤儿。
+      // 统一软删（active=0 / status='cancelled'），与考核侧 exam_plans 的取消口径一致。
+      const st = String(found.row.status ?? "");
+      if (st === "done" || st === "missed") {
+        kb.prepare("UPDATE study_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
+          new Date().toISOString(),
+          id
+        );
+        softDeleted = true;
+      } else {
+        kb.prepare("DELETE FROM study_plans WHERE id = ?").run(id);
+      }
     } finally {
       kb.close();
     }
-    return { ok: true };
+    return softDeleted
+      ? { ok: true, softDeleted: true, status: "cancelled" }
+      : { ok: true };
   });
 }

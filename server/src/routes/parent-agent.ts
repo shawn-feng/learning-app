@@ -115,6 +115,26 @@ export function registerParentAgentRoutes(app: FastifyInstance, deps: ParentAgen
     return { ok: true };
   });
 
+  // ISSUE-108：最近一次家长报表（parent_display_report 落 settings；重启不丢）
+  app.get("/api/v1/parent-agent/report", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const row = deps.db.prepare("SELECT value_json FROM settings WHERE key = ?").get(`report:${parentId}`) as
+      | { value_json?: string }
+      | undefined;
+    if (!row?.value_json) return { report: null };
+    try {
+      return { report: JSON.parse(row.value_json) };
+    } catch {
+      return { report: null };
+    }
+  });
+
   // —— 打开会话（ISSUE-107）：进聊天回填历史。家长会话不做跨天裁决（key 不含日期、长期持续
   // 累积），返回现会话全部历史——与孩子端 /agent/:childId/open 的「跨天自动新建」口径不同。
   app.post("/api/v1/parent-agent/open", async (req, reply) => {

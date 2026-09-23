@@ -42,6 +42,15 @@ export interface CorePaths {
   agentSessionsDir(parentId: string, childId: string): string;
   /** 孩子的 agent 工作区（server 作用域文件工具的根，read/write/edit/ls 只能在此树内） */
   childWorkspaceDir(parentId: string, childId: string): string;
+  /**
+   * 家长 agent 根（ISSUE-131 P2 定稿层级）：= `workspaces/<pid>`，materials/uploads/scratch/
+   * 孩子工作区都在其内；家长 agent 的 fs 工具根与网盘可见范围同此。
+   */
+  agentRoot(parentId: string): string;
+  /** 家长会话运行区（cwd、.pi 等；不再落进资产区/孩子目录）= `workspaces/<pid>/scratch` */
+  agentScratchDir(parentId: string): string;
+  /** 孩子会话运行区（考核/编程 agent 的 cwd 与 .pi）= `workspaces/<pid>/<cid>/scratch` */
+  childScratchDir(parentId: string, childId: string): string;
   /** 家长会话目录 */
   parentSessionsDir(parentId: string): string;
 }
@@ -65,6 +74,11 @@ export function createCorePaths(dataDir: string): CorePaths {
       path.join(abs, "agent-sessions", nonEmpty(parentId, "parentId"), safeSegment(childId, "childId")),
     childWorkspaceDir: (parentId, childId) =>
       path.join(abs, "workspaces", nonEmpty(parentId, "parentId"), safeSegment(childId, "childId")),
+    agentRoot: (parentId) => path.join(abs, "workspaces", nonEmpty(parentId, "parentId")),
+    agentScratchDir: (parentId) =>
+      path.join(abs, "workspaces", nonEmpty(parentId, "parentId"), "scratch"),
+    childScratchDir: (parentId, childId) =>
+      path.join(abs, "workspaces", nonEmpty(parentId, "parentId"), safeSegment(childId, "childId"), "scratch"),
     parentSessionsDir: (parentId) =>
       path.join(abs, "sessions", nonEmpty(parentId, "parentId"), "parent"),
   };

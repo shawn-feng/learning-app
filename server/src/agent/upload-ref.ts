@@ -85,13 +85,15 @@ function basenameOf(ref: string): string {
   return parts.length ? parts[parts.length - 1] : ref;
 }
 
-/** 从 files 表按 id 解析（归属校验：只认自己的文件）。 */
+/** 从 files 表按 id 解析（归属校验：只认自己的文件）。
+ *  P2 物理归并后的解析顺序：新根（workspaces/<pid>/{uploads|<cid>/uploads}）优先，
+ *  旧根 files/<pid>/<stored> 永久兜底（存量不迁移）。 */
 function resolveByFileId(ctx: UploadRefCtx, id: string, ref: string): ResolvedUploadRef {
-  let row: { stored_path?: string; original_name?: string } | undefined;
+  let row: { stored_path?: string; original_name?: string; child_id?: string | null } | undefined;
   try {
     row = ctx.db
-      .prepare("SELECT stored_path, original_name FROM files WHERE id = ? AND parent_id = ?")
-      .get(id, ctx.parentId) as { stored_path?: string; original_name?: string } | undefined;
+      .prepare("SELECT stored_path, original_name, child_id FROM files WHERE id = ? AND parent_id = ?")
+      .get(id, ctx.parentId) as { stored_path?: string; original_name?: string; child_id?: string | null } | undefined;
   } catch {
     row = undefined;
   }
@@ -101,7 +103,14 @@ function resolveByFileId(ctx: UploadRefCtx, id: string, ref: string): ResolvedUp
       "missing-remote"
     );
   }
-  const abs = resolveWithin(path.join(ctx.dataDir, "files"), path.join(ctx.parentId, String(row.stored_path)));
+  const stored = String(row.stored_path);
+  const candidates: string[] = [];
+  if (row.child_id) {
+    candidates.push(path.join(ctx.dataDir, "workspaces", ctx.parentId, row.child_id, "uploads", stored));
+  }
+  candidates.push(path.join(ctx.dataDir, "workspaces", ctx.parentId, "uploads", stored));
+  candidates.push(resolveWithin(path.join(ctx.dataDir, "files"), path.join(ctx.parentId, stored)));
+  const abs = candidates.find((c) => fs.existsSync(c)) ?? candidates[candidates.length - 1];
   if (!fs.existsSync(abs)) {
     throw new UploadRefError(`附件「${ref}」有记录但文件已不在服务端磁盘上（可能已被清理）。`, "missing-remote");
   }
@@ -137,6 +146,18 @@ export function resolveAttachmentRef(ctx: UploadRefCtx, raw: string): ResolvedUp
     if (fs.existsSync(own)) {
       return { abs: own, ref, fileName: segs[segs.length - 1], source: "files" };
     }
+    // a2) P2 新根兜底：workspaces/<pid>/uploads/<x>（名称直写布局；segs 自身可能带自己 pid 前缀，两种都试）
+    const uploadsRoot = path.join(ctx.dataDir, "workspaces", ctx.parentId, "uploads");
+    for (const relCand of [rel.slice(1).join("/"), segs.join("/")]) {
+      try {
+        const inNew = resolveWithin(uploadsRoot, relCand);
+        if (fs.existsSync(inNew)) {
+          return { abs: inNew, ref, fileName: segs[segs.length - 1], source: "files" };
+        }
+      } catch {
+        /* 越界候选跳过 */
+      }
+    }
     // b) 自己目录下没有：若在 files 根下确实存在，说明指向的是**别人**的目录/文件 → 拒绝
     let foreign = "";
     try {
@@ -162,10 +183,19 @@ export function resolveAttachmentRef(ctx: UploadRefCtx, raw: string): ResolvedUp
     rel = ["parents", ctx.parentId, ...ref.split("/").filter(Boolean)];
   }
   const abs = resolveWithin(ctx.dataDir, rel.join("/"));
-  if (!fs.existsSync(abs)) {
-    throw new UploadRefError(`附件「${ref}」不在服务端磁盘上`, "missing-remote");
+  if (fs.existsSync(abs)) {
+    return { abs, ref, fileName: rel[rel.length - 1], source: "uploads" };
   }
-  return { abs, ref, fileName: rel[rel.length - 1], source: "uploads" };
+  // P2 新根兜底：`uploads/<name>` / `parents/<pid>/uploads/<name>` → workspaces/<pid>/uploads/<…>
+  const tail = ref.startsWith("uploads/") ? ref.split("/").filter(Boolean).slice(1) : rel.slice(3);
+  if (tail.length) {
+    const newRoot = path.join(ctx.dataDir, "workspaces", ctx.parentId, "uploads");
+    const inNew = resolveWithin(newRoot, tail.join("/"));
+    if (fs.existsSync(inNew)) {
+      return { abs: inNew, ref, fileName: tail[tail.length - 1], source: "uploads" };
+    }
+  }
+  throw new UploadRefError(`附件「${ref}」不在服务端磁盘上`, "missing-remote");
 }
 
 /** 文本类附件扩展名（可返回正文）。图片另有视觉模型通道。 */

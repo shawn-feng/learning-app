@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import {
+  childKbAdminWriteSpecs,
   childKbReadableRegistry,
   childKbWritableRegistry,
   describeChildTables,
@@ -56,6 +57,34 @@ CREATE TABLE courses (
   PRIMARY KEY (topic, title)
 );
 CREATE TABLE tags (tag TEXT PRIMARY KEY, dimension TEXT NOT NULL DEFAULT '', criteria TEXT NOT NULL DEFAULT '');
+CREATE TABLE mistake_book (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('wrong_question','unknown_word','weak_point')),
+  content TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'conversation',
+  source_ref TEXT NOT NULL DEFAULT '',
+  question_id TEXT NOT NULL DEFAULT '',
+  course_ref TEXT NOT NULL DEFAULT '',
+  knowledge_point_id TEXT NOT NULL DEFAULT '',
+  knowledge_point_name TEXT NOT NULL DEFAULT '',
+  count INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','mastered','dismissed')),
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  mastered_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE display_contents (
+  child_key TEXT NOT NULL,
+  path TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL DEFAULT '',
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (child_key, path)
+);
 CREATE TABLE reward_configs (
   child_id TEXT PRIMARY KEY, todo_tiers_json TEXT NOT NULL DEFAULT '[]', exam_tiers_json TEXT NOT NULL DEFAULT '[]',
   todo_gate_parent_min_rate REAL NOT NULL DEFAULT 1.0, exam_gate_parent_min_score REAL NOT NULL DEFAULT 0.9,
@@ -93,6 +122,12 @@ function freshKb() {
     "多看 20 分钟动画",
     50
   );
+  db.prepare(
+    "INSERT INTO mistake_book (id, kind, content, detail, source, status, first_seen, last_seen, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run("m1", "wrong_question", "应用题：鸡兔同笼", "卡在设未知数", "conversation", "open", "2026-09-20", "2026-09-21", "2026-09-20", "2026-09-21");
+  db.prepare(
+    "INSERT INTO mistake_book (id, kind, content, detail, source, status, first_seen, last_seen, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run("m2", "unknown_word", "鬻", "yù，卖", "lookup", "mastered", "2026-09-15", "2026-09-16", "2026-09-15", "2026-09-18");
   return db;
 }
 
@@ -110,6 +145,45 @@ describe("child db read", () => {
     expect(r.text).toContain("course_name");
     expect(r.text).toContain("学而篇");
     expect(r.text).not.toContain("scope_json"); // 列裁剪生效
+    db.close();
+  });
+
+  it("错题本可读：open 过滤 + last_seen 倒序 + 只读列（count）在读面（ISSUE-114）", () => {
+    const db = freshKb();
+    const specs = childKbReadableRegistry();
+    const r = executeRead(db, specs, {
+      table: "mistake_book",
+      where: { status: "open" },
+      orderBy: "last_seen",
+      orderDesc: true,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain("鸡兔同笼");
+    expect(r.text).not.toContain("鬻"); // mastered 已过滤
+    expect(r.text).toContain("count"); // 只读列在读面可见
+    db.close();
+  });
+
+  it("管理口径写错题本：status 可纠错，服务端维护列（count）拒写（ISSUE-114 + ISSUE-128）", () => {
+    const db = freshKb();
+    const specs = childKbAdminWriteSpecs();
+    const dismiss = executeWrite(db, specs, {
+      table: "mistake_book",
+      op: "update",
+      rows: { status: "dismissed" },
+      where: { id: "m1" },
+    });
+    expect(dismiss.ok).toBe(true);
+    const row = db.prepare("SELECT status FROM mistake_book WHERE id = 'm1'").get() as any;
+    expect(row.status).toBe("dismissed");
+    const bad = executeWrite(db, specs, {
+      table: "mistake_book",
+      op: "update",
+      rows: { count: 99 },
+      where: { id: "m1" },
+    });
+    expect(bad.ok).toBe(false);
+    expect(bad.text).toContain("未登记");
     db.close();
   });
 

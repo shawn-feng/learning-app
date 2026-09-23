@@ -10,10 +10,12 @@
  * - 考核计划/积分/奖励规则等全部只读——考核状态机与积分产生是防作弊边界，任何写通道都不登记；
  * - redemption_requests 的 child_id 由服务端强制覆盖为会话绑定的孩子，agent 传什么都不生效。
  */
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数（内含 SDK defineTool）
 import { Type } from "typebox";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
+// ISSUE-133：rows/where/columns 参数 schema 放行「JSON 字符串」分支（执行器统一归一回结构）
+import { JsonObjectParam, JsonStringArrayParam, WriteRowsParam } from "./tool-shapes.js";
 import { listMistakes, setMistakeStatus, upsertMistake, type MistakeStatus } from "../db/mistakes.js";
 import {
   childKbReadableRegistry,
@@ -87,8 +89,8 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       "查「今天要做什么」请优先用 child_study_plan_list / child_exam_plan_list / child_life_plan_list（带今日窗口语义）。",
     parameters: Type.Object({
       table: Type.String({ description: "表名或 ns:灵活实体名（清单见系统提示）" }),
-      columns: Type.Optional(Type.Array(Type.String(), { description: "只查这些列（缺省=全部可读列）" })),
-      where: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "等值条件，如 {status:\"pending\"}" })),
+      columns: Type.Optional(JsonStringArrayParam("只查这些列（缺省=全部可读列）")),
+      where: Type.Optional(JsonObjectParam('等值条件，如 {status:"pending"}')),
       orderBy: Type.Optional(Type.String({ description: "排序列" })),
       orderDesc: Type.Optional(Type.Boolean({ description: "是否倒序（缺省正序）" })),
       limit: Type.Optional(Type.Number({ description: "单次最多返回行数（缺省 50，最大 200）" })),
@@ -99,8 +101,9 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       _id: string,
       params: {
         table: string;
-        columns?: string[];
-        where?: Record<string, unknown>;
+        /** ISSUE-133：也接受被整串 JSON 序列化的字符串（执行器统一归一） */
+        columns?: string[] | string;
+        where?: Record<string, unknown> | string;
         orderBy?: string;
         orderDesc?: boolean;
         limit?: number;
@@ -159,22 +162,20 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       table: Type.String({ description: "白名单表名：daily_entries / redemption_requests" }),
       op: Type.Union([Type.Literal("insert"), Type.Literal("update"), Type.Literal("delete")], { description: "操作类型" }),
       rows: Type.Optional(
-        Type.Union([Type.Array(Type.Record(Type.String(), Type.Unknown())), Type.Record(Type.String(), Type.Unknown())], {
-          description:
-            "insert=行数组 [{列:值},…]（单行也可直接传 {列:值} 对象）；update=列值对象 {列: 新值}（兼容 [{列:值}] 单元素数组）",
-        })
+        WriteRowsParam(
+          "insert=行数组 [{列:值},…]（单行也可直接传 {列:值} 对象）；update=列值对象 {列: 新值}（兼容 [{列:值}] 单元素数组）"
+        )
       ),
-      where: Type.Optional(
-        Type.Record(Type.String(), Type.Unknown(), { description: "update/delete 必填：等值条件" })
-      ),
+      where: Type.Optional(JsonObjectParam("update/delete 必填：等值条件")),
     }),
     execute: async (
       _id: string,
       params: {
         table: string;
         op: "insert" | "update" | "delete";
-        rows?: Array<Record<string, unknown>> | Record<string, unknown>;
-        where?: Record<string, unknown>;
+        /** ISSUE-133：两种形状 + 字符串化形态都由执行器归一 */
+        rows?: Array<Record<string, unknown>> | Record<string, unknown> | string;
+        where?: Record<string, unknown> | string;
       }
     ) => {
       const db = openKb(deps.dataDir, deps.parentId, deps.childId);

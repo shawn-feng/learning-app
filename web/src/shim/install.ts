@@ -1,9 +1,9 @@
 /**
  * Web 版 window.api 适配层安装入口（设计方案 §0/§4）。
  *
- * 方法面与 electron/preload.ts 逐条对齐（preload 共 199 个方法），按域分组组装：
+ * 方法面与 electron/preload.ts 逐条对齐（preload 共 204 个方法），按域分组组装：
  *   agents(46) parent(17) exam(19) misc(19) scheduler(13) models(11) voice(8)
- *   children(8) plans(8) learning(7) files(6) auth(6) assessment(6) window(6)
+ *   children(8) plans(8) learning(7) files(6) auth(6) assessment(11) window(6)
  *   config(4) backup(4) skills(5) sessions(3) dialogs(2) materials(1) db(0)
  *
  * Phase 1 状态：
@@ -20,9 +20,11 @@ import { dbDomain } from "./domains/db";
 import { configDomain } from "./domains/config";
 import { modelsDomain } from "./domains/models";
 import { sessionsDomain } from "./domains/sessions";
+import { opsDomain } from "./domains/ops";
 import { schedulerDomain } from "./domains/scheduler";
 import { materialsDomain } from "./domains/materials";
 import { filesDomain } from "./domains/files";
+import { fsDomain } from "./domains/fs";
 import { backupDomain } from "./domains/backup";
 import { parentDomain } from "./domains/parent";
 import { plansDomain } from "./domains/plans";
@@ -51,9 +53,11 @@ function buildWebApi() {
     ...configDomain,
     ...modelsDomain,
     ...sessionsDomain,
+    ...opsDomain,
     ...schedulerDomain,
     ...materialsDomain,
     ...filesDomain,
+    ...fsDomain,
     ...backupDomain,
     ...parentDomain,
     ...plansDomain,

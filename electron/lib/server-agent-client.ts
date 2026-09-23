@@ -328,6 +328,13 @@ export async function abortParentAgent(kind: ParentKind = "parent", token = sess
   });
 }
 
+/** ISSUE-108：取最近一次家长报表（parent_display_report 落 settings；无则 null）。 */
+export async function getParentReport(
+  token = sessionToken()
+): Promise<{ report: { title: string; content: string; ts: number } | null }> {
+  return serverFetch("/parent-agent/report", { method: "GET", token, timeoutMs: 15000 });
+}
+
 /** 页面事件上行（PiBridge 信封 → 服务端桥，累积到下一轮消息前）。 */
 export async function postPageEvent(
   childId: string,

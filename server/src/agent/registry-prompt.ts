@@ -13,6 +13,7 @@ import {
   parentLibPaths,
   childKbReadableRegistry,
   childKbWritableRegistry,
+  childKbAdminWriteSpecs,
   applyPathIndex,
   type ReadableTableSpec,
   type TableSpec,
@@ -95,8 +96,9 @@ export function buildDataChannelBlocks(dataDir: string, parentId: string): DataC
   const childBlock = [
     "【孩子库可读表】",
     ...compactTableLines(childRead),
-    "【孩子库可写表】",
-    ...compactWriteLines(childKbWritableRegistry()),
+    // ISSUE-105 修订（2026-09-21）：家长 db 通道按管理口径开放孩子库全部登记表（孩子 agent 自己的写面仍走两表白名单）
+    "【孩子库可写表】（管理口径全表可写；状态机表 study_plans/exam_plans/points_ledger 等直写绕过受控流程，改前先 read 确认目标行）",
+    ...compactWriteLines(childKbAdminWriteSpecs()),
     ...(childNsRows.length ? ["【孩子库灵活实体 Tier 2】（只读；table 用 ns:名称）", ...compactNsLines(childNsRows)] : []),
   ].join("\n");
 

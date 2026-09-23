@@ -274,6 +274,7 @@ function openChatUpload(relPath: string): { success: boolean; error?: string } {
 
 let childBusy = false;
 let parentBusy = false;
+let parentDataBusy = false;
 let parentContentBusy = false;
 
 // ---------------------------------------------------------------------------
@@ -610,6 +611,48 @@ export const agentsDomain = {
   piResetParent: async () => {
     try {
       await resetParentSession("parent");
+      return { success: true, history: [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  // ---- 数据管理助手（parent-data 独立 agent，ISSUE-088/F15b；Electron pi:start/prompt/reset_parent_data 同段）----
+
+  /** piStartParentData: () => Promise<{success, history}> */
+  piStartParentData: async () => {
+    try {
+      ensureParentStream("parent-data");
+      return { success: true, history: [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** piPromptParentData: (text, images?) => Promise<{success}>（同 piPromptParent：家长识图走服务端工具，images 不随 prompt 上送） */
+  piPromptParentData: async (text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) => {
+    void images;
+    if (parentDataBusy) {
+      return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
+    }
+    parentDataBusy = true;
+    try {
+      ensureParentStream("parent-data");
+      await promptParent(text, { kind: "parent-data" });
+      return { success: true };
+    } catch (err) {
+      eventBus.emit("pi:reply_error", { childId: "parent-data", error: friendlyError((err as Error).message) });
+      eventBus.emit("pi:reply_end", { childId: "parent-data" });
+      return { success: false, error: (err as Error).message };
+    } finally {
+      parentDataBusy = false;
+    }
+  },
+
+  /** piResetParentData: () => Promise<{success, history}> */
+  piResetParentData: async () => {
+    try {
+      await resetParentSession("parent-data");
       return { success: true, history: [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };

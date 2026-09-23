@@ -2,10 +2,11 @@ import { useState } from "react";
 import { ArrowLeft, KeyRound, Trash2 } from "lucide-react";
 import IconButton from "./IconButton";
 import LearningDashboard from "./LearningDashboard";
-import StudyPlanPanel from "./StudyPlanPanel";
+import ChildDailyPlans from "./ChildDailyPlans";
 import { ChildTopicsContent } from "./ChildTopicsModal";
 import SessionReview from "./SessionReview";
-import ExamRecords from "./ExamRecords";
+import ChildExamPlans from "./ChildExamPlans";
+import RewardPanel from "./RewardPanel";
 import ChildDailyPanel from "./ChildDailyPanel";
 
 interface Props {
@@ -17,10 +18,11 @@ interface Props {
 
 const TABS = [
   { key: "progress", label: "📊 学习进度" },
-  { key: "plan", label: "🗓 学习计划" },
+  { key: "plan", label: "🗓 计划" },
   { key: "daily", label: "📅 每日记录" },
   { key: "topics", label: "📚 学习主题" },
-  { key: "exam", label: "🎯 考核记录" },
+  { key: "exam", label: "🎯 考核计划" },
+  { key: "reward", label: "✨ 积分" },
   { key: "account", label: "🔑 账号密码" },
   { key: "review", label: "💬 对话回顾" },
 ] as const;
@@ -113,10 +115,10 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
         </div>
       )}
 
-      {/* ISSUE-033 P4：学习计划只读（编辑走家长中心右侧 AI 对话） */}
+      {/* ISSUE-130：计划（每天要完成的事，家长制定/孩子自定分组，对齐孩子端） */}
       {tab === "plan" && (
         <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
-          <StudyPlanPanel children={[child]} />
+          <ChildDailyPlans childId={child.childId} />
         </div>
       )}
 
@@ -143,9 +145,17 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
         </div>
       )}
 
+      {/* ISSUE-130：考核计划（孩子端 pick 布局：未来排期 + 历史成绩，家长只读） */}
       {tab === "exam" && (
         <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
-          <ExamRecords childId={child.childId} />
+          <ChildExamPlans childId={child.childId} />
+        </div>
+      )}
+
+      {/* ISSUE-130：积分并入孩子详情（复用家长端 RewardPanel，单孩子隐藏切换器） */}
+      {tab === "reward" && (
+        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+          <RewardPanel children={[child]} />
         </div>
       )}
 

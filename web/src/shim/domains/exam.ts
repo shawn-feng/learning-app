@@ -225,7 +225,9 @@ export const examDomain = {
 
   /** examSubmit: (payload, voices) => {success, data:{ok,id}}（exam:submit）
    *  协议对齐 ipc：先逐段 uploadExamVoice 拿 fileId、按 qid 回填 payload.perQuestion[].audioFileId，
-   *  再 POST /exam/attempts（payload 原样上报，服务端按 scheduleId 置 done 并落 speech_assessments）。 */
+   *  再 POST /exam/attempts（payload 原样上报；服务端按 scheduleId 把结果直写孩子库三层——
+   *  exam_plan_courses 逐题明细 / exam_course_results 课程概要 / knowledge_point_records 知识点情况，
+   *  并把题级口语评测存进孩子库 speech_assessments，最后置计划 done。ISSUE-135 P0-a）。 */
   examSubmit: async (
     payload: any,
     voices: Array<{ qid: string; buffer: ArrayBuffer; name: string }>

@@ -13,7 +13,7 @@
  */
 import type { DatabaseSync } from "node:sqlite";
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "../agent/tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import { createReminderTask } from "../db/task-runs.js";
 
 /** custom 会话工具白名单（createWorkerKbTools 产出的名字 + 本模块两工具）。 */

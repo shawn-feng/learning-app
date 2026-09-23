@@ -3,7 +3,7 @@
  *
  * 与孩子会话（session-registry.ts）的差异：
  * - 作用域是**家长**而非孩子（key = `<parentId>:parent` / `<parentId>:parent-content`）；
- * - 工具面向课程与资料治理（parent-tools.ts），工作区在 `workspaces/<parentId>/parent/`；
+ * - 工具面向课程与资料治理（parent-tools.ts）；ISSUE-131 P2：根=workspaces/<pid>，运行区 scratch/；
  * - 会话同样持久落盘（`agent-sessions/<parentId>/parent/`），支持多端订阅同一会话。
  *
  * 说明：家长库（topics/courses）是家长维度的真源，模型凭据与孩子会话同源
@@ -15,8 +15,9 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
-  defineTool,
 } from "@earendil-works/pi-coding-agent";
+// ISSUE-134：统一还原字符串化参数（内含 SDK defineTool）
+import { defineTool } from "./tool-kit.js";
 import {
   createCorePaths,
   createCoreSession,
@@ -31,6 +32,7 @@ import { buildDataChannelBlocks } from "./registry-prompt.js";
 import { friendlyModelError, syncSessionModel } from "./model-sync.js";
 import { PARENT_AGENT_TOOL_NAMES, DATA_AGENT_TOOL_NAMES, createParentAgentTools, createDataAgentTools } from "./parent-tools.js";
 import { PLAN_DOMAIN_TOOL_NAMES, createPlanDomainTools } from "./parent-plans.js";
+import { createParentReportTool } from "./parent-report-tool.js";
 import { agentStreamHub } from "./stream-hub.js";
 
 const DEPS: CoreSessionDeps = {
@@ -162,6 +164,13 @@ export function buildServerParentPrompt(input: { parentId: string; workspace: st
 - 边界：只能读**自己名下**孩子的记录（系统按归属校验）；**只读**——不存在任何改写孩子会话的能力。
 - 汇报方式：向家长**概括要点**，不要大段复述逐字稿原文。
 
+## 孩子的错题本（孩子库 mistake_book，ISSUE-114）
+孩子学习过程中的漏洞档案（对话口述错题/查词生字/考核错题/自述薄弱点自动沉淀）。家长问「孩子哪里薄弱/老错什么」，或生成学习情况报表时，这是第一数据源：
+- parent_db_read（child=孩子名，table=mistake_book）查询；**status=open 按 last_seen 倒序**是「当前没掌握的」，count 越大=反复出现=越没掌握，本周新增看 first_seen；
+- kind：wrong_question=错题（detail 存卡住点与正解）/ unknown_word=生字 / weak_point=稳定薄弱点；knowledge_point_name 可按知识点聚合薄弱视图；
+- 汇报口径：按 kind/知识点**聚合概览**，别整表罗列；status=mastered/dismissed 是已关闭项，一般不进概览；
+- 改动仅限管理口径纠错（如「这条记错了」→ status=dismissed），一次一行、改前复述；**不要代孩子标 mastered**（掌握要孩子自己验证）。
+
 ## 通用数据查询（受控数据通道）
 需要查「专用工具覆盖不到」的表数据时用 parent_db_read（只读）/ parent_db_write（受控写，改动前先复述）：
 - 不传 child=查家长内容库；传 child=孩子姓名=查该**孩子库**（仅 daily_entries / redemption_requests 可写）；
@@ -194,7 +203,7 @@ export function buildServerDataAgentPrompt(input: { parentId: string; today: str
 - 今天：${input.today}
 
 ## 表 / 路径 / 灵活实体清单（元数据，读操作零 describe）
-两套库由 **child 参数**切换：不传 child=家长库；传 child=孩子名=该孩子库（除 daily_entries、redemption_requests 外只读）。
+两套库由 **child 参数**切换：不传 child=家长库；传 child=孩子名=该孩子库（管理口径：全部登记表可写——状态机表 study_plans/exam_plans/points_ledger 等直写会绕过受控流程，改前先 read 确认目标行，改后向家长复述）。
 ns:开头的表是 Tier 2 灵活实体（家长可写；孩子库的只读；待确认草案生效前不出现在任何读写面）。
 
 ${input.tablesBlock ?? ""}
@@ -225,8 +234,11 @@ async function ensureEntry(
   const runtime = await getWorkerRuntime(deps.dataDir, parentId, settings.auth);
   const model = pickWorkerModel(runtime, settings.appSettings);
 
-  const workspace = paths.childWorkspaceDir(parentId, "parent");
-  const agentDir = `${workspace}/.pi`;
+  // ISSUE-131 P2：家长 agent 根 = workspaces/<pid>（materials/uploads/scratch/孩子目录都在其内，
+  // fs 工具/网盘同此边界）；会话运行区（cwd、.pi）独立到 scratch，不再落 parent/ 工作区。
+  const workspace = paths.agentRoot(parentId);
+  const scratch = paths.agentScratchDir(parentId);
+  const agentDir = `${scratch}/.pi`;
 
   // —— 独立「数据管理 agent」（parent-data）：只挂统一数据 API，与运营类家长助手隔离 ——
   if (kind === "parent-data") {
@@ -250,7 +262,7 @@ async function ensureEntry(
       deps: DEPS,
       runtime,
       model,
-      cwd: workspace,
+      cwd: scratch,
       agentDir,
       systemPrompt,
       toolNames: [...DATA_AGENT_TOOL_NAMES].filter((n, i, arr) => arr.indexOf(n) === i),
@@ -280,6 +292,8 @@ async function ensureEntry(
     ...fsTools,
     ...parentTools,
     ...createPlanDomainTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
+    // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
+    createParentReportTool({ db: deps.db, parentId, streamKey: key }),
     createGetDateTool(),
   ];
 
@@ -295,7 +309,7 @@ async function ensureEntry(
     deps: DEPS,
     runtime,
     model,
-    cwd: workspace,
+    cwd: scratch,
     agentDir,
     systemPrompt,
     toolNames: [
@@ -303,6 +317,7 @@ async function ensureEntry(
       ...PARENT_AGENT_TOOL_NAMES,
       ...PLAN_DOMAIN_TOOL_NAMES,
       "get_date",
+      "parent_display_report",
     ].filter((n, i, arr) => arr.indexOf(n) === i),
     customTools,
     sessionsDir: paths.agentSessionsDir(parentId, kind),

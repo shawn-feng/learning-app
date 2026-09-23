@@ -3,8 +3,8 @@
  * /plans/today 三表窗口覆盖当天的行）与「我的执行力」趋势（todoStatsList 走 /rewards/:childId
  * 的 recentStats 按日汇总），积分读写与档位配置（/rewards/*），计划状态推进（/plans/status），
  * 家长端学习计划只读面板（/study-plans*，ISSUE-033）。
- * 逐通道对齐 electron/lib/ipc-handlers.ts 1046-1160 行；返回 {success, ...} 信封与 ipc 一致
- * （RewardPanel/TodoModal/StudyPlanPanel 按此消费）。
+ * 逐通道对齐 electron/lib/ipc-handlers.ts；返回 {success, ...} 信封与 ipc 一致
+ * （RewardPanel/TodoModal/ChildDailyPlans 按此消费）。
  */
 import { http } from "../core/server-fetch";
 
@@ -30,6 +30,27 @@ export const plansDomain = {
         { timeoutMs: 20000 }
       );
       return { success: true, date: res.date ?? d, items: res.items ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** plansRange: (childId, from?, days?) => {success, from, days}（plans:range → GET /plans/range，
+   *  ISSUE-130 多日三域聚合；from 缺省=本地今天、days 缺省 14（服务端夹取 1~31）） */
+  plansRange: async (
+    childId: string,
+    from?: string,
+    days?: number
+  ): Promise<{ success: boolean; from?: string; days?: Array<{ date: string; items: unknown[] }>; error?: string }> => {
+    try {
+      const q = new URLSearchParams({ childId });
+      if (from) q.set("from", from);
+      if (days) q.set("days", String(days));
+      const res = await http<{ from: string; days: Array<{ date: string; items: unknown[] }> }>(
+        `/plans/range?${q.toString()}`,
+        { timeoutMs: 20000 }
+      );
+      return { success: true, from: res.from, days: res.days ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

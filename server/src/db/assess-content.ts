@@ -238,6 +238,9 @@ export function getOrCreateKnowledgePoint(
 
 // ==================== 题库 ====================
 
+/** 题库列表上限（ISSUE-074：家长需要看到全量；生产 3575+ 条，2000 会静默截断。曾修过一次，F10-b 重构时回归，勿再降回小值） */
+export const BANK_LIST_LIMIT = 10000;
+
 /** 新增或整题更新（id 存在则覆盖题干/答案/评分/分值/行为/备注/知识点概要）。返回题目 id。 */
 export function saveQuestion(
   db: DatabaseSync,
@@ -396,11 +399,11 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
   note: string;
   knowledgeSummary: string;
   options: QuestionOption[];
-  contexts: Array<{ topic: string; course: string; knowledgePoint: string }>;
+  contexts: Array<{ topic: string; course: string; knowledgePoint: string; courseUuid: string; knowledgePointId: string }>;
 }> {
   const qs = db
     .prepare(
-      `SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary, options FROM question_bank ORDER BY rowid DESC LIMIT 2000`
+      `SELECT id, stem, answer, scoring, point_max AS pointMax, behavior, note, knowledge_summary AS knowledgeSummary, options FROM question_bank ORDER BY rowid DESC LIMIT ${BANK_LIST_LIMIT}`
     )
     .all() as Array<{
     id: string;
@@ -414,26 +417,143 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
     options: string;
   }>;
   const ctx = (() => {
-    // F10-b：挂载反查走注册表路径 bank_question_contexts（kp/courses 均 LEFT JOIN，与原语义一致）
+    // F10-b：挂载反查走注册表路径 bank_question_contexts（kp/courses 均 LEFT JOIN，与原语义一致；
+    // ISSUE-132 起带 courseUuid/knowledgePointId，供客户端挂载管理直接引用）
     const { sql, params } = buildPathQuery(registeredPath("bank_question_contexts"), {
       orderBy: "course_knowledge_questions.rowid",
       limit: 5000,
     });
     const rows = db.prepare(sql).all(...params) as Array<{
       question_id: string;
+      knowledge_point_id: string | null;
       topic: string | null;
       title: string | null;
+      uuid: string | null;
       name: string | null;
     }>;
-    return rows.map((c) => ({ qid: c.question_id, topic: c.topic ?? "", course: c.title ?? "", knowledgePoint: c.name ?? "" }));
+    return rows.map((c) => ({
+      qid: c.question_id,
+      topic: c.topic ?? "",
+      course: c.title ?? "",
+      knowledgePoint: c.name ?? "",
+      courseUuid: c.uuid ?? "",
+      knowledgePointId: c.knowledge_point_id ?? "",
+    }));
   })();
-  const ctxMap = new Map<string, Array<{ topic: string; course: string; knowledgePoint: string }>>();
+  const ctxMap = new Map<string, Array<{ topic: string; course: string; knowledgePoint: string; courseUuid: string; knowledgePointId: string }>>();
   for (const c of ctx) {
     const arr = ctxMap.get(c.qid) || [];
-    arr.push({ topic: c.topic, course: c.course, knowledgePoint: c.knowledgePoint });
+    arr.push({ topic: c.topic, course: c.course, knowledgePoint: c.knowledgePoint, courseUuid: c.courseUuid, knowledgePointId: c.knowledgePointId });
     ctxMap.set(c.qid, arr);
   }
   return qs.map((q) => ({ ...q, options: parseOptions(q.options), contexts: ctxMap.get(q.id) || [] }));
+}
+
+// ==================== 题库管理（ISSUE-132：维度 facets + 挂载增删 + 删题） ====================
+
+export interface BankFacets {
+  topics: Array<{ name: string; topicKey: string }>;
+  courses: Array<{ topic: string; title: string; uuid: string }>;
+  knowledgePoints: Array<{ id: string; courseUuid: string; name: string; detail: string }>;
+}
+
+/** 主题/课程/知识点 三维全量（含还没有挂题的课程与知识点），供题库级联筛选与挂载选择。 */
+export function listBankFacets(db: DatabaseSync): BankFacets {
+  const topics = db
+    .prepare("SELECT name, topic_key AS topicKey FROM topics ORDER BY name")
+    .all() as Array<{ name: string; topicKey: string }>;
+  const courses = db
+    .prepare("SELECT topic, title, uuid FROM courses WHERE uuid IS NOT NULL AND uuid != '' ORDER BY topic, sort_order, title")
+    .all() as Array<{ topic: string; title: string; uuid: string }>;
+  const knowledgePoints = db
+    .prepare("SELECT id, course_uuid AS courseUuid, name, detail FROM knowledge_points ORDER BY course_uuid, seq, rowid")
+    .all() as Array<{ id: string; courseUuid: string; name: string; detail: string }>;
+  return { topics, courses, knowledgePoints };
+}
+
+/** 把一道题库题挂到某课的某知识点下。课程可按 uuid（courseId）或 topic+title 定位；
+ *  知识点可按 id（须属于该课）或名称（不存在则创建）定位。返回定位结果与是否新挂。 */
+export function linkQuestionToKnowledgePoint(
+  db: DatabaseSync,
+  input: {
+    questionId: string;
+    courseId?: string;
+    topic?: string;
+    title?: string;
+    knowledgePointId?: string;
+    knowledgePointName?: string;
+    knowledgePointDetail?: string;
+    overview?: string;
+  }
+): { courseId: string; knowledgePointId: string; knowledgePointName: string; questionId: string; linked: boolean } {
+  const qid = String(input.questionId || "").trim();
+  if (!qid) throw new Error("缺少 questionId");
+  if (!getQuestion(db, qid)) throw new Error(`题库题不存在：${qid}`);
+
+  const uuid = input.courseId
+    ? input.courseId
+    : getCourseUuid(db, String(input.topic || ""), String(input.title || ""));
+  if (!uuid) throw new Error("课程不存在：需要 courseId 或 topic+title（请先在课程库创建该课）");
+  const courseRow = db.prepare("SELECT topic, title FROM courses WHERE uuid = ?").get(uuid) as
+    | { topic: string; title: string }
+    | undefined;
+  if (!courseRow) throw new Error(`课程不存在：${uuid}`);
+
+  let kpId = String(input.knowledgePointId || "").trim();
+  let kpName = "";
+  if (kpId) {
+    const row = db.prepare("SELECT id, name FROM knowledge_points WHERE id = ? AND course_uuid = ?").get(kpId, uuid) as
+      | { id: string; name: string }
+      | undefined;
+    if (!row) throw new Error(`知识点不存在或不属于该课：${kpId}`);
+    kpName = row.name;
+  } else {
+    kpId = getOrCreateKnowledgePoint(db, uuid, String(input.knowledgePointName || ""), String(input.knowledgePointDetail || "")).id;
+    kpName = String(input.knowledgePointName || "").trim();
+  }
+
+  const r = db
+    .prepare("INSERT OR IGNORE INTO course_knowledge_questions (course_id, knowledge_point_id, question_id, seq, overview) VALUES (?, ?, ?, ?, ?)")
+    .run(uuid, kpId, qid, 0, String(input.overview || ""));
+  if (Number(r.changes) > 0) {
+    // 首次挂载才占一个序号（同知识点下按挂载顺序展示）
+    const seq = (db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM course_knowledge_questions WHERE course_id = ? AND knowledge_point_id = ?").get(uuid, kpId) as { next: number }).next;
+    db.prepare("UPDATE course_knowledge_questions SET seq = ? WHERE course_id = ? AND knowledge_point_id = ? AND question_id = ?").run(seq, uuid, kpId, qid);
+  }
+  return {
+    courseId: uuid,
+    knowledgePointId: kpId,
+    knowledgePointName: kpName,
+    questionId: qid,
+    linked: Number(r.changes) > 0,
+  };
+}
+
+/** 移除一道题在「某课某知识点」下的一处挂载（题目本身保留在题库）。 */
+export function unlinkQuestionFromKnowledgePoint(
+  db: DatabaseSync,
+  input: { questionId: string; courseId: string; knowledgePointId: string }
+): { removed: boolean } {
+  const r = db
+    .prepare("DELETE FROM course_knowledge_questions WHERE question_id = ? AND course_id = ? AND knowledge_point_id = ?")
+    .run(String(input.questionId), String(input.courseId), String(input.knowledgePointId));
+  return { removed: Number(r.changes) > 0 };
+}
+
+/** 从题库删除一道题（事务：先清全部挂载行，再删题目行）。考核历史存的是逐题快照，不受影响。 */
+export function deleteBankQuestion(db: DatabaseSync, id: string): { deleted: boolean; mountsRemoved: number } {
+  const exists = db.prepare("SELECT id FROM question_bank WHERE id = ?").get(id);
+  if (!exists) return { deleted: false, mountsRemoved: 0 };
+  db.exec("BEGIN");
+  try {
+    const m = db.prepare("DELETE FROM course_knowledge_questions WHERE question_id = ?").run(id);
+    db.prepare("DELETE FROM question_bank WHERE id = ?").run(id);
+    db.exec("COMMIT");
+    return { deleted: true, mountsRemoved: Number(m.changes) };
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 // ==================== 考核方法 method_spec ====================

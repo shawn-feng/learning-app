@@ -103,4 +103,57 @@ export const assessmentDomain = {
       return { success: false, error: (err as Error).message };
     }
   },
+
+  /** assessBankFacets: () => {success, data: {topics,courses,knowledgePoints}}（assess:bankFacets → GET /assess/questions/facets，ISSUE-132） */
+  assessBankFacets: async (): Promise<{ success: boolean; data?: unknown; error?: string }> => {
+    try {
+      const data = await http<Record<string, unknown>>("/assess/questions/facets", {});
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** assessQuestionSave: (q) => {success, data: {id}}（assess:questionSave → POST /assess/questions，create/update 单题不含挂载） */
+  assessQuestionSave: async (q: any): Promise<{ success: boolean; data?: unknown; error?: string }> => {
+    try {
+      const data = await http<{ id: string }>("/assess/questions", { method: "POST", body: q });
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** assessQuestionDelete: (questionId) => {success, data: {deleted,mountsRemoved}}（assess:questionDelete → DELETE /assess/questions/:id） */
+  assessQuestionDelete: async (questionId: string): Promise<{ success: boolean; data?: unknown; error?: string }> => {
+    try {
+      const data = await http<{ deleted: boolean; mountsRemoved: number }>(
+        `/assess/questions/${encodeURIComponent(questionId)}`,
+        { method: "DELETE" }
+      );
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** assessQuestionLink: (input) => {success, data}（assess:questionLink → POST /assess/questions/link，挂到课×知识点） */
+  assessQuestionLink: async (input: any): Promise<{ success: boolean; data?: unknown; error?: string }> => {
+    try {
+      const data = await http<Record<string, unknown>>("/assess/questions/link", { method: "POST", body: input });
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** assessQuestionUnlink: (input) => {success, data: {removed}}（assess:questionUnlink → POST /assess/questions/unlink） */
+  assessQuestionUnlink: async (input: any): Promise<{ success: boolean; data?: unknown; error?: string }> => {
+    try {
+      const data = await http<{ removed: boolean }>("/assess/questions/unlink", { method: "POST", body: input });
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
 };

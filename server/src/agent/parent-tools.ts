@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数（内含 SDK defineTool）
 import type { DatabaseSync } from "node:sqlite";
 import { openParentLib } from "../db/parent-lib.js";
 import { openKb } from "../db/kb.js";
@@ -55,14 +55,18 @@ import {
   executeWrite,
   executeRead,
   executePathRead,
+  parseJsonArg,
+  coerceArrayArg,
   parentLibPaths,
   parentLibTableRegistry,
   parentReadableRegistry,
   childKbReadableRegistry,
-  childKbWritableRegistry,
+  childKbAdminWriteSpecs,
   type ColumnSpec,
   type WriteRequest,
 } from "./db-channel.js";
+// ISSUE-133：rows/where/columns/items 等复合参数 schema 放行「JSON 字符串」分支（执行器统一归一回结构）
+import { JsonArrayParam, JsonObjectParam, JsonStringArrayParam, WriteRowsParam } from "./tool-shapes.js";
 import {
   defineNamespace,
   loadNamespaces,
@@ -989,7 +993,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     parameters: Type.Object({
       topic: Type.String({ description: "主题目录名（topic_key，如 lunyu）" }),
       title: Type.String({ description: "课程名（需已存在）" }),
-      items: Type.Array(
+      items: JsonArrayParam(
         Type.Object({
           knowledgePoint: Type.Optional(
             Type.String({ description: "知识点名称（不存在则新建，已存在则复用；按 course+name 唯一）" })
@@ -1025,14 +1029,19 @@ export function createParentAgentTools(deps: ParentToolDeps) {
               })
             )
           ),
-        })
+        }),
+        "items 每项 = 一个知识点（knowledgePoint 或 knowledgePointId + detail/overview + questions 题目数组）；整课全量快照"
       ),
     }),
     execute: async (_id, params) => {
       const topic = String(params.topic ?? "").trim();
       const title = String(params.title ?? "").trim();
       if (!topic || !title) throw new Error("parent_upsert_course_content 需要 topic + title");
-      const items = Array.isArray(params.items) ? params.items : [];
+      // ISSUE-133：items 实测有 17% 的调用被模型整串序列化成字符串（09-14/15 连续 12 次
+      // 「items.0: must be object」，模型无法从该报错自愈）——schema 放行 string，这里 parse 回数组
+      const itemsArg = coerceArrayArg(params.items, "items");
+      if (itemsArg.error) throw new Error(itemsArg.error);
+      const items = itemsArg.value as Array<Record<string, unknown>>;
       if (!items.length) {
         throw new Error("items 不能为空——本工具是整课替换，空数组会把该课的挂载全部清空");
       }
@@ -1473,7 +1482,7 @@ function buildDbDescribeTool(deps: ParentToolDeps) {
   const parentSpecs = parentLibTableRegistry();
   const parentPaths = parentLibPaths();
   const childReadSpecs = childKbReadableRegistry();
-  const childWriteSpecs = childKbWritableRegistry();
+  const childWriteSpecs = childKbAdminWriteSpecs();
 
   // Tier 2 namespace 注册行存家长库（会话元数据已常驻 prompt；describe 只兜底单实体详情）。
   // 数据管理 agent 需要看到自己提交的待确认草案 → includePending。
@@ -1563,7 +1572,7 @@ function buildDbDescribeTool(deps: ParentToolDeps) {
         `【家长库 parent.sqlite】用 parent_db_read / parent_db_write（不传 child）操作：\n${parentList}\n\n` +
           `【家长库命名路径】parent_db_read 传 path=名称（多跳关联一次查询）：\n${pathList}\n\n` +
           `【孩子库 kb（每个孩子一个库）】用 parent_db_read / parent_db_write 传 child=孩子名 操作；` +
-          `除 daily_entries、redemption_requests 可写外，其余只读：\n${childList}\n\n` +
+          `管理口径：全部登记表可写（状态机表直写绕过受控流程，务必先 read 确认目标行）：\n${childList}\n\n` +
           (nsList ? `【Tier 2 灵活实体】parent_db_read 的 table 用 ns:名称：\n${nsList}\n\n` : "") +
           `传 table / path 查详情；例如 parent_db_read({path:'topic_questions', where:{'courses.topic':'lunyu'}})。`
       );
@@ -1593,10 +1602,8 @@ function buildDbReadTool(deps: ParentToolDeps) {
       child: Type.Optional(
         Type.String({ description: "孩子姓名或 id；传了就查该孩子库（kb），不传查家长库（parent.sqlite）" })
       ),
-      columns: Type.Optional(Type.Array(Type.String(), { description: "只返回的列（缺省=全部可读列）" })),
-      where: Type.Optional(
-        Type.Record(Type.String(), Type.Unknown(), { description: "等值过滤条件 {列: 值}；路径查询用 表.列 全限定名" })
-      ),
+      columns: Type.Optional(JsonStringArrayParam("只返回的列（缺省=全部可读列）")),
+      where: Type.Optional(JsonObjectParam("等值过滤条件 {列: 值}；路径查询用 表.列 全限定名")),
       orderBy: Type.Optional(Type.String({ description: "排序列（须为可读列）" })),
       orderDesc: Type.Optional(Type.Boolean({ description: "true=降序（缺省升序）" })),
       limit: Type.Optional(Type.Number({ description: "单次最多返回行数（缺省 50，最大 200）" })),
@@ -1609,8 +1616,9 @@ function buildDbReadTool(deps: ParentToolDeps) {
         table?: string;
         path?: string;
         child?: string;
-        columns?: string[];
-        where?: Record<string, unknown>;
+        /** ISSUE-133：也接受被整串 JSON 序列化的字符串（执行器统一归一） */
+        columns?: string[] | string;
+        where?: Record<string, unknown> | string;
         orderBy?: string;
         orderDesc?: boolean;
         limit?: number;
@@ -1702,36 +1710,32 @@ function buildDbReadTool(deps: ParentToolDeps) {
 
 function buildDbWriteTool(deps: ParentToolDeps) {
   const dbSpecs = parentLibTableRegistry();
-  const childSpecs = childKbWritableRegistry();
+  // ISSUE-105 修订（2026-09-21）：家长 db 通道按管理口径开放孩子库全部登记表（孩子 agent 自己的写面仍是两表白名单）
+  const childSpecs = childKbAdminWriteSpecs();
   const ctx: MaterialCtx = { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
   return defineTool({
     name: "parent_db_write",
     label: "受控写数据表（单表增删改）",
     description:
-      "对登记表执行受控 insert/update/delete。不传 child=写家长内容库；传 child=孩子名/id=写该**孩子库**（仅 daily_entries、redemption_requests 白名单表）。\n" +
+      "对登记表执行受控 insert/update/delete。不传 child=写家长内容库；传 child=孩子名/id=写该**孩子库**（管理口径：全部登记表可写，含 study_plans/exam_plans 等状态机表——直写绕过受控流程，改前务必先 read 确认目标行，改后向家长复述）。\n" +
       "table 支持 ns:前缀的灵活实体（Tier 2，仅家长库；孩子侧 ns 只读）。\n" +
       "列白名单 + 逐列校验 + 行数熔断 + 事务 + 审计，update/delete 必须带 where 等值条件（先预览影响行数）。" +
       "写入敏感列（answer/options 等）后返回提示，必须向家长逐条复述。\n" +
-      "**不要**用它替代 parent_upsert_course_content 的整课替换语义；孩子库考核/积分/奖励规则等不开放写。",
+      "**不要**用它替代 parent_upsert_course_content 的整课替换语义；写孩子库状态机表（study_plans/exam_plans/积分）时优先考虑专用工具（parent_study_plan_update 等），直写仅作管理兜底。",
     parameters: Type.Object({
       table: Type.String({ description: "登记的表名或 ns:灵活实体名（清单见系统提示；孩子库表需配合 child 参数）" }),
       child: Type.Optional(
-        Type.String({ description: "孩子姓名或 id；传了就写该孩子库（kb），不传写家长库。孩子库仅 daily_entries/redemption_requests 可写" })
+        Type.String({ description: "孩子姓名或 id；传了就写该孩子库（kb，管理口径全表可写），不传写家长库" })
       ),
       op: Type.Union([Type.Literal("insert"), Type.Literal("update"), Type.Literal("delete")], {
         description: "操作类型",
       }),
       rows: Type.Optional(
-        Type.Union([Type.Array(Type.Record(Type.String(), Type.Unknown())), Type.Record(Type.String(), Type.Unknown())], {
-          description:
-            "insert=行数组 [{列:值},…]（单行也可直接传 {列:值} 对象）；update=列值对象 {列: 新值}（兼容 [{列:值}] 单元素数组）",
-        })
+        WriteRowsParam(
+          "insert=行数组 [{列:值},…]（单行也可直接传 {列:值} 对象）；update=列值对象 {列: 新值}（兼容 [{列:值}] 单元素数组）"
+        )
       ),
-      where: Type.Optional(
-        Type.Record(Type.String(), Type.Unknown(), {
-          description: "update/delete 必填：等值条件 {列: 值}，全部须为登记列",
-        })
-      ),
+      where: Type.Optional(JsonObjectParam("update/delete 必填：等值条件 {列: 值}，全部须为登记列")),
     }),
     execute: async (
       _id: string,
@@ -1739,8 +1743,9 @@ function buildDbWriteTool(deps: ParentToolDeps) {
         table: string;
         child?: string;
         op: "insert" | "update" | "delete";
-        rows?: Array<Record<string, unknown>> | Record<string, unknown>;
-        where?: Record<string, unknown>;
+        /** ISSUE-133：两种形状 + 字符串化形态都由执行器归一 */
+        rows?: Array<Record<string, unknown>> | Record<string, unknown> | string;
+        where?: Record<string, unknown> | string;
       }
     ) => {
       if (params.child) {
@@ -1793,9 +1798,18 @@ function buildDbWriteTool(deps: ParentToolDeps) {
           if (embeddedColumn(params.table)) {
             const ec = embeddedColumn(params.table)!;
             // ISSUE-122：rows 现在可能是单行对象（insert 兼容形状）——统一成数组再取主键
-            const insertRows = Array.isArray(params.rows) ? params.rows : params.rows ? [params.rows] : [];
+            // ISSUE-133：字符串化形态先解析回结构（否则取不到主键、静默跳过重嵌入）
+            const rowsRaw = parseJsonArg(params.rows, "rows").value;
+            const whereRaw = parseJsonArg(params.where, "where").value;
+            const insertRows: Array<Record<string, unknown>> = Array.isArray(rowsRaw)
+              ? (rowsRaw as Array<Record<string, unknown>>)
+              : rowsRaw && typeof rowsRaw === "object"
+                ? [rowsRaw as Record<string, unknown>]
+                : [];
             const sources: Array<Record<string, unknown>> =
-              params.op === "insert" ? insertRows : [{ ...(params.where ?? {}) }];
+              params.op === "insert"
+                ? insertRows
+                : [whereRaw && typeof whereRaw === "object" ? (whereRaw as Record<string, unknown>) : {}];
             for (const src of sources) {
               const pkVals = ec.pkCols.map((c) => (src[c] ?? null) as null);
               if (pkVals.every((v) => v !== null)) markStale(embCtx(deps), params.table, pkVals);

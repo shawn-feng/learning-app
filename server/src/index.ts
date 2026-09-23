@@ -15,6 +15,7 @@ import { registerConfigRoutes } from "./routes/config.js";
 import { registerMaterialsRoutes } from "./routes/materials.js";
 import { registerMaterialDocRoutes } from "./routes/materials-doc.js";
 import { registerFilesRoutes } from "./routes/files.js";
+import { registerFsRoutes } from "./routes/fs.js";
 import { registerBackupRoutes } from "./routes/backup.js";
 import { registerSessionsRoutes } from "./routes/sessions.js";
 import { registerAgentRoutes } from "./routes/agent.js";
@@ -29,6 +30,7 @@ import { registerPlanRewardRoutes } from "./routes/plans-rewards.js";
 import { registerWechatRoutes } from "./routes/wechat.js";
 import { registerNamespaceRoutes } from "./routes/namespaces.js";
 import { registerMistakeRoutes } from "./routes/mistakes.js";
+import { registerTokenUsageRoutes } from "./routes/token-usage.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
 import { initServerLog, logInfo, logError, installServerConsoleRedirect } from "./log.js";
 
@@ -69,6 +71,7 @@ registerConfigRoutes(app, { config, db });
 registerMaterialsRoutes(app, { config, db });
 registerMaterialDocRoutes(app, { config, db }); // Web 前端 Phase 0：文档网关（附加式）
 registerFilesRoutes(app, { config, db });
+registerFsRoutes(app, { config, db }); // ISSUE-131 P1：文件区网盘（双端文件管理）
 registerBackupRoutes(app, { config, db });
 registerSessionsRoutes(app, { config, db });
 registerAgentRoutes(app, { config, db });
@@ -83,6 +86,7 @@ registerPlanRewardRoutes(app, { config, db });
 registerWechatRoutes(app, { config, db });
 registerNamespaceRoutes(app, { config, db });
 registerMistakeRoutes(app, { config, db });
+registerTokenUsageRoutes(app, { config, db, dataDir: config.dataDir });
 // 飞书渠道：设置页保存的配置（settings 表）优先，未配置时回退环境变量（长连接，进程内直调会话）
 {
   void import("./channels/feishu.js")

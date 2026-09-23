@@ -73,6 +73,14 @@ CREATE TABLE IF NOT EXISTS courses (
   last_review TEXT NOT NULL DEFAULT '',
   review_count INTEGER NOT NULL DEFAULT 0,
   tags TEXT NOT NULL DEFAULT '',
+  -- ISSUE-135 P0（2026-09-23）掌握闭环：课程级掌握 + 教学建议，由每日 progressAnalysis 任务（第 3 环）写入。
+  -- ⚠️ 列名必须避开 dropLegacyCourseColumns 的删除名单（mastery / exam_mastery / first_learned），
+  -- 那三个是 2026-09-10 重构主动废弃的旧口径列，若同名会在每次开库时被误删。
+  -- 比率与时间不在此重复存：lastExamRate/lastExamAt/lastLearnedAt 由 course_progress 视图实时算。
+  mastery_level TEXT NOT NULL DEFAULT '',      -- not_started | learning | needs_review | mastered
+  mastery_desc TEXT NOT NULL DEFAULT '',       -- 累计掌握叙述（最开始 → 中间 → 最新）
+  teaching_advice TEXT NOT NULL DEFAULT '',    -- 下次教学建议（只增补，从不回写家长手写的方法字段）
+  mastery_updated_at TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (topic, title)
 );
 CREATE INDEX IF NOT EXISTS idx_courses_topic ON courses(topic, sort_order);
@@ -128,6 +136,9 @@ CREATE TABLE IF NOT EXISTS study_plans (
   due_at TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending',
   result TEXT NOT NULL DEFAULT '',
+  -- ISSUE-135 §3.4（D7）：本次学习的结果概要（课程层面；知识点级明细落 knowledge_point_records）。
+  -- exam_plans 不加同类列——一次考核跨多门课，课程级概要按 (计划, 课程) 落 exam_course_results。
+  result_summary TEXT NOT NULL DEFAULT '',
   done_at TEXT NOT NULL DEFAULT '',
   task_type TEXT NOT NULL DEFAULT 'required',
   count_in_rate INTEGER NOT NULL DEFAULT 1,
@@ -140,7 +151,10 @@ CREATE INDEX IF NOT EXISTS idx_sp_child_window ON study_plans(child_id, status, 
 CREATE INDEX IF NOT EXISTS idx_sp_course ON study_plans(course_uuid);
 CREATE INDEX IF NOT EXISTS idx_sp_creator ON study_plans(child_id, creator, active);
 
--- ===== 考核计划（一行 = 一条考核计划，进「今日计划」；实际考核场次 = 主库 exam_attempts，逐题记录在其 per_question）=====
+-- ===== 考核计划（一行 = 一条考核计划，进「今日计划」）=====
+-- ISSUE-135 P0-a（2026-09-23）起：一次考核的结果分三层落在孩子库——
+--   exam_plan_courses（逐题明细）/ exam_course_results（每课概要）/ knowledge_point_records（知识点情况）；
+--   主库 exam_attempts 已废弃（逐题富信息原只存在主库该表，经确认放弃，见 ISSUE-135 §8.4）。
 CREATE TABLE IF NOT EXISTS exam_plans (
   id TEXT PRIMARY KEY,
   parent_id TEXT NOT NULL DEFAULT '',
@@ -176,17 +190,28 @@ CREATE INDEX IF NOT EXISTS idx_ep_creator ON exam_plans(child_id, creator, activ
 -- 旧孩子自请行 kind='self' 统一归并为 'custom'（建单人由 creator='child' 区分）。
 UPDATE exam_plans SET kind = 'custom' WHERE kind = 'self';
 
--- ===== 考核计划课程明细（范围 → 开考回填结果）=====
+-- ===== 考核明细表（一行一题：本次考核这门课考了哪些题、每题得几分、孩子答了什么、老师怎么评）=====
+-- ISSUE-135 §3.6：结构保持**逐题**（不收敛为一课一行）；P0-a 补题级富字段（承接原主库
+-- exam_attempts.per_question，否则三处「考核记录」界面与「听原音」会失数据），并删除与
+-- point_got 重复、全仓只写不读的 score 列（D12：得分率一律用显式 rate 表达）。
 CREATE TABLE IF NOT EXISTS exam_plan_courses (
   id TEXT PRIMARY KEY,
   plan_id TEXT NOT NULL,
   course_uuid TEXT NOT NULL DEFAULT '',
   course_name TEXT NOT NULL DEFAULT '',
   knowledge_point_id TEXT NOT NULL DEFAULT '',
+  knowledge_point_name TEXT NOT NULL DEFAULT '',
   question_id TEXT NOT NULL DEFAULT '',
+  question_text TEXT NOT NULL DEFAULT '',
+  ref_text TEXT NOT NULL DEFAULT '',
   point_got REAL,
   point_max REAL,
-  score REAL,
+  correct INTEGER,                                   -- 1/0/NULL
+  ai_comment TEXT NOT NULL DEFAULT '',
+  asr_text TEXT NOT NULL DEFAULT '',
+  audio_file_id TEXT NOT NULL DEFAULT '',            -- 录音引用（听原音）
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  behavior TEXT NOT NULL DEFAULT '',                 -- 题级行为：speech_recite / speech_read / generic
   seq INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -319,6 +344,115 @@ CREATE TABLE IF NOT EXISTS redemption_requests (
 CREATE INDEX IF NOT EXISTS idx_rr_child ON redemption_requests(child_id, status);
 `;
 
+/**
+ * ISSUE-135（2026-09-23）掌握闭环 —— 结果记录与累计表（全部在孩子库）。
+ * - exam_course_results：课程**每次**考核的结果概要（一行 = 考核计划 × 课程）；第 3 环分析任务的直接读入。
+ * - knowledge_point_records：知识点掌握情况流水（学习/考核同表，`source` 分类）；第 2 环产出。
+ * - knowledge_point_progress：知识点**累计**掌握（自然语言叙述 + 档位 + 计数）；第 3 环产出。
+ * - speech_assessments：题级口语评测存档（D13：从主库搬入孩子库 + 补 plan_id/course_uuid/question_id 关联）。
+ * 知识点 id 是家长库 `knowledge_points.id` 的跨文件逻辑引用（无 FK），带 name 快照防悬挂 —— 与 mistake_book 同模式。
+ */
+export const KB_MASTERY_TABLES = `
+-- ===== 课程每次考核结果概要（D7/D11）=====
+CREATE TABLE IF NOT EXISTS exam_course_results (
+  id             TEXT PRIMARY KEY,
+  parent_id      TEXT NOT NULL DEFAULT '',
+  child_id       TEXT NOT NULL,
+  plan_id        TEXT NOT NULL,                 -- exam_plans.id（一次考核）
+  attempt_ref    TEXT NOT NULL DEFAULT '',      -- 迁移溯源：旧主库 exam_attempts.id（新数据为空）
+  topic_key      TEXT NOT NULL DEFAULT '',
+  course_uuid    TEXT NOT NULL,
+  course_name    TEXT NOT NULL DEFAULT '',
+  exam_at        TEXT NOT NULL DEFAULT '',      -- 本次考核时间
+  point_got      REAL NOT NULL DEFAULT 0,       -- 该课本次 Σ得分
+  point_max      REAL NOT NULL DEFAULT 0,       -- 该课本次 Σ满分
+  rate           REAL,                          -- 该课本次得分率 0~1（仍按实测值回填；显示层再换算百分数）
+  question_count INTEGER NOT NULL DEFAULT 0,    -- 本次该课考了几道题
+  course_summary TEXT NOT NULL DEFAULT '',      -- 课程结果概要（可重算）
+  plan_review_at TEXT NOT NULL DEFAULT '',      -- 复习到期（承接旧 reinforce_plan.planReviewAt）
+  focus_json     TEXT NOT NULL DEFAULT '[]',    -- 复习重点（承接旧 reinforce_plan.focus[]）
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL,
+  UNIQUE (plan_id, course_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_ecr_child  ON exam_course_results(child_id, exam_at);
+CREATE INDEX IF NOT EXISTS idx_ecr_course ON exam_course_results(course_uuid, exam_at);
+CREATE INDEX IF NOT EXISTS idx_ecr_plan   ON exam_course_results(plan_id);
+
+-- ===== 知识点掌握情况流水（§3.1，学习与考核同表）=====
+CREATE TABLE IF NOT EXISTS knowledge_point_records (
+  id                   TEXT PRIMARY KEY,
+  parent_id            TEXT NOT NULL DEFAULT '',
+  child_id             TEXT NOT NULL DEFAULT '',
+  source               TEXT NOT NULL CHECK (source IN ('study','exam')),
+  plan_id              TEXT NOT NULL DEFAULT '',          -- study_plans.id / exam_plans.id
+  knowledge_point_id   TEXT NOT NULL,                     -- 家长库 knowledge_points.id
+  knowledge_point_name TEXT NOT NULL DEFAULT '',          -- 快照防悬挂
+  topic_key            TEXT NOT NULL DEFAULT '',
+  course_uuid          TEXT NOT NULL DEFAULT '',
+  course_name          TEXT NOT NULL DEFAULT '',
+  record_at            TEXT NOT NULL DEFAULT '',
+  outcome              TEXT NOT NULL DEFAULT '',          -- solid | partial | weak
+  point_got            REAL,                              -- 考核：该知识点本次得分（学习 NULL）
+  point_max            REAL,
+  rate                 REAL,
+  summary              TEXT NOT NULL DEFAULT '',          -- 本次情况描述
+  detail_json          TEXT NOT NULL DEFAULT '{}',        -- 困难点/亮点/题目 id 列表
+  source_ref           TEXT NOT NULL DEFAULT '',          -- 迁移溯源：旧 exam_attempts.id / daily 日期
+  created_at           TEXT NOT NULL,
+  UNIQUE (source, plan_id, course_uuid, knowledge_point_id)   -- 幂等
+);
+CREATE INDEX IF NOT EXISTS idx_kpr_kp     ON knowledge_point_records(knowledge_point_id, record_at);
+CREATE INDEX IF NOT EXISTS idx_kpr_link   ON knowledge_point_records(plan_id, course_uuid);
+CREATE INDEX IF NOT EXISTS idx_kpr_plan   ON knowledge_point_records(source, plan_id);
+CREATE INDEX IF NOT EXISTS idx_kpr_course ON knowledge_point_records(course_uuid, record_at);
+CREATE INDEX IF NOT EXISTS idx_kpr_child  ON knowledge_point_records(child_id, record_at);
+
+-- ===== 知识点累计掌握（§3.2，第 3 环产出）=====
+CREATE TABLE IF NOT EXISTS knowledge_point_progress (
+  parent_id            TEXT NOT NULL DEFAULT '',
+  child_id             TEXT NOT NULL,
+  knowledge_point_id   TEXT NOT NULL,
+  knowledge_point_name TEXT NOT NULL DEFAULT '',
+  course_uuid          TEXT NOT NULL DEFAULT '',
+  course_name          TEXT NOT NULL DEFAULT '',
+  level                TEXT NOT NULL DEFAULT 'learning',  -- not_started|learning|needs_review|mastered
+  mastery_desc         TEXT NOT NULL DEFAULT '',          -- 累计自然语言（最开始→中间→最新）
+  study_count          INTEGER NOT NULL DEFAULT 0,
+  exam_count           INTEGER NOT NULL DEFAULT 0,
+  last_outcome         TEXT NOT NULL DEFAULT '',
+  last_rate            REAL,
+  first_at             TEXT NOT NULL DEFAULT '',
+  last_at              TEXT NOT NULL DEFAULT '',
+  updated_at           TEXT NOT NULL,
+  PRIMARY KEY (child_id, knowledge_point_id)
+);
+
+-- ===== 题级口语评测存档（D13：从主库搬入，与考核明细按 (plan_id,course_uuid,question_id) 关联）=====
+CREATE TABLE IF NOT EXISTS speech_assessments (
+  id              TEXT PRIMARY KEY,
+  parent_id       TEXT NOT NULL DEFAULT '',
+  child_id        TEXT NOT NULL,
+  plan_id         TEXT NOT NULL DEFAULT '',   -- exam_plans.id
+  course_uuid     TEXT NOT NULL DEFAULT '',
+  question_id     TEXT NOT NULL DEFAULT '',   -- 关联 exam_plan_courses.question_id
+  attempt_ref     TEXT NOT NULL DEFAULT '',   -- 迁移溯源：旧 exam_attempts.id
+  topic_key       TEXT NOT NULL DEFAULT '',
+  course_name     TEXT NOT NULL DEFAULT '',
+  question_type   TEXT NOT NULL DEFAULT '',
+  ref_text        TEXT NOT NULL DEFAULT '',
+  audio_file_id   TEXT NOT NULL DEFAULT '',
+  overall         REAL NOT NULL DEFAULT 0,
+  pron            REAL NOT NULL DEFAULT 0,
+  dimensions_json TEXT NOT NULL DEFAULT '{}',
+  detail_json     TEXT NOT NULL DEFAULT '{}',
+  is_exam         INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_speech_child    ON speech_assessments(child_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, course_uuid, question_id);
+`;
+
 export const KB_SCHEMA_VIEWS = `
 CREATE VIEW IF NOT EXISTS topic_progress AS
 SELECT
@@ -338,17 +472,17 @@ FROM courses
 GROUP BY topic;
 `;
 
-/** 课程进度视图（2026-09-10 计划域）：掌握度=最近一次考核；学习状态=最近学习时间（只报时间）。 */
+/** 课程进度视图（2026-09-10 计划域；ISSUE-135 P0-a 改数据源）：掌握度=最近一次考核；学习状态=最近学习时间（只报时间）。
+ *  数据源改为 exam_course_results（课程每次考核概要，单表直读，不必再按逐题明细 GROUP BY）；
+ *  比率与时间只在视图算、不落列，避免与 courses 的四列掌握叙述重复存。
+ *  ⚠️ 视图定义变更必须 DROP 后重建——`CREATE VIEW IF NOT EXISTS` 对已存在的旧视图是空操作。 */
 export const KB_PLAN_SCHEMA_VIEWS = `
-CREATE VIEW IF NOT EXISTS course_progress AS
+DROP VIEW IF EXISTS course_progress;
+CREATE VIEW course_progress AS
 SELECT c.topic, c.title, c.uuid AS course_uuid,
-  (SELECT MAX(p.done_at) FROM exam_plans p
-     JOIN exam_plan_courses ec ON ec.plan_id = p.id AND ec.course_uuid = c.uuid
-    WHERE p.status = 'done') AS lastExamAt,
-  (SELECT ROUND(SUM(ec.point_got) * 1.0 / NULLIF(SUM(ec.point_max), 0), 4)
-     FROM exam_plan_courses ec JOIN exam_plans p ON p.id = ec.plan_id
-    WHERE ec.course_uuid = c.uuid AND p.status = 'done'
-    GROUP BY ec.plan_id ORDER BY MAX(p.done_at) DESC LIMIT 1) AS lastExamRate,
+  (SELECT MAX(r.exam_at) FROM exam_course_results r WHERE r.course_uuid = c.uuid AND r.exam_at != '') AS lastExamAt,
+  (SELECT r.rate FROM exam_course_results r
+    WHERE r.course_uuid = c.uuid ORDER BY r.exam_at DESC, r.created_at DESC LIMIT 1) AS lastExamRate,
   (SELECT MAX(s.done_at) FROM study_plans s
     WHERE s.course_uuid = c.uuid AND s.status = 'done') AS lastLearnedAt
 FROM courses c;
@@ -376,6 +510,7 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   // 否则 CREATE INDEX idx_courses_topic_key 在缺列的老库上直接报错
   ensureCourseDomainColumns(db);
   db.exec(KB_SCHEMA_TABLES);
+  ensureCourseMasteryColumns(db); // ISSUE-135 P0：courses 加掌握四列（必须在 dropLegacyCourseColumns 之前补列，且列名不得进其删除名单）
   dropLegacyCourseColumns(db); // mastery/exam_mastery/first_learned + 教学字段副本（material/lesson_method 等，真源在家长库）
   dropLegacyTopicColumns(db); // topics.method / topics.progress（教学方法真源家长库；进度看 topic_progress 视图）
   ensureCourseUuidColumn(db);
@@ -384,6 +519,11 @@ export function openKb(dataDir: string, parentId: string, childId: string): Data
   db.exec(KB_PLAN_SCHEMA_TABLES); // 计划域 + 积分域（2026-09-10）
   ensureDailyPlanColumns(db);
   ensureExamRetakeColumn(db); // ISSUE-115：exam_plans 加 retake（幂等，2026-09-19）
+  ensureStudyPlanResultSummary(db); // ISSUE-135 P0：study_plans 加 result_summary
+  ensureExamPlanCourseColumns(db); // ISSUE-135 P0-a：考核明细补题级富字段
+  dropLegacyExamPlanCourseScore(db); // ISSUE-135 P0-a：删与 point_got 重复、只写不读的 score 列
+  db.exec(KB_MASTERY_TABLES); // ISSUE-135：考核结果概要 / 知识点流水与累计 / 口语评测存档（幂等）
+  dedupeLegacyExamPlanCourses(db); // ISSUE-135 §8.5①：老明细重复行清理（meta 游标，只跑一次）
   // 2026-09-18 F14：todo_items / child_todo_stats 是 2026-09-10 计划域重构后的废弃死表
   //（数据已迁三张计划表 + reward_daily_stats），不再登记进任何读面，直接 DROP（幂等）
   db.exec("DROP TABLE IF EXISTS todo_items;");
@@ -538,6 +678,106 @@ function dropLegacyCourseColumns(db: DatabaseSync): void {
     } catch {
       /* SQLite 版本不支持 DROP COLUMN 则保留（读取侧已不使用） */
     }
+  }
+}
+
+/**
+ * ISSUE-135 P0（幂等）：courses 加掌握四列。新建库由 CREATE TABLE 直接带上，老库这里补列。
+ * ⚠️ 与 dropLegacyCourseColumns 的删除名单**不得重名**：那三个旧口径列（mastery/exam_mastery/first_learned）
+ * 会在每次开库时被幂等删掉，若复用同名，分析任务刚写的掌握度下次启动就没了。
+ */
+function ensureCourseMasteryColumns(db: DatabaseSync): void {
+  let cols: string[] = [];
+  try {
+    cols = (db.prepare("PRAGMA table_info(courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  } catch {
+    return; // courses 不存在则忽略
+  }
+  if (!cols.length) return;
+  const add: Array<[string, string]> = [
+    ["mastery_level", "TEXT NOT NULL DEFAULT ''"],
+    ["mastery_desc", "TEXT NOT NULL DEFAULT ''"],
+    ["teaching_advice", "TEXT NOT NULL DEFAULT ''"],
+    ["mastery_updated_at", "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [col, def] of add) {
+    if (!cols.includes(col)) db.exec(`ALTER TABLE courses ADD COLUMN ${col} ${def}`);
+  }
+}
+
+/** ISSUE-135 P0（幂等）：study_plans 加 result_summary（本次学习的结果概要）。 */
+function ensureStudyPlanResultSummary(db: DatabaseSync): void {
+  try {
+    const cols = (db.prepare("PRAGMA table_info(study_plans)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (cols.length && !cols.includes("result_summary")) {
+      db.exec("ALTER TABLE study_plans ADD COLUMN result_summary TEXT NOT NULL DEFAULT ''");
+    }
+  } catch {
+    /* study_plans 不存在则忽略 */
+  }
+}
+
+/** ISSUE-135 P0-a（幂等）：考核明细表补题级富字段（承接原主库 exam_attempts.per_question，三处考核界面靠它们回放）。 */
+function ensureExamPlanCourseColumns(db: DatabaseSync): void {
+  let cols: string[] = [];
+  try {
+    cols = (db.prepare("PRAGMA table_info(exam_plan_courses)").all() as Array<{ name: string }>).map((c) => c.name);
+  } catch {
+    return; // 表不存在则忽略
+  }
+  if (!cols.length) return;
+  const add: Array<[string, string]> = [
+    ["knowledge_point_name", "TEXT NOT NULL DEFAULT ''"],
+    ["question_text", "TEXT NOT NULL DEFAULT ''"],
+    ["ref_text", "TEXT NOT NULL DEFAULT ''"],
+    ["correct", "INTEGER"],
+    ["ai_comment", "TEXT NOT NULL DEFAULT ''"],
+    ["asr_text", "TEXT NOT NULL DEFAULT ''"],
+    ["audio_file_id", "TEXT NOT NULL DEFAULT ''"],
+    ["duration_ms", "INTEGER NOT NULL DEFAULT 0"],
+    ["behavior", "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [col, def] of add) {
+    if (!cols.includes(col)) db.exec(`ALTER TABLE exam_plan_courses ADD COLUMN ${col} ${def}`);
+  }
+}
+
+/** ISSUE-135 P0-a（幂等）：删 exam_plan_courses.score —— 与该题 point_got 完全重复、全仓只写不读（D12）。 */
+function dropLegacyExamPlanCourseScore(db: DatabaseSync): void {
+  try {
+    const cols = (db.prepare("PRAGMA table_info(exam_plan_courses)").all() as Array<{ name: string }>).map((c) => c.name);
+    if (!cols.includes("score")) return;
+    db.exec("ALTER TABLE exam_plan_courses DROP COLUMN score");
+    console.log("[kb] exam_plan_courses 删列 score（ISSUE-135：与 point_got 重复、只写不读）");
+  } catch {
+    /* SQLite 版本不支持 DROP COLUMN 则保留（读取侧已不使用） */
+  }
+}
+
+/**
+ * ISSUE-135 §8.5①（一次性，meta 游标防重跑）：老明细表有重复行 —— 旧数据的行数是其逐题数的 **2 倍**
+ * （如 sch_1788400121 20 行 / 逐题 10 题）。根因是旧数据 question_id 为空导致去重键失效。
+ * 按 (plan_id, course_uuid, question_id, seq) 去重，每组保留 rowid 最小的一行。
+ */
+function dedupeLegacyExamPlanCourses(db: DatabaseSync): void {
+  try {
+    const done = (db.prepare("SELECT value FROM meta WHERE key='issue135_epc_dedup'").get() as { value?: string } | undefined)?.value;
+    if (done === "1") return;
+    const before = (db.prepare("SELECT COUNT(*) AS c FROM exam_plan_courses").get() as { c: number }).c;
+    db.exec(`
+      DELETE FROM exam_plan_courses
+       WHERE rowid NOT IN (
+         SELECT MIN(rowid) FROM exam_plan_courses
+         GROUP BY plan_id, course_uuid, question_id, seq
+       );
+    `);
+    const after = (db.prepare("SELECT COUNT(*) AS c FROM exam_plan_courses").get() as { c: number }).c;
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('issue135_epc_dedup', '1')").run();
+    if (before !== after) {
+      console.log(`[kb] exam_plan_courses 去重（ISSUE-135 §8.5①）：${before} → ${after} 行`);
+    }
+  } catch {
+    /* 表不存在/meta 未就绪则跳过 */
   }
 }
 

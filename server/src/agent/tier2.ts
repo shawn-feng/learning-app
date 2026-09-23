@@ -15,6 +15,8 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  coerceColumnsArg,
+  coerceObjectArg,
   digitColHint,
   normalizeWriteRows,
   sqlVal,
@@ -319,18 +321,24 @@ function nsColSql(ns: NamespaceRow, col: string): string | null {
 }
 
 /** Tier 2 受控读（语义与 executeRead 对齐：预算/截断/countOnly/自愈） */
-export function tier2Read(db: DatabaseSync, ns: NamespaceRow, req: { columns?: string[]; where?: Record<string, unknown>; orderBy?: string; orderDesc?: boolean; limit?: number; offset?: number; countOnly?: boolean }): { ok: boolean; text: string } {
+export function tier2Read(db: DatabaseSync, ns: NamespaceRow, req: { columns?: unknown; where?: unknown; orderBy?: string; orderDesc?: boolean; limit?: number; offset?: number; countOnly?: boolean }): { ok: boolean; text: string } {
+  // ISSUE-133：字符串化参数先归一
+  const whereArg = coerceObjectArg(req.where, "where");
+  if (whereArg.error) return { ok: false, text: whereArg.error };
+  const colsArg = coerceColumnsArg(req.columns);
+  if (colsArg.error) return { ok: false, text: colsArg.error };
+  const reqCols = colsArg.value;
   const dataCols = Object.keys(ns.spec.columns);
   const allCols = [...NS_META_COLS, "data", ...dataCols];
   let cols = ["id", "data", "created_at", "updated_at"];
-  if (req.columns?.length) {
-    const unknown = req.columns.filter((c) => !nsColSql(ns, c));
+  if (reqCols?.length) {
+    const unknown = reqCols.filter((c) => !nsColSql(ns, c));
     if (unknown.length) {
       return { ok: false, text: `字段未登记不可读：${unknown.join("、")}。ns:${ns.ns} 可用字段：${allCols.join("、")}` };
     }
-    cols = req.columns;
+    cols = reqCols;
   }
-  const whereEntries = Object.entries(req.where ?? {}).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
+  const whereEntries = Object.entries(whereArg.value).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
   const whereSqlParts: string[] = [];
   const whereVals: Array<null | number | bigint | string> = [];
   for (const [col, value] of whereEntries) {
@@ -457,10 +465,11 @@ export function tier2AsTableSpecs(rows: NamespaceRow[]): TableSpec[] {
 export interface Tier2WriteRequest {
   op: "insert" | "update" | "delete";
   /** insert=行数组（字段=spec.columns）；update=要写的字段值对象。
-   *  ISSUE-122：两种形状执行器都兼容（数组 update 取首元素、对象 insert 视为单行）。 */
-  rows?: Array<Record<string, unknown>> | Record<string, unknown>;
-  /** update/delete 必填：id 或可过滤字段等值条件 */
-  where?: Record<string, unknown>;
+   *  ISSUE-122：两种形状执行器都兼容（数组 update 取首元素、对象 insert 视为单行）。
+   *  ISSUE-133：也兼容被整串 JSON 序列化的字符串形态。 */
+  rows?: unknown;
+  /** update/delete 必填：id 或可过滤字段等值条件（同样兼容字符串化 JSON） */
+  where?: unknown;
 }
 
 /** refs 应用层校验：value 必须存在于 Tier1 表.列（SQLite 无法对 JSON 字段建 FK） */
@@ -486,8 +495,11 @@ export function tier2Write(db: DatabaseSync, ns: NamespaceRow, req: Tier2WriteRe
   const spec = ns.spec;
   const colNames = Object.keys(spec.columns);
   const filterable = new Set([...(spec.filterable ?? []), "id"]);
-  const whereEntries = Object.entries(req.where ?? {}).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
   const fail = (text: string) => ({ ok: false, text });
+  // ISSUE-133：字符串化参数先归一
+  const whereArg = coerceObjectArg(req.where, "where");
+  if (whereArg.error) return fail(whereArg.error);
+  const whereEntries = Object.entries(whereArg.value).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
 
   if (req.op !== "insert" && !whereEntries.length) return fail("update/delete 必须带 where 等值条件（防全表操作）");
   for (const [col] of whereEntries) {
@@ -585,7 +597,7 @@ export function tier2Write(db: DatabaseSync, ns: NamespaceRow, req: Tier2WriteRe
     writeAudit(db, {
       table: `ns:${ns.ns}`,
       op: req.op,
-      where: req.where ?? {},
+      where: whereArg.value,
       rowCount: affected,
       summary: `agent ${req.op} ns:${ns.ns}：${affected} 行`,
     });

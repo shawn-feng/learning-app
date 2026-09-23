@@ -19,6 +19,8 @@
 
 > **索引校正（2026-09-18 实测）**：下列旧索引条目在当前工作树中**已不存在**——`ARCHITECTURE.md`、`EXAM-ARCHITECTURE.md`、`SPLIT-REQUIREMENTS.md`、`DESIGN-SPLIT.md`、`SPLIT-DATA-STRUCTURE.md`、`REQUIREMENTS.md`、`EXAM-REQUIREMENTS.md`、`ENGLISH-AGENT-REQUIREMENTS.md`、`PARENT-AGENT-REQUIREMENTS.md`、`RESEARCH-*`、`DESIGN-english-scene-courses-*`、`DESIGN-reward-points-*`、`DESIGN-plan-domain-rewrite-*`、`DESIGN-server-agent-migration-*`、`需求盘点-三大需求场景分析-*`、`调研笔记-叶圣陶语文方法论.md`。当前仓库根实际存在的文档只有：`技术实现文档-功能实现与数据流转-2026-09-13.md`、`MATERIAL-BRIDGE-PROTOCOL.md`、`PACKAGING.md`、`WEB-前端设计方案与实施规划-2026-09-15.md`、`DEPLOY-201-server-0.4.1-迁移方案-2026-09-15.md`、`学习伙伴-用户使用说明书.md`、`DESIGN-generic-entity-api-2026-09-18.md`。**下述「需求/设计/调研文档」列表仅作历史线索保留，勿据其判断文件存在性。**
 
+> **规划归档约定（2026-09-23 用户要求，同日扩大适用范围）**：**功能规划与「治本方案/设计稿」一律不再单独出文件，全部写成 ISSUE** —— 详情进 `.workbuddy/memory/ISSUES/ISSUE-xxx.md`，索引行进 `ISSUES.md`。已适用：**学习/考核掌握闭环 = ISSUE-135**（原 `DESIGN-mastery-loop-2026-09-22.md` 全文迁入，文件已删除）；**工具参数序列化治本方案 = ISSUE-134**（原 `DESIGN-tool-arg-coercion-2026-09-23.md` 全文迁入，文件已删除）。
+
 ## 需求 / 设计 / 调研文档（仓库根）
 
 > ⚠ 2026-09-18 起：本节多数条目在当前工作树中**已不存在**（见上方「索引校正」）。新增文档请以实际存在为准。
@@ -41,10 +43,13 @@
 ## 环境备忘（PACKAGING.md 刻意不留明文的部分）
 
 - 201（192.168.1.201）SSH 凭据：`shanshan` / `123456`（sudo 同）；部署脚本模板在 `tmp/deploy/*.py`
-- 201 服务端运行方式：`/usr/bin/node /opt/learning-server/server.cjs`（systemd `learning-server`，以 root 跑，pkg 已弃用）；数据目录 `/opt/learning-server/data`；健康端点 `/api/v1/health`。部署＝stop → 备份（bundle→`server.cjs.bak-<ts>`，数据→`data/backups/deploy-<ver>-<ts>/`）→ 换 bundle → daemon-reload + restart，停机约 6 秒。**当前已部署 0.5.3（2026-09-21 18:24，含 0.5.2 全部 + ISSUE-124 家长附件读取 + ISSUE-126 会话模型热切换/模型错误可见化）。** 部署脚本模板 `tmp/deploy/deploy_server_0XX*.py`；**远程多步脚本一律上传 `.sh` 再 `sudo bash` 执行**（`bash -c` 内嵌 `$变量` 会被外层 shell 提前展开成空 → 备份静默空操作，09-21 踩过）。
+- 201 服务端运行方式：`/usr/bin/node /opt/learning-server/server.cjs`（systemd `learning-server`，以 root 跑，pkg 已弃用）；数据目录 `/opt/learning-server/data`；健康端点 `/api/v1/health`。部署＝stop → 备份（bundle→`server.cjs.bak-<ts>`，数据→`data/backups/deploy-<ver>-<ts>/`）→ 换 bundle → daemon-reload + restart，停机约 6 秒。**当前已部署 0.5.5（2026-09-23 09:05，含 0.5.4 全部 + ISSUE-134 工具参数统一还原层 `prepareArguments` + ISSUE-133 兜底补丁 + ISSUE-132 题库接口 `/assess/questions/{facets,link,unlink}`）：0.5.4 两个新文件（`db/token-usage.ts`/`routes/token-usage.ts`）此前一直未入 git，2026-09-23 已补提交。部署验证口径：`/api/v1/version` 版本号 + bundle 标记（`coerceToolArgs`/`prepareArguments`/`JsonArrayParam`）+ 新路由返回 401（不是 404）+ `journalctl` ERR_COUNT=0。** 备份：bundle `server.cjs.bak-20260923-0905`、数据 `data/backups/deploy-0.5.5-20260923-0905/`（含 server.sqlite/agents.sqlite 快照，注意 data 已 2.7G）。部署脚本模板 `tmp/deploy/deploy_server_0XX*.py`；**远程多步脚本一律上传 `.sh` 再 `sudo bash` 执行**（`bash -c` 内嵌 `$变量` 会被外层 shell 提前展开成空 → 备份静默空操作，09-21 踩过）。
+- ⚠️ **201 磁盘告警（2026-09-23 实测）**：根分区 116G 用 104G＝**95%，仅剩 6.3G**。可回收项： **36 个共 686M**（含 09-11 起的全部历史 bundle）、 **790M**（deploy-0.5.2 起的每次部署快照，每次约 40M）、 共 2.7G。建议每次部署前顺手清旧备份（保留最近 3~5 个），**清理需用户确认**（属删除操作）。
 - 201 客户端：deb 装到 `/opt/学习伙伴/xuexihub`（root 属主），**进程属主=shanshan、桌面会话 `:0`**，用户数据 `/home/shanshan/.config/learning-app`。升级＝`pkill -TERM -f '/opt/学习伙伴/xuexihub'` → `sudo dpkg -i /tmp/learning-app_<ver>_amd64.deb` → `DISPLAY=:0 XAUTHORITY=/home/shanshan/.Xauthority setsid nohup '/opt/学习伙伴/xuexihub' >/tmp/xuexihub-<ver>.log 2>&1 < /dev/null &`（**GUI 可远程重启**）。旧 deb 存 `/tmp` 用于回滚。**当前已部署 0.1.15（2026-09-15）。**
 - OSS AK/SK：仓库根 `aliyun-aksk.txt`
 
 ## 操作约定（用户明确要求）
 
 - **2026-09-14：未经用户明确同意，不得部署到 201**（哪怕改动已构建完成、哪怕属 issue 修复的验证环节）。Windows 本地构建/验证可以自主做，201 的部署与生产验证动作必须先询问。
+- **2026-09-23：本仓库禁用 `git stash`**（实测事故：`.git/refs/` 消失 + 对象库被清空 + `pack-*.pack` 缺失 → 仓库不可用）。
+  需要临时撤回改动做基线对照时，改用**复制文件到 `tmp/`**；工作树本身未受影响。修复路径见同用户 `~/.workbuddy/MEMORY.md`。

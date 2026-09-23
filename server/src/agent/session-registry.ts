@@ -15,8 +15,9 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
-  defineTool,
 } from "@earendil-works/pi-coding-agent";
+// ISSUE-134：统一还原字符串化参数（内含 SDK defineTool）
+import { defineTool } from "./tool-kit.js";
 import {
   createCorePaths,
   createCoreSession,

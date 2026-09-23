@@ -11,9 +11,9 @@
  */
 import fs from "node:fs";
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import { createCorePaths, resolveWithin } from "@pi/agent-core";
-import { materialsRoot } from "../db/materials.js";
+import { resolveMaterialFile } from "../db/materials.js";
 import { registerDisplay } from "../db/displays.js";
 import { agentStreamHub } from "./stream-hub.js";
 
@@ -53,17 +53,20 @@ export function createDisplayContentTool(deps: DisplayToolDeps) {
       let rel = raw.replace(/^\/+/, "");
       if (rel.startsWith(REMOTE_PREFIX)) rel = rel.slice(REMOTE_PREFIX.length);
 
+      // ISSUE-131 P2 三源：孩子 outputs/（孩子工作区）、家长 materials（新根，孩子会话可解析展示/
+      // 读授权放行——孩子 fs 工具仍不可写不可见）、存量旧根 materials/<pid>（兼容层，不迁移）。
       const isWorkspace = rel.startsWith("outputs/");
       const workspace = paths.childWorkspaceDir(deps.parentId, deps.childId);
-      const materialRoot = materialsRoot(deps.dataDir, deps.parentId);
       let abs: string;
       try {
-        abs = isWorkspace ? resolveWithin(workspace, rel) : resolveWithin(materialRoot, rel);
+        abs = isWorkspace
+          ? resolveWithin(workspace, rel)
+          : resolveMaterialFile(deps.dataDir, deps.parentId, rel);
       } catch (err) {
         throw new Error(`资料路径非法：${(err as Error).message}`);
       }
       if (!fs.existsSync(abs)) {
-        const where = isWorkspace ? `孩子工作区（${workspace}）` : `家长资料库（${materialRoot}）`;
+        const where = isWorkspace ? `孩子工作区（${workspace}）` : `家长资料库（${resolveMaterialFile(deps.dataDir, deps.parentId, rel)}）`;
         throw new Error(
           `资料不存在：${raw}\n（在 ${where} 中未找到；请核对路径，或用 ls / parent_list_materials 先看有什么）` +
             (ctx?.cwd ? `\n当前工作区：${ctx.cwd}` : "")

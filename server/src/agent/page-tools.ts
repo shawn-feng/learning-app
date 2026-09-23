@@ -9,7 +9,7 @@
  *    `POST /agent/:childId/page-result` 回来 —— 传输层从本地 IPC 换成 HTTP/SSE，**客户端侧实现不动**。
  */
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import { createCorePaths } from "@pi/agent-core";
 import type { PageExecParams } from "@pi/agent-core";
 import type { DatabaseSync } from "node:sqlite";

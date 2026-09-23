@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import { resolveWithin, relativeDisplayPath } from "@pi/agent-core";
 
 const MAX_WRITE_BYTES = 2 * 1024 * 1024;

@@ -265,7 +265,8 @@ export async function createExamSession(deps: ExamEngineDeps, systemPrompt: stri
   const runtime = await getWorkerRuntime(deps.dataDir, deps.parentId, settings.auth);
   const model = pickWorkerModel(runtime, settings.appSettings);
   const paths = createCorePaths(deps.dataDir);
-  const cwd = paths.childWorkspaceDir(deps.parentId, deps.childId);
+  // ISSUE-131 P2：考核会话运行区进孩子 scratch（cwd 与 .pi 不再长在工作区/资产区）
+  const cwd = paths.childScratchDir(deps.parentId, deps.childId);
   const agentDir = path.join(cwd, ".pi", "agent");
   fs.mkdirSync(agentDir, { recursive: true });
   const loader = new DefaultResourceLoader({

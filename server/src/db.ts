@@ -97,16 +97,8 @@ export function openDb(dataDir: string): DatabaseSync {
       updated TEXT NOT NULL,
       PRIMARY KEY (parent_id)
     );
-    CREATE TABLE IF NOT EXISTS materials (
-      parent_id TEXT NOT NULL,
-      id TEXT NOT NULL,
-      path TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'other',
-      size INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (parent_id, id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_materials_parent ON materials(parent_id);
+    -- ISSUE-131 P2 决策 1：materials 索引表已删（纯镜像无归属价值）——新库不再建，
+    -- 旧库由下方 DROP 迁移清掉；材料清单 = 现场双根 walk（db/materials.ts）。
     CREATE TABLE IF NOT EXISTS files (
       id TEXT PRIMARY KEY,
       parent_id TEXT NOT NULL,
@@ -196,50 +188,26 @@ export function openDb(dataDir: string): DatabaseSync {
       finished_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_task_runs_parent ON task_runs(parent_id, date);
-    -- 学习考核（EXAM-REQUIREMENTS.md）：每次考核一条记录（孩子端判分后客户端上报，服务端只存结果）。
-    -- per_question 逐题明细(JSON)：qid/course/question/audioPath/asrText/startedAt/answeredAt/durationMs/pointGot/pointMax/correct/aiComment
-    -- course_mastery(JSON)：{"<course>": {correct,total,rate}}；reinforce_plan(JSON)：{"<course>": {planReviewAt, focus[], aiSuggestion?}}
-    CREATE TABLE IF NOT EXISTS exam_attempts (
-      id TEXT PRIMARY KEY,
-      parent_id TEXT NOT NULL,
-      child_id TEXT NOT NULL,
-      topic TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL DEFAULT '',
-      started_at TEXT NOT NULL DEFAULT '',
-      submitted_at TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'grading',
-      score REAL NOT NULL DEFAULT 0,
-      per_question TEXT NOT NULL DEFAULT '[]',
-      course_mastery TEXT NOT NULL DEFAULT '{}',
-      reinforce_plan TEXT NOT NULL DEFAULT '{}',
-      wrong_questions TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL DEFAULT ''
-    );
-    CREATE INDEX IF NOT EXISTS idx_exam_attempts_child ON exam_attempts(child_id, submitted_at);
+    -- ISSUE-135 §8（2026-09-23）：主库 exam_attempts 已废弃 —— 它不是「考核真源」，只是历史包袱：
+    --   · 逐题**得分**早已由 applyExamAttempts 回填进孩子库 exam_plan_courses（09-10 计划域重构执行了一半）；
+    --   · 场次表与题级富信息（评语/ASR/录音引用/评测）却一直留在主库且仍是写入真源 → 归属错位（孩子数据落主库）。
+    --   P0-a 把结果直写孩子库三层（exam_plan_courses / exam_course_results / knowledge_point_records），
+    --   本表停写并 DROP；存量数据经用户确认放弃（均为 09-01~09-17 早期测试数据，音频文件本体不受影响）。
+    DROP TABLE IF EXISTS exam_attempts;
+    DROP INDEX IF EXISTS idx_exam_attempts_child;
     -- 2026-09-14 考核域重构：exam_schedules 排期表已取消——每日/每周固定考核改为配置项
     -- （settings 键 exam_fixed:<parentId>，worker 每天检查配置生成当天考核计划）；
     -- 自定义考核直接写孩子库 exam_plans。旧排期数据不再使用，直接清表。
     DROP TABLE IF EXISTS exam_schedules;
     DROP INDEX IF EXISTS idx_exam_schedules_child;
-    -- 口语评测结果（SSECP 声希引擎）：考核内口语/听说题的维度分存档，供家长端在考核结果内回放/审计。
-    CREATE TABLE IF NOT EXISTS speech_assessments (
-      id TEXT PRIMARY KEY,
-      parent_id TEXT NOT NULL,
-      child_id TEXT NOT NULL,
-      topic_key TEXT NOT NULL DEFAULT '',
-      course_name TEXT NOT NULL DEFAULT '',
-      question_type TEXT NOT NULL DEFAULT '',
-      ref_text TEXT NOT NULL DEFAULT '',
-      audio_file_id TEXT NOT NULL DEFAULT '',
-      overall REAL NOT NULL DEFAULT 0,
-      pron REAL NOT NULL DEFAULT 0,
-      dimensions_json TEXT NOT NULL DEFAULT '{}',
-      detail_json TEXT NOT NULL DEFAULT '{}',
-      is_exam INTEGER NOT NULL DEFAULT 0,
-      exam_attempt_id TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT ''
-    );
-    CREATE INDEX IF NOT EXISTS idx_speech_child ON speech_assessments(child_id, created_at);
+    -- ISSUE-131 P2（2026-09-22）：materials 索引表退役——磁盘即真源，列表/比对全走现场 walk。
+    DROP TABLE IF EXISTS materials;
+    DROP INDEX IF EXISTS idx_materials_parent;
+    -- ISSUE-135 D13（2026-09-23）：题级口语评测存档已搬到孩子库
+    -- （kb/<parentId>/<childId>.sqlite 的 speech_assessments：补 plan_id / course_uuid / question_id，
+    --   与考核明细 exam_plan_courses 按 (plan_id, course_uuid, question_id) 关联；同一题多行 = 多次评测）。
+    -- 原主库表是纯存档（全仓无读取方）且缺题目键，随 exam_attempts 一并下线。
+    DROP TABLE IF EXISTS speech_assessments;
     -- 学习计划（ISSUE-033 重构 2026-09-04）：家长对话制定 → 「每天学什么」排期（服务端为数据真源）。
     -- 每行 = 一门课的排期（不再 content JSON 数组塞多课）。mode 区分 学/复习；status/done_at 由 stat 在孩子当天
     -- 实际学/复习完对应课程后写入（家长面板与 carry 都直接读这两列，精确匹配，不靠文本前缀）。
@@ -262,6 +230,40 @@ export function openDb(dataDir: string): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_study_plan_child ON study_plan_items(child_id, date);
     CREATE INDEX IF NOT EXISTS idx_study_plan_parent ON study_plan_items(parent_id, date);
+    -- ISSUE-129 token 用量统计（口径=模型返回字段原样直传，每行带模型名，不做本地归因）：
+    -- 一行 = 一条 assistant 消息；扫描 data/agent-sessions/<pid>/<slot>/*.jsonl 幂等入库（可回填历史）。
+    -- 考核/worker 的 inMemory 会话不落盘，扫不到（已知边界，见 ISSUE-129）。
+    -- scope: parent（家长/内容/数据助手）| child（孩子主会话）| scene | course；
+    -- child_id 仅 scope≠parent 时有值；slot 为目录名（parent / parent-content / <childId>-main 等）。
+    CREATE TABLE IF NOT EXISTS token_usage (
+      parent_id TEXT NOT NULL,
+      session_file TEXT NOT NULL,
+      entry_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      child_id TEXT NOT NULL DEFAULT '',
+      slot TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      stop_reason TEXT NOT NULL DEFAULT '',
+      input INTEGER NOT NULL DEFAULT 0,
+      cache_read INTEGER NOT NULL DEFAULT 0,
+      cache_write INTEGER NOT NULL DEFAULT 0,
+      output INTEGER NOT NULL DEFAULT 0,
+      reasoning INTEGER NOT NULL DEFAULT 0,
+      total_tokens INTEGER NOT NULL DEFAULT 0,
+      cost REAL NOT NULL DEFAULT 0,
+      PRIMARY KEY (parent_id, session_file, entry_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(parent_id, date);
+    -- 扫描游标（同 session_files 模式）：每文件记已处理行数，只扫增量
+    CREATE TABLE IF NOT EXISTS token_usage_files (
+      parent_id TEXT NOT NULL,
+      file TEXT NOT NULL,
+      line_count INTEGER NOT NULL DEFAULT 0,
+      updated TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (parent_id, file)
+    );
   `);
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '10')").run();
   db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('config_revision', '0')").run();
@@ -270,15 +272,6 @@ export function openDb(dataDir: string): DatabaseSync {
   // 旧库迁移：children 表加 profile_json（孩子详情 + 密码哈希上云，2026-08-30）
   try {
     db.exec("ALTER TABLE children ADD COLUMN profile_json TEXT");
-  } catch {
-    // 已存在则忽略
-  }
-  // 旧库迁移：exam_attempts 加 schedule_id（考核 v2 排期关联回填，2026-09-01）
-  try {
-    const examCols = (db.prepare("PRAGMA table_info(exam_attempts)").all() as Array<{ name: string }>).map((c) => c.name);
-    if (!examCols.includes("schedule_id")) {
-      db.exec("ALTER TABLE exam_attempts ADD COLUMN schedule_id TEXT NOT NULL DEFAULT ''");
-    }
   } catch {
     // 已存在则忽略
   }

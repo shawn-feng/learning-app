@@ -5,6 +5,7 @@
  * 根目录 DESIGN-plan-domain-rewrite-2026-09-10.md 与 DESIGN-reward-points-2026-09-10.md）。
  *
  * - GET  /api/v1/plans/today?childId=&date=      当日三域计划聚合（动态 todolist：三表窗口覆盖当天的行）
+ * - GET  /api/v1/plans/range?childId=&from=&days= 多日三域聚合（ISSUE-130 家长端「计划」tab；重复规则虚拟展开）
  * - POST /api/v1/plans/status                    家长审计与修正：cancel（取消）/ reopen（撤销完成）/ done（代判完成）
  * - GET  /api/v1/rewards/:childId?date=&limit=   余额 + 当日结算（含"未解锁"gate_ok）+ 流水
  * - GET  /api/v1/rewards/:childId/config         积分奖罚设置（分档 + 门控阈值）
@@ -24,6 +25,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
+import { collectPlanRange } from "../db/plans-range.js";
 
 interface Deps {
   config: ServerConfig;
@@ -211,6 +213,29 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
     } finally {
       kb.close();
     }
+  });
+
+  // ==================== 多日三域聚合（ISSUE-130：家长端孩子详情「计划」tab） ====================
+  app.get("/api/v1/plans/range", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { childId, from, days } = (req.query ?? {}) as { childId?: string; from?: string; days?: string };
+    if (!childId) return reply.code(400).send({ error: "childId 必填" });
+    const startDay = from || todayLocal();
+    if (!validDate(startDay)) return reply.code(400).send({ error: "from 格式应为 YYYY-MM-DD" });
+    const n = Math.min(31, Math.max(1, Number(days) || 14));
+    try {
+      assertChildOwned(deps.db, parentId, childId);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    return collectPlanRange(deps.config.dataDir ?? "", parentId, childId, startDay, n);
   });
 
   // ==================== 家长审计与修正 ====================

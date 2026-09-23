@@ -20,11 +20,11 @@
  *   parent_life_plan_update       修改生活计划（delete / reschedule / rename；家长可操作任意 creator 行）
  *   parent_exam_plan_create       自定义考核计划（直接写孩子库 exam_plans；courses 必须为精确课程名）
  *   parent_exam_plan_list         查看孩子考核计划（孩子库 exam_plans；行 id，改/删/开考前先 list）
- *   parent_exam_plan_cancel       取消/删除孩子库考核计划（软删 active=0/status=cancelled，done 不可取消；实际考核场次在主库 exam_attempts）
+ *   parent_exam_plan_cancel       取消/删除孩子库考核计划（软删 active=0/status=cancelled，done 不可取消；考核结果在孩子库结果三表）
  */
 import crypto from "node:crypto";
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import type { DatabaseSync } from "node:sqlite";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
@@ -106,8 +106,9 @@ interface SpRow {
 function readStudyPlans(dataDir: string, parentId: string, childId: string): SpRow[] {
   const kb = openKb(dataDir, parentId, childId);
   try {
+    // 已取消（ISSUE-135 P1 软删）的行不再出现在列表/查改范围里 —— 与家长端 UI 口径一致（routes/study-plans.ts 同款过滤）。
     return kb
-      .prepare("SELECT * FROM study_plans ORDER BY start_at DESC, created_at ASC LIMIT 2000")
+      .prepare("SELECT * FROM study_plans WHERE active = 1 AND status != 'cancelled' ORDER BY start_at DESC, created_at ASC LIMIT 2000")
       .all() as unknown as SpRow[];
   } finally {
     kb.close();
@@ -377,6 +378,14 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         // 先反查 topic_key/uuid，再用**反查后的 topicKey** 做去重（与路由顺序一致——
         // 若用空占位匹配，已存行的 topic_key 非空时防重会失效导致重复插入）
         const { titleToTopic, titleToUuid } = buildCourseLookup(dataDir, parentId);
+        // ISSUE-123：课程名必须是课程库真实存在的——查不到的计划（topic_key/course_uuid 空）
+        // 永远无法被 daily 学习记录按 course_name 匹配完成 → missed 顺延 + 拖累完成率扣分。
+        const missing = [...new Set(items.filter((it) => !titleToTopic.has(it.courseName)).map((it) => it.courseName))];
+        if (missing.length) {
+          throw new Error(
+            `这些课程在孩子课程库里不存在，请核对后重排：${missing.join("、")}（可先 parent_study_plan_sources 查真实课程名）`
+          );
+        }
         const withTopic = items.map((it) => ({ ...it, topicKey: titleToTopic.get(it.courseName) || "" }));
         const fresh = withTopic.filter((it) => !have.has(`${it.topicKey}\u0000${it.courseName}\u0000${it.mode}`));
         if (!fresh.length) {
@@ -490,7 +499,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     label: "修改学习计划（删/挪天/改复习）",
     description:
       "修改某孩子**已有的一条排期**（一课一行；先 parent_study_plan_list 拿行 id）。三种动作：\n" +
-      "- `delete` + `id`：删除该课的这条排期\n" +
+      "- `delete` + `id`：删除该课的这条排期（**已完成/已错过**的行只能取消、不能真删，工具会自动改为取消）\n" +
       "- `reschedule` + `id` + `date`：把该课挪到另一天\n" +
       "- `setmode` + `id` + `mode`（new|review）：新学 ↔ 复习\n" +
       "改完可用 parent_study_plan_get 核对。",
@@ -516,8 +525,21 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       const kb = openKb(dataDir, parentId, child.id);
       try {
         if (act === "delete") {
+          const day = (row.start_at || "").slice(0, 10);
+          // ISSUE-135 D2/P1：已完成/已错过的计划行**禁止硬删**。学习结果（knowledge_point_records.plan_id、
+          // exam_course_results.plan_id）都指向计划行，硬删会让历史记录失联成孤儿；统一软删，对齐考核侧口径。
+          if (row.status === "done" || row.status === "missed") {
+            kb.prepare("UPDATE study_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
+              new Date().toISOString(),
+              row.id
+            );
+            return ok(
+              `「${child.name}」${day} 的「${row.course_name}」排期已${row.status === "done" ? "完成" : "错过"}，不能直接删除` +
+                `（删除会让该次学习的结果记录失联）。已改为「取消」：不再计入完成率与掌握度，历史结果保留。`
+            );
+          }
           kb.prepare("DELETE FROM study_plans WHERE id = ?").run(row.id);
-          return ok(`已删除「${child.name}」${(row.start_at || "").slice(0, 10)} 的「${row.course_name}」排期。`);
+          return ok(`已删除「${child.name}」${day} 的「${row.course_name}」排期。`);
         }
         if (act === "reschedule") {
           const date = String(params.date ?? "").trim();
@@ -856,7 +878,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       "查看某孩子的**考核计划**（孩子库 exam_plans，出现在「今日计划」；含固定档配置生成的、家长自定义的、孩子自请的三类）：日期 / 类型 / 制定人 / 状态 / 行 id。\n" +
       "每条还带**考核内容细节**：考哪些课程、每门课考哪些知识点各抽几题（`课程（知识点×题数）`）、计划级考核方法（只考/不考哪些知识点、背诵通过线）、说明。\n" +
       "固定档（kind=fixed）的课程由「本周期学习计划的必学课程」在开考时确定，**不固化在计划里**，因此不列具体课程——这是正常的，不是数据缺失。\n" +
-      "**取消某条考核计划**用 parent_exam_plan_cancel。实际考核场次（孩子真正提交的考试，含逐题记录与得分）在主库 exam_attempts，可在家长端「考核记录」查看，不受取消影响。\n" +
+      "**取消某条考核计划**用 parent_exam_plan_cancel。考核结果（孩子真正提交的考试及其逐题记录与得分）存在孩子库结果表里，可在家长端「考核记录」查看，不受取消影响。\n" +
       "**可选过滤**：from / to（YYYY-MM-DD，含边界）。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
@@ -960,7 +982,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     name: "parent_exam_plan_cancel",
     label: "取消/删除考核计划",
     description:
-      "取消某孩子**的一条考核计划**（孩子库 exam_plans，出现在「今日计划」。实际考核场次 = 主库 exam_attempts，孩子真正提交的考试及其逐题记录，不受本工具影响）。\n" +
+      "取消某孩子**的一条考核计划**（孩子库 exam_plans，出现在「今日计划」。考核结果存在孩子库结果三表，孩子真正提交的考试及其逐题记录，不受本工具影响）。\n" +
       "考核计划一旦生成默认只增不删；本工具按**计划行 id**（先 parent_exam_plan_list 拿 id）做**软删除**：置 active=0、status='cancelled'，历史行保留供审计，但不再计入完成率/掌握度。\n" +
       "已考完（status='done'）的考核计划不允许取消（保留成绩）。",
     parameters: Type.Object({

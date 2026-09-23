@@ -31,7 +31,7 @@ interface CourseDailySummary {
   tags: string;
 }
 
-/** 考核逐题明细（exam_attempts.perQuestion，camelCase 与服务端 rowToAttempt 一致）。 */
+/** 考核逐题明细（服务端由孩子库 exam_plan_courses 现场组装成 perQuestion，camelCase 与服务端一致）。 */
 interface ExamQuestion {
   qid: string;
   course?: string;
@@ -43,7 +43,7 @@ interface ExamQuestion {
   aiComment?: string;
 }
 
-/** 一次考核（exam_attempts 行）。 */
+/** 一次考核（服务端由 exam_plans(done) + exam_course_results + exam_plan_courses 组装）。 */
 interface ExamAttemptItem {
   id: string;
   title: string;

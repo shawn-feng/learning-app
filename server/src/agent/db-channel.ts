@@ -368,12 +368,76 @@ export interface WriteRequest {
   op: "insert" | "update" | "delete";
   /** insert=要插入的行数组；update=要写入的列值对象（{列: 新值}）。
    *  ISSUE-122：两种形状执行器都兼容——历史上 schema 只许数组、说明却要求 update 传对象，
-   *  自相矛盾导致 update 恒报「列 0 未登记」（数组下标被当列名）。 */
-  rows?: Array<Record<string, unknown>> | Record<string, unknown>;
+   *  自相矛盾导致 update 恒报「列 0 未登记」（数组下标被当列名）。
+   *  ISSUE-133：类型放宽为 unknown——工具 schema 已放行「JSON 字符串」分支，执行器入口统一归一。 */
+  rows?: unknown;
   /** update/delete 的等值条件（列名→值），必须命中登记列；delete/update 必填 */
-  where?: Record<string, unknown>;
+  where?: unknown;
   /** 服务端强制列值（insert 时覆盖 agent 传的同名列，如孩子身份），绕不过 */
   force?: Record<string, unknown>;
+}
+
+// ==================== ISSUE-133：JSON 字符串参数归一 ====================
+
+/**
+ * ISSUE-133（2026-09-22）：参数被**整串 JSON 序列化**后的兼容解析。
+ *
+ * 现场：模型把 `rows` 传成字符串 `"[{\"status\":\"done\",\"result\":\"done\"}]"`。
+ * 为什么在**校验层**就硬失败：SDK（`pi-ai/dist/utils/validation.js`）先跑 TypeBox 的
+ * `Value.Convert`，而它只做标量转换（"20"→20、"true"→true），**不会**把字符串 parse 回
+ * 对象/数组；于是 `rows: must be array / must be object / must match a schema in anyOf`
+ * 三条一起报，工具连执行器都没进——模型只看到一句 schema 报错，无法自愈重试。
+ *
+ * 治本两层（与 ISSUE-122 同思路：纯 schema 修复不够，执行器兜底才是治本）：
+ * ① 工具 schema 显式接受 string 分支（见 tool-shapes.ts）→ 校验放行；
+ * ② 执行器入口统一 parse 回结构（本函数）→ 语义不受影响，parse 不了给可读原因，绝不静默。
+ */
+export function parseJsonArg(raw: unknown, label: string): { value: unknown; error?: string } {
+  if (typeof raw !== "string") return { value: raw };
+  const s = raw.trim();
+  if (!s) return { value: undefined };
+  try {
+    return { value: JSON.parse(s) };
+  } catch {
+    return {
+      value: undefined,
+      error:
+        `${label} 收到的是字符串但不是合法 JSON：${s.slice(0, 120)}${s.length > 120 ? "…" : ""}\n` +
+        "请把对象/数组**直接**作为参数结构传入，不要传 JSON 序列化后的文本。",
+    };
+  }
+}
+
+/** 归一「{列: 值} 对象」类参数（where / rows 的 update 形状）。支持字符串化形态。 */
+export function coerceObjectArg(raw: unknown, label: string): { value: Record<string, unknown>; error?: string } {
+  const parsed = parseJsonArg(raw, label);
+  if (parsed.error) return { value: {}, error: parsed.error };
+  const v = parsed.value;
+  if (v === undefined || v === null) return { value: {} };
+  if (typeof v !== "object" || Array.isArray(v)) {
+    return { value: {}, error: `${label} 应为 {列: 值} 对象，收到：${JSON.stringify(v).slice(0, 120)}` };
+  }
+  return { value: v as Record<string, unknown> };
+}
+
+/** 归一字符串数组类参数（columns）。支持字符串化形态。 */
+export function coerceColumnsArg(raw: unknown): { value?: string[]; error?: string } {
+  const parsed = parseJsonArg(raw, "columns");
+  if (parsed.error) return { error: parsed.error };
+  const v = parsed.value;
+  if (v === undefined || v === null) return {};
+  if (!Array.isArray(v)) return { error: `columns 应为字符串数组，收到：${JSON.stringify(v).slice(0, 120)}` };
+  return { value: v.map((x) => String(x)) };
+}
+
+/** 归一数组类参数（元素类型不限，如整课替换的 items）。支持字符串化形态。 */
+export function coerceArrayArg(raw: unknown, label: string): { value: unknown[]; error?: string } {
+  const parsed = parseJsonArg(raw, label);
+  if (parsed.error) return { value: [], error: parsed.error };
+  const v = parsed.value;
+  if (v === undefined || v === null) return { value: [] };
+  if (!Array.isArray(v)) return { value: [], error: `${label} 应为数组，收到：${JSON.stringify(v).slice(0, 120)}` };
+  return { value: v };
 }
 
 /**
@@ -386,6 +450,10 @@ export function normalizeWriteRows(
   op: "insert" | "update" | "delete",
   rows: unknown
 ): { list: Array<Record<string, unknown>>; values: Record<string, unknown>; error?: string } {
+  // ISSUE-133：字符串化形态先解析回结构（否则会被当成列名/下标处理）
+  const parsed = parseJsonArg(rows, "rows");
+  if (parsed.error) return { list: [], values: {}, error: parsed.error };
+  rows = parsed.value;
   const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
   if (op === "insert") {
     if (Array.isArray(rows)) return { list: rows as Array<Record<string, unknown>>, values: {} };
@@ -449,10 +517,16 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
     return { ok: false, text: `表 ${req.table} 不允许 ${req.op}（允许：${spec.ops.join("/")}）`, confirmHints: [] };
   }
 
+  // ISSUE-133：字符串化参数先归一（schema 已放行 string 分支，这里还原结构）
+  const whereArg = coerceObjectArg(req.where, "where");
+  if (whereArg.error) return { ok: false, text: whereArg.error, confirmHints: [] };
+  const rowsArg = parseJsonArg(req.rows, "rows");
+  if (rowsArg.error) return { ok: false, text: rowsArg.error, confirmHints: [] };
+
   // —— where 构造与影响行数预览（update/delete 必填；只允许登记列的等值条件）——
   let whereClauses: Array<{ col: string; value: null | number | bigint | string }> = [];
   if (req.op !== "insert") {
-    const w = req.where ?? {};
+    const w = whereArg.value;
     const entries = Object.entries(w).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
     if (!entries.length) return { ok: false, text: `${req.op} 必须带 where 等值条件（防全表操作）`, confirmHints: [] };
     for (const [col, value] of entries) {
@@ -473,7 +547,7 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
     let affected = 0;
 
     if (req.op === "insert") {
-      const { list, error } = normalizeWriteRows("insert", req.rows);
+      const { list, error } = normalizeWriteRows("insert", rowsArg.value);
       if (error) fail(error);
       const rows = list;
       if (!rows.length) fail("insert 需要至少一行 rows（行数组 [{列:值},…]；单行也可直接传 {列:值} 对象）");
@@ -543,7 +617,7 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
         fail(`where 条件命中 ${cntRow.n} 行，超过单次上限 ${spec.rowLimit} 行；请缩小条件（如按主键逐条）`);
       }
       if (req.op === "update") {
-        const { values, error } = normalizeWriteRows("update", req.rows);
+        const { values, error } = normalizeWriteRows("update", rowsArg.value);
         if (error) fail(error);
         const sets = Object.entries(values);
         if (!sets.length) fail("update 需要给出要写入的列值（rows 传 {列: 值} 对象）");
@@ -572,7 +646,7 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
     writeAudit(db, {
       table: spec.table,
       op: req.op,
-      where: req.where ?? {},
+      where: whereArg.value,
       rowCount: affected,
       summary: `agent ${req.op} ${spec.table}：${affected} 行`,
     });
@@ -618,8 +692,9 @@ export interface RegistryPath {
 
 export interface PathReadRequest {
   path: string;
-  columns?: string[];
-  where?: Record<string, unknown>;
+  /** ISSUE-133：类型放宽，buildPathQuery 内部归一（兼容 JSON 字符串形态） */
+  columns?: unknown;
+  where?: unknown;
   orderBy?: string;
   orderDesc?: boolean;
   limit?: number;
@@ -654,13 +729,19 @@ export function buildPathQuery(
   req: Omit<PathReadRequest, "path">
 ): { sql: string; params: Array<null | number | bigint | string>; selectCols: string[]; limit: number } {
   assertPathValid(path);
-  const whereEntries = Object.entries(req.where ?? {}).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
+  // ISSUE-133：字符串化参数先在编译器入口归一（任何调用方都受益；不合法则抛出，由上层转成可读文案）
+  const whereArg = coerceObjectArg(req.where, "where");
+  if (whereArg.error) throw new Error(whereArg.error);
+  const colsArg = coerceColumnsArg(req.columns);
+  if (colsArg.error) throw new Error(colsArg.error);
+  const reqCols = colsArg.value;
+  const whereEntries = Object.entries(whereArg.value).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
   for (const [col] of whereEntries) {
     if (!path.filterable.includes(col)) {
       throw new Error(`where 条件列 ${col} 不在路径 ${path.name} 的可过滤列内（可用：${path.filterable.join("、")}）`);
     }
   }
-  const selectCols = req.columns?.length ? [...req.columns] : [...path.returns];
+  const selectCols = reqCols?.length ? [...reqCols] : [...path.returns];
   const unknownCols = selectCols.filter((c) => !path.returns.includes(c));
   if (unknownCols.length) {
     throw new Error(`返回列不在路径 ${path.name} 的 returns 内：${unknownCols.join("、")}（可用：${path.returns.join("、")}）`);
@@ -695,6 +776,7 @@ export function executePathRead(db: DatabaseSync, paths: RegistryPath[], req: Pa
   if (!path) {
     return { ok: false, text: `没有登记名为「${req.path}」的路径。可用：${paths.map((p) => p.name).join("、")}` };
   }
+  // ISSUE-133：字符串化参数由 buildPathQuery 统一归一（失败抛出→下面 catch 转成可读文案）
   let built: ReturnType<typeof buildPathQuery>;
   try {
     built = buildPathQuery(path, req);
@@ -809,7 +891,14 @@ export function parentLibPaths(): RegistryPath[] {
         { table: "courses", on: { uuid: "knowledge_points.course_uuid" }, optional: true },
       ],
       filterable: ["knowledge_points.name"],
-      returns: ["course_knowledge_questions.question_id", "courses.topic", "courses.title", "knowledge_points.name"],
+      returns: [
+        "course_knowledge_questions.question_id",
+        "course_knowledge_questions.knowledge_point_id",
+        "courses.topic",
+        "courses.title",
+        "courses.uuid",
+        "knowledge_points.name",
+      ],
       rowLimit: 5000,
     },
   ];
@@ -872,7 +961,8 @@ export function childKbTableSpecs(): TableSpec[] {
         course_uuid: R("课程 uuid（courses.uuid 真引用）"), course_name: R("课程名"), mode: R("new=新学/review=复习"),
         creator: R("创建人 parent/child"), origin: R("来源 conversation/carry/recurrence"), carry_from: R("顺延自哪天"),
         recurrence_id: R("重复规则 id"), start_at: R("开始时间"), due_at: R("截止时间"),
-        status: R("pending/started/done/cancelled"), result: R("结果备注"), done_at: R("完成时间"),
+        status: R("pending/started/done/cancelled"), result: R("结果备注"),
+        result_summary: R("本次学习的结果概要（课程级；ISSUE-135 掌握闭环）"), done_at: R("完成时间"),
         task_type: R("required=必须/optional=加分"), count_in_rate: R("1=计入完成率"), points: R("完成可得积分"),
         active: R("1=有效"), created_at: R("创建时间"), updated_at: R("更新时间"),
       },
@@ -887,6 +977,7 @@ export function childKbTableSpecs(): TableSpec[] {
         creator: R("创建人 parent/child"), kind: R("fixed=固定档/custom=自定义"), freq: R("重复频率"),
         scope_json: R("考核范围 JSON"), origin: R("来源"), recurrence_id: R("重复规则 id"),
         start_at: R("考核日期"), due_at: R("截止"), status: R("pending/started/done"), attempt_id: R("成绩记录 id"),
+        retake: R("当天重考标准（自然语言，空=不重考；ISSUE-115）"),
         score: R("得分"), result: R("结果备注"), done_at: R("完成时间"),
         task_type: R("required/optional"), count_in_rate: R("1=计入得分率"), points: R("积分"),
         active: R("1=有效"), created_at: R("创建时间"), updated_at: R("更新时间"),
@@ -894,15 +985,75 @@ export function childKbTableSpecs(): TableSpec[] {
     },
     {
       table: "exam_plan_courses",
-      label: "考核课程明细",
-      desc: "每场考核计划的课程/知识点/题目范围与得分明细",
+      label: "考核明细（逐题）",
+      desc: "一行一题：这次考核这门课考了哪些题、每题得几分、孩子答了什么、老师怎么评（ISSUE-135 P0-a 起含题级富字段）",
       pk: ["id"],
       columns: {
-        id: R("行 id"), plan_id: R("考核计划 id"), course_uuid: R("课程 uuid"), course_name: R("课程名"),
-        knowledge_point_id: R("知识点 id"), question_id: R("题目 id"), point_got: R("得分"), point_max: R("满分"),
-        score: R("该题得分"), seq: R("顺序"), created_at: R("创建时间"),
+        id: R("行 id"), plan_id: R("考核计划 id（exam_plans.id）"), course_uuid: R("课程 uuid"), course_name: R("课程名"),
+        knowledge_point_id: R("知识点 id（逻辑引用家长库）"), knowledge_point_name: R("知识点名快照"),
+        question_id: R("题库题 id（逻辑引用）"), question_text: R("题干"), ref_text: R("背诵/朗读原文"),
+        point_got: R("该题得分"), point_max: R("该题满分"), correct: R("1=对/0=错/NULL 未判"),
+        ai_comment: R("AI 评语"), asr_text: R("孩子回答的语音转写"), audio_file_id: R("录音引用（听原音）"),
+        duration_ms: R("答题用时毫秒"), behavior: R("题级行为 speech_recite/speech_read/generic"),
+        seq: R("顺序"), created_at: R("创建时间"),
       },
       readOnlyColumns: { category_id: "旧考核类别 id（2026-09-11 知识点制前残留，仅历史行有值）" },
+    },
+    {
+      table: "exam_course_results",
+      label: "课程每次考核结果概要",
+      desc: "一行 = 一次考核 × 一门课（ISSUE-135 §3.5）：Σ得分/Σ满分/得分率 + 课程结果概要 + 复习重点；课程进度与「最近一次考核」口径的直接读入",
+      pk: ["id"],
+      columns: {
+        id: R("行 id"), parent_id: R("归属家长 id"), child_id: R("孩子 id"), plan_id: R("考核计划 id"),
+        attempt_ref: R("本次提交溯源 id"), topic_key: R("主题标识"), course_uuid: R("课程 uuid"), course_name: R("课程名"),
+        exam_at: R("本次考核时间"), point_got: R("该课本次 Σ得分"), point_max: R("该课本次 Σ满分"),
+        rate: R("该课本次得分率 0~1"), question_count: R("本次该课题数"), course_summary: R("课程结果概要"),
+        plan_review_at: R("复习到期"), focus_json: R("复习重点 JSON 数组"),
+        created_at: R("创建时间"), updated_at: R("更新时间"),
+      },
+    },
+    {
+      table: "knowledge_point_records",
+      label: "知识点掌握情况流水",
+      desc: "一行 = 某知识点在某次学习/考核计划里的一次情况（source 区分 study/exam；ISSUE-135 §3.1）。查某知识点全部历史：按 knowledge_point_id 过滤后按 record_at 排序",
+      pk: ["id"],
+      columns: {
+        id: R("行 id"), parent_id: R("归属家长 id"), child_id: R("孩子 id"), source: R("study=学习 / exam=考核"),
+        plan_id: R("来源计划 id（study_plans.id / exam_plans.id）"), knowledge_point_id: R("知识点 id（逻辑引用家长库）"),
+        knowledge_point_name: R("知识点名快照"), topic_key: R("主题标识"), course_uuid: R("课程 uuid"), course_name: R("课程名"),
+        record_at: R("发生时间"), outcome: R("solid=扎实 / partial=一般 / weak=薄弱"),
+        point_got: R("该知识点本次得分（学习为空）"), point_max: R("满分"), rate: R("得分率"),
+        summary: R("本次情况描述"), detail_json: R("困难点/亮点/题目 id JSON"),
+        source_ref: R("溯源引用"), created_at: R("创建时间"),
+      },
+    },
+    {
+      table: "knowledge_point_progress",
+      label: "知识点累计掌握",
+      desc: "一行 = 一个知识点的累计掌握（ISSUE-135 §3.2，由每日分析任务汇总）：档位 + 累计自然语言叙述 + 学/考次数",
+      pk: ["child_id", "knowledge_point_id"],
+      columns: {
+        parent_id: R("归属家长 id"), child_id: R("孩子 id"), knowledge_point_id: R("知识点 id"),
+        knowledge_point_name: R("知识点名快照"), course_uuid: R("课程 uuid"), course_name: R("课程名"),
+        level: R("not_started/learning/needs_review/mastered"), mastery_desc: R("累计掌握叙述（最开始→中间→最新）"),
+        study_count: R("学习次数"), exam_count: R("考核次数"), last_outcome: R("最近一次档位"), last_rate: R("最近一次得分率"),
+        first_at: R("首次记录时间"), last_at: R("最近记录时间"), updated_at: R("更新时间"),
+      },
+    },
+    {
+      table: "speech_assessments",
+      label: "口语评测存档（题级）",
+      desc: "考核内口语/听说题的发音评测维度分存档（ISSUE-135 D13：按 (plan_id,course_uuid,question_id) 与考核明细关联；同一题多行 = 多次评测）",
+      pk: ["id"],
+      columns: {
+        id: R("行 id"), parent_id: R("归属家长 id"), child_id: R("孩子 id"),
+        plan_id: R("考核计划 id"), course_uuid: R("课程 uuid"), question_id: R("题库题 id"), attempt_ref: R("提交溯源 id"),
+        topic_key: R("主题标识"), course_name: R("课程名"), question_type: R("题型"),
+        ref_text: R("参考原文"), audio_file_id: R("录音引用"), overall: R("总分"), pron: R("发音分"),
+        dimensions_json: R("维度分 JSON（准确/完整/流利/韵律/音质）"), detail_json: R("原始评测结果 JSON"),
+        is_exam: R("1=考核内评测"), created_at: R("创建时间"),
+      },
     },
     {
       table: "life_plans",
@@ -942,6 +1093,10 @@ export function childKbTableSpecs(): TableSpec[] {
         topic: R("主题名"), topic_key: R("主题标识"), title: R("课程名"), uuid: R("课程 uuid"),
         sort_order: R("排序"), status: R("学习状态标记"),
         last_review: R("最近学习/复习时间"), review_count: R("复习次数"), tags: R("标签"),
+        mastery_level: R("掌握档位 not_started/learning/needs_review/mastered（ISSUE-135，分析任务写）"),
+        mastery_desc: R("累计掌握叙述（最开始→中间→最新；ISSUE-135）"),
+        teaching_advice: R("下次教学建议（ISSUE-135；只增补，不改家长手写教学方法）"),
+        mastery_updated_at: R("上述三列刷新时间（ISSUE-135）"),
       },
     },
     {
@@ -1026,6 +1181,37 @@ export function childKbTableSpecs(): TableSpec[] {
       pk: ["tag"],
       columns: { tag: R("标签名"), dimension: R("所属维度"), criteria: R("打标标准") },
     },
+    {
+      table: "mistake_book",
+      label: "错题/生字本",
+      desc: "孩子学习漏洞档案：口述错题/查词生字/考核错题/薄弱点结构化沉淀，复习闭环真源（ISSUE-114）。查询建议 status=open 按 last_seen 倒序；count 越大=反复出现=越未掌握",
+      pk: ["id"],
+      columns: {
+        id: R("条目 id"), kind: R("wrong_question=错题/unknown_word=生字/weak_point=薄弱点"),
+        content: R("题干摘要或字词（与 kind+course_ref 联合去重）"), detail: R("正解/释义/卡住点/讲解要点"),
+        source: R("conversation=口述/lookup=查词/exam=考核"), source_ref: R("来源引用（attempt id / 会话日期 / 课程）"),
+        question_id: R("题库题 id（逻辑引用，错题重做经此取原题；空=无原题）"), course_ref: R("课程标识（可空）"),
+        knowledge_point_id: R("知识点 id（逻辑引用家长库，跨库无 FK）"), knowledge_point_name: R("知识点名称快照（防家长侧改删后悬挂）"),
+        status: R("open=待掌握/mastered=已掌握/dismissed=不算"),
+        created_at: R("创建时间"), updated_at: R("更新时间"),
+      },
+      readOnlyColumns: {
+        count: "重复出现次数（重复=未掌握的证据；服务端 upsert 维护，直改破坏遗忘曲线语义）",
+        first_seen: "首次出现时间（服务端维护）",
+        last_seen: "最近出现时间（服务端维护）",
+        mastered_at: "标掌握时间（空=未掌握过）",
+      },
+    },
+    {
+      table: "display_contents",
+      label: "展示登记",
+      desc: "会话展示内容登记（agent 推送资料/报表后按 (会话, path) 记一条，会话重进回填左侧列表、重置即清；内部表，一般无需读；ISSUE-113）",
+      pk: ["child_key", "path"],
+      columns: {
+        child_key: R("会话键（孩子/家长会话标识）"), path: R("展示路径"), title: R("标题"),
+        source: R("来源类型"), content: R("内容快照"), ts: R("推送时间戳"),
+      },
+    },
     ] as KbTableDef[]
   ).map(kbTable);
 }
@@ -1035,7 +1221,9 @@ export function childKbReadableRegistry(): ReadableTableSpec[] {
   return readableFromSpecs(childKbTableSpecs());
 }
 
-/** 孩子可写白名单：只有日常记录与兑换申请（考核/积分/计划状态机绝不开放，见 ISSUE-105 矩阵） */
+/** 孩子可写白名单：只有日常记录与兑换申请（考核/积分/计划状态机绝不开放，见 ISSUE-105 矩阵）。
+ *  ⚠️ 仅用于**孩子 agent 自己**的写面；家长 db 通道（parent_db_write + child）2026-09-21 起按
+ *  管理口径开放全表，见 childKbAdminWriteSpecs。 */
 export function childKbWritableRegistry(): TableSpec[] {
   return [
     {
@@ -1098,6 +1286,22 @@ export function childKbWritableRegistry(): TableSpec[] {
 }
 
 /**
+ * ISSUE-105 修订（2026-09-21 用户拍板）：家长 db 通道按**管理口径**开放孩子库全部登记表——
+ * `parent_db_write` + child 参数走本规格（childKbTableSpecs 全量 + 全 ops）。
+ * 与孩子 agent 自己的写面（childKbWritableRegistry，两表白名单）划清边界：
+ * - 列级校验/行数熔断（50）/事务/审计照旧；readOnlyColumns（如 daily_entries.plan_id）仍不可写；
+ * - ⚠️ 状态机表（study_plans/exam_plans/points_ledger 等）直写会绕过受控流程——审计追责 + 工具描述风险提示兜底；
+ * - insert 需自带 id/时间戳（specs 未配 serverGenerated）。
+ */
+export function childKbAdminWriteSpecs(): TableSpec[] {
+  return childKbTableSpecs().map((s) => ({
+    ...s,
+    ops: ["insert", "update", "delete"],
+    rowLimit: 50,
+  }));
+}
+
+/**
  * 家长内容库「可读面」派生：从写登记表（parentLibTableRegistry）直接映射出只读面，
  * 避免两份列清单各写一遍、互相漂移。读与写共用同一套列定义（单一真源）。
  * 服务端的统一读原语 parent_db_read 走这张表（ISSUE-110 盲区修复：家长侧此前只有写，没有通用读）。
@@ -1129,9 +1333,9 @@ export function describeParentTables(readSpecs: ReadableTableSpec[], writeSpecs:
  *  F1：返回体按字符预算截断（SQL 下沉 ≠ 结果不进上下文）；F6：countOnly 走 SELECT COUNT(*)。 */
 export interface ReadRequest {
   table: string;
-  /** 缺省=全部可读列 */
-  columns?: string[];
-  where?: Record<string, unknown>;
+  /** 缺省=全部可读列（ISSUE-133：类型放宽，executeRead 内部归一，兼容 JSON 字符串形态） */
+  columns?: unknown;
+  where?: unknown;
   /** 排序列（须在可读列内），缺省不加 ORDER BY */
   orderBy?: string;
   /** 缺省正序；orderBy 给了才生效 */
@@ -1179,17 +1383,23 @@ export function executeRead(db: DatabaseSync, specs: ReadableTableSpec[], req: R
   if (!spec) {
     return { ok: false, text: `没有登记名为「${req.table}」的可读表。可用：${specs.map((s) => s.table).join("、")}` };
   }
+  // ISSUE-133：字符串化参数先归一（where/columns 被整串 JSON 序列化时同样会撞 SDK 校验）
+  const whereArg = coerceObjectArg(req.where, "where");
+  if (whereArg.error) return { ok: false, text: whereArg.error };
+  const colsArg = coerceColumnsArg(req.columns);
+  if (colsArg.error) return { ok: false, text: colsArg.error };
+  const reqCols = colsArg.value;
   const allCols = Object.keys(spec.columns);
   let cols = allCols;
-  if (req.columns?.length) {
-    const unknown = req.columns.filter((c) => !spec.columns[c]);
+  if (reqCols?.length) {
+    const unknown = reqCols.filter((c) => !spec.columns[c]);
     if (unknown.length) {
       // F2 自愈：列名错直接回可用列清单，一次往返内纠正
       return { ok: false, text: `列未登记不可读：${unknown.join("、")}。${spec.table} 可用列：${allCols.join("、")}` };
     }
-    cols = req.columns;
+    cols = reqCols;
   }
-  const whereEntries = Object.entries(req.where ?? {}).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
+  const whereEntries = Object.entries(whereArg.value).filter(([, v]) => v !== undefined && v !== null && String(v) !== "");
   for (const [col] of whereEntries) {
     if (!spec.columns[col]) {
       return { ok: false, text: `where 条件列 ${col} 不可读。${spec.table} 可用列：${allCols.join("、")}` };

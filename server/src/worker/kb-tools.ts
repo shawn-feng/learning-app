@@ -5,7 +5,7 @@
  * 读写孩子 kb，减少一层网络往返且归属校验（children.parent_id）同样生效。
  * 格式化为紧凑 markdown（worker 任务用已提供上下文为主，kb_query 仅作核对）。
  */
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "../agent/tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import { Type } from "typebox";
 import type { DatabaseSync } from "node:sqlite";
 import { runKbQuery, runKbExec } from "../routes/db.js";

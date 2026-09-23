@@ -55,6 +55,33 @@ function filesRoot(dataDir: string): string {
   return path.join(dataDir, "files");
 }
 
+/**
+ * P2 归并后的 stored 文件物理解析（新根优先、旧根永久兜底，存量不迁移）：
+ *  - 新根（写入点）：家长 `workspaces/<pid>/uploads/<stored>`；孩子 `workspaces/<pid>/<cid>/uploads/<stored>`；
+ *  - 旧根（只读兜底）：`files/<pid>/<stored>`（2026-09-22 前的全部存量）。
+ * stored_path 服务端生成（uuid.ext），child_id 来自 files 表行。
+ */
+export function resolveStoredFileAbs(
+  dataDir: string,
+  parentId: string,
+  childId: string | null,
+  storedPath: string
+): string {
+  const newRoot = childId
+    ? path.join(dataDir, "workspaces", parentId, childId, "uploads")
+    : path.join(dataDir, "workspaces", parentId, "uploads");
+  const candidates = [path.join(newRoot, storedPath), path.join(filesRoot(dataDir), parentId, storedPath)];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  return candidates[0];
+}
+
+/** P2 写入根：按 scope 落盘（家长/孩子各自 uploads 子区）。 */
+function uploadsWriteRoot(dataDir: string, parentId: string, childId: string | null): string {
+  return childId
+    ? path.join(dataDir, "workspaces", parentId, childId, "uploads")
+    : path.join(dataDir, "workspaces", parentId, "uploads");
+}
+
 /** 扩展名白名单化（防路径注入），如 ".mp4" / "" */
 function safeExt(originalName: string): string {
   const ext = path.extname(originalName).toLowerCase();
@@ -116,12 +143,12 @@ export function registerFilesRoutes(app: FastifyInstance, deps: FilesDeps): void
     const id = crypto.randomUUID();
     const ext = safeExt(originalName);
     const storedPath = `${id}${ext}`;
-    const root = filesRoot(deps.config.dataDir);
-    const parentDir = path.join(root, parentId);
-    fs.mkdirSync(parentDir, { recursive: true });
+    // ISSUE-131 P2：按 scope 落盘到 workspaces/<pid>/{uploads|<cid>/uploads}；files 表登记不变
+    const root = uploadsWriteRoot(deps.config.dataDir, parentId, childId || null);
+    fs.mkdirSync(root, { recursive: true });
     let abs: string;
     try {
-      abs = resolveSafe(root, path.join(parentId, storedPath));
+      abs = resolveSafe(root, storedPath);
     } catch (err) {
       if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
       throw err;
@@ -149,10 +176,11 @@ export function registerFilesRoutes(app: FastifyInstance, deps: FilesDeps): void
     }
     const { id } = req.params as { id: string };
     const row = deps.db
-      .prepare("SELECT stored_path, mime, size FROM files WHERE id = ? AND parent_id = ?")
-      .get(id, parentId) as { stored_path: string; mime: string; size: number } | undefined;
+      .prepare("SELECT stored_path, mime, size, child_id FROM files WHERE id = ? AND parent_id = ?")
+      .get(id, parentId) as { stored_path: string; mime: string; size: number; child_id: string | null } | undefined;
     if (!row) return reply.code(404).send({ error: "文件不存在" });
-    const abs = resolveSafe(filesRoot(deps.config.dataDir), path.join(parentId, row.stored_path));
+    // P2：新根优先、旧根兜底（存量不迁移）
+    const abs = resolveStoredFileAbs(deps.config.dataDir, parentId, row.child_id, row.stored_path);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
       return reply.code(404).send({ error: "文件不存在" });
     }
@@ -173,10 +201,10 @@ export function registerFilesRoutes(app: FastifyInstance, deps: FilesDeps): void
     }
     const { id } = req.params as { id: string };
     const row = deps.db
-      .prepare("SELECT stored_path FROM files WHERE id = ? AND parent_id = ?")
-      .get(id, parentId) as { stored_path: string } | undefined;
+      .prepare("SELECT stored_path, child_id FROM files WHERE id = ? AND parent_id = ?")
+      .get(id, parentId) as { stored_path: string; child_id: string | null } | undefined;
     if (!row) return reply.code(404).send({ error: "文件不存在" });
-    const abs = resolveSafe(filesRoot(deps.config.dataDir), path.join(parentId, row.stored_path));
+    const abs = resolveStoredFileAbs(deps.config.dataDir, parentId, row.child_id, row.stored_path);
     deps.db.prepare("DELETE FROM files WHERE id = ?").run(id);
     // 磁盘文件删除失败不阻断：记录已删即可，孤儿文件由后续清理兜底
     try {

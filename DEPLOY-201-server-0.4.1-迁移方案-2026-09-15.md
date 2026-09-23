@@ -336,3 +336,14 @@ PASS=2 FAIL=0（闻闻无进行中计划，无法断言；其数据本为空）
 4. `sudo systemctl start learning-server`，确认 `/api/v1/version` 回到 0.4.4。
 
 > 备注：①本次**未改 Electron 客户端**——所有服务端改动为附加式（query token 兼容为"头优先、无头回退"），客户端直连 8788 行为不变。②局域网非 localhost 页面受浏览器策略限制**无法使用麦克风**（语音输入/发音评测），需 HTTPS 或 Chrome 白名单（见 `web/DEPLOY.md`）；localhost 不受限。③Web 端构建产物更新流程：`npm run web:build` → 同步 `web/dist/` 到 201 同路径，无需重启服务。
+
+
+## 12.4 部署 0.5.4（2026-09-22 07:07，ISSUE-129 token 用量统计）
+
+- **版本**：0.5.3 → **0.5.4**（`server/package.json` + `routes/version.ts` SERVER_VERSION 同步）。
+- **上线内容**：ISSUE-129 全量——`token_usage` / `token_usage_files` 表（启动自动建）、扫描器 `db/token-usage.ts`、`GET /api/v1/token-usage/{days,sessions,dates}`（家长 JWT，读时增量扫描可回填历史）；客户端侧（preload/IPC/web-shim/TokenStatsPanel 重写 + 删旧 token-stats 死代码）随下个客户端包发布，服务端单侧部署即可供 API。
+- **流程**：`tmp/deploy/deploy_server_054.py` + `deploy_054.sh`（文件脚本 + 字面路径）——停服 → bundle 备份（`server.cjs.bak-20260922-0707`）→ sqlite 在线快照（VACUUM INTO server/agents）+ secret/json 备份（`data/backups/deploy-0.5.4-20260922-0707/`）→ 换包 → 起服。
+- **验证**：`version`=0.5.4、health `{"ok":true,"db":"ok"}`、`token_usage`/`token_usage_files` 表在位、journal ERR_COUNT=0；bundle 标记（token_usage×9 / scanTokenUsageIntoDb×2 / token-usage/days×1）全命中。
+- **首次回填探针**（`probe_054_token.sh`，读 server-config jwtSecret 现场签 JWT）：`/dates` 触发回填 **1179 行 / 26 个会话文件**（09-15~09-21）；真实消耗首次可见——09-21 家长助手 184 轮 1962 万 tok、珊珊主会话 80 轮 295 万、闻闻主会话 65 轮 121 万；未登录 401 正确。
+- **web 前端同步（同日补）**：`/opt/learning-server/web/` 为 root 属主，shanshan 直写被拒（EACCES）→ 改走 `/tmp/webdist-054` 上传 + `web_swap_054.sh`（sudo）换目录。201 dist 从 09-17 旧构建（旧 Token 面板调死 IPC 不可用）换为本期新构建（index-BN3Iin8Q.js，含 tokenUsageDays），旧目录备份 `dist.old-20260922`；静态按请求读盘，替换即时生效未重启。
+- 回滚：`cp -a server.cjs.bak-20260922-0707 server.cjs && systemctl restart learning-server`（token_usage 表可留着不碍事）；web 回滚 `cd /opt/learning-server/web && rm -rf dist && mv dist.old-20260922 dist`。

@@ -5,7 +5,7 @@
  *   1) expandRecurrences：把 plan_recurrences 命中今天的规则展开成计划行（三表之一，origin=recurrence，幂等）
  *   2) runPlanStat：三域判定 + 到期 carry + 归属日统计 + 积分结算
  *      - 学习域：daily 学习记录（标题=课程名、记录日落在计划窗口内）→ study_plans.done（并回写当天 daily 学习条目的 plan_id）
- *      - 考核域：当天提交的考核场次（exam_attempts）→ exam_plans.done/score/attempt_id + exam_plan_courses 明细（计划期不固化题目）
+ *      - 考核域（ISSUE-135 P0-a 起）：结果由提交路由直写孩子库三层，worker 只做单库幂等兜底（见 applyExamAttempts）
  *      - 生活域：daily_entries(plan_id + plan_outcome='done') → life_plans.done
  *      - 到期未完成 → missed；**复制新行到当天**（origin=carry，窗口=当天）；cancelled 不复制
  *      - 归属日统计 → reward_daily_stats（source × owner）
@@ -17,6 +17,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { openKb } from "../db/kb.js";
+import { openParentLib } from "../db/parent-lib.js";
 import { upsertMistake, examMistakeSynced } from "../db/mistakes.js";
 import type { WorkerTaskCtx } from "./tasks.js";
 import { formatLocalDate } from "./kb-tools.js";
@@ -121,6 +122,22 @@ const nowStr = (d: Date) => {
 export function expandRecurrences(ctx: WorkerTaskCtx): number {
   const today = formatLocalDate(ctx.now);
   const kb = openKb(ctx.dataDir, ctx.parentId, ctx.childId);
+  // ISSUE-123：课程库 title 集合（study 重复规则展开时校验课程名；家长库不可用 → null = 跳过校验按旧行为）
+  let courseTitles: Set<string> | null = null;
+  try {
+    const pdb = openParentLib(ctx.dataDir, ctx.parentId);
+    try {
+      courseTitles = new Set(
+        (pdb.prepare("SELECT title FROM courses").all() as Array<{ title: string }>)
+          .map((r) => (r.title || "").trim())
+          .filter(Boolean)
+      );
+    } finally {
+      pdb.close();
+    }
+  } catch {
+    /* 家长库不可用：不校验 */
+  }
   try {
     const rows = kb
       .prepare("SELECT * FROM plan_recurrences WHERE enabled = 1 AND (last_expanded_date = '' OR last_expanded_date < ?)")
@@ -160,21 +177,31 @@ export function expandRecurrences(ctx: WorkerTaskCtx): number {
             dayStart(today), dayEnd(today),
             String(payload.task_type || "required"), Number(payload.count_in_rate ?? 1), Number(payload.points || 0), ts, ts
           );
+          created++;
         } else if (planType === "study") {
-          kb.prepare(
-            `INSERT INTO study_plans (id,parent_id,child_id,topic_key,course_uuid,course_name,mode,creator,origin,carry_from,recurrence_id,
-              start_at,due_at,status,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,'recurrence','',?,?,?,'pending','','',?,?,?,1,?,?)`
-          ).run(
-            id, ctx.parentId, ctx.childId, String(payload.topic_key || ""), String(payload.course_uuid || ""),
-            String(payload.course_name || title), String(payload.mode || "new"), String(payload.creator || "parent"), String(r.id),
-            dayStart(today), dayEnd(today),
-            String(payload.task_type || "required"), Number(payload.count_in_rate ?? 1), Number(payload.points || 0), ts, ts
-          );
+          const courseName = String(payload.course_name || title);
+          // ISSUE-123：课程已不在课程库的计划永远无法被 daily 学习记录按 course_name 匹配完成
+          // → 跳过不展开（游标照常推进避免每天重复告警；规则如已失效请删除后重建）。
+          if (courseTitles && courseTitles.size > 0 && !courseTitles.has(courseName)) {
+            console.warn(
+              `[worker:plan] recurrence ${String(r.id).slice(0, 12)}: 课程「${courseName}」已不在课程库，今日跳过展开`
+            );
+          } else {
+            kb.prepare(
+              `INSERT INTO study_plans (id,parent_id,child_id,topic_key,course_uuid,course_name,mode,creator,origin,carry_from,recurrence_id,
+                start_at,due_at,status,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,'recurrence','',?,?,?,'pending','','',?,?,?,1,?,?)`
+            ).run(
+              id, ctx.parentId, ctx.childId, String(payload.topic_key || ""), String(payload.course_uuid || ""),
+              courseName, String(payload.mode || "new"), String(payload.creator || "parent"), String(r.id),
+              dayStart(today), dayEnd(today),
+              String(payload.task_type || "required"), Number(payload.count_in_rate ?? 1), Number(payload.points || 0), ts, ts
+            );
+            created++;
+          }
         } else {
           continue; // exam 重复暂不展开（考核由排期/固定档承担）
         }
-        created++;
       }
       kb.prepare("UPDATE plan_recurrences SET last_expanded_date = ?, updated_at = ? WHERE id = ?").run(today, nowStr(ctx.now), String(r.id));
     }
@@ -323,101 +350,83 @@ function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { 
   return { missed, carried };
 }
 
-/** 考核域：把当天提交的考核场次（exam_attempts）挂接到考核计划 exam_plans + exam_plan_courses。 */
+/**
+ * 考核域**幂等兜底**（ISSUE-135 P0-a 收窄）：提交路由（routes/exam.ts）已把结果直写孩子库三层，
+ * 这里只补两种残缺状态，且**只读孩子库**（不再跨主库 exam_attempts —— 该表已废弃）：
+ *   ① 计划已 done 且逐题明细在，但 exam_course_results 缺行（写概要及时崩溃）→ 按明细补概要；
+ *   ② 计划有明细/概要却没被置 done（写 done 前失败）→ 补 done。
+ * 补记一律 `DO NOTHING`，绝不覆盖路由已写好的数据（含 LLM 润色过的 course_summary）。
+ */
 function applyExamAttempts(ctx: WorkerTaskCtx, kb: DatabaseSync): number {
   const now = nowStr(ctx.now);
-  const rows = ctx.mainDb
+  const plans = kb
     .prepare(
-      `SELECT id, title, submitted_at, score, per_question, schedule_id FROM exam_attempts
-       WHERE parent_id = ? AND child_id = ? AND per_question != '[]'`
+      `SELECT id, attempt_id, done_at FROM exam_plans
+        WHERE child_id = ? AND active = 1
+          AND EXISTS (SELECT 1 FROM exam_plan_courses ec WHERE ec.plan_id = exam_plans.id)`
     )
-    .all(ctx.parentId, ctx.childId) as Array<{
-    id: string;
-    title: string;
-    submitted_at: string;
-    score: number;
-    per_question: string;
-    schedule_id: string;
-  }>;
-  let n = 0;
-  for (const a of rows) {
-    const planId = a.schedule_id || `exam_${a.id}`;
-    const hasPlan = kb.prepare("SELECT attempt_id FROM exam_plans WHERE id = ?").get(planId) as
-      | { attempt_id?: string }
-      | undefined;
-    // 幂等判据 = attempt_id 匹配 **且逐题明细已回填**。仅凭 attempt_id 判重会踩空：
-    // 2026-09-14 考核 v2 起，提交路由（routes/exam.ts）先行置 done + attempt_id，
-    // worker 再跑到这里时若直接 continue，exam_plan_courses 永远为空 →
-    // computeExamRate 分母 0 → 得分率恒 0%（ISSUE-112）。
-    const coursesFilled = !!kb.prepare("SELECT 1 FROM exam_plan_courses WHERE plan_id = ? LIMIT 1").get(planId);
-    if (hasPlan?.attempt_id === a.id && coursesFilled) continue; // 已挂接且明细已回填（幂等）
-    if (!hasPlan) {
-      kb.prepare(
-        `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
-           start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-         VALUES (?,?,?,?,'parent','custom','','{}','conversation','',?,?,'done',?,?,'',?,'required',1,0,1,?,?)`
-      ).run(
-        planId, ctx.parentId, ctx.childId, a.title || "考核",
-        dayStart(a.submitted_at), dayEnd(a.submitted_at),
-        a.id, a.score ?? null, a.submitted_at || now, now, now
-      );
-    } else {
-      kb.prepare(
-        "UPDATE exam_plans SET status='done', attempt_id=?, score=?, done_at=?, updated_at=? WHERE id=?"
-      ).run(a.id, a.score ?? null, a.submitted_at || now, now, planId);
+    .all(ctx.childId) as Array<{ id: string; attempt_id: string; done_at: string }>;
+  let repaired = 0;
+  const ins = kb.prepare(
+    `INSERT INTO exam_course_results (id,parent_id,child_id,plan_id,attempt_ref,topic_key,course_uuid,course_name,
+       exam_at,point_got,point_max,rate,question_count,course_summary,plan_review_at,focus_json,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'','[]',?,?)
+     ON CONFLICT(plan_id, course_uuid) DO NOTHING`
+  );
+  for (const p of plans) {
+    let touched = false;
+    if (String(p.done_at ?? "") === "") {
+      kb.prepare("UPDATE exam_plans SET status='done', done_at=?, updated_at=? WHERE id=?").run(now, now, p.id);
+      touched = true;
     }
-    // 逐题明细（先清后插，幂等）
-    kb.prepare("DELETE FROM exam_plan_courses WHERE plan_id = ?").run(planId);
-    let pq: Array<Record<string, unknown>> = [];
-    try {
-      pq = JSON.parse(a.per_question) as Array<Record<string, unknown>>;
-    } catch {
-      pq = [];
-    }
-    if (!pq.length) {
-      // ISSUE-112 ②：明细为空此前静默吞掉，得分率会退化成 0 且无从排查——打警告留痕。
-      logWarn("plan-domain", `考核 attempt ${a.id} per_question 为空，无法回填逐题明细（该场得分率将按 0 计）`);
-    }
-    let seq = 0;
-    const ins = kb.prepare(
-      `INSERT INTO exam_plan_courses (id,plan_id,course_uuid,course_name,knowledge_point_id,question_id,
-        point_got,point_max,score,seq,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-    );
-    for (const q of pq) {
-      ins.run(
-        randomUUID(), planId, String(q.courseId ?? ""), String(q.course ?? ""),
-        String(q.knowledgePointId ?? ""), String(q.questionId ?? ""),
-        q.pointGot != null ? Number(q.pointGot) : null, q.pointMax != null ? Number(q.pointMax) : null,
-        q.pointGot != null ? Number(q.pointGot) : null, seq++, now
-      );
-      // ISSUE-114 C3：错题同步进错题本（source=exam，天然带 question_id/knowledge_point 引用；
-      // (source_ref, question_id) 幂等哨兵防重复挂接时刷次数）
-      const got = q.pointGot != null ? Number(q.pointGot) : null;
-      const max = q.pointMax != null ? Number(q.pointMax) : null;
-      if (got != null && max != null && max > 0 && got < max) {
-        const qid = String(q.questionId ?? "");
-        try {
-          if (!examMistakeSynced(ctx.dataDir, ctx.parentId, ctx.childId, a.id, qid)) {
-            const kpId = String(q.knowledgePointId ?? "");
-            upsertMistake(ctx.dataDir, ctx.parentId, ctx.childId, {
-              kind: "wrong_question",
-              content: `${a.title || "考核"}·${q.course ?? ""}·${kpId || "题目"}（${got}/${max}）`,
-              detail: String(q.aiComment ?? ""),
-              source: "exam",
-              source_ref: a.id,
-              question_id: qid,
-              course_ref: String(q.course ?? ""),
-              knowledge_point_id: kpId,
-            });
-          }
-        } catch {
-          /* 同步失败不影响考核挂接 */
-        }
+    const rows = kb
+      .prepare("SELECT course_uuid, course_name, point_got, point_max FROM exam_plan_courses WHERE plan_id = ?")
+      .all(p.id) as Array<{ course_uuid: string; course_name: string; point_got: number | null; point_max: number | null }>;
+    const byCourse = new Map<string, { uuid: string; name: string; topicKey: string; got: number; max: number; count: number }>();
+    for (const r of rows) {
+      const key = String(r.course_uuid ?? "") || `name:${String(r.course_name ?? "")}`;
+      let e = byCourse.get(key);
+      if (!e) {
+        const tk = kb.prepare("SELECT topic_key FROM courses WHERE title = ?").get(String(r.course_name ?? "")) as
+          | { topic_key?: string }
+          | undefined;
+        e = { uuid: key, name: String(r.course_name ?? ""), topicKey: String(tk?.topic_key ?? ""), got: 0, max: 0, count: 0 };
+        byCourse.set(key, e);
       }
+      e.got += Number(r.point_got) || 0;
+      e.max += Number(r.point_max) || 0;
+      e.count += 1;
     }
-    n++;
+    const examAt = String(p.done_at ?? "") || now;
+    for (const e of byCourse.values()) {
+      const exist = kb
+        .prepare("SELECT 1 FROM exam_course_results WHERE plan_id = ? AND course_uuid = ?")
+        .get(p.id, e.uuid);
+      if (exist) continue;
+      const rate = e.max > 0 ? e.got / e.max : null;
+      ins.run(
+        randomUUID(),
+        ctx.parentId,
+        ctx.childId,
+        p.id,
+        String(p.attempt_id ?? ""),
+        e.topicKey,
+        e.uuid,
+        e.name,
+        examAt,
+        e.got,
+        e.max,
+        rate,
+        e.count,
+        `本次「${e.name || "未分课程"}」考了 ${e.count} 题，得 ${Math.round(e.got * 10) / 10}/${Math.round(e.max * 10) / 10} 分。`,
+        now,
+        now
+      );
+      touched = true;
+    }
+    if (touched) repaired++;
   }
-  return n;
+  return repaired;
 }
 
 interface GroupStat {
@@ -457,51 +466,32 @@ function computeGroupStats(
   return { total, done, missed, optionalDone, rate: total ? done / total : 0 };
 }
 
-/** 主库 attempt 逐题求和（ISSUE-112 ① 兜底数据源）：exam_plan_courses 缺明细时用它还原 Σgot/Σmax。 */
-function attemptDetailSums(mainDb: DatabaseSync, attemptId: string | null | undefined): { g: number; m: number } {
-  if (!attemptId) return { g: 0, m: 0 };
-  const row = mainDb.prepare("SELECT per_question FROM exam_attempts WHERE id = ?").get(attemptId) as
-    | { per_question?: string }
-    | undefined;
-  if (!row?.per_question) return { g: 0, m: 0 };
-  let pq: Array<Record<string, unknown>> = [];
-  try {
-    pq = JSON.parse(row.per_question) as Array<Record<string, unknown>>;
-  } catch {
-    return { g: 0, m: 0 };
-  }
-  let g = 0;
-  let m = 0;
-  for (const q of pq) {
-    g += Number(q.pointGot) || 0;
-    m += Number(q.pointMax) || 0;
-  }
-  return { g, m };
-}
-
 /** 考核组得分率（Σ得分/Σ满分，仅归属日=当天的已完成场次）。
- *  口径兜底（ISSUE-112 ①）：exam_plan_courses 无明细/全 NULL（分母 0）时，回退用主库
- *  attempt 逐题求和——得到分率与真实成绩脱节、9/10 被记 0% 触发扣分档。 */
-function computeExamRate(kb: DatabaseSync, mainDb: DatabaseSync, owner: string, date: string): GroupStat {
+ *  ISSUE-135 P0-a：数据源全部在孩子库 —— 优先读课程概要 exam_course_results（一行一课的 Σgot/Σmax），
+ *  该表缺行（写概要及时崩溃）时回退逐题明细 exam_plan_courses 求和；两者都在同一文件，无需跨库兜底。
+ *  口径保住 ISSUE-112 的教训：分母为 0 时不再让得分率退化成 0% 误扣分，而是在这里如实回退求和。 */
+function computeExamRate(kb: DatabaseSync, owner: string, date: string): GroupStat {
   const plans = kb
     .prepare(
-      `SELECT id, attempt_id FROM exam_plans WHERE creator = ? AND active = 1 AND count_in_rate = 1
+      `SELECT id FROM exam_plans WHERE creator = ? AND active = 1 AND count_in_rate = 1
          AND ( (status='done' AND substr(done_at,1,10) = ?) OR (status='missed' AND substr(due_at,1,10) = ?) )`
     )
-    .all(owner, date, date) as Array<{ id: string; attempt_id: string | null }>;
+    .all(owner, date, date) as Array<{ id: string }>;
   if (!plans.length) return { total: 0, done: 0, missed: 0, optionalDone: 0, rate: 0 };
   let got = 0;
   let max = 0;
   for (const p of plans) {
     const agg = kb
-      .prepare("SELECT COALESCE(SUM(point_got),0) AS g, COALESCE(SUM(point_max),0) AS m FROM exam_plan_courses WHERE plan_id = ?")
+      .prepare("SELECT COALESCE(SUM(point_got),0) AS g, COALESCE(SUM(point_max),0) AS m FROM exam_course_results WHERE plan_id = ?")
       .get(p.id) as { g: number; m: number };
     let g = Number(agg?.g) || 0;
     let m = Number(agg?.m) || 0;
     if (m === 0) {
-      const fb = attemptDetailSums(mainDb, p.attempt_id);
-      g = fb.g;
-      m = fb.m;
+      const fb = kb
+        .prepare("SELECT COALESCE(SUM(point_got),0) AS g, COALESCE(SUM(point_max),0) AS m FROM exam_plan_courses WHERE plan_id = ?")
+        .get(p.id) as { g: number; m: number };
+      g = Number(fb?.g) || 0;
+      m = Number(fb?.m) || 0;
     }
     got += g;
     max += m;
@@ -543,8 +533,8 @@ export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: strin
     return {
       parentTodo,
       childTodo,
-      parentExam: computeExamRate(kb, ctx.mainDb, "parent", date),
-      childExam: computeExamRate(kb, ctx.mainDb, "child", date),
+      parentExam: computeExamRate(kb, "parent", date),
+      childExam: computeExamRate(kb, "child", date),
     };
   };
   const mergeTodo = (a: GroupStat, b: GroupStat): GroupStat => {

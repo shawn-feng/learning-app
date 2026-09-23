@@ -11,6 +11,7 @@
  * - GET  /api/v1/exam/course-records/:childId 每课程考核记录表（最近考核/掌握/难点/亮点/计划复习）
  * 鉴权：家长 JWT；childId 必须归属该家长。语音大文件复用 files 通道（child_id 关联）。
  */
+import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
@@ -19,6 +20,8 @@ import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { getRetakeCountInRate, maybeCreateRetakePlan, setRetakeCountInRate } from "../exam-retake.js";
+import { examMistakeSynced, upsertMistake } from "../db/mistakes.js";
+import { persistExamResult } from "../exam-results.js";
 import { attachStructuredQuestions, attachPlanQuestions, buildPlanSpecEntries, parsePlanCourses, type PlanCourseSpec } from "../assess-selection.js";
 import {
   getOrCreateKnowledgePoint,
@@ -32,6 +35,10 @@ import {
   getMethodSpec,
   saveMethodSpec,
   listAllBankQuestions,
+  listBankFacets,
+  linkQuestionToKnowledgePoint,
+  unlinkQuestionFromKnowledgePoint,
+  deleteBankQuestion,
 } from "../db/assess-content.js";
 
 interface ExamDeps {
@@ -88,32 +95,6 @@ export const SCORING_PROMPT = `你是孩子的学习考核评估老师。今天�
 export function buildScoringPrompt(): string {
   const today = new Date().toISOString().slice(0, 10);
   return SCORING_PROMPT.replaceAll("{{TODAY}}", today);
-}
-
-function rowToAttempt(r: Record<string, unknown>): Record<string, unknown> {
-  const parse = (s: unknown, fb: unknown): unknown => {
-    if (typeof s !== "string" || !s) return fb;
-    try {
-      return JSON.parse(s);
-    } catch {
-      return fb;
-    }
-  };
-  return {
-    id: String(r.id),
-    childId: String(r.child_id),
-    topic: String(r.topic ?? ""),
-    title: String(r.title ?? ""),
-    startedAt: String(r.started_at ?? ""),
-    submittedAt: String(r.submitted_at ?? ""),
-    status: String(r.status ?? "grading"),
-    score: Number(r.score) || 0,
-    perQuestion: parse(r.per_question, []),
-    courseMastery: parse(r.course_mastery, {}),
-    reinforcePlan: parse(r.reinforce_plan, {}),
-    wrongQuestions: parse(r.wrong_questions, []),
-    scheduleId: String(r.schedule_id ?? ""),
-  };
 }
 
 // ==================== 考核 v2：固定频率配置 / 排期生成（EXAM-REQUIREMENTS §14） ====================
@@ -316,39 +297,42 @@ function findExamPlanRow(
   return null;
 }
 
-/** 某课程最近一次考核时间（从 exam_attempts.perQuestion 按 course 聚合，取最新 submitted_at）。 */
-function lastExamAtByCourse(db: DatabaseSync, childId: string): Map<string, string> {
-  const rows = db
-    .prepare(
-      "SELECT submitted_at, per_question FROM exam_attempts WHERE child_id = ? AND per_question != '[]' ORDER BY submitted_at"
-    )
-    .all(childId) as Array<{ submitted_at: string; per_question: string }>;
+/** 某课程最近一次考核时间（ISSUE-135 P0-a：改读孩子库 exam_course_results，单库免跨文件聚合）。 */
+function lastExamAtByCourse(kb: DatabaseSync, childId: string): Map<string, string> {
+  const rows = kb
+    .prepare("SELECT course_name, MAX(exam_at) AS at FROM exam_course_results WHERE child_id = ? GROUP BY course_name")
+    .all(childId) as Array<{ course_name: string; at: string | null }>;
   const map = new Map<string, string>();
   for (const r of rows) {
-    try {
-      const pq = JSON.parse(r.per_question) as Array<{ course?: string }>;
-      for (const q of pq) {
-        const c = String(q?.course ?? "");
-        if (c && !map.has(c)) map.set(c, r.submitted_at);
-      }
-    } catch {
-      /* 忽略坏行 */
-    }
+    const c = String(r.course_name ?? "");
+    if (c) map.set(c, String(r.at ?? ""));
   }
   return map;
 }
 
-/** 最近一次考核的 reinforce_plan（按 course 的 planReviewAt，供选课「复习计划到期」打分）。 */
-function latestReinforcePlan(db: DatabaseSync, childId: string): Record<string, { planReviewAt?: string; focus?: string[] }> {
-  const row = db
-    .prepare("SELECT reinforce_plan FROM exam_attempts WHERE child_id = ? AND reinforce_plan != '{}' ORDER BY submitted_at DESC LIMIT 1")
-    .get() as { reinforce_plan?: string } | undefined;
-  if (!row?.reinforce_plan) return {};
-  try {
-    return JSON.parse(row.reinforce_plan);
-  } catch {
-    return {};
+/** 每门课最近一次非空的复习计划（planReviewAt / focus），供选课「复习计划到期」打分。
+ *  ISSUE-135 P0-a：改读孩子库 exam_course_results（原读主库 exam_attempts.reinforce_plan）。 */
+function latestReinforcePlan(kb: DatabaseSync, childId: string): Record<string, { planReviewAt?: string; focus?: string[] }> {
+  const out: Record<string, { planReviewAt?: string; focus?: string[] }> = {};
+  const rows = kb
+    .prepare(
+      "SELECT course_name, plan_review_at, focus_json FROM exam_course_results WHERE child_id = ? ORDER BY exam_at ASC"
+    )
+    .all(childId) as Array<{ course_name: string; plan_review_at: string | null; focus_json: string | null }>;
+  for (const r of rows) {
+    const c = String(r.course_name ?? "");
+    if (!c) continue;
+    let focus: string[] = [];
+    try {
+      const a = JSON.parse(String(r.focus_json ?? "[]"));
+      if (Array.isArray(a)) focus = a.map(String);
+    } catch {
+      focus = [];
+    }
+    const planReviewAt = String(r.plan_review_at ?? "");
+    if (planReviewAt || focus.length) out[c] = { planReviewAt, focus };
   }
+  return out;
 }
 
 /** 全部「有学习痕迹」课程的元数据（选课 LLM 的候选清单；不含知识点全文，控制 prompt 体积）。
@@ -386,8 +370,8 @@ function listLearnedCourseMeta(
         "SELECT topic, title, last_review, status FROM courses WHERE (last_review != '' OR status = '✅') ORDER BY topic, sort_order, title"
       )
       .all() as Array<{ topic: string; title: string; last_review: string; status: string }>;
-    const lastExam = lastExamAtByCourse(db, childId);
-    const reinforce = latestReinforcePlan(db, childId);
+    const lastExam = lastExamAtByCourse(kb, childId);
+    const reinforce = latestReinforcePlan(kb, childId);
     return rows.map((r) => {
       const lr = r.last_review ?? "";
       const learnedNoDate = String(r.status ?? "").trim() === "✅" && !lr;
@@ -441,36 +425,37 @@ function listCourseStatus(
         return [r.topic_key, type] as const;
       })
     );
-    // 考核聚合：按 course 统计 考核次数(不同 attempt) / 最近考核时间 / 累计正确率
-    const examRows = db
-      .prepare("SELECT id, submitted_at, per_question FROM exam_attempts WHERE child_id = ? AND per_question != '[]'")
-      .all(childId) as Array<{ id: string; submitted_at: string; per_question: string }>;
-    const examStat = new Map<string, { ids: Set<string>; lastAt: string; correct: number; total: number }>();
-    for (const er of examRows) {
-      let pq: Array<Record<string, unknown>> = [];
-      try {
-        pq = JSON.parse(er.per_question) as Array<Record<string, unknown>>;
-      } catch {
-        pq = [];
-      }
-      for (const q of pq) {
-        const course = String(q.course ?? "");
-        if (!course) continue;
-        const got = Number(q.pointGot) || 0;
-        const max = Number(q.pointMax) || 0;
-        const isCorrect = max > 0 && got >= max * 0.6;
-        let s = examStat.get(course);
-        if (!s) {
-          s = { ids: new Set<string>(), lastAt: "", correct: 0, total: 0 };
-          examStat.set(course, s);
-        }
-        s.ids.add(er.id);
-        s.total += 1;
-        if (isCorrect) s.correct += 1;
-        if (er.submitted_at > s.lastAt) s.lastAt = er.submitted_at;
-      }
+    // 考核聚合（ISSUE-135 P0-a：改读孩子库 —— 场次数/最近时间来自 exam_course_results，
+    // 累计正确率来自 exam_plan_courses 的题级 correct 标记，全部单库）。
+    const examLastAt = new Map<string, string>();
+    for (const er of kb
+      .prepare("SELECT course_name, exam_at FROM exam_course_results WHERE child_id = ?")
+      .all(childId) as Array<{ course_name: string; exam_at: string | null }>) {
+      const course = String(er.course_name ?? "");
+      if (!course) continue;
+      const at = String(er.exam_at ?? "");
+      if (at > (examLastAt.get(course) ?? "")) examLastAt.set(course, at);
     }
-    const reinforce = latestReinforcePlan(db, childId);
+    const examStat = new Map<string, { ids: Set<string>; lastAt: string; correct: number; total: number }>();
+    for (const q of kb
+      .prepare("SELECT plan_id, course_name, correct FROM exam_plan_courses WHERE plan_id IN (SELECT id FROM exam_plans WHERE child_id = ? AND status = 'done')")
+      .all(childId) as Array<{ plan_id: string; course_name: string; correct: number | null }>) {
+      const course = String(q.course_name ?? "");
+      if (!course) continue;
+      let s = examStat.get(course);
+      if (!s) {
+        s = { ids: new Set<string>(), lastAt: "", correct: 0, total: 0 };
+        examStat.set(course, s);
+      }
+      s.ids.add(String(q.plan_id));
+      s.total += 1;
+      if (Number(q.correct) === 1) s.correct += 1;
+    }
+    for (const [course, at] of examLastAt) {
+      const s = examStat.get(course);
+      if (s) s.lastAt = at;
+    }
+    const reinforce = latestReinforcePlan(kb, childId);
     // 计划域重构（2026-09-10）：掌握度口径改为「最近一次考核」（course_progress 视图；学习侧只报最近学习时间）。
     // 旧的 courses.mastery/exam_mastery 列保留但不再作为掌握度口径（物理删列留下一版，避免运行时断裂）。
     const progress = new Map<string, { lastExamAt: string; lastExamRate: number | null; lastLearnedAt: string }>();
@@ -612,7 +597,7 @@ function listPlanCourseMeta(
       if (!title) continue; // 一课一行，course_name 即真实课程名（无前缀），精确匹配
       if (!want.has(title) || r.date < want.get(title)!) want.set(title, r.date);
     }
-    const lastExam = lastExamAtByCourse(db, childId);
+    const lastExam = lastExamAtByCourse(kb, childId);
     const courses: CourseMeta[] = [];
     const unmatched: string[] = [];
     for (const [title, planDate] of want) {
@@ -1191,7 +1176,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
   });
 
   // 取消考核计划（家长端）：软删除孩子库 exam_plans（active=0 / status='cancelled'），历史保留供审计，不计入完成率/掌握度。
-  // 注意术语：exam_plans 是「考核计划」；实际考核场次 = 主库 exam_attempts（孩子提交后生成，含逐题记录），不受影响。
+  // 注意术语：exam_plans 是「考核计划」；考核结果（逐题明细/课程概要/知识点情况）在孩子库三张结果表里，不受取消影响。
   // 已开考完成（status='done'）的场次不允许取消。
   app.post("/api/v1/exam/plans/:id/cancel", async (req, reply) => {
     let parentId: string;
@@ -1333,90 +1318,49 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       throw err;
     }
     const now = new Date().toISOString();
+    // attemptId 只是「本次提交」的溯源标识（写入 exam_plans.attempt_id，供考核记录界面按计划匹配）；不再有主库场次表。
     const id = `exam_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    deps.db
-      .prepare(
-        `INSERT INTO exam_attempts (
-           id, parent_id, child_id, topic, title, started_at, submitted_at, status, score,
-           per_question, course_mastery, reinforce_plan, wrong_questions, schedule_id, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        id,
+    const submittedAt = String(body.submittedAt ?? now);
+    const examTitle = String(body.title ?? "").trim() || "考核";
+    // 结果落孩子库三层 + 评测存档（单库幂等）：见 src/exam-results.ts（拆成独立模块便于单测）
+    let planId = String(body.scheduleId ?? "").trim();
+    let persisted: ReturnType<typeof persistExamResult>;
+    try {
+      persisted = persistExamResult({
+        dataDir: deps.config.dataDir,
         parentId,
         childId,
-        String(body.topic ?? ""),
-        String(body.title ?? ""),
-        String(body.startedAt ?? ""),
-        String(body.submittedAt ?? now),
-        body.status === "done" ? "done" : "grading",
-        Number(body.score) || 0,
-        JSON.stringify(body.perQuestion ?? []),
-        JSON.stringify(body.courseMastery ?? {}),
-        JSON.stringify(body.reinforcePlan ?? {}),
-        JSON.stringify(body.wrongQuestions ?? []),
-        String(body.scheduleId ?? ""),
-        now
-      );
-    // ===== Plan A（2026-09-13）：口语/听说题的发音测评结果落 speech_assessments（server.sqlite），
-    // 作为 exam_attempts 的明细子表，供家长端回放/审计。仅对 perQuestion 中带 speech 结果的口语题写入。 =====
-    try {
-      const perQuestion = Array.isArray(body.perQuestion) ? (body.perQuestion as Array<Record<string, unknown>>) : [];
-      const insertSpeech = deps.db.prepare(
-        `INSERT INTO speech_assessments (
-           id, parent_id, child_id, topic_key, course_name, question_type, ref_text, audio_file_id,
-           overall, pron, dimensions_json, detail_json, is_exam, exam_attempt_id, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-      for (const q of perQuestion) {
-        const speech = q.speech as Record<string, unknown> | undefined;
-        if (!speech || typeof speech !== "object") continue;
-        const overall = Number(speech.overall ?? speech.pron ?? 0) || 0;
-        const pron = Number(speech.pron ?? 0) || 0;
-        const dimensions = {
-          accuracy: speech.accuracy,
-          integrity: speech.integrity,
-          fluency: speech.fluency,
-          prosody: speech.prosody,
-          audioQuality: speech.audioQuality,
-        };
-        insertSpeech.run(
-          `sa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          parentId,
-          childId,
-          String(body.topic ?? ""),
-          String(q.course ?? ""),
-          String(q.questionType || q.assessMethod || ""),
-          String(q.refText ?? ""),
-          String(q.audioFileId ?? ""),
-          overall,
-          pron,
-          JSON.stringify(dimensions),
-          JSON.stringify(speech),
-          1,
-          id,
-          now
-        );
-      }
+        attemptId: id,
+        planId,
+        title: examTitle,
+        submittedAt,
+        score: Number(body.score) || 0,
+        perQuestion: body.perQuestion ?? [],
+        reinforcePlan: body.reinforcePlan ?? {},
+        now,
+      });
+      planId = persisted.planId;
     } catch (err) {
-      // 明细落库失败不应拖垮主流程：记日志后继续（主 attempt 已写入）。
-      req.log.warn({ err }, "写入 speech_assessments 失败（attempt 已保留）");
+      req.log.error({ err, childId, planId }, "考核结果落库失败");
+      return reply.code(500).send({ error: `考核结果保存失败：${String((err as Error)?.message || err)}` });
     }
-    // 2026-09-10 计划域：掌握度不再回写 courses（该表已无 mastery/exam_mastery 列）。
-    // 掌握度 = course_progress 视图（按 exam_plan_courses / 最近一次考核聚合），此处只保留 attempt 记录。
-    // 考核 v2（2026-09-14 重构）：body.scheduleId 现在携带的是孩子库 exam_plans 考核计划行 id →
-    // 提交后直接把该计划置 done 并回填 attempt_id/score；逐题明细由 worker applyExamAttempts 幂等回填 exam_plan_courses。
-    const planId = String(body.scheduleId ?? "");
-    if (planId) {
-      const kb = openKb(deps.config.dataDir, parentId, childId);
+    // ===== ⑥ 错题本同步（ISSUE-114 C3，从 worker 前移）=====
+    // (source_ref=attempt, question_id) 幂等哨兵：同一场的同一题只同步一次，重复提交不刷 count。
+    for (const m of persisted.wrongSeeds) {
       try {
-        kb
-          .prepare(
-            "UPDATE exam_plans SET status = 'done', attempt_id = ?, score = ?, done_at = ?, updated_at = ? WHERE id = ? AND child_id = ?"
-          )
-          .run(id, Number(body.score) || 0, String(body.submittedAt ?? now), now, planId, childId);
-      } finally {
-        kb.close();
+        if (examMistakeSynced(deps.config.dataDir, parentId, childId, id, m.questionId)) continue;
+        upsertMistake(deps.config.dataDir, parentId, childId, {
+          kind: "wrong_question",
+          content: `${examTitle}·${m.course}·${m.kpId || "题目"}（${m.got}/${m.max}）`,
+          detail: m.comment,
+          source: "exam",
+          source_ref: id,
+          question_id: m.questionId,
+          course_ref: m.course,
+          knowledge_point_id: m.kpId,
+        });
+      } catch (err) {
+        req.log.warn({ err }, "考核错题写入错题本失败（考核结果已保留）");
       }
     }
     // ISSUE-115 重考钩子（同步串入评分环节）：原计划 retake 有值 → 评分落库后立即生成当天重考计划。
@@ -1432,7 +1376,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           childId,
           planId,
           attemptId: id,
-          examTitle: String(body.title ?? ""),
+          examTitle,
           score: Number(body.score) || 0,
           perQuestion: body.perQuestion ?? [],
         });
@@ -1448,6 +1392,9 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
   });
 
   // ===== 家长查询考核记录列表（倒序；limit 默认 50） =====
+  // ISSUE-135 P0-a：数据源从主库 exam_attempts 切到**孩子库三层**，但**响应形状保持不变**
+  // （{attempts:[{id,title,submittedAt,score,perQuestion[],courseMastery,reinforcePlan,...}]}）——
+  // 三处「考核记录」界面（孩子端考核页 / 课程详情 / 家长端考核计划 tab）与「听原音」因此零改动即可继续工作。
   app.get("/api/v1/exam/attempts/:childId", async (req, reply) => {
     let parentId: string;
     try {
@@ -1464,10 +1411,93 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const rows = deps.db
-      .prepare("SELECT * FROM exam_attempts WHERE child_id = ? ORDER BY submitted_at DESC LIMIT ?")
-      .all(childId, limit) as Array<Record<string, unknown>>;
-    return { attempts: rows.map(rowToAttempt) };
+    const kb = openKb(deps.config.dataDir, parentId, childId);
+    try {
+      const plans = kb
+        .prepare(
+          `SELECT id, title, topic_key, attempt_id, score, done_at FROM exam_plans
+            WHERE child_id = ? AND status = 'done' AND active = 1
+            ORDER BY done_at DESC LIMIT ?`
+        )
+        .all(childId, limit) as Array<{
+        id: string;
+        title: string;
+        topic_key: string;
+        attempt_id: string;
+        score: number | null;
+        done_at: string;
+      }>;
+      const qDetail = kb.prepare("SELECT * FROM exam_plan_courses WHERE plan_id = ? ORDER BY seq, rowid");
+      const qResult = kb.prepare("SELECT * FROM exam_course_results WHERE plan_id = ?");
+      const attempts = plans.map((p) => {
+        const details = qDetail.all(p.id) as Array<Record<string, unknown>>;
+        const results = qResult.all(p.id) as Array<Record<string, unknown>>;
+        const perQuestion = details.map((d) => {
+          const behavior = String(d.behavior ?? "");
+          return {
+            qid: String(d.question_id ?? "") || `q_${String(d.seq ?? "")}`,
+            course: String(d.course_name ?? ""),
+            question: String(d.question_text ?? ""),
+            refText: String(d.ref_text ?? ""),
+            pointGot: d.point_got == null ? 0 : Number(d.point_got),
+            pointMax: d.point_max == null ? 0 : Number(d.point_max),
+            correct: Number(d.correct) === 1,
+            aiComment: String(d.ai_comment ?? ""),
+            asrText: String(d.asr_text ?? ""),
+            audioFileId: String(d.audio_file_id ?? ""),
+            durationMs: Number(d.duration_ms) || 0,
+            questionType: behavior,
+            assessMethod: behavior.startsWith("speech") ? "speech" : undefined,
+            questionId: String(d.question_id ?? ""),
+            knowledgePointId: String(d.knowledge_point_id ?? ""),
+            knowledgePointName: String(d.knowledge_point_name ?? ""),
+          };
+        });
+        const courseMastery: Record<string, { correct: number; total: number; rate: number }> = {};
+        for (const q of perQuestion) {
+          const k = q.course || "（未分课程）";
+          const e = courseMastery[k] ?? (courseMastery[k] = { correct: 0, total: 0, rate: 0 });
+          e.total += 1;
+          if (q.correct) e.correct += 1;
+        }
+        for (const k of Object.keys(courseMastery)) {
+          const e = courseMastery[k]!;
+          e.rate = Math.round((e.total ? e.correct / e.total : 0) * 100) / 100;
+        }
+        const reinforcePlan: Record<string, { planReviewAt: string; focus: string[] }> = {};
+        for (const r of results) {
+          const name = String(r.course_name ?? "");
+          if (!name) continue;
+          let focus: string[] = [];
+          try {
+            const a = JSON.parse(String(r.focus_json ?? "[]"));
+            if (Array.isArray(a)) focus = a.map(String);
+          } catch {
+            focus = [];
+          }
+          const planReviewAt = String(r.plan_review_at ?? "");
+          if (planReviewAt || focus.length) reinforcePlan[name] = { planReviewAt, focus };
+        }
+        return {
+          id: String(p.attempt_id ?? "") || p.id,
+          childId,
+          topic: String(p.topic_key ?? ""),
+          title: String(p.title ?? ""),
+          startedAt: String(p.done_at ?? ""),
+          submittedAt: String(p.done_at ?? ""),
+          status: "done",
+          score: p.score == null ? 0 : Number(p.score),
+          perQuestion,
+          courseMastery,
+          reinforcePlan,
+          wrongQuestions: perQuestion.filter((q) => !q.correct).map((q) => q.qid),
+          scheduleId: p.id,
+        };
+      });
+      return { attempts };
+    } finally {
+      kb.close();
+    }
   });
 
   // ===== 每课程考核记录表（家长端：最近考核/掌握/难点/亮点/计划复习时间+重点） =====
@@ -1486,41 +1516,25 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const rows = deps.db
-      .prepare("SELECT id, submitted_at, per_question, course_mastery, reinforce_plan FROM exam_attempts WHERE child_id = ? ORDER BY submitted_at ASC")
-      .all(childId) as Array<Record<string, unknown>>;
-    const records = new Map<
-      string,
-      {
-        course: string;
-        attempts: number;
-        lastAssessAt: string;
-        correct: number;
-        total: number;
-        rate: number;
-        difficulties: string[];
-        highlights: string[];
-        planReviewAt: string;
-        focus: string[];
-      }
-    >();
-    for (const row of rows) {
-      let pq: Array<Record<string, unknown>> = [];
-      try {
-        pq = JSON.parse(String(row.per_question ?? "[]"));
-      } catch {
-        pq = [];
-      }
-      let rp: Record<string, { planReviewAt?: string; focus?: string[] }> = {};
-      try {
-        rp = JSON.parse(String(row.reinforce_plan ?? "{}"));
-      } catch {
-        rp = {};
-      }
-      const submittedAt = String(row.submitted_at ?? "");
-      for (const q of pq) {
-        const course = String(q.course ?? "");
-        if (!course) continue;
+    // ISSUE-135 P0-a：改读孩子库 exam_course_results（场次数/时间/得分率/复习重点）+ exam_plan_courses（逐题评语）。
+    const kb = openKb(deps.config.dataDir, parentId, childId);
+    try {
+      const records = new Map<
+        string,
+        {
+          course: string;
+          attempts: number;
+          lastAssessAt: string;
+          correct: number;
+          total: number;
+          rate: number;
+          difficulties: string[];
+          highlights: string[];
+          planReviewAt: string;
+          focus: string[];
+        }
+      >();
+      const ensure = (course: string) => {
         let rec = records.get(course);
         if (!rec) {
           rec = {
@@ -1537,37 +1551,63 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           };
           records.set(course, rec);
         }
-        rec.attempts = 1; // 记录参与场次数（有题即算）
-        if (submittedAt > rec.lastAssessAt) rec.lastAssessAt = submittedAt;
-        const got = Number(q.pointGot) || 0;
-        const max = Number(q.pointMax) || 0;
-        const isCorrect = got >= max * 0.6;
-        rec.total += 1;
-        if (isCorrect) rec.correct += 1;
-        const comment = String(q.aiComment ?? "");
-        if (!isCorrect && comment) rec.difficulties.push(comment);
-        if (isCorrect && got === max && comment) rec.highlights.push(comment);
-        const plan = rp[course];
-        if (plan) {
-          rec.planReviewAt = String(plan.planReviewAt ?? rec.planReviewAt);
-          if (Array.isArray(plan.focus) && plan.focus.length) rec.focus = plan.focus.map(String);
+        return rec;
+      };
+      for (const r of kb
+        .prepare(
+          "SELECT course_name, exam_at, point_got, point_max, plan_review_at, focus_json FROM exam_course_results WHERE child_id = ? ORDER BY exam_at ASC"
+        )
+        .all(childId) as Array<Record<string, unknown>>) {
+        const course = String(r.course_name ?? "");
+        if (!course) continue;
+        const rec = ensure(course);
+        rec.attempts += 1;
+        const at = String(r.exam_at ?? "");
+        if (at > rec.lastAssessAt) rec.lastAssessAt = at;
+        const planReviewAt = String(r.plan_review_at ?? "");
+        if (planReviewAt) rec.planReviewAt = planReviewAt;
+        try {
+          const a = JSON.parse(String(r.focus_json ?? "[]"));
+          if (Array.isArray(a) && a.length) rec.focus = a.map(String);
+        } catch {
+          /* 坏 JSON 忽略 */
         }
       }
+      for (const q of kb
+        .prepare(
+          `SELECT course_name, point_got, point_max, correct, ai_comment FROM exam_plan_courses
+            WHERE plan_id IN (SELECT id FROM exam_plans WHERE child_id = ? AND status = 'done')
+            ORDER BY created_at ASC, seq ASC`
+        )
+        .all(childId) as Array<Record<string, unknown>>) {
+        const course = String(q.course_name ?? "");
+        if (!course) continue;
+        const rec = ensure(course);
+        const got = Number(q.point_got) || 0;
+        const max = Number(q.point_max) || 0;
+        const isCorrect = Number(q.correct) === 1;
+        rec.total += 1;
+        if (isCorrect) rec.correct += 1;
+        const comment = String(q.ai_comment ?? "");
+        if (!isCorrect && comment) rec.difficulties.push(comment);
+        if (isCorrect && max > 0 && got === max && comment) rec.highlights.push(comment);
+      }
+      const out = Array.from(records.values()).map((r) => ({
+        course: r.course,
+        attempts: r.attempts,
+        lastAssessAt: r.lastAssessAt,
+        correct: r.correct,
+        total: r.total,
+        rate: r.total ? Math.round((r.correct / r.total) * 1000) / 1000 : 0,
+        difficulties: r.difficulties.slice(-3),
+        highlights: r.highlights.slice(-3),
+        planReviewAt: r.planReviewAt,
+        focus: r.focus,
+      }));
+      return { records: out };
+    } finally {
+      kb.close();
     }
-    const out = Array.from(records.values()).map((r) => ({
-      course: r.course,
-      attempts: r.attempts,
-      lastAssessAt: r.lastAssessAt,
-      correct: r.correct,
-      total: r.total,
-      rate: r.total ? Math.round((r.correct / r.total) * 1000) / 1000 : 0,
-      difficulties: r.difficulties.slice(-3),
-      highlights: r.highlights.slice(-3),
-      planReviewAt: r.planReviewAt,
-      focus: r.focus,
-    }));
-    // 掌握度等级（来自最近聚合率）
-    return { records: out };
   });
 
   // ===== 课程综合学习情况「一站式」查询（家长计划/复习决策：学习/复习/考核全景） =====
@@ -1664,6 +1704,109 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         options: Array.isArray(b.options) ? b.options : undefined,
       });
       return { id };
+    } finally {
+      db.close();
+    }
+  });
+
+  /** 主题/课程/知识点 三维 facets（含还没挂题的课与知识点）：题库级联筛选与挂载选择用（ISSUE-132）。 */
+  app.get("/api/v1/assess/questions/facets", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const db = openParentFor(parentId);
+    try {
+      return listBankFacets(db);
+    } finally {
+      db.close();
+    }
+  });
+
+  /** 单题挂载：挂到某课某知识点下（课程按 courseId 或 topic+title；知识点按 id 或名称，名称不存在则新建）。 */
+  app.post("/api/v1/assess/questions/link", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const b = (req.body || {}) as {
+      questionId?: string;
+      courseId?: string;
+      topic?: string;
+      title?: string;
+      knowledgePointId?: string;
+      knowledgePoint?: string;
+      knowledgePointDetail?: string;
+      overview?: string;
+    };
+    if (!b.questionId) return reply.code(400).send({ error: "缺少 questionId" });
+    if (!b.courseId && !(b.topic && b.title)) return reply.code(400).send({ error: "需要 courseId 或 topic+title 定位课程" });
+    if (!b.knowledgePointId && !String(b.knowledgePoint || "").trim())
+      return reply.code(400).send({ error: "需要 knowledgePointId 或 knowledgePoint（知识点名称）" });
+    const db = openParentFor(parentId);
+    try {
+      const r = linkQuestionToKnowledgePoint(db, {
+        questionId: String(b.questionId),
+        courseId: b.courseId ? String(b.courseId) : undefined,
+        topic: b.topic ? String(b.topic) : undefined,
+        title: b.title ? String(b.title) : undefined,
+        knowledgePointId: b.knowledgePointId ? String(b.knowledgePointId) : undefined,
+        knowledgePointName: b.knowledgePoint ? String(b.knowledgePoint) : undefined,
+        knowledgePointDetail: b.knowledgePointDetail ? String(b.knowledgePointDetail) : undefined,
+        overview: b.overview ? String(b.overview) : undefined,
+      });
+      return { ok: true, ...r };
+    } catch (e) {
+      return reply.code(400).send({ error: String((e as Error).message || e) });
+    } finally {
+      db.close();
+    }
+  });
+
+  /** 移除一处挂载（题目保留在题库）。 */
+  app.post("/api/v1/assess/questions/unlink", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const b = (req.body || {}) as { questionId?: string; courseId?: string; knowledgePointId?: string };
+    if (!b.questionId || !b.courseId || !b.knowledgePointId)
+      return reply.code(400).send({ error: "需要 questionId + courseId + knowledgePointId" });
+    const db = openParentFor(parentId);
+    try {
+      const r = unlinkQuestionFromKnowledgePoint(db, {
+        questionId: String(b.questionId),
+        courseId: String(b.courseId),
+        knowledgePointId: String(b.knowledgePointId),
+      });
+      return { ok: true, ...r };
+    } finally {
+      db.close();
+    }
+  });
+
+  /** 删除题库题（事务清挂载行；考核历史为逐题快照不受影响）。 */
+  app.delete("/api/v1/assess/questions/:questionId", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { questionId } = req.params as { questionId: string };
+    const db = openParentFor(parentId);
+    try {
+      return { ok: true, ...deleteBankQuestion(db, String(questionId)) };
     } finally {
       db.close();
     }
@@ -1852,31 +1995,36 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }>;
     const childName = new Map(children.map((c) => [c.id, c.name]));
     const records: Array<Record<string, unknown>> = [];
+    // ISSUE-135 P0-a：改读孩子库考核明细（question_id 直查），不再扫主库 per_question。
     for (const child of children) {
-      const attempts = deps.db
-        .prepare("SELECT id, child_id, created_at, per_question FROM exam_attempts WHERE child_id = ? ORDER BY created_at DESC LIMIT 60")
-        .all(child.id) as Array<{ id: string; child_id: string; created_at: string; per_question: string }>;
-      for (const at of attempts) {
-        let arr: any[] = [];
-        try {
-          arr = JSON.parse(at.per_question || "[]");
-        } catch {
-          continue;
+      const kb = openKb(deps.config.dataDir, parentId, child.id);
+      try {
+        const rows = kb
+          .prepare(
+            `SELECT ec.question_id, ec.point_got, ec.point_max, ec.correct, ec.ai_comment, ec.created_at,
+                    p.attempt_id, p.done_at, p.id AS plan_id
+               FROM exam_plan_courses ec
+               JOIN exam_plans p ON p.id = ec.plan_id AND p.status = 'done'
+              WHERE ec.question_id = ?
+              ORDER BY ec.created_at DESC LIMIT 60`
+          )
+          .all(questionId) as Array<Record<string, unknown>>;
+        for (const q of rows) {
+          records.push({
+            childId: child.id,
+            childName: childName.get(child.id) || child.name,
+            attemptId: String(q.attempt_id ?? "") || String(q.plan_id ?? ""),
+            submittedAt: String(q.done_at ?? q.created_at ?? ""),
+            pointGot: q.point_got == null ? null : Number(q.point_got),
+            pointMax: q.point_max == null ? null : Number(q.point_max),
+            correct: Number(q.correct) === 1,
+            aiComment: String(q.ai_comment || ""),
+          });
         }
-        for (const q of arr) {
-          if (q && String(q.questionId || "") === questionId) {
-            records.push({
-              childId: child.id,
-              childName: childName.get(child.id) || child.name,
-              attemptId: at.id,
-              submittedAt: at.created_at,
-              pointGot: Number(q.pointGot) ?? null,
-              pointMax: Number(q.pointMax) || null,
-              correct: Boolean(q.correct),
-              aiComment: String(q.aiComment || ""),
-            });
-          }
-        }
+      } catch {
+        /* 单个孩子库异常不阻断其他孩子 */
+      } finally {
+        kb.close();
       }
     }
     records.sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)));

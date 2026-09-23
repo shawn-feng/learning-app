@@ -37,13 +37,13 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
   return btoa(bin);
 }
 
-/** 通用上传：POST /files/upload，返回 {success, path(=files.id), size}（对齐 save_upload 返回面）。 */
+/** 通用上传：POST /files/upload，返回 {success, path(=files.id), ref(=files/<id>), size}（对齐 save_upload 返回面）。 */
 async function uploadToFiles(
   childId: string | null,
   name: string,
   _mime: string,
   data: ArrayBuffer
-): Promise<{ success: boolean; path?: string; size?: number; error?: string }> {
+): Promise<{ success: boolean; path?: string; ref?: string; size?: number; error?: string }> {
   try {
     const form = new FormData();
     form.append(
@@ -53,7 +53,12 @@ async function uploadToFiles(
     );
     if (childId) form.append("child_id", childId);
     const data2 = await http<{ file: FileMeta }>("/files/upload", { method: "POST", body: form });
-    return { success: true, path: data2.file.id, size: Number(data2.file.size ?? data.byteLength) };
+    return {
+      success: true,
+      path: data2.file.id,
+      ref: `files/${data2.file.id}`,
+      size: Number(data2.file.size ?? data.byteLength),
+    };
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }

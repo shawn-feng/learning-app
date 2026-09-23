@@ -48,3 +48,12 @@
 - 状态流转：mastered（会了，验证后）/ dismissed（不算）/ reopen；重复出现自动重开 open。
 - 未做：家长端 dashboard widget（等 ISSUE-108）；重考做对自动标 mastered（二期）。
 - 测试 test/mistakes.test.ts 4 例全绿；全量 315 过/15 败（存量）。
+
+---
+**补全记录（2026-09-22）——家长端可见性（落地记录挂起的最后一项 v1 缺口）**：
+- 根因：ISSUE-128 开放家长 db 通道「孩子库全部登记表」时，`childKbTableSpecs()` 登记清单漏了 `mistake_book`（和 `display_contents`）——家长 agent（parent / parent-data）读不到错题本，ISSUE-108 报表也因此无错题数据源。probe:registry-drift 此前已把它列为「未被注册表覆盖」。
+- db-channel.ts：登记 `mistake_book`（13 列 + readOnlyColumns：count/first_seen/last_seen/mastered_at 服务端维护拒写——家长纠错走 status=dismissed，不碰遗忘曲线计数）+ `display_contents`（内部表，只读登记）+ 补 `exam_plans.retake` 列（ISSUE-115 加列时漏登记）。孩子库漂移清零。
+- parent-registry.ts：家长 agent prompt 新增「孩子的错题本」段——status=open 按 last_seen 倒序 = 当前没掌握，count 越大越薄弱，按 kind/知识点聚合汇报；约束：不代孩子标 mastered（掌握要孩子自己验证）。
+- 家长侧用法：对话直接问（「孩子最近哪里薄弱？」）或让 agent 生成含错题统计的学习报表（ISSUE-108 报表通道）。
+- 测试：db-channel-child.test.ts 新增 2 例（错题本读过滤 + 管理口径写纠错/拒写维护列），10 例全绿；mistakes.test.ts 4 例回归绿；server tsc 零错误；probe:registry-drift 无漂移。
+- 仍未做（维持原判）：重考做对自动标 mastered（二期，见落地记录 2026-09-19）。

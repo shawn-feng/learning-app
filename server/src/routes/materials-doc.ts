@@ -36,7 +36,7 @@ import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
-import { encodeMaterialId, materialsRoot } from "../db/materials.js";
+import { encodeMaterialId, resolveMaterialFile } from "../db/materials.js";
 import { injectBridge } from "../../../src/lib/page-bridge.js";
 
 interface MaterialDocDeps {
@@ -66,24 +66,11 @@ function authParentFlexible(
   }
 }
 
-/** 解析相对路径并校验落在材料根目录内（防目录穿越，与 materials.ts 的 resolveSafe 一致）。 */
-function resolveSafe(root: string, relPosix: string): string {
-  const abs = path.resolve(root, relPosix);
-  if (!abs.startsWith(path.resolve(root) + path.sep)) {
-    throw new ApiError(403, "非法路径");
-  }
-  return abs;
-}
-
-/** 读材料相对路径的文本内容（utf-8）；不存在/越界/不可读返回 null。 */
-function readMaterialText(root: string, relPosix: string): string | null {
-  let abs: string;
+/** 读材料相对路径的文本内容（utf-8）；不存在/不可读返回 null。
+ *  P2 双根：resolveMaterialFile 新根优先、旧根兜底（rel 合法性由调用方校验）。 */
+function readMaterialText(dataDir: string, parentId: string, relPosix: string): string | null {
   try {
-    abs = resolveSafe(root, relPosix);
-  } catch {
-    return null;
-  }
-  try {
+    const abs = resolveMaterialFile(dataDir, parentId, relPosix);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
     return fs.readFileSync(abs, "utf-8");
   } catch {
@@ -108,7 +95,7 @@ function extractRedirectTarget(html: string): string | null {
  * followHtmlRedirectRemote）：最多 8 跳、visited 防环；仅跟随落在 materials 根内的
  * 相对 .html/.htm 目标，越界/无效时原样返回 startRel。
  */
-function followHtmlRedirectOnDisk(root: string, startRel: string, startContent: string): { rel: string; content: string } {
+function followHtmlRedirectOnDisk(dataDir: string, parentId: string, startRel: string, startContent: string): { rel: string; content: string } {
   let curRel = startRel;
   let content = startContent;
   const visited = new Set<string>([startRel]);
@@ -122,7 +109,7 @@ function followHtmlRedirectOnDisk(root: string, startRel: string, startContent: 
     if (visited.has(nextRel)) break;
     if (!/\.(html|htm)$/i.test(nextRel)) break;
     visited.add(nextRel);
-    const next = readMaterialText(root, nextRel);
+    const next = readMaterialText(dataDir, parentId, nextRel);
     if (next === null) break;
     curRel = nextRel;
     content = next;
@@ -216,21 +203,18 @@ export function registerMaterialDocRoutes(app: FastifyInstance, deps: MaterialDo
     if (!/\.(html|htm)$/i.test(relPosix)) {
       return reply.code(400).send({ error: "doc 网关仅接受 .html/.htm 材料" });
     }
-    // 归属校验与 content 路由一致：按 (id, parent_id) 查索引（Electron 端 fetchMaterialContent 亦经 content 路由，同语义）
-    const row = deps.db
-      .prepare("SELECT path FROM materials WHERE id = ? AND parent_id = ?")
-      .get(id, parentId) as { path: string } | undefined;
-    if (!row) return reply.code(404).send({ error: "材料不存在" });
-
-    const root = materialsRoot(deps.config.dataDir, parentId);
-    const raw = readMaterialText(root, row.path);
+    // 归属校验：id 即相对路径，父归属由 token 决定（与 content 路由同语义；索引表已删）
+    if (!relPosix || relPosix.includes("..") || path.isAbsolute(relPosix) || /[\\]/.test(relPosix)) {
+      return reply.code(403).send({ error: "非法材料路径" });
+    }
+    const raw = readMaterialText(deps.config.dataDir, parentId, relPosix);
     if (raw === null) return reply.code(404).send({ error: "材料文件不存在" });
 
     // 1) 跟随 <meta http-equiv=refresh> 占位跳转（与 material-doc.ts 相同：占位页落到真实 html）
-    let finalRel = row.path;
+    let finalRel = relPosix;
     let content = raw;
     if (/http-equiv\s*=\s*["']?refresh/i.test(content)) {
-      const jumped = followHtmlRedirectOnDisk(root, finalRel, content);
+      const jumped = followHtmlRedirectOnDisk(deps.config.dataDir, parentId, finalRel, content);
       if (jumped.rel !== finalRel) {
         finalRel = jumped.rel;
         content = jumped.content;
@@ -289,17 +273,16 @@ export function registerMaterialDocRoutes(app: FastifyInstance, deps: MaterialDo
       return reply.code(403).send({ error: "非法路径" });
     }
     // 页面内相对跳转/拼接以当前目录为 base：目录形态请求（无扩展名）不是合法材料，直接 404
-    const root = materialsRoot(deps.config.dataDir, parentId);
 
     const ext = path.extname(relPosix).toLowerCase().replace(".", "");
     if (ext === "html" || ext === "htm") {
       // ── 文档分支：跟随 refresh → 改写 + base + 注桥（对齐 doc 网关管线，base 为新增）──
-      const raw = readMaterialText(root, relPosix);
+      const raw = readMaterialText(deps.config.dataDir, parentId, relPosix);
       if (raw === null) return reply.code(404).send({ error: "材料文件不存在" });
       let finalRel = relPosix;
       let content = raw;
       if (/http-equiv\s*=\s*["']?refresh/i.test(content)) {
-        const jumped = followHtmlRedirectOnDisk(root, finalRel, content);
+        const jumped = followHtmlRedirectOnDisk(deps.config.dataDir, parentId, finalRel, content);
         if (jumped.rel !== finalRel) {
           finalRel = jumped.rel;
           content = jumped.content;
@@ -329,14 +312,8 @@ export function registerMaterialDocRoutes(app: FastifyInstance, deps: MaterialDo
       return reply.send(html);
     }
 
-    // ── 子资源分支：磁盘直读流式（MIME/Range 与 content 路由逐行对齐）──
-    let abs: string;
-    try {
-      abs = resolveSafe(root, relPosix);
-    } catch (err) {
-      if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
-      throw err;
-    }
+    // ── 子资源分支：磁盘直读流式（MIME/Range 与 content 路由逐行对齐；P2 双根解析）──
+    const abs = resolveMaterialFile(deps.config.dataDir, parentId, relPosix);
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
       return reply.code(404).send({ error: "材料文件不存在" });
     }

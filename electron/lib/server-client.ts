@@ -206,3 +206,47 @@ export async function serverUploadFile(
   }
   return (await res.json()) as unknown;
 }
+
+/**
+ * 通用 multipart 上传（带附加字段，返回完整 JSON body）——ISSUE-131 网盘 fs:upload 用。
+ * 与 uploadFileToServer 的差异：除 file 外还带 path/overwrite/childId 等表单字段。
+ */
+export async function serverUploadWithFields(
+  path: string,
+  file: { name: string; mime: string; data: ArrayBuffer | Buffer },
+  fields: Record<string, string>,
+  token: string,
+  opts: { timeoutMs?: number } = {}
+): Promise<{ [key: string]: unknown }> {
+  const base = serverBase();
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([file.data as BlobPart], file.mime ? { type: file.mime } : undefined),
+    String(file.name || "file").slice(0, 120) || "file"
+  );
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/v1${path}`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 120000),
+    });
+  } catch (e) {
+    throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 120000));
+  }
+  if (!res.ok) {
+    let detail = `服务端错误 (HTTP ${res.status})`;
+    try {
+      const b = (await res.json()) as { error?: string };
+      if (b?.error) detail = b.error;
+    } catch {
+      /* 保留默认 */
+    }
+    throw new ServerError(res.status, detail);
+  }
+  return (await res.json()) as { [key: string]: unknown };
+}

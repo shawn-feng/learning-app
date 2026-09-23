@@ -5,7 +5,7 @@ import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildP
 import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
-import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, openChildSession, openParentSession, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult } from "./server-agent-client";
+import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, openChildSession, openParentSession, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult, getParentReport } from "./server-agent-client";
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
@@ -13,7 +13,7 @@ import crypto from "crypto";
 import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, prewarmTexts, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
 import { dbQuery, currentSessionToken } from "./client-data";
-import { serverFetch, uploadFileToServer } from "./server-client";
+import { serverFetch, uploadFileToServer, serverUploadWithFields, serverBase } from "./server-client";
 import { formatLocalDate } from "./dates";
 import { listChildren } from "./child-auth";
 import { readClientLogFile, getClientLog } from "./app-logger";
@@ -39,7 +39,7 @@ import {
 } from "./parent-library";
 import { getChildSchedulerConfig, setChildSchedulerConfig, getParentSchedulerConfig, setParentSchedulerConfig, getBackupSchedulerConfig, setBackupSchedulerConfig, getEventPollConfig, setEventPollConfig } from "./scheduler";
 import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
-import { readTokenLog, getTokenSummary } from "./token-stats";
+
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
 import { listWechatBindRequests, decideWechatBindRequest, listWechatBindings, addWechatBinding, removeWechatBinding, getFeishuConfig, saveFeishuConfig } from "./wechat";
 import { listNamespaces, decideNamespace, setNamespaceStatus } from "./namespaces";
@@ -1156,6 +1156,21 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       return { success: false, error: (err as Error).message };
     }
   });
+  // ISSUE-130：多日三域聚合（孩子详情「计划」tab；重复规则虚拟展开由服务端处理）
+  ipcMain.handle("plans:range", async (_e, childId: string, from?: string, days?: number) => {
+    try {
+      const q = new URLSearchParams({ childId });
+      if (from) q.set("from", from);
+      if (days) q.set("days", String(days));
+      const res = await serverFetch<{ from: string; days: Array<{ date: string; items: unknown[] }> }>(
+        `/plans/range?${q.toString()}`,
+        { token: currentSessionToken(), timeoutMs: 20000 }
+      );
+      return { success: true, from: res.from, days: res.days ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
   // 近 N 天完成情况（趋势；来自 reward_daily_stats 按日汇总）
   ipcMain.handle("todo:stats:list", async (_e, childId: string, range?: number) => {
     try {
@@ -1377,6 +1392,18 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // ISSUE-108：取最近一次家长报表（parent_display_report 落服务端 settings）
+  ipcMain.handle("parent-report:get", async () => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await getParentReport(token);
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle(
     "pi:prompt",
     async (
@@ -1573,19 +1600,199 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // ---- token 统计读取（ISSUE-010）：家长端只读汇总 / 最近日志 ----
-  // childId 缺省时返回全局（家长会话）统计；传 childId 时返回该孩子隔离统计。
-  ipcMain.handle("token:summary", async (_e, childId?: string) => {
+  // ---- token 用量查询（ISSUE-129）：透传服务端聚合（口径=模型返回字段原样直传） ----
+  // 服务端读取前先做增量扫描（游标幂等）；scope: parent|child|scene|course。
+  ipcMain.handle("tokenUsage:days", async (_e, params?: { from?: string; to?: string; scope?: string }) => {
     try {
-      return { success: true, summary: getTokenSummary(childId || undefined) };
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const qs = new URLSearchParams();
+      if (params?.from) qs.set("from", params.from);
+      if (params?.to) qs.set("to", params.to);
+      if (params?.scope) qs.set("scope", params.scope);
+      const data = await serverFetch<{ days?: unknown[] }>(`/token-usage/days?${qs.toString()}`, { token });
+      return { success: true, days: data?.days ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
-  ipcMain.handle("token:list", async (_e, childId?: string, limit?: number) => {
+  ipcMain.handle("tokenUsage:sessions", async (_e, date: string, scope?: string) => {
     try {
-      return { success: true, entries: readTokenLog(childId || undefined, limit ?? 50) };
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const qs = new URLSearchParams({ date });
+      if (scope) qs.set("scope", scope);
+      const data = await serverFetch<{ sessions?: unknown[] }>(`/token-usage/sessions?${qs.toString()}`, { token });
+      return { success: true, sessions: data?.sessions ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- 文件区网盘（ISSUE-131 P1）：服务端 /fs/* 透传 ----
+  // 家长 scope（childId 省略）= materials/ uploads/ workspaces/<pid>/ 整棵虚拟树；
+  // 孩子 scope（带 childId）= 自己工作区。返回 {success, data|...} 包装与其它透传一致。
+  ipcMain.handle("fs:list", async (_e, payload: { path?: string; childId?: string }) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<Record<string, unknown>>("/fs/list", {
+        method: "POST",
+        body: { path: payload?.path ?? "", childId: payload?.childId || undefined },
+        token,
+      });
+      return { success: true, ...data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 子树检索（当前目录范围内向下，名字大小写不敏感包含匹配）
+  ipcMain.handle("fs:search", async (_e, payload: { path?: string; query: string; childId?: string }) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<Record<string, unknown>>("/fs/search", {
+        method: "POST",
+        body: { path: payload?.path ?? "", query: payload?.query ?? "", childId: payload?.childId || undefined },
+        token,
+      });
+      return { success: true, ...data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("fs:mkdir", async (_e, payload: { path: string; name: string; childId?: string }) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<Record<string, unknown>>("/fs/mkdir", {
+        method: "POST",
+        body: { path: payload.path, name: payload.name, childId: payload.childId || undefined },
+        token,
+      });
+      return { success: true, ...data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle(
+    "fs:rename",
+    async (_e, payload: { path: string; newName: string; confirm?: boolean; childId?: string }) => {
+      try {
+        const token = currentSessionToken();
+        if (!token) return { success: false, error: "未登录" };
+        const data = await serverFetch<Record<string, unknown>>("/fs/rename", {
+          method: "POST",
+          body: {
+            path: payload.path,
+            newName: payload.newName,
+            confirm: payload.confirm === true,
+            childId: payload.childId || undefined,
+          },
+          token,
+        });
+        if ((data as { needsConfirm?: boolean }).needsConfirm) return data; // R-1 引用影响待确认
+        return { success: true, ...data };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    "fs:move",
+    async (_e, payload: { from: string; toDir: string; confirm?: boolean; childId?: string }) => {
+      try {
+        const token = currentSessionToken();
+        if (!token) return { success: false, error: "未登录" };
+        const data = await serverFetch<Record<string, unknown>>("/fs/move", {
+          method: "POST",
+          body: {
+            from: payload.from,
+            toDir: payload.toDir,
+            confirm: payload.confirm === true,
+            childId: payload.childId || undefined,
+          },
+          token,
+        });
+        if ((data as { needsConfirm?: boolean }).needsConfirm) return data;
+        return { success: true, ...data };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  ipcMain.handle("fs:delete", async (_e, payload: { path: string; confirm?: boolean; childId?: string }) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<Record<string, unknown>>("/fs/delete", {
+        method: "POST",
+        body: { path: payload.path, confirm: payload.confirm === true, childId: payload.childId || undefined },
+        token,
+      });
+      if ((data as { needsConfirm?: boolean }).needsConfirm) return data;
+      return { success: true, ...data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("fs:refs", async (_e, payload: { path: string; childId?: string }) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ refs?: unknown[] }>("/fs/refs", {
+        method: "POST",
+        body: { path: payload.path, childId: payload.childId || undefined },
+        token,
+      });
+      return { success: true, refs: data?.refs ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle(
+    "fs:upload",
+    async (
+      _e,
+      payload: { path: string; name: string; mime: string; data: ArrayBuffer | Buffer; overwrite?: boolean; childId?: string }
+    ) => {
+      try {
+        const token = currentSessionToken();
+        if (!token) return { success: false, error: "未登录" };
+        const data = await serverUploadWithFields(
+          "/fs/upload",
+          { name: payload.name, mime: payload.mime, data: payload.data },
+          {
+            path: payload.path,
+            overwrite: payload.overwrite ? "true" : "false",
+            ...(payload.childId ? { childId: payload.childId } : {}),
+          },
+          token
+        );
+        return { success: true, ...data };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  // 下载 URL：GET /fs/download?path=&token=（a[download]/新标签无法带请求头；?token= 与
+  // files/materials GET 二进制路由同一暴露面）。Web 端由 shim 同构实现。
+  ipcMain.handle("fs:download_url", async (_e, payload: { path: string; childId?: string }) => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const qs = new URLSearchParams({ path: payload.path, token });
+      if (payload.childId) qs.set("childId", payload.childId);
+      return { success: true, url: `${serverBase()}/api/v1/fs/download?${qs.toString()}` };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1843,7 +2050,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // 文件上传落盘（ISSUE-008）：保存到 data/children/<childId>/uploads/，按 childId 隔离
+  // 文件上传落盘（ISSUE-008）：本机缓存 data/children/<childId>/uploads/，按 childId 隔离。
+  // ISSUE-125/131 P2 收口：同时上送服务端 files 通道（带 child_id，服务端落 <cid>/uploads/），
+  // 返回 ref（files/<id>）——孩子端标记 ref 优先，服务端 agent 才读得到附件（同家长 ISSUE-124）。
   ipcMain.handle(
     "file:save_upload",
     async (
@@ -1866,11 +2075,32 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         }
         fs.writeFileSync(full, Buffer.from(payload.data));
         pruneUploads(uploadsDir);
+        // 上送服务端（child_id 决定服务端落盘子区 <cid>/uploads）；失败不阻断本机落盘
+        let ref = "";
+        let uploadError: string | undefined;
+        try {
+          const token = currentSessionToken();
+          if (!token) throw new Error("未登录");
+          const data = await serverUploadWithFields(
+            "/files/upload",
+            { name: finalName, mime: payload.mime, data: payload.data },
+            { child_id: payload.childId },
+            token
+          );
+          const fileId = (data as { file?: { id?: string } })?.file?.id;
+          if (!fileId) throw new Error("服务端未返回 file id");
+          ref = `files/${fileId}`;
+        } catch (err) {
+          uploadError = `附件未上传到服务端（${(err as Error).message}），AI 可能读不到这份附件`;
+          console.warn(`[file:save_upload] 服务端上传失败（本机已落盘）:`, (err as Error).message);
+        }
         return {
           success: true,
           // 相对路径（相对 data/），统一正斜杠，便于前端展示/后续读取
           path: path.join("children", payload.childId, "uploads", finalName).replace(/\\/g, "/"),
           size: Buffer.byteLength(payload.data),
+          ref,
+          ...(uploadError ? { uploadError } : {}),
         };
       } catch (err) {
         return { success: false, error: (err as Error).message };
@@ -2390,6 +2620,47 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       const { questionAssessRecords } = await import("./assess-admin");
       const data = await questionAssessRecords(String(questionId));
       return { success: true, data: data.records || [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  // 题库管理（ISSUE-132）：facets / 单题保存·删除 / 挂载增删
+  ipcMain.handle("assess:bankFacets", async () => {
+    try {
+      const { assessBankFacets } = await import("./assess-admin");
+      return { success: true, data: await assessBankFacets() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("assess:questionSave", async (_e, q: any) => {
+    try {
+      const { saveAssessQuestion } = await import("./assess-admin");
+      return { success: true, data: await saveAssessQuestion(q) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("assess:questionDelete", async (_e, questionId: string) => {
+    try {
+      const { deleteAssessQuestion } = await import("./assess-admin");
+      return { success: true, data: await deleteAssessQuestion(String(questionId)) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("assess:questionLink", async (_e, input: any) => {
+    try {
+      const { linkAssessQuestion } = await import("./assess-admin");
+      return { success: true, data: await linkAssessQuestion(input) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("assess:questionUnlink", async (_e, input: any) => {
+    try {
+      const { unlinkAssessQuestion } = await import("./assess-admin");
+      return { success: true, data: await unlinkAssessQuestion(input) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

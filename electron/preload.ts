@@ -34,6 +34,8 @@ const api = {
   // P4：服务端 agent 的 display_content 推送（资料面板自动打开；含 path/title/source/content 正文）
   onPiDisplayContent: (callback: (data: { childId: string; path: string; title?: string; source?: string; content?: string }) => void) =>
     registerListener("pi:display_content", callback),
+  // ISSUE-108：取最近一次家长报表（parent_display_report 推送并落服务端 settings）
+  parentReportGet: () => ipcRenderer.invoke("parent-report:get"),
 
   // ISSUE-061：场景对话会话（scene agent）事件
   onSceneReply: (callback: (data: { childId: string; courseKey: string; text: string }) => void) =>
@@ -100,6 +102,25 @@ const api = {
   // 读取家长 uploads 目录内文件内容（base64），用于家长聊天历史消息播放语音录音
   readParentUpload: (parentId: string, relPath: string) =>
     ipcRenderer.invoke("file:read_upload_parent", parentId, relPath),
+  // ISSUE-131 P1：文件区网盘（家长=materials/uploads/workspaces 整棵虚拟树；孩子=自己工作区）
+  fsList: (payload: { path?: string; childId?: string }) => ipcRenderer.invoke("fs:list", payload || {}),
+  // 子树检索（当前目录范围内向下，名字大小写不敏感包含匹配）
+  fsSearch: (payload: { path?: string; query: string; childId?: string }) =>
+    ipcRenderer.invoke("fs:search", payload),
+  fsMkdir: (payload: { path: string; name: string; childId?: string }) => ipcRenderer.invoke("fs:mkdir", payload),
+  fsRename: (payload: { path: string; newName: string; confirm?: boolean; childId?: string }) =>
+    ipcRenderer.invoke("fs:rename", payload),
+  fsMove: (payload: { from: string; toDir: string; confirm?: boolean; childId?: string }) =>
+    ipcRenderer.invoke("fs:move", payload),
+  fsDelete: (payload: { path: string; confirm?: boolean; childId?: string }) =>
+    ipcRenderer.invoke("fs:delete", payload),
+  // R-1 引用影响预检（materials 区删/移前展示）
+  fsRefs: (payload: { path: string; childId?: string }) => ipcRenderer.invoke("fs:refs", payload),
+  // 上传到指定目录（payload.path = 目标目录虚拟路径）；409 重名冲突时 error 里带提示
+  fsUpload: (payload: { path: string; name: string; mime: string; data: ArrayBuffer; overwrite?: boolean; childId?: string }) =>
+    ipcRenderer.invoke("fs:upload", payload),
+  // 下载直链（GET /fs/download?path=&token=，浏览器另存为/新标签打开）
+  fsDownloadUrl: (payload: { path: string; childId?: string }) => ipcRenderer.invoke("fs:download_url", payload),
   // ISSUE-078：读当前登录家长 id（来自 <data>/.session.json，只读）。
   // 家长聊天面板用它把真实 parentId 传给 ChatWindow，上传按登录家长落盘（不再全落 parents/default）。
   getSessionParentId: () => ipcRenderer.invoke("session:get_parent_id"),
@@ -134,10 +155,11 @@ const api = {
   piPromptParentData: (text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) =>
     ipcRenderer.invoke("pi:prompt_parent_data", text, images || []),
   piResetParentData: () => ipcRenderer.invoke("pi:reset_parent_data"),
-  // Token 统计读取（ISSUE-010）：汇总 / 最近日志（childId 缺省为家长全局）
-  getTokenSummary: (childId?: string) => ipcRenderer.invoke("token:summary", childId || null),
-  getTokenList: (childId?: string, limit?: number) =>
-    ipcRenderer.invoke("token:list", childId || null, limit ?? 50),
+  // Token 用量查询（ISSUE-129）：按日期×渠道聚合 / 某天按会话聚合（服务端透传）
+  tokenUsageDays: (params?: { from?: string; to?: string; scope?: string }) =>
+    ipcRenderer.invoke("tokenUsage:days", params || {}),
+  tokenUsageSessions: (date: string, scope?: string) =>
+    ipcRenderer.invoke("tokenUsage:sessions", date, scope),
   piListSessions: (childId: string) => ipcRenderer.invoke("pi:listSessions", childId),
   piGetSessionMessages: (childId: string, file: string) =>
     ipcRenderer.invoke("pi:getSessionMessages", childId, file),
@@ -338,6 +360,9 @@ const api = {
   // todoGet 走 /api/v1/plans/today（三表窗口覆盖当天的行）；
   // todoStatsList 走 /api/v1/rewards/:childId（reward_daily_stats 按日汇总）。
   todoGet: (childId: string, date?: string) => ipcRenderer.invoke("todo:get", childId, date),
+  // ISSUE-130：多日三域聚合（孩子详情「计划」tab；重复规则未来命中日服务端虚拟展开）
+  plansRange: (childId: string, from?: string, days?: number) =>
+    ipcRenderer.invoke("plans:range", childId, from, days),
   todoStatsList: (childId: string, range?: number) =>
     ipcRenderer.invoke("todo:stats:list", childId, range),
   // 计划域 / 积分域（2026-09-10）
@@ -418,6 +443,12 @@ const api = {
   assessCourseContent: (topic: string, title: string) => ipcRenderer.invoke("assess:courseContent", topic, title),
   assessQuestionList: () => ipcRenderer.invoke("assess:questionList"),
   assessQuestionRecords: (questionId: string) => ipcRenderer.invoke("assess:questionRecords", questionId),
+  // 题库管理（ISSUE-132）
+  assessBankFacets: () => ipcRenderer.invoke("assess:bankFacets"),
+  assessQuestionSave: (q: any) => ipcRenderer.invoke("assess:questionSave", q),
+  assessQuestionDelete: (questionId: string) => ipcRenderer.invoke("assess:questionDelete", questionId),
+  assessQuestionLink: (input: any) => ipcRenderer.invoke("assess:questionLink", input),
+  assessQuestionUnlink: (input: any) => ipcRenderer.invoke("assess:questionUnlink", input),
   examScore: (childId: string, scoringPrompt: string, answers: any[]) =>
     ipcRenderer.invoke("exam:score", childId, scoringPrompt, answers),
   // 口语/听说题判分：主进程合并多段录音为 16k wav → 上传 → 调 SSECP 发音评测，返回维度分

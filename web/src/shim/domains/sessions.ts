@@ -63,4 +63,37 @@ export const sessionsDomain = {
       return { success: false, error: (err as Error).message };
     }
   },
+
+  /** tokenUsageDays（ISSUE-129）：按日期×渠道聚合（口径=模型返回字段原样直传） */
+  tokenUsageDays: async (
+    params?: { from?: string; to?: string; scope?: string }
+  ): Promise<{ success: boolean; days?: unknown[]; error?: string }> => {
+    try {
+      if (!getStoredToken()) return { success: false, error: "未登录" };
+      const qs = new URLSearchParams();
+      if (params?.from) qs.set("from", params.from);
+      if (params?.to) qs.set("to", params.to);
+      if (params?.scope) qs.set("scope", params.scope);
+      const data = await http<{ days?: unknown[] }>(`/token-usage/days?${qs.toString()}`);
+      return { success: true, days: data?.days ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** tokenUsageSessions（ISSUE-129）：某天按会话聚合 */
+  tokenUsageSessions: async (
+    date: string,
+    scope?: string
+  ): Promise<{ success: boolean; sessions?: unknown[]; error?: string }> => {
+    try {
+      if (!getStoredToken()) return { success: false, error: "未登录" };
+      const qs = new URLSearchParams({ date });
+      if (scope) qs.set("scope", scope);
+      const data = await http<{ sessions?: unknown[] }>(`/token-usage/sessions?${qs.toString()}`);
+      return { success: true, sessions: data?.sessions ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
 };

@@ -8,7 +8,7 @@
  * ephemeral 会话写 kb」的实现，避免客户端/服务端/定时任务三处各写一遍导致行为漂移。
  */
 import { Type } from "typebox";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import type { DatabaseSync } from "node:sqlite";
 import { runRecordingSummary } from "../worker/tasks.js";
 import { readParentSettings } from "../worker/scheduler.js";

@@ -209,17 +209,20 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
         <h2 style={{ margin: 0, fontSize: 18, display: "flex", alignItems: "center", gap: 6 }}>
           <Sparkles size={18} /> 积分
         </h2>
-        <select
-          value={childId}
-          onChange={(e) => setChildId(e.target.value)}
-          style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
-        >
-          {childList.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+        {/* ISSUE-130：并入孩子详情后常为单孩子——只展示一个时隐藏切换器 */}
+        {childList.length > 1 && (
+          <select
+            value={childId}
+            onChange={(e) => setChildId(e.target.value)}
+            style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+          >
+            {childList.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        )}
         <input
           type="date"
           value={date}

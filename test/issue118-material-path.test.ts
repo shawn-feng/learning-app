@@ -33,7 +33,8 @@ afterAll(() => {
   }
 });
 
-const MAT_ROOT = path.join(dataDir, "materials", parentId);
+// ISSUE-131 P2：资料真源物理根已并入家长工作区（workspaces/<pid>/materials）；旧根 materials/<pid> 只读兜底
+const MAT_ROOT = path.join(dataDir, "workspaces", parentId, "materials");
 
 describe("ISSUE-118 parent_build_material 输出路径路由", () => {
   it("家长侧根相对路径（与 parent_put_material 同语法）→ 资料真源", () => {
@@ -49,10 +50,10 @@ describe("ISSUE-118 parent_build_material 输出路径路由", () => {
     expect(r.relPath).toBe("materials/lunyu/lesson-01.html");
   });
 
-  it("家长侧不再落家长工作区（修复点）：任意合法路径都锚定 materials 根", () => {
+  it("家长侧任意合法路径都锚定 materials 根（ISSUE-131 P2 后真源在 workspaces/<pid>/materials 内）", () => {
     const r = resolveLessonOutputPath(deps, "english/01-什么是英语/index.html");
     expect(r.base).toBe(MAT_ROOT);
-    expect(r.resolved.startsWith(path.join(dataDir, "workspaces"))).toBe(false);
+    expect(r.resolved).toBe(path.join(MAT_ROOT, "english", "01-什么是英语", "index.html"));
   });
 
   it("家长侧 topic 段非法（中文/点段）→ 明确报错", () => {

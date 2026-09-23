@@ -15,5 +15,46 @@
      - 备选：新增 agent 工具 `compact_session`（让 agent 判断一课学完后自调）；或 UI（孩子/家长端）加「本课完成·压缩会话」按钮。
   ④ **防误压**：仅在「课程切换 / 明确一课完成」时触发，不每轮压；压缩前可顺带把本课要点写 daily（与现有 summarize 互补）。
   ⑤ **兼容性**：压缩后系统提示/AGENTS/进度概览仍由 SDK 首轮自动附加（`pi-session.ts:404` systemPromptOverride + progressContext），不受影响。
-- **优先级**：⏸ 暂缓 / 暂不处理（用户 2026-08-31 标注：后续再讨论，本期不动）
+- **优先级**：⏸ 暂缓 / 暂不处理（用户 2026-08-31 标注：后续再讨论，本期不动；**2026-09-21 再次讨论后仍决定暂不实施**，设计方案登记如下）
 - **记录时间**：2026-08-31
+
+---
+
+## 2026-09-21 设计讨论结论（暂不实施，仅登记）
+
+> 背景：agent 已上移服务端，上面 2026-08-31 的排查入口（electron/pi-session.ts）已过时。本次基于服务端架构 + SDK 0.84.1 源码重新设计。
+
+### 现状复核（服务端）
+
+- **被动压缩**：SDK 阈值触发 auto-compaction（`shouldCompact(contextTokens, contextWindow)`，agent-session.js:1587）——「满了才压」，触发点由 token 数决定而非教学节奏，可能压在一课中间。
+- **`summarize_conversation`**（kb-summary-tool.ts）：实为**记录工具**（读逐字稿写 daily 供家长回看），不缩减上下文，与压缩是两回事。
+
+### 体积实测（2026-09-21，闻闻一家，脚本 `server/_prompt_size.mts` / `_tools_size.mts` 可重跑）
+
+- 孩子 system prompt 4,383 字符 ≈ 1.5~2.2k token；**tools 载荷 16,947 字符（25 个工具）≈ 5.8~8k token**，每轮重发。
+- 家长 system prompt 8,804 字符；tools 29,620 字符（45 工具）≈ 10.3~14.4k token。
+
+### 方案定案：状态外置 + SDK 分支（不用 newSession、不用原地 compact）
+
+- **哲学**：真状态（进度/错题/掌握度/约定）本来就归孩子库，对话只是过程——课包提取后落库核实，上下文里的历史即可整体丢弃。
+- **关键裁定（用户提出）**：**不 newSession**——重建会话会让 system prompt（错题本块/日期会变）+ tools 前缀缓存全失效；用 **pi session 树分支**，同文件同前缀，缓存保留。
+- **SDK 现成能力（0.84.1 已验证）**：
+  - `session.navigateTree(targetId, {summarize: true, customInstructions, label})`（agent-session.d.ts:584）——一次调用：LLM 生成被弃分支摘要（支持课包口径自定义指令）→ `branchWithSummary(newLeafId|null, summary)` 建新分支 → 摘要成为新分支**第一条消息**（session-manager.js:182 `createBranchSummaryMessage`）。同文件，老分支条目留在树里（回看/审计不受影响）。
+  - 服务端可直接调：session-registry.ts:350 `entry.session` 即完整 AgentSession。
+
+### 实施链路（将来做时按此）
+
+1. **`finish_lesson` 工具**：agent 课末调用，仅**打标记**——不能在 execute 里直接 navigate（运行中抽会话树会出事；compaction 进行中 prompt() 也抛错）。
+2. **空闲/进场触发**：`agent_end` 后或下次 `ensureEntry` 兜底检查未归档标记 → 调 `navigateTree`（复用 ISSUE-100「重置在进会话时完成」模式，不阻塞发送路径）。
+3. **课包口径**：`customInstructions` 写明「只保留：学到哪课/哪个环节、掌握与未掌握知识点（未掌握进错题本）、下次约定、孩子情绪与鼓励偏好；丢弃题目原文与对话细节」。
+4. **快照式摘要**：每次从根部（或首条用户消息父节点）分支，课包 = 本课新事 + 上份快照仍有效的约定（滚动状态快照），不做摘要链——上下文恒为「一份快照 + 当前课轮次」。
+5. **兜底**：保留 SDK 阈值 auto-compaction 不动（防单课过长撑爆窗口）。
+6. 触发三层：finish_lesson（主）/ 进场兜底（必发生，孩子学完直接关页面是常态）/ 阈值（保底）。
+
+### 注意点
+
+- 课包摘要 prompt 必须按「状态快照」写，不能写成「本课流水」——否则几次课后旧约定丢失。
+- 分支不重建 prompt：系统提示词里的错题本块保持会话创建时的旧内容，本课新错题靠课包快照与 KB 补位，跨天新会话自然刷新。
+- 成本：每次课间一次 LLM 调用（对被弃分支，几千 token）；省的是之后每一轮。
+- 会话文件随分支增长（树结构），daily 汇总按时间戳读不受影响，备份体积缓增。
+- 关联：工具描述按需载入（tool_help + setActiveToolsByName）是另一条独立的省 token 线，本轮也已评估（SDK 支持 `setActiveToolsByName`，registry 固定、激活集可变，同运行内下一步生效），同样暂不做。

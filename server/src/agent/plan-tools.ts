@@ -15,7 +15,7 @@
  * 教学方法在家长库（openParentLib(dataDir, parentId)）。
  */
 import crypto from "node:crypto";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import { Type } from "typebox";
 import type { DatabaseSync } from "node:sqlite";
 import { openKb } from "../db/kb.js";

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell, BookMarked } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell, BookMarked, FolderOpen } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, type TextFileAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
@@ -8,6 +8,7 @@ import ModelSelector from "../components/ModelSelector";
 import TodoModal from "../components/TodoModal";
 import MistakeBookModal from "../components/MistakeBookModal";
 import MyRemindersModal from "../components/MyRemindersModal";
+import FilesPanel from "../components/FilesPanel";
 import ExamView from "../components/ExamView";
 import { useChatPanel } from "../hooks/useChatPanel";
 import type { MaterialsPanelHandle, PageAction, PageEvent, PageExecResultUplink } from "../lib/page-bridge";
@@ -384,6 +385,8 @@ export default function Learn({ child, onExit }: Props) {
   const [showMistakes, setShowMistakes] = useState(false);
   // ISSUE-047 方案A：孩子端「我的提醒」弹框（独立于计划；提醒不一定是"要做的事"）
   const [showReminders, setShowReminders] = useState(false);
+  // ISSUE-131 P1：孩子端文件管理弹框（根=自己工作区）
+  const [showFiles, setShowFiles] = useState(false);
   // 学习考核（EXAM-REQUIREMENTS.md）：锁定考试视图开关（true 时全屏覆盖，考试中不可退出）
   const [examOpen, setExamOpen] = useState(false);
   // 待考核科目数（周期到点标红提醒，不强制打断；0 = 无）
@@ -1154,6 +1157,7 @@ export default function Learn({ child, onExit }: Props) {
     // 多段（ISSUE-021）由主进程 voice:merge 拼接成单个 WAV；单段沿用原 saveUpload。
     // 场景模式下单段语音改落 voice/scene 目录（与场景语音球一致，便于挑选分析）。
     let audioPath: string | undefined;
+    let audioRef = "";
     let audioData: string | undefined;
     if (opts?.audios && opts.audios.length) {
       if (opts.audios.length === 1) {
@@ -1163,7 +1167,10 @@ export default function Learn({ child, onExit }: Props) {
           const r: any = useScene
             ? await window.api.sceneVoiceSave(child.childId, buf)
             : await window.api.saveUpload(child.childId, "语音录音.webm", "audio/webm", buf);
-          if (r?.success) audioPath = r.path as string;
+          if (r?.success) {
+            audioPath = r.path as string;
+            audioRef = (r.ref as string) || "";
+          }
         } catch {
           /* 落盘失败不影响发送 */
         }
@@ -1184,7 +1191,10 @@ export default function Learn({ child, onExit }: Props) {
       try {
         const buf = base64ToArrayBuffer(opts.audio);
         const r: any = await window.api.saveUpload(child.childId, "语音录音.webm", "audio/webm", buf);
-        if (r?.success) audioPath = r.path as string;
+        if (r?.success) {
+          audioPath = r.path as string;
+          audioRef = (r.ref as string) || "";
+        }
       } catch {
         /* 落盘失败不影响发送 */
       }
@@ -1240,15 +1250,16 @@ export default function Learn({ child, onExit }: Props) {
       // 注意：这里只放附件标记，不放任何给 AI 的指令文字——指令文字会随消息存进会话历史、
       // 退出重进时原样显示在气泡里；附件处理规则已写在 AGENTS.md（LEARNING_NAV_INSTRUCTIONS）。
       const toRel = (p?: string) => (p ? p.replace(/^children\/[^/]+\//, "") : "未保存");
+      // ref 优先（files/<id>，服务端 agent 可读），path（本机相对路径）兜底——同家长端 ISSUE-124 语义
       if (audioData) {
         const audioName = audioPath ? audioPath.split("/").pop() || "语音录音" : "语音录音";
-        parts.push(`【附件音频：${audioName}|${toRel(audioPath)}】`);
+        parts.push(`【附件音频：${audioName}|${audioRef || toRel(audioPath)}】`);
       }
       for (const img of images) {
-        parts.push(`【附件图片：${img.name}|${toRel(img.path)}】`);
+        parts.push(`【附件图片：${img.name}|${img.ref || toRel(img.path)}】`);
       }
       for (const f of textFiles) {
-        parts.push(`【附件文件：${f.name}|${toRel(f.path)}】`);
+        parts.push(`【附件文件：${f.name}|${f.ref || toRel(f.path)}】`);
       }
       const promptText = parts.join("\n");
       // dataURL → SDK ImageContent（剥离前缀，内联 base64 发送，不落盘）
@@ -1409,6 +1420,15 @@ export default function Learn({ child, onExit }: Props) {
               onClick={() => setShowReminders(true)}
             >
               <Bell size={20} />
+            </button>
+
+            {/* ISSUE-131 P1：我的文件（根=自己工作区；上传/新建/重命名/移动/删除） */}
+            <button
+              className="sidebar-icon-btn"
+              title="我的文件"
+              onClick={() => setShowFiles(true)}
+            >
+              <FolderOpen size={20} />
             </button>
           </div>
 
@@ -1682,6 +1702,7 @@ export default function Learn({ child, onExit }: Props) {
       )}
 
       {showMistakes && <MistakeBookModal childId={child.childId} onClose={() => setShowMistakes(false)} />}
+      {showFiles && <FilesPanel childId={child.childId} onClose={() => setShowFiles(false)} />}
       {showTodo && (
         <TodoModal
           childId={child.childId}

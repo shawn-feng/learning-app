@@ -1,4 +1,4 @@
-# ISSUE-108：家长界面可定制 Dashboard——家长自定义「孩子学习进度与情况」展示页，定制经家长 agent 完成（方案定稿建议）
+# ISSUE-108（✅ 已实施 2026-09-21 简化定案：markdown 报表，不做 HTML widget）：家长界面可定制 Dashboard——家长自定义「孩子学习进度与情况」展示页，定制经家长 agent 完成（方案定稿建议）
 
 - **类型**：需求 / 设计（含实施方案，待用户确认后实施）
 - **描述**：家长中心目前是固定菜单（孩子管理/课程/题库/计划/考核/积分/定时任务/token/设置，`src/pages/Dashboard.tsx:30-32` view 枚举），家长想一眼看到的孩子学习进度与情况散在各页。需求：新增一个可定制的 **dashboard 页面**，展示内容/布局由家长**通过家长 agent 对话**来定制（如「给首页加一张珊珊的积分卡」「把进度卡放到最上面」）。
@@ -37,3 +37,26 @@
 - **回归**：现有各管理页不受影响（dashboard 为新增 view）；家长聊天/agent 现有工具不受影响（新增两个工具）；多设备登录同一家长看到同一份 dashboard 配置（settings 上云）；未配置过的家长看到默认布局不空白。
 - **优先级**：中（体验增强，需求已明确、方案待拍板）
 - **记录时间**：2026-09-17
+
+
+---
+
+## ✅ 实施记录（2026-09-21，按用户简化定案：**不用 HTML，用 markdown**）
+
+原 7 类 widget/受控 JSON 方案作废，改为「家长 agent 产 markdown 报表 → 家长模式左侧报表区展示」：
+
+- **服务端**（新 `agent/parent-report-tool.ts`）：
+  - 工具 `parent_display_report`（挂家长/家长内容会话，`parent-registry.ts` shared 路径 + toolNames 白名单；parent-data 数据 agent 不挂）：
+    参数 `{markdown, title?}`，校验非空 → 写主库 settings 键 `report:<parentId>`（JSON {title, content, ts}，重启不丢）
+    → `agentStreamHub.publish(streamKey, "display_content", {path: report/<ts>.md, source: "report", title, content, ts})`；
+  - 读回路由 `GET /api/v1/parent-agent/report`（authParent）→ `{report: {title, content, ts} | null}`。
+- **客户端（零新桥接）**：家长 SSE 流的 `display_content` 事件在 `server-agent-client.ts:126` 已映射
+  `pi:display_content`（childId="parent"）——Dashboard 监听该通道（source=report）即收；
+  新增 `parent-report:get` IPC + `parentReportGet` preload；挂载时读回最近报表。
+- **UI**：家长中心顶部卡片行加「📊 报表」卡片（新报表红点未读角标，打开即清）；`view="report"`
+  用 react-markdown 渲染（标题+时间+正文）；空态引导文案（「对右侧家长助手说…」）。
+- **取舍说明**：markdown 受信文本直接渲染（react-markdown 转义 HTML），无需孩子侧 HTML 沙盒 iframe/落文件；
+  每家长只留**最近一份**报表（settings 单键覆盖写）——历史报表如需多份留存二期再加（settings 改行存或专表）。
+- **验证**：新增 `test/issue108-parent-report.test.ts` 4 用例（空拒绝/推送+留存+SSE 断言/持久化往返/坏 JSON 兜底）；
+  server tsc 零错误、electron-vite build 通过。
+- **部署状态**：未上 201（随下次发版）。

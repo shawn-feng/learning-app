@@ -16,11 +16,13 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   SessionManager,
-  defineTool,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
+// ISSUE-134：统一还原字符串化参数（内含 SDK defineTool）
+import { defineTool } from "./tool-kit.js";
 import { createCorePaths, getWorkerRuntime, learningGuardExtension, resolveWithin } from "@pi/agent-core";
-import { materialsRoot } from "../db/materials.js";
+import { legacyMaterialsRoot,
+  materialsRoot } from "../db/materials.js";
 import { readParentSettings } from "../worker/scheduler.js";
 
 export interface ProgrammingDeps {
@@ -59,7 +61,12 @@ export function buildProgrammingPrompt(): string {
 完整协议规范见仓库根 MATERIAL-BRIDGE-PROTOCOL.md（正文约定以上述为准）。`;
 }
 
-async function getProgrammingSession(deps: ProgrammingDeps, cwd: string, sessionKey: string): Promise<AgentSession> {
+async function getProgrammingSession(
+  deps: ProgrammingDeps,
+  cwd: string,
+  sessionKey: string,
+  agentDir: string
+): Promise<AgentSession> {
   const key = `${deps.parentId}:${sessionKey}`;
   const existing = sessions.get(key);
   if (existing) return existing;
@@ -84,7 +91,6 @@ async function getProgrammingSession(deps: ProgrammingDeps, cwd: string, session
   const model = provider && modelId ? runtime.getModel(provider, modelId) : undefined;
   if (!model) throw new Error(`编程 agent 模型不可用：${programmingKey}（请到设置页重新选择）`);
 
-  const agentDir = path.join(cwd, ".pi", "agent");
   fs.mkdirSync(agentDir, { recursive: true });
   const loader = new DefaultResourceLoader({
     cwd,
@@ -183,10 +189,25 @@ export async function generateHtmlLesson(
   input: GenerateHtmlLessonInput,
   workspaceRoot?: string
 ): Promise<GenerateHtmlLessonResult> {
-  const { base, resolved } = resolveLessonOutputPath(deps, input.outputPath, workspaceRoot);
+  const paths = createCorePaths(deps.dataDir);
+  const { base, resolved, relPath } = resolveLessonOutputPath(deps, input.outputPath, workspaceRoot);
+
+  // ISSUE-131 P2：编程 agent 的 .pi 运行区进 scratch（家长=workspaces/<pid>/scratch，孩子=<cid>/scratch），
+  // 不再长进资产区/工作区；输出 base 不变，sessionKey 机制不变（生成+改上下文连续）。
+  const agentDir = path.join(workspaceRoot ? path.join(workspaceRoot, "scratch") : paths.agentScratchDir(deps.parentId), ".pi", "agent");
+
+  // 迁移即用：目标只存在于旧 materials 根（存量不迁移策略）时，先复制到新根再按「修改已有」走，
+  // 单源写入点恒为新根，避免新旧双份漂移。
+  if (!fs.existsSync(resolved) && base === materialsRoot(deps.dataDir, deps.parentId)) {
+    const legacyAbs = path.join(legacyMaterialsRoot(deps.dataDir, deps.parentId), relPath.replace(/^materials\//, ""));
+    if (fs.existsSync(legacyAbs)) {
+      fs.mkdirSync(path.dirname(resolved), { recursive: true });
+      fs.copyFileSync(legacyAbs, resolved);
+    }
+  }
 
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  const session = await getProgrammingSession(deps, base, input.sessionKey ?? input.outputPath);
+  const session = await getProgrammingSession(deps, base, input.sessionKey ?? input.outputPath, agentDir);
   const existedBefore = fs.existsSync(resolved);
   const prompt = [
     existedBefore ? "修改已有文件：" : "生成新文件：",
@@ -215,7 +236,6 @@ export async function generateHtmlLesson(
   console.log(
     `[programming-agent] 生成完成 ${input.outputPath}（${fs.statSync(resolved).size}B，耗时 ${elapsed}s）`
   );
-  const { relPath } = resolveLessonOutputPath(deps, input.outputPath, workspaceRoot);
   return { path: resolved, relPath, title: input.title };
 }
 

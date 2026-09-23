@@ -26,7 +26,7 @@ import { apiUrl, getStoredToken } from "./server-fetch";
 import { eventBus } from "./event-bus";
 
 export type AgentKind = "main" | "scene" | `course:${string}`;
-export type ParentKind = "parent" | "parent-content";
+export type ParentKind = "parent" | "parent-content" | "parent-data";
 
 /** 服务端 SSE 事件（id 用于 Last-Event-ID 重放配对）。 */
 export interface AgentEvent {
@@ -330,7 +330,7 @@ function bridgeChildAgentEvents(e: AgentEvent, childId: string): void {
   bridgeAgentEventCore(e, childId, `child:${childId}`);
 }
 
-/** 家长侧桥（childId 语义用 "parent" / "parent-content" 表示会话，供前端路由）。 */
+/** 家长侧桥（childId 语义用 "parent" / "parent-content" / "parent-data" 表示会话，供前端路由）。 */
 function bridgeParentAgentEvents(e: AgentEvent, kind: ParentKind): void {
   bridgeAgentEventCore(e, kind, `parent:${kind}`);
 }
@@ -506,7 +506,7 @@ export function ensureChildStream(childId: string): void {
   );
 }
 
-/** 订阅家长 agent 事件流（kind = "parent" | "parent-content"；家长流无 page/display 事件）。 */
+/** 订阅家长 agent 事件流（kind = "parent" | "parent-content" | "parent-data"；家长流无 page/display 事件）。 */
 export function ensureParentStream(kind: ParentKind): void {
   const key = `parent:${kind}`;
   const existing = agentStreams.get(key);
