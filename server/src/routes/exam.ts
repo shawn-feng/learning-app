@@ -1413,16 +1413,17 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     }
     const kb = openKb(deps.config.dataDir, parentId, childId);
     try {
+      // ⚠️ exam_plans **没有 topic_key 列**（主题归属在 exam_course_results / 明细里），
+      // 早前此处 select 了 topic_key → 线上 500 `no such column: topic_key`（2026-09-23 部署 0.5.6 实测）。
       const plans = kb
         .prepare(
-          `SELECT id, title, topic_key, attempt_id, score, done_at FROM exam_plans
+          `SELECT id, title, attempt_id, score, done_at FROM exam_plans
             WHERE child_id = ? AND status = 'done' AND active = 1
             ORDER BY done_at DESC LIMIT ?`
         )
         .all(childId, limit) as Array<{
         id: string;
         title: string;
-        topic_key: string;
         attempt_id: string;
         score: number | null;
         done_at: string;
@@ -1481,7 +1482,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         return {
           id: String(p.attempt_id ?? "") || p.id,
           childId,
-          topic: String(p.topic_key ?? ""),
+          topic: String(results.find((r) => String(r.topic_key ?? ""))?.topic_key ?? ""),
           title: String(p.title ?? ""),
           startedAt: String(p.done_at ?? ""),
           submittedAt: String(p.done_at ?? ""),
@@ -2021,8 +2022,10 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
             aiComment: String(q.ai_comment || ""),
           });
         }
-      } catch {
-        /* 单个孩子库异常不阻断其他孩子 */
+      } catch (err) {
+        // 单个孩子库异常不阻断其他孩子，但**必须留痕**：静默吞掉会让「no such column」这类
+        // 结构错在页面表现为"没数据"，排查成本极高（2026-09-23 线上 500 的教训）。
+        req.log.warn({ err, childId: child.id }, "assess/questions/:id/records 读取孩子库失败");
       } finally {
         kb.close();
       }

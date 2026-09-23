@@ -3,7 +3,7 @@
 - **类型**：需求 / 架构（计划域 + 考核域重构 + 新增掌握闭环）
 - **优先级**：中-高（家长最核心诉求：学完/考完能看见"到底掌握了什么"，并据此安排下一次）
 - **记录时间**：2026-09-22（设计定稿 2026-09-23；08:20 按用户"废弃 attempts"决定改写为 v2 方案）
-- **状态**：🚧 **P0-a + P4（含 P3 学习侧抽取）已实施（2026-09-23）**：① 考核结果重构（孩子库三层 + 评测存档 + 主库 `exam_attempts` 退场 + 读取侧全切 + worker 收窄 + P0 结构 + P1 防硬删）；② 掌握闭环归纳**改为自定义任务**（默认「学习情况分析」每天 21:30 + 4 个 `mastery_*` 工具，见 §4.3）。剩余：P0-b 回填脚本、P2 概要 LLM 润色、P5 消费侧。**未部署**（需用户明确同意）
+- **状态**：✅ **P0-a + P4 已实施并部署到 201（0.5.7，2026-09-23 11:39）**：① 考核结果重构（孩子库三层 + 评测存档 + 主库 `exam_attempts` 退场 + 读取侧全切 + worker 收窄 + P0 结构 + P1 防硬删）；② 掌握闭环归纳改为**自定义任务**（默认「学习情况分析」每天 21:30 + 4 个 `mastery_*` 工具）；③ 部署中发现并修复读取侧 500（详见 §11.5）。剩余：P0-b 回填脚本、P2 概要 LLM 润色、P5 消费侧。**P4 首次真实运行尚未验证**（等 21:30 自然触发或手动跑一次）
 
 ---
 
@@ -418,6 +418,7 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 | 2026-09-23 08:31 | **旧数据处置定案：不迁、直接废弃**。实测对照确认：**结构数据（课程/知识点/题目/得分）确实都在 `exam_plan_courses`**，但题级富信息（83 条 `aiComment` / 55 条 `asrText` / 46 条 `audioFileId` / 25 条 `speech`）只在 `exam_attempts` → 经用户确认视为可放弃的早期数据（09-01~09-17，同一孩子）、执行 `DROP TABLE`。另新增 §8.5 两条实测发现：**明细表老数据有重复行**（行数=逐题数×2，因 `question_id` 为空导致去重键失效）+ **`knowledgePointId` 仅 31/83 有值**。**待拍板清零，P0-a 可开工** |
 | 2026-09-23 10:10 | ✅ **P0-a 已实施**（+ P0 结构 + P1 防硬删），见 §11 实施记录 |
 | 2026-09-23 11:15 | ⭐ **P4 改向并实施**：掌握闭环归纳**不再新增 worker 任务类型**，改为复用「自定义任务」—— 默认「学习情况分析」（每天 21:30，幂等播种、家长可改/停用）+ 自然语言指令 + 4 个 `mastery_*` 工具（取数/写回）+ 通用 `parent_db_read/write`；P3 学习侧抽取并入该任务指令。§4.3 重写、§7 的 P3/P4 行更新、新增 §11.4 |
+| 2026-09-23 11:40 | ⚠️ **部署 0.5.6 暴露读取侧 500**（`no such column: topic_key`，路由 handler 无测试覆盖）→ **0.5.7 修复并重新部署**：SELECT 去 `topic_key`（改从 `exam_course_results` 取）、静默 catch 改留痕 warn、**新增路由级冒烟测试 `test/issue135-exam-routes.test.ts`（7 用例）**；端到端验证全 200。详见 §11.5 |
 
 ---
 
@@ -469,3 +470,34 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 4. **agent 判断 vs 工具确定性**：知识点档位/课程 level/累计叙述由 LLM 产出；**学考次数、最近档位与得分率、知识点名快照、课程归属、幂等 UPSERT** 全由工具算/校验（模型编造的 kp id 或非法枚举会被拒并如实报告，不落库）。
 5. **顺带修掉两个真问题**（都是单测逼出来的）：① `cut()` 会补省略号，`cut(date,10)` 拼进 SQL 日期比较永远匹配不上 → 拆出 `dayOf()` 专供日期；② `exam_plans` **没有 `topic_key` 列**（只有 `exam_plan_courses`/`exam_course_results`/`knowledge_point_records` 有），原打算照抄 study_plans 的取法会直接报错。
 6. **未做**：P2（考核概要/知识点 summary 的 LLM 润色 —— 现状规则文案已可用）；家长端知识点级展开（P5）。
+
+### 11.5 部署 0.5.6 → 0.5.7：读取侧线上 500 与修复（2026-09-23 11:28~11:40）
+
+**0.5.6 首次部署即暴露一个 P0-a 漏网 bug**：`GET /api/v1/exam/attempts/:childId` 返回
+`500 ERR_SQLITE_ERROR: no such column: topic_key` —— 读取侧 SQL 写了 `SELECT id, title, topic_key, ... FROM exam_plans`，
+但 **`exam_plans` 没有 `topic_key` 列**（只有 `exam_plan_courses` / `exam_course_results` / `knowledge_point_records` 有）。
+
+- **为什么漏网**：P0-a 的单测只覆盖**写入函数** `persistExamResult`（`test/issue135-exam-results.test.ts`），
+  **路由 handler 里的 SQL 全仓零覆盖** —— 全文测试没有任何 fastify `inject` 用例。
+  同一个"列不存在"的坑在 `worker/mastery-tools.ts`（P4）已经踩过一次（见 §11.4 第 5 条），说明**记住坑没用，需要机制**。
+- **修复（0.5.7）**：① `exam_plans` 的 SELECT 去掉 `topic_key`，`topic` 改从 `exam_course_results.topic_key` 取（`results.find(...)`）；
+  ② `assess/questions/:id/records` 的**静默 `catch {}` 改为 `catch (err) { req.log.warn(...) }`** —— 静默吞错正是这类结构错
+  在页面上表现为"没数据"、极难排查的根因；
+  ③ **新增 `test/issue135-exam-routes.test.ts`（7 用例）**：真 fastify（`createRequire` 从 `server/` 解析，根 node_modules 没有 fastify）
+  + 真 sqlite + 真 JWT，覆盖 4 条读接口 + `POST /exam/attempts` 写入口 + 401/403；已用"注入原 bug → 测试复现 500 → 还原"验证过测试有效性（非假绿）。
+
+**部署记录**
+
+| 版本 | 时间 | 结果 |
+|---|---|---|
+| 0.5.6 | 11:28~11:29 | 部署成功、主库 `exam_attempts`(19 行)/`speech_assessments` 已 DROP、默认掌握任务已播种、两个活跃孩子库（闻闻/珊珊）迁移到位；**发现 `GET /exam/attempts` 500** |
+| 0.5.7 | 11:38~11:40 | 修复版部署；端到端验证（自签家长 JWT 直连 201）四条读接口 + `scheduler/tasks` + `exam/fixed-config` **全部 200**，`attempts=5` 含完整字段 |
+
+**验证环境事实（复用于后续部署）**：
+
+- 201 上 `data/server-config.json` 含 `jwtSecret`，可用纯 Node `crypto` 自签 HS256 家长 JWT（payload `{parent_id,email,plan,iat,exp}`）直连 `127.0.0.1:8788` 做端到端只读验证，无需走客户端。
+- 5 个孩子库中只有 2 个是活跃孩子（主库 `children` 有行）；另 3 个是孤儿/测试残留（`4d6e76fc` 在主家长目录但主库无此孩子；`test-parent/` 两个是测试家长），
+  **懒迁移（openKb 时建表）不会碰它们**，属正常现象，无需处理。
+- 部署脚本模板：`tmp/deploy/deploy_057.sh`（+ `deploy_server_057.py`）+ 结构核对 `tmp/deploy/verify_056.js` + 接口核对 `tmp/deploy/verify_056_api.js`。
+
+**仍未验证**：P4 的「学习情况分析」自定义任务**尚未真实跑过一次**（工具白名单/agent 调工具/写库链路端到端未验）。
