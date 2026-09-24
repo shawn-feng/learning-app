@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 状态 | **✅ 已修复 + 回归测试（2026-09-24，本地验证全绿；未部署 201，待用户同意）** |
+| 状态 | **✅ 已修复 + 回归测试 + 已部署 201（0.5.9，2026-09-24 11:16）——真录音回放验证通过** |
 | 优先级 | 高（线上口语评测全挂） |
 | 日期 | 2026-09-24 |
 | 提出 | 用户：「发音测评功能在家长端测试时报错，提示找不到音频文件。201的生产环境，今天的背诵考核也没有正常做发音测试。」 |
@@ -50,9 +50,15 @@ ISSUE-131 P2 把 files 通道落盘从旧根 `data/files/<pid>/<stored>` 切到 
 - 相邻回归：`issue131-p2-merge` + `issue135-exam-routes` + `issue143` 共 **23 用例全绿**
 - `node scripts/build.mjs` 构建通过（bundle 24,563,427 字节，含 `resolveStoredFileAbs`）
 
-## 六、部署注意事项（待用户同意）
+## 六、部署记录（0.5.9，2026-09-24 11:16，用户「部署吧」）
 
-- 版本 0.5.8 → **0.5.9**（`server/package.json` + banner），部署流程照旧（stop → 备份 → 换包 → restart，模板 `tmp/deploy/deploy_server_054.py` 改字面路径）。
-- ⚠️ bundle 从**整个工作树**构建：本次部署会同时带上 ISSUE-142 已实施未部署的改动（`child-report-tools` 三专用只读工具 + 撤 `child_db_read/write/describe` + `child_mistake_log(list)` 扩列）。部署前需用户知情确认。
-- 部署后验证口径：家长端设置页「测试」返回评测结果；跑一场口语题考核看 `speech_assessments` 有当日行；journalctl 无 warn。
-- **可选补分**：09-23 09:05 之后两场考核的录音都还在（files 表有 id、明细表有 `audio_file_id`），修复上线后可对 `audioFileId` 重跑评测补 `speech` 结果（无现成入口，需脚本一次性回填）。
+- **随包内容**：ISSUE-143 修复 + ISSUE-142（孩子侧专用报告工具）+ ISSUE-144（家长 agent 场景 skill P0~P4+P7，P5/P6 未做）——bundle 从整个工作树构建，三者同车。提交：`195f7ab`（143）/`11c8794`（142+144）/`87eb421`（docs）。
+- **流程**：`tmp/deploy/deploy_server_059.py` + `deploy_059.sh`——停服 → bundle 备份 `server.cjs.bak-20260924-1116` → 数据快照 `data/backups/deploy-0.5.9-20260924-1116/`（server/agents VACUUM INTO + 4 个配置文件）→ 换包（24,621,257 字节，标记 ver=1/resolve=4/142=9/144=2）→ daemon-reload + 起服。
+- **验证**：version=0.5.9、health `{ok:true,db:ok}`、journal ERR_COUNT=0；`exam/attempts` 两孩子均 200（读面回归）；⭐**真录音回放**：用今早 07:51 失败考核的 3 条真实录音（voice-q2/q3/q4，按 `audio_file_id` 反查明细拿真实 ref_text）调 `POST /assessment/assess` → **全部 200 返回真实评分**（pron=17/32/42），不再「音频文件不存在」。脚本 `tmp/deploy/verify_059_api.js`/`verify_059_r3.js`。
+- **坑**：考核明细（`exam_plan_courses`）与 files 表的 `created_at` 存的是 **UTC** ISO（本地 09-24 07:44 = `2026-09-23T23:44Z`），按本地日期 `LIKE '2026-09-24%'` 会整批漏行（验证脚本第一版踩中）。
+
+## 七、可选后续
+
+- **补分**：09-23 09:05 之后两场考核的录音都在（明细表有 `audio_file_id`），可写一次性脚本对每条重新评测并把 `speech` 结果回写孩子库 `speech_assessments`（无现成入口；assess 路由本身不落库）。
+- 201 磁盘仍在 ~95%（本次部署新增备份约 65M），旧备份清理仍待用户确认。
+
