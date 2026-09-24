@@ -853,7 +853,8 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     name: "parent_exam_plan_list",
     label: "查看孩子考核计划",
     description:
-      "查看某孩子的**考核计划**（孩子库 exam_plans，出现在「今日计划」；含固定档配置生成的、家长自定义的、孩子自请的三类）：日期 / 类型 / 制定人 / 状态 / 行 id。\n" +
+      "查看某孩子的**考核计划**（日期 / 类型 / 制定人 / 状态 / 行 id；**取消某一场之前先用它列出候选、复述是哪一场**）。\n" +
+      "计划出现在「今日计划」；含固定档配置生成的、家长自定义的、孩子自请的三类。\n" +
       "每条还带**考核内容细节**：考哪些课程、每门课考哪些知识点各抽几题（`课程（知识点×题数）`）、计划级考核方法（只考/不考哪些知识点、背诵通过线）、说明。\n" +
       "固定档（kind=fixed）的课程由「本周期学习计划的必学课程」在开考时确定，**不固化在计划里**，因此不列具体课程——这是正常的，不是数据缺失。\n" +
       "**取消某条考核计划**用 parent_exam_plan_cancel。考核结果（孩子真正提交的考试及其逐题记录与得分）存在孩子库结果表里，可在家长端「考核记录」查看，不受取消影响。\n" +
@@ -960,9 +961,9 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     name: "parent_exam_plan_cancel",
     label: "取消/删除考核计划",
     description:
-      "取消某孩子**的一条考核计划**（孩子库 exam_plans，出现在「今日计划」。考核结果存在孩子库结果三表，孩子真正提交的考试及其逐题记录，不受本工具影响）。\n" +
-      "考核计划一旦生成默认只增不删；本工具按**计划行 id**（先 parent_exam_plan_list 拿 id）做**软删除**：置 active=0、status='cancelled'，历史行保留供审计，但不再计入完成率/掌握度。\n" +
-      "已考完（status='done'）的考核计划不允许取消（保留成绩）。",
+      "取消某孩子**的一条考核计划**（按**计划行 id**；**没点名是哪一场时先 `parent_exam_plan_list` 列候选并复述，确认后再取消**）。\n" +
+      "考核计划一旦生成默认只增不删；本工具按 id 做**软删除**：置 active=0、status='cancelled'，历史行保留供审计，但不再计入完成率/掌握度。\n" +
+      "孩子真正提交的考试及其逐题记录存在孩子库结果表，**不受本工具影响**。已考完（status='done'）的考核计划不允许取消（保留成绩）。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       id: Type.String({ description: "考核计划行 id（可传前 8 位）" }),

@@ -13,6 +13,10 @@ export const progressSkill: ParentSkill = {
   tools: [
     "parent_list_children",
     "parent_library_topics",
+    // ISSUE-144 实跑修正（2026-09-25）：问"《静夜思》到底会不会"要**先定位这门课在哪**，
+    // 用的就是 course 场景的课程名册。它只归 course 时，progress 场景一伸手就撞守卫
+    // （实测样本 3 连撞两次、被迫加载 course + materials）。⇒ 声明为**多场景工具**（守卫任一放行）。
+    "parent_library_courses",
     "parent_library_course_content",
     "parent_read_child_conversation",
     "parent_display_report",
@@ -40,6 +44,7 @@ export const progressSkill: ParentSkill = {
 | 这次考了多少、哪几题错了 | \`parent_child_exam_report\` | 不传 \`plan_id\`＝最近几场（含整体得分率与趋势）；传 \`plan_id\`＝那一场的**逐题明细 + 每课概要 + 知识点档位** |
 | 哪里薄弱、某个知识点到底会不会 | \`parent_child_mastery_report\` | 不传参＝各主题概览 + **薄弱项（错题本）**；\`topic\`＝该主题逐课 + 要盯的知识点；\`course\`＝单课掌握叙述 + 教学建议 + 知识点档位 + 学习结果 + 本课错题 |
 | 学到哪了、最近什么时候学的 | \`parent_library_topics\` | 实时聚合：已学/总数/下一课 + 权威 \`topic_key\` |
+| **"《静夜思》到底会不会"这类要点名一门课的问题** | \`parent_library_courses\` | **先定位这门课在哪**（\`topic\`=主题目录名 → 该主题下的课程名册）；拿到**准确课程名**再去 \`parent_child_mastery_report\`（\`course\`=课程名）或 \`parent_library_course_content\` 看该课内容。**不要凭记忆猜课程名** |
 | 她昨天到底问了什么 | \`parent_read_child_conversation\` | 默认今天，最多 7 天 |
 | 来份周报 | \`parent_display_report\` | 用**刚查到的真实数据**推一份 markdown 到「📊 报表」区 |
 
@@ -53,6 +58,7 @@ export const progressSkill: ParentSkill = {
 - \`parent_child_exam_report\`：\`child\`（孩子姓名；**名下只有一个孩子时可省略**）· \`plan_id\`（缺省＝列最近几场已完成的考核，带整体得分率与趋势）· \`course\`（只看某门课，可选）· \`limit\`（缺省 5，最多 10）→ 列表里每场都带 \`id=\`，**追问某一场就把那个 id 传给 \`plan_id\`**。没考完的场次只给范围、不给题。
 - \`parent_child_mastery_report\`：\`child\`（同上，可省略）· \`topic\`（主题名或拼音目录名）· \`course\`（课程名）——三个层级：概览（含薄弱项）/ 主题 / 单课。
 - \`parent_library_topics\`：无参数 → 每个主题的进度（已学/总数/下一课）与**权威 \`topic_key\`**。
+- \`parent_library_courses\`：\`topic\`（必填，主题目录名如 \`lunyu\`）→ 该主题下的**课程名册**（准确标题）。**"这门课在不在 / 准确叫什么"只能靠它**，别猜。
 - \`parent_library_course_content\`：\`topic\` + \`title\`（必填）→ 该课知识点与题（含**标准答案 \`answer\`**，见下"红线"）。
 - \`parent_read_child_conversation\`：\`child\`（必填）· \`date\`（可选：\`YYYY-MM-DD\` / \`all\` / 口语「今天/昨天/前天」；缺省今天）· \`days\`（\`date=all\` 时读最近几天，缺省 3、最多 7）。
 - \`parent_display_report\`：\`markdown\`（必填，完整 markdown 正文，**不要 HTML**）· \`title\`（可选，缺省「学习报表」）。

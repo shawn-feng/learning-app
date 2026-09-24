@@ -222,7 +222,7 @@
 | P6.7 | 测试/脚本 | 删 `test/e2e-data-agent.mts`、`test/tool-echo.mts`；`issue133` 的"报错现场重放"改按**执行器级**（`executeWrite` + 孩子库管理写规格）、`issue134` 的集成例改指**仍在工具面上的** `parent_upsert_course_content.items`；`issue135` 白名单断言**翻转**为"不该再有 `parent_db_*`"；`data-channel-v2` 的元数据块用例改为断言"家长提示词里不再有表清单" | ✅ |
 | P6.8 | 保留（有意） | `db-channel.ts` / `tier2.ts`（注册表与执行器**库**：路径查询、路由、测试仍在用）；`parent-data` 会话旧历史文件在 `agent-sessions/<pid>/parent-data/` 作归档 | ✅ |
 
-**预算变化（P6 后）**：工具面 **48 → 45 把**；工具块源码态 24010 → **20948**、注册后 16848 → **13786**（相对原始基线 25078 **-45%**）；常驻提示词 2501 → **2185**（去掉兜底段 316 字符）；8 技能正文 19265 → **19315**（删兜底话术 + 补 P6 说明）。
+**预算变化（P6 后）**：工具面 **48 → 45 把**；工具块源码态 24010 → **20948**、注册后 16848 → **13892**（相对原始基线 25078 **-45%**）；常驻提示词 2501 → **2185**（去掉兜底段 316 字符）；8 技能正文 19265 → **19315**（删兜底话术 + 补 P6 说明）。
 
 **顺带收口（一处真实隐患）**：`src/components/NamespacePanel.tsx` 原先教家长"去「数据管理」助手里描述场景"——助手已退场，文案已改写为"自定义数据随通用通道退场，这里只处理历史遗留"。**Tier 2 自定义数据现状**：助手侧**没有**任何读写面（设计器与通用读写都没了），页面只剩确认遗留/停用/删除；要恢复该能力＝给它补一把**场景专用工具**（记入待定）。
 
@@ -254,7 +254,19 @@
 | P5 端到端 | ✅ 覆盖生效（回复第一句变成家长写的标记）→ 清空回落（标记消失）→ 红线写法 **HTTP 400**（留痕 `p5-override-result.txt`） |
 | 副作用 | 整轮 **零写入**；course 档复跑真建了「国学」主题 + 1 课 → **已删净并核对回到 11 主题 / 1317 课**；孩子库未被连带写入；材料库零新文件 |
 
-**三条待修真缺陷（如实跑报告 §3）**：① `parent_library_courses` / `parent_library_course_content` 的场景归属太窄（只归 course，progress 也要用 → 样本 3 的绕远与 2 次拒跑直接由它引起）；② course 场景"先核对 → 复述 → 再写"没执行到位（C6 **未复述就建了主题**，违 A7）；③ "先列清单再问哪一份/哪一场"没执行（#10 #13）。**⇒ 建议下一批修，不阻塞本轮。**
+**三条待修真缺陷（如实跑报告 §3）**：① `parent_library_courses` / `parent_library_course_content` 的场景归属太窄（只归 course，progress 也要用 → 样本 3 的绕远与 2 次拒跑直接由它引起）；② course 场景"先核对 → 复述 → 再写"没执行到位（C6 **未复述就建了主题**，违 A7）；③ "先列清单再问哪一份/哪一场"没执行（#10 #13）。
+
+**✅ 三条已修 + 定向复跑验证通过（同批）**：
+
+| 缺陷 | 修法 | 复跑证据 |
+|---|---|---|
+| 1 工具归属 | `parent-scene-progress.tools` += `parent_library_courses`（多场景任一放行）；progress 技能补"先定位这门课在哪" | F1「《静夜思》到底会不会」：**拒跑 2 → 0**，技能只加载 progress（不再被迫加载 course+materials） |
+| 2 先复述再写/先核对 | A7 补"**新建或修改主题与课程**"；course 步骤 1/2 重写（核对靠课程名册 + 落结构前先复述取得确认 + **建主题也算写库**）；口径补"对象不明先列清单" | F5（原 C6「这门课用 lunyu/lesson-01.html」）：**这次零写入**（先 course+materials → topics → **courses** → materials → 问确认）；F4 也不写 |
+| 3 先列清单再问 | materials 步骤 1/4 + 口径；plan 步骤 6/7 改成**两步**（先 `parent_list_children` 定孩子 → 再 `parent_exam_plan_list` 列场次，因为 `childName` 必填）；**四把工具的"注册后第一句"**带上"先列清单" | F2「这份资料不要了」：`list_materials` ×2 → "定位不到，先不动手删"；F3「那场考核取消吧」：`list_children` → **`exam_plan_list` ×4（四个孩子）** → 把待考场次列出来让家长挑 |
+| 副作用 | —— | 修复后复跑**零写入**（topics 11→11 / courses 1317→1317 / 材料文件 0 新增；修复前那次真建了"国学"主题+1 课） |
+| 测试 | `test/issue144-parent-skills.test.ts` 新增 5 例"实跑修正"（归属+守卫放行+两处口径+四把工具一句），**41/41** | —— |
+
+**新暴露的一条效率问题（未修，记入待办）**：F1 单轮 **>150s 超时**——它在 512 门的 `lunyu` 主题里反复查课程名册找一门**测试库里并不存在的课（《静夜思》）**。⇒ 建议：给 `parent_library_courses` 加**标题模糊筛选**，或技能里写"同一主题别反复试，查不到就如实说没有"。
 
 **家长三项拍板（同批记录）**：
 
@@ -345,7 +357,7 @@
 2. **既有回归同步扩写**：`test/issue144-parent-skills.test.ts` → **36 / 36**（新增：覆盖版追加「不可覆盖条款」、跨家长隔离、旧形态 `skill:<name>` 不再被认、红线校验 4 例）；`test/issue133-json-string-args.test.ts` **16 / 16**、`test/issue134-arg-coercion.test.ts` **19 / 19**、`test/issue135-mastery-task.test.ts` **6 / 6**、`test/data-channel-v2.test.ts` **27 / 27**；`test/issue144-parent-report-tools.test.ts` **18 / 18**、`test/issue142-child-report-tools.test.ts` **14 / 14**（未受影响）；
 3. **类型**：`cd server && npx tsc --noEmit` → **exit 0**；
 4. **构建**：`npx electron-vite build` → **exit 0**（`out/main` 281 kB / `out/preload` 27 kB / `out/renderer` 2.5 MB）；`npm --prefix web run build` → **exit 0**（`web/dist` 1.58 MB）；
-5. **预算**（测试内打印）：工具面 **48 → 45 把**；工具块源码态 24010 → **20948**、注册后 16848 → **13786**（相对原始 25078 **-45%**）；常驻提示词 2501 → **2185**；8 技能正文 19315；
+5. **预算**（测试内打印）：工具面 **48 → 45 把**；工具块源码态 24010 → **20948**、注册后 16848 → **13892**（相对原始 25078 **-45%**）；常驻提示词 2501 → **2185**；8 技能正文 19315；
 6. **全量回归**：`npx vitest run` → **8 files / 15 tests 失败，558 passed / 8 skipped（65 files / 581 tests）**。失败清单与既有基线**逐项一致**（`assess-guide` / `assessment` / `english-course-session` / `event-poll-config` / `kb-sqlite` / `page-bridge` / `sync` / `token-stats`），**零新增失败**；留档 `tmp/p6p5-full-regression.txt`（相对 P4 那次：文件 +1＝新增 P5 测试文件，用例 +12＝P5 新增 8 + skills 新增 4，通过数 546 → 558）；
 7. **P6 的 grep 判据**：`src/` + `electron/` + `web/src/` 对 `parent-data|dataagent|ParentData|pi:start_parent_data|pi:prompt_parent_data|pi:reset_parent_data`（含大小写不敏感变体）→ **零命中**；
 8. **执行中的一次写法错误（留档）**：往技能正文模板字符串里插入 P6 说明时又忘了转义反引号（`` `ISSUE-144` ``），`tsc` 报 `TS1005`；与 §7.2 第 6 条同一类，**第二次犯**——已修。**结论：改 `skills/parent/*.ts` 的正文，写完立刻 `tsc`，不要等到最后。**

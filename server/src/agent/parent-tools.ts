@@ -192,8 +192,8 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     name: "parent_list_materials",
     label: "列出课程学习资料",
     description:
-      "列出服务端课程学习资料真源（可按 topic 或路径前缀过滤）。\n\n" +
-      "**何时调用**：整理资料前先看「现在有什么」——去重、归并目录、重命名都必须先列清单。\n" +
+      "列出服务端课程学习资料真源（可按 topic 或路径前缀过滤）；**家长只说「这份 / 那几份」没点名时，先用它列出候选再问**。\n\n" +
+      "**何时调用**：整理资料前先看「现在有什么」——去重、归并目录、重命名、删除都必须先列清单。\n" +
       "返回每条的相对路径（可直接用作 read/delete/move 的 path）。",
     parameters: Type.Object({
       topic: Type.Optional(Type.String({ description: "主题目录名（第一级目录，如 lunyu）；不传=全部" })),
@@ -230,7 +230,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     name: "parent_delete_material",
     label: "删除课程资料（需确认）",
     description:
-      "删除一份课程学习资料。**默认只演练（dryRun）**：不传 confirm 时只返回「将被删除的文件」清单。\n\n" +
+      "删除一份课程学习资料；**家长没点名是哪一份时，先 `parent_list_materials` 列出候选、复述后再删**。**默认只演练（dryRun）**：不传 confirm 时只返回「将被删除的文件」清单。\n\n" +
       "**流程（必须遵守）**：先调用一次（不传 confirm）拿到清单 → 向家长复述要删什么并征得同意 →\n" +
       "再带 `confirm: true` 调用真正删除。删除会写入家长操作记录（activity-log）可追溯。\n\n" +
       "**为什么**：资料是孩子上课要用的真源，误删无法回滚。",

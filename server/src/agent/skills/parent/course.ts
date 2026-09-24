@@ -31,8 +31,14 @@ export const courseSkill: ParentSkill = {
 **家长只说了其中一步，就只做那一步**（例如只说"把第 2 课教法改成…"，不必走完整条线）。
 
 ## 步骤
-1. **先核对现在有什么**：\`parent_library_topics\` / \`parent_library_courses\`——不许凭记忆建重名主题或重名课程。
-2. **落结构**：\`parent_upsert_topic\`（name 主键 + \`topic_key\` 目录名 + \`method\` / \`assess_method\`）→ \`parent_upsert_course\`（\`(topic,title)\` 联合主键 + \`sort_order\` / \`lesson_method\` / \`html_path\` / \`teaching_copy\` / \`assess_rubric\`）。
+1. **先核对现在有什么**（不许凭记忆建重名主题或重名课程）：
+   - \`parent_library_topics\` → **主题名册**（含权威 \`topic_key\`）；
+   - \`parent_library_courses\`（\`topic\` 必填）→ **该主题下的课程名册**。
+   ⚠️ **"这门课是否已存在、准确标题是什么"只能靠课程名册**：只看到主题列表就动手，是实测里出过的错（把课建重、或对着错课名操作）。主题还不确定就先看主题名册。
+   **例外（合理路径）**：家长要**新建一个还不存在的主题**时，主题名册里没有就是没有——这时不必再查空主题下的课程名册，直接进第 2 步复述；但**要动已有主题/已有课时，必须先看课程名册**（"这门课用某份资料""把这课改个名"都属于这一类）。
+2. **落结构（写库 → 先复述取得确认）**：先把「要**新建**还是**覆盖**什么、主题与课程的字段值（含 \`topic_key\` / \`sort_order\` / 教法 / 资料路径）」列成清单**复述给家长并等确认**（红线 A7），再：
+   \`parent_upsert_topic\`（name 主键 + \`topic_key\` 目录名 + \`method\` / \`assess_method\`）→ \`parent_upsert_course\`（\`(topic,title)\` 联合主键 + \`sort_order\` / \`lesson_method\` / \`html_path\` / \`teaching_copy\` / \`assess_rubric\`）。
+   **建主题也算写库**：不要以为"先建个空主题没关系"——实测里就是这么在没有复述的情况下把主题建出来的。
    **学习进度不在家长库**（库域分工后进度归孩子库），落库时**不要写进度字段**。
 3. **写教学三件套**：讲什么（\`teaching_copy\`）/ 用什么资料（\`html_path\`）/ 考什么（\`assess_rubric\`）。
    **\`html_path\` 必须是资料真源里真实存在的文件**：写之前用 \`parent_list_materials\` 核一下（当前工具**不做存在性校验**）；对不上就列出同主题下的相近候选让家长确认，**不要硬写**。
@@ -52,7 +58,7 @@ export const courseSkill: ParentSkill = {
 
 ## 参数速查（本场景工具）
 - \`parent_library_topics\`：无参数；每个主题给出**权威 \`topic_key\`** 与进度（已学/总数/下一课）。
-- \`parent_library_courses\`：\`topic\`（必填，\`topic_key\` 如 lunyu）→ 该主题下课程（标题/进度/资料路径）。
+- \`parent_library_courses\`：\`topic\`（必填，\`topic_key\` 如 lunyu）→ 该主题下课程（标题/进度/资料路径）。**"这门课在不在 / 准确叫什么"用它**（也用于核对 \`html_path\` 该挂哪门课）。
 - \`parent_library_course_content\`：\`topic\` + \`title\`（必填）→ 该课知识点（**\`id=\`**）与每个知识点下的题（题干/答案/行为/分值，题也带 **\`id=\`**）。返回的 id 正是 \`items\` 里 \`knowledgePointId\` / \`questionId\` 要用的。
 - \`parent_upsert_topic\`：\`name\`（必填，主题中文名＝**主键**）· \`topic_key\`（必填，目录名）· \`method\` / \`assess_method\` / \`progress\` / \`rules_json\`（缺省 \`{}\`）。**覆盖只更新你给的字段**，没给的保持原样。
 - \`parent_upsert_course\`：\`topic\` + \`title\`（必填，**联合主键**）· \`sort_order\`（缺省 0）· \`lesson_method\` · \`html_path\` · \`teaching_copy\` · \`assess_rubric\` · \`material\`（资料附注）· \`send_material\`（要发给孩子的资料）· \`tags\`（逗号分隔）。**没有 status 这类进度字段**。
@@ -66,6 +72,7 @@ export const courseSkill: ParentSkill = {
 
 ## 口径
 - 面向家长一律用**主题名 + 课程名**说话，不要报内部字段名与行 id。
+- **对象不明先列清单**：家长只说"这门课 / 那几课 / 加三课"却没点名时，**先 \`parent_library_topics\` + \`parent_library_courses\` 把候选念出来让他挑**，而不是空口反问"哪门课"（列清单更省来回）。
 - **同步返回里会列出"跳过了哪些未分配主题、各多少门课"——如实转述**，别只说"已同步"。
 - 汇报"新增/更新多少门、哪些对不上需要人工确认、哪些主题还没分配给孩子"；**没有变化也要说"已是最新"**。
 - 一次一个孩子；多个孩子就多次调用，别合并成一句"都同步了"。

@@ -572,7 +572,7 @@ describe("ISSUE-144 A 路线：说明下沉到技能，工具块只留结构与�
         `不参与下沉的通用设施：${[...COMPACT_EXEMPT_TOOLS].join("、")} + fs 四把（read/write/edit/ls）。`
     );
     expect(afterTotal).toBeLessThan(beforeTotal * 0.75);
-    // P6 又撤掉三把通用通道工具（parent_db_read/write/describe，源码态 ≈ 3.1k）：45 把 / 13786。
+    // P6 又撤掉三把通用通道工具（parent_db_read/write/describe，源码态 ≈ 3.1k）：45 把 / 13892。
     // 上限随工具面增减同步调，防"加工具悄悄突破预算"。
     expect(afterTotal).toBeLessThan(14200);
     expect(beforeTotal).toBeGreaterThan(20500);
@@ -731,5 +731,67 @@ describe("ISSUE-144 A 路线：场景守卫（未加载场景 → 拒绝执行�
     expect(scenarioGuard(state, "parent-scene-course")).toBeNull();
     const again = await load.execute("t5", { name: "parent-scene-course" });
     expect(again.content[0].text).toContain("已经读过"); // 幂等：不重复灌正文
+  });
+});
+
+// ==================== 行为层实跑修正（2026-09-25，三条缺陷） ====================
+/**
+ * 来源：`docs/家长agent-行为样本实跑-2026-09-25.md` §3 的三条真缺陷。
+ * 这里把修法**钉进测试**，避免以后改文案时又漂回去。
+ */
+describe("ISSUE-144 实跑修正：三条缺陷", () => {
+  it("缺陷 1：「定位某门课在哪」用的 parent_library_courses 归 progress + course 两场景（多场景任一放行）", () => {
+    expect(findParentSkill("parent-scene-progress")!.tools).toContain("parent_library_courses");
+    expect(findParentSkill("parent-scene-course")!.tools).toContain("parent_library_courses");
+    // 进度技能里要写明"这门课在不在只能靠它"，否则模型还会拿主题列表硬凑
+    expect(findParentSkill("parent-scene-progress")!.body).toContain("先定位这门课在哪");
+  });
+
+  it("缺陷 1：真实工具——只加载 progress 时 parent_library_courses 就放行（不再逼模型去加载 course）", async () => {
+    const state = createParentSkillState();
+    const tools = pilotTools(state);
+    const courses: any = tools.find((x: any) => x.name === "parent_library_courses")!;
+    expect(String(courses?.description ?? "")).toContain("load_skill"); // 它也走说明下沉
+    // 未加载任何场景：拒跑，且提示里要包含 progress（多场景提示）
+    await expect(courses.execute("d1", { topic: "lunyu" })).rejects.toThrow(/parent-scene-progress/);
+    // 只加载 progress → 放行（这正是样本 3 连撞两次守卫的根因）
+    state.loaded.add("parent-scene-progress");
+    const r = await courses.execute("d1", { topic: "__不存在的主题__" });
+    expect(JSON.stringify(r)).not.toContain("load_skill"); // 走到真实业务逻辑（回"该主题下没有课程"）
+  });
+
+  it("缺陷 2：course 技能写死「核对必须用课程名册」「写库前先复述取得确认」「建主题也算写库」", () => {
+    const course = findParentSkill("parent-scene-course")!.body;
+    for (const kw of ["只能靠课程名册", "先复述取得确认", "建主题也算写库", "对象不明先列清单"]) {
+      expect(course, `course 技能缺 ${kw}`).toContain(kw);
+    }
+    // A7 要把"新建或修改主题与课程"点名为写库（原来只列举了改排期/建考核/落库内容）
+    const a7 = IRON_RULES.find((r) => r.id === "A7")!.text;
+    expect(a7).toContain("新建或修改主题与课程");
+    expect(a7).toContain("得到确认再执行");
+    expect(residentPrompt()).toContain(a7); // 常驻层同样生效
+  });
+
+  it("缺陷 3：materials / plan 写死「对象不明先列清单再问」", () => {
+    const mats = findParentSkill("parent-scene-materials")!.body;
+    const plan = findParentSkill("parent-scene-plan")!.body;
+    for (const kw of ["先列出候选把路径念给他挑", "对象不明先回到第 1 步列清单"]) {
+      expect(mats, `materials 技能缺 ${kw}`).toContain(kw);
+    }
+    for (const kw of ["取消考核是两步", "对象不明先列清单", "把现有场次念给他挑"]) {
+      expect(plan, `plan 技能缺 ${kw}`).toContain(kw);
+    }
+  });
+
+  it("缺陷 3：四把「对象不明」工具的**注册后一句**里就带着「先列清单再问」", () => {
+    const tools = allTools();
+    const desc = (n: string) => String(tools.find((t: any) => t.name === n)?.description ?? "");
+    expect(desc("parent_list_materials")).toContain("列出候选再问");
+    expect(desc("parent_delete_material")).toContain("列出候选");
+    expect(desc("parent_exam_plan_list")).toContain("先用它列出候选");
+    expect(desc("parent_exam_plan_cancel")).toContain("列候选并复述");
+    for (const n of ["parent_list_materials", "parent_delete_material", "parent_exam_plan_list", "parent_exam_plan_cancel"]) {
+      expect(desc(n).length, `${n} 的注册后描述超长`).toBeLessThanOrEqual(320);
+    }
   });
 });
