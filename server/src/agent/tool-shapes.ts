@@ -35,6 +35,15 @@ export function JsonStringArrayParam(desc: string) {
   });
 }
 
+/**
+ * 同上，但**不带说明**（ISSUE-144 试点：说明下沉到场景技能，只留结构）。
+ * 仍保留 `string` 分支——某些模型会把数组整串序列化（ISSUE-133/134），
+ * 放行 string 才不会在校验层就硬失败，执行器入口负责 parse 回结构。
+ */
+export function BareJsonArrayParam<T extends TSchema>(item: T) {
+  return Type.Union([Type.Array(item), Type.String()]);
+}
+
 /** 写侧 rows：行数组 / 列值对象，或被整串 JSON 序列化的字符串 */
 export function WriteRowsParam(desc: string) {
   return Type.Union(

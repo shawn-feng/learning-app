@@ -25,6 +25,7 @@ const PROVIDERS = [
   { id: "qwen", name: "通义千问 (按量付费)", keyHint: "sk-..." },
   { id: "qwen-tokenplan", name: "通义千问 (token-plan 套餐)", keyHint: "sk-...（与按量不同的 key）" },
   { id: "deepseek", name: "DeepSeek (官方直连)", keyHint: "sk-..." },
+  { id: "moyu", name: "魔芋AI (聚合平台)", keyHint: "sk-...（魔芋令牌，moyu.cn 控制台创建）" },
   { id: "openai", name: "OpenAI", keyHint: "sk-..." },
   { id: "minimax", name: "MiniMax", keyHint: "请填写 MiniMax API Key" },
   { id: "mimo", name: "小米 MiMo (按量付费)", keyHint: "sk-...（MiMo 按量 Key）" },

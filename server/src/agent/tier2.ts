@@ -419,7 +419,7 @@ export function describeNamespace(ns: NamespaceRow): string {
   const statusText = ns.status === "pending" ? "【待家长确认——生效前任何 agent 不可见】" : ns.status === "disabled" ? "【已停用】" : "";
   const lines = [
     `## ns:${ns.ns}（${ns.label}）【Tier 2 灵活实体 · scope=${ns.scope} · v${ns.version}】${statusText}`,
-    `存于 entities(ns='${ns.ns}')，data_json 一行一实体；读 parent_db_read / child_db_read 用 table="ns:${ns.ns}"。`,
+    `存于 entities(ns='${ns.ns}')，data_json 一行一实体；家长侧用 parent_db_read 以 table="ns:${ns.ns}" 读取（孩子侧当前无通用读工具，见 ISSUE-142）。`,
     "字段：",
   ];
   for (const [col, c] of Object.entries(ns.spec.columns)) {

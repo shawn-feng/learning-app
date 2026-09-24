@@ -309,11 +309,13 @@ describe("child db write whitelist", () => {
 });
 
 describe("child describe", () => {
-  it("清单区分只读/可写；单表详情含列含义", () => {
+  it("清单区分只读/可写；单表详情含列含义（ISSUE-142：文案不再绑定工具名）", () => {
     const all = describeChildTables(childKbReadableRegistry(), childKbWritableRegistry());
     expect(all).toContain("可读表");
-    expect(all).toContain("child_db_read");
-    expect(all).toContain("child_db_write");
+    expect(all).toContain("可写表");
+    // ISSUE-142：通用读/写工具已撤，describe 文案不再出现工具名（该函数家长侧 parent_db_describe 仍复用）
+    expect(all).not.toContain("child_db_read");
+    expect(all).not.toContain("child_db_write");
     const exam = describeChildTables(childKbReadableRegistry(), childKbWritableRegistry(), "exam_plans");
     expect(exam).toContain("只读");
     const req = describeChildTables(childKbReadableRegistry(), childKbWritableRegistry(), "redemption_requests");

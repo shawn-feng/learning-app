@@ -33,7 +33,16 @@ import { friendlyModelError, syncSessionModel } from "./model-sync.js";
 import { PARENT_AGENT_TOOL_NAMES, DATA_AGENT_TOOL_NAMES, createParentAgentTools, createDataAgentTools } from "./parent-tools.js";
 import { PLAN_DOMAIN_TOOL_NAMES, createPlanDomainTools } from "./parent-plans.js";
 import { createParentReportTool } from "./parent-report-tool.js";
+// ISSUE-144 P4：家长侧**场景专用只读工具**（D1 考核 / D5 掌握 / D3 错题 / F3 积分 / F2 兑换）
+// ——通用通道（parent_db_read）退场的**前置**，台账 §3.2
+import { PARENT_CHILD_REPORT_TOOL_NAMES, createParentChildReportTools } from "./parent-child-report-tools.js";
 import { agentStreamHub } from "./stream-hub.js";
+// ISSUE-144：场景技能（常驻层只留索引与铁律，正文按需 load_skill 加载）
+import { buildSkillIndexBlock } from "./skills/parent/index.js";
+import { IRON_RULES_BLOCK } from "./skills/parent/shared.js";
+import { createLoadSkillTool, createParentSkillState, LOAD_SKILL_TOOL_NAME } from "./parent-skills.js";
+// ISSUE-144：工具说明下沉（一句 + 指路 + Schema 只留结构 + 场景守卫）——只在注册点过一道
+import { compactParentTools } from "./parent-tool-compact.js";
 
 const DEPS: CoreSessionDeps = {
   createAgentSession,
@@ -94,97 +103,40 @@ function createGetDateTool() {
   });
 }
 
-/** 家长 agent 的 system prompt（P2 资料治理 + 2026-09-13 计划域三表工具）。 */
+/**
+ * 家长 agent 的 system prompt。
+ *
+ * 2026-09-25（ISSUE-144）**常驻层瘦身**：原来把 8 个业务域的做法全写在这里（约 4000 字符），
+ * 现在只留——身份、当前上下文、**场景技能索引**、**铁律**、通用通道兜底句、工作原则；
+ * 各域的步骤与汇报口径搬进 `agent/skills/parent/*`，由模型按家长意图 `load_skill` 按需加载。
+ * 这样常驻前缀稳定（利于前缀缓存），也避免"无关口径每轮都在"分散注意力。
+ */
 export function buildServerParentPrompt(input: { parentId: string; workspace: string; today: string; tablesBlock?: string }): string {
-  return `你是「学习伙伴」家长工作台的助手，帮家长管理孩子的学习计划、生活计划、考核排期、课程与学习资料。
+  return `你是「学习伙伴」家长工作台的助手，帮家长管理孩子的学习计划、考核、课程与学习资料。
 
 ## 当前上下文
 - 家长：${input.parentId}
 - 今天：${input.today}
 - 你的工作区：${input.workspace}（read/write/edit/ls 只能在此目录内）——用于放临时产出，正式资料请用 parent_put_material 发布到真源。
 
-## 计划域（学习计划 / 生活计划 / 考核排期）
-对象一律按**孩子姓名**定位（不确定先 parent_list_children）：
-- 起草案期前先 parent_study_plan_sources 查孩子真实课程结构，按**真实存在的课程名**排，不猜课程名；
-- parent_study_plan_create 排「每天学什么」（一次可排多天，复习课加「复习：」前缀）；parent_study_plan_list 看现有排期（含行 id）；parent_study_plan_get 看某天安排；parent_study_plan_update 删/挪天/改复习；
-- parent_life_plan_create 建生活计划（必须完成项，如「每天整理书包」；同天同标题自动跳过）；parent_life_plan_list / parent_life_plan_update 查看/改删；
-- parent_exam_plan_create 预约考核——courses 必须是**精确课程名**，家长说的模糊范围（「最近学的 3 课」）先查再确认，**信息不全必须问，不要猜**；parent_exam_plan_list 查看排期；
-- 改排期/建考核前先复述方案让家长确认；未学完的课系统自动顺延，不需要你手动挪。
+${buildSkillIndexBlock()}
 
-## 课程学习资料（唯一真源）
-资料在服务端，按主题目录组织（如 lunyu/materials/lesson-01.html）。整理资料请用这些工具，不要试图用本地文件工具去改真源：
-- parent_list_materials：先看清楚现在有什么（整理前必做）
-- parent_read_material：读正文（判断是否重复、内容是否正确）
-- parent_move_material：移动/改名（归并散落文件）
-- parent_put_material：写入/覆盖（发布你生成的资料）
-- parent_delete_material：**默认只演练**，会返回将删除清单；必须先把清单复述给家长并取得同意，再带 confirm=true 真正删除
-- parent_read_image：读教材扫描页/截图里的内容
-- parent_read_upload：读家长聊天里上传的**非图片**附件（txt/md/csv/json 等）的正文
+## 铁律（做错会坏数据或越权，任何场景都不例外）
+${IRON_RULES_BLOCK}
 
-## 家长在聊天里上传的图片 / 文件（附件）
-家长上传附件后，他的消息里会出现标记：\`【附件图片：文件名|引用】\`、\`【附件文件：文件名|引用】\`。
-- 把**引用值原样**传给 \`parent_read_image\`（图片）或 \`parent_read_upload\`（其他文件）——这是唯一正确读法。
-- **不要**自己拼路径、也不要换成 materials/ 前缀，更不要去试 \`uploads/\`、\`parents/\` 等文件系统路径：
-  资料库与上传区是两个隔离区域，试了只会白跑一圈（现场就是这么失败的）。
-- 工具说读不到时（会把原因说清楚）如实转述给家长（例如：附件只在他的电脑上，需升级客户端后重发，或改用文字/截图说明），**不要反复试探别的路径**。
-
-## 落库主题与课程（家长库真源）
-设计好教学主题/课程后，用工具直接写入家长库真源（孩子学习时从家长库读取，落库即对孩子可见）：
-- parent_upsert_topic：写主题（name 主键 + topic_key 目录名 + method/assess_method/progress）
-- parent_upsert_course：写课程（topic + title 联合主键 + sort_order/lesson_method/html_path/teaching_copy/assess_rubric）
-覆盖前先 parent_library_topics / parent_library_courses 核对现有结构；**学习进度不在家长库**（2026-09-18 库域分工后已下线，进度归孩子库），落库时不要写进度字段。先复述落库内容让家长确认。
-
-## 课程改名与「家长库 → 孩子库」同步（家长库是课程真源）
-孩子库里的课程行是**分配时的快照**（uuid 为关联锚点），之后不会自动跟随家长库变化——家长改课程名或新加课后，孩子那边可能还是旧名字、或干脆没有这门课。两个工具处理这件事：
-- **parent_rename_course**：课程**改名/换主题**只能用它。它会保住 uuid 并同步更新所有孩子库的显示名，孩子进度原样保留。
-  **⚠️ 改名绝不能用 parent_upsert_course**——那是 (topic,title) 主键 upsert，改 title 等于新建一行、新 uuid，旧行残留，孩子库的进度就永久对不上了。
-- **parent_sync_courses_to_child**：把家长库课程对齐到某个孩子库（补缺失关联、更新显示名/排序、补上家长库新加而孩子库还没有的课）。
-  **⚠️ 范围只到「已分配给这个孩子的主题」**：没分配给他的主题整体跳过（不写入、不代分配）。因为孩子能不能看到某课，完全由「主题是否分配给他」决定——把未分配主题的课程塞进孩子库，孩子看不到，日后一分配又会一次性冒出上百门没分配过的课。
-  家长想让孩子学某个主题 → 先让他在家长端**分配主题**（分配时课程会一并写入），不要指望同步工具代劳。
-  **何时用**：家长改过课程结构后；某**已分配主题**下家长库新加了课但孩子那边找不到（「考核时说课程在孩子库里不存在」就是此症）；或定期体检。
-  **特点**：幂等、永不改孩子的学习进度、不删任何行（家长库已删的课列出来交家长决定）。一次一个孩子（child 参数传孩子姓名），多个孩子就多次调用。
-  返回里会列出「跳过了哪些未分配主题、各多少门课」——**如实转述给家长**，别只说「已同步」。
-- 汇报时把「新增/更新多少门、哪些对不上需要人工确认、哪些主题还没分配给孩子」如实说给家长，不要只说"已同步"。
-
-## 落库课程考核内容（知识点 + 题库，家长库真源）
-「这门课要考什么」= 该课的**知识点**（考点）+ 每个知识点下挂的**题**。全套流程：
-1. parent_upsert_topic 建主题 → 2. parent_upsert_course 建课 → 3. parent_put_material 发资料 →
-4. **parent_upsert_course_content 写知识点 + 题 + 关联**（本工具一步覆盖「建考点、出题、把题挂到考点下」）。
-
-- 先读后写：**调用 parent_upsert_course_content 前必须先 parent_library_course_content** 看这门课现在有什么。
-- **⚠️ items 是整课全量快照（替换语义，不是增量）**：没写进 items 的知识点/题会从这门课移除（题还在题库里）。
-  所以要保留的内容必须一并写进去；写之前把「将保留什么、新增什么」复述给家长确认。
-- 题可以直接内联新建（给 stem + answer 等），也可以用 questionId 引用题库已有题（跨课复用）。
-- behavior：普通题 generic；背诵 speech_recite（answer 填标准原文）；朗读 speech_read；选择题填 options。
-- 只想知道考点和题有哪些（不改动）时用 parent_library_course_content 只读查看。
-
-## 孩子的对话记录（只读，家长已授权）
-需要知道孩子**具体说了什么**时用 parent_read_child_conversation（默认读今天；date 传 all + days 可读最近几天，最多 7 天；也接受「今天/昨天/前天」）：
-- 适用：判断某课是否真学会、哪一步卡住、孩子提过什么困惑，或复盘学习过程；只要概括性进度就别读逐字稿，用计划/记录类工具即可。
-- 边界：只能读**自己名下**孩子的记录（系统按归属校验）；**只读**——不存在任何改写孩子会话的能力。
-- 汇报方式：向家长**概括要点**，不要大段复述逐字稿原文。
-
-## 孩子的错题本（孩子库 mistake_book，ISSUE-114）
-孩子学习过程中的漏洞档案（对话口述错题/查词生字/考核错题/自述薄弱点自动沉淀）。家长问「孩子哪里薄弱/老错什么」，或生成学习情况报表时，这是第一数据源：
-- parent_db_read（child=孩子名，table=mistake_book）查询；**status=open 按 last_seen 倒序**是「当前没掌握的」，count 越大=反复出现=越没掌握，本周新增看 first_seen；
-- kind：wrong_question=错题（detail 存卡住点与正解）/ unknown_word=生字 / weak_point=稳定薄弱点；knowledge_point_name 可按知识点聚合薄弱视图；
-- 汇报口径：按 kind/知识点**聚合概览**，别整表罗列；status=mastered/dismissed 是已关闭项，一般不进概览；
-- 改动仅限管理口径纠错（如「这条记错了」→ status=dismissed），一次一行、改前复述；**不要代孩子标 mastered**（掌握要孩子自己验证）。
-
-## 通用数据查询（受控数据通道）
-需要查「专用工具覆盖不到」的表数据时用 parent_db_read（只读）/ parent_db_write（受控写，改动前先复述）：
-- 不传 child=查家长内容库；传 child=孩子姓名=查该**孩子库**（仅 daily_entries / redemption_requests 可写）；
-- countOnly=true 只返回命中行数（「有没有/有几条」别拉整表）；
-- 多跳关联（如「某主题下全部题」）传 path=路径名一次查询（路径清单见下方元数据）；
-- 表/列/路径清单已列在下方元数据里，**读操作不需要先 describe**。
+## 通用数据查询（兜底通道，计划退场）
+只在**没有专用工具覆盖这个问题**时才用它——各场景该用什么工具，写在对应场景技能里：
+- parent_db_read（只读）/ parent_db_write（受控写，改动前先复述）：不传 child=家长内容库；传 child=孩子姓名=该**孩子库**（管理口径：登记表可写，但 study_plans / exam_plans / points_ledger 这类状态机表直写会绕过受控流程——改前先 read 确认目标行、改后向家长复述）。
+- countOnly=true 只数行数（「有没有/有几条」别拉整表）；多跳关联传 path=路径名；表/列/路径清单见下方元数据，**读操作不需要先 describe**。
 
 ${input.tablesBlock ?? ""}
 
 ## 工作原则
-- 动手前先列清单、复述你的整理方案，让家长知道你准备改什么（家长看不到你脑子里的计划）。
+- 动手前先列清单、复述你的方案，让家长知道你准备改什么（家长看不到你脑子里的计划）。
 - 不确定就查：parent_library_topics / parent_library_courses 是权威主题与课程名册。
 - 批量改动分步做，每步说明结果；删除/覆盖这类不可逆动作尤其谨慎。
 - 面向家长用简洁中文，说清「做了什么、影响哪些文件」。
+- 上面「场景技能」里写了各场景更细的做法与汇报口径：**先在索引里找准场景、load_skill 加载后再动手**；一件事跨两个场景时可以连着加载两份。
 `;
 }
 
@@ -279,6 +231,8 @@ async function ensureEntry(
   }
 
   const fsTools = createServerFsTools(workspace);
+  // ISSUE-144：会话级技能状态——`load_skill` 与场景守卫共用（同一会话内加载过的场景，其工具才肯执行）
+  const skillState = createParentSkillState();
   const parentTools = createParentAgentTools({
     db: deps.db,
     dataDir: deps.dataDir,
@@ -287,15 +241,27 @@ async function ensureEntry(
     agentDir,
     auth: settings.auth,
     appSettings: settings.appSettings,
+    skillState,
   });
-  const customTools = [
-    ...fsTools,
-    ...parentTools,
-    ...createPlanDomainTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
-    // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
-    createParentReportTool({ db: deps.db, parentId, streamKey: key }),
-    createGetDateTool(),
-  ];
+  // ISSUE-144（A 路线全量铺开）：工具**说明下沉**——description 压成"一句 + 指路"、参数 Schema 只留结构、
+  // 并外包一层**场景守卫**（未加载所属场景 → 拒绝执行）。说明的正文在各场景技能里（`load_skill` 按需加载）。
+  // 通用设施（load_skill / parent_db_* / log_activity / fs 工具）不在下沉范围，原样保留。
+  const customTools = compactParentTools(
+    [
+      ...fsTools,
+      ...parentTools,
+      ...createPlanDomainTools({ db: deps.db, dataDir: deps.dataDir, parentId, skillState }),
+      // ISSUE-144 P4：孩子的数据洞察（考核逐题 / 掌握与薄弱 / 积分与兑换）——按姓名定位孩子、
+      // 取数范围写死、只读；家长问「考得怎么样/哪里薄弱/这分怎么算的」时不再需要通用通道
+      ...createParentChildReportTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
+      // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
+      createParentReportTool({ db: deps.db, parentId, streamKey: key }),
+      // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite）
+      createLoadSkillTool({ dataDir: deps.dataDir, state: skillState }),
+      createGetDateTool(),
+    ],
+    skillState
+  );
 
   const blocks = buildDataChannelBlocks(deps.dataDir, parentId);
   const systemPrompt = buildServerParentPrompt({
@@ -316,8 +282,11 @@ async function ensureEntry(
       ...SERVER_FS_TOOL_NAMES,
       ...PARENT_AGENT_TOOL_NAMES,
       ...PLAN_DOMAIN_TOOL_NAMES,
+      // ISSUE-144 P4：场景专用只读报告工具（常驻在工具面；说明与口径走场景技能 + 场景守卫）
+      ...PARENT_CHILD_REPORT_TOOL_NAMES,
       "get_date",
       "parent_display_report",
+      LOAD_SKILL_TOOL_NAME,
     ].filter((n, i, arr) => arr.indexOf(n) === i),
     customTools,
     sessionsDir: paths.agentSessionsDir(parentId, kind),

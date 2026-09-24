@@ -1142,7 +1142,7 @@ export function childKbTableSpecs(): TableSpec[] {
     {
       table: "redemption_requests",
       label: "我的兑换申请",
-      desc: "我提交的兑换申请及审批状态（新增申请请用 child_db_write）",
+      desc: "我提交的兑换申请及审批状态",
       pk: ["id"],
       columns: {
         id: R("申请 id"), child_id: R("孩子 id"), item_id: R("商品 id"), custom_desc: R("自定义奖励描述"),
@@ -1222,8 +1222,10 @@ export function childKbReadableRegistry(): ReadableTableSpec[] {
 }
 
 /** 孩子可写白名单：只有日常记录与兑换申请（考核/积分/计划状态机绝不开放，见 ISSUE-105 矩阵）。
- *  ⚠️ 仅用于**孩子 agent 自己**的写面；家长 db 通道（parent_db_write + child）2026-09-21 起按
- *  管理口径开放全表，见 childKbAdminWriteSpecs。 */
+ *  ⚠️ **ISSUE-142（2026-09-23）起孩子 agent 侧已无 db 写工具**（`child_db_write` 撤掉：写 daily 的正规通道
+ *  是 `kb_insert`/`kb_update`；兑换申请因整条链路未通、暂由场景侧决策）。本注册表**保留定义**作为权限矩阵
+ *  的真源，供将来「兑换申请」专用工具复用与家长管理口径对比。
+ *  家长 db 通道（parent_db_write + child）2026-09-21 起按管理口径开放全表，见 childKbAdminWriteSpecs。 */
 export function childKbWritableRegistry(): TableSpec[] {
   return [
     {
@@ -1480,9 +1482,9 @@ export function describeChildTables(readSpecs: ReadableTableSpec[], writeSpecs: 
     return `## ${r.table}（${r.label}）【只读】\n${r.desc}\n列：\n${Object.entries(r.columns).map(([c, d]) => `- ${c}：${d}`).join("\n")}`;
   }
   return (
-    "可读表（用 child_db_read 查询）：\n" +
+    "可读表：\n" +
     readSpecs.map((s) => `- ${s.table}（${s.label}）：${s.desc}`).join("\n") +
-    "\n\n可写表（用 child_db_write，允许操作见单表详情）：\n" +
+    "\n\n可写表（允许操作见单表详情）：\n" +
     writeSpecs.map((s) => `- ${s.table}（${s.label}）：允许 ${s.ops.join("/")}`).join("\n")
   );
 }

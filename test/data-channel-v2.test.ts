@@ -417,7 +417,13 @@ describe("WP4/F7：元数据块", () => {
     expect(blocks.childBlock).toContain("study_plans");
     expect(blocks.childBlock).toContain("redemption_requests");
     const self = buildChildSelfBlock(dataDir, pid);
-    expect(self).toContain("points_ledger");
+    // ISSUE-142：孩子侧元数据块从「表/列清单」改为「我能查到什么」的能力清单
+    // （通用读已撤，不再暴露表名，避免模型去查不存在的入口）
+    expect(self).toContain("我能查到什么");
+    expect(self).toContain("child_points_report");
+    expect(self).toContain("child_mastery_report");
+    expect(self).toContain("child_exam_result");
+    expect(self).not.toContain("points_ledger");
   });
 });
 

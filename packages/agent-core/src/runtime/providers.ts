@@ -201,6 +201,58 @@ const MINIMAX_PROVIDER: ProviderConfig = {
   models: MINIMAX_MODELS,
 };
 
+// ==================== 魔芋AI（大模型聚合平台，OpenAI 兼容中转） ====================
+// 接入要点：控制台「令牌管理」创建 sk- 令牌；Base URL 为 https://www.moyu.info/v1
+// （官网 www.moyu.cn 的 /docs 页需登录后才可见，公开教程均以 moyu.info/v1 为准）。
+// 平台聚合 200+ 模型，此处只登记已确认的常用起步清单；模型 ID 以平台「模型广场」为准，
+// 后续要加新模型直接往 MOYU_MODELS 里补即可（同渠道不同模型 ID 大小写敏感）。
+
+const MOYU_MODELS: ProviderModelConfig[] = [
+  {
+    id: "DeepSeek-V4.1-flash",
+    name: "DeepSeek V4.1 Flash (魔芋)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+    compat: {
+      thinkingFormat: "deepseek",
+      supportsDeveloperRole: false,
+      requiresReasoningContentOnAssistantMessages: true,
+    },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+  {
+    id: "glm-5.3",
+    name: "GLM-5.3 (魔芋)",
+    api: "openai-completions",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+  },
+  {
+    id: "gpt-4o",
+    name: "GPT-4o (魔芋)",
+    api: "openai-completions",
+    reasoning: false,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 16384,
+  },
+];
+
+const MOYU_PROVIDER: ProviderConfig = {
+  name: "魔芋AI (聚合平台)",
+  baseUrl: "https://www.moyu.info/v1",
+  api: "openai-completions",
+  models: MOYU_MODELS,
+};
+
 const MIMO_MODELS: ProviderModelConfig[] = [
   {
     id: "mimo-v2.5-pro",
@@ -258,6 +310,7 @@ export const PROVIDER_REGISTRATIONS: Array<[string, AugProviderConfig]> = [
   ["qwen", QWEN_PROVIDER],
   ["qwen-tokenplan", QWEN_TOKENPLAN_PROVIDER],
   ["deepseek", DEEPSEEK_PROVIDER],
+  ["moyu", MOYU_PROVIDER],
   ["minimax", MINIMAX_PROVIDER],
   ["mimo", MIMO_PROVIDER],
   ["mimo-tokenplan", MIMO_TOKENPLAN_PROVIDER],

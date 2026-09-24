@@ -48,6 +48,24 @@ export function getAgentPrompt(dataDir: string, scope: string, ref: string): str
   }
 }
 
+/** 列出某 scope 下**所有**当前用户版本（ISSUE-144：技能覆盖层用它取全部 `skill:<name>`）。 */
+export interface AgentPromptRow {
+  ref: string;
+  content: string;
+  updated: string;
+}
+
+export function listAgentPrompts(dataDir: string, scope: string): AgentPromptRow[] {
+  const db = openAgents(dataDir);
+  try {
+    return db
+      .prepare("SELECT ref, content, updated FROM prompts WHERE scope = ?")
+      .all(scope) as unknown as AgentPromptRow[];
+  } finally {
+    db.close();
+  }
+}
+
 /** 保存用户版本（整体替换）：旧版本先入历史；空内容 = 恢复默认（删除当前行，保留历史）。 */
 export function saveAgentPrompt(
   dataDir: string,

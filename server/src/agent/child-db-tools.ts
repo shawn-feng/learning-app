@@ -1,32 +1,23 @@
 /**
- * 孩子 agent 受控数据通道工具（ISSUE-105 方案 B P2）。
+ * 孩子 agent 的数据工具（ISSUE-142 收敛，2026-09-23）。
  *
- * - child_db_describe：列出自己 kb 里可读/可写的表与列（含业务含义）；
- * - child_db_read：对可读表做受控查询（等值 where + 列裁剪 + 排序 + 行数上限，全参数化）；
- * - child_db_write：只对白名单表（日常记录 / 兑换申请）开放受控写。
+ * 历史：本文件曾导出 `child_db_describe` / `child_db_read` / `child_db_write`——即 ISSUE-105 方案 B P2
+ * 的「通用受控数据通道」（22 张表任意等值查询 + 两表白名单写）。按"场景 → 工具"逐条对齐后确认：
+ * **没有任何场景需要通用通道**，它只是"缺专用工具时的兜底"：
+ * - 写 daily 的正规通道是 `kb_insert` / `kb_update`（带语义解析 / 去重 / 计划联动）；
+ * - 读积分、掌握、考核逐题结果已由 `child-report-tools.ts` 的三个**业务语言**专用工具承接；
+ * - 读课程 / 主题 / 进度 / 标签走 `kb_query`；读计划走三个 `child_*_plan_list`。
+ * ⇒ 通用三工具于 ISSUE-142 撤掉（孩子侧不再有"任意表 / 任意列"入口）。
  *
- * 安全边界（ISSUE-105 权限矩阵）：
- * - 连接不经过参数：openKb(dataDir, parentId, childId)，childId 来自会话绑定，物理上只能开自己的库；
- * - 考核计划/积分/奖励规则等全部只读——考核状态机与积分产生是防作弊边界，任何写通道都不登记；
- * - redemption_requests 的 child_id 由服务端强制覆盖为会话绑定的孩子，agent 传什么都不生效。
+ * 现在本文件只保留与「错题本」这一业务对象相关的工具：
+ * - `child_mistake_log`：记录 / 查看 / 标掌握 / 标不算（复习闭环入口，ISSUE-114）。
+ *
+ * 安全边界（延续 ISSUE-105 权限矩阵）：连接不经过参数——`openKb` 的 parentId/childId 来自会话绑定，
+ * 物理上只能读写自己的库；错题本状态流转只经 `db/mistakes.ts` 的受控函数，不提供任意写通道。
  */
-import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数（内含 SDK defineTool）
+import { defineTool } from "./tool-kit.js";
 import { Type } from "typebox";
-import { openKb } from "../db/kb.js";
-import { openParentLib } from "../db/parent-lib.js";
-// ISSUE-133：rows/where/columns 参数 schema 放行「JSON 字符串」分支（执行器统一归一回结构）
-import { JsonObjectParam, JsonStringArrayParam, WriteRowsParam } from "./tool-shapes.js";
 import { listMistakes, setMistakeStatus, upsertMistake, type MistakeStatus } from "../db/mistakes.js";
-import {
-  childKbReadableRegistry,
-  childKbWritableRegistry,
-  describeChildTables,
-  executeRead,
-  executeWrite,
-  type ReadRequest,
-  type WriteRequest,
-} from "./db-channel.js";
-import { loadNamespaces, tier2Read, describeNamespace, type NamespaceRow } from "./tier2.js";
 
 export interface ChildDbToolDeps {
   dataDir: string;
@@ -36,161 +27,12 @@ export interface ChildDbToolDeps {
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
-/** 孩子 scope 的 Tier 2 namespace（注册行存家长库；孩子侧一律只读） */
-function childNamespaces(deps: ChildDbToolDeps): NamespaceRow[] {
-  try {
-    const pdb = openParentLib(deps.dataDir, deps.parentId);
-    try {
-      return loadNamespaces(pdb, "child");
-    } finally {
-      pdb.close();
-    }
-  } catch {
-    return [];
-  }
-}
+const cut = (s: unknown, n: number): string => {
+  const t = String(s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+};
 
 export function createChildDbTools(deps: ChildDbToolDeps) {
-  const readSpecs = childKbReadableRegistry();
-  const writeSpecs = childKbWritableRegistry();
-  const nsRows = childNamespaces(deps);
-
-  const describeTool = defineTool({
-    name: "child_db_describe",
-    label: "查看我的数据表",
-    description:
-      "列出我的数据库里可查询/可写入的表（学习计划、考核计划、积分流水、日常记录、兑换等）与每列含义。\n" +
-      "表清单也已在本会话系统提示的元数据块里（读操作通常不用先调它）；传 table 看单表详情（含 ns:开头的灵活实体）。",
-    parameters: Type.Object({
-      table: Type.Optional(Type.String({ description: "表名或 ns:灵活实体名（可省略=列出全部）" })),
-    }),
-    execute: async (_id: string, params: { table?: string }) => {
-      const table = params.table?.trim() || undefined;
-      if (table?.startsWith("ns:")) {
-        const ns = nsRows.find((n) => `ns:${n.ns}` === table);
-        if (ns) return ok(describeNamespace(ns));
-        return ok(`没有名为 ${table} 的灵活实体（清单见系统提示）。`);
-      }
-      if (table) return ok(describeChildTables(readSpecs, writeSpecs, table));
-      const nsLines = nsRows.map((n) => `- ns:${n.ns}（${n.label}，只读）: ${Object.keys(n.spec.columns).join(", ")}`).join("\n");
-      return ok(
-        describeChildTables(readSpecs, writeSpecs) + (nsLines ? `\n\n【灵活实体 Tier 2】table 用 ns:名称（只读）：\n${nsLines}` : "")
-      );
-    },
-  });
-
-  const readTool = defineTool({
-    name: "child_db_read",
-    label: "查询我的数据",
-    description:
-      "查询自己数据库里的表：学习/考核计划、积分流水与余额、兑换商品与申请、日常记录、课程进度等；table 也支持 ns:开头的灵活实体（只读）。\n" +
-      "等值条件查询（如 where={status:\"pending\"}），支持选列、排序、限制行数（默认 50，最多 200）；" +
-      "countOnly=true 只返回命中行数（「有没有/几条」用这个）。返回体超字符预算会自动截断。\n" +
-      "查「今天要做什么」请优先用 child_study_plan_list / child_exam_plan_list / child_life_plan_list（带今日窗口语义）。",
-    parameters: Type.Object({
-      table: Type.String({ description: "表名或 ns:灵活实体名（清单见系统提示）" }),
-      columns: Type.Optional(JsonStringArrayParam("只查这些列（缺省=全部可读列）")),
-      where: Type.Optional(JsonObjectParam('等值条件，如 {status:"pending"}')),
-      orderBy: Type.Optional(Type.String({ description: "排序列" })),
-      orderDesc: Type.Optional(Type.Boolean({ description: "是否倒序（缺省正序）" })),
-      limit: Type.Optional(Type.Number({ description: "单次最多返回行数（缺省 50，最大 200）" })),
-      offset: Type.Optional(Type.Number({ description: "跳过前 N 行（配合 limit/orderBy 分页拉全量）" })),
-      countOnly: Type.Optional(Type.Boolean({ description: "true=只返回命中行数" })),
-    }),
-    execute: async (
-      _id: string,
-      params: {
-        table: string;
-        /** ISSUE-133：也接受被整串 JSON 序列化的字符串（执行器统一归一） */
-        columns?: string[] | string;
-        where?: Record<string, unknown> | string;
-        orderBy?: string;
-        orderDesc?: boolean;
-        limit?: number;
-        offset?: number;
-        countOnly?: boolean;
-      }
-    ) => {
-      if (params.table.startsWith("ns:")) {
-        const ns = nsRows.find((n) => `ns:${n.ns}` === params.table);
-        if (!ns) return ok(`没有名为 ${params.table} 的灵活实体（清单见系统提示）。`);
-        const db = openKb(deps.dataDir, deps.parentId, deps.childId);
-        try {
-          return ok(
-            tier2Read(db, ns, {
-              columns: params.columns,
-              where: params.where,
-              orderBy: params.orderBy,
-              orderDesc: params.orderDesc,
-              limit: params.limit,
-              offset: params.offset,
-              countOnly: params.countOnly,
-            }).text
-          );
-        } finally {
-          db.close();
-        }
-      }
-      const db = openKb(deps.dataDir, deps.parentId, deps.childId);
-      try {
-        const req: ReadRequest = {
-          table: params.table,
-          columns: params.columns,
-          where: params.where,
-          orderBy: params.orderBy,
-          orderDesc: params.orderDesc,
-          limit: params.limit,
-          offset: params.offset,
-          countOnly: params.countOnly,
-        };
-        const r = executeRead(db, readSpecs, req);
-        return ok(r.text);
-      } finally {
-        db.close();
-      }
-    },
-  });
-
-  const writeTool = defineTool({
-    name: "child_db_write",
-    label: "写入我的数据（白名单表）",
-    description:
-      "只对白名单表写入：daily_entries（日常记录，可增/改/删）、redemption_requests（兑换申请，只能新增）。\n" +
-      "考核计划、积分、奖励规则、灵活实体（ns:）等不允许写——积分只能由考核/任务流程产生。\n" +
-      "update/delete 必须带 where 等值条件；兑换申请的 child_id 由服务端自动填，不用传。",
-    parameters: Type.Object({
-      table: Type.String({ description: "白名单表名：daily_entries / redemption_requests" }),
-      op: Type.Union([Type.Literal("insert"), Type.Literal("update"), Type.Literal("delete")], { description: "操作类型" }),
-      rows: Type.Optional(
-        WriteRowsParam(
-          "insert=行数组 [{列:值},…]（单行也可直接传 {列:值} 对象）；update=列值对象 {列: 新值}（兼容 [{列:值}] 单元素数组）"
-        )
-      ),
-      where: Type.Optional(JsonObjectParam("update/delete 必填：等值条件")),
-    }),
-    execute: async (
-      _id: string,
-      params: {
-        table: string;
-        op: "insert" | "update" | "delete";
-        /** ISSUE-133：两种形状 + 字符串化形态都由执行器归一 */
-        rows?: Array<Record<string, unknown>> | Record<string, unknown> | string;
-        where?: Record<string, unknown> | string;
-      }
-    ) => {
-      const db = openKb(deps.dataDir, deps.parentId, deps.childId);
-      try {
-        // 兑换申请：child_id 强制为会话绑定的孩子（执行器侧覆盖，agent 传什么都不生效）
-        const force = params.table === "redemption_requests" ? { child_id: deps.childId } : undefined;
-        const req: WriteRequest = { table: params.table, op: params.op, rows: params.rows, where: params.where, force };
-        const r = executeWrite(db, writeSpecs, req);
-        return ok(r.text);
-      } finally {
-        db.close();
-      }
-    },
-  });
-
   // —— 错题/生字本（ISSUE-114 C1）：孩子 agent 记录/查看/关闭自己的漏洞信号 ——
   const mistakeTool = defineTool({
     name: "child_mistake_log",
@@ -203,8 +45,8 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       "3. 孩子表达稳定的薄弱点（「最怕应用题」「课文总背不住」，反复或明确说学不好）→ kind=weak_point。\n\n" +
       "**不要调用**：提问学习内容本身 ≠ 不会（「什么是比喻句」是求知）；考核错题系统自动同步、不要手动记；口误玩笑；本轮已经记过。\n" +
       "**时序**：先共情 + 讲解，讲解完成后的同轮收尾时静默记录，可轻带一句「已帮你记到错题本」并顺势提供类似练习。\n\n" +
-      "action=log：content（题干摘要或字词，同内容自动合并计数）+ detail（正解/释义/讲解要点）+ kind + course（可选主题中文名）；\n" +
-      "action=list：查看错题本（可按 kind/status 过滤，缺省 open）；\n" +
+      "action=log：content（题干摘要或字词，同内容自动合并计数）+ detail（正解/释义/讲解要点）+ kind + course（可选，**课程名**——用孩子库里的课程名，拿不准就先 `kb_query` 查一下，别猜也别写主题名）；\n" +
+      "action=list：查看错题本（可按 kind/status 过滤，缺省 open；返回含关联课程/知识点、以及有没有可重做的原题）；\n" +
       "action=master：孩子确认掌握（先小题验证再标）→ status=mastered；action=dismiss：记错/重复 → status=dismissed（id 从 list 取）。",
     parameters: Type.Object({
       action: Type.Union(
@@ -219,7 +61,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       ),
       content: Type.Optional(Type.String({ description: "log 必填：题干摘要或字词（同内容自动合并计数）" })),
       detail: Type.Optional(Type.String({ description: "log 可选：正解 / 释义 / 卡住点 / 讲解要点" })),
-      course: Type.Optional(Type.String({ description: "log 可选：关联主题/课程名（如 论语）" })),
+      course: Type.Optional(Type.String({ description: "log 可选：关联的**课程名**（如 学而第一）" })),
       id: Type.Optional(Type.String({ description: "master/dismiss 必填：条目 id（list 里取）" })),
       status: Type.Optional(Type.String({ description: "list 可选：open（缺省）/ mastered / dismissed" })),
     }),
@@ -258,15 +100,17 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
         });
         if (!rows.length) return ok(`错题本（${status}）暂时是空的。`);
         const KIND_ZH: Record<string, string> = { wrong_question: "错题", unknown_word: "生字词", weak_point: "薄弱点" };
-        return ok(
-          `错题本（${status}，${rows.length} 条）：\n` +
-            rows
-              .map(
-                (r) =>
-                  `- [${r.id}] ${KIND_ZH[r.kind] ?? r.kind}：${r.content}${r.count > 1 ? `（${r.count} 次）` : ""}${r.detail ? `｜${r.detail.slice(0, 80)}` : ""}`
-              )
-              .join("\n")
-        );
+        const lines = rows.map((r) => {
+          const rel: string[] = [];
+          if (String(r.course_ref ?? "").trim()) rel.push(`课程：${String(r.course_ref).trim()}`);
+          if (String(r.knowledge_point_name ?? "").trim()) rel.push(`知识点：${String(r.knowledge_point_name).trim()}`);
+          if (String(r.question_id ?? "").trim()) rel.push("有原题可重做");
+          return (
+            `- [${r.id}] ${KIND_ZH[r.kind] ?? r.kind}：${r.content}${r.count > 1 ? `（${r.count} 次）` : ""}` +
+            `${r.detail ? `｜${cut(r.detail, 80)}` : ""}${rel.length ? `｜${rel.join(" ｜ ")}` : ""}`
+          );
+        });
+        return ok(`错题本（${status}，${rows.length} 条）：\n${lines.join("\n")}`);
       }
       if (!params.id) throw new Error(`${params.action} 需要 id（先 action=list 获取）`);
       const done = setMistakeStatus(
@@ -282,12 +126,8 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
     },
   });
 
-  return [describeTool, readTool, writeTool, mistakeTool];
+  return [mistakeTool];
 }
 
-export const CHILD_DB_TOOL_NAMES = [
-  "child_db_describe",
-  "child_db_read",
-  "child_db_write",
-  "child_mistake_log",
-];
+/** 孩子会话装配的数据工具名（ISSUE-142 起只剩错题本；通用 db 通道已撤） */
+export const CHILD_DB_TOOL_NAMES = ["child_mistake_log"];

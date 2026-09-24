@@ -66,7 +66,8 @@ import {
   type WriteRequest,
 } from "./db-channel.js";
 // ISSUE-133：rows/where/columns/items 等复合参数 schema 放行「JSON 字符串」分支（执行器统一归一回结构）
-import { JsonArrayParam, JsonObjectParam, JsonStringArrayParam, WriteRowsParam } from "./tool-shapes.js";
+import { BareJsonArrayParam, JsonObjectParam, JsonStringArrayParam, WriteRowsParam } from "./tool-shapes.js";
+import { type ParentSkillState } from "./parent-skills.js";
 import {
   defineNamespace,
   loadNamespaces,
@@ -89,6 +90,8 @@ export interface ParentToolDeps extends MaterialCtx {
   agentDir: string;
   auth: Record<string, unknown>;
   appSettings?: Record<string, unknown>;
+  /** ISSUE-144：会话级技能状态（场景守卫用；不传＝不拦，脚本/测试可直调） */
+  skillState?: ParentSkillState;
 }
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
@@ -143,8 +146,9 @@ function normalizeDateParam(raw: string): string {
 /**
  * childName → { id, name, aiName }（精确匹配；找不到列出可选名，不猜）。
  * 归属校验同 assertChildOwned 口径：只在自己名下孩子里找，找不到即拒绝。
+ * ISSUE-144 P4：导出供三个「孩子的数据」只读报告工具复用（姓名定位与归属校验只有这一处）。
  */
-function resolveConvoChild(
+export function resolveConvoChild(
   db: DatabaseSync,
   parentId: string,
   childName: string
@@ -549,8 +553,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       "把孩子库的课程行与**家长库真源**对齐（一次一个孩子）：补齐缺失关联、更新课程显示名/排序、补上家长库新加而孩子库还没有的课。\n\n" +
       "**⚠️ 同步范围 = 该孩子**已分配**的主题**（孩子能不能看到某课完全由「主题是否分配给他」决定）。" +
       "**没有分配给他的主题，整体跳过**：不写入、也不代分配（分配主题是家长的决定，请在家长端操作）——本次跳过了哪些主题会在返回里列出。\n" +
-      "**何时调用**：① 家长改过课程名或调整过主题内课程；② 家长库给**已分配主题**新加了课、但孩子那边找不到（考核创建报「课程在孩子库里不存在」就是此症）；" +
-      "③ 定期体检孩子库与家长库是否对齐。**幂等**：已对齐的内容不会重复改动。\n" +
+      "**何时调用**：家长改过课程名或调整过主题内课程；家长库给**已分配主题**新加了课但孩子那边找不到（考核报「课程在孩子库里不存在」就是此症）；或定期体检对齐。**幂等**：已对齐的内容不会重复改动。\n" +
       "**边界（重要）**：孩子的学习进度（status/last_review/review_count/tags）**一概不动**；不删任何行（家长库已删的课，孩子库进度行保留为孤儿并列入汇报）；不改孩子级主题规则；不新增主题分配。\n" +
       "**参数**：`child` 必填（一次一个孩子，多孩子多次调用）；`topic` 可选（主题目录名或中文名，只同步该主题——若该主题未分配给孩子会被拒绝并说明）；`titles` 可选（只同步这些课程名）。",
     parameters: Type.Object({
@@ -975,62 +978,40 @@ export function createParentAgentTools(deps: ParentToolDeps) {
   });
 
   // ISSUE-103：课程考核内容（知识点 + 题库 + 挂载关联）——写（整课替换）
+  // ISSUE-144：说明与参数语义已**下沉到 `parent-scene-course` 技能**（工具块只留结构 + 一句）；
+  // 场景守卫（未加载该场景 → 拒绝执行）由 `parent-tool-compact.ts` 在**注册点统一加**，本文件不再手写。
   const upsertCourseContentTool = defineTool({
     name: "parent_upsert_course_content",
     label: "写入课程考核内容（知识点 + 题，整课替换）",
     description:
-      "把一门课的考核内容写入家长库：items 每项 = 一个**知识点**（knowledgePoint 名称，或 knowledgePointId 引用已有）+ 该知识点下要考的**题目**。\n\n" +
-      "**何时调用**：家长要「给某课建考点 / 出题 / 把题挂到考点下」时——「建知识点 + 建题 + 关联」一步到位。\n" +
-      "**⚠️ items 是整课全量快照，不是增量**：本工具**替换**该课全部挂载——没写进 items 的知识点/题会从这门课移除" +
-      "（题本身还留在题库，可再用 questionId 挂回，但家长手工建的挂载关系会丢）。" +
-      "**所以必须先 parent_library_course_content 看现状、把要保留的内容一并写进 items，并向家长复述后再调用**。\n" +
-      "**题的三种给法**：① `questionId` 单独引用题库已有题（先 parent_library_course_content 拿 id），原样挂载不改题；" +
-      "② `questionId` + 内联字段（stem/answer/scoring/pointMax/behavior/note/options 任一）＝**更新该题**，只更新给出的字段，其余保留原值" +
-      "（⚠️ 更新是改题库题本身：同一道题挂在多处时会同步生效）；" +
-      "③ 内联 `stem`+`answer` 新建题库题（可带 behavior/pointMax/scoring/note/options）。\n" +
-      "**behavior**：普通题 generic；背诵 speech_recite（answer 填标准原文）；朗读 speech_read；选择题填 options=[{key,text}]。\n" +
-      "课程必须先存在（parent_upsert_course 建课）。",
+      "写一门课的考核内容（知识点 + 题目），**整课替换**（不是增量）。" +
+      "参数语义与红线见场景技能：先 `load_skill(\"parent-scene-course\")` 再调用——未加载时本工具拒绝执行。",
     parameters: Type.Object({
-      topic: Type.String({ description: "主题目录名（topic_key，如 lunyu）" }),
-      title: Type.String({ description: "课程名（需已存在）" }),
-      items: JsonArrayParam(
+      topic: Type.String(),
+      title: Type.String(),
+      // 数组整串序列化（ISSUE-133）仍需放行 string 分支，但不再在 schema 里写说明（下沉到技能）
+      items: BareJsonArrayParam(
         Type.Object({
-          knowledgePoint: Type.Optional(
-            Type.String({ description: "知识点名称（不存在则新建，已存在则复用；按 course+name 唯一）" })
-          ),
-          knowledgePointId: Type.Optional(
-            Type.String({ description: "已有知识点 id（须属于本课）；给了它就不用 knowledgePoint" })
-          ),
-          detail: Type.Optional(Type.String({ description: "知识点详情（该考点的详细描述/考核要点）" })),
-          overview: Type.Optional(Type.String({ description: "该知识点在本课的补充说明（可空）" })),
+          knowledgePoint: Type.Optional(Type.String()),
+          knowledgePointId: Type.Optional(Type.String()),
+          detail: Type.Optional(Type.String()),
+          overview: Type.Optional(Type.String()),
           questions: Type.Optional(
             Type.Array(
               Type.Object({
-                questionId: Type.Optional(
-                  Type.String({
-                    description:
-                      "引用题库已有题 id；单独给出＝原样挂载，同时给出 stem/answer 等内联字段＝更新该题（只更新给出的字段）",
-                  })
-                ),
-                stem: Type.Optional(Type.String({ description: "题干" })),
-                answer: Type.Optional(Type.String({ description: "标准答案（背诵/朗读题为原文）" })),
-                scoring: Type.Optional(Type.String({ description: "评分说明或 JSON（可空）" })),
-                pointMax: Type.Optional(Type.Number({ description: "满分（缺省 10）" })),
-                behavior: Type.Optional(
-                  Type.String({ description: "generic / speech_recite / speech_read（缺省 generic）" })
-                ),
-                note: Type.Optional(Type.String({ description: "备注" })),
-                knowledgeSummary: Type.Optional(Type.String({ description: "知识点概要（缺省=知识点名）" })),
-                options: Type.Optional(
-                  Type.Array(Type.Object({ key: Type.String(), text: Type.String() }), {
-                    description: "选择题选项；非选择题不传",
-                  })
-                ),
+                questionId: Type.Optional(Type.String()),
+                stem: Type.Optional(Type.String()),
+                answer: Type.Optional(Type.String()),
+                scoring: Type.Optional(Type.String()),
+                pointMax: Type.Optional(Type.Number()),
+                behavior: Type.Optional(Type.String()),
+                note: Type.Optional(Type.String()),
+                knowledgeSummary: Type.Optional(Type.String()),
+                options: Type.Optional(Type.Array(Type.Object({ key: Type.String(), text: Type.String() }))),
               })
             )
           ),
-        }),
-        "items 每项 = 一个知识点（knowledgePoint 或 knowledgePointId + detail/overview + questions 题目数组）；整课全量快照"
+        })
       ),
     }),
     execute: async (_id, params) => {

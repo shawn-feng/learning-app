@@ -36,11 +36,14 @@ import {
   type PlanCourseSpec,
 } from "../assess-selection.js";
 import { runKbQuery } from "../routes/db.js";
+import { type ParentSkillState } from "./parent-skills.js";
 
 export interface PlanToolDeps {
   db: DatabaseSync;
   dataDir: string;
   parentId: string;
+  /** ISSUE-144：会话级技能状态（场景守卫用；不传＝不拦，脚本/测试可直调） */
+  skillState?: ParentSkillState;
 }
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
@@ -714,51 +717,26 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     },
   });
 
+  // ISSUE-144：说明与参数语义已**下沉到 `parent-scene-plan` 技能**（工具块只留结构 + 一句）；
+  // 场景守卫（未加载该场景 → 拒绝执行）由 `parent-tool-compact.ts` 在**注册点统一加**，本文件不再手写。
   const examCreateTool = defineTool({
     name: "parent_exam_plan_create",
     label: "创建自定义考核计划",
     description:
-      "为某孩子创建一次**自定义考核计划**（家长对话预约：某天考什么内容；直接写入孩子库考核计划，到当天孩子即可在考核页参加）。\n" +
-      "**参数**：`childName` 必填；`scheduledAt` 考核日期（YYYY-MM-DD，按日期全天可考）；`courses` **必填**且必须是**精确课程名**数组。\n" +
-      "**约束（2026-09-09 起）**：自定义考核不再做运行时选课——必须现在就把「考乡党篇最近学的 3 课」这类描述**解析成精确课程名**（可先 parent_study_plan_sources / parent_library_courses 查），信息不全必须向家长确认，**不要自行猜测**。\n" +
-      "**出题参数在创建时即完整约定（2026-09-14 定案）**：工具会把每门课展开成「考哪些知识点、各几题」写进计划（默认=主题考核方法过滤后全部知识点各 1 题）；**课程必须有知识点和题库题**，否则创建失败并提示先补充考核内容。出题环节严格按计划执行，不再有其它来源。\n" +
-      "`note` 可选（给孩子的说明）。\n" +
-      "`retake` 可选（**当天重考标准**，ISSUE-115）：家长的自然的语言描述，如「错两题以上当天原题重考」「背诵题不对的当天重新背诵」。**有值 = 考核评分结束后按该标准自动安排当天重考**（评分后经 LLM 生成重考计划，孩子当天考核页可见）；不传或空 = 不重考。家长说「考完错的当天再考一次」类需求时必须转成这个参数，不要只写进 note。\n" +
-      "**本次方法覆盖 `methodSpec`（可选）**：当家长说「这次只考背诵 / 只考某几个知识点」等本次特殊要求时用它，只影响这一次考核：\n" +
-      "  - `require`：只考这些**知识点**（键=知识点名，值=每个知识点抽几题，缺省 1）；\n" +
-      "  - `exclude`：排除这些**知识点**（键=知识点名）；\n" +
-      "  - `recitePass`：背诵/朗读题本次通过线（0-100，缺省 90）。\n" +
-      "  **⚠️ 意图必须转成 methodSpec，不能只写进 note**（note 不参与出题范围的计算）。常见说法对照：\n" +
-      "  「背诵考核 / 只背原文 / 只要背诵」→ `{\"require\":{\"背诵\":1}}`；「只考讲意思/句意」→ `{\"require\":{\"句意白话\":1}}`；\n" +
-      "  「不考字词」→ exclude `字词`；「背诵+讲道理」→ `{\"require\":{\"背诵\":1,\"道理\":1}}`。\n" +
-      "  不传且说明里含「只考背诵」类表述时，服务端会自动按只考背诵处理（并在返回里注明）。\n" +
-      "`name` 可选（**考核名称**，ISSUE-121）：如「论语学而篇背诵考核」「数学口算周测」。**同一天可以有多场考核，靠名字区分**（如上午语文背诵、下午数学口测）；同一天**同名**的未考计划不会重复创建（需更换内容请先取消原计划，或换一个名字）。不传缺省「自定义考核」——**建议都取名字**，孩子端按名字识别是哪场考核。",
+      "为孩子创建一次自定义考核计划（家长对话预约；写入孩子库，到当天孩子在考核页参加）。" +
+      "参数语义与红线见场景技能：先 `load_skill(\"parent-scene-plan\")` 再调用——未加载时本工具拒绝执行。",
     parameters: Type.Object({
-      childName: Type.String({ description: "孩子姓名" }),
-      scheduledAt: Type.String({ description: "考核日期 YYYY-MM-DD（口语先换算）" }),
-      courses: Type.Array(Type.String({ description: "要考核的精确课程名（必填）" })),
-      name: Type.Optional(
-        Type.String({
-          description:
-            "考核名称（如「论语学而篇背诵考核」）。同一天可多场考核，靠名字区分；同日同名未考计划不会重复创建。缺省「自定义考核」",
-        })
-      ),
-      note: Type.Optional(Type.String({ description: "考核内容说明（给孩子的提示，可空）" })),
-      retake: Type.Optional(
-        Type.String({
-          description:
-            "当天重考标准（自然语言，如「错两题以上当天原题重考」）。有值=评分结束后按标准自动安排当天重考；不传=不重考",
-        })
-      ),
+      childName: Type.String(),
+      scheduledAt: Type.String(),
+      courses: Type.Array(Type.String()),
+      name: Type.Optional(Type.String()),
+      note: Type.Optional(Type.String()),
+      retake: Type.Optional(Type.String()),
       methodSpec: Type.Optional(
         Type.Object({
-          require: Type.Optional(
-            Type.Record(Type.String(), Type.Number(), {
-              description: "本次只考这些知识点：{知识点名或uuid: 抽题数}（缺省每个 1 题）",
-            })
-          ),
-          exclude: Type.Optional(Type.Array(Type.String(), { description: "本次排除的知识点名或 uuid" })),
-          recitePass: Type.Optional(Type.Number({ description: "背诵/朗读题本次通过线 0-100（缺省 90）" })),
+          require: Type.Optional(Type.Record(Type.String(), Type.Number())),
+          exclude: Type.Optional(Type.Array(Type.String())),
+          recitePass: Type.Optional(Type.Number()),
         })
       ),
     }),
