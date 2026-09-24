@@ -43,9 +43,9 @@ function authParent(
 function parseKind(v: unknown): ParentSessionKind {
   const s = String(v ?? "").trim();
   if (s === "parent-content") return "parent-content";
-  if (s === "parent-data") return "parent-data";
   if (s === "parent" || s === "") return "parent";
-  throw new ApiError(400, "kind 只能是 parent、parent-content 或 parent-data");
+  // ISSUE-144 P6：`parent-data`（数据管理助手）已整组退场——旧客户端带这个 kind 一律按 400 拒绝
+  throw new ApiError(400, "kind 只能是 parent 或 parent-content");
 }
 
 function handleAuthError(err: unknown, reply: any): boolean {

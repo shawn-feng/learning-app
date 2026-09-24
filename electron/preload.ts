@@ -150,11 +150,6 @@ const api = {
   piReset: (childId: string) => ipcRenderer.invoke("pi:reset", childId),
   // ISSUE-042：家长会话重置
   piResetParent: () => ipcRenderer.invoke("pi:reset_parent"),
-  // 独立「数据管理 agent」会话（parent-data）：统一数据 API 操作家长内容库全部表
-  piStartParentData: () => ipcRenderer.invoke("pi:start_parent_data"),
-  piPromptParentData: (text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) =>
-    ipcRenderer.invoke("pi:prompt_parent_data", text, images || []),
-  piResetParentData: () => ipcRenderer.invoke("pi:reset_parent_data"),
   // Token 用量查询（ISSUE-129）：按日期×渠道聚合 / 某天按会话聚合（服务端透传）
   tokenUsageDays: (params?: { from?: string; to?: string; scope?: string }) =>
     ipcRenderer.invoke("tokenUsage:days", params || {}),
@@ -261,6 +256,8 @@ const api = {
     ipcRenderer.invoke("agents:history", scope, ref),
   agentsRestore: (scope: string, ref: string, updated: string) =>
     ipcRenderer.invoke("agents:restore", scope, ref, updated),
+  // ISSUE-144 P5：家长「场景口径」编辑器取数（8 个场景内置稿 + 是否已自定义）
+  agentsSkillList: () => ipcRenderer.invoke("agents:skillList"),
 
   // Progress
   getProgress: (childId: string) => ipcRenderer.invoke("progress:get", childId),

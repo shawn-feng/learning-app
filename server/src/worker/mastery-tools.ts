@@ -11,7 +11,9 @@
  *
  * 分工理由：素材聚合与写入口径固化在代码里（token 可控、幂等、可单测），
  * LLM 只产出「自然语言判断与叙述」——这正是原来 §4.3 里"规则可算、LLM 只润色"的落地方式。
- * 通用读写由 createDataAgentTools 的 parent_db_read/write 提供（agent 需要额外信息时自查，出错可自愈）。
+ * 2026-09-25（ISSUE-144 P6）：原先补挂的"通用读写"（`createDataAgentTools` 的 parent_db_read/write）
+ * 已随通用数据 API 退场——**归纳所需素材一律由本文件的读工具一次给全**（`mastery_plan_context`），
+ * 模型不再需要"自己再查一点"。真缺什么，就为该场景补一把工具。
  */
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
@@ -59,7 +61,7 @@ export const DEFAULT_MASTERY_TASK_INSTRUCTION =
   `4. 全部做完用两三句话汇报：处理了几个计划、几门课，哪门课有进步、哪门课要重点复习。` +
   `某一步失败就如实说失败原因，不要编造结果。\n` +
   `\n注意：\n` +
-  `- 只处理 mastery_todo_list 返回的范围，不要自己翻全库；确实需要补充信息时用 parent_db_read 查（带等值条件、只取需要的列）。\n` +
+  `- 只处理 mastery_todo_list 返回的范围，不要自己翻全库；素材不够就按"未记到细节"如实处理，不要编造。\n` +
   `- 所有描述面向家长、具体可执行；不要输出「掌握度 0.8」这类内部数字。\n` +
   `- 同一天重复运行是安全的：写回按计划/课程覆盖，不会重复累计。`;
 

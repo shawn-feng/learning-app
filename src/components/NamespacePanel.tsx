@@ -1,7 +1,10 @@
 /**
- * 自定义数据场景面板（设置 → 自定义数据，F15b，2026-09-19）。
- * 数据管理 agent 提交的 Tier 2 场景草案在这里由家长确认/拒绝；已生效场景可停用/启用。
- * 轮询 15s：agent 提交草案后无需刷新即可看到。
+ * 自定义数据场景面板（设置 → 自定义数据，F15b，2026-09-19；2026-09-25 退场收口）。
+ *
+ * ISSUE-144 P6：通用数据 API 整组退场——`define_namespace`（设计器）与 `parent_db_read/write`
+ * 都不在工具面上了，**助手既不能再提交草案，也不能读写这些场景的数据**。本页因此只剩
+ * 「历史实体的开关与清理」：确认/拒绝遗留草案、停用/启用、删除。
+ * （要恢复"一句话建一类自定义数据"，做法是给这个场景补一把专用工具，而不是把通用通道请回来。）
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -130,9 +133,11 @@ export default function NamespacePanel() {
   return (
     <div>
       <p style={{ fontSize: 13, color: "#5a6478", lineHeight: 1.7, marginTop: 0 }}>
-        在「数据管理」助手里描述想要记录的场景（如"我想记录孩子每天练琴"），
-        助手会设计好字段并提交草案；草案在下面<strong>确认后立即生效</strong>，
-        之后就可以在对话里直接记录和查询。生效前任何助手都看不到这个场景。
+        <strong>自定义数据（Tier 2）已随「通用数据通道」一起退场</strong>：助手不再能新建这类场景，
+        也不再能读写里面的数据（原来的「数据管理助手」已下线）。这一页现在只用于处理<strong>历史遗留</strong>：
+        确认或拒绝当年留下的待确认草案、停用/启用、删除。
+        <br />
+        需要"一句话建一类自定义数据"这种能力回来时，正确做法是给它补一把**场景专用工具**，而不是恢复通用查表入口。
       </p>
 
       {notice && (
@@ -159,7 +164,7 @@ export default function NamespacePanel() {
                 <strong>{n.label || n.ns}</strong>
                 <span style={{ fontFamily: "monospace", fontSize: 12, color: "#8a94a6" }}>ns:{n.ns}</span>
                 <span style={badge(scopeLabel(n.scope), "#eef2ff", "#3b4cca")}>{scopeLabel(n.scope)}</span>
-                <span style={{ fontSize: 12, color: "#8a94a6" }}>由数据管理助手提交</span>
+                <span style={{ fontSize: 12, color: "#8a94a6" }}>历史遗留草案（助手侧已不能再提交）</span>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                   <button
                     style={{ ...btn, background: "#2f7d4f", color: "#fff" }}

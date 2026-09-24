@@ -39,7 +39,8 @@ import {
   rejectNamespace,
   setNamespaceStatus,
 } from "../server/src/agent/tier2";
-import { buildDataChannelBlocks, buildChildSelfBlock } from "../server/src/agent/registry-prompt";
+import { buildChildSelfBlock } from "../server/src/agent/registry-prompt";
+import { buildServerParentPrompt } from "../server/src/agent/parent-registry";
 import {
   listTopicKnowledgePoints,
   listCourseContent,
@@ -401,21 +402,21 @@ describe("WP6/F10：命名路径", () => {
   });
 });
 
-describe("WP4/F7：元数据块", () => {
-  it("家长/孩子两侧块包含表清单、路径与 Tier 2 行", () => {
+describe("WP4/F7：元数据块（家长侧清单已随 ISSUE-144 P6 退场）", () => {
+  it("家长侧不再有表/列/路径清单；孩子侧仍是「我能查到什么」能力清单", () => {
     const pid = `${parentId}-wp4-${++libSeq}`;
     const db = openParentLib(dataDir, pid);
     defineNamespace(db, parentLibTableRegistry(), { ns: "habit_check", scope: "parent", label: "习惯打卡", spec: {
       columns: { date: { kind: "string", desc: "日期" } },
     } });
     db.close();
-    const blocks = buildDataChannelBlocks(dataDir, pid);
-    expect(blocks.parentBlock).toContain("question_bank");
-    expect(blocks.parentBlock).toContain("topic_questions");
-    expect(blocks.parentBlock).toContain("ns:habit_check");
-    expect(blocks.parentBlock).toContain("topic→topics.topic_key");
-    expect(blocks.childBlock).toContain("study_plans");
-    expect(blocks.childBlock).toContain("redemption_requests");
+    // ISSUE-144 P6：`buildDataChannelBlocks` 已删除——通用数据 API 退场后，家长会话不再注入
+    // 「有哪些表、哪些列、哪条路径」的清单（那张清单只会诱导模型绕过场景专用工具）。
+    // 这里直接对家长 system prompt 断言"清单不在"，比断言某个函数不存在更能守住行为。
+    const prompt = buildServerParentPrompt({ parentId: pid, workspace: "/tmp/ws", today: "2026-09-25" });
+    for (const leaked of ["question_bank", "topic_questions", "ns:habit_check", "parent_db_read"]) {
+      expect(prompt, `家长提示词不该再出现 ${leaked}`).not.toContain(leaked);
+    }
     const self = buildChildSelfBlock(dataDir, pid);
     // ISSUE-142：孩子侧元数据块从「表/列清单」改为「我能查到什么」的能力清单
     // （通用读已撤，不再暴露表名，避免模型去查不存在的入口）

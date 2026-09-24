@@ -1,5 +1,5 @@
 /**
- * ISSUE-133 回归（2026-09-22）：数据通道工具参数被**整串 JSON 序列化**时的兼容。
+ * ISSUE-133 回归（2026-09-22）：数据通道参数被**整串 JSON 序列化**时的兼容。
  *
  * 用户现场：`parent_db_write` 调 update，rows 传成字符串 `"[{\"status\":\"done\"}]"`，
  * 工具参数校验在**执行器之前**就硬失败：
@@ -12,8 +12,11 @@
  * ② 执行器入口 `parseJsonArg` / `coerceObjectArg` / `coerceColumnsArg` 把字符串 parse 回结构，
  *    parse 不了回可读中文原因（绝不静默）。
  *
- * 本测试用**真实工具对象**（createDataAgentTools）+ SDK 同款校验步骤（Value.Convert + Compile.Check）
- * 复刻报错链路，再真跑一次写库，确保「校验过 + 写对了」。
+ * **2026-09-25（ISSUE-144 P6）改口径**：`parent_db_write` / `parent_db_read` 两把通用通道工具已整组退场，
+ * 消费者不再存在——但**契约本身没退**：
+ * - ① 底层执行器（`executeWrite` / `executeRead` / `tier2Write`）仍然吃字符串形态 → 本文件按**执行器级**验证；
+ * - ② 仍在工具面上的复合参数（`parent_upsert_course_content.items`，实测 17% 被字符串化）→ 仍按
+ *   **真实工具对象 + SDK 同款校验步骤**验证（⑦ 段）。
  */
 import { describe, expect, it, afterAll } from "vitest";
 import fs from "node:fs";
@@ -24,13 +27,17 @@ import { Value } from "typebox/value";
 import { openDb } from "../server/src/db";
 import { openKb } from "../server/src/db/kb";
 import { openParentLib } from "../server/src/db/parent-lib";
-import { createDataAgentTools, createParentAgentTools } from "../server/src/agent/parent-tools";
+import { createParentAgentTools } from "../server/src/agent/parent-tools";
 import {
   executePathRead,
   executeRead,
+  executeWrite,
   childKbReadableRegistry,
+  childKbAdminWriteSpecs,
   parentReadableRegistry,
+  parentLibTableRegistry,
   type RegistryPath,
+  type WriteRequest,
 } from "../server/src/agent/db-channel";
 import { tier2Read, tier2Write, type NamespaceRow } from "../server/src/agent/tier2";
 
@@ -74,19 +81,14 @@ pdb
   )
   .run();
 
-const tools = createDataAgentTools({
-  db: mainDb,
-  dataDir,
-  parentId,
-  workspaceDir: path.join(dataDir, "ws"),
-  agentDir: path.join(dataDir, "agent"),
-  auth: {},
-});
-const tool = (name: string) => {
-  const t = tools.find((x) => x.name === name);
-  if (!t) throw new Error(`工具不存在：${name}`);
-  return t as { name: string; parameters: unknown; execute: (id: string, args: any) => Promise<any> };
-};
+/**
+ * ISSUE-144 P6 之后：通用通道的那两把工具已不在工具面上，这里改测**它当年直调的执行器**
+ * （`executeWrite` + 孩子库管理写规格）——字符串归一化契约在同一个函数里，覆盖等价。
+ */
+const kbAdminSpecs = childKbAdminWriteSpecs();
+const writeKb = (req: WriteRequest) => executeWrite(kb, kbAdminSpecs, req);
+/** 家长库写面（tier1）——与孩子库写面同构，用于列校验那条。 */
+const writeParent = (req: WriteRequest) => executeWrite(pdb, parentLibTableRegistry(), req);
 
 /**
  * 复刻 SDK `validateToolArguments` 的校验步骤（pi-ai/dist/utils/validation.js）：
@@ -127,45 +129,56 @@ afterAll(() => {
 });
 
 describe("ISSUE-133 ①：schema 放行字符串形态（不再在执行器之前硬失败）", () => {
-  it("parent_db_write 的 rows / where 均含 string 分支", () => {
-    const write = tool("parent_db_write");
-    const s = JSON.stringify(write.parameters);
-    expect(s).toContain('"rows"');
-    expect(s).toContain('"type":"string"');
-    // where 也是 anyOf[object, string]
-    expect(JSON.stringify((write.parameters as any).properties.where)).toContain('"type":"string"');
+  it("通用通道已退场：家长工具面不含 parent_db_*，但不影响 items 的 string 分支", () => {
+    const names = createParentAgentTools({
+      db: mainDb,
+      dataDir,
+      parentId,
+      workspaceDir: path.join(dataDir, "ws"),
+      agentDir: path.join(dataDir, "agent"),
+      auth: {},
+    }).map((t: any) => t.name);
+    expect(names.filter((n: string) => n.startsWith("parent_db_"))).toEqual([]);
+    // 仍在工具面上的复合参数（items）必须留 string 分支——见 ⑦ 段实测
+    const content = createParentAgentTools({
+      db: mainDb,
+      dataDir,
+      parentId,
+      workspaceDir: path.join(dataDir, "ws"),
+      agentDir: path.join(dataDir, "agent"),
+      auth: {},
+    }).find((t: any) => t.name === "parent_upsert_course_content") as any;
+    expect(JSON.stringify(content.parameters)).toContain('"type":"string"');
   });
 });
 
-describe("ISSUE-133 ②：报错现场原样重放——字符串化 rows 能写进去", () => {
-  it("① 用户原始调用：rows 传 JSON 字符串 → 校验通过 + 计划被改为 done/done", async () => {
-    const text = await runTool("parent_db_write", {
+describe("ISSUE-133 ②：报错现场原样重放——字符串化 rows 能写进去（执行器级）", () => {
+  it("① 用户原始调用：rows 传 JSON 字符串 → 计划被改为 done/done", () => {
+    const r = writeKb({
       table: "study_plans",
-      child: "珊珊",
       op: "update",
       rows: '[{"status":"done","result":"done"}]',
       where: { id: "ba4180ab" },
     });
-    expect(text).toContain("update study_plans 成功");
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain("update study_plans 成功");
     expect(planRow()).toMatchObject({ status: "done", result: "done" });
   });
 
-  it("② rows 与 where 同时被字符串化 → 同样成功", async () => {
-    const text = await runTool("parent_db_write", {
+  it("② rows 与 where 同时被字符串化 → 同样成功", () => {
+    const r = writeKb({
       table: "study_plans",
-      child: "珊珊",
       op: "update",
       rows: '{"result":"done-2"}',
       where: '{"id":"ba4180ab"}',
     });
-    expect(text).toContain("update study_plans 成功");
+    expect(r.ok).toBe(true);
     expect(planRow().result).toBe("done-2");
   });
 
-  it("③ insert：rows 传字符串化行数组 → 插入成功", async () => {
-    const text = await runTool("parent_db_write", {
+  it("③ insert：rows 传字符串化行数组 → 插入成功", () => {
+    const r = writeKb({
       table: "study_plans",
-      child: "珊珊",
       op: "insert",
       rows: JSON.stringify([
         {
@@ -191,70 +204,45 @@ describe("ISSUE-133 ②：报错现场原样重放——字符串化 rows 能写
         },
       ]),
     });
-    expect(text).toContain("insert study_plans 成功");
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain("insert study_plans 成功");
     expect(kb.prepare("SELECT 1 FROM study_plans WHERE id='plan-133-insert'").get()).toBeTruthy();
   });
 
-  it("④ 字符串但不是合法 JSON → 校验通过但执行器回可读原因，且数据未变", async () => {
+  it("④ 字符串但不是合法 JSON → 回可读原因，且数据未变", () => {
     const before = planRow();
-    const text = await runTool("parent_db_write", {
+    const r = writeKb({
       table: "study_plans",
-      child: "珊珊",
       op: "update",
       rows: '[{"result":',
       where: { id: "ba4180ab" },
     });
-    expect(text).toContain("不是合法 JSON");
-    expect(text).toContain("不要传 JSON 序列化后的文本");
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("不是合法 JSON");
+    expect(r.text).toContain("不要传 JSON 序列化后的文本");
     expect(planRow()).toEqual(before);
   });
 });
 
 describe("ISSUE-133 ③：原有形态零回归（ISSUE-122 双向兼容保持）", () => {
-  it("⑤ update rows 真对象 / 真数组仍成功", async () => {
-    const t1 = await runTool("parent_db_write", {
-      table: "study_plans",
-      child: "珊珊",
-      op: "update",
-      rows: { result: "obj" },
-      where: { id: "ba4180ab" },
-    });
-    expect(t1).toContain("成功");
+  it("⑤ update rows 真对象 / 真数组仍成功", () => {
+    const t1 = writeKb({ table: "study_plans", op: "update", rows: { result: "obj" }, where: { id: "ba4180ab" } });
+    expect(t1.ok).toBe(true);
     expect(planRow().result).toBe("obj");
 
-    const t2 = await runTool("parent_db_write", {
-      table: "study_plans",
-      child: "珊珊",
-      op: "update",
-      rows: [{ result: "arr" }],
-      where: { id: "ba4180ab" },
-    });
-    expect(t2).toContain("成功");
+    const t2 = writeKb({ table: "study_plans", op: "update", rows: [{ result: "arr" }], where: { id: "ba4180ab" } });
+    expect(t2.ok).toBe(true);
     expect(planRow().result).toBe("arr");
   });
 
-  it("⑥ 列校验不受影响（未登记列仍拒绝）", async () => {
-    const text = await runTool("parent_db_write", {
-      table: "study_plans",
-      child: "珊珊",
-      op: "update",
-      rows: '{"not_a_column":1}',
-      where: { id: "ba4180ab" },
-    });
-    expect(text).toContain("未登记");
+  it("⑥ 列校验不受影响（未登记列仍拒绝）", () => {
+    const r = writeParent({ table: "courses", op: "update", rows: '{"not_a_column":1}', where: { title: "学而篇" } });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("未登记");
   });
 });
 
-describe("ISSUE-133 ④：读侧同样归一（parent_db_read 及底层执行器）", () => {
-  it("⑦ parent_db_read：where / columns 字符串化 → 正常查询", async () => {
-    const text = await runTool("parent_db_read", {
-      table: "courses",
-      where: '{"topic":"lunyu"}',
-      columns: '["title","tags"]',
-    });
-    expect(text).toContain("学而篇");
-  });
-
+describe("ISSUE-133 ④：读侧同样归一（底层执行器）", () => {
   it("⑧ executeRead 单测：字符串化 where/columns", () => {
     const r = executeRead(pdb, parentReadableRegistry(), {
       table: "courses",

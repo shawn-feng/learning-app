@@ -27,7 +27,7 @@ function stripInstructions(text: string): string {
 export default function ParentChatPanel({
   childId = "parent",
 }: {
-  childId?: "parent" | "parent-content" | "parent-data";
+  childId?: "parent" | "parent-content";
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -38,25 +38,18 @@ export default function ParentChatPanel({
   // 当前正在工作的 AI 消息 id（思考/工具/正式回复都更新到同一气泡）
   const workingIdRef = useRef<string | null>(null);
 
-  // 按 childId 选择对应的家长会话桥（默认主助手 parent；数据管理 agent 用 parent-data）
+  // 按 childId 选择对应的家长会话桥（默认主助手 parent；资料助手用 parent-content）
   const startParentSession = () =>
-    childId === "parent-data"
-      ? window.api.piStartParentData()
-      : childId === "parent-content"
-        ? window.api.piStartParentContent()
-        : window.api.piStartParent();
+    childId === "parent-content" ? window.api.piStartParentContent() : window.api.piStartParent();
   const promptParentSession = (
     text: string,
     images?: Array<{ type: "image"; mimeType: string; data: string }>
   ) =>
-    childId === "parent-data"
-      ? window.api.piPromptParentData(text, images)
-      : childId === "parent-content"
-        ? window.api.piPromptParentContent(text)
-        : window.api.piPromptParent(text, images);
+    childId === "parent-content"
+      ? window.api.piPromptParentContent(text)
+      : window.api.piPromptParent(text, images);
   const abortParentSession = () => window.api.piAbort(childId);
-  const resetParentSession = () =>
-    childId === "parent-data" ? window.api.piResetParentData() : window.api.piResetParent();
+  const resetParentSession = () => window.api.piResetParent();
 
   useEffect(() => {
     // ISSUE-078：取当前登录家长 id（未登录返回 ""，ChatWindow 仍兜底 default）
@@ -394,7 +387,7 @@ export default function ParentChatPanel({
 
   return (
     <div className="parent-chat-panel">
-      <div className="parent-chat-title">{childId === "parent-data" ? "数据管理助手" : "家长助手"}</div>
+      <div className="parent-chat-title">家长助手</div>
       {/* ISSUE-078：透传登录家长真实 id —— 上传/打开/读取附件落到 data/parents/<真实pid>/uploads/，
           与家长 agent 提示词「当前家长」目录一致；未登录时 parentId 为空，ChatWindow 兜底 default */}
       <ChatWindow messages={messages} onSend={handleSend} disabled={busy || stopping} running={busy || stopping} onStop={handleStop} owner="parent" parentId={parentId} />

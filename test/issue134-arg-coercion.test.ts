@@ -4,6 +4,9 @@
  * 背景：`mimo-v2.5` 无法表达 JSON Schema 的 `anyOf`——凡联合类型属性一律退化成 JSON 字符串
  * （生产实测 `parent_db_write.rows` 26/26），深长嵌套数组（`items`/`days`）也会被整串序列化；
  * 而 SDK 校验只做标量转换、不做 string→结构 解析 ⇒ 校验在**执行器之前**硬失败。
+ * （2026-09-25 `ISSUE-144` P6：`parent_db_write` 已退场，但同一类事故在**仍在工具面上的**
+ *  `parent_upsert_course_content.items` / `parent_study_plan_create.days` / `parent_exam_plan_create.methodSpec`
+ *  上照旧会发生——所以这一层还原继续按真实工具对象验证。）
  *
  * 修复：用 SDK 官方钩子 `prepareArguments`（校验前调用）在 `tool-kit.ts` 里统一还原。
  * 本测试分两部分：
@@ -18,7 +21,7 @@ import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
 import { coerceToolArgs, defineTool } from "../server/src/agent/tool-kit";
-import { createDataAgentTools, createParentAgentTools } from "../server/src/agent/parent-tools";
+import { createParentAgentTools } from "../server/src/agent/parent-tools";
 import { createPlanDomainTools } from "../server/src/agent/parent-plans";
 import { openDb } from "../server/src/db";
 import { openKb } from "../server/src/db/kb";
@@ -168,8 +171,9 @@ const deps = {
 const parentTools = createParentAgentTools(deps);
 // 计划域工具（学习/生活/考核计划、重复规则）由独立构造器提供，注册在 parent-registry.ts
 const planTools = createPlanDomainTools({ db: mainDb, dataDir, parentId });
-const dataTools = createDataAgentTools(deps);
-const allTools = [...parentTools, ...planTools, ...dataTools];
+// ISSUE-144 P6：`createDataAgentTools`（parent_db_* 三把 + define_namespace）已随通用数据 API 退场，
+// 这里不再拼进 allTools——"数据面"只剩场景专用工具。
+const allTools = [...parentTools, ...planTools];
 const tool = (name: string) => {
   const t = allTools.find((x) => x.name === name);
   if (!t) throw new Error(`工具不存在：${name}`);
@@ -216,7 +220,7 @@ afterAll(() => {
 });
 
 describe("ISSUE-134 B. 全部工具都挂上了还原层", () => {
-  it("⑫ 三个构造器（家长/计划域/数据管理）的每个工具都有 prepareArguments", () => {
+  it("⑫ 两个构造器（家长/计划域）的每个工具都有 prepareArguments", () => {
     expect(allTools.length).toBeGreaterThan(20);
     const missing = allTools.filter((t) => typeof (t as any).prepareArguments !== "function").map((t) => t.name);
     expect(missing).toEqual([]);
@@ -224,17 +228,9 @@ describe("ISSUE-134 B. 全部工具都挂上了还原层", () => {
 });
 
 describe("ISSUE-134 B. 生产故障形态：字符串化参数现在能真正执行", () => {
-  it("⑬ 用户原始场景：parent_db_write rows 字符串 → 校验过 + 计划真被改成 done/done", async () => {
-    const text = await runTool("parent_db_write", {
-      table: "study_plans",
-      child: "珊珊",
-      op: "update",
-      rows: '[{"status":"done","result":"done"}]',
-      where: { id: "plan-134" },
-    });
-    expect(text).toContain("update study_plans 成功");
-    const row = kb.prepare("SELECT status,result FROM study_plans WHERE id='plan-134'").get() as any;
-    expect(row).toMatchObject({ status: "done", result: "done" });
+  it("⑬ 通用通道已退场：工具面上不再有 parent_db_*（当年那条现场的执行器级回归见 issue133）", () => {
+    const dbNames = allTools.map((t) => t.name).filter((n) => n.startsWith("parent_db_") || n === "define_namespace");
+    expect(dbNames).toEqual([]);
   });
 
   it("⑭ 整课替换 items 字符串 → 校验过 + 知识点/题/挂载真落库", async () => {
@@ -253,13 +249,11 @@ describe("ISSUE-134 B. 生产故障形态：字符串化参数现在能真正执
   it("⑮ 非法 JSON → 走可读原因（不再是一句 must be object）", async () => {
     let msg = "";
     try {
-      const t = tool("parent_db_write");
+      const t = tool("parent_upsert_course_content");
       const prepared = t.prepareArguments!({
-        table: "study_plans",
-        child: "珊珊",
-        op: "update",
-        rows: '[{"status":',
-        where: { id: "plan-134" },
+        topic: "lunyu",
+        title: "内容测试课",
+        items: '[{"knowledgePoint":',
       });
       prepared.toString();
     } catch (e) {

@@ -108,7 +108,6 @@ export default function TokenStatsPanel({ childrenList }: Props) {
     (r: { scope: string; child_id: string; slot: string }) => {
       if (r.scope === "parent") {
         if (r.slot === "parent-content") return "家长·资料助手";
-        if (r.slot === "parent-data") return "家长·数据助手";
         return "家长助手";
       }
       const base = SCOPE_ZH[r.scope] || r.scope;

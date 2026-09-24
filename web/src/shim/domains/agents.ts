@@ -274,7 +274,6 @@ function openChatUpload(relPath: string): { success: boolean; error?: string } {
 
 let childBusy = false;
 let parentBusy = false;
-let parentDataBusy = false;
 let parentContentBusy = false;
 
 // ---------------------------------------------------------------------------
@@ -617,48 +616,6 @@ export const agentsDomain = {
     }
   },
 
-  // ---- 数据管理助手（parent-data 独立 agent，ISSUE-088/F15b；Electron pi:start/prompt/reset_parent_data 同段）----
-
-  /** piStartParentData: () => Promise<{success, history}> */
-  piStartParentData: async () => {
-    try {
-      ensureParentStream("parent-data");
-      return { success: true, history: [] };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  },
-
-  /** piPromptParentData: (text, images?) => Promise<{success}>（同 piPromptParent：家长识图走服务端工具，images 不随 prompt 上送） */
-  piPromptParentData: async (text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) => {
-    void images;
-    if (parentDataBusy) {
-      return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
-    }
-    parentDataBusy = true;
-    try {
-      ensureParentStream("parent-data");
-      await promptParent(text, { kind: "parent-data" });
-      return { success: true };
-    } catch (err) {
-      eventBus.emit("pi:reply_error", { childId: "parent-data", error: friendlyError((err as Error).message) });
-      eventBus.emit("pi:reply_end", { childId: "parent-data" });
-      return { success: false, error: (err as Error).message };
-    } finally {
-      parentDataBusy = false;
-    }
-  },
-
-  /** piResetParentData: () => Promise<{success, history}> */
-  piResetParentData: async () => {
-    try {
-      await resetParentSession("parent-data");
-      return { success: true, history: [] };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  },
-
   // ---- 场景对话（scene agent）调用（ISSUE-061；scene 子会话 session="scene"，与课程会话解耦） ----
 
   /** scenePrompt: (childId, courseKey, text) => Promise<{success}> —— 挂收集器 → POST prompt(session=scene)；本轮结束把 say 台词/兜底正文回发 scene:reply* */
@@ -818,9 +775,9 @@ export const agentsDomain = {
     }
   },
 
-  /** agentsGet: (scope: string, ref: string) => Promise<{content, customized, network}> —— parent scope 的 ref 统一为当前登录家长 id */
+  /** agentsGet: (scope: string, ref: string) => Promise<{content, customized, network}> —— parent scope 的 ref 统一为当前登录家长 id（`skill:<技能名>` 除外，那是场景口径覆盖层的线上键） */
   agentsGet: async (scope: string, ref: string) => {
-    if (scope === "parent") ref = getStoredParentId();
+    if (scope === "parent" && !ref.startsWith("skill:")) ref = getStoredParentId();
     try {
       const r = await dbQuery<{ content: string | null }>("agents.get", { scope, ref });
       if (r.content !== null) return { content: r.content, customized: true, network: false };
@@ -831,9 +788,9 @@ export const agentsDomain = {
     }
   },
 
-  /** agentsSave: (scope: string, ref: string, content: string) => Promise<{success}> */
+  /** agentsSave: (scope: string, ref: string, content: string) => Promise<{success}>（`skill:<技能名>` 原样透传＝场景口径覆盖层） */
   agentsSave: async (scope: string, ref: string, content: string) => {
-    if (scope === "parent") ref = getStoredParentId();
+    if (scope === "parent" && !ref.startsWith("skill:")) ref = getStoredParentId();
     try {
       await dbExec("agents.save", { scope, ref, content });
       return { success: true };
@@ -844,7 +801,7 @@ export const agentsDomain = {
 
   /** agentsHistory: (scope: string, ref: string) => Promise<{success, data}>（服务端按时间倒序，最新在前，最多 50 条） */
   agentsHistory: async (scope: string, ref: string) => {
-    if (scope === "parent") ref = getStoredParentId();
+    if (scope === "parent" && !ref.startsWith("skill:")) ref = getStoredParentId();
     try {
       const data = await dbQuery<Array<{ content: string; updated: string }>>("agents.history", { scope, ref });
       return { success: true, data };
@@ -855,10 +812,20 @@ export const agentsDomain = {
 
   /** agentsRestore: (scope: string, ref: string, updated: string) => Promise<{success, data:boolean}>（按 updated 定位历史版本回退） */
   agentsRestore: async (scope: string, ref: string, updated: string) => {
-    if (scope === "parent") ref = getStoredParentId();
+    if (scope === "parent" && !ref.startsWith("skill:")) ref = getStoredParentId();
     try {
       const r = await dbExec<{ ok: boolean }>("agents.restore", { scope, ref, updated });
       return { success: true, data: r.ok === true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** ISSUE-144 P5：agentsSkillList: () => Promise<{success, data}>（8 个场景的内置稿 + 本家长是否已自定义） */
+  agentsSkillList: async () => {
+    try {
+      const data = await dbQuery<Array<Record<string, unknown>>>("agents.skills.list", {});
+      return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

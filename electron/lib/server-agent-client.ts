@@ -18,7 +18,7 @@ export function sessionToken(): string {
 }
 
 export type AgentKind = "main" | "scene" | `course:${string}`;
-export type ParentKind = "parent" | "parent-content" | "parent-data";
+export type ParentKind = "parent" | "parent-content";
 
 export interface AgentEvent {
   id: number;
@@ -676,7 +676,7 @@ export function bridgeChildAgentEvents(
  */
 export function bridgeParentAgentEvents(
   e: AgentEvent,
-  childId: "parent" | "parent-content" | "parent-data",
+  childId: "parent" | "parent-content",
   send: (channel: string, payload: any) => void
 ): void {
   bridgeAgentEventCore(e, childId, `parent:${childId}`, send);

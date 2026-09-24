@@ -21,9 +21,9 @@
  *
  * ## 不参与下沉的工具（`COMPACT_EXEMPT_TOOLS`）
  * - `load_skill` 本身（它是加载器）；
- * - `parent_db_read` / `parent_db_write` / `parent_db_describe`：**跨场景通用数据通道**，语义没有单一场景归属，
- *   且是 P6 的退场候选——留原样（评估见 `ISSUE-144` §3.3）；
  * - `log_activity`：工作区操作记录，任何场景都可能用，同样是通用设施。
+ * （原先还豁免 `parent_db_read` / `parent_db_write` / `parent_db_describe` 三把通用通道工具；
+ *  2026-09-25 `ISSUE-144` P6 已把它们连同 `parent-data` 会话整组退场，豁免名单随之收窄。）
  */
 import { LOAD_SKILL_TOOL_NAME, scenarioGuard, type ParentSkillState } from "./parent-skills.js";
 import { visibleParentSkills } from "./skills/parent/index.js";
@@ -31,9 +31,6 @@ import { visibleParentSkills } from "./skills/parent/index.js";
 /** 不参与"说明下沉"的工具（通用设施；语义无单一场景归属，或本身就是加载器） */
 export const COMPACT_EXEMPT_TOOLS: ReadonlySet<string> = new Set<string>([
   LOAD_SKILL_TOOL_NAME,
-  "parent_db_read",
-  "parent_db_write",
-  "parent_db_describe",
   "log_activity",
 ]);
 

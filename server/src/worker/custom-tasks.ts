@@ -12,7 +12,6 @@
  *   in-flight 内存锁防两个 tick 并发跑同一 (任务, 孩子)。
  */
 import type { DatabaseSync } from "node:sqlite";
-import path from "node:path";
 import { readParentSettings } from "./scheduler.js";
 import { createWorkerEphemeralSession, hhmm, type WorkerTaskCtx } from "./tasks.js";
 import { createWorkerKbTools, formatLocalDate } from "./kb-tools.js";
@@ -22,20 +21,20 @@ import {
   createWeatherTool,
   WEEKDAY_ZH,
 } from "./custom-task-tools.js";
-// ISSUE-135 P4：掌握闭环归纳工具（掌握分析类自定义任务用）+ 通用数据读写（家长库/孩子库）
+// ISSUE-135 P4：掌握闭环归纳工具（掌握分析类自定义任务用）。
 // 注意：**不再 import 默认任务播种** —— 掌握分析任务改为家长显式添加（见 mastery-tools.ts 的 MASTERY_TASK_TEMPLATE）。
+// ISSUE-144 P6：原先还挂 `createDataAgentTools`（parent_db_read/write/describe 三把通用数据通道工具）——
+// 通用数据 API 已整组退场，**定时任务不再有"任意读写两库登记表"的通道**：任务能用的数据面就是
+// kb_query / kb_insert / kb_update（孩子库受控子集，见 kb-tools.ts）+ mastery_*。以后哪类任务缺工具，
+// 就为它补一把场景专用工具，而不是把通用通道请回来。
 import { createMasteryTools, MASTERY_TOOL_NAMES } from "./mastery-tools.js";
-import { createDataAgentTools } from "../agent/parent-tools.js";
 import { recordTaskRun } from "../db/task-runs.js";
 
 const EXEC_TIMEOUT_MS = 5 * 60_000; // 待拍板③：单次执行上限 5 分钟（看门狗）
 
-/** 通用数据通道暴露给自定义任务的三个工具（Tier 2 建 namespace 不开放给定时任务）。 */
-const CUSTOM_TASK_DATA_TOOL_NAMES = ["parent_db_describe", "parent_db_read", "parent_db_write"];
-
 /** 自定义任务暴露的工具名**并集**：SDK 的 tools 白名单对自定义工具同样生效，漏登记 = 工具静默不可见。 */
 export function customTaskToolNames(): string[] {
-  return Array.from(new Set([...CUSTOM_TASK_TOOL_NAMES, ...MASTERY_TOOL_NAMES, ...CUSTOM_TASK_DATA_TOOL_NAMES]));
+  return Array.from(new Set([...CUSTOM_TASK_TOOL_NAMES, ...MASTERY_TOOL_NAMES]));
 }
 
 interface CustomTaskRow {
@@ -112,8 +111,8 @@ const CUSTOM_TASK_SYSTEM_PROMPT =
   `- create_reminders 创建的提醒会按时刻推送到孩子设备语音播报；同任务下次运行会自动替换上次未播报的提醒（replace 默认 true），按指令批量创建即可。\n` +
   `- 频率选型：「每天/工作日固定播」→ daily/weekly；「未来 N 天各播一次」→ 一次性创建 N 条 once（每条 fireAt=对应日期时刻）；不要把未来多天建成 daily（会每天全部重复播）。\n` +
   `- 天气等查询工具失败时不要编造数据，如实汇报失败原因。\n` +
-  `- 需要查/改数据时：家长内容库与孩子库（传 child=孩子名）都能用 parent_db_read / parent_db_write（先 parent_db_describe 看列）；` +
-  `只要读少量列、带等值条件，避免把整表读进上下文。\n` +
+  `- 需要查/改数据时：本任务能用的数据面只有 kb_query / kb_insert / kb_update（该孩子的 daily 记录、课程表字段、主题进度、标签定义；范围受 kb-tools 白名单约束）。` +
+  `要读别的数据（考核逐题、掌握档位、积分流水）本任务没有工具，如实说做不到，不要编造。\n` +
   `- 若指令是**学习情况分析/掌握度归纳**类：用 mastery_todo_list 看待归纳范围 → mastery_plan_context 取素材 → ` +
   `mastery_save_records 写知识点结果 → mastery_save_course_mastery 写课程掌握与教学建议；不要自己手写这些表的 SQL。`;
 
@@ -174,15 +173,6 @@ export async function executeCustomTask(
       const customTools = [
         ...createWorkerKbTools(ctx),
         ...createMasteryTools({ dataDir: deps.dataDir, parentId, childId }),
-        ...createDataAgentTools({
-          db: deps.db,
-          dataDir: deps.dataDir,
-          parentId,
-          workspaceDir: path.join(deps.dataDir, "workspaces", parentId),
-          agentDir: path.join(deps.dataDir, ".worker", "agent", parentId, childId),
-          auth: settings.auth,
-          appSettings: settings.appSettings,
-        }),
         createWeatherTool(deps.db, parentId),
         createRemindersTool(deps.db, parentId, childId, task.id),
       ];

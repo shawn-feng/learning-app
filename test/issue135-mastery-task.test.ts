@@ -122,11 +122,12 @@ const tool = (name: string) => {
 const text = (r: any): string => (r?.content ?? []).map((c: any) => c.text).join("");
 
 describe("ISSUE-135 P4 掌握闭环（自定义任务 + 工具）", () => {
-  it("① 工具面契约：白名单含 4 个 mastery_* + 3 个 parent_db_*", () => {
+  it("① 工具面契约：白名单含 4 个 mastery_*（P6 起不再含 parent_db_*）", () => {
     const names = customTaskToolNames();
     for (const n of MASTERY_TOOL_NAMES) expect(names, `白名单缺 ${n}`).toContain(n);
+    // ISSUE-144 P6：通用数据通道整组退场 → 定时任务的数据面只剩 kb_query/kb_insert/kb_update（受控子集）
     for (const n of ["parent_db_describe", "parent_db_read", "parent_db_write"]) {
-      expect(names, `白名单缺 ${n}`).toContain(n);
+      expect(names, `通用通道已退场，不该再有 ${n}`).not.toContain(n);
     }
     // 原有定制任务能力不能被覆盖掉
     for (const n of ["get_date", "kb_query", "kb_insert", "kb_update", "weather_query", "create_reminders"]) {

@@ -2,8 +2,8 @@
 
 | 项 | 值 |
 |---|---|
-| 状态 | **P0–P4 + P7 已实施**：单测 **49/49**（skills 31 + P4 报告工具 18）、`tsc` 0 错、全量回归零新增失败（8 files/15 tests 为既有失败）；**P5/P6 未做**（P6 的前置已清） |
-| 优先级 | 高（家长端最高频的"问"已能讲清：P4 三把报告工具到位） |
+| 状态 | **P0–P7 全部实施完毕 + 行为层样本已实跑（2026-09-25）**：单测 **63/63**（skills 36 + P4 报告工具 18 + P5 覆盖层通道 8）+ 孩子端 14、`tsc` 0 错、**三端构建 exit 0**、全量回归零新增失败（8 files/15 tests 为既有失败）；行为层 **13/20 完全命中**、负样本 100% 守住（报告 `docs/家长agent-行为样本实跑-2026-09-25.md`）；P3.2 界面显示**决定不做** |
+| 优先级 | 高（家长端最高频的"问"已能讲清：P4 三把报告工具到位；通用通道已退场） |
 | 日期 | 2026-09-25 |
 | 提出 | 用户：「能否通过 skill 来管理每个场景域的 prompt 和工具调用描述。这样按需调用，不会导致提示词臃肿以及工具描述太多太乱，分散模型注意力」→ 后续拍板「按场景划分」「入口让模型自选」「会话内不切工具集（怕丢缓存）」「拆成 学习考核安排 / 定时任务 两个场景，重复规则两边都写」→「都按照你的建议做。执行吧」 |
 | 关联文档 | `docs/家长agent-场景skill方案-讨论稿.md`（方案）、`docs/家长agent-场景skill实施方案-2026-09-25.md`（执行版）、`docs/家长agent使用场景梳理-2026-09-24.md`（逐条台账：37 条 / 6 域） |
@@ -13,7 +13,7 @@
 
 ## 一、做了什么（一句话）
 
-家长提示词从**一份写死的长基底**改成「**常驻层（短）+ 8 个按场景加载的技能正文**」：常驻层只留身份、当前上下文、**场景索引**、**铁律**、通用通道兜底句与工作原则；各场景的步骤与汇报口径搬进 `server/src/agent/skills/parent/*`，由模型按家长意图调 `load_skill` **按需读进来**。**工具集全程不变**（不切工具，避免前缀缓存失效）。
+家长提示词从**一份写死的长基底**改成「**常驻层（短）+ 8 个按场景加载的技能正文**」：常驻层只留身份、当前上下文、**场景索引**、**铁律**与工作原则（**2026-09-25 晚 P6 起，原来的「通用通道兜底句」与两库元数据块也已删除**）；各场景的步骤与汇报口径搬进 `server/src/agent/skills/parent/*`，由模型按家长意图调 `load_skill` **按需读进来**。**工具集全程不变**（不切工具，避免前缀缓存失效）；**家长可按场景覆盖口径**（P5），**通用数据通道已整组退场**（P6）。
 
 ## 二、改动清单
 
@@ -32,10 +32,10 @@
 
 ## 三、预算（改前 → 改后，同一 `tablesBlock` 桩）
 
-| 项 | 改前 | 改后 | 说明 |
+| 项 | 改前 | 改后（P2 落地时） | 说明 |
 |---|---|---|---|
-| **常驻提示词** | **4710 字符** | **2501 字符**（-47%） | 组成：场景索引 987 + 铁律 691 + 通用通道兜底 338 + 当前上下文 141 + 工作原则 261 + 身份 42 |
-| **技能正文** | 0（全在常驻） | **11491 字符（8 个，按需加载）** | 常驻 2501 < 全部正文 11491 —— 渐进披露成立 |
+| **常驻提示词** | **4710 字符** | **2501 字符**（-47%） | 组成：场景索引 987 + 铁律 691 + 通用通道兜底 338 + 当前上下文 141 + 工作原则 261 + 身份 42。**P6 又删掉兜底段与元数据块 → 2185 字符** |
+| **技能正文** | 0（全在常驻） | **11491 字符（8 个，按需加载）** | 常驻 2501 < 全部正文 11491 —— 渐进披露成立。**最终（P4+P6 后）19315** |
 | 家长工具 description | 10732 字符 | **9833**（-8.4%） | 只瘦了 `parent_exam_plan_create` 这个离群值（1275）与 sync 的"何时调用"；**结构性规格与铁律一律不瘦** |
 
 > **为什么工具描述只瘦这一点**：39 把工具的描述里绝大部分是**参数语义 + 铁律 + 参数化约束**（如 `methodSpec` 怎么传、执行会话白名单是什么），删了会让"没加载技能"的模型直接做错；真正冗余的只有 `exam_plan_create` 那一类"把参数说明再复述一遍 + 说法对照表"。测试里加了总量上限（10500）与单把上限（≤800）防回涨。
@@ -207,6 +207,65 @@
 
 **预算（P4 之后）**：工具面 45 → **48 把**；工具块（description + Schema）源码态 **24010** → 注册后（进上下文）**16848**（P7.4 时为 15997，三把新工具 **+851**）；8 个技能正文 17706 → **19265**（progress / points 两篇扩容）；常驻提示词仍 **2501**（未变）。
 
+### 3.6 P6：通用数据通道**整组退场**（2026-09-25 晚执行，用户拍板"现在就拆"）
+
+> **用户口径**：「P6 拆桥做了吧，**以后场景缺少工具就增加工具**。」——即：不再保留"通用通道 + 自己查表"这条老路，缺能力就补专用工具。
+
+| ID | 层面 | 具体删了什么 | 状态 |
+|---|---|---|---|
+| P6.1 | 会话 | `ParentSessionKind` 去掉 `"parent-data"`；`buildServerDataAgentPrompt` 删除；`ensureEntry` 的 `parent-data` 分支删除；`routes/parent-agent.ts` 的 `parseKind` 拒收（旧客户端带该 kind → 400） | ✅ |
+| P6.2 | 工具 | `parent_db_describe` / `parent_db_read` / `parent_db_write` / `define_namespace`；`DATA_AGENT_TOOL_NAMES` / `createDataAgentTools` / `buildDb{Describe,Read,Write}Tool` / `buildDefineNamespaceTool`；`PARENT_AGENT_TOOL_NAMES` 26 → **23**；`COMPACT_EXEMPT_TOOLS` 只剩 `load_skill` + `log_activity` | ✅ |
+| P6.3 | 提示词 | 常驻层「通用数据查询（兜底通道，计划退场）」整段；`${tablesBlock}` 注入；`buildDataChannelBlocks`（`registry-prompt.ts` 只剩孩子侧能力清单）；`buildServerParentPrompt` 不再接受 `tablesBlock`。**工作原则新增负向口径**：没工具就如实说做不到 + 指路界面，不绕道/不臆造工具名/不假装做完 | ✅ |
+| P6.4 | 技能 | `progress` / `points` 删 `parent_db_read` 声明与"通用兜底通道"话术，改成"这张表覆盖不到就如实说查不到" | ✅ |
+| P6.5 | 定时任务 | `custom-tasks.ts` 原先还挂通用三件（自然语言指令能任意读写两库登记表，超出文档白名单）→ 收敛为 `kb_query/kb_insert/kb_update` + `mastery_*` + 天气/提醒；`mastery-tools.ts` 的指令话术同步改（素材一律由 `mastery_plan_context` 一次给全） | ✅ |
+| P6.6 | 客户端 | 侧栏「🗃️ 数据管理」入口与视图；`ParentChatPanel` 的 `childId` 收窄 + 三处分支 + 标题；`preload` 三个方法；主进程三个 handler + `parentDataBusy`；根 `server-agent-client.ts` 与 `electron/lib/server-agent-client.ts` 的 `ParentKind`；`web/src/shim/{core/sse,domains/agents}.ts`；`TokenStatsPanel` 标签；`NamespacePanel` 三处指向已退场助手的文案 | ✅ |
+| P6.7 | 测试/脚本 | 删 `test/e2e-data-agent.mts`、`test/tool-echo.mts`；`issue133` 的"报错现场重放"改按**执行器级**（`executeWrite` + 孩子库管理写规格）、`issue134` 的集成例改指**仍在工具面上的** `parent_upsert_course_content.items`；`issue135` 白名单断言**翻转**为"不该再有 `parent_db_*`"；`data-channel-v2` 的元数据块用例改为断言"家长提示词里不再有表清单" | ✅ |
+| P6.8 | 保留（有意） | `db-channel.ts` / `tier2.ts`（注册表与执行器**库**：路径查询、路由、测试仍在用）；`parent-data` 会话旧历史文件在 `agent-sessions/<pid>/parent-data/` 作归档 | ✅ |
+
+**预算变化（P6 后）**：工具面 **48 → 45 把**；工具块源码态 24010 → **20948**、注册后 16848 → **13786**（相对原始基线 25078 **-45%**）；常驻提示词 2501 → **2185**（去掉兜底段 316 字符）；8 技能正文 19265 → **19315**（删兜底话术 + 补 P6 说明）。
+
+**顺带收口（一处真实隐患）**：`src/components/NamespacePanel.tsx` 原先教家长"去「数据管理」助手里描述场景"——助手已退场，文案已改写为"自定义数据随通用通道退场，这里只处理历史遗留"。**Tier 2 自定义数据现状**：助手侧**没有**任何读写面（设计器与通用读写都没了），页面只剩确认遗留/停用/删除；要恢复该能力＝给它补一把**场景专用工具**（记入待定）。
+
+### 3.7 P5：家长自定义层（设置 →「场景口径」，2026-09-25 晚执行）
+
+| ID | 做什么 | 结果 |
+|---|---|---|
+| P5.1 | 路由放开 | `routes/db.ts` 新增并导出 `resolveAgentsRef(ctx, scope, rawRef)`：`scope!=='parent'` 原样；`skill:<技能名>` → 展开成库内键 `skill:<家长id>:<技能名>`（技能名必须在 `visibleParentSkills()` 里，否则 400）；**其余 parent ref 仍强制成家长 id** |
+| P5.2 | **隔离修正** | `agents.sqlite` 是**服务端全局一个文件** ⇒ 原 `ref="skill:<name>"` 会让多家长**串口径**。改为 `skillRefOf(parentId, name)` + `parseSkillRef(ref)`（按最后一个 `:` 切分）；`listParentSkillOverrides` / `resolveParentSkill` / `createLoadSkillTool` 全部加 `parentId`；旧形态（无 id 段）忽略＝回内置 |
+| P5.3 | 红线关键词校验 | `validateSkillOverride(text)`：空内容放行（＝恢复内置）、超上限（20k）提示精简、`忽略/无视铁律`、`跳过/绕过确认`、`删孩子`、`改/重置密码`、`直接删/不用确认` 当场 400。函数注释里**明确定位：安全带不是证明** |
+| P5.4 | 不可覆盖条款 | `SKILL_OVERRIDE_POLICY`：覆盖版生效时 `load_skill` 在正文后追加（工具面/参数语义来自代码、铁律继续有效、冲突以铁律为准） |
+| P5.5 | 取数接口 | RPC `agents.skills.list`（8 个场景：中文名/触发说法/summary/tools/线上 `ref`/内置稿/是否已自定义/时间）；IPC `agents:skillList`（Electron 与 web shim 同面）；四个 `agents:*` 的 ref 强制逻辑改为"`skill:` 前缀透传" |
+| P5.6 | 界面 | 新增 `src/components/SceneSkillSettings.tsx` + `Settings.tsx` 的「场景口径」页：左选场景（标"已自定义/官方口径"）、右整段编辑（默认载入当前生效正文）、保存 / 载入官方口径 / 恢复官方口径 / 历史版本回退；页头写明**改完要新会话才生效** |
+| P5.7 | 回归 | `test/issue144-parent-scene-override.test.ts` **8/8**（真 fastify + 真 sqlite + 真 JWT）；`issue144-parent-skills` 覆盖层用例改为按家长隔离 + 断言「不可覆盖条款」到场 + 新增红线校验 4 例 |
+
+**⚠️ 一处必须记住的生效语义**：技能正文在会话里 `load_skill` 读过一次就固定了 ⇒ **改了覆盖层要开新会话**（不是清缓存、不是重启服务端就够）。UI 里已写明。
+
+### 3.8 行为层 20 条实跑 + 家长三项拍板（2026-09-25 晚）
+
+**怎么跑**：本机 `server/` **用新代码重启**（停掉旧 dev server，同命令同端口同数据目录）→ 真账号 `test@qq.com` **真实登录** → 模型 `mimo-tokenplan/mimo-v2.5` → 脚本 `tmp/behavior-samples/run.cjs` 走 HTTP + SSE，每轮等 `turn_end`；跑前快照测试家长的三件套（`tmp/behavior-snapshot/`）。**完整报告见 `docs/家长agent-行为样本实跑-2026-09-25.md`**。
+
+| 口径 | 结果 |
+|---|---|
+| 整轮 20 条 | **13 条完全命中**（含 2 条负样本）、1 条半失败（#3 绕远 + **2 次守卫拒跑**后自愈）、6 条未命中/未触发（#5 #6 #7 #8 #10 #13） |
+| 守卫机制 | ✅ 真的在拦（**含只读工具**），**拒跑后模型自己 load_skill 并答完**，无死循环；整轮仅 2 次拒跑 |
+| 会话内幂等缓存 | ✅ 正确（同一场景不重复加载）；**跨场景连读（#15）无缝**，缓存前缀不动 |
+| 负向口径 | ✅ 100%：`config` 改不了如实说 + 指路；"今天天气"不加载任何场景；改密码/删孩子**零工具调用** + 明确拒绝 |
+| P4 三把报告工具触发 | ✅ 准确（#1 exam / #2#3 mastery / #15 points），没有一次去"查表" |
+| P5 端到端 | ✅ 覆盖生效（回复第一句变成家长写的标记）→ 清空回落（标记消失）→ 红线写法 **HTTP 400**（留痕 `p5-override-result.txt`） |
+| 副作用 | 整轮 **零写入**；course 档复跑真建了「国学」主题 + 1 课 → **已删净并核对回到 11 主题 / 1317 课**；孩子库未被连带写入；材料库零新文件 |
+
+**三条待修真缺陷（如实跑报告 §3）**：① `parent_library_courses` / `parent_library_course_content` 的场景归属太窄（只归 course，progress 也要用 → 样本 3 的绕远与 2 次拒跑直接由它引起）；② course 场景"先核对 → 复述 → 再写"没执行到位（C6 **未复述就建了主题**，违 A7）；③ "先列清单再问哪一份/哪一场"没执行（#10 #13）。**⇒ 建议下一批修，不阻塞本轮。**
+
+**家长三项拍板（同批记录）**：
+
+| # | 事项 | 拍板 |
+|---|---|---|
+| 1 | Tier 2 自定义数据的终局 | **先冻结**（"还没想好场景"）——不补工具、不删功能，`设置 → 自定义数据` 只做遗留开关；将来按"给场景补专用工具"的路子做（台账 §8 #16） |
+| 2 | 兑换的扣分时点（文档 ≠ 实现） | **以后再讨论**（"还没想好具体怎么兑换"）——文案保持按实现写，等兑换流程定案一起改（台账 §8 #15） |
+| 3 | 要不要再加"全局补充层"（P5 粒度） | **不加**——保持"按场景覆盖"这一种粒度，避免把胖基底请回来（台账 §8 #1） |
+
+**执行期的一处操作说明**：为跑行为样本，**停掉了你原来那个 `npm run dev`（tsx）进程并用同一条命令重起了**（端口 8788、数据目录 `server/data` 不变）——现在跑的是含 P4/P5/P6/P7 的新代码。
+
 ## 四、关键设计决定（含理由）
 
 1. **技能正文放 TS 模块，不放 `.md` 文件**：server 是 esbuild 打包运行（`server/src/index.ts` 有"bundled 后 `__dirname` 变化"的教训），文件要额外处理构建/asar 拷贝；而 TS 常量还能让**重复规则物理同源**（`REPEAT_RULES_BLOCK` 被 plan / automation 两处引用，测试断言两处都 `toContain` 同一常量）。
@@ -219,23 +278,26 @@
 
 ## 五、验收证据
 
-1. `test/issue144-parent-skills.test.ts`：**31 / 31 通过**（§3.4 / §3.5 后）；
+1. `test/issue144-parent-skills.test.ts`：**36 / 36 通过**（§3.4 / §3.5 / §3.7 后）；
 2. `test/issue144-parent-report-tools.test.ts`：**18 / 18 通过**（§3.5 P4 新增）；
-3. `test/issue142-child-report-tools.test.ts`：**14 / 14 通过**（共用零件抽取后孩子端行为不变）；
-4. `cd server && npx tsc --noEmit`：**exit 0，零错误**；
-5. 全量 `vitest run`：见 §七（按 `ISSUE-142` §9.3 的口径甄别既有失败）；
-6. 预算数字见 §三 / §3.5（测试里会打印，可随时复跑）。
+3. `test/issue144-parent-scene-override.test.ts`：**8 / 8 通过**（§3.7 P5 新增，路由级）；
+4. `test/issue142-child-report-tools.test.ts`：**14 / 14 通过**（共用零件抽取后孩子端行为不变）；
+5. `cd server && npx tsc --noEmit`：**exit 0，零错误**；
+6. **三端构建**：`npx electron-vite build` **exit 0**（main / preload / renderer 三包）、`npm --prefix web run build` **exit 0**；
+7. 全量 `vitest run`：见 §7.4（按 `ISSUE-142` §9.3 的口径甄别既有失败）；
+8. 预算数字见 §三 / §3.5 / §3.6（测试里会打印，可随时复跑）。
 
 ## 六、没做的事（明确留出）
 
 | 项 | 为什么没做 |
 |---|---|
-| **P3.2 界面显示"已进入：{场景名}"** | 目前已可观测：`load_skill` 的工具结果首行固定是「已加载场景：{中文名}（{name}）」，服务端也打 `[parent-agent] skill loaded: <name>`；**前端展示**要改 `src/components/ParentChatPanel.tsx` 并重建 Web 产物，单独排（可观测性增强，不阻塞） |
+| **P3.2 界面显示"已进入：{场景名}"** | **2026-09-25 家长明确「不做」**：家长不需要了解现在是什么场景（场景是给模型看的组织方式）。可观测性留在服务端日志 `[parent-agent] skill loaded: <name>` 与 `load_skill` 返回首行 |
 | ~~**P4 三个场景专用读工具**~~ | **已做（§3.5）**——D1 / D3 / D5 / F2 / F3 的读数不再依赖通用通道 |
-| **P5 家长自定义层界面** | 存储与读取通道**已经通了**（`agents.sqlite` 的 `scope=parent`、`ref=skill:<name>`；本 ISSUE 已实现读取与"覆盖优先"，测试覆盖）；缺的是**设置页编辑框** + `server/src/routes/db.ts` 的 ref 放开（现在 `scope=parent` 会把 ref 强制成 `parentId`）+ 红线校验 |
-| **P6 通用通道退场** | **前置已清（P4 完成）**：剩下的触发条件是"上线后观察一个版本周期无断供"；`parent-data` 会话与 `parent_db_*` 暂留（用户已确认"暂时保留"）。⚠️ 退场时要把 `progress` 技能里那两句"兜底通道"话术与 `parent_db_read` 的声明一并删掉，否则提示词会教模型调不存在的工具 |
-| **行为层 20 条样本实跑** | 需要有模型配置的会话；样本清单已固化在 `test/issue144-parent-skills.test.ts` 末尾（`PARENT_SKILL_SAMPLES`，18 条对话样本 + 2 条负样本），静态自检已过（技能存在、工具名存在、8 个场景都有样本）。**要重点看三件事**：① 模型会不会先 `load_skill` 再调工具（守卫命中率 / 被拒后的自愈率，含只读工具）；② 多场景工具的 `load_skill` 选择是否会绕远（如 `list_children` 现在提示了四个场景）；③ **P4 三把报告工具的触发是否准确**（"考得怎么样"→ `exam_report`、"哪里薄弱"→ `mastery_report`、"这分怎么算的"→ `points_report`），以及**多孩子时会不会正确地问一句**而不是猜 |
-| **通用三把 + `log_activity` 的说明未下沉** | `parent_db_read`/`parent_db_write`/`parent_db_describe` 是**跨场景通用通道**（无单一场景归属，且是 P6 退场候选），`log_activity` 是通用设施——它们连同 fs 四把共 **4843 字符**留在工具块里，是 A 路线 16k 中的主要"未瘦"部分；P4/P6 落地后自然消失 |
+| ~~**P5 家长自定义层界面**~~ | **已做（§3.7）** |
+| ~~**P6 通用通道退场**~~ | **已做（§3.6）**——会话、四把工具、常驻兜底段、两库元数据块、侧栏入口与视图全部删净 |
+| **行为层 20 条样本实跑** | **✅ 已跑（2026-09-25，§3.8）**：真账号 + 真模型 + 新代码服务端，13/20 完全命中、负样本 100% 守住；**剩 #7/#8 两条没跑出结论**（#7 单轮 >150s 超时、#8 被 409 挡住）与 P5 双账号隔离的实跑，见报告 §6 |
+| **Tier 2 自定义数据的终局** | **家长拍板：先冻结**（§3.8 表）——助手侧已无读写面（§3.6 顺带收口），不补工具也不删功能 |
+| ~~**通用三把 + `log_activity` 的说明未下沉**~~ | **已随 P6 解决**：通用三把已删除，`log_activity` 与 `load_skill` 属通用设施（`COMPACT_EXEMPT_TOOLS`），有意保留下沉豁免 |
 
 ## 七、本轮证据（回填）
 
@@ -276,4 +338,24 @@
 4. **预算**（测试内打印）：工具面 45 → **48 把**；工具块源码态 **24010** → 注册后 **16848**（三把新工具 +851）；8 个技能正文 17706 → **19265**（仍逐篇 ≤ 6000）；常驻提示词 **2501 未变**；
 5. **全量回归**：`npx vitest run` → **8 files / 15 tests 失败，546 passed / 8 skipped（64 files / 569 tests）**。失败清单与既有基线**逐项一致**（`assess-guide` / `assessment` / `english-course-session` / `event-poll-config` / `kb-sqlite` / `page-bridge` / `sync` / `token-stats`），**零新增失败**；留档 `tmp/p4-full-regression.txt`；
 6. **一次测试自身的写法错误（留档，非产品问题）**：新增测试里有三处**我自己的期望写错**——① 断言"未考完不给题"时用了 `not.toContain("逐题")`，而提示语本身就写着"逐题明细与评语就会出来"（改为断言不给 `【逐题】` 段与题干原文）；② 以为"为政第二"的错题不算"论语"主题（它算，`course_ref` 过滤是按该主题下的课程名集合）；③ 多孩子提示名单按 `name` 排序（同秒创建时 `created_at` 相同）→ 改为断言两个名字都在，而不是固定顺序。**教训：断言要贴着"该说什么"写，不要贴着我以为的实现写。**
+
+### 7.4 P5 + P6 的证据（2026-09-25 晚）
+
+1. **新增回归（P5 路由级）**：`npx vitest run test/issue144-parent-scene-override.test.ts` → **8 / 8 通过**（真 fastify + 真 sqlite + 真 JWT）：`agents.skills.list` 形状（8 行、线上 ref、内置稿非空）、`agents.get` 形状、`skill:*` 展开成 `skill:<pid>:<name>`、**跨家长隔离**、清空回内置且历史保留、红线四类拒绝且**不落库**、未知场景/空名 400；
+2. **既有回归同步扩写**：`test/issue144-parent-skills.test.ts` → **36 / 36**（新增：覆盖版追加「不可覆盖条款」、跨家长隔离、旧形态 `skill:<name>` 不再被认、红线校验 4 例）；`test/issue133-json-string-args.test.ts` **16 / 16**、`test/issue134-arg-coercion.test.ts` **19 / 19**、`test/issue135-mastery-task.test.ts` **6 / 6**、`test/data-channel-v2.test.ts` **27 / 27**；`test/issue144-parent-report-tools.test.ts` **18 / 18**、`test/issue142-child-report-tools.test.ts` **14 / 14**（未受影响）；
+3. **类型**：`cd server && npx tsc --noEmit` → **exit 0**；
+4. **构建**：`npx electron-vite build` → **exit 0**（`out/main` 281 kB / `out/preload` 27 kB / `out/renderer` 2.5 MB）；`npm --prefix web run build` → **exit 0**（`web/dist` 1.58 MB）；
+5. **预算**（测试内打印）：工具面 **48 → 45 把**；工具块源码态 24010 → **20948**、注册后 16848 → **13786**（相对原始 25078 **-45%**）；常驻提示词 2501 → **2185**；8 技能正文 19315；
+6. **全量回归**：`npx vitest run` → **8 files / 15 tests 失败，558 passed / 8 skipped（65 files / 581 tests）**。失败清单与既有基线**逐项一致**（`assess-guide` / `assessment` / `english-course-session` / `event-poll-config` / `kb-sqlite` / `page-bridge` / `sync` / `token-stats`），**零新增失败**；留档 `tmp/p6p5-full-regression.txt`（相对 P4 那次：文件 +1＝新增 P5 测试文件，用例 +12＝P5 新增 8 + skills 新增 4，通过数 546 → 558）；
+7. **P6 的 grep 判据**：`src/` + `electron/` + `web/src/` 对 `parent-data|dataagent|ParentData|pi:start_parent_data|pi:prompt_parent_data|pi:reset_parent_data`（含大小写不敏感变体）→ **零命中**；
+8. **执行中的一次写法错误（留档）**：往技能正文模板字符串里插入 P6 说明时又忘了转义反引号（`` `ISSUE-144` ``），`tsc` 报 `TS1005`；与 §7.2 第 6 条同一类，**第二次犯**——已修。**结论：改 `skills/parent/*.ts` 的正文，写完立刻 `tsc`，不要等到最后。**
+
+### 7.5 行为层实跑的证据（2026-09-25 晚）
+
+1. **环境**：本机 `server/` 重启为新代码（127.0.0.1:8788）；账号 `test@qq.com`（parentId `86a84278-…`，4 个孩子）；真实 `POST /api/v1/auth/login` 成功（authMode=login）；模型 `mimo-tokenplan/mimo-v2.5`；
+2. **结果**：整轮 20 条 **13 完全命中 / 1 半失败 / 6 未命中或未触发**；course 档定向复跑（重置会话）C5 首次命中、C6 加载错 + 未复述就写、C7 >150s 超时、C8 被 409 挡；
+3. **P5 端到端**：覆盖生效 ✅ / 清空回落 ✅ / 红线 400 ✅（`p5-override-result.txt`）；
+4. **原始记录**：`tmp/behavior-samples/{behavior-run.json,behavior-run-course.json,p5-override-result.txt}`；驱动脚本 `{run,p5-override,summarize,cleanup2}.cjs`；
+5. **副作用与回滚**：跑前快照 `tmp/behavior-snapshot/`；整轮零写入；course 档创建的主题+课程已删净并核对（11 主题 / 1317 课），孩子库与材料库未被连带写入（`cleanup2-{audit,applied}.txt`）；
+6. **顺带清理一个死文件**：根目录 `server-agent-client.ts`（未被 tsconfig 收录、全仓无人 import、且 `import "./server-client"` 在仓库里根本不存在——是 `electron/lib/server-agent-client.ts` 的历史拷贝）。已按"清理掉它"的建议删除。
 

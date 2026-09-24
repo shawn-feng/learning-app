@@ -1,108 +1,15 @@
 /**
- * F7/C3：注册表 → 模型可见元数据（紧凑实体/列/关系/路径清单），常驻 system prompt。
- * 目标：读场景零 describe——agent 首次调用前就知道有哪些表、哪些列、能走哪条路径。
+ * 会话常驻提示词里的「数据库元信息块」。
  *
- * 口径说明：设计稿 §6.2 的「≈1861 token」基于 F14 补列前的残缺注册表；列补齐后实际体积以
- * 本模块的输出实测为准（验收时回填文档）。Tier 2 namespace 在会话启动时一并并入（一行一个），
- * 使 C3 对两层统一成立——describe 退化为写校验/枚举值域的专项出口（§6.3 收窄后定位）。
+ * 历史（ISSUE-144 P6 之前）：本模块还导出 `buildDataChannelBlocks`——把家长库/孩子库的
+ * 表、列、关系、命名路径、Tier 2 灵活实体压成一份紧凑清单注入家长会话的 system prompt，
+ * 目的是"读场景零 describe"（模型凭清单直接写 `parent_db_read` 查询）。
+ * 2026-09-25 通用数据 API 整组退场，那段清单连同 `parent-data` 会话一并删除——
+ * **家长侧不再有"自己查表"的入口**，问题该用哪把工具由场景技能给出（`load_skill` 按需加载）。
+ *
+ * 现在只剩孩子侧的能力清单（ISSUE-142 起同款做法：说"哪个问题用哪个工具"，不说表名）。
  */
-import { openParentLib } from "../db/parent-lib.js";
-import {
-  parentLibTableRegistry,
-  parentReadableRegistry,
-  parentLibPaths,
-  childKbReadableRegistry,
-  childKbAdminWriteSpecs,
-  applyPathIndex,
-  type ReadableTableSpec,
-  type TableSpec,
-  type RegistryPath,
-} from "./db-channel.js";
-import { loadNamespaces, tier2AsReadable, type NamespaceRow } from "./tier2.js";
 import { listMistakes } from "../db/mistakes.js";
-
-/** 紧凑表清单：一行一表，列名平铺；refs 以 列→表.列 标注（模型靠它理解关系，不用查） */
-function compactTableLines(readSpecs: ReadableTableSpec[]): string[] {
-  return readSpecs.map((s) => {
-    const refByCol = new Map<string, string[]>();
-    for (const r of s.refs ?? []) {
-      const arr = refByCol.get(r.column) ?? [];
-      arr.push(`${r.column}→${r.refTable}.${r.refColumn}`);
-      refByCol.set(r.column, arr);
-    }
-    const refNotes = [...refByCol.values()].flat();
-    const cols = Object.keys(s.columns).join(", ");
-    return `- ${s.table}（${s.label}）: ${cols}${refNotes.length ? ` ｜关系: ${refNotes.join(", ")}` : ""}`;
-  });
-}
-
-function compactWriteLines(writeSpecs: TableSpec[]): string[] {
-  return writeSpecs
-    .filter((s) => s.ops.length)
-    .map((s) => `- ${s.table}: ${s.ops.join("/")}（单次≤${s.rowLimit} 行）`);
-}
-
-function compactPathLines(paths: RegistryPath[]): string[] {
-  return paths.map(
-    (p) => `- ${p.name}（${p.label}）: 主体 ${p.select}；可过滤 ${p.filterable.join(" | ")}；可返回 ${p.returns.length} 列（describe path 可见全部）`
-  );
-}
-
-function compactNsLines(nsRows: NamespaceRow[]): string[] {
-  return nsRows.map((ns) => {
-    const refs = (ns.spec.refs ?? []).map((r) => `${r.column}→${r.refTable}.${r.refColumn}`).join(", ");
-    return `- ns:${ns.ns}（${ns.label}）: ${Object.keys(ns.spec.columns).join(", ")}${refs ? ` ｜关系: ${refs}` : ""}`;
-  });
-}
-
-export interface DataChannelBlocks {
-  /** 家长库：Tier 1 表 + 命名路径 + Tier 2(parent scope) */
-  parentBlock: string;
-  /** 孩子库：Tier 1 表 + Tier 2(child scope)（写面仅 daily_entries/redemption_requests） */
-  childBlock: string;
-}
-
-/** 组装两库的紧凑元数据（会话创建时调用一次；ns 注册行来自家长库 namespaces 表） */
-export function buildDataChannelBlocks(dataDir: string, parentId: string): DataChannelBlocks {
-  let parentNs: NamespaceRow[] = [];
-  let childNs: NamespaceRow[] = [];
-  try {
-    const pdb = openParentLib(dataDir, parentId);
-    try {
-      parentNs = loadNamespaces(pdb, "parent");
-      childNs = loadNamespaces(pdb, "child");
-    } finally {
-      pdb.close();
-    }
-  } catch {
-    /* 家长库打不开（极端情况）→ 退化为纯 Tier 1 清单 */
-  }
-
-  const parentPaths = parentLibPaths();
-  const parentRead = applyPathIndex(parentReadableRegistry(), parentPaths);
-  const parentBlock = [
-    "【家长库可读表】",
-    ...compactTableLines(parentRead),
-    "【家长库可写表】",
-    ...compactWriteLines(parentLibTableRegistry()),
-    ...(parentNs.length ? ["【家长库灵活实体 Tier 2】（table 用 ns:名称）", ...compactNsLines(parentNs)] : []),
-    "【命名路径】（parent_db_read 传 path=名称，多跳关联一次查询）",
-    ...compactPathLines(parentPaths),
-  ].join("\n");
-
-  const childNsRows = childNs;
-  const childRead = applyPathIndex(childKbReadableRegistry(), []);
-  const childBlock = [
-    "【孩子库可读表】",
-    ...compactTableLines(childRead),
-    // ISSUE-105 修订（2026-09-21）：家长 db 通道按管理口径开放孩子库全部登记表（孩子 agent 自己的写面仍走两表白名单）
-    "【孩子库可写表】（管理口径全表可写；状态机表 study_plans/exam_plans/points_ledger 等直写绕过受控流程，改前先 read 确认目标行）",
-    ...compactWriteLines(childKbAdminWriteSpecs()),
-    ...(childNsRows.length ? ["【孩子库灵活实体 Tier 2】（只读；table 用 ns:名称）", ...compactNsLines(childNsRows)] : []),
-  ].join("\n");
-
-  return { parentBlock, childBlock };
-}
 
 /** 孩子 agent 自己视角的元信息块。
  *  ISSUE-142（2026-09-23）起**不再暴露表/列清单**：孩子侧已无通用读写通道（通用三工具撤掉），

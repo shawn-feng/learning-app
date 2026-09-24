@@ -17,11 +17,39 @@ import {
 } from "../db/agents.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { markStale } from "../agent/embeddings.js";
+// ISSUE-144 P5：家长自定义层（按场景覆盖口径）——ref 解析 / 红线校验 / 编辑器取内置稿
+import {
+  SKILL_REF_PREFIX,
+  listParentSkillOverrides,
+  skillRefOf,
+  validateSkillOverride,
+} from "../agent/parent-skills.js";
+import { findParentSkill, visibleParentSkills } from "../agent/skills/parent/index.js";
 
 interface RpcContext {
   dataDir: string;
   mainDb: DatabaseSync;
   parentId: string;
+}
+
+/**
+ * ISSUE-144 P5：把客户端传来的 `ref` 解析成**库内键**。
+ *
+ * 约定（与「家长提示词按家长隔离」同源，2026-08-30）：
+ * - `scope !== "parent"` → 原样（孩子侧 ref 是 childId，另有归属校验）；
+ * - `scope === "parent"` 且 `ref = "skill:<技能名>"` → 展开成 `skill:<parentId>:<技能名>`
+ *   （**场景口径覆盖层**；技能名必须在可见清单里，否则 400——挡住"用 ref 摸别的键"）；
+ * - 其余 parent ref → **强制成当前家长 id**（家长级提示词按家长隔离，客户端说了不算）。
+ */
+export function resolveAgentsRef(ctx: RpcContext, scope: string, rawRef: unknown): string {
+  const ref = str(rawRef);
+  if (scope !== "parent") return ref;
+  if (ref.startsWith(SKILL_REF_PREFIX)) {
+    const name = ref.slice(SKILL_REF_PREFIX.length).trim();
+    if (!findParentSkill(name)) throw new ApiError(400, `未知场景：${name || "(空)"}`);
+    return skillRefOf(ctx.parentId, name);
+  }
+  return ctx.parentId;
 }
 
 /**
@@ -325,8 +353,8 @@ export const queryHandlers: Record<string, QueryHandler> = {
   // 旧库 todo_items / child_todo_stats 表保留供迁移脚本读取，服务端不再读写。
   "agents.get": (ctx, args) => {
     const scope = str(args.scope);
-    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
-    const ref = scope === "parent" ? ctx.parentId : str(args.ref);
+    // 家长提示词按家长隔离（2026-08-30）；P5：`skill:*` 展开成本家长的场景覆盖键
+    const ref = resolveAgentsRef(ctx, scope, args.ref);
     if (scope === "child") assertChildOwned(ctx, ref);
     if (scope !== "child" && scope !== "parent") {
       throw new ApiError(400, "scope 仅支持 child / parent");
@@ -336,13 +364,33 @@ export const queryHandlers: Record<string, QueryHandler> = {
   },
   "agents.history": (ctx, args) => {
     const scope = str(args.scope);
-    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
-    const ref = scope === "parent" ? ctx.parentId : str(args.ref);
+    const ref = resolveAgentsRef(ctx, scope, args.ref);
     if (scope === "child") assertChildOwned(ctx, ref);
     if (scope !== "child" && scope !== "parent") {
       throw new ApiError(400, "scope 仅支持 child / parent");
     }
     return listAgentPromptHistory(ctx.dataDir, scope, ref);
+  },
+  /**
+   * ISSUE-144 P5：场景口径编辑器的一次性取数——8 个场景的**内置稿**（编辑底稿）+ 本家长是否已自定义。
+   * 客户端只认 `ref = "skill:<技能名>"` 这种线上形态，库内键（含 parentId）不出去。
+   */
+  "agents.skills.list": (ctx) => {
+    const overrides = listParentSkillOverrides(ctx.dataDir, ctx.parentId);
+    return visibleParentSkills().map((s) => {
+      const own = overrides.get(s.name);
+      return {
+        name: s.name,
+        title: s.title,
+        triggers: s.triggers,
+        summary: s.summary,
+        tools: s.tools,
+        ref: `${SKILL_REF_PREFIX}${s.name}`,
+        builtin: s.body,
+        override: own?.content ?? null,
+        updated: own?.updated ?? null,
+      };
+    });
   },
   "parent_lib.topics.list": (ctx) => {
     const db = openParentLib(ctx.dataDir, ctx.parentId);
@@ -762,19 +810,23 @@ export const execHandlers: Record<string, ExecHandler> = {
   },
   "agents.save": (ctx, args) => {
     const scope = str(args.scope);
-    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
-    const ref = scope === "parent" ? ctx.parentId : str(args.ref);
+    const ref = resolveAgentsRef(ctx, scope, args.ref);
     if (scope === "child") assertChildOwned(ctx, ref);
     if (scope !== "child" && scope !== "parent") {
       throw new ApiError(400, "scope 仅支持 child / parent");
     }
-    saveAgentPrompt(ctx.dataDir, scope, ref, str(args.content));
+    const content = str(args.content);
+    // ISSUE-144 P5.3：家长改「场景口径」时的红线关键词校验（空内容＝恢复内置，直接放行）
+    if (scope === "parent" && ref.startsWith(SKILL_REF_PREFIX)) {
+      const bad = validateSkillOverride(content);
+      if (bad) throw new ApiError(400, bad);
+    }
+    saveAgentPrompt(ctx.dataDir, scope, ref, content);
     return { ok: true };
   },
   "agents.restore": (ctx, args) => {
     const scope = str(args.scope);
-    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 强制为当前家长 id
-    const ref = scope === "parent" ? ctx.parentId : str(args.ref);
+    const ref = resolveAgentsRef(ctx, scope, args.ref);
     if (scope === "child") assertChildOwned(ctx, ref);
     if (scope !== "child" && scope !== "parent") {
       throw new ApiError(400, "scope 仅支持 child / parent");

@@ -147,7 +147,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       })
     );
   };
-  const ensureParentStream = (kind: "parent" | "parent-content" | "parent-data") => {
+  const ensureParentStream = (kind: "parent" | "parent-content") => {
     const key = `parent:${kind}`;
     if (agentStreams.has(key)) return;
     agentStreams.set(
@@ -166,7 +166,6 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   let childBusy = false;
   let parentBusy = false;
   let parentContentBusy = false;
-  let parentDataBusy = false;
 
   // SPLIT：服务端连接配置（纯服务端模式必需）
   ipcMain.handle("server:get_config", async () => {
@@ -454,8 +453,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   // ---- AGENTS / 系统提示词「用户可编辑版本」通用接口（ISSUE-033）----
   ipcMain.handle("agents:get", async (_e, scope: string, ref: string) => {
-    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
-    if (scope === "parent") ref = getCurrentParentId();
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id；
+    // ISSUE-144 P5：`skill:<技能名>` 是「场景口径覆盖层」的线上键（服务端展开成本家长的库内键），原样透传
+    if (scope === "parent" && !ref.startsWith("skill:")) ref = getCurrentParentId();
     // SPLIT M8-B：编辑器实时读服务端（远程取 + 缓存兜底）
     const { content: userVer, status } = await fetchAgentPromptRemote(scope, ref);
     if (userVer !== null) return { content: userVer, customized: true, network: status === "network" };
@@ -465,8 +465,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("agents:save", async (_e, scope: string, ref: string, content: string) => {
-    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
-    if (scope === "parent") ref = getCurrentParentId();
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id；
+    // ISSUE-144 P5：`skill:<技能名>` 是「场景口径覆盖层」的线上键（服务端展开成本家长的库内键），原样透传
+    if (scope === "parent" && !ref.startsWith("skill:")) ref = getCurrentParentId();
     try {
       // SPLIT M8-B：保存走服务端 RPC（prompts 当前版 + prompt_history 历史版），并更新本地缓存
       await saveAgentPrompt(scope, ref, content);
@@ -477,8 +478,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("agents:history", async (_e, scope: string, ref: string) => {
-    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
-    if (scope === "parent") ref = getCurrentParentId();
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id；
+    // ISSUE-144 P5：`skill:<技能名>` 是「场景口径覆盖层」的线上键（服务端展开成本家长的库内键），原样透传
+    if (scope === "parent" && !ref.startsWith("skill:")) ref = getCurrentParentId();
     try {
       return { success: true, data: await listAgentPromptHistory(scope, ref) };
     } catch (err) {
@@ -487,10 +489,20 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("agents:restore", async (_e, scope: string, ref: string, updated: string) => {
-    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id
-    if (scope === "parent") ref = getCurrentParentId();
+    // 家长提示词按家长隔离（2026-08-30）：parent scope 的 ref 统一为当前家长 id；
+    // ISSUE-144 P5：`skill:<技能名>` 是「场景口径覆盖层」的线上键（服务端展开成本家长的库内键），原样透传
+    if (scope === "parent" && !ref.startsWith("skill:")) ref = getCurrentParentId();
     try {
       return { success: true, data: await restoreAgentPromptVersion(scope, ref, updated) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ---- ISSUE-144 P5：家长「场景口径」编辑器取数（8 个场景的内置稿 + 本家长是否已自定义）----
+  ipcMain.handle("agents:skillList", async () => {
+    try {
+      return { success: true, data: await dbQuery("agents.skills.list", {}) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1873,45 +1885,6 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("pi:reset_parent", async () => {
     try {
       await resetParentSessionServer("parent");
-      return { success: true, history: [] };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ---- 独立「数据管理 agent」会话（parent-data）：统一数据 API 操作家长内容库全部表 ----
-  ipcMain.handle("pi:start_parent_data", async () => {
-    try {
-      ensureParentStream("parent-data");
-      const history = await openParentSession("parent-data").catch(() => [] as any[]);
-      return { success: true, history };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle("pi:prompt_parent_data", async (_e: IpcMainInvokeEvent, text: string) => {
-    if (parentDataBusy) {
-      return { success: false, error: "上一条消息还在收尾或停止中，请稍候再发。" };
-    }
-    parentDataBusy = true;
-    try {
-      ensureParentStream("parent-data");
-      await promptParent(text, { kind: "parent-data" });
-      return { success: true };
-    } catch (err) {
-      console.error(`[pi:prompt_parent_data] error:`, (err as Error).message);
-      _e.sender.send("pi:reply_error", { childId: "parent-data", error: friendlyError((err as Error).message) });
-      _e.sender.send("pi:reply_end", { childId: "parent-data" });
-      return { success: false, error: (err as Error).message };
-    } finally {
-      parentDataBusy = false;
-    }
-  });
-
-  ipcMain.handle("pi:reset_parent_data", async () => {
-    try {
-      await resetParentSessionServer("parent-data");
       return { success: true, history: [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };

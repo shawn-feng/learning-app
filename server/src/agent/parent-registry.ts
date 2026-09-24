@@ -28,9 +28,8 @@ import {
 } from "@pi/agent-core";
 import { readParentSettings } from "../worker/scheduler.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
-import { buildDataChannelBlocks } from "./registry-prompt.js";
 import { friendlyModelError, syncSessionModel } from "./model-sync.js";
-import { PARENT_AGENT_TOOL_NAMES, DATA_AGENT_TOOL_NAMES, createParentAgentTools, createDataAgentTools } from "./parent-tools.js";
+import { PARENT_AGENT_TOOL_NAMES, createParentAgentTools } from "./parent-tools.js";
 import { PLAN_DOMAIN_TOOL_NAMES, createPlanDomainTools } from "./parent-plans.js";
 import { createParentReportTool } from "./parent-report-tool.js";
 // ISSUE-144 P4：家长侧**场景专用只读工具**（D1 考核 / D5 掌握 / D3 错题 / F3 积分 / F2 兑换）
@@ -50,7 +49,7 @@ const DEPS: CoreSessionDeps = {
   SessionManager: SessionManager as unknown as CoreSessionDeps["SessionManager"],
 };
 
-export type ParentSessionKind = "parent" | "parent-content" | "parent-data";
+export type ParentSessionKind = "parent" | "parent-content";
 
 export interface ParentSessionDeps {
   db: DatabaseSync;
@@ -107,11 +106,16 @@ function createGetDateTool() {
  * 家长 agent 的 system prompt。
  *
  * 2026-09-25（ISSUE-144）**常驻层瘦身**：原来把 8 个业务域的做法全写在这里（约 4000 字符），
- * 现在只留——身份、当前上下文、**场景技能索引**、**铁律**、通用通道兜底句、工作原则；
+ * 现在只留——身份、当前上下文、**场景技能索引**、**铁律**、工作原则；
  * 各域的步骤与汇报口径搬进 `agent/skills/parent/*`，由模型按家长意图 `load_skill` 按需加载。
  * 这样常驻前缀稳定（利于前缀缓存），也避免"无关口径每轮都在"分散注意力。
+ *
+ * 2026-09-25（ISSUE-144 P6）**通用通道退场**：原来这里还有一段「通用数据查询（兜底通道）」
+ * 与两库表/列/路径元数据块（`buildDataChannelBlocks`），教模型用 `parent_db_read` 自己拼口径。
+ * 通用数据 API 已整组退场，那段连同元数据块一并删掉——**场景要什么，就由场景专用工具给什么**；
+ * 缺工具时按工作原则如实说明并指路界面，不再有"自己查表"这条退路。
  */
-export function buildServerParentPrompt(input: { parentId: string; workspace: string; today: string; tablesBlock?: string }): string {
+export function buildServerParentPrompt(input: { parentId: string; workspace: string; today: string }): string {
   return `你是「学习伙伴」家长工作台的助手，帮家长管理孩子的学习计划、考核、课程与学习资料。
 
 ## 当前上下文
@@ -124,51 +128,13 @@ ${buildSkillIndexBlock()}
 ## 铁律（做错会坏数据或越权，任何场景都不例外）
 ${IRON_RULES_BLOCK}
 
-## 通用数据查询（兜底通道，计划退场）
-只在**没有专用工具覆盖这个问题**时才用它——各场景该用什么工具，写在对应场景技能里：
-- parent_db_read（只读）/ parent_db_write（受控写，改动前先复述）：不传 child=家长内容库；传 child=孩子姓名=该**孩子库**（管理口径：登记表可写，但 study_plans / exam_plans / points_ledger 这类状态机表直写会绕过受控流程——改前先 read 确认目标行、改后向家长复述）。
-- countOnly=true 只数行数（「有没有/有几条」别拉整表）；多跳关联传 path=路径名；表/列/路径清单见下方元数据，**读操作不需要先 describe**。
-
-${input.tablesBlock ?? ""}
-
 ## 工作原则
 - 动手前先列清单、复述你的方案，让家长知道你准备改什么（家长看不到你脑子里的计划）。
 - 不确定就查：parent_library_topics / parent_library_courses 是权威主题与课程名册。
 - 批量改动分步做，每步说明结果；删除/覆盖这类不可逆动作尤其谨慎。
+- **手里没有对应工具时，如实说"这件事我现在做不到"并指路界面，不要绕道、不要臆造工具名、更不要假装做完了。**
 - 面向家长用简洁中文，说清「做了什么、影响哪些文件」。
 - 上面「场景技能」里写了各场景更细的做法与汇报口径：**先在索引里找准场景、load_skill 加载后再动手**；一件事跨两个场景时可以连着加载两份。
-`;
-}
-
-/** 数据管理 agent 的 system prompt（独立 agent：统一数据 API 操作家长内容库全部表）。 */
-export function buildServerDataAgentPrompt(input: { parentId: string; today: string; tablesBlock?: string }): string {
-  return `你是「学习伙伴」家长工作台的**数据管理助手**，专门用一套「统一数据 API」帮家长查看与维护课程内容库（家长库真源）。
-
-## 你的工具（覆盖两套库的全部登记表 + 自定义场景设计器）
-- parent_db_read：**只读查询**。支持等值 where + 列裁剪 + 排序 + 行数上限；countOnly=true 只数行数；path=路径名一次查多跳关联。SQL 在库内执行，返回体超字符预算会自动截断并提示。
-- parent_db_write：受控 insert/update/delete（列白名单 + 校验 + 行数熔断 + 事务 + 审计，update/delete 必须带 where）。
-- parent_db_describe：查单表/路径/ns 的列结构与校验规则（写操作前确认必填与引用校验用；读操作通常不需要——清单已在下方元数据）。
-- define_namespace：**设计器**——家长想要一类新的自定义数据（习惯打卡、自定义练习记录等）时，由你设计字段并提交草案。草案要家长在「设置 → 自定义数据」确认后才生效；你只能新建，不能改已有场景。
-
-## 当前上下文
-- 家长：${input.parentId}
-- 今天：${input.today}
-
-## 表 / 路径 / 灵活实体清单（元数据，读操作零 describe）
-两套库由 **child 参数**切换：不传 child=家长库；传 child=孩子名=该孩子库（管理口径：全部登记表可写——状态机表 study_plans/exam_plans/points_ledger 等直写会绕过受控流程，改前先 read 确认目标行，改后向家长复述）。
-ns:开头的表是 Tier 2 灵活实体（家长可写；孩子库的只读；待确认草案生效前不出现在任何读写面）。
-
-${input.tablesBlock ?? ""}
-
-## 工作原则
-- 列名以元数据清单为准，不要臆造；猜错列名/值域时错误信息会直接给出可用列或取值样例，按提示一次纠正。
-- 多跳关联（如「某主题下所有题」）优先传 path=路径名一次查询；没有登记路径的关联才分步查并说明是分步拼装。
-- 「有没有/有几条」用 countOnly=true，不要拉行数。
-- 设计新场景时先复述你的字段设计让家长确认，再调 define_namespace；提交后提醒家长去设置页点确认，确认前不要假装能读写它。
-- 写操作前先向家长复述「要改哪张表、哪几行、改成什么」；update/delete 务必给 where 缩小到精确行（按主键最稳），避免误伤其它行。
-- 写入了敏感列（如 question_bank.answer / options）必须逐条向家长复述改动内容。
-- 批量/危险操作（批量删题、清空挂载、改孩子日常记录）先列清单取得家长同意，再执行。
-- 面向家长用简洁中文，说清「查到什么 / 改了什么、影响几行」。
 `;
 }
 
@@ -192,44 +158,6 @@ async function ensureEntry(
   const scratch = paths.agentScratchDir(parentId);
   const agentDir = `${scratch}/.pi`;
 
-  // —— 独立「数据管理 agent」（parent-data）：只挂统一数据 API，与运营类家长助手隔离 ——
-  if (kind === "parent-data") {
-    const dataTools = createDataAgentTools({
-      db: deps.db,
-      dataDir: deps.dataDir,
-      parentId,
-      workspaceDir: workspace,
-      agentDir,
-      auth: settings.auth,
-      appSettings: settings.appSettings,
-    });
-    const customTools = [...dataTools, createGetDateTool()];
-    const blocks = buildDataChannelBlocks(deps.dataDir, parentId);
-    const systemPrompt = buildServerDataAgentPrompt({
-      parentId,
-      today: localDate(),
-      tablesBlock: `${blocks.parentBlock}\n\n${blocks.childBlock}`,
-    });
-    const handle = await createCoreSession({
-      deps: DEPS,
-      runtime,
-      model,
-      cwd: scratch,
-      agentDir,
-      systemPrompt,
-      toolNames: [...DATA_AGENT_TOOL_NAMES].filter((n, i, arr) => arr.indexOf(n) === i),
-      customTools,
-      sessionsDir: paths.agentSessionsDir(parentId, kind),
-      shouldAutoNewSession: () => resetMarks.has(key),
-    });
-    resetMarks.delete(key);
-    const entry: Entry = { session: handle.session, busy: false, paths };
-    attachStream(entry, key);
-    entries.set(key, entry);
-    console.log(`[parent-agent] 已就绪会话 ${key}`);
-    return entry;
-  }
-
   const fsTools = createServerFsTools(workspace);
   // ISSUE-144：会话级技能状态——`load_skill` 与场景守卫共用（同一会话内加载过的场景，其工具才肯执行）
   const skillState = createParentSkillState();
@@ -245,7 +173,7 @@ async function ensureEntry(
   });
   // ISSUE-144（A 路线全量铺开）：工具**说明下沉**——description 压成"一句 + 指路"、参数 Schema 只留结构、
   // 并外包一层**场景守卫**（未加载所属场景 → 拒绝执行）。说明的正文在各场景技能里（`load_skill` 按需加载）。
-  // 通用设施（load_skill / parent_db_* / log_activity / fs 工具）不在下沉范围，原样保留。
+  // 通用设施（load_skill / log_activity / fs 工具）不在下沉范围，原样保留。
   const customTools = compactParentTools(
     [
       ...fsTools,
@@ -256,19 +184,19 @@ async function ensureEntry(
       ...createParentChildReportTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
       // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
       createParentReportTool({ db: deps.db, parentId, streamKey: key }),
-      // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite）
-      createLoadSkillTool({ dataDir: deps.dataDir, state: skillState }),
+      // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite，按本家长隔离）
+      createLoadSkillTool({ dataDir: deps.dataDir, parentId, state: skillState }),
       createGetDateTool(),
     ],
     skillState
   );
 
-  const blocks = buildDataChannelBlocks(deps.dataDir, parentId);
+  // ISSUE-144 P6：systemPrompt 不再注入两库表/列/路径元数据块（通用数据 API 已退场，
+  // 那张"自己查表"的清单只会诱导模型绕过场景专用工具）。
   const systemPrompt = buildServerParentPrompt({
     parentId,
     workspace,
     today: localDate(),
-    tablesBlock: `${blocks.parentBlock}\n\n${blocks.childBlock}`,
   });
 
   const handle = await createCoreSession({
