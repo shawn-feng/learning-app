@@ -2,7 +2,7 @@ import {
   getCurrentParentId, ipcMain, app, BrowserWindow, dialog, shell, screen, type IpcMainInvokeEvent } from "electron";
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
-import { getSkillsDir, getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
+import { getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
 import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, openChildSession, openParentSession, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult, getParentReport } from "./server-agent-client";
@@ -1285,81 +1285,6 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
-  });
-
-  ipcMain.handle("skills:list", async () => {
-    const skillsDir = getSkillsDir();
-    if (!fs.existsSync(skillsDir)) return [];
-    return fs.readdirSync(skillsDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name);
-  });
-
-  ipcMain.handle("skill:import_folder", async () => {
-    try {
-      const win = getMainWindow();
-      const result = await dialog.showOpenDialog(win!, {
-        properties: ["openDirectory"],
-        title: "选择 Skill 文件夹",
-      });
-      if (result.canceled || result.filePaths.length === 0) {
-        return { cancelled: true };
-      }
-      const srcDir = result.filePaths[0];
-      const name = path.basename(srcDir);
-      const destDir = path.join(getSkillsDir(), name);
-      if (fs.existsSync(destDir)) {
-        return { success: false, error: `技能 "${name}" 已存在` };
-      }
-      copyDir(srcDir, destDir);
-      return { success: true, name };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle("skill:read", async (_e, skillName: string, filePath: string) => {
-    try {
-      const full = path.resolve(getSkillsDir(), skillName, filePath);
-      const skillsRoot = path.resolve(getSkillsDir());
-      if (!full.startsWith(skillsRoot + path.sep)) {
-        return { success: false, error: "路径超出技能目录" };
-      }
-      if (!fs.existsSync(full)) return { success: true, content: "" };
-      return { success: true, content: fs.readFileSync(full, "utf-8") };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle("skill:write", async (_e, skillName: string, filePath: string, content: string) => {
-    try {
-      const full = path.resolve(getSkillsDir(), skillName, filePath);
-      const skillsRoot = path.resolve(getSkillsDir());
-      if (!full.startsWith(skillsRoot + path.sep)) {
-        return { success: false, error: "路径超出技能目录" };
-      }
-      fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(full, content, "utf-8");
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle("skill:list_files", async (_e, skillName: string) => {
-    const dir = path.join(getSkillsDir(), skillName);
-    if (!fs.existsSync(dir)) return [];
-    const files: string[] = [];
-    const walk = (d: string) => {
-      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        const full = path.join(d, e.name);
-        if (e.isDirectory()) walk(full);
-        else files.push(path.relative(dir, full).replace(/\\/g, "/"));
-      }
-    };
-    walk(dir);
-    return files;
   });
 
   // ---- Pi session handlers ----
@@ -2973,17 +2898,4 @@ function friendlyError(msg: string): string {
     return "网络连接失败，请检查网络后重试";
   }
   return msg || "模型调用失败";
-}
-
-function copyDir(src: string, dest: string): void {
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
 }

@@ -17,7 +17,6 @@ import path from "path";
 // 必须在进程早期、其它模块开始打印前初始化（幂等）。
 import { installConsoleRedirect, installCrashHandlers, logInfo } from "./lib/app-logger";
 import { getDataDir } from "./lib/config";
-import { initSharedSkills } from "./lib/user-init";
 import { registerIpcHandlers } from "./lib/ipc-handlers";
 import { startScheduler, runCatchUp } from "./lib/scheduler";
 import { lintAllChildren } from "./lib/kb-lint";
@@ -131,12 +130,8 @@ app.whenReady().then(() => {
     platform: process.platform,
     arch: process.arch,
   });
-  try {
-    initSharedSkills();
-    console.log("Shared skills initialized at:", path.join(getDataDir(), "shared", "skills"));
-  } catch (e) {
-    console.error("Failed to init shared skills:", e);
-  }
+  // ISSUE-144 清理：原先这里 initSharedSkills() 把 templates/skills 拷进 data/shared/skills。
+  // 模板目录早已不存在、原生 skills 也不再加载（见 packages/agent-core/src/sessions.ts），整条链路移除。
   // 放行麦克风/摄像头权限（语音输入与考核录音需要 getUserMedia({audio:true})）。
   // 注意：仅实现 setPermissionRequestHandler 不够。getUserMedia 会先走权限「预检」
   // （setPermissionCheckHandler），预检被拒则直接抛 NotAllowedError —— 在 Linux(Ubuntu) 上

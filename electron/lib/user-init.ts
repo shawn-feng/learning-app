@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { app } from "electron";
-import { getChildDir, getSkillsDir } from "./config";
+import { getChildDir } from "./config";
 import type { ChildProfile } from "./child-auth";
 import { openKbDb } from "./kb-sqlite";
 
@@ -49,7 +48,8 @@ export function initChildKb(childDir: string): void {
 
 export function buildChildSettings(): Record<string, unknown> {
   return {
-    skills: [getSkillsDir()],
+    // ISSUE-144 清理：原来这里有 `skills: [getSkillsDir()]`——那是 pi 原生技能目录，客户端会话
+    // 早已不存在（agent 上移服务端，服务端一律 noSkills），该键无读者，故移除。
     defaultProjectTrust: "always",
     compaction: {
       enabled: true,
@@ -92,37 +92,6 @@ export async function initChildDirectory(
   // ISSUE-033：AGENTS 纯 SQLite（data/agents.sqlite）——新建孩子不写任何 AGENTS 物理文件，
   // 开会话时 buildChildPrompt 经 resolveChildAgents 实时取「SQLite 用户版本 / 代码默认」。
 
-  initSharedSkills();
-}
-
-export function initSharedSkills(): void {
-  const skillsDir = getSkillsDir();
-  // 打包后 resources 位于 process.resourcesPath；开发态位于项目根目录。
-  // ⚠️ 用 `?.` 防非 Electron 环境（vitest node 环境未 mock electron 时 app 为 undefined）崩溃。
-  const templatesBase = app?.isPackaged ? process.resourcesPath : process.cwd();
-  const templatesDir = path.join(templatesBase, "templates", "skills");
-
-  if (!fs.existsSync(templatesDir)) return;
-
-  for (const entry of fs.readdirSync(templatesDir)) {
-    const srcPath = path.join(templatesDir, entry);
-    const destPath = path.join(skillsDir, entry);
-
-    if (!fs.existsSync(destPath)) {
-      copyDir(srcPath, destPath);
-    }
-  }
-}
-
-function copyDir(src: string, dest: string): void {
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
+  // ISSUE-144 清理：原先这里还会 initSharedSkills()（拷 templates/skills → data/shared/skills）。
+  // 模板目录不存在、原生 skills 也不再加载，链路已整体移除。
 }

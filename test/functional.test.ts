@@ -168,7 +168,7 @@ describe("需求 §十二 数据架构", () => {
     expect(fs.existsSync(path.join(getDataDir(), "parents", "default", "agents"))).toBe(false);
   });
 
-  it("settings.json 指向共享技能目录", async () => {
+  it("settings.json 不再携带 skills（原生技能已退场）", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
 
@@ -179,19 +179,10 @@ describe("需求 §十二 数据架构", () => {
 
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-    expect(settings.skills[0]).toBe(config.getSkillsDir());
+    // ISSUE-144 清理：pi 原生 skills 不再加载（服务端会话一律 noSkills），settings 里那份
+    // `skills: [data/shared/skills]` 没有读者，已从 buildChildSettings 移除。
+    expect(settings.skills).toBeUndefined();
     expect(settings.defaultProjectTrust).toBe("always");
-  });
-
-  it("共享技能目录为空（recording / study-tracker 均已改为定时任务）", async () => {
-    const config = await import("../electron/lib/config");
-    const skillsDir = config.getSkillsDir();
-    expect(fs.existsSync(skillsDir)).toBe(true);
-
-    const dirs = fs.readdirSync(skillsDir).filter((d) =>
-      fs.statSync(path.join(skillsDir, d)).isDirectory()
-    );
-    expect(dirs).toEqual([]);
   });
 
   it("任务状态文件 task-state.json 路径配置正确", async () => {

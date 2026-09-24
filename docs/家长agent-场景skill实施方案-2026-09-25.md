@@ -56,7 +56,13 @@
 3. 我们要的"家长覆盖层"SDK 不提供，反正要自建注册表；
 4. server 精确 `0.84.1`、client `^0.84.1`，少依赖一层 SDK 语义就少一处两端分叉。
 
-⇒ **自建索引 + 自建 `load_skill`**，SDK 保持 `noSkills`（现状），**`packages/agent-core` 一行未改**。
+⇒ **自建索引 + 自建 `load_skill`**，SDK 保持 `noSkills`（现状），**`packages/agent-core` 只加注释、语义未改**。
+
+**补（2026-09-25 二次核实 + 残留清理）**：
+
+- **语义更正**：`noSkills: true` **不是**"技能体系不可用"，它只丢掉 `settings.json` 里那份 `skills` 清单；显式传入的 **`additionalSkillPaths` 无论如何都会加载**（`dist/core/resource-loader.js:329-331`）。也就是说"开启原生技能"技术上是**加一个参数**，不是改架构——上面四条是"**不用**"，而不是"**用不了**"。
+- **理由已进代码**：`packages/agent-core/src/sessions.ts` 的 `noSkills` 调用点原来只是一行裸的 `?? true`，后来人看不出所以然；现已把四条理由（绝对路径 vs read 沙箱 / cwd 是模型可写区 / 宿主级目录多家长共用 / 原生技能没有执行点，挂不上场景守卫）写在调用点，并注明"要放行必须同时解决 read 路径策略与目录可写性，不能只把这里改成 false"。
+- **残留清理**（同批）：`data/shared/skills` 不再预建、`initSharedSkills()` 与 `templates/skills` 链路删除、`buildChildSettings()` 不再写 `skills`、死页面 `src/pages/SkillEditor.tsx` + `src/components/SkillImport.tsx`、无调用方的 `skills:*` IPC/preload、web shim `domains/skills.ts`、失效脚本 `scripts/verify-child-prompt.mjs`（引用的 `electron/lib/pi-session.ts` 早已不存在）全部删除。
 
 ### 2.3 三层文本分层（瘦身的安全边界）
 

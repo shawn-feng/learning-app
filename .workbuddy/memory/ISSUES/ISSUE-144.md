@@ -278,10 +278,32 @@
 
 **执行期的一处操作说明**：为跑行为样本，**停掉了你原来那个 `npm run dev`（tsx）进程并用同一条命令重起了**（端口 8788、数据目录 `server/data` 不变）——现在跑的是含 P4/P5/P6/P7 的新代码。
 
+### 3.9 pi 原生 skills：**保持关闭**（把理由写进代码）+ 清掉客户端残留（2026-09-25 晚；起因：家长问「为什么不能开启 pi 的 skill 功能？」）
+
+**先更正事实**：不是"不能开"，是**我们自己关的**——`packages/agent-core/src/sessions.ts` 的 `noSkills: opts.noSkills ?? true`；全仓**无一处传 `false`**，也**无一处传 `additionalSkillPaths`**。二次核实内核 0.84.1 得到一条语义更正：`noSkills: true` **只丢掉 `settings.json` 里那份 `skills` 清单**，显式 `additionalSkillPaths` **无论如何都会加载**（`dist/core/resource-loader.js:329-331`）⇒ "开启原生技能"技术上是**加一个参数**，不是改架构。
+
+**为什么仍然不用（四条，前两条是硬冲突）**：
+
+| # | 理由 | 证据 |
+|---|---|---|
+| 1 | 索引里给的是**绝对路径** `<location>`，而我们的 `read` 由 `resolveWithin` 沙箱**明确拒绝绝对路径**；默认技能目录还在家长工作区之外（`~/.pi/agent/skills` 是**宿主级**，多家长共用一个目录 = 串口径） | `dist/core/skills.js:273`；`packages/agent-core/src/paths.ts:113` |
+| 2 | 项目级发现目录 `<cwd>/.pi/skills` 落在**模型有写权限**的 cwd（`workspaces/<pid>/scratch`）⇒ 等于让模型给自己写指令，且会进 system prompt | `paths.ts:78-79`；`SERVER_FS_TOOL_NAMES` 含 write/edit |
+| 3 | 家长覆盖层是**每家长一行 DB 记录**（`skill:<pid>:<name>` + 红线校验 + 20KB 上限 + 历史回退 + 设置页编辑器）；文件方案＝**一份 SKILL.md 服务所有家长**，P5 那层覆盖/隔离作废 | `parent-skills.ts:35 / 89 / 189` |
+| 4 | 原生技能是**纯建议**（只提示模型自己去 `read` 正文，pi 文档自己承认模型不总去读），**没有执行点**；我们需要的是"未加载场景**不许执行**" | `docs/skills.md:68`；`scenarioGuard`（`parent-skills.ts:137`） |
+
+**缓存不是理由**（避免后人误解）：两种做法都 cache-safe——索引在 system prompt 的固定位置、正文都以"工具结果"追加在消息尾部。我们选工具结果是为了**有地方挂守卫**、正文能按家长覆盖实时解析。
+
+**本轮改动（口径 + 清理层，零行为变更）**：
+- `packages/agent-core/src/sessions.ts`：`noSkills` 调用点补注释（四条理由 + "要放行必须同时解决 `read` 路径策略与技能目录可写性，**不能只把这里改成 `false`**"），接口字段补语义说明；
+- 删除原生技能的客户端残留：死页面 `src/pages/SkillEditor.tsx`、`src/components/SkillImport.tsx`（**无任何路由 import**）、`ipc-handlers.ts` 的 5 个 `skills:*` handler + `copyDir`、`preload.ts` 的 5 个桥、`web/src/shim/domains/skills.ts` 与 `install.ts` 接线、`user-init.ts` 的 `initSharedSkills()` + `buildChildSettings().skills`、`main.ts` 的调用、`config.ts` 的 `getSkillsDir()` 与 `shared/skills` 预建、失效脚本 `scripts/verify-child-prompt.mjs`（它引用的 `electron/lib/pi-session.ts` 早已不存在）；
+- 受影响测试改写为断言**新行为**：`test/app.test.ts`、`test/functional.test.ts`（settings 里 `skills` 为 `undefined`、`initSharedSkills` 不再导出）；另 7 个 test 文件删掉 config mock 中已失效的 `getSkillsDir` 键。
+
+**结论**：家长/孩子身上跑的"技能"**只有自建那一套**（场景技能正文 + `load_skill` + DB 覆盖层 + 场景守卫）；原生那套一行都没在跑，也没有任何界面能真正用上它。
+
 ## 四、关键设计决定（含理由）
 
 1. **技能正文放 TS 模块，不放 `.md` 文件**：server 是 esbuild 打包运行（`server/src/index.ts` 有"bundled 后 `__dirname` 变化"的教训），文件要额外处理构建/asar 拷贝；而 TS 常量还能让**重复规则物理同源**（`REPEAT_RULES_BLOCK` 被 plan / automation 两处引用，测试断言两处都 `toContain` 同一常量）。
-2. **不启用 SDK 自带的 Agent Skills**：① 它给的是**绝对路径** `<location>`，而我们的 `read` 拒绝绝对路径、`learning-guard` 又把 FS 限制在会话 cwd ⇒ 模型拿到路径也读不到；② 打开默认发现目录会扫 `~/.pi/agent/skills`、`~/.agents/skills` 与 **cwd 及其祖先目录**的 `.pi/skills`，而 cwd 是模型自己可写的地方 ⇒ 等于让模型给自己写指令；③ 家长覆盖层本来就要自建；④ 少依赖一层 SDK 语义（server 精确 0.84.1 / client ^0.84.1）。⇒ **自建索引 + 自建 `load_skill`，`packages/agent-core` 一行未改**。
+2. **不启用 SDK 自带的 Agent Skills**：① 它给的是**绝对路径** `<location>`，而我们的 `read` 拒绝绝对路径、`learning-guard` 又把 FS 限制在会话 cwd ⇒ 模型拿到路径也读不到；② 打开默认发现目录会扫 `~/.pi/agent/skills`、`~/.agents/skills` 与 **cwd 及其祖先目录**的 `.pi/skills`，而 cwd 是模型自己可写的地方 ⇒ 等于让模型给自己写指令；③ 家长覆盖层本来就要自建；④ 少依赖一层 SDK 语义（server 精确 0.84.1 / client ^0.84.1）。⇒ **自建索引 + 自建 `load_skill`，`packages/agent-core` 只加注释、语义未改**（§3.9：`noSkills: true` 只关 settings 清单，显式 `additionalSkillPaths` 仍会加载——是"不用"，不是"用不了"）。
 3. **会话内绝不切工具集**：`setActiveToolsByName` 会重建 system prompt，而工具数组与 system prompt 都在消息之前 ⇒ 改头＝整条前缀缓存作废。技能正文以"工具结果"进入消息尾部，**前缀不动**。测试里加了断言防后人回退这一点。
    - **补（2026-09-25 核实）**：内核 `dist/core/agent-session.js:631-645` 的 `setActiveToolsByName()` 并**不会丢掉我们的常驻提示词**（`agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt`，而 `_rebuildSystemPrompt()` 把我们的提示词当 `customPrompt`），也**不需要重建会话**。但"改工具数组＝缓存前缀整条失效"依然成立，**决定未变**；另外历史消息里会出现"当前已不在工具面"的工具调用，各家 provider 容忍度待验证。
    - **注意区分**：**缩减工具描述/schema（§3.2 试点 / §3.4 全量）不等于切工具集**——工具数组不变，缓存前缀不受影响，只是"宣告的文字"变少。
@@ -370,4 +392,13 @@
 4. **原始记录**：`tmp/behavior-samples/{behavior-run.json,behavior-run-course.json,p5-override-result.txt}`；驱动脚本 `{run,p5-override,summarize,cleanup2}.cjs`；
 5. **副作用与回滚**：跑前快照 `tmp/behavior-snapshot/`；整轮零写入；course 档创建的主题+课程已删净并核对（11 主题 / 1317 课），孩子库与材料库未被连带写入（`cleanup2-{audit,applied}.txt`）；
 6. **顺带清理一个死文件**：根目录 `server-agent-client.ts`（未被 tsconfig 收录、全仓无人 import、且 `import "./server-client"` 在仓库里根本不存在——是 `electron/lib/server-agent-client.ts` 的历史拷贝）。已按"清理掉它"的建议删除。
+
+### 7.6 原生 skills「保持关闭 + 清残留」的证据（2026-09-25 晚）
+
+1. **关闭点唯一**：`noSkills|additionalSkillPaths` 全仓 **12 处命中**，代码里只有 `packages/agent-core/src/sessions.ts` 的默认值 + `exam-engine` / `programming-agent` / `vision` 三处显式 `true`；**`noSkills: false` 0 处**，**`additionalSkillPaths` 代码 0 处**（仅剩 `sessions.ts` 注释里的语义说明）；
+2. **残留清零**：`getSkillsDir|initSharedSkills|skillsDomain|skillImportFolder|skillListFiles` 在 `src/ electron/ web/src/ test/` → **只剩解释性注释，零代码引用**（清理前 30+ 处）；`SkillEditor.tsx` / `SkillImport.tsx` / `web/src/shim/domains/skills.ts` / `scripts/verify-child-prompt.mjs` 文件已删；
+3. **测试**：`test/app.test.ts` + `test/functional.test.ts` **20/20 通过**（含新断言：settings 无 `skills` 键、`initSharedSkills` 不再导出）；受影响的 9 个文件定向复跑 **75 passed / 3 failed**，3 处失败＝既有基线（assess-guide / kb-sqlite / sync）；
+4. **三端构建 + 类型**：`cd server && npx tsc --noEmit` **exit 0**；`npx electron-vite build` **exit 0**（main 278.35 kB / preload 26.86 kB / renderer 2509.89 kB）；`web` 的 `npx vite build` **exit 0**（2153 modules）；
+5. **全量回归**：`npx vitest run` → **8 files / 15 tests 失败，593 passed / 8 skipped（67 files / 616 tests）**，失败清单与既有基线**逐项一致**（`assess-guide` / `assessment` / `english-course-session` / `event-poll-config` / `kb-sqlite` / `page-bridge` / `sync` / `token-stats`），**零新增失败**；留档 `tmp/issue144-skills-cleanup-regression.txt`。
+   - 注：跑全量前发现 8788 上的服务端已停（`ECONNREFUSED` → 服务端依赖型用例成批红），遂以 `cd server && npx tsx src/index.ts` 起了一个（数据目录不变），复跑后回到基线。
 

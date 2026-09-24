@@ -20,7 +20,6 @@ vi.mock("../electron/lib/config", async (importOriginal) => {
     getChildrenDir: () => path.join(mockTmpRoot, "children"),
     getChildDir: (id: string) => path.join(mockTmpRoot, "children", id),
     getSharedDir: () => path.join(mockTmpRoot, "shared"),
-    getSkillsDir: () => path.join(mockTmpRoot, "shared", "skills"),
   };
 });
 

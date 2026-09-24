@@ -89,16 +89,13 @@ describe("Electron app modules", () => {
     // data cleanup skipped: sandbox restricts rmSync on project dirs
   });
 
-  it("creates data dir and initializes shared skills", () => {
-    config.getDataDir();
-    userInit.initSharedSkills();
-    const skillsDir = config.getSkillsDir();
-    expect(fs.existsSync(skillsDir)).toBe(true);
-    const skills = fs
-      .readdirSync(skillsDir)
-      .filter((d) => fs.statSync(path.join(skillsDir, d)).isDirectory());
-    // recording / study-tracker 均已改为定时任务，共享技能目录应为空
-    expect(skills).toEqual([]);
+  it("creates data dir（共享技能目录已随原生 skills 退场，不再预建）", () => {
+    const dataDir = config.getDataDir();
+    expect(fs.existsSync(dataDir)).toBe(true);
+    expect(fs.existsSync(path.join(dataDir, "children"))).toBe(true);
+    // ISSUE-144 清理：pi 原生 skills 不再加载（packages/agent-core/src/sessions.ts 的 noSkills
+    // 默认 true），故 data/shared/skills 不再预建、initSharedSkills() 已删除。
+    expect("initSharedSkills" in userInit).toBe(false);
   });
 
   it("initializes child directory with all required files", async () => {
@@ -129,7 +126,9 @@ describe("Electron app modules", () => {
     const settingsPath = path.join(childDir, ".pi", "agent", "settings.json");
     expect(fs.existsSync(settingsPath)).toBe(true);
     const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-    expect(settings.skills[0]).toBe(config.getSkillsDir());
+    // ISSUE-144 清理：settings.json 不再写 `skills`（原生技能目录无读者）
+    expect(settings.skills).toBeUndefined();
+    expect(settings.defaultProjectTrust).toBe("always");
   });
 
   it("adds child and authenticates with local password", { timeout: 30000 }, async () => {

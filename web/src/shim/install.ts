@@ -4,7 +4,8 @@
  * 方法面与 electron/preload.ts 逐条对齐（preload 共 204 个方法），按域分组组装：
  *   agents(46) parent(17) exam(19) misc(19) scheduler(13) models(11) voice(8)
  *   children(8) plans(8) learning(7) files(6) auth(6) assessment(11) window(6)
- *   config(4) backup(4) skills(5) sessions(3) dialogs(2) materials(1) db(0)
+ *   config(4) backup(4) sessions(3) dialogs(2) materials(1) db(0)
+ *   （原 skills(5) 域已随 ISSUE-144 清理退场：原生 skills 不再加载，桌面端页面/通道一并删除）
  *
  * Phase 1 状态：
  *   - 真实现：auth 域全部（authLogin/authRegister/authCheck/authLogout/authVerify/
@@ -31,7 +32,6 @@ import { plansDomain } from "./domains/plans";
 import { examDomain } from "./domains/exam";
 import { assessmentDomain } from "./domains/assessment";
 import { voiceDomain } from "./domains/voice";
-import { skillsDomain } from "./domains/skills";
 import { learningDomain } from "./domains/learning";
 import { agentsDomain } from "./domains/agents";
 import { dialogsDomain } from "./domains/dialogs";
@@ -64,7 +64,6 @@ function buildWebApi() {
     ...examDomain,
     ...assessmentDomain,
     ...voiceDomain,
-    ...skillsDomain,
     ...learningDomain,
     ...agentsDomain,
     ...dialogsDomain,

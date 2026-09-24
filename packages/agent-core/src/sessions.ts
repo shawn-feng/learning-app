@@ -42,6 +42,12 @@ export interface CoreSessionCommonOptions {
   extensionFactories?: unknown[];
   /** 是否禁用项目上下文文件（AGENTS.md 等）注入 */
   noContextFiles?: boolean;
+  /**
+   * 是否禁用 pi 原生 skills 发现。**默认 true＝禁用**（2026-09-25 决策，理由见调用点注释）。
+   *
+   * 注意语义：`noSkills: true` 只丢掉 settings.json 里那份 `skills` 清单；显式传入的
+   * `additionalSkillPaths` 仍会被 pi 加载（resource-loader.js:329-331）。本仓任何调用方都未传后者。
+   */
   noSkills?: boolean;
 }
 
@@ -73,6 +79,15 @@ export async function createCoreSession(
   fs.mkdirSync(opts.cwd, { recursive: true });
   fs.mkdirSync(opts.agentDir, { recursive: true });
 
+  // pi 原生 skills 一律**禁用**（2026-09-25 决策，别照抄成"没这功能"）：它的 SKILL.md 以
+  // **绝对路径**写进 system prompt，而我们的 read 工具是 resolveWithin 沙箱（拒绝绝对路径）→
+  // 索引指向模型打不开的门；项目级发现目录 `<cwd>/.pi/skills` 又落在模型**有写权限**的 cwd 里
+  // （等于让模型给自己写指令，还会进 prompt）；全局目录是宿主级、多家长共用；且原生技能只是
+  // "提示模型自己去 read 正文"，没有执行点，挂不上我们需要的场景守卫（未加载场景不许执行）。
+  // 家长场景技能因此自建：正文存 DB（内置随代码发布 + 家长覆盖）、经 `load_skill` 以工具结果
+  // 追加到消息尾部（不动 system prompt、不动工具集），由 scenarioGuard 强制。若将来要放行原生
+  // skills，必须同时解决 read 的路径策略与技能目录的可写性，不能只把这里改成 false。
+  // 详见 docs/家长agent-场景skill实施方案-2026-09-25.md、server/src/agent/parent-skills.ts。
   const loader = new deps.ResourceLoader({
     cwd: opts.cwd,
     agentDir: opts.agentDir,

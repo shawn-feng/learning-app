@@ -330,16 +330,6 @@ const api = {
   materialsLimitGet: () => ipcRenderer.invoke("settings:materials_limit:get"),
   materialsLimitSet: (n: number) => ipcRenderer.invoke("settings:materials_limit:set", n),
 
-  // Skills
-  skillsList: () => ipcRenderer.invoke("skills:list"),
-  skillImportFolder: () => ipcRenderer.invoke("skill:import_folder"),
-  skillRead: (skillName: string, filePath: string) =>
-    ipcRenderer.invoke("skill:read", skillName, filePath),
-  skillWrite: (skillName: string, filePath: string, content: string) =>
-    ipcRenderer.invoke("skill:write", skillName, filePath, content),
-  skillListFiles: (skillName: string) =>
-    ipcRenderer.invoke("skill:list_files", skillName),
-
   // Learning topics (parent mode, 教学内容)
   learningList: (childId: string) => ipcRenderer.invoke("learning:list", childId),
   learningRead: (childId: string, relPath: string) =>

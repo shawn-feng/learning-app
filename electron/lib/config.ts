@@ -17,7 +17,9 @@ export function getDataDir(): string {
       dataDir = path.join(process.cwd(), "data");
     }
     fs.mkdirSync(dataDir, { recursive: true });
-    fs.mkdirSync(path.join(dataDir, "shared", "skills"), { recursive: true });
+    // ISSUE-144 清理：`shared/skills`（pi 原生技能目录）随原生 skills 退场，不再预建；
+    // shared/ 本身仍要建（auth.json / voice-config.json 等落在其中）。
+    fs.mkdirSync(path.join(dataDir, "shared"), { recursive: true });
     fs.mkdirSync(path.join(dataDir, "children"), { recursive: true });
   }
   return dataDir;
@@ -25,10 +27,6 @@ export function getDataDir(): string {
 
 export function getSharedDir(): string {
   return path.join(getDataDir(), "shared");
-}
-
-export function getSkillsDir(): string {
-  return path.join(getSharedDir(), "skills");
 }
 
 // ==================== 按家长分区（2026-08-30 用户决策） ====================
