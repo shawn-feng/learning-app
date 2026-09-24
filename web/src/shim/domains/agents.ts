@@ -157,6 +157,20 @@ async function resetChildSession(childId: string): Promise<void> {
   await http(`/agent/${encodeURIComponent(childId)}/reset`, { method: "POST", body: { session: undefined } });
 }
 
+/**
+ * 打开家长会话（ISSUE-107 冷路径）：服务端返回**现会话全部历史**（家长会话不做跨天裁决）。
+ * 2026-09-24（ISSUE-145）补齐：此前 Web shim 的 piStartParent/piStartParentContent 直接把 history
+ * 写死成 `[]`（误以为"历史由服务端会话/display_content 事件推送驱动"）——实际服务端只在 prompt 时
+ * 推增量，**回填必须主动调本接口**，于是家长端「刷新/重进后看不到任何历史消息」。
+ */
+async function openParentSession(kind: ParentKind): Promise<HistoryMessage[]> {
+  const r = await http<{ messages: Array<{ role: string; content: unknown[]; timestamp?: number | string }> }>(
+    "/parent-agent/open",
+    { method: "POST", body: { kind } }
+  );
+  return mapHistoryMessages(r.messages ?? []);
+}
+
 /** 重置家长会话。 */
 async function resetParentSession(kind: ParentKind): Promise<void> {
   await http("/parent-agent/reset", { method: "POST", body: { kind } });
@@ -326,6 +340,10 @@ export const agentsDomain = {
   /** onPiToolEnd: (callback: (data: any) => void) => void */
   onPiToolEnd: (callback: (data: any) => void) => subscribe("pi:tool_end", callback),
 
+  /** onPiToolProgress: (callback: (data: { childId, toolCallId, toolName, progress }) => void) => void
+   * ISSUE-146 P0-b：长工具（生成 HTML 资料）执行期间的一句话进度，供工作气泡显示 */
+  onPiToolProgress: (callback: (data: any) => void) => subscribe("pi:tool_progress", callback),
+
   /** onPiAgentEnd: (callback: (data: { childId: string }) => void) => void */
   onPiAgentEnd: (callback: (data: { childId: string }) => void) => subscribe("pi:agent_end", callback),
 
@@ -455,11 +473,18 @@ export const agentsDomain = {
     }
   },
 
-  /** piStartParent: () => Promise<{success, history}> */
+  /** piStartParent: () => Promise<{success, history}> —— 建流 + POST /parent-agent/open 回填历史（ISSUE-107；家长不做跨天裁决） */
   piStartParent: async () => {
     try {
       ensureParentStream("parent");
-      return { success: true, history: [] };
+      // ISSUE-145 修复：真去拉历史（此前硬编码 []，导致刷新/重进后家长端不显示任何历史消息）
+      // 失败时留痕（不静默吞成空历史），便于区分「服务端没历史」与「请求本身失败」
+      const history = await openParentSession("parent").catch((err) => {
+        console.warn(`[web-shim piStartParent] 历史回填失败（已降级为空历史）: ${(err as Error).message}`);
+        return [] as HistoryMessage[];
+      });
+      // 资料仍由 display_content 事件推送驱动（open 只回消息，不回资料），此处无需额外处理
+      return { success: true, history };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -546,11 +571,15 @@ export const agentsDomain = {
     }
   },
 
-  /** piStartParentContent: () => Promise<{success, history}>（教学内容生成专用会话，ISSUE-026） */
+  /** piStartParentContent: () => Promise<{success, history}>（教学内容生成专用会话，ISSUE-026；ISSUE-145：同样回填历史） */
   piStartParentContent: async () => {
     try {
       ensureParentStream("parent-content");
-      return { success: true, history: [] };
+      const history = await openParentSession("parent-content").catch((err) => {
+        console.warn(`[web-shim piStartParentContent] 历史回填失败（已降级为空历史）: ${(err as Error).message}`);
+        return [] as HistoryMessage[];
+      });
+      return { success: true, history };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

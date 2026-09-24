@@ -82,18 +82,19 @@ export default function ParentChatPanel({
           return;
         }
         // ISSUE-039：退出再进入 / 切 view 再回聊天时恢复历史消息
+        // ISSUE-145：openParentSession 是异步网络请求，期间 SSE 可能已把本轮增量追加进来——
+        // 只在当前还没有任何消息时才用历史回填，避免把刚到的增量覆盖掉。
         if (Array.isArray(r.history) && r.history.length > 0) {
-          setMessages(
-            r.history.map((m: any) => ({
-              id: nextId(),
-              role: m.role === "user" ? "user" : "ai",
-              text: stripInstructions(typeof m.text === "string" ? m.text : ""),
-              time: m.time || nowTime(),
-              // 恢复 AI 消息的思考过程与工具调用记录（点 🧠 可看）
-              thinking: m.role === "ai" ? m.thinking : undefined,
-              tools: m.role === "ai" ? m.tools : undefined,
-            }))
-          );
+          const restored = r.history.map((m: any) => ({
+            id: nextId(),
+            role: m.role === "user" ? "user" : "ai",
+            text: stripInstructions(typeof m.text === "string" ? m.text : ""),
+            time: m.time || nowTime(),
+            // 恢复 AI 消息的思考过程与工具调用记录（点 🧠 可看）
+            thinking: m.role === "ai" ? m.thinking : undefined,
+            tools: m.role === "ai" ? m.tools : undefined,
+          }));
+          setMessages((prev) => (prev.length ? prev : restored));
         }
       })
       .catch((e: any) => {
@@ -148,6 +149,16 @@ export default function ParentChatPanel({
             ? { ...t, status: data.isError ? ("error" as const) : ("done" as const), resultPreview: data.resultPreview }
             : t
         ),
+      }));
+    });
+    // ISSUE-146 P0-b：长工具（编程 agent 生成资料）执行期间的进度 → 更新对应工具，
+    // 工作气泡标签与工具卡片随之显示（否则家长对着「正在使用工具…」干等 4~11 分钟）
+    window.api.onPiToolProgress((data: any) => {
+      if (data.childId !== childId) return;
+      if (!data.progress) return;
+      patchWorking((m) => ({
+        ...m,
+        tools: (m.tools || []).map((t) => (t.id === data.toolCallId ? { ...t, progress: data.progress } : t)),
       }));
     });
     // 正式回复：替换 working 气泡为最终文本（与孩子聊天界面一致）

@@ -12,6 +12,8 @@ export interface ToolCallState {
   argsPreview?: string;
   status: "running" | "done" | "error";
   resultPreview?: string;
+  /** ISSUE-146 P0-b：长工具执行期间的进度文案（仅 running 时有意义，如「生成中…（已 4.2 分钟）」） */
+  progress?: string;
 }
 
 export interface ChatMessage {
@@ -166,6 +168,12 @@ function TraceDetails({ m }: { m: ChatMessage }) {
                 <span className="tool-body">
                   <span className="tool-verb">{meta.verb}</span>
                   {t.argsPreview && <span className="tool-arg">{t.argsPreview}</span>}
+                  {/* ISSUE-146 P0-b：长工具（编程 agent 生成资料）执行期间的一句话进度，避免只看到 ⏳ */}
+                  {t.status === "running" && t.progress && (
+                    <span className="tool-result" title={t.progress}>
+                      {t.progress}
+                    </span>
+                  )}
                   {t.status !== "running" && t.resultPreview && (
                     <span className="tool-result" title={t.resultPreview}>
                       {t.resultPreview}
@@ -200,7 +208,16 @@ function WorkingLabel({ m }: { m: ChatMessage }) {
   }, [m.working]);
   const elapsed = m.workingSince ? Math.max(0, Math.round((Date.now() - m.workingSince) / 1000)) : 0;
   const hasOutput = (m.tools && m.tools.length > 0) || !!m.thinking;
-  const label = m.tools && m.tools.length > 0 ? "正在使用工具…" : m.thinking ? "思考中…" : "等待模型返回…";
+  // ISSUE-146 P0-b：正在跑的工具若回报了进度（长工具：生成资料），直接把进度当标签，
+  // 否则家长只能看到「正在使用工具…」一动不动地等 4~11 分钟。
+  const runningTool = m.tools?.find((t) => t.status === "running" && t.progress);
+  const label = runningTool
+    ? runningTool.progress!
+    : m.tools && m.tools.length > 0
+      ? "正在使用工具…"
+      : m.thinking
+        ? "思考中…"
+        : "等待模型返回…";
   const waitText = m.workingSince
     ? `（已等待 ${elapsed >= 60 ? `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒` : `${elapsed} 秒`}）`
     : "";

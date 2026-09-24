@@ -36,6 +36,19 @@ import { createParentReportTool } from "./parent-report-tool.js";
 // ——通用通道（parent_db_read）退场的**前置**，台账 §3.2
 import { PARENT_CHILD_REPORT_TOOL_NAMES, createParentChildReportTools } from "./parent-child-report-tools.js";
 import { agentStreamHub } from "./stream-hub.js";
+// ISSUE-146 P0：会话活跃度登记（挂死看门狗判据；长工具执行期间不算静默）
+import {
+  SESSION_IDLE_TIMEOUT_MS,
+  TOOL_EXEC_TIMEOUT_MS,
+  beginToolExecution,
+  clearActivity,
+  endToolExecution,
+  lastActivityAt,
+  markActivity,
+  runningToolCount,
+  runningToolNames,
+  toolProgressText,
+} from "./session-activity.js";
 // ISSUE-144：场景技能（常驻层只留索引与铁律，正文按需 load_skill 加载）
 import { buildSkillIndexBlock } from "./skills/parent/index.js";
 import { IRON_RULES_BLOCK } from "./skills/parent/shared.js";
@@ -230,16 +243,14 @@ async function ensureEntry(
   return entry;
 }
 
-// —— 挂死看门狗共用：任何会话事件（思考/文本/工具/结束）都会刷新活跃时间 ——
-const SESSION_IDLE_TIMEOUT_MS = 240_000;
-const activityBySession = new Map<string, number>();
-function markSessionActivity(key: string): void {
-  activityBySession.set(key, Date.now());
-}
+// —— 挂死看门狗（ISSUE-146 P0 改造）：判据与工具执行状态分离 ——
+// 原来「240s 无任何事件即判挂死」会把**长时工具**（编程 agent：中位 321s、最长 654s）误杀，
+// 且报错文案错误地归因给模型。现在：有工具在跑 → 用 TOOL_EXEC_TIMEOUT_MS 硬上限 + 工具超时文案；
+// 无工具在跑 → 才用 SESSION_IDLE_TIMEOUT_MS 判模型静默。活跃度与工具计数见 session-activity.ts。
 
 function attachStream(entry: Entry, key: string): void {
   entry.session.subscribe((event: any) => {
-    markSessionActivity(key);
+    markActivity(key);
     switch (event?.type) {
       case "message_update": {
         const ame = event.assistantMessageEvent;
@@ -248,9 +259,22 @@ function attachStream(entry: Entry, key: string): void {
         break;
       }
       case "tool_execution_start":
+        // ISSUE-146 P0：工具执行期间会话静默是正常的 —— 计数让 watchdog 跳过误判
+        beginToolExecution(key, event.toolName);
         agentStreamHub.publish(key, "tool_start", { toolCallId: event.toolCallId, toolName: event.toolName, args: event.args });
         break;
+      case "tool_execution_update":
+        // ISSUE-146 P0-b：长工具经 execute 的 onUpdate 回报进度（每 15s「仍在生成…已 X 分钟」等），
+        // 让家长不再对着空白气泡等 11 分钟。注意：**不**复用 text_delta/message_end，
+        // 否则会污染客户端轮内文本缓冲（web/src/shim/core/sse.ts 的 turnTextBuffers）。
+        agentStreamHub.publish(key, "tool_progress", {
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          progress: toolProgressText(event.partialResult),
+        });
+        break;
       case "tool_execution_end":
+        endToolExecution(key, event.toolName);
         agentStreamHub.publish(key, "tool_end", {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
@@ -304,11 +328,35 @@ export async function submitParentPrompt(
   // 会话 busy 永久占用、客户端无限转圈。任何事件都刷新活跃时间；超过 IDLE 无事件
   // 即视为挂死 → abort 当前一轮（finally 会恢复 busy）+ 经 error 事件告知前端。
   const activity = { fired: false };
-  markSessionActivity(key);
+  // 本轮基线：lastActivityAt 缺失时回退到本轮开始时间（ISSUE-146）
+  const turnStartedAt = Date.now();
+  markActivity(key, turnStartedAt);
   const watchdog = setInterval(() => {
     if (activity.fired) return;
-    const last = activityBySession.get(key) ?? Date.now();
-    if (Date.now() - last <= SESSION_IDLE_TIMEOUT_MS) return;
+    const last = lastActivityAt(key) ?? turnStartedAt;
+    const silent = Date.now() - last;
+    const tools = runningToolCount(key);
+    if (tools > 0) {
+      // ISSUE-146 P0：有工具在跑 —— 此时静默是**正常**的（长工具的 execute 内部 await 一个独立的
+      // 嵌套会话，它的事件不进父会话，父层只有 tool_start 一个事件）。改用显著更宽的工具硬上限兜底，
+      // 且文案如实归因到「工具」，不再像旧版那样误报成「模型服务无响应」。
+      if (silent <= TOOL_EXEC_TIMEOUT_MS) return;
+      activity.fired = true;
+      clearInterval(watchdog);
+      const names = runningToolNames(key).filter(Boolean).join("、") || "未知工具";
+      console.error(
+        `[parent-agent] 会话 ${key} 的工具 ${names} 超过 ${TOOL_EXEC_TIMEOUT_MS / 60000} 分钟无任何进度，判定卡死，中止本轮`
+      );
+      agentStreamHub.publish(key, "error", {
+        message:
+          `工具「${names}」执行超过 ${TOOL_EXEC_TIMEOUT_MS / 60000} 分钟仍未完成，已自动中止本轮。` +
+          `该任务可能过于复杂，可拆成更小的需求后重试。`,
+      });
+      void entry.session.abort().catch(() => undefined);
+      return;
+    }
+    // 无工具在跑 → 这才是原本要抓的「模型 API 偶发挂起」，判据与文案保持原样
+    if (silent <= SESSION_IDLE_TIMEOUT_MS) return;
     activity.fired = true;
     clearInterval(watchdog);
     console.error(`[parent-agent] 会话 ${key} 超过 ${SESSION_IDLE_TIMEOUT_MS / 1000}s 无任何事件，判定挂死，中止本轮`);
@@ -330,6 +378,9 @@ export async function submitParentPrompt(
     } finally {
       clearInterval(watchdog);
       entry.busy = false;
+      // ISSUE-146 P0：一轮结束即清活跃/工具计数 —— 防异常路径（工具没 emit end）导致计数泄漏，
+      // 那会让**下一轮**的看门狗永远跳过判定、真挂死反而再也没人抓。
+      clearActivity(key);
       agentStreamHub.publish(key, "turn_end", {});
     }
   })();
@@ -405,5 +456,6 @@ export function resetParentSession(parentId: string, kind: ParentSessionKind = "
     entries.delete(key);
   }
   resetMarks.add(key);
+  clearActivity(key); // ISSUE-146 P0：随之清掉活跃/工具计数，避免旧会话残留影响新会话的看门狗
   console.log(`[parent-agent] 已重置会话 ${key}（下次对话新开会话，旧历史保留为归档）`);
 }

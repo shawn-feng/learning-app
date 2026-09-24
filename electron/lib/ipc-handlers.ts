@@ -1397,7 +1397,11 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     try {
       ensureParentStream("parent");
       // 会话历史回填（ISSUE-107：服务端 /parent-agent/open 返回现会话全部历史，家长不做跨天裁决）
-      const history = await openParentSession("parent").catch(() => [] as any[]);
+      // ISSUE-145：回填失败不再静默吞成空历史——留痕，便于区分「服务端没历史」与「请求就失败了」
+      const history = await openParentSession("parent").catch((err) => {
+        console.warn(`[pi:start_parent] 历史回填失败（已降级为空历史）: ${(err as Error).message}`);
+        return [] as any[];
+      });
       return { success: true, history };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -1585,7 +1589,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     try {
       ensureParentStream("parent-content");
       // 会话历史回填（ISSUE-107：同 pi:start_parent，parent-content 槽同样返回现会话全部历史）
-      const history = await openParentSession("parent-content").catch(() => [] as any[]);
+      const history = await openParentSession("parent-content").catch((err) => {
+        console.warn(`[pi:start_parent_content] 历史回填失败（已降级为空历史）: ${(err as Error).message}`);
+        return [] as any[];
+      });
       return { success: true, history };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -2851,6 +2858,25 @@ function previewResult(toolName: string, result: any, isError: boolean): string 
   }
 }
 
+/**
+ * ISSUE-146 P0-b：从工具 `onUpdate` 载荷提取**一行**进度文案
+ * （与服务端 `server/src/agent/session-activity.ts` 的 toolProgressText 同规则）。
+ */
+function progressText(partialResult: any): string {
+  const fromDetails = partialResult?.details?.progress;
+  let t = typeof fromDetails === "string" ? fromDetails : "";
+  if (!t && Array.isArray(partialResult?.content)) {
+    for (const c of partialResult.content) {
+      if (c?.type === "text" && typeof c.text === "string" && c.text.trim()) {
+        t = c.text.trim();
+        break;
+      }
+    }
+  }
+  const one = t.replace(/\s+/g, " ").trim();
+  return one.length > 120 ? `${one.slice(0, 119)}…` : one;
+}
+
 function attachSessionEvents(session: any, childId: string, win: () => BrowserWindow | null) {
   if (subscribedSessions.has(session)) return;
   subscribedSessions.add(session);
@@ -2877,6 +2903,15 @@ function attachSessionEvents(session: any, childId: string, win: () => BrowserWi
             toolCallId: event.toolCallId,
             toolName: event.toolName,
             argsPreview: previewArgs(event.toolName, event.args),
+          });
+          break;
+        case "tool_execution_update":
+          // ISSUE-146 P0-b：长工具执行期间的进度文案（与服务端路径保持同一渲染行为）
+          w.webContents.send("pi:tool_progress", {
+            childId,
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            progress: progressText(event.partialResult),
           });
           break;
         case "tool_execution_end":

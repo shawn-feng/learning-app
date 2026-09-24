@@ -56,6 +56,19 @@ import { getCaps } from "./caps.js";
 import { buildServerChildPrompt, buildServerScenePrompt } from "./prompt.js";
 import { friendlyModelError, syncSessionModel } from "./model-sync.js";
 import { agentStreamHub, AgentStreamHub } from "./stream-hub.js";
+// ISSUE-146 P0：会话活跃度登记（挂死看门狗判据；长工具执行期间不算静默）
+import {
+  SESSION_IDLE_TIMEOUT_MS,
+  TOOL_EXEC_TIMEOUT_MS,
+  beginToolExecution,
+  clearActivity,
+  endToolExecution,
+  lastActivityAt,
+  markActivity,
+  runningToolCount,
+  runningToolNames,
+  toolProgressText,
+} from "./session-activity.js";
 import { learningGuardExtension as guardExtension } from "@pi/agent-core";
 
 const CORE_SESSION_DEPS: CoreSessionDeps = {
@@ -352,7 +365,8 @@ async function ensureEntry(
   resetMarks.delete(key);
 
   const entry: Entry = { session: handle.session, busy: false, paths };
-  attachStream(entry, streamKeyOf(parentId, childId));
+  // ISSUE-146 P0：活跃度/工具计数按**会话** key 记，SSE 事件仍发到**孩子** streamKey
+  attachStream(entry, key, streamKeyOf(parentId, childId));
   entries.set(key, entry);
   console.log(
     `[agent] 已就绪会话 ${key}（持久：${paths.agentSessionsDir(parentId, slot)}；caps=${caps.raw || "none"}；工具 ${toolNames.length} 项；AGENTS ${agentRules ? "用户版" : "默认"}）`
@@ -410,29 +424,50 @@ function courseContextBlock(deps: AgentSessionDeps, parentId: string, childId: s
   }
 }
 
-/** 把 SDK 事件映射为流事件（与客户端 attachSessionEvents 的事件面保持一致）。 */
-function attachStream(entry: Entry, key: string): void {
+/**
+ * 把 SDK 事件映射为流事件（与客户端 attachSessionEvents 的事件面保持一致）。
+ *
+ * ⚠️ 两个 key 必须分开（ISSUE-146 P0 修正）：
+ * - `sessionKey`（`${pid}:${cid}:${kind}`）：**活跃度与工具计数**按会话记 —— 静默必须按会话判
+ *   （一个孩子的 main/scene/course 是三个独立会话，各自的挂死互不代表）；
+ * - `streamKey`（`${pid}:${cid}`）：SSE 事件的发布 key —— 沿用既有语义，客户端订阅一个孩子即可收到其所有会话的事件。
+ * 此前两者混用同一个参数（传的是 streamKey），导致 watchdog 读的 `sessionActivity.get(sessionKey)` 永远拿不到
+ * attachStream 刷新的值 —— 判据退化成「从提交时刻起算的硬超时」，任何超过 240s 的**正常**轮都会被砍。
+ */
+function attachStream(entry: Entry, sessionKey: string, streamKey: string): void {
   entry.session.subscribe((event: any) => {
-    markSessionActivity(key);
+    markActivity(sessionKey);
     switch (event?.type) {
       case "message_update": {
         const ame = event.assistantMessageEvent;
         if (ame?.type === "text_delta") {
-          agentStreamHub.publish(key, "text_delta", { delta: ame.delta });
+          agentStreamHub.publish(streamKey, "text_delta", { delta: ame.delta });
         } else if (ame?.type === "thinking_delta") {
-          agentStreamHub.publish(key, "thinking_delta", { delta: ame.delta });
+          agentStreamHub.publish(streamKey, "thinking_delta", { delta: ame.delta });
         }
         break;
       }
       case "tool_execution_start":
-        agentStreamHub.publish(key, "tool_start", {
+        // ISSUE-146 P0：工具执行期间会话静默是正常的 —— 计数让 watchdog 跳过误判
+        beginToolExecution(sessionKey, event.toolName);
+        agentStreamHub.publish(streamKey, "tool_start", {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           args: event.args,
         });
         break;
+      case "tool_execution_update":
+        // ISSUE-146 P0-b：长工具（create_html_lesson 等）经 execute 的 onUpdate 回报进度。
+        // **不**复用 text_delta/message_end，避免污染客户端轮内文本缓冲（turnTextBuffers）。
+        agentStreamHub.publish(streamKey, "tool_progress", {
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          progress: toolProgressText(event.partialResult),
+        });
+        break;
       case "tool_execution_end":
-        agentStreamHub.publish(key, "tool_end", {
+        endToolExecution(sessionKey, event.toolName);
+        agentStreamHub.publish(streamKey, "tool_end", {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           isError: event.isError === true,
@@ -446,17 +481,17 @@ function attachStream(entry: Entry, key: string): void {
           // 否则客户端只会收到 turn_end，工作气泡永远卡「等待模型返回」。
           if (event.message.stopReason === "error") {
             const raw = String(event.message.errorMessage || event.message.error || "模型调用失败");
-            agentStreamHub.publish(key, "error", { message: friendlyModelError(raw) });
+            agentStreamHub.publish(streamKey, "error", { message: friendlyModelError(raw) });
             break;
           }
-          agentStreamHub.publish(key, "message_end", { message: event.message });
+          agentStreamHub.publish(streamKey, "message_end", { message: event.message });
         }
         break;
       case "agent_end":
-        agentStreamHub.publish(key, "agent_end", {});
+        agentStreamHub.publish(streamKey, "agent_end", {});
         break;
       case "error":
-        agentStreamHub.publish(key, "error", {
+        agentStreamHub.publish(streamKey, "error", {
           message: String(event.error || event.message || "未知错误"),
         });
         break;
@@ -476,13 +511,10 @@ export interface SubmitResult {
  * - 页面事件（若有）按客户端既有语义附在本轮消息前（ISSUE-015）；
  * - 会话忙时直接返回 busy，由前端提示「上一轮还在回答」，不排队（避免上下文交错）。
  */
-// —— 挂死看门狗（2026-09-18，与 parent-registry 同一套参数）：任何事件刷新活跃时间，
-// 超过 IDLE 无事件判定挂死 → abort + error 事件告知前端。
-const SESSION_IDLE_TIMEOUT_MS = 240_000;
-const sessionActivity = new Map<string, number>();
-function markSessionActivity(key: string): void {
-  sessionActivity.set(key, Date.now());
-}
+// —— 挂死看门狗（ISSUE-146 P0 改造）：判据与工具执行状态分离 ——
+// 原来「240s 无任何事件即判挂死」会把**长时工具**（create_html_lesson：内部 await 独立编程会话，
+// 实测中位 321s、最长 654s）误杀，且文案错误归因给模型。现在有工具在跑 → TOOL_EXEC_TIMEOUT_MS 硬上限；
+// 无工具在跑 → 才用 SESSION_IDLE_TIMEOUT_MS 判模型静默。活跃度与工具计数见 session-activity.ts。
 
 export async function submitChildPrompt(
   deps: AgentSessionDeps,
@@ -507,15 +539,38 @@ export async function submitChildPrompt(
   if (!prompt) return { ok: false, error: "空消息" };
 
   entry.busy = true;
-  markSessionActivity(key);
+  // 本轮基线：lastActivityAt 缺失时回退到本轮开始时间（ISSUE-146）
+  const turnStartedAt = Date.now();
+  markActivity(key, turnStartedAt);
   agentStreamHub.publish(streamKey, "user_message", { text: prompt, pageEvents: opts.pendingPageEvents ?? "", session: kind });
   // 挂死看门狗：模型 API 偶发挂起时 prompt 永不返回也不报错 → busy 永久占用。
-  // 超过 IDLE 无任何事件即 abort + error 事件告知前端。
   const watchdogActivity = { fired: false };
   const watchdog = setInterval(() => {
     if (watchdogActivity.fired) return;
-    const last = sessionActivity.get(key) ?? Date.now();
-    if (Date.now() - last <= SESSION_IDLE_TIMEOUT_MS) return;
+    const last = lastActivityAt(key) ?? turnStartedAt;
+    const silent = Date.now() - last;
+    const tools = runningToolCount(key);
+    if (tools > 0) {
+      // ISSUE-146 P0：有工具在跑 —— 静默是正常的（长工具的 execute 内部 await 独立编程会话，
+      // 它的事件不进本会话）。改用更宽的工具硬上限，且文案如实归因到「工具」。
+      if (silent <= TOOL_EXEC_TIMEOUT_MS) return;
+      watchdogActivity.fired = true;
+      clearInterval(watchdog);
+      const names = runningToolNames(key).filter(Boolean).join("、") || "未知工具";
+      console.error(
+        `[agent] 会话 ${key} 的工具 ${names} 超过 ${TOOL_EXEC_TIMEOUT_MS / 60000} 分钟无任何进度，判定卡死，中止本轮`
+      );
+      agentStreamHub.publish(streamKey, "error", {
+        message:
+          `工具「${names}」执行超过 ${TOOL_EXEC_TIMEOUT_MS / 60000} 分钟仍未完成，已自动中止本轮。` +
+          `该任务可能过于复杂，可拆成更小的需求后重试。`,
+        session: kind,
+      });
+      void entry.session.abort().catch(() => undefined);
+      return;
+    }
+    // 无工具在跑 → 这才是原本要抓的「模型 API 偶发挂起」，判据与文案保持原样
+    if (silent <= SESSION_IDLE_TIMEOUT_MS) return;
     watchdogActivity.fired = true;
     clearInterval(watchdog);
     console.error(`[agent] 会话 ${key} 超过 ${SESSION_IDLE_TIMEOUT_MS / 1000}s 无任何事件，判定挂死，中止本轮`);
@@ -539,6 +594,9 @@ export async function submitChildPrompt(
     } finally {
       clearInterval(watchdog);
       entry.busy = false;
+      // ISSUE-146 P0：一轮结束即清活跃/工具计数 —— 防异常路径（工具没 emit end）导致计数泄漏，
+      // 那会让**下一轮**的看门狗永远跳过判定、真挂死反而再也没人抓。
+      clearActivity(key);
       agentStreamHub.publish(streamKey, "turn_end", { session: kind });
     }
   })();
@@ -660,6 +718,7 @@ export function disposeSession(parentId: string, childId: string, kind?: ChildSe
       /* 忽略 */
     }
     entries.delete(key);
+    clearActivity(key); // ISSUE-146 P0：活跃/工具计数随之清掉
     console.log(`[agent] 已释放会话 ${key}（下次对话按最新能力重建）`);
     return;
   }
@@ -671,6 +730,7 @@ export function disposeSession(parentId: string, childId: string, kind?: ChildSe
       /* 忽略 */
     }
     entries.delete(key);
+    clearActivity(key); // ISSUE-146 P0
   }
   console.log(`[agent] 已释放 ${parentId}:${childId} 的全部会话（下次对话按最新能力重建）`);
 }
@@ -685,5 +745,6 @@ export function disposeChildAgentSession(childId: string): void {
       /* 忽略 */
     }
     entries.delete(key);
+    clearActivity(key); // ISSUE-146 P0
   }
 }

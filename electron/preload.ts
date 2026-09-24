@@ -19,6 +19,9 @@ const api = {
     registerListener("pi:tool_start", callback),
   onPiToolEnd: (callback: (data: any) => void) =>
     registerListener("pi:tool_end", callback),
+  // ISSUE-146 P0-b：长工具（生成 HTML 资料）执行期间的一句话进度
+  onPiToolProgress: (callback: (data: any) => void) =>
+    registerListener("pi:tool_progress", callback),
   onPiAgentEnd: (callback: (data: { childId: string }) => void) =>
     registerListener("pi:agent_end", callback),
   onPiMessageEnd: (callback: (data: any) => void) =>

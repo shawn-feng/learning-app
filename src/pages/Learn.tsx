@@ -571,6 +571,17 @@ export default function Learn({ child, onExit }: Props) {
   }
 
   // 工具结束调用 + 学习资料列表更新
+  // ISSUE-146 P0-b：长工具（create_html_lesson 生成 HTML 页面）执行期间的进度 → 更新对应工具，
+  // 工作气泡标签/工具卡片随之显示（孩子侧同样会等 4~11 分钟）
+  const handleToolProgress = useCallback((data: any) => {
+    if (data.childId !== childIdRef.current) return;
+    if (!data.progress) return;
+    patchWorking((m) => ({
+      ...m,
+      tools: (m.tools || []).map((t) => (t.id === data.toolCallId ? { ...t, progress: data.progress } : t)),
+    }));
+  }, [patchWorking]);
+
   const handleToolEnd = useCallback((data: any) => {
     if (data.childId !== childIdRef.current) return;
     // display_content 旧协议兼容（tool_end 的 result.details.panelContent）；主路径已改走 pi:display_content 事件
@@ -1065,6 +1076,7 @@ export default function Learn({ child, onExit }: Props) {
     window.api.onPiThinking(handleThinking);
     window.api.onPiToolStart(handleToolStart);
     window.api.onPiToolEnd(handleToolEnd);
+    window.api.onPiToolProgress(handleToolProgress);
     window.api.onPiDisplayContent(handleDisplayContent);
     window.api.onPiSessionReset(handleSessionReset);
     window.api.onPiVisionModelSwitched(handleVisionSwitched);
@@ -1077,7 +1089,7 @@ export default function Learn({ child, onExit }: Props) {
     return () => {
       window.api.piRemoveListeners();
     };
-  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleDisplayContent, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec, handleSceneReply, handleSceneReplyEnd, handleSceneReplyError]);
+  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleToolProgress, handleDisplayContent, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec, handleSceneReply, handleSceneReplyEnd, handleSceneReplyError]);
 
   // 向聊天追加一条 AI 消息（命令反馈 / 系统提示用）
   function addAiMessage(text: string) {

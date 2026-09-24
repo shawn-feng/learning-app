@@ -125,6 +125,18 @@ export function translateAgentEvent(
           argsPreview: previewArgs(e.data?.args),
         },
       };
+    case "tool_progress":
+      // ISSUE-146 P0-b：长工具（编程 agent 生成 HTML 资料）执行期间的**进度文案**。
+      // 与 text_delta 严格区分：它只用于工作气泡/工具卡片的提示文案，不参与正文累积。
+      return {
+        channel: "pi:tool_progress",
+        payload: {
+          childId,
+          toolCallId: e.data?.toolCallId,
+          toolName: e.data?.toolName,
+          progress: String(e.data?.progress ?? ""),
+        },
+      };
     case "tool_end":
       return {
         channel: "pi:tool_end",
@@ -388,25 +400,53 @@ function sessionToken(): string {
 }
 
 /**
+ * 静默停摆阈值：连续多久没收到**任何字节**就判定这条流已经死了。
+ * 服务端每 15s 写一次 `: ping` 心跳（routes/parent-agent.ts / agent.ts 的 setInterval），
+ * 因此 45s = 连续丢 3 次心跳，足够保守又能在 1 分钟内自愈。
+ */
+const SSE_STALL_TIMEOUT_MS = 45_000;
+
+/**
  * SSE 连接（带自动重连）——server-agent-client.ts openSse 逐行移植。
  * - 每次（重）连接都重新构建 URL（取最新 serverBase / sessionToken / lastEventId）；
  * - 断线/读尽 → 指数退避重连（2s 起步、逐次 +2s、上限 15s），**静默重连不报错**——
  *   服务端会按 lastEventId 回放缺失事件，UI 自动恢复，无需打扰用户；
  * - 仅 401/403（登录态失效，重连无意义）才回调 onError 终止（handle 置 closed）。
+ *
+ * 2026-09-24（ISSUE-145）**心跳存活判据 + 静默停摆看门狗**：
+ * 症状是「服务端早就跑完并 publish 了事件、心跳也照写，连接 TCP 层全 ACK，但浏览器 JS 一条都收不到」，
+ * 而旧实现只在 `reader.read()` 返回 `done` 或抛异常时才重连——静默停摆两种情况都不发生，于是永不重连、
+ * UI 永久停在「等待模型返回」。修法（三层）：
+ *  ① **任何字节到达（含 `: ping` 注释行）都刷新 `lastByteAt`** —— 心跳由此有了判据（parseSseChunk 把注释行
+ *    丢弃是**事件**层面的正确行为，但"收到过字节"这个事实不能丢）；
+ *  ② `SSE_STALL_TIMEOUT_MS` 无字节 → 判定流死 → `ac.abort()` 强制走既有重连（带 `lastEventId` 续传补齐）；
+ *  ③ **每次 connect 新建 AbortController**（旧实现复用同一个 ac：一旦 abort，之后所有重连的 fetch 都会
+ *    立即以 AbortError 失败 → 退化成死循环重连）。
  */
 function openSse(
   buildUrl: () => string,
   onEvent: (e: AgentEvent) => void,
   onError?: (err: string) => void
 ): StreamHandle {
-  const ac = new AbortController();
   const handle: StreamHandle = { closed: false, close: () => {} };
   let lastEventId = 0;
   let attempt = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let stallTimer: ReturnType<typeof setInterval> | null = null;
+  let currentAc: AbortController | null = null;
+  /** 最后一次收到任何字节的时刻（含心跳注释行）；看门狗据此判活。 */
+  let lastByteAt = 0;
+
+  const clearStall = () => {
+    if (stallTimer) {
+      clearInterval(stallTimer);
+      stallTimer = null;
+    }
+  };
 
   const scheduleReconnect = (reason: string) => {
     if (handle.closed) return;
+    clearStall();
     attempt++;
     const delay = Math.min(15000, 2000 * attempt);
     console.warn(`[web-sse] 连接中断（${reason}），${delay / 1000}s 后第 ${attempt} 次重连`);
@@ -417,6 +457,23 @@ function openSse(
 
   const connect = () => {
     if (handle.closed) return;
+    const ac = new AbortController(); // 每次（重）连独立：上一轮的 abort 不该污染这一轮
+    currentAc = ac;
+    lastByteAt = Date.now();
+    clearStall();
+    // 看门狗：每 5s 检查一次「距上次收到字节是否已超阈值」；超时即 abort 交给既有重连路径
+    stallTimer = setInterval(() => {
+      if (handle.closed) {
+        clearStall();
+        return;
+      }
+      if (Date.now() - lastByteAt <= SSE_STALL_TIMEOUT_MS) return;
+      console.warn(
+        `[web-sse] ${SSE_STALL_TIMEOUT_MS / 1000}s 未收到任何数据（含心跳），判定流已静默停摆，强制重连`
+      );
+      clearStall(); // 先停表，避免 abort 报错前又触发一次
+      ac.abort(); // → reader.read() 抛 AbortError → catch 分支 scheduleReconnect（带 lastEventId 续传）
+    }, 5000);
     (async () => {
       try {
         let url = buildUrl();
@@ -426,6 +483,7 @@ function openSse(
           if (res.status === 401 || res.status === 403) {
             // 登录态失效：重连无意义，交由上层提示（渲染层会弹错误气泡），流终止
             onError?.(`流连接失败（HTTP ${res.status}）：登录态可能已失效，请重新登录`);
+            clearStall();
             handle.closed = true;
             return;
           }
@@ -439,6 +497,8 @@ function openSse(
         while (!handle.closed) {
           const { value, done } = await reader.read();
           if (done) break;
+          // ① 任何字节（含 15s `: ping` 心跳注释行）都算「连接活着」——静默停摆由此可被判出
+          lastByteAt = Date.now();
           buf += decoder.decode(value, { stream: true });
           const { events, rest } = parseSseChunk(buf);
           buf = rest;
@@ -461,8 +521,9 @@ function openSse(
 
   handle.close = () => {
     handle.closed = true;
+    clearStall();
     if (retryTimer) clearTimeout(retryTimer);
-    ac.abort();
+    currentAc?.abort();
   };
   return handle;
 }

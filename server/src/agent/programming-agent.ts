@@ -61,6 +61,67 @@ export function buildProgrammingPrompt(): string {
 完整协议规范见仓库根 MATERIAL-BRIDGE-PROTOCOL.md（正文约定以上述为准）。`;
 }
 
+/**
+ * 嵌套编程会话的事件 → 一行**给人看的**进度文案（ISSUE-146 P0-b）。
+ *
+ * 为什么要翻译：嵌套会话的事件不能直接转发（会污染父层轮内文本缓冲），但长工具跑 4~11 分钟
+ * 期间家长只能看到「正在使用工具…」一动不动。这里把它压成一句可读文案，经 SDK 的 `onUpdate`
+ * 变成 `tool_execution_update` → 父会话 publish `tool_progress` → 客户端气泡显示。
+ */
+function describeProgrammingEvent(event: any): string | undefined {
+  const type = event?.type;
+  if (type === "tool_execution_start") {
+    const name = String(event?.toolName ?? "");
+    if (name === "read") return "正在查看现有文件…";
+    if (name === "write") return "正在写入资料文件…";
+    if (name === "edit") return "正在修改资料文件…";
+    return name ? `正在执行 ${name}…` : undefined;
+  }
+  if (type === "message_update") {
+    const ame = event?.assistantMessageEvent;
+    if (ame?.type === "thinking_delta") return "正在设计页面结构…";
+    if (ame?.type === "text_delta") return "正在编写页面代码…";
+  }
+  return undefined;
+}
+
+/**
+ * 进度节流器：子会话事件很密（每个 token 一个 delta），SSE 不能照单全收。
+ * 保证**最小间隔** MIN_INTERVAL_MS，且相同文案不重复发（心跳文案含分钟数，会自然变化）。
+ */
+function createProgressReporter(onProgress?: (text: string) => void) {
+  const MIN_INTERVAL_MS = 3000;
+  let lastSentAt = 0;
+  let lastText = "";
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const flush = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (!lastText || !onProgress) return;
+    lastSentAt = Date.now();
+    onProgress(lastText);
+  };
+  return {
+    report(text: string): void {
+      if (!onProgress) return;
+      const t = String(text ?? "").trim();
+      if (!t || t === lastText) return;
+      lastText = t;
+      const wait = MIN_INTERVAL_MS - (Date.now() - lastSentAt);
+      if (wait <= 0) flush();
+      else if (!timer) timer = setTimeout(flush, wait);
+    },
+    stop(): void {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
 async function getProgrammingSession(
   deps: ProgrammingDeps,
   cwd: string,
@@ -181,13 +242,22 @@ export function resolveLessonOutputPath(
   return { base: base!, resolved, relPath: isMaterial ? `materials/${relInBase}` : relInBase };
 }
 
+export interface GenerateHtmlLessonHooks {
+  /** 进度回报（已节流，一行可读文案）→ SDK onUpdate → 父会话 SSE `tool_progress`（ISSUE-146 P0-b） */
+  onProgress?: (text: string) => void;
+  /** 父层中止信号：透传到嵌套编程会话（否则 11 分钟的生成无法被父层「停止」打断，ISSUE-146 P0-c） */
+  signal?: AbortSignal;
+}
+
 /** 生成/修改一份 HTML 资料并落盘（含沙箱校验与落盘校验）。
  * @param workspaceRoot 非 materials 输出的落盘根（孩子调用时=孩子工作区）；不传时=家长侧，恒落资料真源。
+ * @param hooks 进度回报与中止传播（ISSUE-146 P0；不传＝行为同旧版）
  */
 export async function generateHtmlLesson(
   deps: ProgrammingDeps,
   input: GenerateHtmlLessonInput,
-  workspaceRoot?: string
+  workspaceRoot?: string,
+  hooks?: GenerateHtmlLessonHooks
 ): Promise<GenerateHtmlLessonResult> {
   const paths = createCorePaths(deps.dataDir);
   const { base, resolved, relPath } = resolveLessonOutputPath(deps, input.outputPath, workspaceRoot);
@@ -223,7 +293,34 @@ export async function generateHtmlLesson(
   ].join("\n");
 
   const t0 = Date.now();
-  await session.prompt(prompt);
+  // ISSUE-146 P0：① 子会话事件 → 节流后的可读进度；② 15s 心跳，保证「黑洞期」也有进度可看；
+  // ③ signal → session.abort()，让父层的「停止」按钮能真的打断这场生成（旧版做不到）。
+  const reporter = createProgressReporter(hooks?.onProgress);
+  const unsubscribe = hooks?.onProgress
+    ? session.subscribe((event: any) => {
+        const label = describeProgrammingEvent(event);
+        if (label) reporter.report(label);
+      })
+    : undefined;
+  const heartbeat = hooks?.onProgress
+    ? setInterval(() => reporter.report(`生成中…（已 ${((Date.now() - t0) / 60000).toFixed(1)} 分钟）`), 15000)
+    : null;
+  const onAbort = () => {
+    void session.abort().catch(() => undefined);
+  };
+  if (hooks?.signal) {
+    if (hooks.signal.aborted) onAbort();
+    else hooks.signal.addEventListener("abort", onAbort, { once: true });
+  }
+  try {
+    await session.prompt(prompt);
+  } finally {
+    // ⚠️ 必须退订：编程会话按 sessionKey **复用**，不退订会让订阅者随每次生成累积
+    hooks?.signal?.removeEventListener("abort", onAbort);
+    if (heartbeat) clearInterval(heartbeat);
+    unsubscribe?.();
+    reporter.stop();
+  }
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
   if (!fs.existsSync(resolved) || fs.statSync(resolved).size < 100) {
@@ -283,7 +380,7 @@ export function createProgrammingTool(
         ? Type.Optional(Type.String({ description: "输出相对路径（缺省 outputs/<标题>.html）" }))
         : Type.String({ description: "资料真源相对路径 <topic>/<文件>.html（如 lunyu/lesson-01.html，与 parent_put_material 同语法）" }),
     }),
-    execute: async (_id: string, params: any) => {
+    execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: (partial: any) => void) => {
       const title = String(params?.title ?? "").trim();
       const requirement = String(params?.requirement ?? "").trim();
       if (!title || !requirement) throw new Error("title 与 requirement 都必填");
@@ -292,7 +389,15 @@ export function createProgrammingTool(
         ? String(params?.path ?? `outputs/${safeName}.html`)
         : String(params?.path ?? "").trim();
       if (!outputPath) throw new Error("path 必填（如 materials/<topic>/<文件>.html）");
-      const r = await generateHtmlLesson(deps, { title, requirement, outputPath }, workspaceRoot);
+      const r = await generateHtmlLesson(deps, { title, requirement, outputPath }, workspaceRoot, {
+        // ISSUE-146 P0：进度经 SDK 转成 tool_execution_update（父会话 publish `tool_progress`）；
+        // 中止信号透传，让父层 abort 能打断嵌套的编程会话。两者都是**可选**形参，
+        // 直调（脚本/测试）时不传即保持旧行为。
+        onProgress: onUpdate
+          ? (text: string) => onUpdate({ content: [{ type: "text" as const, text }], details: { progress: text } })
+          : undefined,
+        signal,
+      });
       return {
         content: [
           {
