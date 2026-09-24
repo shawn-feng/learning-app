@@ -6,13 +6,13 @@
  * 鉴权：家长 JWT；childId 可选（考核流程必传并校验归属；设置页「测试」可不传）。语音复用 files 通道。
  */
 import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
+import { resolveStoredFileAbs } from "./files.js";
 import { assessAudio, toSpeechAssessment, loadAssessmentConfig, getMaskedAssessmentConfig, applyAssessmentConfigPatch } from "../assessment/index.js";
 
 interface AssessmentDeps {
@@ -44,16 +44,17 @@ function handleAuthError(err: unknown, reply: any): boolean {
   return false;
 }
 
-/** 按 fileId 从服务端 files 表取已上传音频字节（与 files.ts 读取逻辑一致，做路径穿越防护）。 */
+/**
+ * 按 fileId 从服务端 files 表取已上传音频字节。
+ * 路径解析统一走 files.ts 的 resolveStoredFileAbs（ISSUE-143：P2 归并后新录音落
+ * workspaces/<pid>[/cid]/uploads，本处此前只查旧根 files/<pid> → 评测全部「音频文件不存在」）。
+ */
 function readAudioBytes(db: DatabaseSync, dataDir: string, parentId: string, fileId: string): Buffer {
   const row = db
-    .prepare("SELECT stored_path FROM files WHERE id = ? AND parent_id = ?")
-    .get(fileId, parentId) as { stored_path: string } | undefined;
+    .prepare("SELECT stored_path, child_id FROM files WHERE id = ? AND parent_id = ?")
+    .get(fileId, parentId) as { stored_path: string; child_id: string | null } | undefined;
   if (!row) throw new ApiError(404, "音频文件不存在");
-  const root = path.join(dataDir, "files");
-  const base = path.resolve(root, parentId);
-  const abs = path.resolve(base, row.stored_path);
-  if (!abs.startsWith(base + path.sep)) throw new ApiError(403, "非法路径");
+  const abs = resolveStoredFileAbs(dataDir, parentId, row.child_id, row.stored_path);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new ApiError(404, "音频文件不存在");
   return fs.readFileSync(abs);
 }
@@ -131,6 +132,8 @@ export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentD
       const mapped = toSpeechAssessment(result);
       return { audioFileId: fileId, assessmentId: crypto.randomUUID(), result: mapped };
     } catch (err) {
+      // ISSUE-143：评测失败必须留痕（此前 404/502 只回给客户端，journalctl 零记录，线上坏了一天才被发现）
+      req.log.warn({ err, fileId, childId }, "发音评测失败");
       const msg = err instanceof Error ? err.message : String(err);
       return reply.code(502).send({ error: `发音评测失败：${msg}` });
     }
