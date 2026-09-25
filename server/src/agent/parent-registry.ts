@@ -197,7 +197,15 @@ async function ensureEntry(
       // 取数范围写死、只读；家长问「考得怎么样/哪里薄弱/这分怎么算的」时不再需要通用通道
       ...createParentChildReportTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
       // KB P1：知识库条目（KB 走专用工具；家长侧刻意**没有** kb_lookup——要看条目用 parent_kb_list）
-      ...createParentKbTools({ dataDir: deps.dataDir, parentId, db: deps.db }),
+      // P3④：图片入库要走视觉模型，所以把家长凭证/设置/运行目录一并交进去
+      ...createParentKbTools({
+        dataDir: deps.dataDir,
+        parentId,
+        db: deps.db,
+        auth: settings.auth,
+        appSettings: settings.appSettings,
+        agentDir,
+      }),
       // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
       createParentReportTool({ db: deps.db, parentId, streamKey: key }),
       // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite，按本家长隔离）

@@ -20,7 +20,7 @@ import { openDb } from "../server/src/db";
 import { openParentLib } from "../server/src/db/parent-lib";
 import { materialsRoot } from "../server/src/db/materials";
 import { getKbEntry, listKbAssets, saveKbEntries } from "../server/src/db/kb-entries";
-import { createParentKbTools } from "../server/src/agent/parent-kb-tools";
+import { createParentKbTools, IMAGE_BODY_MARK, extractIngestText, isImagePath } from "../server/src/agent/parent-kb-tools";
 import { KB_BODY_MAX, decodeEntities, htmlToText, ingestKindOf, textify } from "../server/src/agent/kb-ingest";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "kb-ing-"));
@@ -218,6 +218,44 @@ describe("KB P3②：家长工具上的 ingest", () => {
 
   it("五个参数一个都不给 → 报错文案要把 ingest 也列上", async () => {
     await expect(byName("parent_kb_save").execute("i9", {})).rejects.toThrow(/ingest/);
+  });
+});
+
+describe("KB P3④：图片入库（走视觉模型，**不需要新依赖**）", () => {
+  it("图片扩展名认得出来（png/jpg/webp/svg…）；html/pdf 不算图片", () => {
+    for (const p of ["a.png", "a.JPG", "a.jpeg", "a.webp", "a.svg", "a.gif", "a.avif"]) {
+      expect(isImagePath(p), p).toBe(true);
+    }
+    for (const p of ["a.html", "a.pdf", "a.txt", "a.mp4", "a.mp3"]) {
+      expect(isImagePath(p), p).toBe(false);
+    }
+  });
+
+  it("**没有视觉能力时如实报错并给出路**（离线可测：连请求都不会发）", async () => {
+    const p = "preqin/照片.png";
+    fs.writeFileSync(path.join(root, p), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/视觉模型/);
+    await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/口述成一句说法/);
+  });
+
+  it("PDF 仍走**文本化那句**报错（两类的出路不同，不能混成一句）", async () => {
+    const p = "preqin/讲义2.pdf";
+    fs.writeFileSync(path.join(root, p), "%PDF-1.4");
+    await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/还不能自动读成文字/);
+  });
+
+  it("正文前缀标记必须点明「这不是家长的说法」（提取产物永远不是权威）", () => {
+    expect(IMAGE_BODY_MARK).toContain("不是家长的说法");
+    expect(IMAGE_BODY_MARK).toContain("summary");
+  });
+
+  it("工具层：图片 + 没有视觉凭证 → 报错，且**不留下空条目**", async () => {
+    const noVision = createParentKbTools({ dataDir, parentId, db: main }); // 故意不传 auth/agentDir
+    const t = noVision.find((x: any) => x.name === "parent_kb_save")!;
+    await expect((t as any).execute("v1", { ingest: [{ path: "preqin/照片.png", title: "图里的东西" }] })).rejects.toThrow(
+      /视觉模型/
+    );
+    expect(getKbEntry(lib, "图里的东西")).toBeUndefined();
   });
 });
 

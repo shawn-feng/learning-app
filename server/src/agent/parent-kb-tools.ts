@@ -26,7 +26,8 @@ import { defineTool } from "./tool-kit.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { resolveTopicKey } from "./plan-tools.js";
 import { markStale, KB_ENTRY_TEXT_COLUMN } from "./embeddings.js";
-import { textify, chunkText, KB_BODY_MAX } from "./kb-ingest.js";
+import { textify, chunkText, ingestKindOf, KB_BODY_MAX } from "./kb-ingest.js";
+import { describeImageViaVision, imageMimeFromExt } from "./vision.js";
 import { clipWebPage } from "./web-clip.js";
 import { TOPIC_KEY_RE, putMaterial } from "./parent-materials.js";
 import { resolveMaterialFile } from "../db/materials.js";
@@ -55,6 +56,80 @@ export interface ParentKbToolDeps {
   parentId: string;
   /** 主库（读家长 settings 取 embedding 凭证用）。缺省则写入后**不排队建向量**，检索退回纯精确 */
   db?: DatabaseSync;
+  /** 家长模型凭证 / 应用设置 / 会话运行目录：**图片入库要走视觉模型**（P3④），缺了就只做文本类 */
+  auth?: Record<string, unknown>;
+  appSettings?: Record<string, unknown>;
+  agentDir?: string;
+}
+
+/** 图片正文的前缀标记：**它必须一眼看出不是家长的话**（提取产物永远不是权威，§3.4.1） */
+export const IMAGE_BODY_MARK =
+  "【下面是视觉模型对这张图的描述，不是家长的说法。孩子听到的只会是 summary（家长认过的那段话）】";
+
+export function isImagePath(rel: string): boolean {
+  return imageMimeFromExt(rel) !== "application/octet-stream";
+}
+
+/**
+ * 一份资料 → 可入库的正文（P3 阶段②/④ 的文本化入口）。
+ *
+ * 三条格式的命运不同，且**每一条都要说得出为什么**：
+ * - `html/htm/md/txt`：直接文本化（同步、毫秒级）；
+ * - **图片**：走**视觉模型**。这条路是"**接一条现成的线**"——`app_settings.visionModel` 已经配了、
+ *   `parent_read_image` 已在用同一条能力（`describeImageViaVision`），**不需要新依赖**。
+ *   产物加前缀标记后被塞进 `body`：它**只用来让孩子换个问法也能找到这条**，永远不会成为答案；
+ * - **其它（含 PDF）**：交给 `textify` 抛出它那句已经写好"下一步"的话。
+ *   **绝不返回空正文**让上游以为成功了。
+ */
+export async function extractIngestText(
+  abs: string,
+  rel: string,
+  deps: Pick<ParentKbToolDeps, "dataDir" | "parentId" | "auth" | "appSettings" | "agentDir">
+): Promise<{ text: string; chars: number; truncated: boolean; via: "text" | "vision" }> {
+  const kind = ingestKindOf(rel);
+  if (kind) {
+    const ex = textify(fs.readFileSync(abs, "utf-8"), rel);
+    return { text: ex.text, chars: ex.chars, truncated: ex.truncated, via: "text" };
+  }
+  if (isImagePath(rel)) {
+    if (!deps.auth || !deps.agentDir) {
+      throw new Error(
+        `这份是图片，要读它得用视觉模型——但这次会话没拿到家长配的模型凭证。\n` +
+          `下一步：让家长把图里的要点**口述成一句说法**（那条才是最权威的），或先按"只有资料"的条目挂上（孩子问到时放给她看）。`
+      );
+    }
+    const desc = (
+      await describeImageViaVision(
+        {
+          dataDir: deps.dataDir,
+          parentId: deps.parentId,
+          auth: deps.auth,
+          appSettings: deps.appSettings,
+          agentDir: deps.agentDir,
+        },
+        { type: "image", mimeType: imageMimeFromExt(rel), data: fs.readFileSync(abs).toString("base64") },
+        "如实描述这张图里能看到的内容：有文字就照抄文字，有画面就说清画面（谁、在做什么、什么颜色）。" +
+          "**只描述你看到的东西**——不要推测、不要补充背景知识、不要下结论。"
+      )
+    ).trim();
+    if (!desc) {
+      throw new Error(
+        `这张图读不出内容（视觉模型没返回描述）：${rel}\n` +
+          `下一步：让家长口述要点，或先按"只有资料"的条目挂上。`
+      );
+    }
+    const marked = `${IMAGE_BODY_MARK}\n${desc}`;
+    const truncated = marked.length > KB_BODY_MAX;
+    return {
+      text: truncated ? marked.slice(0, KB_BODY_MAX) : marked,
+      chars: Math.min(marked.length, KB_BODY_MAX),
+      truncated,
+      via: "vision",
+    };
+  }
+  // 其它格式（含 PDF）：让 textify 抛出它那句已经写好"下一步"的话（**别在这里另写一套**）
+  const ex = textify("", rel);
+  return { text: ex.text, chars: ex.chars, truncated: ex.truncated, via: "text" };
 }
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
@@ -352,6 +427,40 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
         }
       }
 
+      /**
+       * **ingest 的文本提取也在开库之前做完**，理由与 clip 相同：图片那一支要走**视觉模型（异步）**，
+       * 而 `withLib` 是同步的。它顺带把"I/O 先做完、再一次性开库写"这条顺序统一了。
+       * 注意 anchor（灌进哪条已有条目）**留到库会话里解析**——那需要读库。
+       */
+      interface PreparedIngest {
+        rel: string;
+        requestedTitle: string;
+        anchor: string;
+        body: string;
+        chars: number;
+        truncated: boolean;
+        via: "text" | "vision";
+      }
+      const prepared: PreparedIngest[] = [];
+      for (const it of ingestItems) {
+        const rel = String(it?.path ?? "").trim().replace(/\\/g, "/").replace(/^materials\//, "");
+        if (!rel) throw new Error("parent_kb_save 的 ingest 每一项都要有 path");
+        const abs = resolveMaterialFile(deps.dataDir, deps.parentId, rel);
+        if (!fs.existsSync(abs)) {
+          throw new Error(`资料不存在：${rel}（先用 parent_list_materials 核对准确相对路径，别猜）`);
+        }
+        const ex = await extractIngestText(abs, rel, deps);
+        prepared.push({
+          rel,
+          requestedTitle: String(it?.title ?? "").trim(),
+          anchor: String(it?.entry_id ?? it?.entry_title ?? "").trim(),
+          body: ex.text, // ⚠️ 字段名是 `body`（入库用），不是 `text`（提取返回的）——别直接 spread `ex`
+          chars: ex.chars,
+          truncated: ex.truncated,
+          via: ex.via,
+        });
+      }
+
       return withLib((lib) => {
         const out: string[] = [];
         /**
@@ -365,30 +474,24 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
         const ingNotes = new Map<string, string>();
         const ingEntries: KbEntryInput[] = [];
         const ingAssets: KbAssetInput[] = [];
-        for (const it of ingestItems) {
-          const rel = String(it?.path ?? "").trim().replace(/\\/g, "/").replace(/^materials\//, "");
-          if (!rel) throw new Error("parent_kb_save 的 ingest 每一项都要有 path");
-          const abs = resolveMaterialFile(deps.dataDir, deps.parentId, rel);
-          if (!fs.existsSync(abs)) {
-            throw new Error(`资料不存在：${rel}（先用 parent_list_materials 核对准确相对路径，别猜）`);
-          }
-          const ex = textify(fs.readFileSync(abs, "utf-8"), rel);
+        for (const p of prepared) {
           let target: { id?: string; title: string };
-          const anchor = String(it?.entry_id ?? it?.entry_title ?? "").trim();
-          if (anchor) {
+          if (p.anchor) {
             // 灌进已有条目：**必须沿用库里那个标题**——`saveKbEntries` 会把 title 一起更新，
             // 若这里传文件名当标题，就等于顺手把家长的条目改名了。
-            const exist = getKbEntry(lib, anchor);
-            if (!exist) throw new Error(`要灌正文的条目不存在：${anchor}（先用 parent_kb_list 核对标题或 id）`);
+            const exist = getKbEntry(lib, p.anchor);
+            if (!exist) throw new Error(`要灌正文的条目不存在：${p.anchor}（先用 parent_kb_list 核对标题或 id）`);
             target = { id: exist.id, title: exist.title };
           } else {
-            target = { title: String(it?.title ?? "").trim() || rel.split("/").pop()!.replace(/\.[^.]+$/, "") };
+            target = { title: p.requestedTitle || p.rel.split("/").pop()!.replace(/\.[^.]+$/, "") };
           }
-          ingEntries.push({ ...target, body: ex.text });
-          ingAssets.push({ ...(target.id ? { entry_id: target.id } : { entry_title: target.title }), path: rel });
+          ingEntries.push({ ...target, body: p.body });
+          ingAssets.push({ ...(target.id ? { entry_id: target.id } : { entry_title: target.title }), path: p.rel });
           ingNotes.set(
             target.title,
-            `- 「${target.title}」← ${rel}（${ex.chars} 字${ex.truncated ? `，太长只收了前 ${KB_BODY_MAX} 字` : ""}）`
+            `- 「${target.title}」← ${p.rel}（${p.via === "vision" ? "图片 → 视觉模型描述" : ""}${p.chars} 字${
+              p.truncated ? `，太长只收了前 ${KB_BODY_MAX} 字` : ""
+            }）`
           );
         }
 
