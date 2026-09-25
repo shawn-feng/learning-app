@@ -238,6 +238,13 @@ describe("KB P3④：图片入库（走视觉模型，**不需要新依赖**）"
     await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/口述成一句说法/);
   });
 
+  it("**PDF 不读文字，只当媒体**（家长拍板）：被拒时把家长引到「挂成只有资料的条目」那条正路", async () => {
+    const p = "preqin/讲义3.pdf";
+    fs.writeFileSync(path.join(root, p), "%PDF-1.4");
+    await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/只用来放给孩子看/);
+    await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/assets/);
+  });
+
   it("**仍不支持的格式**（docx/word 等）走 `textify` 那句报错——各条路的出路不同，不能混成一句", async () => {
     // 注：PDF 从 P3 阶段⑥ 起**已经支持**（见 test/kb-p3-pdf.test.ts），所以这里改用 docx 来守"真正不支持的那一类"。
     // 这条断言当初写的是 PDF——加 PDF 支持后它过期了，**是全量跑才发现的**（单独跑那次在加 PDF 之前）。

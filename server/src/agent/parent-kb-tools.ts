@@ -28,7 +28,6 @@ import { resolveTopicKey } from "./plan-tools.js";
 import { markStale, KB_ENTRY_TEXT_COLUMN } from "./embeddings.js";
 import { textify, chunkText, ingestKindOf, KB_BODY_MAX } from "./kb-ingest.js";
 import { describeImageViaVision, imageMimeFromExt } from "./vision.js";
-import { pdfToText } from "./pdf-text.js";
 import { clipWebPage } from "./web-clip.js";
 import { TOPIC_KEY_RE, putMaterial } from "./parent-materials.js";
 import { resolveMaterialFile } from "../db/materials.js";
@@ -79,7 +78,7 @@ export function isImagePath(rel: string): boolean {
  * - **图片**：走**视觉模型**。这条路是"**接一条现成的线**"——`app_settings.visionModel` 已经配了、
  *   `parent_read_image` 已在用同一条能力（`describeImageViaVision`），**不需要新依赖**。
  *   产物加前缀标记后被塞进 `body`：它**只用来让孩子换个问法也能找到这条**，永远不会成为答案；
- * - **其它（含 PDF）**：交给 `textify` 抛出它那句已经写好"下一步"的话。
+ * - **其它（含 docx 等）**：交给 `textify` 抛出它那句已经写好"下一步"的话。
  *   **绝不返回空正文**让上游以为成功了。
  */
 export async function extractIngestText(
@@ -127,10 +126,21 @@ export async function extractIngestText(
       via: "vision",
     };
   }
-  // PDF：走 pdfjs 纯 JS 路径（动态 import，没装时给可操作的话）
+  /**
+   * **PDF：不读文字，只当媒体**（家长拍板，2026-09-25）。
+   *
+   * 与视频同类处理：把它**展示**给孩子看，而不是把它的字抽进 `body`。
+   * 理由和我们一开始给视频的那条一样——**画面/版面的适龄判断权在家长**，
+   * 而且抽出来的文字是"描述级"的东西，进 `body` 只能影响召回、并不能成为孩子听到的话，
+   * 为它引一个解析依赖不划算。所以这里**明确拒绝提取**，并把家长引到"挂成只有资料的条目"那条正路。
+   */
   if (/\.pdf$/i.test(rel)) {
-    const r = await pdfToText(abs, { maxChars: KB_BODY_MAX });
-    return { text: r.text, chars: r.text.length, truncated: r.truncated, via: "text" };
+    throw new Error(
+      `PDF 不读成文字——它和视频一样，**只用来放给孩子看**。\n` +
+        `下一步：把它作为"只有资料"的条目挂上去（\`parent_kb_save\` 的 \`assets\`，不写 summary），` +
+        `孩子问到时助手会用 display_content 直接把这份 PDF 放出来（面板里能翻页看，点不出去）。\n` +
+        `如果你想要的是"这件事该怎么说"，那句话只能由家长给——把要点口述给我就行。`
+    );
   }
   // 其它格式：让 textify 抛出它那句已经写好"下一步"的话（**别在这里另写一套**）
   const ex = textify("", rel);
@@ -281,7 +291,8 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
       "**`ingest`：把资料读成文字收进条目**（html/htm、md、txt）。家长传了资料说「这份收进库里」时用。\n" +
       "**读出来的是「资料讲了什么」，不是「该怎么说」**——正文只进 `body`，用来让孩子**换个问法也能找到这条**；\n" +
       "她真正听到的仍然是 `summary`。所以 ingest 之后**必须追问一句**「这件事你想怎么跟她说？」。\n" +
-      "**PDF 与图片还读不了**：被拒时如实说，并给出路（让家长口述要点，或先按「只有资料」的条目挂上）。\n\n" +
+      "**图片**：走视觉模型读出图里的内容（**不需要额外配置**）。\n" +
+      "**PDF 不读**：它和视频一样**只用来放给孩子看**——被拒时如实说，并把家长引到「把这份挂成只有资料的条目」那条正路。\n\n" +
       "**`clip`：把网页「落袋」**。家长说「把这个网页存下来给她看」时用（`url` 必填，`topic` 缺省 `web`）。\n" +
       "服务端把网页抓下来，存成**单个自包含 HTML**（图片内联、**脚本/外链/表单全剥掉**、再叠一层 CSP），\n" +
       "落进 `materials/` 并挂到条目上——**孩子只看到这一页，点不出去、也不会再访问别的网站**。\n" +
@@ -350,7 +361,7 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
             entry_id: Type.Optional(Type.String({ description: "把提取的正文灌进这条已有条目（id）" })),
             entry_title: Type.Optional(Type.String({ description: "同上，按精确标题" })),
           }),
-          "把资料读成文字收进条目（html/md/txt；PDF 与图片暂不支持）"
+          "把资料读成文字收进条目（html/md/txt、图片；PDF 不读，只展示）"
         )
       ),
       clip: Type.Optional(
