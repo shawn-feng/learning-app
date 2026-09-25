@@ -238,10 +238,13 @@ describe("KB P3④：图片入库（走视觉模型，**不需要新依赖**）"
     await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/口述成一句说法/);
   });
 
-  it("PDF 仍走**文本化那句**报错（两类的出路不同，不能混成一句）", async () => {
-    const p = "preqin/讲义2.pdf";
-    fs.writeFileSync(path.join(root, p), "%PDF-1.4");
+  it("**仍不支持的格式**（docx/word 等）走 `textify` 那句报错——各条路的出路不同，不能混成一句", async () => {
+    // 注：PDF 从 P3 阶段⑥ 起**已经支持**（见 test/kb-p3-pdf.test.ts），所以这里改用 docx 来守"真正不支持的那一类"。
+    // 这条断言当初写的是 PDF——加 PDF 支持后它过期了，**是全量跑才发现的**（单独跑那次在加 PDF 之前）。
+    const p = "preqin/讲义2.docx";
+    fs.writeFileSync(path.join(root, p), "PK\u0003\u0004fake-docx");
     await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/还不能自动读成文字/);
+    await expect(extractIngestText(path.join(root, p), p, { dataDir, parentId })).rejects.toThrow(/口述成一句说法/);
   });
 
   it("正文前缀标记必须点明「这不是家长的说法」（提取产物永远不是权威）", () => {

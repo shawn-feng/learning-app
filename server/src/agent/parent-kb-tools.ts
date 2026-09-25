@@ -28,6 +28,7 @@ import { resolveTopicKey } from "./plan-tools.js";
 import { markStale, KB_ENTRY_TEXT_COLUMN } from "./embeddings.js";
 import { textify, chunkText, ingestKindOf, KB_BODY_MAX } from "./kb-ingest.js";
 import { describeImageViaVision, imageMimeFromExt } from "./vision.js";
+import { pdfToText } from "./pdf-text.js";
 import { clipWebPage } from "./web-clip.js";
 import { TOPIC_KEY_RE, putMaterial } from "./parent-materials.js";
 import { resolveMaterialFile } from "../db/materials.js";
@@ -91,8 +92,7 @@ export async function extractIngestText(
     const ex = textify(fs.readFileSync(abs, "utf-8"), rel);
     return { text: ex.text, chars: ex.chars, truncated: ex.truncated, via: "text" };
   }
-  if (isImagePath(rel)) {
-    if (!deps.auth || !deps.agentDir) {
+  if (isImagePath(rel)) {    if (!deps.auth || !deps.agentDir) {
       throw new Error(
         `这份是图片，要读它得用视觉模型——但这次会话没拿到家长配的模型凭证。\n` +
           `下一步：让家长把图里的要点**口述成一句说法**（那条才是最权威的），或先按"只有资料"的条目挂上（孩子问到时放给她看）。`
@@ -127,7 +127,12 @@ export async function extractIngestText(
       via: "vision",
     };
   }
-  // 其它格式（含 PDF）：让 textify 抛出它那句已经写好"下一步"的话（**别在这里另写一套**）
+  // PDF：走 pdfjs 纯 JS 路径（动态 import，没装时给可操作的话）
+  if (/\.pdf$/i.test(rel)) {
+    const r = await pdfToText(abs, { maxChars: KB_BODY_MAX });
+    return { text: r.text, chars: r.text.length, truncated: r.truncated, via: "text" };
+  }
+  // 其它格式：让 textify 抛出它那句已经写好"下一步"的话（**别在这里另写一套**）
   const ex = textify("", rel);
   return { text: ex.text, chars: ex.chars, truncated: ex.truncated, via: "text" };
 }
