@@ -54,7 +54,7 @@ import {
 // ISSUE-144：场景技能（常驻层只留索引与铁律，正文按需 load_skill 加载）
 import { buildSkillIndexBlock } from "./skills/parent/index.js";
 import { IRON_RULES_BLOCK } from "./skills/parent/shared.js";
-import { createLoadSkillTool, createParentSkillState, LOAD_SKILL_TOOL_NAME } from "./parent-skills.js";
+import { createLoadSkillTool, createParentSkillState, LOAD_SKILL_TOOL_NAME, seedLoadedFromMessages } from "./parent-skills.js";
 // ISSUE-144：工具说明下沉（一句 + 指路 + Schema 只留结构 + 场景守卫）——只在注册点过一道
 import { compactParentTools } from "./parent-tool-compact.js";
 
@@ -176,6 +176,10 @@ async function ensureEntry(
   const fsTools = createServerFsTools(workspace);
   // ISSUE-144：会话级技能状态——`load_skill` 与场景守卫共用（同一会话内加载过的场景，其工具才肯执行）
   const skillState = createParentSkillState();
+  // ISSUE-144（2026-09-25 修"同一场景重复整段加载"）：`loaded` 只在内存里，而会话实例会因部署/
+  // 重启被重建（jsonl 续接、对话还在）。把"当前会话消息"喂给 load_skill，并在建会话后立刻从历史
+  // 恢复已加载场景——否则模型会把同一份 2~5k 字正文一遍遍重读。
+  const sessionRef: { session?: { messages?: unknown[] } } = {};
   const parentTools = createParentAgentTools({
     db: deps.db,
     dataDir: deps.dataDir,
@@ -209,7 +213,12 @@ async function ensureEntry(
       // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
       createParentReportTool({ db: deps.db, parentId, streamKey: key }),
       // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite，按本家长隔离）
-      createLoadSkillTool({ dataDir: deps.dataDir, parentId, state: skillState }),
+      createLoadSkillTool({
+        dataDir: deps.dataDir,
+        parentId,
+        state: skillState,
+        getMessages: () => sessionRef.session?.messages ?? [],
+      }),
       createGetDateTool(),
     ],
     skillState
@@ -248,6 +257,14 @@ async function ensureEntry(
     shouldAutoNewSession: () => resetMarks.has(key),
   });
   resetMarks.delete(key);
+
+  sessionRef.session = handle.session;
+  // 续接历史：同一个 jsonl 里已经 load 过的场景恢复进状态（并顺带解锁其工具），
+  // 这样重启后模型不必把正文再读一遍——正文本来就在对话历史里。
+  const restoredSkills = seedLoadedFromMessages(skillState, handle.session?.messages ?? []);
+  if (restoredSkills.length) {
+    console.log(`[parent-agent] 会话 ${key} 恢复已加载场景：${restoredSkills.join("、")}`);
+  }
 
   const entry: Entry = { session: handle.session, busy: false, paths };
   attachStream(entry, key);

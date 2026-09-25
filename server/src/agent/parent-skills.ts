@@ -21,6 +21,11 @@ export const LOAD_SKILL_TOOL_NAME = "load_skill";
 export const MAX_SKILL_CHARS = 64 * 1024;
 /** 覆盖层正文长度上限（比内置上限宽松一档即可；超了让家长精简，而不是静默截断） */
 export const MAX_SKILL_OVERRIDE_CHARS = 20 * 1024;
+/**
+ * 判"正文是否还在当前上下文里"的指纹长度：取正文开头这一段做逐字比对。
+ * 压缩摘要（compaction）不会逐字复制这么长一段，所以命中即可认为正文仍在上下文。
+ */
+const BODY_FINGERPRINT_CHARS = 120;
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
@@ -125,6 +130,83 @@ export function createParentSkillState(): ParentSkillState {
   return { loaded: new Set<string>() };
 }
 
+/** 从 `toolCall` 参数里取技能名（部分 provider 会把 arguments 传成 JSON 字符串，这里统一还原）。 */
+function skillNameOfCall(part: any): string {
+  const raw = part?.arguments ?? part?.args ?? part?.input;
+  if (typeof raw === "string") {
+    try {
+      return String(JSON.parse(raw)?.name ?? "").trim();
+    } catch {
+      return "";
+    }
+  }
+  return String(raw?.name ?? "").trim();
+}
+
+/** 会话历史里的所有文本片段（工具结果、助手文本；用于"正文还在不在上下文"的判定）。 */
+function* textParts(messages: readonly unknown[]): Generator<string> {
+  for (const msg of messages ?? []) {
+    const content: any = (msg as any)?.content;
+    if (typeof content === "string") {
+      yield content;
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (typeof part?.text === "string") yield part.text;
+    }
+  }
+}
+
+/**
+ * 从**会话历史**恢复"本会话已加载过哪些场景"——进程重启/部署后必备。
+ *
+ * 为什么必须有（2026-09-25 实证）：家长会话**不做跨天新建**（刻意长期累积，见 `openParentSession`），
+ * 而 `loaded` 只在内存里；服务端一重启（部署、崩溃、重启）状态就没了，可对话仍在 jsonl 里续接。
+ * 于是模型会把同一份正文**整段再读一遍**——实测某个会话文件里 `load_skill` 整段正文重复灌了
+ * **37,466 字符**（占该文件全部技能正文的 78%：materials 重复 5 次、kb 重复 5 次、course 重复 1 次，
+ * ≈ 2.5 万 token），而正文其实一直躺在对话历史里，重复加载纯属烧 token。
+ *
+ * 与既有语义一致：技能正文"在会话里读过一次就固定"（改口径要**新会话**生效）——所以这里
+ * 只认"这个会话里调用过 `load_skill` 且技能名有效"，不比对正文内容，正文改了也不重灌。
+ */
+export function seedLoadedFromMessages(state: ParentSkillState, messages: readonly unknown[]): string[] {
+  // 只有"调用 + 结果真的回来了（且不是报错）"才算读过——否则一次中途崩掉/被中止的调用会让
+  // 守卫误以为正文已在上下文里，模型就再也拿不到那份口径了。
+  const completed = new Set<string>();
+  for (const msg of messages ?? []) {
+    const m: any = msg;
+    if (m?.role !== "toolResult" || m.toolName !== LOAD_SKILL_TOOL_NAME) continue;
+    if (m.isError === true || !m.toolCallId) continue;
+    completed.add(String(m.toolCallId));
+  }
+  const found: string[] = [];
+  for (const msg of messages ?? []) {
+    const content: any = (msg as any)?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (!part || part.type !== "toolCall" || part.name !== LOAD_SKILL_TOOL_NAME) continue;
+      if (!part.id || !completed.has(String(part.id))) continue;
+      const name = skillNameOfCall(part);
+      // 名字错到不存在的调用不算数（那次调用是报错返回，正文没进过上下文）
+      if (!name || state.loaded.has(name) || !findParentSkill(name)) continue;
+      state.loaded.add(name);
+      found.push(name);
+    }
+  }
+  return found;
+}
+
+/** 正文是否**仍在当前上下文**里（压缩之后可能只剩摘要 → 必须重发，否则模型手里没有正文）。 */
+export function bodyStillInContext(messages: readonly unknown[], body: string): boolean {
+  const fingerprint = String(body ?? "").trim().slice(0, BODY_FINGERPRINT_CHARS);
+  if (fingerprint.length < 24) return false;
+  for (const text of textParts(messages)) {
+    if (text.includes(fingerprint)) return true;
+  }
+  return false;
+}
+
 /**
  * 场景守卫：工具所属场景**本会话还没加载**时返回一段可读提示，否则返回 `null`。
  *
@@ -183,10 +265,21 @@ export function resolveParentSkill(dataDir: string, parentId: string, name: stri
  * `state` 传入时与"场景守卫"共用（同一会话内加载过的场景，属于该场景的工具才肯执行）；
  * `parentId` 用于取**该家长自己**的覆盖层（P5）。
  *
+ * `getMessages` 传入时额外做一件事（2026-09-25 的重复加载问题修复）：重复调用时**确认正文还在
+ * 上下文里**——被压缩掉就整段重发，不当哑巴（"重启后接着聊"那半场由 `seedLoadedFromMessages`
+ * 在 `ensureEntry` 建会话时完成，工具里不必再扫一遍历史：扫描会把**本轮正在进行的这次调用**
+ * 也算成"已加载"，反而误判）。
+ *
  * 覆盖版生效时，正文后面**由代码追加** `SKILL_OVERRIDE_POLICY`（不可覆盖条款）——
  * 家长改的是"怎么说"，改不掉"能做什么"。
  */
-export function createLoadSkillTool(deps: { dataDir: string; parentId: string; state?: ParentSkillState }) {
+export function createLoadSkillTool(deps: {
+  dataDir: string;
+  parentId: string;
+  state?: ParentSkillState;
+  /** 取当前会话消息（判定"正文是否还在上下文"用）。不传＝维持原语义（重复加载只回桩）。 */
+  getMessages?: () => readonly unknown[];
+}) {
   // 未接管状态时退回内部 Set（脚本/测试直调 `load_skill` 也能保持会话内幂等）
   const loadedInSession = deps.state ? deps.state.loaded : new Set<string>();
 
@@ -211,8 +304,23 @@ export function createLoadSkillTool(deps: { dataDir: string; parentId: string; s
         throw new Error(`没有这个场景技能：${name || "(空)"}。可用的有：${list}`);
       }
       const { skill, body, overridden, truncated } = resolved;
+      const renderBody = () =>
+        ok(
+          `已加载场景：${skill.title}（${skill.name}）\n` +
+            (overridden ? "（这是**家长自定义过**的口径，以它为准）\n" : "") +
+            (truncated ? `（正文过长，已截断到 ${MAX_SKILL_CHARS} 字符）\n` : "") +
+            `\n${body}` +
+            (overridden ? `\n\n${SKILL_OVERRIDE_POLICY}` : "")
+        );
 
       if (loadedInSession.has(skill.name)) {
+        // 重复加载：能取到会话消息时先确认正文是否还在上下文里（被压缩掉就重发）；
+        // 取不到（脚本/测试直调）→ 维持原语义，只回桩。
+        if (deps.getMessages && !bodyStillInContext(deps.getMessages(), body)) {
+          console.log(`[parent-agent] skill 重新加载（上下文里已无正文，可能被压缩过）: ${skill.name}`);
+          return renderBody();
+        }
+        console.log(`[parent-agent] skill 命中已加载，跳过重复正文: ${skill.name}（省 ${body.length} 字符）`);
         return ok(
           `已加载场景：${skill.title}（${skill.name}）——本次会话已经读过，正文见前面那条工具结果，不要重复展开。`
         );
@@ -220,13 +328,7 @@ export function createLoadSkillTool(deps: { dataDir: string; parentId: string; s
       loadedInSession.add(skill.name);
       console.log(`[parent-agent] skill loaded: ${skill.name}${overridden ? " (家长覆盖版)" : ""}`);
 
-      return ok(
-        `已加载场景：${skill.title}（${skill.name}）\n` +
-          (overridden ? "（这是**家长自定义过**的口径，以它为准）\n" : "") +
-          (truncated ? `（正文过长，已截断到 ${MAX_SKILL_CHARS} 字符）\n` : "") +
-          `\n${body}` +
-          (overridden ? `\n\n${SKILL_OVERRIDE_POLICY}` : "")
-      );
+      return renderBody();
     },
   });
 }

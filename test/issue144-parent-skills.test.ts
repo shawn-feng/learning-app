@@ -30,9 +30,11 @@ import {
   MAX_SKILL_OVERRIDE_CHARS,
   createLoadSkillTool,
   createParentSkillState,
+  bodyStillInContext,
   listParentSkillOverrides,
   resolveParentSkill,
   scenarioGuard,
+  seedLoadedFromMessages,
   skillRefOf,
   validateSkillOverride,
   type ParentSkillState,
@@ -779,6 +781,101 @@ describe("ISSUE-144 A 路线：场景守卫（未加载场景 → 拒绝执行�
     expect(scenarioGuard(state, "parent-scene-course")).toBeNull();
     const again = await load.execute("t5", { name: "parent-scene-course" });
     expect(again.content[0].text).toContain("已经读过"); // 幂等：不重复灌正文
+  });
+
+  // —— 2026-09-25 修「同一会话里同一场景被整段重复加载」——
+  // 实证：本地/201 的同一个 jsonl 里 parent-scene-course(5071 字) 被整段加载 3 次、
+  // parent-scene-materials(2209 字) 6 次、parent-scene-kb(4132 字) 4 次——因为 loaded 只在内存里，
+  // 服务端一重启就丢，而家长会话是长期累积、jsonl 续接的。正文其实一直躺在历史里。
+  it("进程重启后续接历史：已加载场景从会话历史恢复，重复加载只回桩", async () => {
+    const history: any[] = [];
+    const state1 = createParentSkillState();
+    const load1: any = createLoadSkillTool({ dataDir, parentId, state: state1, getMessages: () => history });
+    const first = await load1.execute("t1", { name: "parent-scene-course" });
+    expect(first.content[0].text.length).toBeGreaterThan(2000); // 首次：整段正文
+    history.push({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "c1", name: "load_skill", arguments: { name: "parent-scene-course" } }],
+    });
+    history.push({
+      role: "toolResult",
+      toolName: "load_skill",
+      toolCallId: "c1",
+      isError: false,
+      content: [{ type: "text", text: first.content[0].text }],
+    });
+
+    // 模拟服务端重启：内存状态清零，但同一个 jsonl 历史继续。
+    // 真实代码里这一步在 parent-registry.ensureEntry 建会话后调用（这里直接调同名函数）。
+    const state2 = createParentSkillState();
+    const restored = seedLoadedFromMessages(state2, history);
+    expect(restored).toEqual(["parent-scene-course"]);
+    const load2: any = createLoadSkillTool({ dataDir, parentId, state: state2, getMessages: () => history });
+    const again = await load2.execute("t2", { name: "parent-scene-course" });
+
+    expect(state2.loaded.has("parent-scene-course"), "应能从历史恢复已加载场景").toBe(true);
+    expect(scenarioGuard(state2, "parent-scene-course"), "恢复后守卫应直接放行").toBeNull();
+    expect(again.content[0].text).toContain("已经读过");
+    expect(again.content[0].text.length).toBeLessThan(200); // 不再整段重发（5071 → 60 余字）
+  });
+
+  it("历史里 arguments 是 JSON 字符串时同样能恢复（provider 形态差异）；报错/没结果的调用都不算", () => {
+    const state = createParentSkillState();
+    const restored = seedLoadedFromMessages(state, [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "a1", name: "load_skill", arguments: '{"name":"parent-scene-plan"}' }],
+      },
+      {
+        role: "toolResult",
+        toolName: "load_skill",
+        toolCallId: "a1",
+        isError: false,
+        content: [{ type: "text", text: "已加载场景：学习与考核安排（parent-scene-plan）" }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "a2", name: "load_skill", arguments: '{"name":"不存在的场景"}' }],
+      },
+      {
+        role: "toolResult",
+        toolName: "load_skill",
+        toolCallId: "a2",
+        isError: true,
+        content: [{ type: "text", text: "没有这个场景技能：不存在的场景" }],
+      },
+      // 只有调用、结果没回来（中途崩掉/被中止）→ 正文没进过上下文，不能算加载过
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "a3", name: "load_skill", arguments: { name: "parent-scene-points" } }],
+      },
+    ]);
+    expect(restored).toEqual(["parent-scene-plan"]);
+    expect(state.loaded.has("不存在的场景")).toBe(false);
+    expect(state.loaded.has("parent-scene-points"), "结果没回来的调用不算加载过").toBe(false);
+  });
+
+  it("正文已被压缩掉（只剩摘要）→ 重复加载必须整段重发，不当哑巴", async () => {
+    const state = createParentSkillState();
+    state.loaded.add("parent-scene-course");
+    const compacted = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "c9", name: "load_skill", arguments: { name: "parent-scene-course" } }],
+      },
+      { role: "toolResult", content: [{ type: "text", text: "（上下文摘要）家长在备一门课，模型先读了备课文案。" }] },
+    ];
+    expect(bodyStillInContext(compacted, findParentSkill("parent-scene-course")!.body)).toBe(false);
+    const load: any = createLoadSkillTool({ dataDir, parentId, state, getMessages: () => compacted });
+    const r = await load.execute("t3", { name: "parent-scene-course" });
+    expect(r.content[0].text.length).toBeGreaterThan(2000);
+    expect(r.content[0].text).toContain("已加载场景");
+  });
+
+  it("正文仍在上下文里（历史里那条工具结果还在）→ 判定为可跳过", () => {
+    const body = findParentSkill("parent-scene-materials")!.body;
+    const withBody = [{ role: "toolResult", content: [{ type: "text", text: `已加载场景：整理 / 找资料（x）\n\n${body}` }] }];
+    expect(bodyStillInContext(withBody, body)).toBe(true);
   });
 });
 

@@ -300,6 +300,43 @@
 
 **结论**：家长/孩子身上跑的"技能"**只有自建那一套**（场景技能正文 + `load_skill` + DB 覆盖层 + 场景守卫）；原生那套一行都没在跑，也没有任何界面能真正用上它。
 
+### 3.10 修「同一会话里同一场景被整段重复加载」（2026-09-25 晚，家长在 201 生产环境发现）
+
+**现象**：同一个家长会话里 `parent-scene-course` 被重复加载，白烧 token。
+
+**根因（本地逐条实证，不是推测）**：`ParentSkillState.loaded` **只在内存里**，而家长会话**刻意不跨天新建**
+（`openParentSession`：key 不含日期、长期累积）；服务端一重启/部署，状态清零而 jsonl 继续被 `continueRecent` 续接
+⇒ 模型把同一份正文**整段再读一遍**。逐条核对本地 `agent-sessions/**/*.jsonl` 里的 `load_skill` **工具结果**：
+
+| 会话文件 | 整段正文合计 | 其中重复 | 重复项 |
+|---|---|---|---|
+| `86a84278-…/parent/2026-09-24T06-00-38-700Z_….jsonl`（140 行长会话） | 48,005 字符 | **37,466 字符（78%）** | materials ×5、kb ×5、course ×1 |
+
+⇒ 单个长会话白烧 ≈2.5 万 token。全库 41 个 jsonl：重复 37,466 / 119,186 字符 = **31.4%**（`tmp/skill-waste-summary.cjs`，判据＝同一 jsonl 里同一场景第 2 次起的整段加载）。
+
+**修法（两处，都不动 system prompt、不动工具集 —— 前缀缓存不受影响）**：
+
+1. **建会话时从历史恢复**：`seedLoadedFromMessages`（`parent-registry.ensureEntry` 调）扫历史里**有结果回来且未报错**的
+   `load_skill` 调用（按 `toolCallId` 配对，避免把"中途崩掉/被中止的调用"当成读过），把场景名塞回 `state.loaded`
+   ⇒ 重启后同一场景**不必再读**，其工具也不会被守卫误拦。与既有语义一致（正文"在会话里读过一次就固定"，
+   改口径要**新会话**生效），故**不比对正文内容**。
+2. **重复加载时先确认正文还在上下文**：`bodyStillInContext`（`createLoadSkillTool` 经 `getMessages` 取消息）——
+   还在 → 只回 ~65 字符幂等桩；**已被压缩（compaction）掉 → 整段重发**，不当哑巴。这是原版幂等桩的隐藏坑：
+   状态说"读过"，而正文可能已被摘要替换。
+
+**实跑验证**（`tmp/skill-reload-e2e.cjs`，真账号 `test@qq.com` + `mimo-tokenplan/mimo-v2.5`）：
+
+| 阶段 | 动作 | 结果 |
+|---|---|---|
+| 1 | 重置会话 → 问「珊珊最近学得怎么样？」 | `load_skill parent-scene-progress` → **3973 字符整段**（首次，正确） |
+| — | **重启服务端**（模拟部署） | 日志 `[parent-agent] 会话 … 恢复已加载场景：parent-scene-progress、parent-scene-materials、parent-scene-plan` |
+| 3 | 问资料库 | 该轮 **零 `load_skill` 调用**，直接 `parent_list_materials`（修复前会白灌 2327 字符） |
+| 4 | 问掌握情况 | 同样 **零 `load_skill` 调用**，14.7s 完成 |
+
+**明确留出的限制**：守卫判据仍是"这个场景加载过"，而非"正文此刻还在上下文里"——若**压缩把正文摘要掉**而状态还在，
+守卫仍会放行；模型若再调 `load_skill` 会拿到整段重发（自愈），但它若不调、直接照摘要干活，就有拿旧摘要办事的风险。
+彻底修需让 `scenarioGuard` 也做"正文在场"检查（每次守卫调用都要扫一遍消息，成本待评估）——**本轮不做，记入待办**。
+
 ## 四、关键设计决定（含理由）
 
 1. **技能正文放 TS 模块，不放 `.md` 文件**：server 是 esbuild 打包运行（`server/src/index.ts` 有"bundled 后 `__dirname` 变化"的教训），文件要额外处理构建/asar 拷贝；而 TS 常量还能让**重复规则物理同源**（`REPEAT_RULES_BLOCK` 被 plan / automation 两处引用，测试断言两处都 `toContain` 同一常量）。
@@ -401,4 +438,17 @@
 4. **三端构建 + 类型**：`cd server && npx tsc --noEmit` **exit 0**；`npx electron-vite build` **exit 0**（main 278.35 kB / preload 26.86 kB / renderer 2509.89 kB）；`web` 的 `npx vite build` **exit 0**（2153 modules）；
 5. **全量回归**：`npx vitest run` → **8 files / 15 tests 失败，593 passed / 8 skipped（67 files / 616 tests）**，失败清单与既有基线**逐项一致**（`assess-guide` / `assessment` / `english-course-session` / `event-poll-config` / `kb-sqlite` / `page-bridge` / `sync` / `token-stats`），**零新增失败**；留档 `tmp/issue144-skills-cleanup-regression.txt`。
    - 注：跑全量前发现 8788 上的服务端已停（`ECONNREFUSED` → 服务端依赖型用例成批红），遂以 `cd server && npx tsx src/index.ts` 起了一个（数据目录不变），复跑后回到基线。
+
+### 7.7 「技能重复加载」修复的证据（2026-09-25 晚）
+
+1. **量化复现**：`node tmp/skill-waste-summary.cjs` → 41 个 jsonl 里 `load_skill` 整段正文合计 119,186 字符，其中**同一会话内重复整段加载 37,466 字符（31.4%）**，全部集中在一个 140 行的长会话（materials 重复 5 次、kb 重复 5 次、course 重复 1 次）；该文件内重复占比 **78%**；
+2. **单测**：`test/issue144-parent-skills.test.ts` **45/45**（原 41 + 新增 4）：
+   - 进程重启后续接历史 → 从历史恢复、守卫直接放行、重复加载只回桩（5071 → <200 字符）；
+   - 历史里 `arguments` 是 JSON 字符串也能恢复；**报错的调用**与**只有调用没有结果的调用**都不算"读过"；
+   - 正文已被压缩掉（只剩摘要）→ 重复加载**整段重发**；
+   - 正文仍在上下文里 → 判定为可跳过；
+3. **实跑（真账号 + 真模型）**：见 §3.10 的阶段 1/3/4 表（首次整段 3973 字符 → 重启后两轮**零 `load_skill` 调用**）；原始记录 `tmp/skill-reload-e2e-phase{1,2,3,4}.json`；
+4. **服务端日志佐证**：`[parent-agent] 会话 … 恢复已加载场景：parent-scene-progress、parent-scene-materials、parent-scene-plan`；命中时 `skill 命中已加载，跳过重复正文: X（省 N 字符）`；压缩场景 `skill 重新加载（上下文里已无正文，可能被压缩过）: X`；
+5. **类型 + 全量回归**：`cd server && npx tsc --noEmit` **exit 0**；`npx vitest run` → **8 files / 15 tests 失败，802 passed / 8 skipped（76 files / 825 tests）**，失败清单与既有基线逐项一致（`assess-guide` / `assessment` / `english-course-session` / `event-poll-config` / `kb-sqlite` / `page-bridge` / `sync` / `token-stats`），**零新增失败**；留档 `tmp/issue144-skill-reload-regression.txt`。
+   - 注：文件/用例总数比 §7.6 那次（67 files / 616 tests）多，是**并行工作线**（ISSUE-148 等，未入库部分）新增了测试文件，非本轮改动。
 
