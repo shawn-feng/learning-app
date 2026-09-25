@@ -243,12 +243,13 @@ export function createChildLifePlanCreateTool(deps: PlanToolsDeps) {
     label: "创建自己的生活计划（加分项）",
     description:
       "孩子自己安排一条**生活计划**（加分项，制定人=孩子自己）：例如「我想每天睡前读 20 分钟书」。\n" +
-      "**参数**：title 必填；date 可选（缺省=今天，YYYY-MM-DD）；time 可选（HH:mm 截止时刻）。\n" +
-      "**语义**：你自己给自己安排的事，算**加分项**（optional）——完成后有积分奖励；与家长的「必须完成项」不同，不做不会扣分。同日同标题已存在会自动跳过。",
+      "**参数**：title 必填；date 可选（缺省=今天，YYYY-MM-DD）；time 可选（HH:mm 截止时刻）；endDate 可选（跨日期结束日，一件事几天内完成时用，如「这周日之前读完这本书」）。\n" +
+      "**语义**：你自己给自己安排的事，算**加分项**（optional）——完成后有积分奖励；与家长的「必须完成项」不同，不做不会扣分。填了 endDate 会生成**一条**跨日期计划（只在结束日判定），不要把多天意图拆成多天各排一条。同日同标题已存在会自动跳过。",
     parameters: Type.Object({
       title: Type.String({ description: "要做的事（干净表述，时间放 time 参数）" }),
       date: Type.Optional(Type.String({ description: "哪天做，YYYY-MM-DD；缺省 = 今天" })),
       time: Type.Optional(Type.String({ description: "截止时刻 HH:mm（可选），如 20:30" })),
+      endDate: Type.Optional(Type.String({ description: "跨日期结束日 YYYY-MM-DD（含，可=date 表示单日）；一件事几天内完成时用" })),
     }),
     execute: async (_tc, params) => {
       const title = String(params?.title ?? "").trim();
@@ -256,6 +257,13 @@ export function createChildLifePlanCreateTool(deps: PlanToolsDeps) {
       if (title.length > 200) throw new Error("title 过长（≤200 字）");
       const d = String(params?.date ?? "").trim();
       const date = validDate(d) ? d : localDateStr();
+      const endDateRaw = String(params?.endDate ?? "").trim();
+      let endDate = "";
+      if (endDateRaw) {
+        if (!validDate(endDateRaw)) throw new Error(`endDate 格式应为 YYYY-MM-DD：${endDateRaw}`);
+        if (endDateRaw < date) throw new Error(`endDate（${endDateRaw}）不能早于 date（${date}）`);
+        endDate = endDateRaw;
+      }
       const time = String(params?.time ?? "").trim();
       if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error(`time 格式应为 HH:mm：${time}`);
       const kb = openKb(deps.dataDir, deps.parentId, deps.childId);
@@ -276,9 +284,17 @@ export function createChildLifePlanCreateTool(deps: PlanToolsDeps) {
              (id,parent_id,child_id,title,creator,origin,carry_from,recurrence_id,start_at,due_at,status,result,done_at,
               task_type,count_in_rate,points,active,created_at,updated_at)
            VALUES (?,?,?,?,?,'conversation','','',?,?,'pending','','',?,1,0,1,?,?)`
-        ).run(id, deps.parentId, deps.childId, title, "child", `${date} 00:00:00`, time ? `${date} ${time}:00` : `${date} 23:59:59`, "optional", now, now);
+        ).run(
+          id, deps.parentId, deps.childId, title, "child",
+          `${date} 00:00:00`,
+          time ? `${endDate || date} ${time}:00` : `${endDate || date} 23:59:59`,
+          "optional", now, now
+        );
         return {
-          content: [{ type: "text" as const, text: `已为你添加生活计划「${title}」${time ? `（${time} 前）` : ""}（加分项，完成有积分奖励）。` }],
+          content: [{
+            type: "text" as const,
+            text: `已为你添加生活计划「${title}」（${date}${endDate ? `~${endDate}` : ""}${time ? `，${time} 前` : ""}）（加分项，完成有积分奖励）。`,
+          }],
           details: {},
         };
       } finally {
@@ -419,12 +435,13 @@ export function createChildStudyPlanCreateTool(deps: PlanToolsDeps) {
     label: "创建自己的学习计划（加分项）",
     description:
       "孩子自己安排**某天想学哪几门课**（加分项，制定人=孩子自己）：例如「我明天想学《论语学而篇》」「我想复习昨天那课」。\n" +
-      "**参数**：`courses` 必填（课程名数组，一项一课；要复习的课在名字前加「复习：」前缀）；`date` 可选（缺省=今天，YYYY-MM-DD）。\n" +
-      "**语义**：你自己给自己安排的学习任务，算**加分项**（optional）——完成后有积分奖励；不做不会扣分。同日同课已存在会自动跳过。\n" +
+      "**参数**：`courses` 必填（课程名数组，一项一课；要复习的课在名字前加「复习：」前缀）；`date` 可选（缺省=今天，YYYY-MM-DD）；`endDate` 可选（跨日期结束日：一门课几天内慢慢学完时用，如「这周把〈学而篇〉学完」，此时 courses 只能填一门）。\n" +
+      "**语义**：你自己给自己安排的学习任务，算**加分项**（optional）——完成后有积分奖励；不做不会扣分。填了 endDate 会生成**一条**跨日期计划（只在结束日判定），不要拆成多天各排一条。同日同课已存在会自动跳过。\n" +
       "**课程名必须真实存在**（在家长给你的主题课程内）：不确定课程名时，先 `child_study_plan_list` 看已排的课，或问 AI 伙伴/家长确认，不要自己编名字。",
     parameters: Type.Object({
       courses: Type.Array(Type.String({ description: "课程名数组（复习加「复习：」前缀）" })),
       date: Type.Optional(Type.String({ description: "哪天学，YYYY-MM-DD；缺省 = 今天" })),
+      endDate: Type.Optional(Type.String({ description: "跨日期结束日 YYYY-MM-DD（含，可=date 表示单日）；一门课几天内完成时用，此时 courses 只能一门" })),
     }),
     execute: async (_tc, params) => {
       const raw = Array.isArray(params?.courses) ? params.courses.map((c) => String(c).trim()).filter(Boolean) : [];
@@ -432,6 +449,14 @@ export function createChildStudyPlanCreateTool(deps: PlanToolsDeps) {
       if (raw.length > 20) throw new Error("courses 过多（单次 ≤20 门）");
       const d = String(params?.date ?? "").trim();
       const date = validDate(d) ? d : localDateStr();
+      const endDateRaw = String(params?.endDate ?? "").trim();
+      let endDate = "";
+      if (endDateRaw) {
+        if (!validDate(endDateRaw)) throw new Error(`endDate 格式应为 YYYY-MM-DD：${endDateRaw}`);
+        if (endDateRaw < date) throw new Error(`endDate（${endDateRaw}）不能早于 date（${date}）`);
+        if (raw.length > 1) throw new Error("endDate（跨日期）一次只能排一门课，多门请分开排或逐天排");
+        endDate = endDateRaw;
+      }
       const items = raw.map((t) => splitStudyPrefix(t));
       const { byTitle, titles } = parentCourseLookup(deps);
       const missing = items.filter((it) => !byTitle.has(it.courseName)).map((it) => it.courseName);
@@ -465,7 +490,7 @@ export function createChildStudyPlanCreateTool(deps: PlanToolsDeps) {
                (id,parent_id,child_id,topic_key,course_uuid,course_name,mode,creator,origin,carry_from,recurrence_id,
                 start_at,due_at,status,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
              VALUES (?,?,?,?,?,?,?,'child','conversation','','',?,?,'pending','','','optional',1,0,1,?,?)`
-          ).run(id, deps.parentId, deps.childId, info.topic, info.uuid, it.courseName, it.mode, `${date} 00:00:00`, `${date} 23:59:59`, now, now);
+          ).run(id, deps.parentId, deps.childId, info.topic, info.uuid, it.courseName, it.mode, `${date} 00:00:00`, `${endDate || date} 23:59:59`, now, now);
           have.add(dedupKey);
           inserted.push(`${it.courseName}（${it.mode === "review" ? "复习" : "新学"}）`);
         }
@@ -473,7 +498,7 @@ export function createChildStudyPlanCreateTool(deps: PlanToolsDeps) {
         if (inserted.length) parts.push(`已添加 ${inserted.length} 项（${inserted.join("、")}）`);
         if (skipped.length) parts.push(`${skipped.join("、")} 当天已存在，跳过`);
         return {
-          content: [{ type: "text" as const, text: `你的 ${date} 学习计划：${parts.join("；")}。这是加分项，完成后有积分奖励。` }],
+          content: [{ type: "text" as const, text: `你的 ${date}${endDate ? `~${endDate}` : ""} 学习计划：${parts.join("；")}。这是加分项，完成后有积分奖励。` }],
           details: {},
         };
       } finally {

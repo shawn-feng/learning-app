@@ -345,23 +345,29 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
 
   const createTool = defineTool({
     name: "parent_study_plan_create",
-    label: "创建学习计划排期（逐日）",
+    label: "创建学习计划排期（逐日 / 跨日期）",
     description:
-      "为某孩子创建**学习计划排期**（「每天学什么」的逐日安排，服务端真源）。一次调用可排**多天**，也可一天多课。\n" +
-      "**参数**：`childName` 必填；`days` 必填数组，每项 = `date`（YYYY-MM-DD，口语「周五」先换算成日期）+ `content`（当天课程名数组，一项一课）。\n" +
+      "为某孩子创建**学习计划排期**（「每天学什么」的安排，服务端真源）。三种形态按家长意图二选一/三选一：\n" +
+      "① **逐日多行**：每天安排不同内容 → `days` 每项一天（一次可排多天、一天多课）；\n" +
+      "② **跨日期行（ISSUE-149）**：**一件事在一段时间内完成/有截止日**（如「27 号前把学校作业写完」）→ `days` 单项 + `endDate`（结束日，含），生成**一条**跨日期计划，**只在结束日判定完成与顺延**，中间没做完不算 missed、不扣分。**不要把这种意图拆成多行同名排期**（会每天重复判定并顺延出重复计划）。跨日期时 `content` 只能一项；\n" +
+      "③ **每天重复同样内容** → 不用本工具，用 `parent_recurrence_create`。\n" +
+      "**参数**：`childName` 必填；`days` 必填数组，每项 = `date`（YYYY-MM-DD，口语「周五」先换算成日期）+ `content`（当天课程名数组，一项一课）+ `endDate`（可选，跨日期结束日）。\n" +
       "**新学 / 复习**：库内每行带 mode 字段（new=新学 / review=复习）；排某课为复习时在内容前加「复习：」前缀（如 \"复习：论语学而篇第一章\"）。已学完的课要巩固就走复习。\n" +
-      "**用前先查**：排前先 `parent_study_plan_sources` 查孩子真实课程名，按**真实存在的课程名**安排；空天 = 不要求学。同日同课已存在会自动跳过；未学完次日自动顺延。",
+      "**用前先查**：排前先 `parent_study_plan_sources` 查孩子真实课程名，按**真实存在的课程名**安排；空天 = 不要求学。同日同课已存在会自动跳过；未学完自动顺延（单日次日顺延，跨日期结束日后顺延）。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       days: Type.Array(
         Type.Object({
           date: Type.String({ description: "哪天学，YYYY-MM-DD" }),
           content: Type.Array(Type.String({ description: "当天要学的课程名（一项一课；复习加「复习：」前缀）" })),
+          endDate: Type.Optional(
+            Type.String({ description: "跨日期结束日 YYYY-MM-DD（含，可=date 表示单日）。一件事几天内完成时必填；此时 content 只能一项" })
+          ),
         }),
         { description: "排期日期数组（必填）" }
       ),
     }),
-    execute: async (_id: string, params: { childName: string; days: Array<{ date: string; content: string[] }> }) => {
+    execute: async (_id: string, params: { childName: string; days: Array<{ date: string; content: string[]; endDate?: string }> }) => {
       const child = resolvePlanChild(db, parentId, params.childName);
       const days = Array.isArray(params.days) ? params.days : [];
       if (!days.length) throw new Error("parent_study_plan_create 需要 days（至少一天的安排）");
@@ -369,9 +375,20 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       for (const day of days) {
         const date = String(day.date ?? "").trim();
         if (!validDate(date)) throw new Error(`排期日期格式应为 YYYY-MM-DD：${date}`);
+        const endDateRaw = String(day.endDate ?? "").trim();
+        let endDate = "";
+        if (endDateRaw) {
+          if (!validDate(endDateRaw)) throw new Error(`endDate 格式应为 YYYY-MM-DD：${endDateRaw}`);
+          if (endDateRaw < date) throw new Error(`endDate（${endDateRaw}）不能早于 date（${date}）`);
+          endDate = endDateRaw;
+        }
         const rawItems = Array.isArray(day.content) ? day.content.map((t) => String(t).trim()).filter(Boolean) : [];
         if (!rawItems.length) throw new Error(`${date} 没有内容：content 至少一项（这天空着就不用排）`);
         if (rawItems.length > 100) throw new Error(`${date} 内容超过 100 项上限`);
+        // ISSUE-149：跨日期行 = 一件事跨多天，一天只能对应一项内容；多项内容请逐天排
+        if (endDate && rawItems.length > 1) {
+          throw new Error(`endDate（跨日期）一次只能排一项内容，当前 ${rawItems.length} 项；多项请逐天排或分开多次调用`);
+        }
         const items = rawItems.map((t) => splitActionPrefix(t));
         // 去重：同日同课同 mode 已存在则跳过（与路由幂等语义一致）
         const existing = readStudyPlans(dataDir, parentId, child.id).filter(
@@ -407,16 +424,16 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
               `INSERT INTO study_plans (id,parent_id,child_id,topic_key,course_uuid,course_name,mode,creator,origin,carry_from,recurrence_id,
                  start_at,due_at,status,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
                VALUES (?,?,?,?,?,?,?,?,'conversation','','',?,?,'pending','','',?,1,0,1,?,?)`
-            ).run(id, parentId, child.id, topicKey, courseUuid, it.courseName, it.mode, "parent", `${date} 00:00:00`, `${date} 23:59:59`, "required", now, now);
+            ).run(id, parentId, child.id, topicKey, courseUuid, it.courseName, it.mode, "parent", `${date} 00:00:00`, `${endDate || date} 23:59:59`, "required", now, now);
             have.add(`${topicKey}\u0000${it.courseName}\u0000${it.mode}`);
             inserted.push(`${it.courseName}（${it.mode === "review" ? "复习" : "新学"}）`);
           }
         } finally {
           kb.close();
         }
-        created.push(`${date}：新增 ${inserted.length} 项（${inserted.join("、")}）`);
+        created.push(`${date}${endDate ? `~${endDate}` : ""}：新增 ${inserted.length} 项（${inserted.join("、")}）`);
       }
-      return ok(`已为「${child.name}」创建学习计划：\n${created.map((c) => `- ${c}`).join("\n")}\n（未学完会自动顺延到次日；想改某天用 parent_study_plan_list 看当前安排）`);
+      return ok(`已为「${child.name}」创建学习计划：\n${created.map((c) => `- ${c}`).join("\n")}\n（未学完会自动顺延：单日计划次日顺延，跨日期计划在结束日判定后顺延；想改某天用 parent_study_plan_list 看当前安排）`);
     },
   });
 
@@ -567,20 +584,22 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     label: "创建孩子生活计划（必须完成项）",
     description:
       "为孩子创建**生活计划**（必须完成项，制定人=家长）：日常任务类安排，如「每天整理书包」「周五前完成手工」「睡前阅读 20 分钟」。\n" +
-      "**参数**：`childName` 必填；`days` 必填数组，每项 = `date` + `title`（要做的事，时间放 time）+ `time`（可选 HH:mm 截止时刻）。\n" +
-      "**语义**：这些是必须完成项——当天没完成影响完成率与积分（可能扣分），到点未完成自动顺延。孩子端「今日计划」会显示为「必须完成项（家长制定）」。同天同标题已存在会自动跳过。",
+      "**参数**：`childName` 必填；`days` 必填数组，每项 = `date` + `title`（要做的事，时间放 time）+ `time`（可选 HH:mm 截止时刻）+ `endDate`（可选，跨日期结束日）。\n" +
+      "**两种形态**：① 逐日任务（每天各一件事/每天都要做）→ 每项一天；② **一件事在一段时间内完成**（如「周日之前完成手抄报」）→ 单项 + `endDate`，生成**一条**跨日期计划，**只在结束日判定完成与顺延**，中间没做完不算 missed、不扣分——**不要拆成多行同名**（会每天重复判定并顺延出重复计划）。每天重复同样内容用 `parent_recurrence_create`。\n" +
+      "**语义**：这些是必须完成项——没完成影响完成率与积分（可能扣分）：单日计划当天判、跨日期计划结束日判；到点未完成自动顺延。孩子端「今日计划」会显示为「必须完成项（家长制定）」。同天同标题已存在会自动跳过。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       days: Type.Array(
         Type.Object({
           date: Type.String({ description: "哪天做，YYYY-MM-DD（口语先换算成日期）" }),
           title: Type.String({ description: "要做的事（干净表述，时间放 time 参数）" }),
-          time: Type.Optional(Type.String({ description: "截止时刻 HH:mm（可选），如 20:30" })),
+          time: Type.Optional(Type.String({ description: "截止时刻 HH:mm（可选），如 20:30；跨日期时=结束日当天的截止时刻" })),
+          endDate: Type.Optional(Type.String({ description: "跨日期结束日 YYYY-MM-DD（含，可=date 表示单日）。一件事几天内完成时必填" })),
         }),
         { description: "生活计划数组（必填）" }
       ),
     }),
-    execute: async (_id: string, params: { childName: string; days: Array<{ date: string; title: string; time?: string }> }) => {
+    execute: async (_id: string, params: { childName: string; days: Array<{ date: string; title: string; time?: string; endDate?: string }> }) => {
       const child = resolvePlanChild(db, parentId, params.childName);
       const days = Array.isArray(params.days) ? params.days : [];
       if (!days.length) throw new Error("parent_life_plan_create 需要 days（至少一天的生活安排）");
@@ -588,11 +607,19 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       for (const d of days) {
         const date = String(d.date ?? "").trim();
         if (!validDate(date)) throw new Error(`日期格式应为 YYYY-MM-DD：${date}`);
+        const endDateRaw = String(d.endDate ?? "").trim();
+        let endDate = "";
+        if (endDateRaw) {
+          if (!validDate(endDateRaw)) throw new Error(`endDate 格式应为 YYYY-MM-DD：${endDateRaw}`);
+          if (endDateRaw < date) throw new Error(`endDate（${endDateRaw}）不能早于 date（${date}）`);
+          endDate = endDateRaw;
+        }
         const title = String(d.title ?? "").trim();
         if (!title) throw new Error(`${date} 缺少 title（要做的事）`);
         if (title.length > 200) throw new Error("title 过长（≤200 字）");
         const time = String(d.time ?? "").trim();
         if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error(`time 格式应为 HH:mm：${time}`);
+        const dueAt = time ? `${endDate || date} ${time}:00` : `${endDate || date} 23:59:59`;
         // 防重语义与 /plans/life 路由一致：同 title+creator 当天已有 pending 行则跳过
         const kb = openKb(dataDir, parentId, child.id);
         try {
@@ -613,13 +640,13 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
                (id,parent_id,child_id,title,creator,origin,carry_from,recurrence_id,start_at,due_at,status,result,done_at,
                 task_type,count_in_rate,points,active,created_at,updated_at)
              VALUES (?,?,?,?,?,'conversation','','',?,?,'pending','','',?,1,0,1,?,?)`
-          ).run(id, parentId, child.id, title, "parent", `${date} 00:00:00`, time ? `${date} ${time}:00` : `${date} 23:59:59`, "required", now, now);
-          created.push(`${date}「${title}」${time ? `（${time} 前）` : ""}`);
+          ).run(id, parentId, child.id, title, "parent", `${date} 00:00:00`, dueAt, "required", now, now);
+          created.push(`${date}${endDate ? `~${endDate}` : ""}「${title}」${time ? `（${time} 前）` : ""}`);
         } finally {
           kb.close();
         }
       }
-      return ok(`已为「${child.name}」创建生活计划（必须完成项）：\n${created.map((c) => `- ${c}`).join("\n")}\n（当天未完成会影响完成率与积分，未完成自动顺延；想取消用家长端「积分」页的取消按钮。）`);
+      return ok(`已为「${child.name}」创建生活计划（必须完成项）：\n${created.map((c) => `- ${c}`).join("\n")}\n（未完成会影响完成率与积分：单日计划当天判、跨日期计划结束日判，到点未完成自动顺延；想取消用家长端「积分」页的取消按钮。）`);
     },
   });
 

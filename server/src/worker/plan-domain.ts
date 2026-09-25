@@ -299,9 +299,11 @@ function applySignals(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): numb
   return n;
 }
 
-/** 到期未完成 → missed + 复制新行到当天（carry）。cancelled 不复制。返回 (missed, carried)。
- *  考核计划（exam_plans）只判 missed、**不顺延**——考核错过后由家长重排（2026-09-11 拍板；
- *  此前 specs 误含 exam_plans 导致考核也被顺延，已修正）。 */
+/** 到期未完成 → missed + 复制新行到当天（carry）。cancelled 不进判定。返回 (missed, carried)。
+ *  考核计划（exam_plans）**不进本判定**：既不自动 missed 也不顺延，过期保持 pending，由家长重排或取消
+ *  （2026-09-11 拍板考核不顺延；此前注释误写「考核只判 missed」——全库只有本函数写 missed，specs 里无 exam_plans）。
+ *  ISSUE-149 顺延防重：目标日已有**同身份**（study: creator+topic_key+course_name+mode；life: creator+title）
+ *  的 pending 行时只置 missed、不再复制——家长已把该任务排到后续天时，无条件复制会造出同名重复行。 */
 function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { missed: number; carried: number } {
   const now = nowStr(ctx.now);
   const nowIso = ctx.now.toISOString();
@@ -317,10 +319,28 @@ function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { 
     const rows = kb
       .prepare(`SELECT * FROM ${s.table} WHERE status = 'pending' AND active = 1 AND due_at != '' AND due_at < ?`)
       .all(now) as Array<Record<string, unknown>>;
+    // 同身份 pending 防重查询（ISSUE-149）：参数 = 身份列… + today, today
+    const dupCheck =
+      s.table === "study_plans"
+        ? kb.prepare(
+            `SELECT 1 FROM study_plans WHERE active = 1 AND status = 'pending'
+               AND creator = ? AND topic_key = ? AND course_name = ? AND mode = ?
+               AND substr(start_at,1,10) <= ? AND substr(due_at,1,10) >= ? LIMIT 1`
+          )
+        : kb.prepare(
+            `SELECT 1 FROM life_plans WHERE active = 1 AND status = 'pending'
+               AND creator = ? AND title = ?
+               AND substr(start_at,1,10) <= ? AND substr(due_at,1,10) >= ? LIMIT 1`
+          );
+    const identityOf = (r: Record<string, unknown>): string[] =>
+      s.table === "study_plans"
+        ? [String(r.creator ?? ""), String(r.topic_key ?? ""), String(r.course_name ?? ""), String(r.mode ?? "")]
+        : [String(r.creator ?? ""), String(r.title ?? "")];
     for (const r of rows) {
       const id = String(r.id);
       kb.prepare(`UPDATE ${s.table} SET status='missed', updated_at=? WHERE id=?`).run(nowIso, id);
       missed++;
+      if (dupCheck.get(...identityOf(r), today, today)) continue; // 目标日已有同身份 pending → 不复制
       // 复制新行到当天（窗口=当天；不继承原窗口）。carry_from=原行 id（溯源）；origin='carry' 供「顺延」过滤。
       const newId = randomUUID();
       const colNames = s.cols.join(", ");
@@ -438,11 +458,14 @@ interface GroupStat {
 }
 
 /**
- * 归属日统计（2026-09-10 收口修正——窗口覆盖口径）：
- * 分母 = 当天窗口覆盖的全部 count_in_rate 行（done/missed/pending 都算），
- * rate = done / 分母。此前口径只数 done+missed、pending 不进分母，
- * 导致白天 stat tick 结算时分母=已完成数 → rate 恒 100% 提前发满档分。
- * （跨天场景：done 行无论哪天完成都算当窗口日的完成；missed 行由 expireAndCarry 在到期日落定。）
+ * 归属日统计（ISSUE-149 口径收口，2026-09-10 窗口覆盖口径只对单日行保留）：
+ *   - **单日行**（start=due，含 '' 防御）：沿用旧「窗口覆盖当天」口径——pending/done/missed 都算它唯一那天；
+ *     done 行无论哪天完成都算当窗口日完成（晚判/代判不改变归属日）。
+ *   - **跨日期行**（start≠due，ISSUE-149 引入）：**完成日或到期日**二选一计入，每天最多一次——
+ *     done → 只计完成日；pending/missed → 只计到期日。完成前不进任何一天的分子分母。
+ *     （旧口径下跨日期行窗口内每天进分母：未完成每天 -10、完成后剩余每天 +20，成倍结算。）
+ *   - cancelled 不计分母（与 /plans 路由「取消 = 不计分母、不再 carry」的既述口径对齐；旧 SQL 漏排）。
+ *   - due_at='' 的无截止行（历史防御，现无写入方）沿用旧行为：start_at 起长期计入。
  */
 function computeGroupStats(
   kb: DatabaseSync,
@@ -453,11 +476,18 @@ function computeGroupStats(
   const rows = kb
     .prepare(
       `SELECT status, task_type, count_in_rate FROM ${table}
-       WHERE creator = ? AND active = 1 AND count_in_rate = 1
-         AND (start_at = '' OR substr(start_at,1,10) <= ?)
-         AND (due_at  = '' OR substr(due_at,1,10)  >= ?)`
+       WHERE creator = ? AND active = 1 AND count_in_rate = 1 AND status != 'cancelled'
+         AND (
+           ( (start_at = '' OR due_at = '' OR substr(start_at,1,10) = substr(due_at,1,10))
+             AND (start_at = '' OR substr(start_at,1,10) <= ?)
+             AND (due_at  = '' OR substr(due_at,1,10)  >= ?) )
+           OR
+           ( (start_at != '' AND due_at != '' AND substr(start_at,1,10) != substr(due_at,1,10))
+             AND ( (status = 'done' AND substr(done_at,1,10) = ?)
+                   OR (status IN ('pending','missed') AND substr(due_at,1,10) = ?) ) )
+         )`
     )
-    .all(owner, date, date) as Array<{ status: string; task_type: string; count_in_rate: number }>;
+    .all(owner, date, date, date, date) as Array<{ status: string; task_type: string; count_in_rate: number }>;
   const required = rows.filter((r) => r.task_type !== "optional");
   const optionalDone = rows.filter((r) => r.task_type === "optional" && r.status === "done").length;
   const total = required.length;

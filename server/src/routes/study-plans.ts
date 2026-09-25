@@ -35,6 +35,8 @@ export interface StudyPlanRowDto {
   id: string;
   childId: string;
   date: string;
+  /** 跨日期计划的结束日（YYYY-MM-DD，含）；单日计划 = date（ISSUE-149） */
+  endDate: string;
   topicKey: string;
   courseName: string;
   mode: string;
@@ -155,6 +157,7 @@ function toPlanDto(r: SpRow): StudyPlanRowDto {
     id: r.id,
     childId: r.child_id,
     date: (r.start_at || "").slice(0, 10),
+    endDate: (r.due_at || "").slice(0, 10) || (r.start_at || "").slice(0, 10),
     topicKey: r.topic_key,
     courseName: r.course_name,
     mode: r.mode,
@@ -214,7 +217,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     }
     const { childId, date } = (req.query ?? {}) as { childId?: string; date?: string };
     if (!childId) return reply.code(400).send({ error: "childId 必填" });
-    const day = date ?? new Date().toISOString().slice(0, 10);
+    const day = date ?? new Date().toLocaleDateString("sv-SE"); // 本地日（ISSUE-149：UTC 日在深夜 0-8 点会差一天，与 /plans/life 等对齐）
     if (!validDate(day)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
     try {
       assertChildOwned(deps.db, parentId, childId);
@@ -300,7 +303,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const day = date ?? new Date().toISOString().slice(0, 10);
+    const day = date ?? new Date().toLocaleDateString("sv-SE"); // 本地日（ISSUE-149：UTC 日在深夜 0-8 点会差一天，与 /plans/life 等对齐）
     if (!validDate(day)) return reply.code(400).send({ error: "date 格式应为 YYYY-MM-DD" });
     const parsed = parseItems(items);
     if (!parsed) return reply.code(400).send({ error: "items 应为 [{courseName, mode?}] 数组（≤100 项）" });
