@@ -312,8 +312,9 @@ async function ensureEntry(
           createChildLifePlanUpdateTool({ dataDir: deps.dataDir, parentId, childId }),
           ...createChildReportTools({ dataDir: deps.dataDir, parentId, childId }),
           ...createChildDbTools({ dataDir: deps.dataDir, parentId, childId }),
-          // KB P1：kb_lookup（检索家长库的已发布条目；只读、门控在 SQL）
-          ...createChildKbTools({ dataDir: deps.dataDir, parentId, childId }),
+          // KB P1：kb_lookup（检索家长库的已发布条目；只读、门控在 SQL）；
+          // P3 起带 `db`，用于精确未命中时的向量兜底（读家长 settings 取 embedding 凭证）
+          ...createChildKbTools({ dataDir: deps.dataDir, parentId, childId, db: deps.db }),
         ]),
     ...(pageTools
       ? isScene

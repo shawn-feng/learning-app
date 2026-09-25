@@ -189,8 +189,7 @@ async function ensureEntry(
   // ISSUE-144（A 路线全量铺开）：工具**说明下沉**——description 压成"一句 + 指路"、参数 Schema 只留结构、
   // 并外包一层**场景守卫**（未加载所属场景 → 拒绝执行）。说明的正文在各场景技能里（`load_skill` 按需加载）。
   // 通用设施（load_skill / log_activity / fs 工具）不在下沉范围，原样保留。
-  const customTools = compactParentTools(
-    [
+  const customTools = compactParentTools(    [
       ...fsTools,
       ...parentTools,
       ...createPlanDomainTools({ db: deps.db, dataDir: deps.dataDir, parentId, skillState }),
@@ -198,7 +197,7 @@ async function ensureEntry(
       // 取数范围写死、只读；家长问「考得怎么样/哪里薄弱/这分怎么算的」时不再需要通用通道
       ...createParentChildReportTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
       // KB P1：知识库条目（KB 走专用工具；家长侧刻意**没有** kb_lookup——要看条目用 parent_kb_list）
-      ...createParentKbTools({ dataDir: deps.dataDir, parentId }),
+      ...createParentKbTools({ dataDir: deps.dataDir, parentId, db: deps.db }),
       // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
       createParentReportTool({ db: deps.db, parentId, streamKey: key }),
       // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite，按本家长隔离）

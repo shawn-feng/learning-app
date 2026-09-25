@@ -20,9 +20,11 @@
  * （`parent-scene-kb`），否则会被判定"不属于任何场景"而**原样保留、且不加场景守卫**。
  */
 import { Type } from "typebox";
+import type { DatabaseSync } from "node:sqlite";
 import { defineTool } from "./tool-kit.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { resolveTopicKey } from "./plan-tools.js";
+import { markStale } from "./embeddings.js";
 import { coerceArrayArg, coerceObjectArg } from "./db-channel.js";
 import { JsonArrayParam } from "./tool-shapes.js";
 import {
@@ -42,6 +44,8 @@ import {
 export interface ParentKbToolDeps {
   dataDir: string;
   parentId: string;
+  /** 主库（读家长 settings 取 embedding 凭证用）。缺省则写入后**不排队建向量**，检索退回纯精确 */
+  db?: DatabaseSync;
 }
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
@@ -65,6 +69,27 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
       return fn(lib);
     } finally {
       lib.close();
+    }
+  }
+
+  /**
+   * KB P3：把刚写过的条目排队重建向量（`kb_entries` 的**合成检索文本**，见 `embeddings.ts`）。
+   *
+   * 为什么在这里调、而不是在 `saveKbEntries` 里：`db/kb-entries.ts` 是纯数据层，
+   * 不依赖 embedding 凭证与主库；写路径上挂派生索引是**调用层**的事（与 db-channel 的
+   * `writeTouchesEmbedded` 同一分工）。没有 `db` 就静默跳过——功能降级为纯精确匹配，不影响落库。
+   *
+   * 删除也要排一次：worker 查不到行就会把旁表向量删掉（见 `markStale` 的"行已删 → 删向量"分支）。
+   */
+  function queueEmbed(ids: string[]): void {
+    if (!deps.db || !ids.length) return;
+    const ctx = { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
+    for (const id of ids) {
+      try {
+        markStale(ctx, "kb_entries", [id]);
+      } catch {
+        /* 排队失败不影响落库；下次更新会再排 */
+      }
     }
   }
 
@@ -175,6 +200,7 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
         const out: string[] = [];
         if (entries.length || assets.length) {
           const saved = saveKbEntries(lib, deps.dataDir, deps.parentId, entries, assets);
+          queueEmbed(saved.map((s) => s.id));
           const lines = saved.map((s) => {
             const bits = [
               `${s.created ? "新建" : "更新"}「${s.title}」`,
@@ -219,6 +245,7 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
         }
         if (delKeys.length) {
           const d = deleteKbEntries(lib, delKeys);
+          queueEmbed(d.ids); // 让 worker 发现"行没了"并把旁表向量删掉
           const seg: string[] = [];
           if (d.deleted.length) {
             seg.push(`已删掉 ${d.deleted.length} 条（**没法恢复**）：${d.deleted.map((t) => `「${t}」`).join("、")}`);

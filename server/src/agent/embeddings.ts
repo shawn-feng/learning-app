@@ -18,14 +18,42 @@ import { getProviderEmbedding, EMBEDDING_PROVIDER_PRIORITY, PROVIDER_REGISTRATIO
 
 export interface EmbeddedColumn {
   table: string;
+  /**
+   * 列名。若给了 `textOf`，这里是一个**虚拟列名**（不对应真实列，只作 `embeddings.column_name` 的键）。
+   * 为什么需要虚拟列：KB 条目的检索文本是 `title + aliases + summary + body(前段)` **合成**的，
+   * 不是一个列。合成文本若落成 `kb_entries` 上的真实列，就是"派生数据入库"——
+   * 与 ISSUE-131 P2 删 materials 索引表、以及删掉 `kb_entry_assets.role` 是同一条教训。
+   * 向量本来就在旁表（`embeddings`）里，属"可重建的派生索引"，合成文本只存在于嵌入的那一刻。
+   */
   column: string;
   /** 主键列（row_pk 序列化顺序） */
   pkCols: string[];
+  /** 合成检索文本（给了它就不读真实列，`column` 仅作键） */
+  textOf?: (row: Record<string, unknown>) => string;
 }
+
+/**
+ * KB 条目的**合成检索文本**：孩子会怎么问到它，就把它拼进来。
+ *
+ * 顺序与权重（向量模型不认权重，顺序=重要性）：
+ * `title`（条目名，家长认人的标签）→ `aliases`（孩子会用的词，**最像问题**）→
+ * `summary`（家长认过的那段话）→ `body` 前 600 字（提取/长正文，P3 起才有）。
+ * `body` 截断是防"一篇 8000 字的资料把条目名与别名淹没在向量里"——长正文的正确做法是
+ * 分块（`kb_entry_chunks`，P3 后续），在那之前先用截断保住短字段的权重。
+ */
+export function kbEntryText(row: Record<string, unknown>): string {
+  const s = (k: string) => String(row[k] ?? "").replace(/\s+/g, " ").trim();
+  const body = s("body");
+  return [s("title"), s("aliases"), s("summary"), body.slice(0, 600)].filter(Boolean).join("　");
+}
+
+/** KB 条目的虚拟列名（`embeddings.column_name` 的取值） */
+export const KB_ENTRY_TEXT_COLUMN = "__kb_entry_text";
 
 export const EMBEDDED_COLUMNS: EmbeddedColumn[] = [
   { table: "courses", column: "title", pkCols: ["topic", "title"] },
   { table: "topics", column: "name", pkCols: ["name"] },
+  { table: "kb_entries", column: KB_ENTRY_TEXT_COLUMN, pkCols: ["id"], textOf: kbEntryText },
 ];
 
 export function embeddedColumn(table: string, column?: string): EmbeddedColumn | undefined {
@@ -225,7 +253,34 @@ export function parentLibCacheKey(dataDir: string, parentId: string): string {
   return `pdb:${dataDir}|${parentId}`;
 }
 
-/** 查业务表当前文本（按 pk）；行已删 → null。 */
+/**
+ * 通用：在某 (表, 列/虚拟列) 的向量里按余弦取 top-K。**不做任何权限过滤**——调用方自己筛。
+ *
+ * 两个刻意的设计：
+ * 1. **只返回 `rowPk` 与分数，不返回文本**。向量只用来**排序**；命中的内容必须回业务表
+ *    **按当前状态重读**（门控可能已变、家长可能刚改过说法）。把文本一起带出去会诱使调用方
+ *    直接拿旧文本回答——这正是"缓存里的一句已作废的家长口径"最容易漏出去的路径。
+ * 2. `rowPk` 的解码（`JSON.parse` → 按 `pkCols` 取值）留给调用方，因为只有它知道主键语义。
+ */
+export function topVectorRows(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  queryVec: Float32Array,
+  opts?: { topK?: number; threshold?: number; cacheKey?: string }
+): Array<{ rowPk: string; score: number }> {
+  const threshold = opts?.threshold ?? VECTOR_DEFAULT_THRESHOLD;
+  const topK = opts?.topK ?? VECTOR_TOP_K;
+  const scored: Array<{ rowPk: string; score: number }> = [];
+  for (const [rowPk, vec] of loadVectors(db, table, column, opts?.cacheKey)) {
+    const score = cosine(queryVec, vec);
+    if (score >= threshold) scored.push({ rowPk, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, topK);
+}
+
+/** 查业务表当前文本（按 pk）；行已删 → null。虚拟列（有 textOf）取整行后合成。 */
 function currentText(db: DatabaseSync, ec: EmbeddedColumn, rowPk: string): { pk: Record<string, unknown>; text: string } | null {
   let vals: Array<null | number | bigint | string>;
   try {
@@ -234,19 +289,20 @@ function currentText(db: DatabaseSync, ec: EmbeddedColumn, rowPk: string): { pk:
     return null;
   }
   const where = ec.pkCols.map((c) => `${c} = ?`).join(" AND ");
-  const row = db.prepare(`SELECT ${ec.column} FROM ${ec.table} WHERE ${where}`).get(...vals) as
+  const cols = ec.textOf ? "*" : `${ec.pkCols.join(", ")}, ${ec.column}`;
+  const row = db.prepare(`SELECT ${cols} FROM ${ec.table} WHERE ${where}`).get(...vals) as
     | Record<string, unknown>
     | undefined;
   if (!row) return null;
   const pk: Record<string, unknown> = {};
-  ec.pkCols.forEach((c, i) => (pk[c] = vals[i]));
-  return { pk, text: String(row[ec.column] ?? "") };
+  ec.pkCols.forEach((c, i) => (pk[c] = row[c] ?? vals[i]));
+  return { pk, text: ec.textOf ? ec.textOf(row) : String(row[ec.column] ?? "") };
 }
 
-/** 读当前设置的向量阈值（app_settings.embeddingThreshold，可调）。 */
-export function vectorThreshold(appSettings?: Record<string, unknown>): number {
+/** 读当前设置的向量阈值（app_settings.embeddingThreshold，可调）。`fallback` 供任务自定默认值。 */
+export function vectorThreshold(appSettings?: Record<string, unknown>, fallback = VECTOR_DEFAULT_THRESHOLD): number {
   const v = Number(appSettings?.embeddingThreshold);
-  return Number.isFinite(v) && v > 0 && v < 1 ? v : VECTOR_DEFAULT_THRESHOLD;
+  return Number.isFinite(v) && v > 0 && v < 1 ? v : fallback;
 }
 
 /**
@@ -263,14 +319,16 @@ export async function lookupWithFallback(
 ): Promise<LookupResult> {
   const ec = embeddedColumn(table, column);
   if (!ec) return { kind: "miss", query: value };
-  // ① 精确 = 命中 → 原样返回（零额外开销）
-  const row = db
-    .prepare(`SELECT ${ec.pkCols.join(", ")}, ${ec.column} FROM ${ec.table} WHERE ${ec.column} = ? LIMIT 1`)
-    .get(value) as Record<string, unknown> | undefined;
-  if (row) {
-    const pk: Record<string, unknown> = {};
-    for (const c of ec.pkCols) pk[c] = row[c];
-    return { kind: "exact", pk, text: String(row[ec.column] ?? "") };
+  // ① 精确 = 命中 → 原样返回（零额外开销）。**虚拟列没有可比对的列**，直接进向量分支。
+  if (!ec.textOf) {
+    const row = db
+      .prepare(`SELECT ${ec.pkCols.join(", ")}, ${ec.column} FROM ${ec.table} WHERE ${ec.column} = ? LIMIT 1`)
+      .get(value) as Record<string, unknown> | undefined;
+    if (row) {
+      const pk: Record<string, unknown> = {};
+      for (const c of ec.pkCols) pk[c] = row[c];
+      return { kind: "exact", pk, text: String(row[ec.column] ?? "") };
+    }
   }
   // ② 无可用 embedding → 静默降级为现状行为
   if (!resolved) return { kind: "miss", query: value };
@@ -365,9 +423,9 @@ export function markStale(ctx: EmbedContext, table: string, pkVals: Array<null |
             try {
               const ec = embeddedColumn(job.table)!;
               const where = ec.pkCols.map((c) => `${c} = ?`).join(" AND ");
-              const row = pdb.prepare(`SELECT ${ec.pkCols.join(", ")}, ${ec.column} FROM ${ec.table} WHERE ${where}`).get(...job.pkVals) as
-                | Record<string, unknown>
-                | undefined;
+              const row = pdb
+                .prepare(`SELECT ${ec.textOf ? "*" : `${ec.pkCols.join(", ")}, ${ec.column}`} FROM ${ec.table} WHERE ${where}`)
+                .get(...job.pkVals) as Record<string, unknown> | undefined;
               if (!row) {
                 // 行已删 → 删向量
                 const rowPk = JSON.stringify(job.pkVals);
@@ -375,7 +433,7 @@ export function markStale(ctx: EmbedContext, table: string, pkVals: Array<null |
                 invalidateVectorCache(parentLibCacheKey(ctx.dataDir, ctx.parentId), ec.table, ec.column);
                 continue;
               }
-              const text = String(row[ec.column] ?? "");
+              const text = ec.textOf ? ec.textOf(row) : String(row[ec.column] ?? "");
               const hash = hashText(text);
               const rowPk = JSON.stringify(ec.pkCols.map((c) => row[c]));
               const exist = pdb

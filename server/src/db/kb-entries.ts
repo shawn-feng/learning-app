@@ -581,6 +581,8 @@ export function publishKbEntries(
 
 export interface KbDeleteResult {
   deleted: string[];
+  /** 被删条目的 id（删向量用——旁表要按 id 清，见 `markStale`） */
+  ids: string[];
   missing: string[];
   /** 找到了、但不许删的 */
   refused: Array<{ title: string; why: string }>;
@@ -605,7 +607,7 @@ export interface KbDeleteResult {
 export function deleteKbEntries(lib: DatabaseSync, keys: string[]): KbDeleteResult {
   const list = (keys ?? []).map((k) => String(k ?? "").trim()).filter(Boolean);
   if (!list.length) throw new Error("parent_kb_save 的 delete 需要条目 id 或精确标题");
-  const out: KbDeleteResult = { deleted: [], missing: [], refused: [] };
+  const out: KbDeleteResult = { deleted: [], ids: [], missing: [], refused: [] };
   for (const key of list) {
     const row = getKbEntry(lib, key);
     if (!row) {
@@ -624,6 +626,7 @@ export function deleteKbEntries(lib: DatabaseSync, keys: string[]): KbDeleteResu
     lib.prepare("UPDATE kb_gaps SET entry_id = '', status = 'open' WHERE entry_id = ?").run(row.id);
     lib.prepare("DELETE FROM kb_entries WHERE id = ?").run(row.id);
     out.deleted.push(row.title);
+    out.ids.push(row.id);
   }
   return out;
 }
@@ -928,6 +931,46 @@ export function searchKbForChild(
 
 /** 高风险管理上限（`high_risk` 参数名，与工具参数一致） */
 export const KB_MATCH_LIMIT = 5;
+
+/**
+ * **KB 语义兜底的相似度阈值（0.45，低于通用默认 0.6）**。
+ *
+ * 为什么不沿用 `VECTOR_DEFAULT_THRESHOLD = 0.6`：那个值是为「课程名 → 课程名」调的
+ * （短、近同形，天然高分），而这里的任务是「**孩子的一句问话 → 条目**」——一个句子对上一串
+ * 标题+别名+说法，**天然低分**。实测：`很久以前地球上那些特别大的动物后来都去哪儿了`
+ * 对 `恐龙是怎么没的` 只有 **0.5119**，语义上明明就是同一件事，却会被 0.6 拒掉。
+ *
+ * 调低的代价用**另一道闸**补回来：语义命中**不当权威口径直接引用**，而是作为候选交给
+ * agent 判断（见 `child-kb-tools.ts` 的 `formatSemanticHits`），并带上分数。
+ * 这与仓库既有约定一致——`formatCandidates` 的注释写着「只提示不代入」。
+ * 家长的设置里若显式给了 `embeddingThreshold`，以家长的为准。
+ */
+export const KB_VECTOR_THRESHOLD = 0.45;
+
+/**
+ * 按 id **再过一次门控**读一条（向量召回专用，P3）。
+ *
+ * 为什么向量召回不能自己拼 SQL：门控必须只有一处真源。向量旁表里存的是"曾经被嵌入过的条目"，
+ * **它不知道家长后来撤回了还是改回了草稿**——嵌入是写入那一刻的快照，门控是读取这一刻的事实。
+ * 所以向量只负责**排序**，命中的内容一律回到这里按当前状态重读。
+ *
+ * 用 `shared` 参数可复用调用方已经打开的孩子身份？——不需要：这里只要 childId 与门控同源，
+ * 每次多开一次很小；**别为了省一次查询把门控复制出去**。
+ */
+export function getGatedEntry(lib: DatabaseSync, childId: string, id: string, via: string): KbHit | undefined {
+  const row = lib
+    .prepare(`SELECT id, title, summary, usage FROM kb_entries WHERE id = ? AND ${GATED_WHERE} LIMIT 1`)
+    .get(id, childId) as { id: string; title: string; summary: string; usage: string } | undefined;
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    title: row.title,
+    summary: String(row.summary ?? ""),
+    usage: String(row.usage ?? ""),
+    via,
+    assets: listKbAssets(lib, row.id),
+  };
+}
 
 export interface KbGapRow {
   id: string;
