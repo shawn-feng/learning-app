@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureAssessContentSchema } from "./assess-content.js";
+import { ensureKbEntriesSchema } from "./kb-entries.js";
 import { ensureTier2Schema } from "../agent/tier2.js";
 import { ensureEmbeddingsSchema } from "../agent/embeddings.js";
 
@@ -61,6 +62,7 @@ export function openParentLib(dataDir: string, parentId: string): DatabaseSync {
   db.exec("DROP VIEW IF EXISTS topic_progress;");
   ensureTier2Schema(db, true); // Tier 2 灵活实体：entities + namespaces 注册行（F15a，幂等）
   ensureEmbeddingsSchema(db); // 向量旁表（ISSUE-111：courses.title / topics.name，幂等）
+  ensureKbEntriesSchema(db); // 知识库条目（KB P1：kb_entries/kb_entry_assets/kb_entry_links/kb_gaps/kb_risk_terms，幂等）
   return db;
 }
 

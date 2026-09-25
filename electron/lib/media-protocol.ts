@@ -22,6 +22,12 @@ const ASSET_ALLOWED_EXT = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
   ".woff", ".woff2", ".ttf", ".otf", ".eot",
   ".json", ".map", ".txt",
+  // PDF（KB P2，2026-09-27 实测）：Electron 43 的 Chromium 自带 PDF 阅读器**不需要**
+  // `webPreferences.plugins`，并且在 standard+secure 的自定义 scheme 上照常渲染。
+  // 探针证据：`plugins:false` + `<embed>` 即出阅读器 UI；加 `#toolbar=0&navpanes=0&view=FitH`
+  // 得到无工具栏的干净页面（只有滚动条）。P1 当初"必须 plugins:true、自定义 scheme 不保证渲染"
+  // 的判断**是错的**，故在 P2 撤回（详见方案 §5.4.2.1 偏差 ②）。
+  ".pdf",
 ]);
 
 const MIME: Record<string, string> = {
@@ -33,6 +39,7 @@ const MIME: Record<string, string> = {
   woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf", eot: "application/vnd.ms-fontobject",
   mp3: "audio/mpeg", mp4: "video/mp4", ogg: "audio/ogg", wav: "audio/wav",
   webm: "video/webm", m4a: "audio/mp4", aac: "audio/aac", flac: "audio/flac", m3u8: "application/vnd.apple.mpegurl",
+  pdf: "application/pdf",
 };
 
 function mimeFor(rel: string): string {

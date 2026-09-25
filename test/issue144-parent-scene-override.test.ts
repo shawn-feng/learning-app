@@ -73,11 +73,11 @@ afterAll(async () => {
 });
 
 describe("ISSUE-144 P5：编辑器取数（agents.skills.list）", () => {
-  it("① 返回 8 个场景：线上 ref 是 skill:<技能名>、带内置稿与是否已自定义", async () => {
+  it("① 返回 9 个场景（KB P1 加了 parent-scene-kb）：线上 ref 是 skill:<技能名>、带内置稿与是否已自定义", async () => {
     const res = await query("agents.skills.list", {});
     expect(res.statusCode, res.body).toBe(200);
     const rows = (res.json() as { result: Array<Record<string, unknown>> }).result;
-    expect(rows).toHaveLength(8);
+    expect(rows).toHaveLength(9);
     for (const r of rows) {
       expect(String(r.ref)).toMatch(/^skill:parent-scene-/);
       expect(String(r.builtin ?? "").length, `${r.name} 内置稿为空`).toBeGreaterThan(200);

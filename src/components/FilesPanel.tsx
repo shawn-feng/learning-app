@@ -25,7 +25,7 @@ interface FsEntry {
 }
 
 interface RefHit {
-  source: "course" | "display" | "exam_plan";
+  source: "course" | "display" | "exam_plan" | "kb";
   detail: string;
 }
 
@@ -33,6 +33,7 @@ const REF_SOURCE_LABEL: Record<string, string> = {
   course: "课程引用",
   display: "展示登记",
   exam_plan: "考核计划",
+  kb: "知识条目",
 };
 
 function formatSize(n: number): string {

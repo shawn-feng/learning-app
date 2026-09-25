@@ -23,9 +23,35 @@ import {
 //（纯函数模块，Electron 端仅被 web 分支引用，零行为影响）。
 import { apiUrl, getStoredToken, encodeMaterialId } from "../../web/src/shim/core/server-fetch";
 
+/** 资料展示类型（KB P1 引入，P2 加 `pdf`）：**由文件扩展名现算、写在事件里**，渲染层不自己猜。缺省=html（兼容旧事件） */
+export type MaterialKind = "html" | "image" | "audio" | "video" | "text" | "pdf";
+
+/**
+ * KB P1：扩展名 → 展示类型（**渲染层的兜底**）。
+ *
+ * 为什么渲染层还要自己算一遍：`display_contents`（ISSUE-113 的会话回填登记）**只存 path/title/
+ * source/content，不存类型**——这是刻意的，类型是 `f(扩展名)` 的派生数据，落库就会在文件改名后
+ * 永远错下去（`kb_entry_assets.role` 当初就是因为这个被删掉的，见
+ * docs/知识库-完整方案-2026-09-26.md §3.3.5）。回填路径没有事件里的 `kind`，就按同一规则现算。
+ *
+ * ⚠️ 这张表与 `server/src/agent/display-tool.ts` 的 `KIND_BY_EXT` **需要同步维护**
+ * （跨进程无法共享代码，与 `materials.ts` MIME / `materials-doc.ts` PAGE_MIME 是同一类约定）。
+ */
+export function kindFromPath(filePath: string | undefined): MaterialKind {
+  const ext = String(filePath ?? "").toLowerCase().split(".").pop() ?? "";
+  if (["txt", "md"].includes(ext)) return "text";
+  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext)) return "image";
+  if (["mp3", "wav", "ogg", "m4a", "aac", "flac"].includes(ext)) return "audio";
+  if (["mp4", "webm"].includes(ext)) return "video";
+  if (ext === "pdf") return "pdf";
+  return "html";
+}
+
 export interface Material {
   id: string;
   format: "html";
+  /** KB P1：展示类型。`html`/`text` 用内联正文，媒体用 URL 直取（二进制不进事件） */
+  kind?: MaterialKind;
   content: string;
   title?: string;
   time: string;
@@ -210,6 +236,35 @@ function resolveSharedDocUrl(
   }
   const segments = norm.split("/").map((s) => encodeURIComponent(s));
   return `asset://local/parent/default/${segments.join("/")}?doc=1${font}&v=${epoch}`;
+}
+
+/**
+ * KB P1/P2：图片/音视频/PDF 的**直链**（不经过 html 文档通道）。
+ *
+ * ⚠️ 平台差异是硬的（`electron/lib/media-protocol.ts:19`）：
+ * - **音视频必须走 `media://`**——`asset://` 的扩展名白名单不含音视频，走它一律 403；
+ * - 图片/文本/**PDF** 走 `asset://`（都在 `ASSET_ALLOWED_EXT` 里；PDF 是 P2 加的）；
+ * - Web 端走服务端目录前缀路由 `/materials/p/:token/*`，该路由支持任意 MIME + Range（视频可 seek）。
+ *
+ * **PDF 的 URL 片段不是可选项**：`#toolbar=0&navpanes=0&view=FitH` 收掉 Chromium 阅读器的
+ * 工具栏、缩略图侧栏和**下载/打印按钮**。P2 探针实测：不加就是一个完整阅读器 UI（截图见
+ * 方案 §5.4.2.1 偏差 ②），加完才是"就是一页纸"的干净画面，也顺带把「孩子能把资料下载到本地」
+ * 这个出口关掉了。
+ */
+function resolveSharedMediaUrl(filePath: string | undefined, kind: MaterialKind, epoch: number): string {
+  if (!filePath) return "";
+  const norm = String(filePath).replace(/\\/g, "/").replace(/^materials\//, "").trim();
+  if (!norm || norm.startsWith("outputs/")) return "";
+  if (!/^[^/]+\/.+/.test(norm)) return "";
+  if (norm.includes("..") || norm.includes(":")) return "";
+  const segs = norm.split("/").map((s) => encodeURIComponent(s)).join("/");
+  const frag = kind === "pdf" ? "#toolbar=0&navpanes=0&view=FitH" : "";
+  if (window.api?.__web) {
+    const token = encodeURIComponent(getStoredToken());
+    return `${apiUrl(`/materials/p/${token}/${segs}`)}?v=${epoch}${frag}`;
+  }
+  const scheme = kind === "audio" || kind === "video" ? "media" : "asset";
+  return `${scheme}://local/parent/default/${segs}${frag}`;
 }
 
 /**
@@ -797,10 +852,15 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
 
   // 详情视图
   if (selected) {
+    const kind: MaterialKind = selected.kind ?? kindFromPath(selected.filePath);
+    // 内联类（html/text）没有正文就没得渲染；媒体类**正文本来就是空的**（二进制不进事件），
+    // 有路径就能放——不要用"正文为空"把媒体误判成空资料（这是 KB P1 放开媒体时最容易踩的坑）。
+    const needsInline = kind === "html" || kind === "text";
     // 兜底：内容为空时显示提示，避免空 srcDoc iframe 白屏（display_content 文件读取竞态、
     // IPC 截断等边缘场景曾触发）；同时清洗后端偶发的 \r 与首尾空白。
     const cleanHtml = (selected.content ?? "").replace(/\r/g, "").trim();
-    if (!cleanHtml) {
+    const mediaUrl = needsInline ? "" : resolveSharedMediaUrl(selected.filePath, kind, htmlEpoch);
+    if ((needsInline && !cleanHtml) || (!needsInline && !mediaUrl)) {
       return (
         <div className="content-panel" style={materialFontStyle}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -813,7 +873,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
           <div className="placeholder">
             📄
             <br />
-            资料内容为空，可让 AI 老师重新展示
+            {needsInline ? "资料内容为空，可让 AI 老师重新展示" : "这份资料读不到，可让 AI 老师重新展示"}
           </div>
         </div>
       );
@@ -827,7 +887,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
           )}
         </div>
         {selected.title && <h2 className="material-title">{selected.title}</h2>}
-        {selected.format === "html" ? (
+        {kind === "html" ? (
           <HtmlFrame
             // ISSUE-061 根治：服务端共享资料（filePath 可解析为 materials 相对路径）走真实 URL 顶层文档
             //（asset://...?doc=1，协议层注入桥）→ 正文脚本随导航执行；本地产物/无 filePath 回退 dataURL。
@@ -841,10 +901,24 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
               showLookup(null); // ISSUE-017：资料刷新后旧浮层坐标失效
             }}
           />
+        ) : kind === "text" ? (
+          /\.md$/i.test(selected.filePath ?? "") ? (
+            <div className="markdown-body">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanHtml}</ReactMarkdown>
+            </div>
+          ) : (
+            <pre className="material-text-body">{cleanHtml}</pre>
+          )
+        ) : kind === "image" ? (
+          <img className="material-media" src={mediaUrl} alt={selected.title || "学习资料"} />
+        ) : kind === "audio" ? (
+          <audio className="material-media" src={mediaUrl} controls preload="metadata" />
+        ) : kind === "pdf" ? (
+          // KB P2：Chromium 自带阅读器内联渲染（`#toolbar=0` 已把阅读器 UI 收掉，见 resolveSharedMediaUrl）。
+          // 不用 <embed>：Electron 里两者都行（探针实测），iframe 在 Web 端口径一致、样式可控。
+          <iframe className="material-media material-pdf" src={mediaUrl} title={selected.title || "学习资料"} />
         ) : (
-          <div className="markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanHtml}</ReactMarkdown>
-          </div>
+          <video className="material-media" src={mediaUrl} controls playsInline preload="metadata" />
         )}
         {/* ISSUE-017：查词浮层（fixed 定位，点击外部空白/Esc/滚动关闭） */}
         {lookup && (
@@ -890,7 +964,9 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         <div className="material-list">
           {materials.map((m) => (
             <button key={m.id} className="material-row" onClick={() => onOpen(m.id)}>
-              <span className="material-row-icon">{m.format === "html" ? "🎮" : "📄"}</span>
+              <span className="material-row-icon">
+                {m.kind === "image" ? "🖼️" : m.kind === "audio" ? "🎵" : m.kind === "video" ? "🎬" : m.kind === "text" ? "📄" : "🎮"}
+              </span>
               <span className="material-row-body">
                 <span className="material-row-title">{m.title || "未命名资料"}</span>
                 <span className="material-row-time">{m.time}</span>

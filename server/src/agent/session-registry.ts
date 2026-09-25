@@ -28,12 +28,18 @@ import {
 } from "@pi/agent-core";
 import { createWorkerKbTools } from "../worker/kb-tools.js";
 import { CHILD_DB_TOOL_NAMES, createChildDbTools } from "./child-db-tools.js";
+// KB P1（2026-09-27）：孩子侧唯一的知识库检索入口 kb_lookup（家长库只读，门控在 SQL 里）
+import { CHILD_KB_TOOL_NAMES, createChildKbTools } from "./child-kb-tools.js";
 import { CHILD_REPORT_TOOL_NAMES, createChildReportTools } from "./child-report-tools.js";
 import { readParentSettings } from "../worker/scheduler.js";
 import { getAgentPrompt } from "../db/agents.js";
 import { openKb } from "../db/kb.js";
 import { clearDisplayLog } from "../db/displays.js";
 import { openParentLib } from "../db/parent-lib.js";
+// KB P2（2026-09-27）：陪学线路的**推送**通道——进课那一刻把该课挂着的条目拼进 system prompt
+import { listEntryBriefsForCourse } from "../db/kb-entries.js";
+// KB P2.1：每轮注入的「家长可能刚撤回」复核纪律（门控管不到对话记忆）
+import { createKbWithdrawNoticeExtension } from "./kb-withdraw-notice.js";
 import { buildChildSelfBlock } from "./registry-prompt.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { createSummarizeConversationTool } from "./kb-summary-tool.js";
@@ -246,6 +252,8 @@ export function computeChildToolNames(caps: { materialPanel: boolean }, kind: Ch
     "child_life_plan_update",
     ...CHILD_REPORT_TOOL_NAMES,
     ...CHILD_DB_TOOL_NAMES,
+    // KB P1：知识库检索。**只进主会话清单，不进 scene 分支**（场景演出不需要查库）
+    ...CHILD_KB_TOOL_NAMES,
   ];
 }
 
@@ -304,6 +312,8 @@ async function ensureEntry(
           createChildLifePlanUpdateTool({ dataDir: deps.dataDir, parentId, childId }),
           ...createChildReportTools({ dataDir: deps.dataDir, parentId, childId }),
           ...createChildDbTools({ dataDir: deps.dataDir, parentId, childId }),
+          // KB P1：kb_lookup（检索家长库的已发布条目；只读、门控在 SQL）
+          ...createChildKbTools({ dataDir: deps.dataDir, parentId, childId }),
         ]),
     ...(pageTools
       ? isScene
@@ -350,8 +360,10 @@ async function ensureEntry(
     // 日期保险（ISSUE-100）：即便客户端漏调 /open、只在发消息时触发 ensureEntry
     // （如服务端重启后内存实例丢失），也不会继续昨天的上下文。
     shouldAutoNewSession: () => resetMarks.has(key) || !isLastMessageToday(sessionsDir),
-    // 会话级红线（路径越界拦截 + 每轮注入日期）与客户端同一份实现
-    extensionFactories: [guardExtension],
+    // 会话级红线（路径越界拦截 + 每轮注入日期）与客户端同一份实现；
+    // KB P2.1：再加一条每轮注入的「撤回复核纪律」——门控管得住"查得到查不到"，
+    // 管不住"还记得不记得"（见 kb-withdraw-notice.ts 的实测缺陷说明）
+    extensionFactories: [guardExtension, createKbWithdrawNoticeExtension({ dataDir: deps.dataDir, parentId })],
   });
   // ISSUE-113：新会话（/reset、跨天自动新建、或首次进入且旧会话非今天）→ 清该会话的展示登记，
   // 左侧资料列表随会话走（重进保留、重置清空）
@@ -407,10 +419,14 @@ function courseContextBlock(deps: AgentSessionDeps, parentId: string, childId: s
         | { topic?: string; lesson_method?: string; teaching_copy?: string; assess_rubric?: string; html_path?: string }
         | undefined;
       if (!row) return `本课「${courseTitle}」在家长库中未找到（可能有名字差异），请先与家长确认课程名再开始。`;
+      // KB P2：本课挂着的知识条目（**注入即权威**——见下方 kbLines 注释）。
+      // 读的时候再门控一次（条目可能已被撤回或改回草稿），门控条件与 kb_lookup 同源。
+      const kbLines = buildCourseKbLines(lib, row.topic ?? "", courseTitle, childId);
       const lines = [
         `- 课程：${courseTitle}（主题 ${row.topic ?? "-"}）`,
         statusLine,
         row.html_path ? `- 已有资料：${row.html_path}（可用 display_content 展示）` : "",
+        ...kbLines,
         row.lesson_method ? `- 教法（怎么上）：${row.lesson_method}` : "",
         row.teaching_copy ? `- 教学文案要点：${row.teaching_copy.slice(0, 800)}` : "",
         row.assess_rubric ? `- 考核要点：${row.assess_rubric.slice(0, 500)}` : "",
@@ -422,6 +438,55 @@ function courseContextBlock(deps: AgentSessionDeps, parentId: string, childId: s
   } catch (err) {
     return `（读取课程资料失败：${(err as Error).message}）`;
   }
+}
+
+/**
+ * KB P2：把该课挂着的知识条目渲染成 system prompt 里的几行。
+ *
+ * **推送与拉取的区别就在这**：`kb_lookup` 是孩子问了才查（拉取），这里是**一进课就已经在手里**
+ * （推送）——所以这些说法不需要孩子提问就会被讲出来，**注入即权威**。
+ *
+ * 三条渲染纪律：
+ * 1. 门控在读的时候再判一次（由 `listEntryBriefsForCourse` 用 `GATED_WHERE` 保证）——
+ *    家长随时可能撤回条目或改回草稿，链接行不会跟着变，**只在绑定时校验等于只挡了第一秒**；
+ * 2. `summary` 是家长原话的要点，**截到 300 字**是预算考虑，不是内容取舍——真长内容在条目里，
+ *    模型可以再调 `kb_lookup` 拿全文口径；
+ * 3. **带上「可展示」的真实路径**：不带路径，孩子上课时就只能自己讲，
+ *    家长配的纪录片放不出来（P2 的目标就是"这课有哪些料"自动可见**可放**）。
+ * 读不到就返回空数组——**绝不编造课程条目**（与 courseContextBlock 对未找到课程的处理一致）。
+ *
+ * 导出是为了测试（与 `normalizeKbQuery` 同理）：这段文字**直接进 system prompt**，
+ * 是本功能唯一的输出面，靠"看着像对"不够，得有断言钉住。
+ */
+export function buildCourseKbLines(
+  lib: ReturnType<typeof openParentLib>,
+  topic: string,
+  courseTitle: string,
+  childId: string
+): string[] {
+  let briefs: ReturnType<typeof listEntryBriefsForCourse> = [];
+  try {
+    briefs = listEntryBriefsForCourse(lib, topic, courseTitle, childId);
+  } catch {
+    return []; // 无表/脏数据不阻塞教学上下文
+  }
+  if (!briefs.length) return [];
+  const flat = (s: string, n: number): string => {
+    const t = String(s ?? "").replace(/\s+/g, " ").trim();
+    return t.length > n ? `${t.slice(0, n)}…` : t;
+  };
+  return [
+    `- 本课知识条目（**讲到相关话题时以这些为准**：不确定就按这些说，**不许自己补数字/人名/结论**；` +
+      `孩子没问到时**不必主动一条条念**，但话题一碰到就必须用这里的说法，不要凭自己的一般了解讲）：`,
+    ...briefs.map((e, i) => {
+      const head = `${e.title}${e.summary ? ` — ${flat(e.summary, 300)}` : ""}`;
+      const usage = e.usage ? `｜什么时候给她看：${flat(e.usage, 80)}` : "";
+      const assets = e.assets.length
+        ? `｜可展示：${e.assets.map((a) => `${a.path}（${a.kind}）`).join("、")}`
+        : "";
+      return `  ${i + 1}. ${head}${usage}${assets}`;
+    }),
+  ];
 }
 
 /**

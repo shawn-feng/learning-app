@@ -44,6 +44,8 @@ import {
   PARENT_CHILD_REPORT_TOOL_NAMES,
   createParentChildReportTools,
 } from "../server/src/agent/parent-child-report-tools";
+// KB P1（2026-09-27）：家长侧知识库三把（必须被 parent-scene-kb 声明，否则说明搬不走、守卫加不上）
+import { PARENT_KB_TOOL_NAMES, createParentKbTools } from "../server/src/agent/parent-kb-tools";
 import { createServerFsTools } from "../server/src/agent/fs-tools";
 import {
   COMPACT_EXEMPT_TOOLS,
@@ -101,7 +103,7 @@ describe("ISSUE-144 P0/P1：常驻层预算（渐进披露确实省下上下文�
     console.log(
       `[ISSUE-144] 常驻提示词 改后 ${prompt.length} 字符（改前 4710，含元数据块桩；P6 后元数据块整块退场）\n` +
         sections.map((s) => `  ${s.chars}\t${s.head}`).join("\n") +
-        `\n[ISSUE-144] 8 个技能正文合计 ${bodyTotal} 字符（按需加载，不再每轮都在）`
+        `\n[ISSUE-144] 9 个技能正文合计 ${bodyTotal} 字符（按需加载，不再每轮都在）`
     );
     expect(prompt.length).toBeLessThan(4000);
     expect(prompt.length).toBeLessThan(bodyTotal); // 常驻 < 全部技能正文之和：这正是渐进披露的意义
@@ -168,7 +170,7 @@ describe("ISSUE-144 P0：场景索引与台账覆盖", () => {
   it("索引包含全部可见技能，且写法是「标题（家长原话）→ 技能名」", () => {
     const idx = buildSkillIndexBlock();
     const visible = visibleParentSkills();
-    expect(visible.length).toBe(8);
+    expect(visible.length).toBe(9);
     for (const s of visible) {
       expect(idx).toContain(`\`${s.name}\``);
       expect(idx).toContain(s.title);
@@ -178,11 +180,11 @@ describe("ISSUE-144 P0：场景索引与台账覆盖", () => {
     expect(idx.length).toBeLessThan(1600); // 索引是唯一每轮都付钱的部分
   });
 
-  it("34 条对话场景 + 3 条界面自足 = 37，且每条只落一个场景", () => {
+  it("36 条对话场景 + 3 条界面自足 = 39，且每条只落一个场景", () => {
     const all = Object.values(PARENT_SKILL_COVERAGE).flat();
-    expect(all.length).toBe(34);
+    expect(all.length).toBe(36);
     expect(new Set(all).size).toBe(all.length); // 不重复
-    expect(all.length + UI_ONLY_SCENARIOS.length).toBe(37);
+    expect(all.length + UI_ONLY_SCENARIOS.length).toBe(39);
     for (const name of Object.keys(PARENT_SKILL_COVERAGE)) {
       expect(findParentSkill(name), `台账映射指向了不存在的技能 ${name}`).toBeTruthy();
     }
@@ -195,6 +197,7 @@ describe("ISSUE-144 P0：场景索引与台账覆盖", () => {
       ...PARENT_AGENT_TOOL_NAMES,
       ...PLAN_DOMAIN_TOOL_NAMES,
       ...PARENT_CHILD_REPORT_TOOL_NAMES,
+      ...PARENT_KB_TOOL_NAMES,
       "parent_display_report",
       "load_skill",
     ]);
@@ -433,14 +436,23 @@ export const PARENT_SKILL_SAMPLES: Array<{ quote: string; skill: string; tools: 
     skill: "parent-scene-plan",
     tools: ["parent_recurrence_create"],
   },
+  {
+    quote: "以后她问女娲造人就这么说：……（我整理后你确认）",
+    skill: "parent-scene-kb",
+    tools: ["parent_kb_save", "parent_kb_publish"],
+  },
+  { quote: "她问过什么我还没回答的？", skill: "parent-scene-kb", tools: ["parent_kb_list"] },
+  // KB P2：挂课与发布是两件事，样本要能把它们分开（"她问起来能查到" vs "这节课我会主动讲"）
+  { quote: "这条讲夏朝的时候一定要提，挂到第一课上", skill: "parent-scene-kb", tools: ["parent_kb_bind"] },
 ];
 
 describe("ISSUE-144 P0.2：验收样本清单静态自检", () => {
-  it("18 条对话样本指向的技能与工具都存在，且 8 个场景都有样本", () => {
+  it("20 条对话样本指向的技能与工具都存在，且 9 个场景都有样本", () => {
     const known = new Set<string>([
       ...PARENT_AGENT_TOOL_NAMES,
       ...PLAN_DOMAIN_TOOL_NAMES,
       ...PARENT_CHILD_REPORT_TOOL_NAMES,
+      ...PARENT_KB_TOOL_NAMES,
       "load_skill",
     ]);
     for (const s of PARENT_SKILL_SAMPLES) {
@@ -471,6 +483,7 @@ function allTools(skillState?: ParentSkillState, opts?: { compacted?: boolean })
     } as any),
     ...createPlanDomainTools({ db, dataDir, parentId, skillState } as any),
     ...createParentChildReportTools({ db, dataDir, parentId }),
+    ...createParentKbTools({ dataDir, parentId }),
     createParentReportTool({ db, parentId, streamKey: "k" } as any),
     createLoadSkillTool({ dataDir, parentId, state: skillState }),
   ] as any[];
@@ -573,8 +586,15 @@ describe("ISSUE-144 A 路线：说明下沉到技能，工具块只留结构与�
     );
     expect(afterTotal).toBeLessThan(beforeTotal * 0.75);
     // P6 又撤掉三把通用通道工具（parent_db_read/write/describe，源码态 ≈ 3.1k）：45 把 / 13892。
+    // KB P1（2026-09-27）加三把知识库工具：48 把 / 15728（+1836）。增量几乎全在**结构**上
+    // （parent_kb_save 的 entries[]/assets[]/risk_terms 是嵌套数组，字段名就是库表列名，
+    //  说明已被下沉层剥掉）——结构是校验与类型转换的依据，不能靠删结构省字符。
+    // KB P2（2026-09-27）加第四把 parent_kb_bind：49 把 / 16184（+456）。
+    // 只用 456 字符是因为它的说明已经在 `parent-scene-kb` 的 `tools` 里 → 走下沉 + 场景守卫，
+    // 进上下文的只剩压缩后的一句 + 参数结构。**这是新工具必须声明进技能的直接收益**：
+    // 不声明就会被判"无场景"而原样保留（description 全长进上下文），这一点比守卫本身更省钱。
     // 上限随工具面增减同步调，防"加工具悄悄突破预算"。
-    expect(afterTotal).toBeLessThan(14200);
+    expect(afterTotal).toBeLessThan(16600);
     expect(beforeTotal).toBeGreaterThan(20500);
   });
 
@@ -608,6 +628,9 @@ describe("ISSUE-144 A 路线：说明下沉到技能，工具块只留结构与�
       "setmode",
       "endDate",
       "每门课生成一条规则",
+      // ISSUE-149：跨日期行路由与口径（防技能文字回退到"逐天拆行"）
+      "不要拆成多行",
+      "只在结束日判定",
     ]) {
       expect(plan, `plan 技能缺 ${kw}`).toContain(kw);
     }
@@ -648,6 +671,17 @@ describe("ISSUE-144 A 路线：说明下沉到技能，工具块只留结构与�
     const automation = findParentSkill("parent-scene-automation")!.body;
     for (const kw of ["frequency", "intervalMinutes", "fireAt", "weekly"]) {
       expect(automation, `automation 技能缺 ${kw}`).toContain(kw);
+    }
+    // KB P2：挂课这条路的**口径**必须写在技能里（工具描述会被下沉剥掉，红线不能只留在代码注释里）
+    const kb = findParentSkill("parent-scene-kb")!.body;
+    for (const kw of [
+      "parent_kb_bind",
+      "unbind",
+      "不是必须的",
+      "草稿挂不上课",
+      "只有家长点名要挂时才挂",
+    ]) {
+      expect(kb, `kb 技能缺 ${kw}`).toContain(kw);
     }
   });
 });

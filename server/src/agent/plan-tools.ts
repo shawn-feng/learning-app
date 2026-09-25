@@ -124,8 +124,11 @@ export function createChildExamPlanListTool(deps: PlanToolsDeps) {
 
 // ---------- 家长库教学方法（parent_content） ----------
 
-/** 把 topic 参数（目录名 lunyu 或中文名 论语）归一为 topic_key。 */
-function resolveTopicKey(lib: DatabaseSync, topic: string): string {
+/**
+ * 把 topic 参数（目录名 lunyu 或中文名 论语）归一为 topic_key。
+ * P2 起 `parent-kb-tools.ts` 也用它（`kb_entry_links.topic` 存目录名，家长嘴里说的是中文名）。
+ */
+export function resolveTopicKey(lib: DatabaseSync, topic: string): string {
   const byKey = lib.prepare("SELECT topic_key FROM topics WHERE topic_key = ?").get(topic) as
     | { topic_key?: string }
     | undefined;

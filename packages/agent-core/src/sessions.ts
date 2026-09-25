@@ -88,12 +88,24 @@ export async function createCoreSession(
   // 追加到消息尾部（不动 system prompt、不动工具集），由 scenarioGuard 强制。若将来要放行原生
   // skills，必须同时解决 read 的路径策略与技能目录的可写性，不能只把这里改成 false。
   // 详见 docs/家长agent-场景skill实施方案-2026-09-25.md、server/src/agent/parent-skills.ts。
+  // ⚠️ 2026-09-25 修正（原来这根线**从来没接通**）：`extensionFactories` 必须交给 **ResourceLoader**，
+  // 不是 `createAgentSession`。
+  //
+  // SDK 里唯一的读取点是 `DefaultResourceLoader` 的 `options.extensionFactories`
+  // （`dist/core/resource-loader.js:168` → `loadExtensionFactories()`，在 `reload()` 时执行）；
+  // 而 `createAgentSession()` 的实现里**根本没有引用 `options.extensionFactories`**
+  // （`dist/core/sdk.js:66` 起：有 `options.resourceLoader` 就直接用它，否则自建一个不带扩展的）。
+  // 于是原先"传进 createAgentSession"的写法被**静默忽略**：`learning-guard` 的「每轮注入日期」
+  // 与「fs 路径红线」在整个 agent-core 会话路径上一直是**没加载**的
+  // （`loadExtensionFactories` 还把工厂异常收进 `errors` 而不抛，所以连报错都没有）。
+  // 症状与 learning-guard 自己注释里记的那次实测（跨天沿用旧日期）一致。
   const loader = new deps.ResourceLoader({
     cwd: opts.cwd,
     agentDir: opts.agentDir,
     noContextFiles: opts.noContextFiles ?? true,
     noSkills: opts.noSkills ?? true,
     systemPromptOverride: () => opts.systemPrompt,
+    ...(opts.extensionFactories ? { extensionFactories: opts.extensionFactories } : {}),
   });
   await loader.reload();
 
@@ -121,7 +133,8 @@ export async function createCoreSession(
     resourceLoader: loader,
     tools: opts.toolNames,
     customTools: opts.customTools,
-    ...(opts.extensionFactories ? { extensionFactories: opts.extensionFactories } : {}),
+    // 注意：这里**不再**传 extensionFactories——`createAgentSession` 不认这个选项（见上面 loader 处的说明）。
+    // 扩展已经在构造 `loader` 时交进去了。
   });
   return { session, startedNewSession };
 }

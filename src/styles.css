@@ -2652,6 +2652,49 @@ input, textarea {
   font-size: 15px;
 }
 
+/* KB P1（2026-09-27）：孩子端资料面板的原生媒体分支（图片/音频/视频）与纯文本分支。
+   在此之前面板只认 html（走 iframe），媒体没有出口——材料类知识条目因此等于残废。 */
+.material-media {
+  display: block;
+  max-width: 100%;
+  margin: 8px auto 0;
+  border-radius: 8px;
+}
+
+video.material-media {
+  max-height: 62vh;
+  background: #000;
+}
+
+img.material-media {
+  max-height: 70vh;
+  object-fit: contain;
+}
+
+audio.material-media {
+  width: 100%;
+}
+
+/* KB P2（2026-09-27）：PDF 也走原生内联渲染（Chromium 自带阅读器，URL 带 #toolbar=0 收掉阅读器 UI）。
+   高度给足才能整页读；四周留一点边，白纸不贴边更好认。 */
+iframe.material-pdf {
+  width: 100%;
+  height: 70vh;
+  border: 1px solid #e2e6ee;
+  background: #fff;
+}
+
+.material-text-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: var(--material-font, 15px);
+  line-height: 1.7;
+  margin: 8px 0 0;
+  padding: 0;
+  background: transparent;
+}
+
 /* ISSUE-030：孩子端学习资料 markdown 正文字号跟随「资料字号」设置。
    作用域限定在 .content-panel（仅孩子端 MaterialsPanel），不影响家长端/聊天 markdown。
    用 * 强制统一字号，与 HTML 资料 iframe 内的处理保持一致（低龄友好、层次简化为单一大字）。 */

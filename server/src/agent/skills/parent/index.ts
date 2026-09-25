@@ -1,14 +1,16 @@
 /**
  * 家长场景技能注册表（ISSUE-144）。
  *
- * 8 个场景技能 = 讨论稿 §2 的清单；**覆盖台账 34 条对话场景**（另 3 条界面自足见 UI_ONLY_SCENARIOS），
+ * 9 个场景技能 = 讨论稿 §2 的清单；**覆盖台账 36 条对话场景**（另 3 条界面自足见 UI_ONLY_SCENARIOS），
  * 每条只落一个场景（PARENT_SKILL_COVERAGE 同时是台账 → 场景的映射，测试会核对不重不漏）。
+ * 2026-09-27 KB P1：新增 `parent-scene-kb`（C9/C10），8 → 9 个技能、34 → 36 条台账。
  */
 import type { ParentSkill } from "./shared.js";
 import { automationSkill } from "./automation.js";
 import { childSkill } from "./child.js";
 import { configSkill } from "./config.js";
 import { courseSkill } from "./course.js";
+import { kbSkill } from "./kb.js";
 import { materialsSkill } from "./materials.js";
 import { planSkill } from "./plan.js";
 import { pointsSkill } from "./points.js";
@@ -16,13 +18,14 @@ import { progressSkill } from "./progress.js";
 
 export type { ParentSkill } from "./shared.js";
 
-/** 8 个入口技能（顺序即索引顺序：高频在前） */
+/** 9 个入口技能（顺序即索引顺序：高频在前） */
 export const PARENT_SKILLS: ParentSkill[] = [
   progressSkill,
   courseSkill,
   planSkill,
   automationSkill,
   materialsSkill,
+  kbSkill,
   childSkill,
   pointsSkill,
   configSkill,
@@ -35,6 +38,7 @@ export const PARENT_SKILL_COVERAGE: Record<string, string[]> = {
   "parent-scene-plan": ["E1", "E2", "E3", "E4", "E5", "E7", "E8"],
   "parent-scene-automation": ["E6"],
   "parent-scene-materials": ["C1", "C2", "C3", "C4", "C7", "C8"],
+  "parent-scene-kb": ["C9", "C10"],
   "parent-scene-child": ["A1", "A2", "A3"],
   "parent-scene-points": ["F2", "F3"],
   "parent-scene-config": ["F4"],

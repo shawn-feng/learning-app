@@ -716,7 +716,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         title: "上传课程资料",
         properties: ["openFile", "multiSelections"],
         filters: [
-          { name: "资料文件", extensions: ["html", "htm", "md", "pdf", "jpg", "jpeg", "png", "webp", "mp3", "mp4", "webm", "ogg", "wav", "m4a", "aac", "flac"] },
+          // KB P1（2026-09-27）：加 txt —— 知识库的「文本类资料」靠它上传；与 Web shim 的 accept 同步
+          { name: "资料文件", extensions: ["html", "htm", "md", "txt", "pdf", "jpg", "jpeg", "png", "webp", "mp3", "mp4", "webm", "ogg", "wav", "m4a", "aac", "flac"] },
         ],
       });
       if (result.canceled || result.filePaths.length === 0) {

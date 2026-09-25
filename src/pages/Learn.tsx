@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
 import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell, BookMarked, FolderOpen } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, type TextFileAttachment, nowTime } from "../components/ChatWindow";
-import MaterialsPanel, { type Material } from "../components/MaterialsPanel";
+import MaterialsPanel, { kindFromPath, type Material, type MaterialKind } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import ModelSelector from "../components/ModelSelector";
 import TodoModal from "../components/TodoModal";
@@ -448,10 +448,16 @@ export default function Learn({ child, onExit }: Props) {
         // 恢复学习资料列表（退出再进入不丢失；主进程已按 limit 截断）。
         // 自动打开最新一份由下方统一的 materials 监听 effect 处理（ISSUE-014），这里只负责回填。
         if (Array.isArray(r.materials)) {
-          setMaterials(r.materials);
+          // KB P1：会话回填的登记行**没有类型字段**（派生数据不落库）→ 按扩展名现算，
+          // 否则恢复出来的图片/音视频会被当成 html 渲染（空白面板）。
+          const restored: Material[] = r.materials.map((m: Material) => ({
+            ...m,
+            kind: m.kind ?? kindFromPath(m.filePath),
+          }));
+          setMaterials(restored);
           // MATERIAL 保鲜：恢复展示的共享 html 可能是旧缓存（服务端文件已更新，尤其场景课）。
           // 后台逐份刷新为最新内容 → 左侧资料/场景自动载入新版本，无需 agent 重新 display。
-          void refreshStaleMaterials(r.materials);
+          void refreshStaleMaterials(restored);
         }
         if (typeof r.materialsLimit === "number" && r.materialsLimit > 0) {
           materialsLimitRef.current = r.materialsLimit;
@@ -526,7 +532,14 @@ export default function Learn({ child, onExit }: Props) {
 
   // 把一份资料（display_content 产物）写入 materials 列表并自动打开；场景判定内联。
   // 旧路径（tool_end 的 result.details.panelContent）与新路径（pi:display_content 事件）共用。
-  function applyDisplayContent(panel: { filePath?: string; title?: string; content: string; isScene?: boolean }) {
+  function applyDisplayContent(panel: {
+    filePath?: string;
+    title?: string;
+    content: string;
+    isScene?: boolean;
+    /** KB P1：展示类型（网页/图片/音频/视频/文本），由服务端从扩展名现算后随事件下发；缺省=网页 */
+    kind?: MaterialKind;
+  }) {
     // 场景课全托管：命中即置交棒标记并**立即激活场景会话**——不再等 iframe 的
     // scene.ready（app 内沙箱 iframe 正文脚本可能不执行，曾导致永不跳转）。
     const isScene =
@@ -547,7 +560,7 @@ export default function Learn({ child, onExit }: Props) {
       if (filePath && prev.some((m) => m.filePath === filePath)) {
         const updated = prev.map((m) =>
           m.filePath === filePath
-            ? { ...m, content: panel.content, title: panel.title || m.title, time: nowLabel() }
+            ? { ...m, content: panel.content, kind: panel.kind ?? m.kind ?? kindFromPath(filePath), title: panel.title || m.title, time: nowLabel() }
             : m
         );
         const moved = updated.filter((m) => m.filePath !== filePath).concat(updated.filter((m) => m.filePath === filePath));
@@ -559,6 +572,7 @@ export default function Learn({ child, onExit }: Props) {
         {
           id,
           format: "html" as const,
+          kind: panel.kind ?? kindFromPath(filePath),
           content: panel.content,
           title: panel.title,
           time: nowLabel(),
@@ -604,12 +618,16 @@ export default function Learn({ child, onExit }: Props) {
   }, [patchWorking]);
 
   // P4：服务端 display_content 推送（pi:display_content 事件）→ 左侧资料面板自动打开
+  // KB P1：事件新增 `kind`；**媒体类的 content 本来就是空的**（二进制不进事件），
+  // 所以"正文为空就跳过"这条兜底只对 网页/文本 生效——否则图片/音视频会被静默丢掉。
   const handleDisplayContent = useCallback(
-    (data: { childId: string; path: string; title?: string; source?: string; content?: string }) => {
+    (data: { childId: string; path: string; title?: string; source?: string; content?: string; kind?: MaterialKind }) => {
       if (data.childId !== childIdRef.current) return;
+      const kind: MaterialKind = data.kind ?? "html";
       const content = typeof data.content === "string" ? data.content : "";
-      if (!content) return; // 正文缺失（读取失败）时静默跳过，避免渲染空白面板
-      applyDisplayContent({ filePath: data.path, title: data.title, content });
+      const needsInline = kind === "html" || kind === "text";
+      if (needsInline && !content) return; // 正文缺失（读取失败）时静默跳过，避免渲染空白面板
+      applyDisplayContent({ filePath: data.path, title: data.title, content, kind });
     },
     []
   );
@@ -741,6 +759,7 @@ export default function Learn({ child, onExit }: Props) {
   async function refreshStaleMaterials(mats: Material[]) {
     const targets = mats.filter(
       (m) =>
+        (m.kind ?? "html") === "html" &&
         m.format === "html" &&
         m.filePath &&
         !m.filePath.startsWith("outputs/") &&

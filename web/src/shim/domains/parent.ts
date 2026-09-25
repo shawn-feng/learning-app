@@ -567,10 +567,10 @@ export const parentDomain = {
     subDir?: string
   ): Promise<{ success: boolean; data?: { files: Array<{ name: string; relPath: string }> }; error?: string }> => {
     try {
-      // 与 ipc 弹框 filters 同一扩展名白名单
+      // 与 ipc 弹框 filters 同一扩展名白名单（KB P1 加 .txt：知识库的文本类资料靠它上传）
       const files = await pickFiles({
         multiple: true,
-        accept: ".html,.htm,.md,.pdf,.jpg,.jpeg,.png,.webp,.mp3,.mp4,.webm,.ogg,.wav,.m4a,.aac,.flac",
+        accept: ".html,.htm,.md,.txt,.pdf,.jpg,.jpeg,.png,.webp,.mp3,.mp4,.webm,.ogg,.wav,.m4a,.aac,.flac",
       });
       if (files.length === 0) return { success: true, data: { files: [] } };
       // 上传的媒体扩展名（进 media/ 子目录；对齐 parent-library.ts MEDIA_EXTS）

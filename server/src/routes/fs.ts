@@ -66,7 +66,7 @@ export interface FsEntry {
 }
 
 export interface RefHit {
-  source: "course" | "display" | "exam_plan";
+  source: "course" | "display" | "exam_plan" | "kb";
   detail: string;
 }
 
@@ -259,6 +259,28 @@ export function findMaterialReferences(ctx: FsCtx, targetRel: string): RefHit[] 
           affectedCourses.add(r.title);
           hits.push({ source: "course", detail: `课程「${r.topic}/${r.title}」的资料文本提到 ${targetRel}` });
         }
+      }
+      // 1b) 知识条目挂着的资料（KB P2）：`kb_entry_assets.path` 精确命中。
+      //     这里**故意不套 kb_entries 的门控**（status/visibility）：R-1 问的是
+      //     「这个文件还有没有人指着」，不是「孩子此刻看不看得见」。套上门控会让
+      //     一条**草稿**条目引用的文件在删除预检里"没人要"——删完再发布，条目就悬空了。
+      try {
+        const rows = lib
+          .prepare(
+            `SELECT a.path, e.title, e.status FROM kb_entry_assets a
+             JOIN kb_entries e ON e.id = a.entry_id`
+          )
+          .all() as Array<{ path: string; title: string; status: string }>;
+        for (const r of rows) {
+          if (refMatches(r.path, targetRel, isDir)) {
+            hits.push({
+              source: "kb",
+              detail: `知识条目「${r.title}」${r.status === "published" ? "" : "（草稿）"}挂着 ${normMaterialRef(r.path)}`,
+            });
+          }
+        }
+      } catch {
+        /* 无表（老库）跳过 */
       }
     } finally {
       lib.close();

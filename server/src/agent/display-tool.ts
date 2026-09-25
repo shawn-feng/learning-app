@@ -28,30 +28,75 @@ export interface DisplayToolDeps {
 
 const REMOTE_PREFIX = "materials/";
 
+/**
+ * 可展示类型（**从扩展名现算，不查任何字段**——`kb_entry_assets.role` 当初就是因为"纯派生数据"
+ * 被删掉的，见 docs/知识库-完整方案-2026-09-26.md §3.3.5）。
+ *
+ * KB P1（2026-09-27）放开白名单的理由：不放，**材料类条目等于残废**——
+ * 家长挂了纪录片，孩子放不出来（原实现只认 `.html/.htm`）。
+ */
+export type DisplayKind = "html" | "text" | "image" | "audio" | "video" | "pdf";
+
+const KIND_BY_EXT: Record<string, DisplayKind> = {
+  html: "html", htm: "html",
+  txt: "text", md: "text",
+  png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", svg: "image", bmp: "image",
+  mp3: "audio", wav: "audio", ogg: "audio", m4a: "audio", aac: "audio", flac: "audio",
+  mp4: "video", webm: "video",
+  // PDF（KB P2）：P1 曾以「自定义 scheme 下不保证渲染」为由拒绝，P2 探针实测推翻
+  // （Electron 43 自带阅读器，不需要 plugins:true）。渲染走 `<iframe>` + `#toolbar=0`。
+  pdf: "pdf",
+};
+
+const KIND_ZH: Record<DisplayKind, string> = {
+  html: "网页", text: "文本", image: "图片", audio: "音频", video: "视频", pdf: "PDF",
+};
+
+/** 从相对路径推展示类型；不支持返回 null（调用方给可操作的话） */
+export function displayKindOf(relPath: string): DisplayKind | null {
+  const ext = String(relPath ?? "").toLowerCase().split(".").pop() ?? "";
+  return KIND_BY_EXT[ext] ?? null;
+}
+
+/** 正文随事件内联（html 供沙箱 iframe 渲染、text 直接显示）；二进制只给路径，由渲染层按 kind 取流 */
+function kindIsInline(kind: DisplayKind): boolean {
+  return kind === "html" || kind === "text";
+}
+
 export function createDisplayContentTool(deps: DisplayToolDeps) {
   const paths = createCorePaths(deps.dataDir);
 
   return defineTool({
     name: "display_content",
-    label: "展示 HTML 资料",
+    label: "展示资料",
     description:
-      "在孩子学习资料面板展示一份 **HTML 格式** 的学习资料（沙盒 iframe 渲染，可含内联 script、可播放音视频）。\n\n" +
-      "**用法**：传 `path` 引用预生成的资料文件——`{topic}/{课程名}.html`（家长库共享资料，相对资料根，兼容旧 `materials/{topic}/...` 写法）" +
-      "或 `outputs/{名称}.html`（你为孩子产出的工具/游戏类页面）。仅支持 .html / .htm。\n\n" +
-      "**何时调用**：引导学习时展示该课预生成的资料，或孩子主动要看某份资料。\n" +
-      "展示什么、何时展示，以 parent_content 取到的该主题教学方法（method）为准。",
+      "在孩子学习资料面板展示一份资料：**网页 / 图片 / 音频 / 视频 / 文本 / PDF**（网页走沙盒 iframe，媒体走原生播放器）。\n\n" +
+      "**用法**：传 `path` 引用真实存在的资料文件——`{topic}/...`（家长资料库共享资料，相对资料根，兼容旧 `materials/{topic}/...` 写法）" +
+      "或 `outputs/{名称}.html`（你为孩子产出的页面）。\n\n" +
+      "**何时调用**：引导学习时展示该课预生成的资料，孩子主动要看某份资料，或知识条目里给了「可展示」的资料。\n" +
+      "**两条纪律**：① **一次只放一份**，放之前先问她想不想看（她正专心听时弹东西会打断）；② 展示什么、何时展示，以「家长准备的说法」" +
+      "（kb_lookup 返回的「用法」）或该主题教学方法为准。\n" +
+      "**放不出来时不要承诺「我去网上找」**：面板只能放资料库里已有的文件，没有就如实说没有。",
     parameters: Type.Object({
-      path: Type.String({ description: "资料文件路径（必须 .html/.htm 结尾），如 lunyu/论语先进篇第十三章.html 或 outputs/番茄钟.html" }),
+      path: Type.String({ description: "资料文件路径，如 lunyu/论语先进篇第十三章.html 或 preqin/media/甲骨文-卜辞拓片.jpg" }),
       title: Type.Optional(Type.String({ description: "内容标题（缺省取文件名）" })),
     }),
     execute: async (_id: string, params: { path: string; title?: string }, _signal: any, _onUpdate: any, ctx: any) => {
       const raw = String(params?.path ?? "").trim();
-      if (!raw) throw new Error("display_content 必须提供 path（预生成的 html 资料路径）");
-      if (!/\.html?$/i.test(raw)) throw new Error(`display_content 只支持 .html/.htm，收到：${raw}`);
+      if (!raw) throw new Error("display_content 必须提供 path（要展示的资料路径）");
 
       // 与客户端旧实现一致的三种写法归一
       let rel = raw.replace(/^\/+/, "");
       if (rel.startsWith(REMOTE_PREFIX)) rel = rel.slice(REMOTE_PREFIX.length);
+
+      const kind = displayKindOf(rel);
+      if (!kind) {
+        throw new Error(
+          `display_content 放不了这一类文件：${raw}\n` +
+            `（面板支持 网页 .html/.htm ｜ 图片 .png/.jpg/.jpeg/.gif/.webp/.svg/.bmp ｜ 音频 .mp3/.wav/.ogg/.m4a/.aac/.flac ｜ 视频 .mp4/.webm ｜ 文本 .txt/.md ｜ PDF .pdf）\n` +
+            `如果是别的格式：**如实告诉孩子这份放不了**，改用你的话讲，或让家长换一份（不要承诺"我去网上找"）。`
+        );
+      }
 
       // ISSUE-131 P2 三源：孩子 outputs/（孩子工作区）、家长 materials（新根，孩子会话可解析展示/
       // 读授权放行——孩子 fs 工具仍不可写不可见）、存量旧根 materials/<pid>（兼容层，不迁移）。
@@ -68,23 +113,27 @@ export function createDisplayContentTool(deps: DisplayToolDeps) {
       if (!fs.existsSync(abs)) {
         const where = isWorkspace ? `孩子工作区（${workspace}）` : `家长资料库（${resolveMaterialFile(deps.dataDir, deps.parentId, rel)}）`;
         throw new Error(
-          `资料不存在：${raw}\n（在 ${where} 中未找到；请核对路径，或用 ls / parent_list_materials 先看有什么）` +
+          `资料不存在：${raw}\n（在 ${where} 中未找到；请核对路径；条目里的「可展示」路径可直接用，` +
+            `或让家长在对话里核对资料库）` +
             (ctx?.cwd ? `\n当前工作区：${ctx.cwd}` : "")
         );
       }
 
-      const title = params.title?.trim() || rel.split("/").pop()!.replace(/\.html?$/i, "");
+      const title = params.title?.trim() || rel.split("/").pop()!.replace(/\.[^.]+$/, "");
       const source = isWorkspace ? "workspace" : "materials";
-      // 正文随事件一起推送：渲染层收到即可直接 iframe 渲染（多端同看、无需再拉文件）。
+      // 正文随事件一起推送（**仅 html/text**）：渲染层收到即可直接渲染，多端同看、无需再拉文件。
+      // 二进制（图片/音视频）**不读正文**——既避免大文件进事件，也避免把字节当字符串。
       // 读取失败（竞态/权限）不阻断——前端拿不到正文会走 materialsRefresh 兜底。
       let content = "";
-      try {
-        content = fs.readFileSync(abs, "utf-8");
-      } catch {
-        content = "";
+      if (kindIsInline(kind)) {
+        try {
+          content = fs.readFileSync(abs, "utf-8");
+        } catch {
+          content = "";
+        }
       }
       const ts = Date.now();
-      agentStreamHub.publish(deps.streamKey, "display_content", { path: rel, source, title, content, ts });
+      agentStreamHub.publish(deps.streamKey, "display_content", { path: rel, source, title, kind, content, ts });
       // ISSUE-113：登记到孩子库（会话重进回填左侧资料列表）；失败不影响推送
       try {
         registerDisplay(deps.dataDir, deps.parentId, deps.childId, deps.sessionKey, {
@@ -94,7 +143,12 @@ export function createDisplayContentTool(deps: DisplayToolDeps) {
         console.warn(`[display_content] 登记失败（不影响推送）：${(err as Error).message}`);
       }
       return {
-        content: [{ type: "text" as const, text: `已展示资料「${title}」（${rel}）——孩子端资料面板会即时打开。` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `已展示资料「${title}」（${rel}，${KIND_ZH[kind]}）——孩子端资料面板会即时打开。放完继续引导她说说看到了什么。`,
+          },
+        ],
         details: {},
       };
     },

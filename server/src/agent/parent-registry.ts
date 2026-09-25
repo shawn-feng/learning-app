@@ -35,6 +35,8 @@ import { createParentReportTool } from "./parent-report-tool.js";
 // ISSUE-144 P4：家长侧**场景专用只读工具**（D1 考核 / D5 掌握 / D3 错题 / F3 积分 / F2 兑换）
 // ——通用通道（parent_db_read）退场的**前置**，台账 §3.2
 import { PARENT_CHILD_REPORT_TOOL_NAMES, createParentChildReportTools } from "./parent-child-report-tools.js";
+// KB P1（2026-09-27）：家长侧知识库工具（存说法 / 挂资料 / 发布 / 看缺口 / 管风险词表）
+import { PARENT_KB_TOOL_NAMES, createParentKbTools } from "./parent-kb-tools.js";
 import { agentStreamHub } from "./stream-hub.js";
 // ISSUE-146 P0：会话活跃度登记（挂死看门狗判据；长工具执行期间不算静默）
 import {
@@ -195,6 +197,8 @@ async function ensureEntry(
       // ISSUE-144 P4：孩子的数据洞察（考核逐题 / 掌握与薄弱 / 积分与兑换）——按姓名定位孩子、
       // 取数范围写死、只读；家长问「考得怎么样/哪里薄弱/这分怎么算的」时不再需要通用通道
       ...createParentChildReportTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
+      // KB P1：知识库条目（KB 走专用工具；家长侧刻意**没有** kb_lookup——要看条目用 parent_kb_list）
+      ...createParentKbTools({ dataDir: deps.dataDir, parentId }),
       // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
       createParentReportTool({ db: deps.db, parentId, streamKey: key }),
       // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite，按本家长隔离）
@@ -225,6 +229,8 @@ async function ensureEntry(
       ...PLAN_DOMAIN_TOOL_NAMES,
       // ISSUE-144 P4：场景专用只读报告工具（常驻在工具面；说明与口径走场景技能 + 场景守卫）
       ...PARENT_CHILD_REPORT_TOOL_NAMES,
+      // KB P1：知识库三把（说明与口径走 parent-scene-kb 技能 + 场景守卫）
+      ...PARENT_KB_TOOL_NAMES,
       "get_date",
       "parent_display_report",
       LOAD_SKILL_TOOL_NAME,
