@@ -701,6 +701,8 @@ export interface PathReadRequest {
   /** 跳过前 N 行（配合 limit/orderBy 分页拉全量） */
   offset?: number;
   countOnly?: boolean;
+  /** 内部全量读取（如题库反查）用：跳过全局 READ_MAX_LIMIT 安全上限，仅受路径自身 rowLimit 约束 */
+  ignoreGlobalCap?: boolean;
 }
 
 /** 校验路径注册项本身良构（表名不重复、on 引用已出现的表、returns 裸列名不冲突） */
@@ -760,7 +762,9 @@ export function buildPathQuery(
   const whereSql = whereEntries.length ? ` WHERE ${whereEntries.map(([c]) => `${c} = ?`).join(" AND ")}` : "";
   const orderSql = req.orderBy ? ` ORDER BY ${req.orderBy} ${req.orderDesc ? "DESC" : "ASC"}` : "";
   const params = whereEntries.map(([, v]) => sqlVal(v));
-  const limit = Math.max(1, Math.min(Number(req.limit) || 20, path.rowLimit, READ_MAX_LIMIT));
+  // 内部全量读取（如题库反查）可跳过全局 READ_MAX_LIMIT 安全上限，仅受路径自身 rowLimit 约束
+  const cap = req.ignoreGlobalCap ? Number.MAX_SAFE_INTEGER : READ_MAX_LIMIT;
+  const limit = Math.max(1, Math.min(Number(req.limit) || 20, path.rowLimit, cap));
   if (req.countOnly) {
     return { sql: `SELECT COUNT(*) AS n FROM ${path.select} ${joinSql}${whereSql}`.replace(/\s+/g, " "), params, selectCols, limit };
   }

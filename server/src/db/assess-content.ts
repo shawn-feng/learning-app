@@ -422,6 +422,8 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
     const { sql, params } = buildPathQuery(registeredPath("bank_question_contexts"), {
       orderBy: "course_knowledge_questions.rowid",
       limit: 5000,
+      // 内部全量反查：放开全局 200 行安全上限（READ_MAX_LIMIT），否则大库仅前 200 行有上下文
+      ignoreGlobalCap: true,
     });
     const rows = db.prepare(sql).all(...params) as Array<{
       question_id: string;
