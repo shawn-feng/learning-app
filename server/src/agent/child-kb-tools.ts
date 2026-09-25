@@ -36,6 +36,7 @@ import {
 } from "../db/kb-entries.js";
 // KB P3：精确未命中 → 向量 top-K 兜底（复用既有 embeddings 设施）
 import {
+  KB_CHUNK_TEXT_COLUMN,
   KB_ENTRY_TEXT_COLUMN,
   embedTexts,
   parentLibCacheKey,
@@ -144,22 +145,44 @@ export function createChildKbTools(deps: ChildKbToolDeps) {
       const resolved = resolveEmbedding(settings.auth);
       if (!resolved) return [];
       const [qv] = await embedTexts(resolved, [query]);
-      const rows = topVectorRows(lib, "kb_entries", KB_ENTRY_TEXT_COLUMN, qv, {
+      const threshold = vectorThreshold(settings.appSettings, KB_VECTOR_THRESHOLD);
+      const cacheKey = parentLibCacheKey(deps.dataDir, deps.parentId);
+
+      // ① 条目级（标题+别名+说法+body 前 600 字）
+      const byEntry = new Map<string, number>();
+      for (const r of topVectorRows(lib, "kb_entries", KB_ENTRY_TEXT_COLUMN, qv, {
         topK: KB_MATCH_LIMIT,
-        // 阈值：家长显式配了就用家长的，否则用 KB 专用默认（0.45，理由见 KB_VECTOR_THRESHOLD）
-        threshold: vectorThreshold(settings.appSettings, KB_VECTOR_THRESHOLD),
-        cacheKey: parentLibCacheKey(deps.dataDir, deps.parentId),
-      });
-      const out: KbHit[] = [];
-      for (const r of rows) {
-        let id = "";
+        threshold,
+        cacheKey,
+      })) {
         try {
-          id = String((JSON.parse(r.rowPk) as unknown[])[0] ?? "");
+          const id = String((JSON.parse(r.rowPk) as unknown[])[0] ?? "");
+          if (id) byEntry.set(id, Math.max(byEntry.get(id) ?? 0, r.score));
         } catch {
           continue;
         }
-        if (!id) continue;
-        const hit = getGatedEntry(lib, childId, id, `语义匹配 ${r.score.toFixed(2)}`);
+      }
+
+      // ② **块级**（长正文的关键：条目级只带了 body 前 600 字，
+      //    一份两万字资料里靠后的内容在条目向量里根本不存在）
+      for (const r of topVectorRows(lib, "kb_entry_chunks", KB_CHUNK_TEXT_COLUMN, qv, {
+        topK: KB_MATCH_LIMIT * 3, // 一块一条，先多取再按条目去重
+        threshold,
+        cacheKey,
+      })) {
+        try {
+          const id = String((JSON.parse(r.rowPk) as unknown[])[0] ?? "");
+          if (id) byEntry.set(id, Math.max(byEntry.get(id) ?? 0, r.score));
+        } catch {
+          continue;
+        }
+      }
+
+      // ③ 命中的是**条目**（不是片段）：按分数降序，逐条**再过一次门控**读当前状态
+      const ranked = [...byEntry.entries()].sort((a, b) => b[1] - a[1]).slice(0, KB_MATCH_LIMIT);
+      const out: KbHit[] = [];
+      for (const [id, score] of ranked) {
+        const hit = getGatedEntry(lib, childId, id, `语义匹配 ${score.toFixed(2)}`);
         if (hit) out.push(hit);
       }
       return out;

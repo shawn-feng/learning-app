@@ -129,3 +129,103 @@ export function textify(raw: string, relPath: string, maxChars = KB_BODY_MAX): I
     truncated,
   };
 }
+
+// ==================== 阶段③：长正文分块 ====================
+
+/** 每块目标字数（中文按字符计）。太小会碎、太大会稀释主题——400 是"一段话"的量级。 */
+export const KB_CHUNK_SIZE = 400;
+/** 同一段落被切开时，相邻块之间的重叠字数（跨块的句子不至于两边都够不着） */
+export const KB_CHUNK_OVERLAP = 60;
+/** 一份正文最多切多少块（防一份 2 万字资料产生上百次嵌入调用） */
+export const KB_CHUNK_MAX = 64;
+
+/** 按句末标点切句，**保留标点**（丢了标点，块读起来会像断句错误） */
+function sentencesOf(para: string): string[] {
+  return para
+    .split(/(?<=[。！？；!?;])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * `body` → 块（**确定性**：同一份 body 永远切出同一批块）。
+ *
+ * 为什么确定性这么重要：块要当**向量旁表的主键载体**（`row_pk = [entry_id, seq]`）。
+ * 切法一变，同一个 `seq` 就指向了不同的文本——所以"确定性"是这套索引能自洽的前提，
+ * 也让"任何时候都能由 body 完整重建"这条正确性判据成立（见 `replaceKbChunks`）。
+ *
+ * 切法（三条，按优先级）：
+ * 1. **段落优先**：按空行切；够短的段落尽量合并到一块（凑到 `size` 附近），别切成一堆碎块；
+ * 2. **超长段落按句切**，块间带 `overlap` 重叠（同一段被切开时，跨块的句子两边都够得着）；
+ * 3. **去掉重复块**（页眉页脚/重复小标题常切出完全一样的块，留着只会污染向量）。
+ */
+export function chunkText(
+  text: string,
+  opts?: { size?: number; overlap?: number; maxChunks?: number }
+): string[] {
+  const size = Math.max(80, Number(opts?.size) || KB_CHUNK_SIZE);
+  const overlap = Math.max(0, Math.min(Number(opts?.overlap ?? KB_CHUNK_OVERLAP) || 0, Math.floor(size / 2)));
+  const maxChunks = Math.max(1, Number(opts?.maxChunks) || KB_CHUNK_MAX);
+  const norm = String(text ?? "")
+    .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!norm) return [];
+
+  const out: string[] = [];
+  const push = (s: string): void => {
+    const t = s.trim();
+    if (t) out.push(t);
+  };
+  let pending = "";
+  for (const raw of norm.split(/\n{2,}/)) {
+    const para = raw.trim();
+    if (!para) continue;
+    if (para.length <= size) {
+      // 短段落：能并就并，别把"一句话的段落"切成独立块
+      if (pending && pending.length + para.length + 1 <= size) pending = `${pending}\n${para}`;
+      else {
+        push(pending);
+        pending = para;
+      }
+      continue;
+    }
+    // 超长段落：先冲掉 pending，再按句切，块间带重叠
+    push(pending);
+    pending = "";
+    let buf = "";
+    for (const sent of sentencesOf(para)) {
+      // 单句本身超长（无标点的长串）→ 硬切
+      if (sent.length > size) {
+        push(buf);
+        buf = "";
+        for (let i = 0; i < sent.length; i += size - overlap) {
+          // 尾巴已被前一块覆盖就别再吐一块：`step = size - overlap` 意味着前一块的右边
+          // 伸到了 `i + overlap`，剩下的若不超过 overlap，就是纯冗余（会切出「。」这种 1 字块）。
+          if (i > 0 && sent.length - i <= overlap) break;
+          push(sent.slice(i, i + size));
+        }
+        continue;
+      }
+      if (buf && buf.length + sent.length > size) {
+        push(buf);
+        buf = buf.slice(-overlap) + sent;
+      } else {
+        buf += sent;
+      }
+    }
+    pending = buf;
+  }
+  push(pending);
+
+  // 去重（保持首次出现的顺序）+ 上限
+  const seen = new Set<string>();
+  const uniq: string[] = [];
+  for (const c of out) {
+    if (seen.has(c)) continue;
+    seen.add(c);
+    uniq.push(c);
+  }
+  return uniq.slice(0, maxChunks);
+}
+

@@ -64,6 +64,19 @@ CREATE TABLE IF NOT EXISTS kb_entry_links (
 );
 CREATE INDEX IF NOT EXISTS idx_kb_links_course ON kb_entry_links(topic, course);
 
+-- KB P3 阶段③：长正文的**分块缓存**（块级向量的落点）。
+-- 它与 kb_entries.body 的关系是「**缓存 ↔ 真源**」，不是两张真源：
+-- 分块是 body 的确定性派生（同一份 body → 同一批块），**每次写 body 就把这张表整体重建**。
+-- 之所以还是落一张表（而不是每次现算）：块要作为向量旁表的主键载体（row_pk = [entry_id, seq]），
+-- 而 markStale/topVectorRows 这套既有设施需要一个**能按主键查回文本的真实表**。
+-- 因此它的正确性判据很硬：**任何时候都能由 body 完整重建**（重建规则见 replaceKbChunks）。
+CREATE TABLE IF NOT EXISTS kb_entry_chunks (
+  entry_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  PRIMARY KEY (entry_id, seq)
+);
+
 CREATE TABLE IF NOT EXISTS kb_gaps (
   id TEXT PRIMARY KEY,
   child_id TEXT NOT NULL,
@@ -655,6 +668,7 @@ export function deleteKbEntries(lib: DatabaseSync, keys: string[]): KbDeleteResu
     }
     lib.prepare("DELETE FROM kb_entry_assets WHERE entry_id = ?").run(row.id);
     lib.prepare("DELETE FROM kb_entry_links WHERE entry_id = ?").run(row.id);
+    lib.prepare("DELETE FROM kb_entry_chunks WHERE entry_id = ?").run(row.id);
     lib.prepare("UPDATE kb_gaps SET entry_id = '', status = 'open' WHERE entry_id = ?").run(row.id);
     lib.prepare("DELETE FROM kb_entries WHERE id = ?").run(row.id);
     out.deleted.push(row.title);
@@ -978,6 +992,49 @@ export const KB_MATCH_LIMIT = 5;
  * 家长的设置里若显式给了 `embeddingThreshold`，以家长的为准。
  */
 export const KB_VECTOR_THRESHOLD = 0.45;
+
+export interface KbChunkRow {
+  entry_id: string;
+  seq: number;
+  text: string;
+}
+
+/**
+ * **整体重建**某条条目的分块缓存（P3 阶段③）。
+ *
+ * 为什么是"整体重建"而不是增量：分块的切法由 `body` 决定（`chunkText` 是确定性函数），
+ * body 一改，**后面每一块的 `seq` 都可能错位**。增量更新要在 seq 上维持一致性，代价远大于
+ * 一次 delete+insert（一份 2 万字正文也就几十行）。**缓存就要按"能整体重建"来设计。**
+ *
+ * 调用时机：任何写了 `body` 的地方（`parent_kb_save` 的 entries/ingest），以及 backfill。
+ * `chunks` 由调用方算好（分块算法在 `agent/kb-ingest.ts`——db 层只存它拿到的东西，不引文本逻辑）。
+ */
+export function replaceKbChunks(lib: DatabaseSync, entryId: string, chunks: string[]): number {
+  const id = String(entryId ?? "").trim();
+  if (!id) return 0;
+  lib.prepare("DELETE FROM kb_entry_chunks WHERE entry_id = ?").run(id);
+  const ins = lib.prepare("INSERT INTO kb_entry_chunks (entry_id, seq, text) VALUES (?, ?, ?)");
+  let n = 0;
+  chunks.forEach((t, i) => {
+    const text = String(t ?? "").trim();
+    if (!text) return;
+    ins.run(id, i, text);
+    n++;
+  });
+  return n;
+}
+
+export function listKbChunks(lib: DatabaseSync, entryId: string): KbChunkRow[] {
+  return lib
+    .prepare("SELECT entry_id, seq, text FROM kb_entry_chunks WHERE entry_id = ? ORDER BY seq")
+    .all(entryId) as unknown as KbChunkRow[];
+}
+
+/** 某条条目的 body（分块重建的输入） */
+export function getKbBody(lib: DatabaseSync, entryId: string): string {
+  const row = lib.prepare("SELECT body FROM kb_entries WHERE id = ?").get(entryId) as { body?: string } | undefined;
+  return String(row?.body ?? "");
+}
 
 /**
  * 按 id **再过一次门控**读一条（向量召回专用，P3）。

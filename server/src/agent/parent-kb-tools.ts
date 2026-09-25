@@ -26,19 +26,22 @@ import { defineTool } from "./tool-kit.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { resolveTopicKey } from "./plan-tools.js";
 import { markStale, KB_ENTRY_TEXT_COLUMN } from "./embeddings.js";
-import { textify, KB_BODY_MAX } from "./kb-ingest.js";
+import { textify, chunkText, KB_BODY_MAX } from "./kb-ingest.js";
 import { resolveMaterialFile } from "../db/materials.js";
 import { coerceArrayArg, coerceObjectArg } from "./db-channel.js";
 import { JsonArrayParam } from "./tool-shapes.js";
 import {
   bindEntryToCourse,
   deleteKbEntries,
+  getKbBody,
   getKbEntry,
+  listKbChunks,
   listKbEntries,
   listKbGaps,
   listKbSuggestions,
   listRiskTerms,
   publishKbEntries,
+  replaceKbChunks,
   saveKbEntries,
   updateRiskTerms,
   type KbAssetInput,
@@ -98,29 +101,73 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
   }
 
   /**
-   * P3 backfill：把**还没有向量**的条目补排队。
+   * 写入之后：**先同步分块缓存，再排向量**（P3 阶段③）。
+   *
+   * 顺序不能反：块的 `seq` 由刚写进去的 body 决定，先排队再重建的话，排出去的是**旧 seq**，
+   * worker 会拿着它去查新块表——查到的是另一段文本（或查不到）。**索引的输入必须先落地。**
+   */
+  function afterWrite(lib: ReturnType<typeof openParentLib>, ids: string[]): void {
+    queueEmbed(ids); // 条目级向量
+    if (!ids.length || !deps.db) return;
+    const ctx = { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
+    for (const id of ids) {
+      try {
+        const n = replaceKbChunks(lib, id, chunkText(getKbBody(lib, id)));
+        for (let i = 0; i < n; i++) markStale(ctx, "kb_entry_chunks", [id, i]);
+      } catch {
+        /* 分块是派生缓存：这里失败不影响落库；下次写入或 backfill 会重建 */
+      }
+    }
+  }
+
+
+  /**
+   * P3 backfill + 分块同步：把**还没有向量**的条目/块补排队，并补齐**缺块**的条目。
    *
    * 为什么需要：`markStale` 只在写入那一刻排队，所以**本轮之前建的条目一条向量都没有**——
    * 它们只能被精确匹配找到，语义兜底对它们等于不存在（静默的功能缺失，最难发现的那种）。
+   * 分块同理：阶段③之前落的条目 `body` 有、块表是空的。
    * 在家长看清单时顺手做（清单条目量在 10²，diff 一次可忽略），不另起定时任务。
    */
-  function queueEmbedMissing(lib: ReturnType<typeof openParentLib>): number {
-    if (!deps.db) return 0;
+  function syncVectors(lib: ReturnType<typeof openParentLib>): { entries: number; chunks: number } {
+    if (!deps.db) return { entries: 0, chunks: 0 };
     try {
       const have = new Set(
         (
           lib
-            .prepare("SELECT row_pk FROM embeddings WHERE table_name = 'kb_entries' AND column_name = ?")
-            .all(KB_ENTRY_TEXT_COLUMN) as Array<{ row_pk: string }>
-        ).map((r) => r.row_pk)
+            .prepare("SELECT table_name, row_pk FROM embeddings WHERE table_name IN ('kb_entries','kb_entry_chunks')")
+            .all() as Array<{ table_name: string; row_pk: string }>
+        ).map((r) => `${r.table_name}|${r.row_pk}`)
       );
-      const missing = (lib.prepare("SELECT id FROM kb_entries").all() as Array<{ id: string }>)
-        .map((r) => r.id)
-        .filter((id) => !have.has(JSON.stringify([id])));
-      queueEmbed(missing);
-      return missing.length;
+      const ids = (lib.prepare("SELECT id FROM kb_entries").all() as Array<{ id: string }>).map((r) => r.id);
+      const missEntries = ids.filter((id) => !have.has(`kb_entries|${JSON.stringify([id])}`));
+      queueEmbed(missEntries);
+
+      // 有 body 却没有块的条目 → 补分块（按当前 body 整体重建）+ 把块排队
+      let chunkCount = 0;
+      const chunkRows: Array<[string, number]> = [];
+      for (const id of ids) {
+        const body = getKbBody(lib, id);
+        if (!body.trim()) continue;
+        if (listKbChunks(lib, id).length === 0) {
+          const n = replaceKbChunks(lib, id, chunkText(body));
+          for (let i = 0; i < n; i++) chunkRows.push([id, i]);
+        }
+      }
+      if (chunkRows.length) {
+        const ctx = { db: deps.db, dataDir: deps.dataDir, parentId: deps.parentId };
+        for (const [id, seq] of chunkRows) {
+          try {
+            markStale(ctx, "kb_entry_chunks", [id, seq]);
+          } catch {
+            /* 排队失败不影响清单 */
+          }
+        }
+        chunkCount = chunkRows.length;
+      }
+      return { entries: missEntries.length, chunks: chunkCount };
     } catch {
-      return 0; // 无 embeddings 表/读不到 → 静默跳过（这只是"顺手补"，不是清单的必要条件）
+      return { entries: 0, chunks: 0 }; // 无 embeddings 表/读不到 → 静默跳过（这只是"顺手补"）
     }
   }
 
@@ -292,7 +339,7 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
         const allAssets: KbAssetInput[] = [...assets, ...ingAssets];
         if (allEntries.length || allAssets.length) {
           const saved = saveKbEntries(lib, deps.dataDir, deps.parentId, allEntries, allAssets);
-          queueEmbed(saved.map((s) => s.id));
+          afterWrite(lib, saved.map((s) => s.id)); // 先同步分块缓存，再排向量
           // 消息分两段：ingest 来的那些要单独说清"这是资料不是说法"
           const fromIngest = saved.filter((s) => ingNotes.has(s.title));
           const plain = saved.filter((s) => !ingNotes.has(s.title));
@@ -437,7 +484,7 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
           );
         }
         const rows = listKbEntries(lib, { status: params?.status, query: params?.query });
-        const backfilled = queueEmbedMissing(lib); // P3：顺手把还没向量的条目补排队
+        const backfilled = syncVectors(lib); // P3：顺手补齐缺向量的条目与缺分块的条目
         if (!rows.length) {
           return ok(
             "知识库还没有条目。可以：① 先说一条「以后她问 XX 就这么说」，我整理成条目；" +
@@ -455,7 +502,9 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
           `知识库条目（${rows.length} 条，最近改的在前）：\n${lines.join("\n")}\n\n` +
             `注：**只有「已发布 + 可以给她看」的条目孩子才查得到**；「草稿」是你还没确认过的，「先不给她看」是你确认过但暂时不给。\n` +
             `「已挂课」= 上那节课时助手会自动按这条讲（用 parent_kb_bind 挂的）；没挂的只有孩子问起才查得到。` +
-            (backfilled ? `\n（顺手补建了 ${backfilled} 条条目的语义检索索引。）` : "")
+            (backfilled.entries || backfilled.chunks
+              ? `\n（顺手补建了 ${backfilled.entries} 条条目的语义索引${backfilled.chunks ? `、${backfilled.chunks} 个正文分块的索引` : ""}。）`
+              : "")
         );
       });
     },

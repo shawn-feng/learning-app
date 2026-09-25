@@ -225,9 +225,10 @@ describe("KB P3②：backfill（顺手补建缺失的向量）", () => {
   it("parent_kb_list 不因 backfill 出错，且在有条目缺向量时报告补建条数", async () => {
     // 本用例里没有任何 embeddings 行（测试环境没有 embedding 凭证，markStale 会静默退出），
     // 所以"缺向量"的条目就是全部条目 → 清单里应出现补建提示，且清单本身照常返回。
+    // P3③ 起这条提示还带上分块（有 body 却没块的条目会被补切）。
     const out = text(await byName("parent_kb_list").execute("l1", {}));
     expect(out).toMatch(/知识库条目/);
-    expect(out).toMatch(/顺手补建了 \d+ 条条目的语义检索索引/);
+    expect(out).toMatch(/顺手补建了 \d+ 条条目的语义索引/);
   });
 
   it("没有 deps.db 时静默跳过（功能降级为纯精确匹配，清单不受影响）", async () => {

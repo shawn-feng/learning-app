@@ -50,10 +50,17 @@ export function kbEntryText(row: Record<string, unknown>): string {
 /** KB 条目的虚拟列名（`embeddings.column_name` 的取值） */
 export const KB_ENTRY_TEXT_COLUMN = "__kb_entry_text";
 
+/** KB 条目**分块**的列名（P3 阶段③：`kb_entry_chunks.text`，真实列） */
+export const KB_CHUNK_TEXT_COLUMN = "text";
+
 export const EMBEDDED_COLUMNS: EmbeddedColumn[] = [
   { table: "courses", column: "title", pkCols: ["topic", "title"] },
   { table: "topics", column: "name", pkCols: ["name"] },
   { table: "kb_entries", column: KB_ENTRY_TEXT_COLUMN, pkCols: ["id"], textOf: kbEntryText },
+  // P3 阶段③：长正文的块级向量。条目级向量（上面那条）把 body 截到 600 字，
+  // 一份两万字的资料里，第 5000 字之后的内容在条目向量里**根本不存在**；
+  // 块级向量就是为这段盲区准备的（`row_pk = [entry_id, seq]`，seq 由确定性分块给出）。
+  { table: "kb_entry_chunks", column: KB_CHUNK_TEXT_COLUMN, pkCols: ["entry_id", "seq"] },
 ];
 
 export function embeddedColumn(table: string, column?: string): EmbeddedColumn | undefined {
