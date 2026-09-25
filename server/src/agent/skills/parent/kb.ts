@@ -42,13 +42,21 @@ export const kbSkill: ParentSkill = {
 9. **删条目**：家长说"这条不要了""建错了删掉" → \`parent_kb_save({ delete: ["标题或id"] })\`。
    **只能删孩子当前看不到的**（草稿，或已撤回的）。还给孩子看着的会被拒——**先撤回再删**，
    并如实说"我先把它收回来，您再确认一次要不要真的删"；**删了没法恢复**，别说成"先收着"。
+10. **家长上传资料、说"把这份收进库里"** → \`parent_kb_save({ ingest: [{ path }] })\`（\`path\` 来自 \`parent_list_materials\`）。
+   **读出来的是「资料讲了什么」，不是「该怎么说」**：正文进 \`body\`，只用来让孩子**换个问法也能找到这条**；
+   她真正听到的仍然是 \`summary\`。所以 ingest 之后**必须追问一句**："这件事你想怎么跟她说？"
+   ——这是冷启动最省力的路径：**家长上传即成库，他只补一句话**。
+   PDF 与图片**还读不了**：被拒时如实说，并给出路（让家长口述要点，或先按"只有资料"的条目挂上，孩子问到时放给她看）。
+   灌进已有条目用 \`entry_title\`/\`entry_id\`（**不会改掉条目标题与已有说法**）。
 
 ## 参数速查（本场景工具）
 - \`parent_kb_save\`：\`entries\`（\`title\` 必填；\`aliases\` 是**孩子可能怎么问**，逗号分隔；\`summary\` 是**可以这样跟她说**那段话；
   \`usage\` 是什么时候给她看/要注意什么；\`share\` 缺省 \`all\`）·
   \`assets\`（\`{ entry_title 或 entry_id, path }\`，\`path\` 来自 \`parent_list_materials\`，**文件必须真实存在**）·
+  \`ingest\`（\`[{ path, title?, entry_id?, entry_title? }]\`，把 html/md/txt 读成文字收进 \`body\`）·
   \`risk_terms\`（\`{add:[{term,note?}], remove:[...]}\`）· \`delete\`（\`["标题或id"]\`，**不可逆，只能删孩子看不见的**）。
-  \`entries\` / \`assets\` / \`risk_terms\` / \`delete\` **至少要有一样**，都没有会被拒。
+  \`entries\` / \`assets\` / \`ingest\` / \`risk_terms\` / \`delete\` **至少要有一样**，都没有会被拒。
+  **五个字段都是"只改你给了的"**：更新时不传 \`summary\` 就不会动原来那段话（要清空得显式传空串）。
 - \`parent_kb_list\`：\`view\` = \`entries\`（缺省）/ \`gaps\` / \`suggestions\` / \`risk\`；\`status\`、\`query\` 只对 entries 生效。
 - \`parent_kb_publish\`：\`entry_ids\`（**id 或精确标题**都行）· \`visibility\` = \`"child"\`（发布）/ \`"parent"\`（撤回）。
 - \`parent_kb_bind\`：\`entry_ids\` · \`topic\`（目录名或中文名）· \`course\`（**课程名必须与库里一致**）·

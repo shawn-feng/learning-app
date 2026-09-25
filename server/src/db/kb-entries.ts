@@ -248,6 +248,14 @@ export interface KbEntryInput {
   title: string;
   aliases?: string;
   summary?: string;
+  /**
+   * 长正文（P3 起由入库管道写入：资料文本化后的产物）。
+   *
+   * **它不是权威**：`kb_lookup` **从不返回 `body`**——没经家长逐字看过的文本不能当依据（§3.4.1）。
+   * 它的用途是给**向量召回**提供匹配面，以及让家长在条目里看到"这份资料讲的是什么"。
+   * 语义上 `undefined` = **不改动库里已有的 body**（避免只改 `aliases` 就把提取来的正文清空）。
+   */
+  body?: string;
   tags?: string;
   usage?: string;
   share?: string;
@@ -353,11 +361,38 @@ export function saveKbEntries(
   // ── 第一遍：写条目（先建，才能让后面的资产引用本次新建的 entry_title）──
   for (const e of list) {
     const title = String(e.title).trim();
-    const summary = String(e.summary ?? "").trim();
     const existing = (e.id ? runById.get(e.id) : undefined) ?? run.get(title);
     const existingRow = existing as
-      | { id: string; summary: string; status: string; visibility: string; origin: string }
+      | {
+          id: string;
+          summary: string;
+          aliases: string;
+          tags: string;
+          usage: string;
+          share: string;
+          status: string;
+          visibility: string;
+          origin: string;
+        }
       | undefined;
+    /**
+     * **patch 语义**：`undefined` = 不改动库里已有的值；要清空就显式传 `""`。
+     *
+     * 这是 P3 阶段②修掉的一个**数据损失隐患**：原先 `undefined` 一律按"清空"处理，
+     * 于是"只想给这条加个别名"会把家长的 `summary` 抹掉、"只想改说法"会把 `share` 从
+     * 「只给某个孩子」放宽成「所有孩子」。两者都是**静默**发生的，家长与模型都不会察觉。
+     * 危险方向不能靠调用方自觉——所以在这里定成"省略即保持"。
+     */
+    const eff = (given: string | undefined, prev: string | undefined): string =>
+      given === undefined ? String(prev ?? "").trim() : String(given).trim();
+    const summary = eff(e.summary, existingRow?.summary);
+    const aliases = eff(e.aliases, existingRow?.aliases);
+    const tags = eff(e.tags, existingRow?.tags);
+    const usage = eff(e.usage, existingRow?.usage);
+    const share = e.share === undefined ? String(existingRow?.share ?? "all").trim() || "all" : String(e.share).trim() || "all";
+    // `body` 同一套语义（见 KbEntryInput.body 的注释）
+    const bodyGiven = e.body !== undefined;
+    const body = bodyGiven ? String(e.body ?? "") : "";
     const own = checkedAssets.filter(
       (a) => (a.entry_id && existingRow && a.entry_id === existingRow.id) || (a.entry_title && String(a.entry_title).trim() === title)
     );
@@ -373,17 +408,13 @@ export function saveKbEntries(
     }
 
     const origin = (e.drafted_by ?? "ai") === "parent" ? "manual" : "generated";
-    const aliases = String(e.aliases ?? "").trim();
-    const tags = String(e.tags ?? "").trim();
-    const usage = String(e.usage ?? "").trim();
-    const share = String(e.share ?? "").trim() || "all";
 
     if (!existingRow) {
       const id = String(e.id ?? "").trim() || randomUUID();
       lib.prepare(
         `INSERT INTO kb_entries (id, title, aliases, summary, body, tags, usage, visibility, share, status, origin, created_at, updated_at)
-         VALUES (?, ?, ?, ?, '', ?, ?, 'parent', ?, 'draft', ?, ?, ?)`
-      ).run(id, title, aliases, summary, tags, usage, share, origin, now, now);
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'parent', ?, 'draft', ?, ?, ?)`
+      ).run(id, title, aliases, summary, body, tags, usage, share, origin, now, now);
       idByTitle.set(title, id);
       saved.push({
         id, title, status: "draft", visibility: "parent", origin,
@@ -401,10 +432,11 @@ export function saveKbEntries(
         : (String(existingRow.origin ?? "").trim() || origin);
       lib.prepare(
         `UPDATE kb_entries SET title = ?, aliases = ?, summary = ?, tags = ?, usage = ?, share = ?,
-           origin = ?, status = ?, updated_at = ? WHERE id = ?`
+           origin = ?, status = ?, updated_at = ?${bodyGiven ? ", body = ?" : ""} WHERE id = ?`
       ).run(
-        title, aliases, summary, tags, usage, share, origin2,
-        requalified ? "draft" : existingRow.status, now, existingRow.id
+        ...(bodyGiven
+          ? [title, aliases, summary, tags, usage, share, origin2, requalified ? "draft" : existingRow.status, now, body, existingRow.id]
+          : [title, aliases, summary, tags, usage, share, origin2, requalified ? "draft" : existingRow.status, now, existingRow.id])
       );
       idByTitle.set(title, existingRow.id);
       saved.push({

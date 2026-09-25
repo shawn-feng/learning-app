@@ -21,15 +21,19 @@
  */
 import { Type } from "typebox";
 import type { DatabaseSync } from "node:sqlite";
+import fs from "node:fs";
 import { defineTool } from "./tool-kit.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { resolveTopicKey } from "./plan-tools.js";
-import { markStale } from "./embeddings.js";
+import { markStale, KB_ENTRY_TEXT_COLUMN } from "./embeddings.js";
+import { textify, KB_BODY_MAX } from "./kb-ingest.js";
+import { resolveMaterialFile } from "../db/materials.js";
 import { coerceArrayArg, coerceObjectArg } from "./db-channel.js";
 import { JsonArrayParam } from "./tool-shapes.js";
 import {
   bindEntryToCourse,
   deleteKbEntries,
+  getKbEntry,
   listKbEntries,
   listKbGaps,
   listKbSuggestions,
@@ -93,6 +97,33 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
     }
   }
 
+  /**
+   * P3 backfill：把**还没有向量**的条目补排队。
+   *
+   * 为什么需要：`markStale` 只在写入那一刻排队，所以**本轮之前建的条目一条向量都没有**——
+   * 它们只能被精确匹配找到，语义兜底对它们等于不存在（静默的功能缺失，最难发现的那种）。
+   * 在家长看清单时顺手做（清单条目量在 10²，diff 一次可忽略），不另起定时任务。
+   */
+  function queueEmbedMissing(lib: ReturnType<typeof openParentLib>): number {
+    if (!deps.db) return 0;
+    try {
+      const have = new Set(
+        (
+          lib
+            .prepare("SELECT row_pk FROM embeddings WHERE table_name = 'kb_entries' AND column_name = ?")
+            .all(KB_ENTRY_TEXT_COLUMN) as Array<{ row_pk: string }>
+        ).map((r) => r.row_pk)
+      );
+      const missing = (lib.prepare("SELECT id FROM kb_entries").all() as Array<{ id: string }>)
+        .map((r) => r.id)
+        .filter((id) => !have.has(JSON.stringify([id])));
+      queueEmbed(missing);
+      return missing.length;
+    } catch {
+      return 0; // 无 embeddings 表/读不到 → 静默跳过（这只是"顺手补"，不是清单的必要条件）
+    }
+  }
+
   const saveTool = defineTool({
     name: "parent_kb_save",
     label: "存下「该怎么说 / 该给她看什么」",
@@ -117,7 +148,12 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
       "**`delete`：删掉条目（不可逆）**。家长说「这条不要了」「建错了删掉」时用。\n" +
       "**只能删孩子当前看不到的**（草稿，或已经撤回的）：还给孩子看着的条目会被拒，\n" +
       "**必须先撤回再删**——撤回是可逆的，删除不是，所以不可逆的动作要排在可逆动作之后。\n" +
-      "被拒时如实说「我先把它收回来，您再确认一次要不要真的删」，**不要直接说已经删了**。",
+      "被拒时如实说「我先把它收回来，您再确认一次要不要真的删」，**不要直接说已经删了**。\n\n" +
+      "**`ingest`：把资料读成文字收进条目**（html/htm、md、txt）。家长传了资料说「这份收进库里」时用。\n" +
+      "**读出来的是「资料讲了什么」，不是「该怎么说」**——正文只进 `body`，用来让孩子**换个问法也能找到这条**；\n" +
+      "她真正听到的仍然是 `summary`。所以 ingest 之后**必须追问一句**「这件事你想怎么跟她说？」。\n" +
+      "**PDF 与图片还读不了**：被拒时如实说，并给出路（让家长口述要点，或先按「只有资料」的条目挂上）。\n\n" +
+      "**五个字段都是「只改你给了的」**：更新时不传 `summary` 就不会动原来那段话（要清空得显式传空串）。",
     parameters: Type.Object({
       entries: Type.Optional(
         JsonArrayParam(
@@ -172,6 +208,17 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
       delete: Type.Optional(
         JsonArrayParam(Type.String(), "要**删掉**的条目（id 或精确标题）。只能删孩子看不见的；删了没法恢复")
       ),
+      ingest: Type.Optional(
+        JsonArrayParam(
+          Type.Object({
+            path: Type.String({ description: "资料库相对路径（来自 parent_list_materials）" }),
+            title: Type.Optional(Type.String({ description: "新建条目时的条目标题；缺省取文件名" })),
+            entry_id: Type.Optional(Type.String({ description: "把提取的正文灌进这条已有条目（id）" })),
+            entry_title: Type.Optional(Type.String({ description: "同上，按精确标题" })),
+          }),
+          "把资料读成文字收进条目（html/md/txt；PDF 与图片暂不支持）"
+        )
+      ),
     }),
     execute: async (_id: string, params: Record<string, unknown>) => {
       const entriesArg = coerceArrayArg(params?.entries, "entries");
@@ -187,42 +234,102 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
       if (riskRemove.error) throw new Error(riskRemove.error);
       const delArg = coerceArrayArg(params?.delete, "delete");
       if (delArg.error) throw new Error(delArg.error);
+      const ingestArg = coerceArrayArg(params?.ingest, "ingest");
+      if (ingestArg.error) throw new Error(ingestArg.error);
 
       const entries = (entriesArg.value as KbEntryInput[]) ?? [];
       const assets = (assetsArg.value as KbAssetInput[]) ?? [];
       const delKeys = delArg.value.map((x) => String(x));
       const hasRisk = riskAdd.value.length > 0 || riskRemove.value.length > 0;
-      if (!entries.length && !assets.length && !hasRisk && !delKeys.length) {
-        throw new Error("parent_kb_save 至少要给 entries（条目）/ assets（资料）/ risk_terms（词表）/ delete（删除）之一");
+      const ingestItems = (ingestArg.value as Array<{ path?: string; title?: string; entry_id?: string; entry_title?: string }>) ?? [];
+      if (!entries.length && !assets.length && !hasRisk && !delKeys.length && !ingestItems.length) {
+        throw new Error(
+          "parent_kb_save 至少要给 entries（条目）/ assets（资料）/ ingest（把资料读成文字）/ risk_terms（词表）/ delete（删除）之一"
+        );
       }
 
       return withLib((lib) => {
         const out: string[] = [];
-        if (entries.length || assets.length) {
-          const saved = saveKbEntries(lib, deps.dataDir, deps.parentId, entries, assets);
+        /**
+         * **ingest 先展开成 entries/assets，与调用方给的一起、只落一次库**。
+         *
+         * 为什么必须合并（实测踩到的 bug）：模型会把 `entries` 与 `ingest` 放在**同一次调用**里
+         * （"建一条『恐龙小知识（资料）』，正文从这份 html 来"）。若两者分两次落库，
+         * 第一趟里那条 `entries` 既没有 `summary` 也没有资产 → 被「至少要有一样」直接拒掉，
+         * 而它的资产本该由这一趟的 ingest 提供。**同一批意图必须走同一次校验。**
+         */
+        const ingNotes = new Map<string, string>();
+        const ingEntries: KbEntryInput[] = [];
+        const ingAssets: KbAssetInput[] = [];
+        for (const it of ingestItems) {
+          const rel = String(it?.path ?? "").trim().replace(/\\/g, "/").replace(/^materials\//, "");
+          if (!rel) throw new Error("parent_kb_save 的 ingest 每一项都要有 path");
+          const abs = resolveMaterialFile(deps.dataDir, deps.parentId, rel);
+          if (!fs.existsSync(abs)) {
+            throw new Error(`资料不存在：${rel}（先用 parent_list_materials 核对准确相对路径，别猜）`);
+          }
+          const ex = textify(fs.readFileSync(abs, "utf-8"), rel);
+          let target: { id?: string; title: string };
+          const anchor = String(it?.entry_id ?? it?.entry_title ?? "").trim();
+          if (anchor) {
+            // 灌进已有条目：**必须沿用库里那个标题**——`saveKbEntries` 会把 title 一起更新，
+            // 若这里传文件名当标题，就等于顺手把家长的条目改名了。
+            const exist = getKbEntry(lib, anchor);
+            if (!exist) throw new Error(`要灌正文的条目不存在：${anchor}（先用 parent_kb_list 核对标题或 id）`);
+            target = { id: exist.id, title: exist.title };
+          } else {
+            target = { title: String(it?.title ?? "").trim() || rel.split("/").pop()!.replace(/\.[^.]+$/, "") };
+          }
+          ingEntries.push({ ...target, body: ex.text });
+          ingAssets.push({ ...(target.id ? { entry_id: target.id } : { entry_title: target.title }), path: rel });
+          ingNotes.set(
+            target.title,
+            `- 「${target.title}」← ${rel}（${ex.chars} 字${ex.truncated ? `，太长只收了前 ${KB_BODY_MAX} 字` : ""}）`
+          );
+        }
+
+        const allEntries: KbEntryInput[] = [...entries, ...ingEntries];
+        const allAssets: KbAssetInput[] = [...assets, ...ingAssets];
+        if (allEntries.length || allAssets.length) {
+          const saved = saveKbEntries(lib, deps.dataDir, deps.parentId, allEntries, allAssets);
           queueEmbed(saved.map((s) => s.id));
-          const lines = saved.map((s) => {
-            const bits = [
-              `${s.created ? "新建" : "更新"}「${s.title}」`,
-              `${STATUS_ZH[s.status] ?? s.status}·${VIS_ZH[s.visibility] ?? s.visibility}`,
-              `${ORIGIN_ZH[s.origin] ?? s.origin}`,
-              s.assetCount ? `${s.assetCount} 份资料` : "无资料",
-              `id=${s.id}`,
-            ];
-            return `- ${bits.join("｜")}`;
-          });
-          out.push(`已存 ${saved.length} 条（**都是草稿，还没给孩子看**）：\n${lines.join("\n")}`);
-          const requal = saved.filter((s) => s.requalified);
-          if (requal.length) {
+          // 消息分两段：ingest 来的那些要单独说清"这是资料不是说法"
+          const fromIngest = saved.filter((s) => ingNotes.has(s.title));
+          const plain = saved.filter((s) => !ingNotes.has(s.title));
+          if (plain.length) {
+            const lines = plain.map((s) => {
+              const bits = [
+                `${s.created ? "新建" : "更新"}「${s.title}」`,
+                `${STATUS_ZH[s.status] ?? s.status}·${VIS_ZH[s.visibility] ?? s.visibility}`,
+                `${ORIGIN_ZH[s.origin] ?? s.origin}`,
+                s.assetCount ? `${s.assetCount} 份资料` : "无资料",
+                `id=${s.id}`,
+              ];
+              return `- ${bits.join("｜")}`;
+            });
+            out.push(`已存 ${plain.length} 条（**都是草稿，还没给孩子看**）：\n${lines.join("\n")}`);
+            const requal = plain.filter((s) => s.requalified);
+            if (requal.length) {
+              out.push(
+                `⚠️ 其中 ${requal.length} 条原来是**已发布**的，因为改了「可以这样跟她说」那段话，**已退回草稿**——` +
+                  `必须请家长再确认一次，再用 parent_kb_publish 发布：${requal.map((s) => `「${s.title}」`).join("、")}`
+              );
+            }
             out.push(
-              `⚠️ 其中 ${requal.length} 条原来是**已发布**的，因为改了「可以这样跟她说」那段话，**已退回草稿**——` +
-                `必须请家长再确认一次，再用 parent_kb_publish 发布：${requal.map((s) => `「${s.title}」`).join("、")}`
+              `**下一步（必须做）**：问家长「这几条哪几条现在就可以给她看？」——得到明确答复后调 parent_kb_publish 发布；` +
+                `没答复就保持草稿，不要在下一轮自作主张发布。`
             );
           }
-          out.push(
-            `**下一步（必须做）**：问家长「这几条哪几条现在就可以给她看？」——得到明确答复后调 parent_kb_publish 发布；` +
-              `没答复就保持草稿，不要在下一轮自作主张发布。`
-          );
+          if (fromIngest.length) {
+            out.push(
+              `已把 ${fromIngest.length} 份资料读成文字收进条目（**仍是草稿、还没给她看**）：\n` +
+                fromIngest.map((s) => ingNotes.get(s.title)).join("\n") +
+                `\n\n⚠️ **读出来的是「资料讲了什么」，不是「该怎么说」。** 提取的正文只用来让孩子**换个问法也能找到这条**；` +
+                `孩子真正听到的仍然是 ` +
+                "`summary`（你认过的那段话）。所以要给她看之前，先补一句「这件事该怎么跟她说」——" +
+                `再问家长「这条现在可以给她看吗？」。`
+            );
+          }
         }
         if (hasRisk) {
           const r = updateRiskTerms(lib, {
@@ -330,6 +437,7 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
           );
         }
         const rows = listKbEntries(lib, { status: params?.status, query: params?.query });
+        const backfilled = queueEmbedMissing(lib); // P3：顺手把还没向量的条目补排队
         if (!rows.length) {
           return ok(
             "知识库还没有条目。可以：① 先说一条「以后她问 XX 就这么说」，我整理成条目；" +
@@ -346,7 +454,8 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
         return ok(
           `知识库条目（${rows.length} 条，最近改的在前）：\n${lines.join("\n")}\n\n` +
             `注：**只有「已发布 + 可以给她看」的条目孩子才查得到**；「草稿」是你还没确认过的，「先不给她看」是你确认过但暂时不给。\n` +
-            `「已挂课」= 上那节课时助手会自动按这条讲（用 parent_kb_bind 挂的）；没挂的只有孩子问起才查得到。`
+            `「已挂课」= 上那节课时助手会自动按这条讲（用 parent_kb_bind 挂的）；没挂的只有孩子问起才查得到。` +
+            (backfilled ? `\n（顺手补建了 ${backfilled} 条条目的语义检索索引。）` : "")
         );
       });
     },
