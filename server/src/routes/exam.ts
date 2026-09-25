@@ -251,7 +251,7 @@ export function ensureTodayExamPlans(db: DatabaseSync, dataDir: string, parentId
         kb.prepare(
           `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
              start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
-           VALUES (?,?,?,?,'parent','fixed',?,?,'config','','?',?,'pending','',NULL,'','required',1,0,1,?,?)`
+           VALUES (?,?,?,?,'parent','fixed',?,?,'config','',?,?,'pending','',NULL,'','','required',1,0,1,?,?)`
         ).run(
           `ep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           parentId,
@@ -1090,7 +1090,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       kb.prepare(
         `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
            start_at,due_at,status,attempt_id,score,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at,retake)
-         VALUES (?,?,?,?,'parent','custom','',?,'conversation','','?',?,'pending','',NULL,'','required',1,0,1,?,?,?)`
+         VALUES (?,?,?,?,'parent','custom','',?,'conversation','',?,?,'pending','',NULL,'','','required',1,0,1,?,?,?)`
       ).run(id, parentId, childId, examName, scopeJson, `${day} 00:00:00`, `${day} 23:59:59`, now, now, retake);
       return { ok: true, id, name: examName };
     } finally {
