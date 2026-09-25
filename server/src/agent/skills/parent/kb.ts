@@ -48,14 +48,20 @@ export const kbSkill: ParentSkill = {
    ——这是冷启动最省力的路径：**家长上传即成库，他只补一句话**。
    PDF 与图片**还读不了**：被拒时如实说，并给出路（让家长口述要点，或先按"只有资料"的条目挂上，孩子问到时放给她看）。
    灌进已有条目用 \`entry_title\`/\`entry_id\`（**不会改掉条目标题与已有说法**）。
+11. **家长说「把这个网页存下来给她看」** → \`parent_kb_save({ clip: [{ url }] })\`。
+   服务端会抓下来存成**自包含 HTML**（图片内联、**脚本/外链/表单剥掉**），孩子只看到这一页、**点不出去**。
+   **为什么不能直接把网址给她**：那等于把整个互联网放进她的屏幕（从那一页能点出去）。
+   抓不下来时**如实说**（打不开／不是网页／是内网地址），给出路：让家长口述要点，或自己截图上传。
+   落袋之后同样要先说清"这是资料不是说法"，并请家长看一眼再决定发不发。
 
 ## 参数速查（本场景工具）
 - \`parent_kb_save\`：\`entries\`（\`title\` 必填；\`aliases\` 是**孩子可能怎么问**，逗号分隔；\`summary\` 是**可以这样跟她说**那段话；
   \`usage\` 是什么时候给她看/要注意什么；\`share\` 缺省 \`all\`）·
   \`assets\`（\`{ entry_title 或 entry_id, path }\`，\`path\` 来自 \`parent_list_materials\`，**文件必须真实存在**）·
   \`ingest\`（\`[{ path, title?, entry_id?, entry_title? }]\`，把 html/md/txt 读成文字收进 \`body\`）·
+  \`clip\`（\`[{ url, topic?, title? }]\`，把网页落袋成自包含 HTML——**孩子点不出去**）·
   \`risk_terms\`（\`{add:[{term,note?}], remove:[...]}\`）· \`delete\`（\`["标题或id"]\`，**不可逆，只能删孩子看不见的**）。
-  \`entries\` / \`assets\` / \`ingest\` / \`risk_terms\` / \`delete\` **至少要有一样**，都没有会被拒。
+  \`entries\` / \`assets\` / \`ingest\` / \`clip\` / \`risk_terms\` / \`delete\` **至少要有一样**，都没有会被拒。
   **五个字段都是"只改你给了的"**：更新时不传 \`summary\` 就不会动原来那段话（要清空得显式传空串）。
 - \`parent_kb_list\`：\`view\` = \`entries\`（缺省）/ \`gaps\` / \`suggestions\` / \`risk\`；\`status\`、\`query\` 只对 entries 生效。
 - \`parent_kb_publish\`：\`entry_ids\`（**id 或精确标题**都行）· \`visibility\` = \`"child"\`（发布）/ \`"parent"\`（撤回）。

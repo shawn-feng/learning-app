@@ -27,6 +27,8 @@ import { openParentLib } from "../db/parent-lib.js";
 import { resolveTopicKey } from "./plan-tools.js";
 import { markStale, KB_ENTRY_TEXT_COLUMN } from "./embeddings.js";
 import { textify, chunkText, KB_BODY_MAX } from "./kb-ingest.js";
+import { clipWebPage } from "./web-clip.js";
+import { TOPIC_KEY_RE, putMaterial } from "./parent-materials.js";
 import { resolveMaterialFile } from "../db/materials.js";
 import { coerceArrayArg, coerceObjectArg } from "./db-channel.js";
 import { JsonArrayParam } from "./tool-shapes.js";
@@ -200,6 +202,11 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
       "**读出来的是「资料讲了什么」，不是「该怎么说」**——正文只进 `body`，用来让孩子**换个问法也能找到这条**；\n" +
       "她真正听到的仍然是 `summary`。所以 ingest 之后**必须追问一句**「这件事你想怎么跟她说？」。\n" +
       "**PDF 与图片还读不了**：被拒时如实说，并给出路（让家长口述要点，或先按「只有资料」的条目挂上）。\n\n" +
+      "**`clip`：把网页「落袋」**。家长说「把这个网页存下来给她看」时用（`url` 必填，`topic` 缺省 `web`）。\n" +
+      "服务端把网页抓下来，存成**单个自包含 HTML**（图片内联、**脚本/外链/表单全剥掉**、再叠一层 CSP），\n" +
+      "落进 `materials/` 并挂到条目上——**孩子只看到这一页，点不出去、也不会再访问别的网站**。\n" +
+      "**为什么不能直接把外网网址给孩子**：那等于把整个互联网放进她的屏幕（从那一页能点出去）。\n" +
+      "抓不下来时**如实说**（网址打不开/不是网页/是内网地址），并给出路：让家长把要点口述成一句说法，或自己截图上传。\n\n" +
       "**五个字段都是「只改你给了的」**：更新时不传 `summary` 就不会动原来那段话（要清空得显式传空串）。",
     parameters: Type.Object({
       entries: Type.Optional(
@@ -266,6 +273,16 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
           "把资料读成文字收进条目（html/md/txt；PDF 与图片暂不支持）"
         )
       ),
+      clip: Type.Optional(
+        JsonArrayParam(
+          Type.Object({
+            url: Type.String({ description: "要存下来的网页地址（http/https）" }),
+            topic: Type.Optional(Type.String({ description: "放哪个主题目录（字母/数字/_/-），缺省 web" })),
+            title: Type.Optional(Type.String({ description: "条目标题；缺省用网页标题" })),
+          }),
+          "把网页「落袋」：服务端抓下来存成自包含 HTML（图片内联、外链与脚本剥掉），孩子只看到这一页、点不出去"
+        )
+      ),
     }),
     execute: async (_id: string, params: Record<string, unknown>) => {
       const entriesArg = coerceArrayArg(params?.entries, "entries");
@@ -283,16 +300,56 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
       if (delArg.error) throw new Error(delArg.error);
       const ingestArg = coerceArrayArg(params?.ingest, "ingest");
       if (ingestArg.error) throw new Error(ingestArg.error);
+      const clipArg = coerceArrayArg(params?.clip, "clip");
+      if (clipArg.error) throw new Error(clipArg.error);
 
       const entries = (entriesArg.value as KbEntryInput[]) ?? [];
       const assets = (assetsArg.value as KbAssetInput[]) ?? [];
       const delKeys = delArg.value.map((x) => String(x));
       const hasRisk = riskAdd.value.length > 0 || riskRemove.value.length > 0;
       const ingestItems = (ingestArg.value as Array<{ path?: string; title?: string; entry_id?: string; entry_title?: string }>) ?? [];
-      if (!entries.length && !assets.length && !hasRisk && !delKeys.length && !ingestItems.length) {
+      const clipItems = (clipArg.value as Array<{ url?: string; topic?: string; title?: string }>) ?? [];
+      if (!entries.length && !assets.length && !hasRisk && !delKeys.length && !ingestItems.length && !clipItems.length) {
         throw new Error(
-          "parent_kb_save 至少要给 entries（条目）/ assets（资料）/ ingest（把资料读成文字）/ risk_terms（词表）/ delete（删除）之一"
+          "parent_kb_save 至少要给 entries（条目）/ assets（资料）/ ingest（把资料读成文字）/ clip（把网页落袋）/ risk_terms（词表）/ delete（删除）之一"
         );
+      }
+
+      /**
+       * **落袋在开库之前做完**：`withLib` 是同步的（它保证句柄一定关掉），而抓网页是网络操作。
+       * 顺序也正好对：网络 → 写文件 → 再开库写条目。抓取失败就整批不写，不留半成品。
+       */
+      interface Clipped {
+        rel: string;
+        title: string;
+        body: string;
+        url: string;
+        kb: number;
+        images: number;
+        warnings: string[];
+      }
+      const clipped: Clipped[] = [];
+      if (clipItems.length) {
+        const ctx = { dataDir: deps.dataDir, parentId: deps.parentId, db: deps.db as DatabaseSync };
+        if (!deps.db) throw new Error("落袋需要主库连接（本次会话没拿到），已放弃——请重开会话再试。");
+        for (const it of clipItems) {
+          const url = String(it?.url ?? "").trim();
+          if (!url) throw new Error("parent_kb_save 的 clip 每一项都要有 url");
+          const topic = String(it?.topic ?? "").trim() || "web";
+          const clip = await clipWebPage(url);
+          const title = String(it?.title ?? "").trim() || clip.title || hostOf(clip.finalUrl);
+          const rel = uniqueMaterialRel(ctx, topic, slugOf(title));
+          putMaterial(ctx, rel, clip.html);
+          clipped.push({
+            rel,
+            title,
+            body: textify(clip.html, rel).text, // 自包含 HTML 的纯文本（base64 图片不会进正文）
+            url: clip.finalUrl,
+            kb: Math.round(Buffer.byteLength(clip.html, "utf-8") / 1024),
+            images: clip.stats.imagesInlined,
+            warnings: clip.warnings,
+          });
+        }
       }
 
       return withLib((lib) => {
@@ -335,14 +392,19 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
           );
         }
 
-        const allEntries: KbEntryInput[] = [...entries, ...ingEntries];
-        const allAssets: KbAssetInput[] = [...assets, ...ingAssets];
+        const clipEntries: KbEntryInput[] = clipped.map((c) => ({ title: c.title, body: c.body }));
+        const clipAssets: KbAssetInput[] = clipped.map((c) => ({ entry_title: c.title, path: c.rel }));
+        const clipTitles = new Set(clipped.map((c) => c.title));
+
+        const allEntries: KbEntryInput[] = [...entries, ...ingEntries, ...clipEntries];
+        const allAssets: KbAssetInput[] = [...assets, ...ingAssets, ...clipAssets];
         if (allEntries.length || allAssets.length) {
           const saved = saveKbEntries(lib, deps.dataDir, deps.parentId, allEntries, allAssets);
           afterWrite(lib, saved.map((s) => s.id)); // 先同步分块缓存，再排向量
           // 消息分两段：ingest 来的那些要单独说清"这是资料不是说法"
           const fromIngest = saved.filter((s) => ingNotes.has(s.title));
-          const plain = saved.filter((s) => !ingNotes.has(s.title));
+          const plain = saved.filter((s) => !ingNotes.has(s.title) && !clipTitles.has(s.title));
+          const fromClip = saved.filter((s) => clipTitles.has(s.title));
           if (plain.length) {
             const lines = plain.map((s) => {
               const bits = [
@@ -375,6 +437,23 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
                 `孩子真正听到的仍然是 ` +
                 "`summary`（你认过的那段话）。所以要给她看之前，先补一句「这件事该怎么跟她说」——" +
                 `再问家长「这条现在可以给她看吗？」。`
+            );
+          }
+          if (fromClip.length) {
+            const lines = fromClip.map((s) => {
+              const c = clipped.find((x) => x.title === s.title)!;
+              return `- 「${c.title}」← ${c.url}\n  已存成 ${c.rel}（${c.kb}KB${c.images ? `，内联了 ${c.images} 张图` : ""}），孩子看到的就是这一页、**点不出去**`;
+            });
+            out.push(
+              `已把 ${fromClip.length} 个网页落袋（**仍是草稿、还没给她看**）：\n${lines.join("\n")}` +
+                (clipped.some((c) => c.warnings.length)
+                  ? `\n\n⚠️ 有需要你知道的情况：\n${clipped
+                      .filter((c) => c.warnings.length)
+                      .map((c) => `- 「${c.title}」：${c.warnings.join(" ")}`)
+                      .join("\n")}`
+                  : "") +
+                `\n\n**脚本、外链、表单已经剥掉了**（她点不出去，也不会再去访问别的网站），所以页面可能比原版朴素一些。` +
+                `**给她看之前仍然要你点头**：先自己扫一眼那份存下来的页面，再问家长「这条现在可以给她看吗？」。`
             );
           }
         }
@@ -611,3 +690,42 @@ export function createParentKbTools(deps: ParentKbToolDeps) {
 
 /** 家长会话装配的知识库工具名（P1 三把 + P2 的 parent_kb_bind） */
 export const PARENT_KB_TOOL_NAMES = ["parent_kb_save", "parent_kb_list", "parent_kb_publish", "parent_kb_bind"];
+
+// ==================== 落袋（P3 阶段④）的两个小助手 ====================
+
+/** 标题 → 安全的文件名（去路径分隔符与控制字符、压空白、限长）。**不保证唯一**，唯一性交给 uniqueMaterialRel */
+export function slugOf(title: string): string {
+  const s = String(title ?? "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/[\\/:*?"<>|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60)
+    .trim();
+  return s || "网页";
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "网页";
+  }
+}
+
+/**
+ * 不覆盖已有资料地挑一个路径：`<topic>/<slug>.html`、`-2`、`-3`…
+ *
+ * **为什么不覆盖**：`materials/` 是家长的资料真源，磁盘即真源、没有索引能判断"这份是不是同一个网页的新版本"。
+ * 悄悄覆盖等于**无声销毁**家长已有的那份字节（哪怕它其实是同一个 URL 的旧版本）。
+ * 宁可多一份带序号的文件，也不要替家长做这个决定。
+ */
+export function uniqueMaterialRel(ctx: { dataDir: string; parentId: string }, topic: string, slug: string): string {
+  const t = TOPIC_KEY_RE.test(topic) ? topic : "web";
+  for (let i = 1; i <= 50; i++) {
+    const rel = `${t}/${slug}${i === 1 ? "" : `-${i}`}.html`;
+    if (!fs.existsSync(resolveMaterialFile(ctx.dataDir, ctx.parentId, rel))) return rel;
+  }
+  throw new Error(`重名太多（${slug} 已有 50 份），请给这份网页换个标题`);
+}
