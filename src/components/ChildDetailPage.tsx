@@ -8,6 +8,7 @@ import SessionReview from "./SessionReview";
 import ChildExamPlans from "./ChildExamPlans";
 import RewardPanel from "./RewardPanel";
 import ChildDailyPanel from "./ChildDailyPanel";
+import ChildMistakeBook from "./ChildMistakeBook";
 
 interface Props {
   child: any;
@@ -20,6 +21,7 @@ const TABS = [
   { key: "progress", label: "📊 学习进度" },
   { key: "plan", label: "🗓 计划" },
   { key: "daily", label: "📅 每日记录" },
+  { key: "mistakes", label: "📕 错题本" },
   { key: "topics", label: "📚 学习主题" },
   { key: "exam", label: "🎯 考核计划" },
   { key: "reward", label: "✨ 积分" },
@@ -126,6 +128,13 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
       {tab === "daily" && (
         <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
           <ChildDailyPanel childId={child.childId} />
+        </div>
+      )}
+
+      {/* ISSUE-114：错题本（家长只读为主，可 dismiss/reopen；掌握由孩子自己验证） */}
+      {tab === "mistakes" && (
+        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+          <ChildMistakeBook childId={child.childId} />
         </div>
       )}
 

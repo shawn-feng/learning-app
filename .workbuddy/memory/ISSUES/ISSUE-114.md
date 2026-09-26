@@ -57,3 +57,11 @@
 - 家长侧用法：对话直接问（「孩子最近哪里薄弱？」）或让 agent 生成含错题统计的学习报表（ISSUE-108 报表通道）。
 - 测试：db-channel-child.test.ts 新增 2 例（错题本读过滤 + 管理口径写纠错/拒写维护列），10 例全绿；mistakes.test.ts 4 例回归绿；server tsc 零错误；probe:registry-drift 无漂移。
 - 仍未做（维持原判）：重考做对自动标 mastered（二期，见落地记录 2026-09-19）。
+
+---
+**补全记录 2（2026-09-26）——家长端「孩子管理」直接查看错题本（方案③的「孩子详情页」分支落地）**：
+- 此前家长只能经 agent 间接问错题；用户指出应在孩子管理里直接可见。IPC/服务端通道早已就绪（`mistake:list`/`mistake:action`，家庭 license token + 归属校验），只缺家长 UI。
+- 新组件 `src/components/ChildMistakeBook.tsx`：顶部概览统计（待掌握 open 数 / 本周新增 first_seen 7 天内 / 已掌握）；open 条目按 kind 分组卡片（内容/讲解 detail/出现次数/首记与最近时间/来源/课程与知识点快照 chip）；家长动作仅「不算了」（dismiss，记错/重复）与已关闭区「重新打开」——**刻意不提供「会了」**：掌握要孩子自己验证（与家长 agent prompt 约束同口径）。
+- 接线 `ChildDetailPage.tsx`：TABS 新增「📕 错题本」（排在每日记录之后），包裹面板样式对齐其余 tab。
+- 数据：`mistakesList({childId, limit:200})` 不传 status → 服务端返回全部状态（open+closed），前端自行分组/统计。
+- 验证：electron-vite build 通过（主进程/preload/renderer 三段全绿）；服务端无改动。孩子端 MistakeBookModal 行为不变。
