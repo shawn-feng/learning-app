@@ -840,7 +840,19 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  ipcMain.handle("scheduler:task:create", async (_e, payload: { name: string; type: string; time: string; extra?: Record<string, unknown>; instruction?: string }) => {
+  // 推荐任务模板（只读；UI 展示卡片 → 点开预填表单，家长可改提示词后保存）
+  ipcMain.handle("scheduler:task:templates:list", async () => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<{ templates?: unknown[] }>("/scheduler/task-templates", { token });
+      return { success: true, templates: data?.templates ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("scheduler:task:create", async (_e, payload: { name: string; type: string; time: string; extra?: Record<string, unknown>; instruction?: string; template?: string }) => {
     try {
       const token = currentSessionToken();
       if (!token) return { success: false, error: "未登录" };

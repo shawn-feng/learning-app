@@ -39,6 +39,18 @@ interface TaskRun {
   finishedAt: string;
 }
 
+/** 推荐任务模板（服务端 GET /scheduler/task-templates；只读，不自动建行） */
+interface TaskTemplate {
+  key: string;
+  name: string;
+  time: string;
+  frequency: string;
+  description: string;
+  instruction: string;
+  /** 该模板对应的任务已创建过时返回任务 id（UI 显示「已添加 · 点击可修改」） */
+  taskId?: string | null;
+}
+
 const TYPE_META: Record<SchedulerTask["type"], { label: string; icon: string; hint: string }> = {
   recording: {
     label: "每日学习记录总结",
@@ -87,10 +99,11 @@ function fmt(iso: string): string {
 export default function SchedulerTasksPanel({ children }: { children: ChildItem[] }) {
   const [tasks, setTasks] = useState<SchedulerTask[]>([]);
   const [runs, setRuns] = useState<TaskRun[]>([]);
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  // 新建任务表单
+  // 新建任务表单（templateKey 非空 = 来自推荐模板：字段已预填，家长可改后保存）
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState<{
     name: string;
@@ -98,6 +111,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
     time: string;
     onNewSession: boolean;
     instruction: string;
+    templateKey?: string;
   }>({ name: "", type: "recording", time: "21:00", onNewSession: false, instruction: "" });
   // 分配弹窗
   const [assignFor, setAssignFor] = useState<SchedulerTask | null>(null);
@@ -133,13 +147,15 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
     setLoading(true);
     setError("");
     try {
-      const [t, r] = await Promise.all([
+      const [t, r, tpl] = await Promise.all([
         window.api.schedulerTasksList(),
         window.api.schedulerRunsList({ limit: 30 }),
+        window.api.schedulerTaskTemplatesList?.() ?? Promise.resolve({ success: false }),
       ]);
       if (t?.success) setTasks(t.tasks ?? []);
       else setError(t?.error || "加载任务失败");
       if (r?.success) setRuns(r.runs ?? []);
+      if (tpl?.success) setTemplates(tpl.templates ?? []);
     } catch (e: any) {
       setError(e?.message || "加载失败");
     } finally {
@@ -156,6 +172,26 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
     return `${TYPE_META[type].label} ${time}`;
   }
 
+  /** 用推荐模板预填新建表单：提示词全文可见、可改（保存后以改过的值生效）。 */
+  function useTemplate(tpl: TaskTemplate) {
+    setForm({
+      name: tpl.name,
+      type: "custom",
+      time: tpl.time,
+      onNewSession: false,
+      instruction: tpl.instruction,
+      templateKey: tpl.key,
+    });
+    setError("");
+    setShowCreate(true);
+  }
+
+  /** 打开空白新建表单（清掉可能残留的模板预填）。 */
+  function openBlankCreate() {
+    setForm({ name: "", type: "recording", time: "21:00", onNewSession: false, instruction: "" });
+    setShowCreate((v) => !v);
+  }
+
   async function createTask() {
     if (!form.name.trim()) {
       setError("请填写任务名称");
@@ -164,13 +200,22 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
     setBusy(true);
     setError("");
     try {
-      const res = await window.api.schedulerTaskCreate({
-        name: form.name.trim(),
-        type: form.type,
-        time: form.time,
-        extra: form.type === "recording" ? { onNewSession: form.onNewSession } : {},
-        ...(form.type === "custom" ? { instruction: form.instruction.trim() } : {}),
-      });
+      const res = form.templateKey
+        ? // 模板路径：服务端按固定 id 幂等创建/更新，家长改过的名称/时刻/提示词以本次保存为准
+          await window.api.schedulerTaskCreate({
+            template: form.templateKey,
+            type: "custom",
+            name: form.name.trim(),
+            time: form.time,
+            instruction: form.instruction.trim(),
+          })
+        : await window.api.schedulerTaskCreate({
+            name: form.name.trim(),
+            type: form.type,
+            time: form.time,
+            extra: form.type === "recording" ? { onNewSession: form.onNewSession } : {},
+            ...(form.type === "custom" ? { instruction: form.instruction.trim() } : {}),
+          });
       if (res?.success) {
         setShowCreate(false);
         setForm({ name: "", type: "recording", time: "21:00", onNewSession: false, instruction: "" });
@@ -234,7 +279,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
             style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontSize: 13, cursor: "pointer" }}
           />
           <button
-            onClick={() => setShowCreate((v) => !v)}
+            onClick={openBlankCreate}
             style={{
               display: "flex", alignItems: "center", gap: 6, padding: "8px 14px",
               background: "#667eea", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer",
@@ -247,10 +292,52 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
 
       {error && <div style={{ color: "#e53e3e", fontSize: 12 }}>{error}</div>}
 
+      {/* 推荐任务模板（服务端下发；点开预填表单，家长可改提示词后保存——不会自动创建任务） */}
+      {templates.length > 0 && !showCreate && (
+        <div>
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>✨ 推荐任务（点开可预览提示词、修改后创建）</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
+            {templates.map((tpl) => (
+              <div
+                key={tpl.key}
+                style={{
+                  border: tpl.taskId ? "1px solid #c6f6d5" : "1px dashed #b3bcf5",
+                  borderRadius: 12, padding: 14, background: tpl.taskId ? "#f6fff9" : "#fafbff",
+                  display: "flex", flexDirection: "column", gap: 8,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 22 }}>🧠</span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{tpl.name}</div>
+                    <div style={{ fontSize: 11, color: "#999" }}>
+                      自定义任务 · 每天 {tpl.time}{tpl.taskId ? " · 已添加" : ""}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "#666", lineHeight: 1.6 }}>{tpl.description}</div>
+                <button
+                  onClick={() => useTemplate(tpl)}
+                  style={{
+                    alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 6, padding: "6px 12px",
+                    background: tpl.taskId ? "#f0fff4" : "#667eea", color: tpl.taskId ? "#276749" : "#fff",
+                    border: tpl.taskId ? "1px solid #9ae6b4" : "none", borderRadius: 8, fontSize: 12, cursor: "pointer",
+                  }}
+                >
+                  {tpl.taskId ? "⚙️ 查看提示词 / 修改设置" : "使用此模板创建"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 新建任务表单 */}
       {showCreate && (
         <div style={{ border: "1px solid #667eea", borderRadius: 10, padding: 16, background: "#fafbff" }}>
-          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>新建定时任务</div>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>
+            {form.templateKey ? "从推荐模板创建（已预填，可修改）" : "新建定时任务"}
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={{ fontSize: 13, color: "#666", width: 70 }}>任务类型：</span>
@@ -296,13 +383,23 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
             )}
             {form.type === "custom" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <span style={{ fontSize: 13, color: "#666" }}>任务指令（自然语言，写清楚做什么、产出什么）：</span>
+                <span style={{ fontSize: 13, color: "#666" }}>
+                  任务指令（自然语言，写清楚做什么、产出什么）：
+                  {form.templateKey && (
+                    <span style={{ color: "#276749", marginLeft: 6 }}>
+                      已按推荐模板预填，下面整段提示词都可以改，保存后以改过的为准
+                    </span>
+                  )}
+                </span>
                 <textarea
                   value={form.instruction}
                   onChange={(e) => setForm((f) => ({ ...f, instruction: e.target.value }))}
                   placeholder="例：查一下今天的天气，然后创建提醒任务：未来 7 天每天 07:00 播报当天天气（一次性建 7 条）"
-                  rows={3}
-                  style={{ padding: "8px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd", resize: "vertical" }}
+                  rows={form.templateKey ? 12 : 3}
+                  style={{
+                    padding: "8px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd",
+                    resize: "vertical", lineHeight: 1.6, fontFamily: "inherit",
+                  }}
                 />
               </div>
             )}
@@ -313,7 +410,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                 disabled={busy}
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#667eea", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer" }}
               >
-                <Save size={14} /> {busy ? "创建中…" : "创建任务"}
+                <Save size={14} /> {busy ? "保存中…" : form.templateKey ? "保存任务" : "创建任务"}
               </button>
               <button
                 onClick={() => setShowCreate(false)}

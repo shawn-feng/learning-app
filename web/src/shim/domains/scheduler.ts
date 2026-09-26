@@ -379,12 +379,25 @@ export const schedulerDomain = {
     }
   },
 
-  /** schedulerTaskCreate: (payload) => Promise<{ success: boolean; task?: unknown; error?: string }>（POST /scheduler/tasks） */
+  /** schedulerTaskTemplatesList：推荐任务模板（只读；UI 展示卡片 → 点开预填表单，家长可改提示词后保存） */
+  schedulerTaskTemplatesList: async (): Promise<{ success: boolean; templates?: unknown[]; error?: string }> => {
+    try {
+      if (!getStoredToken()) return { success: false, error: "未登录" };
+      const data = await http<{ templates?: unknown[] }>("/scheduler/task-templates");
+      return { success: true, templates: data?.templates ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** schedulerTaskCreate: (payload) => Promise<{ success: boolean; task?: unknown; error?: string }>（POST /scheduler/tasks；template=推荐模板一键添加，name/time/instruction 可带家长改过的值） */
   schedulerTaskCreate: async (payload: {
     name: string;
     type: string;
     time: string;
     extra?: Record<string, unknown>;
+    instruction?: string;
+    template?: string;
   }): Promise<{ success: boolean; task?: unknown; error?: string }> => {
     try {
       if (!getStoredToken()) return { success: false, error: "未登录" };

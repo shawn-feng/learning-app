@@ -68,7 +68,11 @@ const qMounted = withParent((db) => saveQuestion(db, { stem: "「学而时习之
 withParent((db) => linkQuestionToKnowledgePoint(db, { questionId: qMounted, courseId: courseUuid, knowledgePointId: kpA.id }));
 
 const PLAN_ID = "sp_135m_1";
-const DAY = "2026-09-23";
+// 日期炸弹修复（2026-09-26）：原钉死 2026-09-23，mastery_todo_list 缺省「最近 3 天」窗口随真实日期
+// 滚动后计划永远落在窗外（全量回归唯一红）。计划数据一律用「今天」构造，测试不随日期过期。
+const _now = new Date();
+const _p = (n: number) => String(n).padStart(2, "0");
+const DAY = `${_now.getFullYear()}-${_p(_now.getMonth() + 1)}-${_p(_now.getDate())}`;
 {
   const kb = openKb(dataDir, parentId, childId);
   try {
@@ -259,6 +263,24 @@ describe("ISSUE-135 P4 掌握闭环（自定义任务 + 工具）", () => {
     expect(bad).toContain("未写入");
     expect(bad).toContain("不存在");
     expect(bad).toContain("非法");
+    // 兜底（§4.1）：素材为空时允许只写课程概要（不编造逐知识点判断）
+    const summaryOnly = text(
+      await tool("mastery_save_records").execute("x", {
+        plan_id: PLAN_ID,
+        source: "study",
+        result_summary: "按计划完成学习，未采集到过程细节。",
+      })
+    );
+    expect(summaryOnly).toContain("没有逐知识点记录");
+    const kb2 = openKb(dataDir, parentId, childId);
+    try {
+      const sp2 = kb2.prepare("SELECT result_summary FROM study_plans WHERE id = ?").get(PLAN_ID) as { result_summary: string };
+      expect(sp2.result_summary).toContain("未采集到过程细节");
+      // items 与 result_summary 都为空才是无效调用
+      await expect(tool("mastery_save_records").execute("x", { plan_id: PLAN_ID, source: "study" })).rejects.toThrow(/不能都为空/);
+    } finally {
+      kb2.close();
+    }
   });
 
   it("⑥ mastery_save_course_mastery：写课程四列 + 知识点累计（计数由工具统计）", async () => {

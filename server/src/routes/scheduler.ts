@@ -27,7 +27,7 @@ import {
   type ReminderOwner,
 } from "../db/task-runs.js";
 // ISSUE-135 P4：默认「学习情况分析」自定义任务（掌握闭环归纳）
-import { MASTERY_TASK_TEMPLATE, createMasteryTask } from "../worker/mastery-tools.js";
+import { MASTERY_TASK_TEMPLATE, createMasteryTask, findMasteryTaskId } from "../worker/mastery-tools.js";
 
 interface SchedulerDeps {
   config: ServerConfig;
@@ -78,13 +78,22 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
 
   /** 推荐任务模板（只读）：给 UI 展示「一键添加／二次确认」用，**不会创建任何行**。 */
   app.get("/api/v1/scheduler/task-templates", async (req, reply) => {
+    let parentId: string;
     try {
-      authParent(req, deps.config.jwtSecret);
+      parentId = authParent(req, deps.config.jwtSecret);
     } catch (err) {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    return { templates: [MASTERY_TASK_TEMPLATE] };
+    return {
+      templates: [
+        {
+          ...MASTERY_TASK_TEMPLATE,
+          // 已创建过 → 带 taskId，UI 显示「已添加 · 点击可修改」而不是「使用此模板创建」
+          taskId: findMasteryTaskId(deps.db, parentId),
+        },
+      ],
+    };
   });
   app.post("/api/v1/scheduler/tasks", async (req, reply) => {
     let parentId: string;
@@ -103,11 +112,22 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       template?: string;
     };
     // 推荐模板一键添加（家长显式动作）：用固定 id 幂等创建 —— 重复点不会建出多条同义任务。
+    // 2026-09-26：模板对话框允许家长改名称/时刻/提示词后保存（overrides）；任务已存在时同样把
+    // 家长确认过的值更新上去（存在 = 不再重复建行，但设置以本次保存为准）。
     if (template) {
       if (template !== MASTERY_TASK_TEMPLATE.key) {
         return reply.code(400).send({ error: `未知模板: ${template}（可用: ${MASTERY_TASK_TEMPLATE.key}）` });
       }
-      const r = createMasteryTask(deps.db, parentId);
+      if (time !== undefined && !validTime(time)) return reply.code(400).send({ error: "time 格式应为 HH:mm" });
+      const instr = String(instruction ?? "").trim();
+      if (instruction !== undefined && !instr) {
+        return reply.code(400).send({ error: "custom 类型需要 instruction（自然语言任务指令）" });
+      }
+      const r = createMasteryTask(deps.db, parentId, {
+        ...(name !== undefined ? { name } : {}),
+        ...(time !== undefined ? { time } : {}),
+        ...(instruction !== undefined ? { instruction: instr } : {}),
+      });
       return {
         ok: true,
         created: r.created,

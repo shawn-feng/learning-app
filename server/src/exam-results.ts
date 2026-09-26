@@ -449,3 +449,197 @@ export function persistExamResult(input: ExamResultInput): ExamResultOutput {
     parent.close();
   }
 }
+
+// ==================== P0-b：历史考核回填知识点记录（ISSUE-135 §11.2） ====================
+
+export interface BackfillExamKpInput {
+  dataDir: string;
+  parentId: string;
+  childId: string;
+  /** 只回填这些计划；缺省 = 该孩子全部 done 且还没有 exam 知识点记录的考核计划。 */
+  planIds?: string[];
+  /** 重算模式：先把指定计划的 exam 知识点记录删掉再回填（只允许与 planIds 同用，防误删全量）。 */
+  rebuild?: boolean;
+}
+
+export interface BackfillExamKpOutput {
+  plansScanned: number;
+  plansBackfilled: number;
+  recordsWritten: number;
+  /** 老数据「同题重复行」被剔除的行数（完全相同的明细行只计一次，否则 Σ得分会翻倍） */
+  duplicateRowsDropped: number;
+  /** 既无 knowledge_point_id、又无法按 question_id 回退定位的明细行数（§4.2③：不写 records，只在概要说明） */
+  rowsWithoutKp: number;
+  /** 每计划 Σgot/Σmax 校验结果；空数组 = 全部对账一致 */
+  issues: string[];
+}
+
+/**
+ * 把**已经落在** `exam_plan_courses` 里的逐题明细，按 `(plan_id, course_uuid, knowledge_point_id)`
+ * 聚合补写 `knowledge_point_records(source='exam')` —— 与 persistExamResult 提交时同一套口径
+ * （outcome 阈值 0.8/0.6、summary 取错题评语、知识点缺失走家长库挂载表回退）。
+ *
+ * 用途：P0-a（2026-09-23）之前提交的历史考核只有明细/概要、没有知识点记录；本函数做一次性回填，
+ * 幂等（已有 records 的计划跳过），可在部署后对新库重跑。
+ */
+export function backfillExamKpRecords(input: BackfillExamKpInput): BackfillExamKpOutput {
+  const now = new Date().toISOString();
+  const out: BackfillExamKpOutput = { plansScanned: 0, plansBackfilled: 0, recordsWritten: 0, duplicateRowsDropped: 0, rowsWithoutKp: 0, issues: [] };
+  if (input.rebuild && !input.planIds?.length) {
+    throw new Error("rebuild 只能与 planIds 同用（防误删全量知识点记录）");
+  }
+  const kb = openKb(input.dataDir, input.parentId, input.childId);
+  const parent = openParentLib(input.dataDir, input.parentId);
+  try {
+    if (input.rebuild) {
+      for (const id of input.planIds!) {
+        kb.prepare("DELETE FROM knowledge_point_records WHERE source = 'exam' AND plan_id = ?").run(id);
+      }
+    }
+    const planRows: Array<Record<string, unknown>> = input.planIds?.length
+      ? (input.planIds
+          .map((id) =>
+            kb.prepare("SELECT id, title, done_at, attempt_id FROM exam_plans WHERE id = ? AND child_id = ?").get(id, input.childId)
+          )
+          .filter((p) => !!p) as Array<Record<string, unknown>>)
+      : (kb.prepare("SELECT id, title, done_at, attempt_id FROM exam_plans WHERE child_id = ? AND status = 'done'").all(input.childId) as Array<
+          Record<string, unknown>
+        >);
+    const plans = planRows.filter((p) => {
+      // 幂等：已有 exam 知识点记录的计划不重算（避免覆盖提交时写入/后续润色过的内容）
+      const has = kb.prepare("SELECT 1 FROM knowledge_point_records WHERE source = 'exam' AND plan_id = ? LIMIT 1").get(String(p.id));
+      return !has;
+    });
+
+    for (const plan of plans) {
+      out.plansScanned++;
+      const planId = String(plan.id);
+      const rows = kb
+        .prepare(
+          `SELECT course_uuid, course_name, knowledge_point_id, knowledge_point_name, question_id,
+                  point_got, point_max, ai_comment, seq
+             FROM exam_plan_courses WHERE plan_id = ? ORDER BY seq`
+        )
+        .all(planId) as Array<Record<string, unknown>>;
+      if (!rows.length) continue;
+
+      // 老数据存在「同题整行重复」（ISSUE-135 §8.5①），先按题目身份去重再聚合。
+      // 键不含 course_uuid：实测存在 uuid 拆分变体（一行 ''、一行已回填 uuid，其余全同）——
+      // 含 uuid 进键会漏掉这种重复，把 Σ得分翻倍（比率不变，档位不受影响）。
+      // 碰撞时保留信息更全的那份（uuid / kp 已回填的行优先）。
+      const byKey = new Map<string, Record<string, unknown>>();
+      for (const r of rows) {
+        const key = [r.course_name, r.knowledge_point_id, r.question_id, r.point_got, r.point_max, r.ai_comment, r.seq].join("\u0001");
+        const prev = byKey.get(key);
+        if (!prev) {
+          byKey.set(key, r);
+          continue;
+        }
+        out.duplicateRowsDropped++;
+        if (!prev.course_uuid && r.course_uuid) byKey.set(key, r);
+        else if (!prev.knowledge_point_id && r.knowledge_point_id) byKey.set(key, r);
+      }
+      const deduped = [...byKey.values()];
+
+      // 课程 uuid 解析（老明细可能 uuid 为空）+ 知识点回退定位（与提交时同一套回退）
+      const metaCache = new Map<string, { uuid: string; topicKey: string }>();
+      const byKp = new Map<
+        string,
+        { courseKey: string; courseName: string; topicKey: string; kpId: string; kpName: string; got: number; max: number; comments: string[]; qids: string[] }
+      >();
+      let withKpGot = 0;
+      let withKpMax = 0;
+      for (const r of deduped) {
+        const courseName = String(r.course_name ?? "").trim();
+        let meta = metaCache.get(courseName);
+        if (!meta && courseName) {
+          meta = resolveCourseMeta(kb, parent, courseName);
+          metaCache.set(courseName, meta);
+        }
+        meta = meta ?? { uuid: String(r.course_uuid ?? ""), topicKey: "" };
+        let kpId = String(r.knowledge_point_id ?? "").trim();
+        const questionId = String(r.question_id ?? "").trim();
+        if (!kpId) kpId = lookupKpIdByQuestion(parent, meta.uuid, questionId);
+        if (!kpId) {
+          out.rowsWithoutKp++;
+          continue;
+        }
+        const kpName = String(r.knowledge_point_name ?? "") || lookupKpName(parent, kpId);
+        const courseKey = meta.uuid || `name:${courseName}`;
+        const key = `${courseKey}\u0001${kpId}`;
+        let e = byKp.get(key);
+        if (!e) {
+          e = { courseKey, courseName, topicKey: meta.topicKey, kpId, kpName, got: 0, max: 0, comments: [], qids: [] };
+          byKp.set(key, e);
+        }
+        if (!e.kpName && kpName) e.kpName = kpName;
+        const got = r.point_got == null ? 0 : Number(r.point_got);
+        const max = r.point_max == null ? 0 : Number(r.point_max);
+        e.got += got;
+        e.max += max;
+        withKpGot += got;
+        withKpMax += max;
+        if (questionId) e.qids.push(questionId);
+        const comment = String(r.ai_comment ?? "").trim();
+        if (comment && max > 0 && got < max) e.comments.push(comment);
+      }
+
+      if (byKp.size) {
+        const recordAt = String(plan.done_at ?? "") || now;
+        const sourceRef = String(plan.attempt_id ?? "") || planId;
+        const insKp = kb.prepare(
+          `INSERT INTO knowledge_point_records (id,parent_id,child_id,source,plan_id,knowledge_point_id,knowledge_point_name,
+             topic_key,course_uuid,course_name,record_at,outcome,point_got,point_max,rate,summary,detail_json,source_ref,created_at)
+           VALUES (?,?,?,'exam',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(source, plan_id, course_uuid, knowledge_point_id) DO UPDATE SET
+             outcome=excluded.outcome, point_got=excluded.point_got, point_max=excluded.point_max, rate=excluded.rate,
+             summary=excluded.summary, detail_json=excluded.detail_json, record_at=excluded.record_at,
+             knowledge_point_name=CASE WHEN excluded.knowledge_point_name != '' THEN excluded.knowledge_point_name ELSE knowledge_point_records.knowledge_point_name END`
+        );
+        for (const e of byKp.values()) {
+          const rate = e.max > 0 ? e.got / e.max : null;
+          const summary = e.comments.length
+            ? e.comments.join(" / ").slice(0, 300)
+            : e.max > 0
+              ? `本次得分 ${Math.round(e.got * 10) / 10}/${Math.round(e.max * 10) / 10}`
+              : "本次未采集到该知识点的作答记录";
+          insKp.run(
+            randomUUID(),
+            input.parentId,
+            input.childId,
+            planId,
+            e.kpId,
+            e.kpName,
+            e.topicKey,
+            e.courseKey,
+            e.courseName,
+            recordAt,
+            outcomeOf(rate),
+            e.got,
+            e.max,
+            rate,
+            summary,
+            JSON.stringify({ question_ids: e.qids, difficulties: e.comments }),
+            sourceRef,
+            now
+          );
+          out.recordsWritten++;
+        }
+        // Σ 校验：records 聚合的 Σgot/Σmax 必须等于「带知识点明细行」的 Σ（不带知识点的行本来就不入 records）
+        const rec = kb
+          .prepare("SELECT COALESCE(SUM(point_got),0) AS g, COALESCE(SUM(point_max),0) AS m FROM knowledge_point_records WHERE source='exam' AND plan_id = ?")
+          .get(planId) as { g: number; m: number };
+        if (Math.abs(rec.g - withKpGot) > 1e-6 || Math.abs(rec.m - withKpMax) > 1e-6) {
+          out.issues.push(
+            `计划 ${planId} Σ对账不一致：明细(带kp) ${withKpGot}/${withKpMax} vs records ${rec.g}/${rec.m}`
+          );
+        }
+        out.plansBackfilled++;
+      }
+    }
+    return out;
+  } finally {
+    kb.close();
+    parent.close();
+  }
+}

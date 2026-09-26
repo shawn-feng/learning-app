@@ -166,11 +166,20 @@ export const MASTERY_TASK_TEMPLATE = {
 } as const;
 
 /**
- * 显式创建「学习情况分析」自定义任务（type=custom / 每天 21:30 / 启用 / owner=parent）并分配给现有孩子。
+ * 显式创建「学习情况分析」自定义任务（type=custom / owner=parent）并分配给现有孩子。
  * 幂等：同一家长重复调用不会建出多条（固定 id）；已存在的分配行不动；新增孩子会被补上分配。
+ * 可选 `overrides`（name/time/instruction，来自 UI 模板对话框——家长可改提示词后保存）：
+ * 创建时落家长改过的值；任务已存在时把非空覆盖值更新上去（家长在对话框里确认过 = 允许覆盖）。
  * 返回 `created=false` 表示该任务本来就存在（家长之前已添加，或又被调用了一次）。
  */
-export function createMasteryTask(db: DatabaseSync, parentId: string): { taskId: string; created: boolean } {
+export function createMasteryTask(
+  db: DatabaseSync,
+  parentId: string,
+  overrides?: { name?: string; time?: string; instruction?: string }
+): { taskId: string; created: boolean } {
+  const name = String(overrides?.name ?? "").trim() || DEFAULT_MASTERY_TASK_NAME;
+  const time = String(overrides?.time ?? "").trim() || DEFAULT_MASTERY_TASK_TIME;
+  const instruction = String(overrides?.instruction ?? "").trim() || DEFAULT_MASTERY_TASK_INSTRUCTION;
   const taskId = `${DEFAULT_MASTERY_TASK_ID_PREFIX}${parentId}`;
   const now = new Date().toISOString();
   const existing = db.prepare("SELECT 1 FROM scheduler_tasks WHERE id = ?").get(taskId);
@@ -179,7 +188,11 @@ export function createMasteryTask(db: DatabaseSync, parentId: string): { taskId:
       `INSERT OR IGNORE INTO scheduler_tasks
          (id, parent_id, name, type, time, extra_json, enabled, owner, frequency, instruction, created_at, updated_at)
        VALUES (?, ?, ?, 'custom', ?, '{}', 1, 'parent', 'daily', ?, ?, ?)`
-    ).run(taskId, parentId, DEFAULT_MASTERY_TASK_NAME, DEFAULT_MASTERY_TASK_TIME, DEFAULT_MASTERY_TASK_INSTRUCTION, now, now);
+    ).run(taskId, parentId, name, time, instruction, now, now);
+  } else {
+    db.prepare(
+      "UPDATE scheduler_tasks SET name = ?, time = ?, instruction = ?, updated_at = ? WHERE id = ?"
+    ).run(name, time, instruction, now, taskId);
   }
   const kids = db.prepare("SELECT id FROM children WHERE parent_id = ?").all(parentId) as Array<{ id: string }>;
   const ins = db.prepare(
@@ -187,6 +200,13 @@ export function createMasteryTask(db: DatabaseSync, parentId: string): { taskId:
   );
   for (const k of kids) ins.run(taskId, k.id, now);
   return { taskId, created: !existing };
+}
+
+/** 该家长的掌握分析任务 id（固定前缀）；已创建返回 id，否则 null。 */
+export function findMasteryTaskId(db: DatabaseSync, parentId: string): string | null {
+  const id = `${DEFAULT_MASTERY_TASK_ID_PREFIX}${parentId}`;
+  const row = db.prepare("SELECT 1 FROM scheduler_tasks WHERE id = ?").get(id);
+  return row ? id : null;
 }
 
 // ==================== 工具 ====================
@@ -446,20 +466,23 @@ export function createMasteryTools(deps: MasteryToolDeps) {
     description:
       "把一次学习/考核的知识点情况写回（按 `(source, plan_id, course_uuid, knowledge_point_id)` 幂等覆盖，重复执行不会重复累计）。\n" +
       "`items` 每项：`knowledge_point_id`（必填，取自 mastery_plan_context 的知识点清单）+ `outcome`（solid/partial/weak）+ " +
-      "`summary`（一句具体描述）+ 可选 `detail`。学习计划可另给 `result_summary`（这次学习的课程级概要）。",
+      "`summary`（一句具体描述）+ 可选 `detail`。学习计划可另给 `result_summary`（这次学习的课程级概要）。\n" +
+      "素材为空、无法逐知识点判断时：`items` 可以不传，只给 `result_summary`（如「按计划完成学习，未采集到过程细节」）——课程概要不因缺素材而漏记。",
     parameters: Type.Object({
       plan_id: Type.String({ description: "计划 id" }),
       source: Type.String({ description: "study | exam" }),
       course_uuid: Type.Optional(Type.String({ description: "课程 uuid（考核多课时按知识点所属课程传）" })),
       course_name: Type.Optional(Type.String({ description: "课程名（缺 course_uuid 时用）" })),
-      items: Type.Array(
-        Type.Object({
-          knowledge_point_id: Type.String({ description: "知识点 id" }),
-          outcome: Type.String({ description: "solid | partial | weak" }),
-          summary: Type.Optional(Type.String({ description: "该知识点这次的情况描述（具体）" })),
-          detail: Type.Optional(Type.String({ description: "补充细节（困难点/亮点，可选）" })),
-        }),
-        { description: "本次涉及的知识点列表" }
+      items: Type.Optional(
+        Type.Array(
+          Type.Object({
+            knowledge_point_id: Type.String({ description: "知识点 id" }),
+            outcome: Type.String({ description: "solid | partial | weak" }),
+            summary: Type.Optional(Type.String({ description: "该知识点这次的情况描述（具体）" })),
+            detail: Type.Optional(Type.String({ description: "补充细节（困难点/亮点，可选）" })),
+          }),
+          { description: "本次涉及的知识点列表（无法逐知识点判断时可不传）" }
+        )
       ),
       result_summary: Type.Optional(Type.String({ description: "学习计划：这次学习的课程级概要" })),
     }),
@@ -479,7 +502,10 @@ export function createMasteryTools(deps: MasteryToolDeps) {
       if (!planId) throw new Error("mastery_save_records 需要 plan_id");
       if (source !== "study" && source !== "exam") throw new Error("source 只能是 study / exam");
       const items = Array.isArray(params.items) ? params.items : [];
-      if (!items.length) throw new Error("items 不能为空（没有知识点就不用调用本工具）");
+      // 兜底（§4.1）：素材为空写不出逐知识点判断时，允许只写课程概要——两样都没有才是真正的无效调用
+      if (!items.length && !String(params.result_summary ?? "").trim()) {
+        throw new Error("items 与 result_summary 不能都为空（没有知识点判断就只写课程概要 result_summary）");
+      }
       const kb = openKb(deps.dataDir, deps.parentId, deps.childId);
       const parent = openParentLib(deps.dataDir, deps.parentId);
       try {
@@ -551,9 +577,10 @@ export function createMasteryTools(deps: MasteryToolDeps) {
           summaryWritten = true;
         }
         const tail = errors.length ? `\n未写入：${errors.join("；")}` : "";
-        return ok(
-          `已写回 ${written} 个知识点的掌握情况（计划 ${planId}）${summaryWritten ? "，并更新了这次学习的课程概要" : ""}。${tail}`
-        );
+        const head = written
+          ? `已写回 ${written} 个知识点的掌握情况（计划 ${planId}）`
+          : `已记录课程概要（计划 ${planId}；本次没有逐知识点记录）`;
+        return ok(`${head}${summaryWritten ? "，并更新了这次学习的课程概要" : ""}。${tail}`);
       } finally {
         kb.close();
         parent.close();

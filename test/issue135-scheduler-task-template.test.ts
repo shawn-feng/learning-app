@@ -136,4 +136,51 @@ describe("ISSUE-135 P4 修订：掌握分析任务不再自动播种", () => {
     expect((await app.inject({ method: "GET", url: "/api/v1/scheduler/task-templates" })).statusCode).toBe(401);
     expect((await app.inject({ method: "POST", url: "/api/v1/scheduler/tasks", payload: { template: "mastery_analysis" } })).statusCode).toBe(401);
   });
+
+  // —— 2026-09-26：UI 模板对话框支持家长改名称/时刻/提示词后保存（POST {template, ...overrides}）——
+  it("⑦ 模板创建带覆盖（家长改过提示词/时刻）→ 落库为改过的值；非法 time / 空指令 → 400", async () => {
+    // 先删掉 ③④ 建的那条，验证「带覆盖的创建」这条路径
+    mainDb.prepare("DELETE FROM scheduler_tasks WHERE id = ?").run(`task_mastery_${parentId}`);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/scheduler/tasks",
+      headers: auth(),
+      payload: { template: "mastery_analysis", name: "学习情况分析（每日）", time: "20:00", instruction: "汇总本周学习与考核结果并更新课程掌握。" },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { created: boolean; task: Record<string, unknown> };
+    expect(body.created).toBe(true);
+    expect(body.task.name).toBe("学习情况分析（每日）");
+    expect(body.task.time).toBe("20:00");
+    expect(String(body.task.instruction)).toContain("汇总本周学习与考核结果");
+    expect(await customCount()).toBe(1);
+
+    // 非法 time → 400；空 instruction → 400（都不建行）
+    const badTime = await app.inject({
+      method: "POST", url: "/api/v1/scheduler/tasks", headers: auth(),
+      payload: { template: "mastery_analysis", time: "晚上八点" },
+    });
+    expect(badTime.statusCode).toBe(400);
+    const badInstr = await app.inject({
+      method: "POST", url: "/api/v1/scheduler/tasks", headers: auth(),
+      payload: { template: "mastery_analysis", instruction: "   " },
+    });
+    expect(badInstr.statusCode).toBe(400);
+    expect(await customCount()).toBe(1);
+  });
+
+  it("⑧ 任务已存在时带覆盖保存 → 不新建行，家长确认过的设置生效", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/scheduler/tasks",
+      headers: auth(),
+      payload: { template: "mastery_analysis", name: "学习情况分析", time: "22:00", instruction: "改后的提示词。" },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { created: boolean; task: Record<string, unknown> };
+    expect(body.created).toBe(false); // 固定 id：不新建
+    expect(body.task.time).toBe("22:00");
+    expect(String(body.task.instruction)).toBe("改后的提示词。");
+    expect(await customCount()).toBe(1);
+  });
 });

@@ -299,7 +299,9 @@ const api = {
     ipcRenderer.invoke("scheduler:parent_config:set", config),
   // 定时任务管理（新模型：先建任务 → 分配给孩子 → 执行结果查询）
   schedulerTasksList: () => ipcRenderer.invoke("scheduler:tasks:list"),
-  schedulerTaskCreate: (payload: { name: string; type: string; time: string; extra?: Record<string, unknown>; instruction?: string }) =>
+  // 推荐任务模板（只读；UI 展示卡片 → 点开预填表单，家长可改提示词后保存）
+  schedulerTaskTemplatesList: () => ipcRenderer.invoke("scheduler:task:templates:list"),
+  schedulerTaskCreate: (payload: { name: string; type: string; time: string; extra?: Record<string, unknown>; instruction?: string; template?: string }) =>
     ipcRenderer.invoke("scheduler:task:create", payload),
   schedulerTaskUpdate: (id: string, patch: { name?: string; time?: string; enabled?: boolean; extra?: Record<string, unknown> }) =>
     ipcRenderer.invoke("scheduler:task:update", id, patch),
