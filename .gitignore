@@ -95,3 +95,7 @@ voice_*.csv
 /server/scripts/check-*.mts
 /server/scripts/check-*.mjs
 ci-artifacts/
+
+# 冒烟测试运行时目录（服务进程 dataDir 指到 server/ 时产生）
+server/parents/
+server/workspaces/

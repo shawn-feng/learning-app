@@ -425,6 +425,9 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 | 2026-09-23 11:15 | ⭐ **P4 改向并实施**：掌握闭环归纳**不再新增 worker 任务类型**，改为复用「自定义任务」—— 默认「学习情况分析」（每天 21:30，幂等播种、家长可改/停用）+ 自然语言指令 + 4 个 `mastery_*` 工具（取数/写回）+ 通用 `parent_db_read/write`；P3 学习侧抽取并入该任务指令。§4.3 重写、§7 的 P3/P4 行更新、新增 §11.4 |
 | 2026-09-23 11:40 | ⚠️ **部署 0.5.6 暴露读取侧 500**（`no such column: topic_key`，路由 handler 无测试覆盖）→ **0.5.7 修复并重新部署**：SELECT 去 `topic_key`（改从 `exam_course_results` 取）、静默 catch 改留痕 warn、**新增路由级冒烟测试 `test/issue135-exam-routes.test.ts`（7 用例）**；端到端验证全 200。详见 §11.5 |
 | 2026-09-23 12:05 | ⭐ **修订：掌握分析任务不再自动创建**（用户反馈「我没设置定时任务，为什么 21:30 会自动触发」）。删除 worker tick + 列表接口的自动播种与 `mastery_task_seeded` 标记；改为 `MASTERY_TASK_TEMPLATE` + `GET /task-templates`（只读）+ `POST /tasks {template}` 显式添加（固定 id 幂等）。新增 `test/issue135-scheduler-task-template.test.ts`（6 用例）；部署 0.5.8 并删除 201 上已存在的任务行，跨 tick 复查未被重建。详见 §11.6 |
+| 2026-09-26（晚2） | ✅ **前端「推荐任务」入口补齐（0.5.14）**：定时任务页新增推荐任务卡片区（拉 `GET /task-templates`）→ 点开**预填表单**（名称/时刻/**提示词全文可见可改**）→ 保存走 `POST /tasks {template, name?, time?, instruction?}`；`createMasteryTask` 支持覆盖（已存在则按家长确认值更新，固定 id 不重复建行）；模板响应带 `taskId`（已添加 → 卡片变「查看提示词/修改设置」）；electron preload + IPC + web shim 三层接线；测试 +2（覆盖创建/已存在更新/非法 400，共 8 例）；App/Web build 过；本地 8788 已重启 0.5.14 并端到端验证（建→改→删全流程）。**201 未部署 0.5.14**（随下次发版 + 新客户端包一起）。详见 §11.8 |
+| 2026-09-26（晚） | ✅ **部署 201（0.5.13）+ 生产库考核回填**：mastery_save_records 兜底契约上线；独立包跑 backfillExamKpRecords——珊珊 +133 / 闻闻 +87 条记录、Σ对账全一致，回填后 done 考核覆盖率 100%。踩坑：独立 bundle 必须带 build.mjs 的 import_meta.url 垫片（否则 agent-core 依赖链启动即崩）。剩余：家长建掌握任务、201 学习侧历史归纳（75+27 计划）、P2/P5。详见 §11.7 |
+| 2026-09-26 | ✅ **P0-b 落地 + P4 首次真实运行（本地真实数据）**：`backfillExamKpRecords()` 代码化 + 回归测试；珊珊考核回填 8 场 33 条记录（Σ对账一致）+ 修复 uuid 拆分重复变体；学习侧 12 计划逐知识点评估（43 条 records + result_summary）、17 计划概要兜底、18 门课程掌握四列 + 52 条知识点累计——闭环数据就位（records 76 / progress 56）。顺带修 mastery_save_records 概要兜底契约 + 掌握任务测试日期炸弹。**未部署 201**；P2/P5 未动。详见 §11.7 |
 
 ---
 
@@ -536,6 +539,57 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 接口验证：列表 custom=0（两次）→ 模板 200（指令 1000 字、不建行）→ 显式添加 created=true → 重复添加 false → 未知模板 400 → 删除后回到 0。
 bundle 备份 `server.cjs.bak-20260923-1205`（本次无 schema 变更，未重复备份数据）。
 
-**⚠️ 前端待办（未做）**：客户端「定时任务」页目前没有「推荐任务」入口，家长要添加只能手填名称/时刻/整段指令。
-要让「一键添加」在 App 里可用，需改 `src/components/SchedulerTasksPanel.tsx`（拉 `GET /task-templates` 展示卡片 → 点一次调 `POST /tasks {template}` → 二次确认）
-并重打客户端包（当前 201 客户端 0.1.15）。本次未改前端（用户只要求「删掉它 + 不要自动播种」）。
+**✅ 前端已补（2026-09-26 晚，用户要求「UI 建任务 + 提示词预设可见可改」）**：见 §11.8。
+
+### 11.7 P0-b 落地 + P4 首次真实运行（2026-09-26，本地真实数据）
+
+**触发**：用户要求「记录计划的学习结果和考核结果，并进行结果评估，再回填到课程的学习情况并提出后续学习计划」——正是本 issue 第 2/3 环的闭环验收。
+
+**① P0-b 代码化：`backfillExamKpRecords()`（exam-results.ts）+ `test/issue135-backfill-exam-kp.test.ts`（3 用例）**
+- 从**已落库**的 `exam_plan_courses` 明细按 `(plan_id, course_uuid, knowledge_point_id)` 聚合补写 `knowledge_point_records(source='exam')`，与提交时（persistExamResult）同一套口径（阈值 0.8/0.6、错题评语作 summary、知识点缺失走家长库挂载表回退）；幂等（已有 records 的计划跳过）；Σgot/Σmax 对账不一致进 `issues`。
+- **`rebuild` 模式**（只许与 planIds 同用）：删掉指定计划的 exam records 重算——修数据用，防误删全量。
+- **实测发现去重键漏洞**：老数据「同题重复行」存在 **uuid 拆分变体**（同一道题两行，一行 `course_uuid=''`、一行已回填 uuid，其余全同）——首版去重键含 `course_uuid` 没抓住，把 sch_1788967846331 的 Σ得分裂成 16/20（**比率不变、档位不受影响**）。修复：键去掉 course_uuid（用课程名），碰撞时保留信息更全的行。测试补该变体用例。
+
+**② 真实数据执行（本地 dev 库，珊珊 `1f050a7f` / 闻闻 `09406c05`，家长 test@qq.com）**
+- **考核回填**：珊珊 16 场 done 考核扫出 **8 场可回填、33 条知识点记录**（Σ对账全部一致）；1 场（sch_1788967846331）rebuild 重算修正翻倍。90 行明细既无 kp 又回退不到（09-01~09-11 老考核，§4.2③ 按设计跳过）。闻闻 3 场全是早期测试考核（明细无 kp 无 question_id）→ 零写入，如实留空。
+- **P4 首次真实运行**（此前 §11.5 记「尚未真实跑过一次」）：`mastery_todo_list(days:0)` 验证工具①（29 个待归纳计划 / 46 门待刷新课程）→ 以「学习情况分析」任务的口径逐计划评估：
+  - **12 个有过程素材的学习计划** → 逐知识点评估 43 条 `knowledge_point_records(source='study')` + 全部 `result_summary`（判断依据=daily 学习记录的考核/难点/错题/表现，无编造）；
+  - **17 个无素材的学习计划** → 只写课程级兜底概要（「按计划完成学习，未采集到过程细节」，**不编造逐知识点判断**）；
+  - **18 门有证据的课程** → `mastery_save_course_mastery` 写掌握四列（13 learning / 5 needs_review）+ 52 条 `knowledge_point_progress`（学/考次数由工具实时统计）；薄弱点定位：孝经第1章（考核 0/30、1/30）、学而篇第一/三/四章、子路篇第四/六章。
+- **闭环终态**：knowledge_point_records 76 条（study 43 + exam 33）、knowledge_point_progress 56 条、courses 掌握四列 18/1304。
+
+**③ 真跑暴露并修复的工具缺口**：`mastery_save_records` 原来强制 `items` 非空，与 §4.1「素材为空也要写课程概要、不静默跳过」**直接矛盾**——生产 agent 跑到无素材计划必撞墙。已改：`items` 可选，`items` 与 `result_summary` 都为空才报错；兜底路径有测试钉住（issue135-mastery-task ⑥ 用例内）。
+
+**④ 顺带修复**：`test/issue135-mastery-task.test.ts` 日期炸弹（数据钉死 2026-09-23、随真实日期滚出「最近 3 天」窗口，是当时全量回归唯一红）——计划数据改为动态「今天」构造。
+
+**未做/待办**：
+- ✅ ~~201 未部署~~ → **0.5.13 已部署 201（2026-09-26 21:48）+ 生产库考核回填完成**：珊珊 10 场 +133 条、闻闻 9 场 +87 条（201 明细 100% 带知识点 id，rowsWithoutKp=0、Σ对账全一致）；回填后两孩子 done 考核知识点记录覆盖率 **100%**。部署要点：服务端 bundle 里 backfillExamKpRecords 被 tree-shake（服务端运行时不调用，属预期），回填走独立 esbuild 包 `tmp/deploy/backfill_201.cjs`（**必须复用 build.mjs 的 import_meta.url 垫片补丁**，否则 pi-coding-agent 在 CJS 下启动即崩——本次实测踩中）；孩子库备份 `data/backups/pre-backfill-kp-20260926-215152/`。
+- **学习侧（分析域）在 201 尚未归纳**：珊珊 75 / 闻闻 27 个 done 学习计划待评估（本地已做 29 个的那套逐点评估属于 LLM 判断，不在回填脚本范围）——由家长创建「学习情况分析」任务后日常覆盖近期；历史欠账可用 days=0 补跑一次（跑在 201 上需要模型配置）。
+- **掌握任务在 201 尚未创建**（scheduler_tasks 里 custom=0）：家长在定时任务页从模板添加或自填 prompt（2026-09-26 探针实测）。
+- P2（考核概要/知识点 summary 的 LLM 润色）与 P5（消费侧：家长 agent 读工具 / 课程会话注入 / 家长界面知识点展开）未动。
+- 本地 dev 库 15 个「概要兜底」计划仍在待归纳清单里（无逐知识点记录——按设计等有素材/考核证据再补，缺省 days=3 窗口不会天天翻出来）。
+- 遗留数据质量：本地 sch_1788967846331 的**明细行与概要**仍是 ×2 重复（本次只修正了知识点记录层）；其 rate/档位正确，如需彻底修要单独的明细/概要去重脚本 + 拍板。
+
+### 11.8 前端「推荐任务」入口 + 提示词预设可改（0.5.14，2026-09-26 晚）
+
+用户要求：把 UI 设置定时任务做好，提示词预设好，**创建任务时显示出来、家长可修改**。
+
+**服务端（0.5.14）**
+- `createMasteryTask(db, parentId, overrides?)`：`overrides = {name?, time?, instruction?}`——创建时落家长改过的值；**任务已存在时同样更新**（家长在对话框确认过 = 允许覆盖，固定 id 仍不重复建行）。
+- `POST /scheduler/tasks {template, name?, time?, instruction?}`：透传覆盖；`time` 非法 / `instruction` 空白 → 400。
+- `GET /scheduler/task-templates`：模板行带 `taskId`（`findMasteryTaskId()`，已创建 → id / 未创建 → null），供 UI 区分「使用此模板创建」与「查看提示词/修改设置」。
+- 测试：`issue135-scheduler-task-template.test.ts` +2（⑦ 覆盖创建 + 非法 400；⑧ 已存在更新不新建行），共 8 例全绿。
+
+**客户端（三层接线 + 面板）**
+- `preload.ts`：`schedulerTaskTemplatesList()`；`schedulerTaskCreate` payload 类型加 `template?`。IPC：`scheduler:task:templates:list`。web shim（`domains/scheduler.ts`）同签名补齐（`instruction?`/`template?` 类型缺口一并修）。
+- `SchedulerTasksPanel.tsx`：
+  - 加载任务时并行拉模板；任务列表上方渲染「✨ 推荐任务」卡片区（未打开创建表单时显示）；
+  - 点卡片 → **预填新建表单**（名称/时刻/类型=custom/提示词全文，textarea 12 行），标题「从推荐模板创建（已预填，可修改）」，提示词区注明「整段都可以改，保存后以改过的为准」；
+  - 保存：带 `template` key 走模板路径（幂等 + 覆盖），按钮文案「保存任务」；空表单路径不变；
+  - 模板已有任务（`taskId`）→ 绿色卡片 +「⚙️ 查看提示词 / 修改设置」；未创建 → 虚线卡片 +「使用此模板创建」。
+  - `window.api` 两侧均为 `any` 类型，无额外 d.ts 改动。
+
+**验证**：route 测试 8/8 + mastery 工具 6/6 + backfill 3/3；server tsc 仅剩并发会话的 topic-package 既有错；App（electron-vite）与 Web build 通过；本地 8788 重启 0.5.14 后端到端验证：模板列表 taskId=null → 带覆盖创建（值生效）→ 重复保存（created=false、设置更新）→ 非法 400 → 删除清理（taskId 回 null）。
+（踩坑留档：验证脚本给 DELETE 带空 JSON content-type 会被 fastify 400——客户端真路径不带，非产品 bug。）
+
+**待办**：201 部署 0.5.14 + 重打客户端包（201 客户端 0.1.15 看不到新卡片；服务端不部署则新客户端在 201 上保存模板会**静默丢覆盖值**——旧 POST 分支忽略多余字段）。
