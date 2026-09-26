@@ -3,7 +3,7 @@
 - **类型**：需求 / 架构（计划域 + 考核域重构 + 新增掌握闭环）
 - **优先级**：中-高（家长最核心诉求：学完/考完能看见"到底掌握了什么"，并据此安排下一次）
 - **记录时间**：2026-09-22（设计定稿 2026-09-23；08:20 按用户"废弃 attempts"决定改写为 v2 方案）
-- **状态**：✅ **P0-a + P4 已实施并部署到 201（0.5.7，2026-09-23 11:39）**：① 考核结果重构（孩子库三层 + 评测存档 + 主库 `exam_attempts` 退场 + 读取侧全切 + worker 收窄 + P0 结构 + P1 防硬删）；② 掌握闭环归纳改为**自定义任务**（默认「学习情况分析」每天 21:30 + 4 个 `mastery_*` 工具）；③ 部署中发现并修复读取侧 500（详见 §11.5）。剩余：P0-b 回填脚本、P2 概要 LLM 润色、P5 消费侧。**P4 首次真实运行尚未验证**（等 21:30 自然触发或手动跑一次）
+- **状态**：✅ **P0-a + P4 已实施并部署到 201（0.5.7，2026-09-23 11:39）**：① 考核结果重构（孩子库三层 + 评测存档 + 主库 `exam_attempts` 退场 + 读取侧全切 + worker 收窄 + P0 结构 + P1 防硬删）；② 掌握闭环归纳改为**自定义任务**（默认「学习情况分析」每天 21:30 + 4 个 `mastery_*` 工具）；③ 部署中发现并修复读取侧 500（详见 §11.5）。09-26：P0-b 落地+真实数据执行+P4 首次真实运行验证、201 部署回填（0.5.13）、推荐任务 UI（0.5.14）、P5 消费侧落地（0.5.15）。剩余：P2 润色、201 部署 0.5.14+、201 学习侧历史归纳。
 
 ---
 
@@ -332,7 +332,7 @@ CREATE INDEX IF NOT EXISTS idx_speech_question ON speech_assessments(plan_id, co
 | **P2** | 考核侧写入规则化（`exam_course_results` + records；规则聚合不依赖 LLM） | 是（上线即有数据） |
 | **P3** | ✅ **已并入 P4 的自定义任务指令**（第 2 步：逐计划取素材 → `mastery_save_records` 写 `records(source='study')` + `study_plans.result_summary`） | 是 |
 | **P4** | ✅ **已实施（2026-09-23，自定义任务版，见 §4.3；同日修订为不自动创建）**：掌握分析任务**模板化 + 家长显式添加**（`GET /task-templates` 只读模板；`POST /tasks {template}` 显式创建、固定 id 幂等）+ 4 个 `mastery_*` 工具（取数/写回）+ 通用 `parent_db_read/write` 接入自定义任务 agent；**不新增 worker 任务类型、不动客户端** | 是 |
-| **P5** | 消费侧（家长 agent 读工具 / `kb.courses.get` 扩展 + 课程子会话注入 / 家长界面） | 分批 |
+| **P5** | ✅ **已实施（2026-09-26 晚，0.5.15，按会话收敛后新格局）**：① `parent_content(type=lesson)` 第五段「上次掌握与教学建议」（courses 四列 + 待巩固知识点，缺记录不抛错）——原设计「课程子会话注入」随会话收敛作废，lesson 材料是掌握反哺教学的唯一活路；② 计划技能（parent-scene-plan）接 `parent_child_mastery_report`：排计划前看掌握，needs_review 优先排复习；③ `GET /courses/status` 下发掌握四列 + 家长界面（CourseDetail 掌握卡 / LearningDashboard 列表徽标）。家长读侧 `parent_child_mastery_report`（ISSUE-144 P4）已在，未重复造 | 是 |
 
 **验收**
 - 学习计划完成 → 次日可查到该课知识点 records，`study_plans.result_summary` 非空。
@@ -593,3 +593,16 @@ bundle 备份 `server.cjs.bak-20260923-1205`（本次无 schema 变更，未重�
 （踩坑留档：验证脚本给 DELETE 带空 JSON content-type 会被 fastify 400——客户端真路径不带，非产品 bug。）
 
 **待办**：201 部署 0.5.14 + 重打客户端包（201 客户端 0.1.15 看不到新卡片；服务端不部署则新客户端在 201 上保存模板会**静默丢覆盖值**——旧 POST 分支忽略多余字段）。
+
+### 11.9 P5 消费侧落地（0.5.15，2026-09-26 晚）
+
+**盘点先行**：家长读侧 `parent_child_mastery_report`（ISSUE-144 P4）已读新表（courses 四列 + 知识点档位 + 错题本），**未重复造轮子**；P5 实际缺口 = 孩子上课消费口 + 计划引用 + 界面展示。
+
+| # | 改动 | 落点 |
+|---|---|---|
+| 1 | **`parent_content(type=lesson)` 第五段「上次掌握与教学建议」**：读孩子库 courses 掌握四列 + `knowledge_point_progress` 待巩固知识点（≤5 个）；**缺记录不抛错**（「暂无掌握评估记录——首次教这门课或分析任务还没归纳过它」，与 lesson 其余段缺项口径一致）；段插在考核要点之后、资料之前（先知道孩子卡在哪，再决定怎么用资料）。原设计的「课程子会话注入」随会话收敛作废，**lesson 材料是掌握反哺教学的唯一活路** | `agent/plan-tools.ts`（`masteryAdviceBlock()`）+ 孩子 prompt 第 49 行同步 |
+| 2 | **计划技能接掌握**：`parent-scene-plan` 声明 `parent_child_mastery_report`（多场景工具）；步骤 2 加「排学习计划前先看掌握——needs_review 优先安排（复习课加「复习：」前缀），教学建议照着排；没数据按家长说的排，不要编造」+ 参数速查一行 | `agent/skills/parent/plan.ts` |
+| 3 | **界面展示**：`GET /courses/status/:childId` 响应加 `masteryLevel/masteryDesc/teachingAdvice/masteryUpdatedAt`（追加字段，旧消费方零破坏）；单课详情（CourseDetail）新增「🧠 掌握情况与教学建议」卡（更新日期 + 累计叙述 + 下次建议 + 掌握档位行）；课程列表（LearningDashboard，家长/孩子两模式共用）每课行加档位彩色徽标（title 悬停显示累计叙述） | `routes/exam.ts` + `CourseDetail.tsx` + `LearningDashboard.tsx` |
+
+**验证**：lesson 测试 +1（掌握段有/无两路，12 例）+ exam-routes 断言掌握四列（7 例）+ issue144 45 例（工具块 16771/17000，余量 229）+ scene-override 8 例全绿；server tsc 0 新增错；App/Web build 过；本地 8788 重启 0.5.15 端到端：courses/status 549 门课 18 门带掌握数据正常下发（学而第一章 needs_review + 建议齐全）。**未部署 201**（随 0.5.14+ 与新客户端包一起）。
+| 2026-09-26（晚3） | ✅ **P5 消费侧落地（0.5.15）**：lesson 第五段掌握注入（原课程子会话注入作废后的一条活路）+ 计划技能接 mastery_report（needs_review 优先复习）+ courses/status 下发掌握四列与界面展示（掌握卡 + 列表徽标）。详见 §11.9 |

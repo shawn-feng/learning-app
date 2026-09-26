@@ -473,9 +473,10 @@ function listCourseStatus(
     } catch {
       /* 视图不存在（未迁移库）则跳过 */
     }
+    // ISSUE-135 P5：掌握四列一并下发（「学习情况分析」任务写入；空 = 还没评估过）
     const rows = kb
       .prepare(
-        "SELECT topic, title, status, last_review, review_count FROM courses ORDER BY topic, sort_order, title"
+        "SELECT topic, title, status, last_review, review_count, mastery_level, mastery_desc, teaching_advice, mastery_updated_at FROM courses ORDER BY topic, sort_order, title"
       )
       .all() as Array<{
         topic: string;
@@ -483,6 +484,10 @@ function listCourseStatus(
         status: string;
         last_review: string;
         review_count: number;
+        mastery_level: string;
+        mastery_desc: string;
+        teaching_advice: string;
+        mastery_updated_at: string;
       }>;
     const out: Array<Record<string, unknown>> = [];
     for (const r of rows) {
@@ -517,6 +522,11 @@ function listCourseStatus(
         examRate: es && es.total ? Math.round((es.correct / es.total) * 1000) / 1000 : 0,
         planReviewAt: rp?.planReviewAt ?? "",
         focus: Array.isArray(rp?.focus) ? rp!.focus!.map(String) : [],
+        // ↓ ISSUE-135 P5：掌握闭环产出（learning/needs_review/...；叙述给人看也给 LLM 读）
+        masteryLevel: String(r.mastery_level ?? ""),
+        masteryDesc: String(r.mastery_desc ?? ""),
+        teachingAdvice: String(r.teaching_advice ?? ""),
+        masteryUpdatedAt: String(r.mastery_updated_at ?? ""),
       });
     }
     return out;

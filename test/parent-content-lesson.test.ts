@@ -18,6 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openParentLib } from "../server/src/db/parent-lib";
+import { openKb } from "../server/src/db/kb";
 import { createParentContentTool } from "../server/src/agent/plan-tools";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "pc-lesson-"));
@@ -134,5 +135,33 @@ describe("parent_content：工具描述把 lesson 写成明写的缺省", () => 
   it("type 参数是可选的（模型漏传也能跑）", () => {
     expect(tool.parameters?.properties?.type).toBeTruthy();
     expect(tool.parameters?.required ?? []).not.toContain("type");
+  });
+});
+
+describe("parent_content lesson 第五段：上次掌握与教学建议（ISSUE-135 P5）", () => {
+  it("孩子库有掌握记录 → 档位/累计/建议/待巩固知识点齐全；没有 → 暂无占位且不抛错", async () => {
+    // 有数据的课：孩子库 courses 掌握四列 + knowledge_point_progress 待巩固项
+    const kb = openKb(dataDir, parentId, childId);
+    try {
+      kb.prepare(
+        "INSERT OR REPLACE INTO courses (topic, topic_key, title, uuid, sort_order, mastery_level, mastery_desc, teaching_advice, mastery_updated_at) VALUES ('preqin','preqin','第一课 夏商周','',1,'needs_review','最开始只能复述原文；最新能自己举例','先用身边例子讲清『世袭』，再让孩子复述','2026-09-26T21:30:00.000Z')"
+      ).run();
+      kb.prepare(
+        "INSERT INTO knowledge_point_progress (parent_id, child_id, knowledge_point_id, knowledge_point_name, course_uuid, course_name, level, mastery_desc, study_count, exam_count, first_at, last_at, updated_at) VALUES (?,?,?,?,?,'第一课 夏商周','needs_review','把『世袭』和『禅让』讲混',1,0,'2026-09-20','2026-09-26','2026-09-26')"
+      ).run(parentId, childId, "kp-pc-1", "世袭制", "uuid-pc-1");
+    } finally {
+      kb.close();
+    }
+    const out = await call({ topic: "preqin", course: "第一课 夏商周" });
+    expect(out).toContain("### 上次掌握与教学建议");
+    expect(out).toContain("待巩固");
+    expect(out).toContain("最新能自己举例");
+    expect(out).toContain("先用身边例子讲清『世袭』");
+    expect(out).toContain("待巩固知识点：世袭制");
+
+    // 没数据的课（同主题第二课）：占位、不抛错、教学可继续
+    const out2 = await call({ topic: "preqin", course: "第二课 秦汉" });
+    expect(out2).toContain("暂无掌握评估记录");
+    expect(out2).toContain("### 学习资料");
   });
 });

@@ -5,6 +5,14 @@ import IconButton from "./IconButton";
 import { ArrowLeft } from "lucide-react";
 
 /** 课程进度字段（两端钻取共用，字段取自 SQLite courses 表）。 */
+/** 掌握档位中文（与 courses.mastery_level 同枚举）。 */
+const MASTERY_LEVEL_CN: Record<string, string> = {
+  not_started: "还没开始",
+  learning: "学习中",
+  needs_review: "待巩固",
+  mastered: "已掌握",
+};
+
 export interface CourseItemLite {
   title: string;
   status: string;
@@ -86,6 +94,11 @@ interface Props {
     lastReview?: string;
     planReviewAt?: string;
     focus?: string[];
+    // ISSUE-135 P5：掌握闭环产出（「学习情况分析」任务写入；空 = 还没评估过）
+    masteryLevel?: string;
+    masteryDesc?: string;
+    teachingAdvice?: string;
+    masteryUpdatedAt?: string;
   } | null;
 }
 
@@ -217,7 +230,13 @@ export default function CourseDetail({ childId, topicDir, topicName, course, onB
     if (cs.reviewCount != null && cs.reviewCount !== course.reviewCount) rows.push(["复习次数", String(cs.reviewCount)]);
     if (cs.planReviewAt) rows.push(["计划复习", cs.planReviewAt]);
     if (cs.focus && cs.focus.length > 0) rows.push(["复习重点", cs.focus.join("；")]);
+    if (cs.masteryLevel) rows.push(["掌握档位", MASTERY_LEVEL_CN[cs.masteryLevel] ?? cs.masteryLevel]);
   }
+
+  // ISSUE-135 P5：掌握叙述与教学建议（「学习情况分析」任务产出；给家长看"到底掌握了什么、下次怎么教"）
+  const masteryDesc = String(courseStatus?.masteryDesc ?? "").trim();
+  const teachingAdvice = String(courseStatus?.teachingAdvice ?? "").trim();
+  const masteryUpdatedAt = String(courseStatus?.masteryUpdatedAt ?? "").slice(0, 10);
 
   return (
     <div className="dashboard-panel">
@@ -245,6 +264,24 @@ export default function CourseDetail({ childId, topicDir, topicName, course, onB
           </div>
         )}
       </div>
+
+      {/* ISSUE-135 P5：掌握叙述与教学建议（「学习情况分析」任务产出） */}
+      {(masteryDesc || teachingAdvice) && (
+        <div className="lesson-detail-card" style={{ marginTop: 12, borderLeft: "3px solid #667eea" }}>
+          <div className="lesson-detail-title" style={{ fontSize: 13 }}>
+            🧠 掌握情况与教学建议{masteryUpdatedAt ? `（更新于 ${masteryUpdatedAt}）` : ""}
+          </div>
+          {masteryDesc && (
+            <div style={{ fontSize: 13, lineHeight: 1.7, color: "#444", whiteSpace: "pre-wrap" }}>{masteryDesc}</div>
+          )}
+          {teachingAdvice && (
+            <div style={{ fontSize: 13, lineHeight: 1.7, color: "#555", marginTop: masteryDesc ? 8 : 0 }}>
+              <b>下次建议：</b>
+              {teachingAdvice}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 两栏：左=记录列表（学习/复习+考核）｜右=选中记录的详情 */}
       <div style={{ display: "flex", gap: 16, marginTop: 12, alignItems: "flex-start", minWidth: 0 }}>

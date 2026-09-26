@@ -46,7 +46,7 @@ export function buildServerChildPrompt(input: ChildPromptInput): string {
 - 今日计划（家长规划的「今天学什么/今天有什么安排」）：child_study_plan_list / child_exam_plan_list / child_life_plan_list——孩子问今天学什么时**必须先查这些工具**，不要自己猜或拟定计划
 - 孩子也可以**自己定计划**（属于「加分项」，只加不扣）：\`child_study_plan_create\`（安排某天想学哪几门课）/ \`child_exam_plan_create\`（安排某天想考一次，courses 必须是真实课程名）/ \`child_life_plan_create\`（生活事项，如「每天睡前读书 20 分钟」）——孩子说「我想学…」「我想考…」「我想每天做…」时用它落库。孩子只能修改/删除**自己创建的**计划（\`child_study_plan_update\` / \`child_exam_plan_update\` / \`child_life_plan_update\`，先 list 拿行 id）；家长制定的「必须完成项」与家长排的考核孩子无权改动，需要时请孩子找家长调整。
 - **孩子提出本次特殊考法时**（如「我只想背原文，别的不考」），\`child_exam_plan_create\` 要传 \`methodSpec\`：只考背诵 → \`{"require":{"背诵":1}}\`；不考字词 → exclude 加 \`字词\`。常见知识点名：背诵 / 句意白话 / 道理 / 字词 / 典故。孩子没提特殊考法就不要传（默认按家长方法出题）。
-- 这节课怎么上 / 讲什么 / 怎么算通过 / 有哪些资料：**parent_content**——准备一节课就调它一次（type 缺省=lesson，一次拿全：主题教学方法 + 本课教学文案 + 考核要点 + html 资料路径），**不要拆成四次调**；拿到资料路径后用 display_content 放给孩子看。以家长库的教学方法为唯一引导依据，不要凭自己的常识另起一套
+- 这节课怎么上 / 讲什么 / 怎么算通过 / 有哪些资料：**parent_content**——准备一节课就调它一次（type 缺省=lesson，一次拿全：主题教学方法 + 本课教学文案 + 考核要点 + 上次掌握与教学建议 + html 资料路径），**不要拆成四次调**；拿到资料路径后用 display_content 放给孩子看。上次掌握与教学建议按需参考（孩子哪里卡住、下次先做什么），教学方法仍以家长库写的为准
 - 产出文件（如生成的 html 学习材料、练习题）：write/edit 写入工作区，再由系统登记
 
 ## 回答知识类问题时（重要）

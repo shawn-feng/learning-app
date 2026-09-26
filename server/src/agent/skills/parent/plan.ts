@@ -14,6 +14,7 @@ export const planSkill: ParentSkill = {
   tools: [
     "parent_list_children",
     "parent_study_plan_sources",
+    "parent_child_mastery_report",
     "parent_study_plan_create",
     "parent_study_plan_list",
     "parent_study_plan_get",
@@ -36,7 +37,7 @@ export const planSkill: ParentSkill = {
 
 ## 步骤
 1. 对象一律按**孩子姓名**定位（不确定先 \`parent_list_children\`）。
-2. 排学习计划前先 \`parent_study_plan_sources\` 看孩子**真实课程结构**，按**真实存在的课程名**排（不猜课程名）；家长说的模糊范围（"最近学的 3 课"）**先查再确认**。
+2. 排学习计划前先 \`parent_study_plan_sources\` 看孩子**真实课程结构**，按**真实存在的课程名**排（不猜课程名）；家长说的模糊范围（"最近学的 3 课"）**先查再确认**。**再看掌握**（\`parent_child_mastery_report\`，child）：\`needs_review\`（待巩固）的课程与知识点**优先安排**（复习课加「复习：」前缀），教学建议里写了下次怎么教就照着排；**没有评估数据的课按家长说的排，不要编造掌握情况**。
 3. \`parent_study_plan_create\` 排学习安排（**复习课加「复习：」前缀**）。**先分清三种形态再落库（ISSUE-149）**：
    - **一件事在一段时间内完成/有截止日**（"27 号前把学校作业写完"、"这周日之前学完〈学而篇〉"）→ **单项 + \`endDate\` 排一条跨日期行**，**只在结束日判定完成与顺延**，中间没做完不算 missed、不扣分。**禁止拆成多行同名排期**——那会每天重复判定、每天顺延出一条重复计划（2026-09-24「学校作业」事故）；
    - **每天各排各的**（"24 号学语文、25 号学数学"）→ 逐天多行（\`days\` 每项一天）；
@@ -60,6 +61,7 @@ export const planSkill: ParentSkill = {
 ## 参数速查（本场景工具）
 - \`parent_list_children\`：无参数；只回**孩子姓名**（本场景所有工具都按**姓名**定位）。
 - \`parent_study_plan_sources\`：\`childName\`（必填）· \`topic\`（可选，\`topic_key\` 或中文名；缺省=全部主题概览 + 未学清单）。
+- \`parent_child_mastery_report\`：\`child\`（孩子姓名，名下只有一个孩子时可省略）· \`course\`（可选，课程名）→ 课程掌握档位 / 累计叙述 / **教学建议** / 待巩固知识点（「学习情况分析」任务产出；**没数据 = 还没评估过**，不是学得差）。
 - \`parent_study_plan_create\`：\`childName\` + \`days\`（必填数组，每项 \`date\` + \`content\`＝当天课程名数组、一项一课 + \`endDate\`（可选，跨日期结束日含当日；填了 content 只能一项、生成一条跨日期行，只在结束日判定与顺延））。**「复习：」前缀＝复习**；空天＝不要求学；同日同课已存在自动跳过。
 - \`parent_study_plan_list\`：\`childName\`（必填）· \`from\` / \`to\`（可选，含边界）→ 一课一行，带**行 id**。
 - \`parent_study_plan_get\`：\`childName\`（必填）· \`date\`（可选，缺省今天）→ 当天学习 + 生活安排（含 📋 顺延）。

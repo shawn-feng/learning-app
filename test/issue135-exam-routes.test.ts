@@ -88,7 +88,7 @@ beforeAll(async () => {
   try {
     // 孩子库课程行（/courses/status 只纳入有学习/复习/考核信号的课程）
     kb.prepare(
-      "INSERT INTO courses (topic, topic_key, title, uuid, sort_order, status, last_review, review_count, tags) VALUES (?,?,?,?,1,'✅','2026-09-23',1,'')"
+      "INSERT INTO courses (topic, topic_key, title, uuid, sort_order, status, last_review, review_count, tags, mastery_level, mastery_desc, teaching_advice, mastery_updated_at) VALUES (?,?,?,?,1,'✅','2026-09-23',1,'','needs_review','最开始只能复述；最新能举例','先复述再举例','2026-09-26T21:30:00.000Z')"
     ).run(TOPIC, TOPIC, COURSE, courseUuid);
     kb.prepare(
       `INSERT INTO exam_plans (id,parent_id,child_id,title,creator,kind,freq,scope_json,origin,recurrence_id,
@@ -179,6 +179,11 @@ describe("ISSUE-135 P0-a 读接口（孩子库口径）", () => {
     const row = body.records.find((r) => r.title === COURSE);
     expect(row, JSON.stringify(body.records.slice(0, 3))).toBeTruthy();
     expect(String(row!.topic)).toBe(TOPIC);
+    // ISSUE-135 P5：掌握四列随响应下发（进度界面展示用）
+    expect(String(row!.masteryLevel)).toBe("needs_review");
+    expect(String(row!.masteryDesc)).toContain("最新能举例");
+    expect(String(row!.teachingAdvice)).toContain("先复述再举例");
+    expect(String(row!.masteryUpdatedAt)).toContain("2026-09-26");
   });
 
   it("GET /assess/questions/:id/records —— 200 且按孩子分组（契约字段名未变）", async () => {

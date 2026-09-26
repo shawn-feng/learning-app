@@ -146,7 +146,7 @@ export function createParentContentTool(deps: PlanToolsDeps) {
     description:
       "从家长库读取**这节课的准备材料**。\n" +
       "孩子数据库不存 method 与教学文案（分配主题时只拷贝课程骨架/进度/资料指针），所以**教学、考核前必须先调本工具**，不要读孩子库、也不要猜。\n" +
-      "- type=lesson（**缺省，准备一节课就用它**）：一次拿全——主题教学方法 + 该课教学文案 + 考核要点 + html 资料路径。**不要为了上课分四次调用**。\n" +
+      "- type=lesson（**缺省，准备一节课就用它**）：一次拿全——主题教学方法 + 该课教学文案 + 考核要点 + 上次掌握与教学建议 + html 资料路径。**不要为了上课分四次调用**。\n" +
       "- type=method / teachingCopy / assessRubric / htmlPath：只取其中一项（补读、单独核对时用）。\n" +
       "拿到 html 资料路径后用 `display_content` 展示（path 传该路径）。",
     parameters: Type.Object({
@@ -192,7 +192,7 @@ export function createParentContentTool(deps: PlanToolsDeps) {
           );
         }
 
-        // 一次拿全：准备一节课（教法 + 文案 + 考核要点 + 资料路径）。
+        // 一次拿全：准备一节课（教法 + 文案 + 考核要点 + 掌握建议 + 资料路径）。
         // 缺项**不抛错**——上课不该因为家长少填一段就卡住；逐项写明"未填写"，让模型知道哪些是家长没给的
         // （而不是它没读到），缺项处按常识组织、但不得编造具体数字/人名/引文。
         if (type === "lesson") {
@@ -208,9 +208,14 @@ export function createParentContentTool(deps: PlanToolsDeps) {
             copy || "（家长未填写教学文案——按教学方法与本课资料组织）",
             "### 考核要点（怎样算通过）",
             rubric || "（家长未填写考核要点——按教学文案里的关键点判定，讲全即通过）",
-            "### 学习资料（可展示）",
-            html ? `${html}\n（用 display_content 展示，path 传上面这个路径）` : "（本课未登记 html 学习资料）",
           ];
+          // P5（ISSUE-135 消费侧）：孩子的掌握情况与教学建议（「学习情况分析」任务写入孩子库）。
+          // 放在考核要点之后、资料之前——先知道孩子上次卡在哪，再决定怎么用这份资料。
+          blocks.push(masteryAdviceBlock(deps, row.title ?? course));
+          blocks.push("### 学习资料（可展示）");
+          blocks.push(
+            html ? `${html}\n（用 display_content 展示，path 传上面这个路径）` : "（本课未登记 html 学习资料）"
+          );
           return { content: [{ type: "text" as const, text: blocks.join("\n") }], details: {} };
         }
 
@@ -236,6 +241,54 @@ export function createParentContentTool(deps: PlanToolsDeps) {
       }
     },
   });
+}
+
+// ---------- 孩子掌握情况（P5 消费侧：lesson 材料第五段） ----------
+
+/** 掌握档位的中文说法（与 knowledge_point_progress / courses.mastery_level 同枚举）。 */
+const MASTERY_LEVEL_CN: Record<string, string> = {
+  not_started: "还没开始",
+  learning: "学习中",
+  needs_review: "待巩固",
+  mastered: "已掌握",
+};
+
+/**
+ * 某门课的「上次掌握与教学建议」段（孩子库 courses 掌握四列 + 待巩固知识点，ISSUE-135 P5）。
+ * 数据由「学习情况分析」任务产出；**缺记录不抛错**——首次教这门课或分析任务还没跑过时如实说明，
+ * 教学不因此卡住（与 lesson 其余段的缺项口径一致）。
+ */
+function masteryAdviceBlock(deps: PlanToolsDeps, courseTitle: string): string {
+  const kb = openKb(deps.dataDir, deps.parentId, deps.childId);
+  try {
+    const c = kb
+      .prepare("SELECT mastery_level, mastery_desc, teaching_advice, mastery_updated_at FROM courses WHERE title = ?")
+      .get(courseTitle) as
+      | { mastery_level?: string; mastery_desc?: string; teaching_advice?: string; mastery_updated_at?: string }
+      | undefined;
+    const level = String(c?.mastery_level ?? "").trim();
+    if (!level) {
+      return "### 上次掌握与教学建议\n（暂无掌握评估记录——首次教这门课，或「学习情况分析」任务还没归纳过它；按教学方法正常上即可）";
+    }
+    const weak = kb
+      .prepare(
+        "SELECT knowledge_point_name FROM knowledge_point_progress WHERE course_name = ? AND level = 'needs_review' ORDER BY updated_at DESC LIMIT 5"
+      )
+      .all(courseTitle) as Array<{ knowledge_point_name?: string }>;
+    const parts = [
+      `### 上次掌握与教学建议（更新于 ${String(c?.mastery_updated_at ?? "").slice(0, 10) || "—"}；由「学习情况分析」任务产出）`,
+      `- 掌握档位：${MASTERY_LEVEL_CN[level] ?? level}`,
+    ];
+    const desc = String(c?.mastery_desc ?? "").trim();
+    if (desc) parts.push(`- 累计：${desc}`);
+    const advice = String(c?.teaching_advice ?? "").trim();
+    if (advice) parts.push(`- 下次建议：${advice}（教学方法仍以家长写的为准，建议只作增补）`);
+    const weakNames = weak.map((w) => String(w.knowledge_point_name ?? "")).filter(Boolean);
+    if (weakNames.length) parts.push(`- 待巩固知识点：${weakNames.join("、")}`);
+    return parts.join("\n");
+  } finally {
+    kb.close();
+  }
 }
 
 // ---------- 生活计划（孩子自建：增 / 查 / 改 / 删，与家长的 life 工具对称） ----------

@@ -14,7 +14,26 @@ interface CourseStatusLite {
   examRate: number;
   planReviewAt: string;
   focus: string[];
+  // ISSUE-135 P5：掌握闭环产出（空 = 还没评估过）
+  masteryLevel?: string;
+  masteryDesc?: string;
+  teachingAdvice?: string;
+  masteryUpdatedAt?: string;
 }
+
+/** 掌握档位中文与徽标配色（与 courses.mastery_level 同枚举）。 */
+const MASTERY_LEVEL_CN: Record<string, string> = {
+  not_started: "还没开始",
+  learning: "学习中",
+  needs_review: "待巩固",
+  mastered: "已掌握",
+};
+const MASTERY_LEVEL_COLOR: Record<string, string> = {
+  not_started: "#a0aec0",
+  learning: "#3182ce",
+  needs_review: "#d69e2e",
+  mastered: "#38a169",
+};
 
 /** 课程列表排序按钮样式。 */
 function sortBtn(active: boolean): CSSProperties {
@@ -295,7 +314,18 @@ export default function LearningDashboard({ childId }: Props) {
                 <span className="lesson-main">
                   <span className="lesson-title">{c.title}</span>
                   <span className="lesson-sub">
-                    {c.mastery && <span className="lesson-mastery">掌握度 {c.mastery}</span>}
+                    {(() => {
+                      const ml = courseStatusMap[c.title]?.masteryLevel;
+                      return ml ? (
+                        <span
+                          className="lesson-mastery"
+                          title={courseStatusMap[c.title]?.masteryDesc || ""}
+                          style={{ color: MASTERY_LEVEL_COLOR[ml] ?? "#666", fontWeight: 600 }}
+                        >
+                          {MASTERY_LEVEL_CN[ml] ?? ml}
+                        </span>
+                      ) : null;
+                    })()}
                     {rate != null && (
                       <span className={`lesson-exam ${rate < 0.7 ? "weak" : ""}`} title="历次考核逐题正确率">
                         🎯 考核 {Math.round(rate * 100)}%
