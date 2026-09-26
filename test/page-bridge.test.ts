@@ -5,6 +5,7 @@ import {
   genRequestId,
   injectBridge,
   PAGE_MSG_TYPES,
+  PIBRIDGE_SCRIPT,
 } from "../src/lib/page-bridge";
 import {
   formatPageEvent,
@@ -60,8 +61,16 @@ describe("injectBridge：桥脚本注入位置（不引入 quirks mode）", () =
     expect(out).toContain("<div>hello</div>");
   });
 
-  it("空字符串 → 只有桥脚本", () => {
-    expect(injectBridge("")).toBe(`<script>${BRIDGE_SCRIPT}</script>`);
+  it("空字符串 → init + 桥脚本 + PiBridge SDK（三块，且不带字号 init）", () => {
+    // 2026-09-25 修正：这条断言停在"只有桥脚本"的年代。MATERIAL-BRIDGE-PROTOCOL 之后
+    // injectBridge 注入的是三块：collect 开关 init + BRIDGE_SCRIPT（宿主桥）+ PIBRIDGE_SCRIPT
+    // （资料作者用的 PiBridge SDK）；matFontPx 未传时不带 __PI_MAT_FONT 那块。
+    expect(injectBridge("")).toBe(
+      `<script>window.__PI_CAPTURE_MANUAL=0;</script><script>${BRIDGE_SCRIPT}</script><script>${PIBRIDGE_SCRIPT}</script>`
+    );
+    // 注意：桥脚本**内部**会读 window.__PI_MAT_FONT（运行期字号），所以这里断言的是
+    // 「没有注入那段 font init」，而不是"整段文本不含这个字面量"。
+    expect(injectBridge("")).not.toMatch(/<script>window\.__PI_MAT_FONT=\d+;<\/script>/);
   });
 });
 
@@ -164,9 +173,15 @@ describe("BRIDGE_SCRIPT：桥脚本静态校验（安全 + 结构）", () => {
     expect(BRIDGE_SCRIPT).toContain('action === "read"');
   });
 
-  it("体积可控（< 13KB，超限提示优化）", () => {
-    const kb = BRIDGE_SCRIPT.length / 1024;
-    expect(kb).toBeLessThan(13);
+  it("体积可控（桥 < 15KB、桥+SDK 合计 < 18KB；超限提示优化）", () => {
+    // 2026-09-25 修正：原预算「BRIDGE_SCRIPT < 13KB」是**单脚本**时代的数（拆分前）。
+    // 现在每份资料页注入的是 BRIDGE_SCRIPT + PIBRIDGE_SCRIPT 两块（当前实测 13.54KB + 2.99KB
+    // = 16.53KB），所以按两块各留一点余量重设——它的作用仍是"涨到这里就该想想能不能瘦身"，
+    // 不是功能上限；资料页数量多，这两块是每页都要付的固定成本。
+    const bridgeKb = BRIDGE_SCRIPT.length / 1024;
+    const totalKb = (BRIDGE_SCRIPT.length + PIBRIDGE_SCRIPT.length) / 1024;
+    expect(bridgeKb).toBeLessThan(15);
+    expect(totalKb).toBeLessThan(18);
   });
 });
 

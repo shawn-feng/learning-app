@@ -123,14 +123,52 @@ export async function registerTestChild(
   profile: Record<string, unknown> = {}
 ): Promise<string> {
   const token = readTestToken(dataDir);
-  const res = await fetch(`${TEST_SERVER_URL}/api/v1/children`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ name, id: childId, profile }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${TEST_SERVER_URL}/api/v1/children`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name, id: childId, profile }),
+    });
+  } catch (err) {
+    // 连不上 ≠ 断言失败：这类测试需要本地服务端在跑（调用方应先用 isTestServerUp 探一次并 skip）
+    throw new Error(
+      `注册测试孩子失败：连不上本地服务端 ${TEST_SERVER_URL}（${(err as Error).message}）。` +
+        `这组是集成测试，请先启动服务端（server 目录 npm run dev / start），或让测试 skip。`
+    );
+  }
   if (!res.ok) {
     throw new Error(`注册测试孩子失败 (HTTP ${res.status}): ${await res.text()}`);
   }
   const data = (await res.json()) as { child?: { id?: string } };
   return data.child?.id ?? childId;
+}
+
+/** 列出测试家长名下的孩子（清理用）。 */
+export async function listTestChildren(
+  dataDir: string
+): Promise<Array<{ id: string; name?: string }>> {
+  const token = readTestToken(dataDir);
+  const res = await fetch(`${TEST_SERVER_URL}/api/v1/children`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`列出测试孩子失败 (HTTP ${res.status}): ${await res.text()}`);
+  const data = (await res.json()) as { children?: Array<{ id: string; name?: string }> };
+  return data.children ?? [];
+}
+
+/**
+ * 删掉服务端上的测试孩子（**清理残留**用）。
+ *
+ * 为什么需要：`POST /children` 有数量上限（当前 4 个），集成测试每跑一次就注册一个
+ * "sync-test"，跑几次就把名额占满 → 之后每次都以「孩子数量已达上限」失败（看起来像代码坏了）。
+ * 调用方应在注册前按名字清掉上次的残留，让这组测试可反复跑。
+ */
+export async function deleteTestChild(dataDir: string, childId: string): Promise<boolean> {
+  const token = readTestToken(dataDir);
+  const res = await fetch(`${TEST_SERVER_URL}/api/v1/children/${encodeURIComponent(childId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.ok;
 }

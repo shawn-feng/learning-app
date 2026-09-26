@@ -3,7 +3,9 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-// ISSUE-041 层 C：云端事件轮询配置（默认开启 2 分钟、保存钳制 1-60）
+// ISSUE-041 层 C：云端事件轮询配置。**2026-09-25 修正默认值断言**：
+// ISSUE-088 起云端消息交换（ISSUE-041 旧通道）已废弃、全走自建服务端，所以默认是**关闭**
+// （DEFAULT_EVENT_POLL_CONFIG.enabled=false，见 electron/lib/scheduler.ts），只是间隔默认仍是 2 分钟。
 import {
   getEventPollConfig,
   setEventPollConfig,
@@ -21,9 +23,9 @@ afterAll(() => {
 });
 
 describe("eventPoll 配置（scheduler-config.json 的 eventPoll 段）", () => {
-  it("默认：开启、2 分钟", () => {
+  it("默认：关闭（ISSUE-088 云端通道已废弃）、间隔 2 分钟", () => {
     const c = getEventPollConfig();
-    expect(c.enabled).toBe(true);
+    expect(c.enabled).toBe(false);
     expect(c.intervalMinutes).toBe(2);
   });
 

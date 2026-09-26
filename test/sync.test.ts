@@ -19,7 +19,7 @@ vi.mock("../electron/lib/config", async (importOriginal) => {
   };
 });
 
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -53,7 +53,27 @@ function scanChildFiles(dir: string): Array<{ path: string; hash: string; mtimeM
   return results;
 }
 
-describe("Phase 9: 同步管理器", () => {
+/**
+ * 这组是**集成测试**：它要在本地服务端 `127.0.0.1:8788` 上注册一个测试孩子（assertChildOwned 要求
+ * 归属 TEST_PARENT），服务端没跑就整组跳过——**不是失败**。
+ *
+ * 2026-09-25 修正：此前没起服务时 `registerTestChild` 在第一句 fetch 上抛错，整组被记为
+ * "Failed Suite"，看起来像代码坏了；其实它只是环境没到位。现在先探一次健康检查，
+ * 不通就 skip（并打一行说明），通了才跑，失败才是真失败。
+ */
+const SERVER_UP = await (async () => {
+  try {
+    const res = await fetch("http://127.0.0.1:8788/api/v1/health", { signal: AbortSignal.timeout(1500) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+})();
+if (!SERVER_UP) {
+  console.warn("[sync.test] 跳过：本地服务端 127.0.0.1:8788 未在运行（本组为集成测试，需先起服务端）");
+}
+
+describe.skipIf(!SERVER_UP)("Phase 9: 同步管理器", () => {
   const TEST_CHILD = {
     name: "sync-test",
     avatar: "🦊",
@@ -70,10 +90,17 @@ describe("Phase 9: 同步管理器", () => {
   const TEST_CHILD_ID = crypto.randomUUID();
 
   beforeAll(async () => {
-    const { writeTestLicense, registerTestChild, TEST_PARENT_ID } = await import("./helpers/server-token");
+    const { writeTestLicense, registerTestChild, listTestChildren, deleteTestChild, TEST_PARENT_ID } = await import(
+      "./helpers/server-token"
+    );
     const { initChildDirectory } = await import("../electron/lib/user-init");
     fs.mkdirSync(mockTmpRoot, { recursive: true });
     writeTestLicense(mockTmpRoot, TEST_PARENT_ID);
+    // 清掉上一次跑残留的同名测试孩子：`POST /children` 有数量上限（当前 4），
+    // 不清就会以「孩子数量已达上限」失败——那是名额被自己的残留占满，不是代码坏了。
+    for (const c of await listTestChildren(mockTmpRoot)) {
+      if (c.name === TEST_CHILD.name) await deleteTestChild(mockTmpRoot, c.id);
+    }
     // 服务端注册测试孩子（assertChildOwned 要求归属 TEST_PARENT）；本地建 profile.json + kb.sqlite
     await registerTestChild(mockTmpRoot, TEST_CHILD_ID, TEST_CHILD.name);
     await initChildDirectory(TEST_CHILD_ID, {
@@ -89,6 +116,17 @@ describe("Phase 9: 同步管理器", () => {
       aiPersonality: TEST_CHILD.aiPersonality,
       createdAt: new Date().toISOString(),
     });
+  });
+
+  // 收尾把本次注册的测试孩子删掉：不删就会每跑一次占掉一个孩子名额（上限 4），
+  // 下次虽会被 beforeAll 清掉，但运行期间的余额会越来越紧。删除失败不影响测试结论。
+  afterAll(async () => {
+    try {
+      const { deleteTestChild } = await import("./helpers/server-token");
+      await deleteTestChild(mockTmpRoot, TEST_CHILD_ID);
+    } catch {
+      /* 收尾失败忽略（beforeAll 下次也会清） */
+    }
   });
 
   it("scanChildFiles 扫描孩子目录中的文件（排除 .pi）", async () => {

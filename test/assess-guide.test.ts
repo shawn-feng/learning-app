@@ -24,15 +24,33 @@ import {
   ensureAssessGuideFile,
 } from "../electron/lib/assess-guide";
 
-// 与 exam-engine.ts L42 RECITATION_MARK_RE 保持一致（契约测试：若引擎正则改动此处需同步）。
-const RECITATION_MARK_RE = /原文背诵[^“”"\n]*?[：:][^\n]*?[“"]([^”"\n]+)[”"]/g;
-
-function extractRefs(md: string): string[] {
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
-  RECITATION_MARK_RE.lastIndex = 0;
-  while ((m = RECITATION_MARK_RE.exec(md)) !== null) out.push(m[1]);
-  return out;
+/**
+ * 从文档的「整课保存示例」段里抽出那份 JSON（agent 会照着抄，所以它必须始终可 parse）。
+ * 示例是**跨多行**的（`{"items":[` … `]}`），所以按花括号配平取整块，并正确跳过字符串里的引号/转义
+ * （示例里的 `scoring` 正是"JSON 字符串"，满是 `\"`）。
+ */
+function extractExampleJson(md: string): any {
+  const at = md.indexOf('{"items"');
+  if (at < 0) throw new Error("文档里找不到整课保存示例 JSON");
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = at; i < md.length; i++) {
+    const ch = md[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return JSON.parse(md.slice(at, i + 1));
+    }
+  }
+  throw new Error("整课保存示例 JSON 没有闭合");
 }
 
 describe("ISSUE-066 assess-guide：考核内容编写规范文档", () => {
@@ -46,24 +64,52 @@ describe("ISSUE-066 assess-guide：考核内容编写规范文档", () => {
     expect(fs.readFileSync(p, "utf-8")).toBe(COURSE_ASSESS_GUIDE_MD);
   });
 
-  it("文档背诵示例的「- 原文背诵：…“原文”」能被引擎同款正则提取标准原文", () => {
-    const refs = extractRefs(COURSE_ASSESS_GUIDE_MD);
-    expect(refs.length).toBeGreaterThan(0);
-    // 文档句法讲解含占位示例（“<要背的原文>”），真实示例行应能提取到论语原文
-    const real = refs.find((r) => r.includes("学而时习之"));
-    expect(real).toBeTruthy();
-    expect(real).not.toMatch(/[“”"]$/); // 提取结果不含引号本身
-    // 任一提取项都来自引号内（不带“原文背诵”提示词前缀）
-    for (const r of refs) expect(r).not.toContain("原文背诵");
+  // 2026-09-25 修正：原「原文背诵：…“原文”」正则契约测试已失效——那是**三段 markdown 考核要点**
+  // 时代的格式，引擎侧的 RECITATION_MARK_RE 已随知识点制删除（`courses.assess_rubric` 也废弃了）。
+  // 现在这份文档是**知识点制**（knowledgePoint + detail → questions，题级 behavior）的编写规范，
+  // 于是改钉两件对当下真正要紧的事：① 示例 JSON 必须可 parse、结构符合文档承诺（模型会照抄）；
+  // ② 关键契约（工具名/字段名/废弃声明）必须在文档里写明。
+  it("「整课保存示例」是可 parse 的 JSON，且结构与文档承诺一致（模型会照抄它）", () => {
+    const payload = extractExampleJson(COURSE_ASSESS_GUIDE_MD);
+    expect(Array.isArray(payload.items)).toBe(true);
+    expect(payload.items.length).toBeGreaterThan(0);
+    for (const item of payload.items) {
+      expect(typeof item.knowledgePoint).toBe("string");
+      expect(item.knowledgePoint.length).toBeGreaterThan(0);
+      // detail（考核要点）是知识点制的地基：文档明写"务必详细"，示例不能是空的
+      expect(typeof item.detail).toBe("string");
+      expect(item.detail.length).toBeGreaterThan(0);
+      expect(Array.isArray(item.questions)).toBe(true);
+      for (const q of item.questions) {
+        expect(typeof q.stem).toBe("string");
+        expect(typeof q.answer).toBe("string");
+      }
+    }
+    // 背诵题示例：题级 behavior 显式给 speech_recite，answer 是逐字原文（发音评测 refText）
+    const recite = payload.items.flatMap((i: any) => i.questions).find((q: any) => q.behavior === "speech_recite");
+    expect(recite).toBeTruthy();
+    expect(recite.answer).toContain("学而时习之");
+    // 口述题示例的 scoring 是**JSON 字符串**（文档要求的那种双重转义写法）——它也得能 parse
+    const generic = payload.items.flatMap((i: any) => i.questions).find((q: any) => q.scoring);
+    expect(generic).toBeTruthy();
+    const scoring = JSON.parse(generic.scoring);
+    expect(Array.isArray(scoring.dims)).toBe(true);
   });
 
-  it("文档含三部分骨架与关键约束（弯引号/不考背诵/对准真实资料）", () => {
-    expect(COURSE_ASSESS_GUIDE_MD).toContain("一、考核知识点");
-    expect(COURSE_ASSESS_GUIDE_MD).toContain("二、现成题目");
-    expect(COURSE_ASSESS_GUIDE_MD).toContain("三、评分标准");
-    expect(COURSE_ASSESS_GUIDE_MD).toContain("原文必须放在中文弯引号");
-    expect(COURSE_ASSESS_GUIDE_MD).toContain("不要编造原文");
-    expect(COURSE_ASSESS_GUIDE_MD).toContain("assessMethod");
-    expect(COURSE_ASSESS_GUIDE_MD).toContain("assessRubric");
+  it("文档含知识点制的关键契约（工具名 / 字段名 / 旧 rubric 已废弃 / 不编造）", () => {
+    const md = COURSE_ASSESS_GUIDE_MD;
+    // 工具面：主入口 + 方法设置 + 写前核对
+    for (const t of ["assess_content_save", "assess_method_set", "assess_knowledge_points_list", "assess_course_get"]) {
+      expect(md).toContain(t);
+    }
+    // 字段契约
+    for (const k of ["knowledgePoint", "detail", "behavior", "speech_recite", "speech_read", "requireText"]) {
+      expect(md).toContain(k);
+    }
+    // 旧字段已废弃（防止文档又把模型带回去写三段 markdown）
+    expect(md).toContain("assess_rubric");
+    expect(md).toMatch(/已废弃/);
+    // 写作纪律：不许编造原文
+    expect(md).toMatch(/不编造原文与知识点/);
   });
 });

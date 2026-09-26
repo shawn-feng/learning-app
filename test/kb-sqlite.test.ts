@@ -300,12 +300,24 @@ describe("写入（kb_insert / kb_update 后端函数）", () => {
 
   it("updateProgress：更新课程字段（含 tags），复习次数 +1 自增", () => {
     expect(updateProgress(tmpDir, { topic: "lunyu", item: "论语先进篇第十七章", field: "状态", value: "✅" })).toBe(true);
-    expect(updateProgress(tmpDir, { topic: "lunyu", item: "论语先进篇第十七章", field: "掌握度", value: "熟练" })).toBe(true);
     expect(updateProgress(tmpDir, { topic: "lunyu", item: "论语先进篇第十七章", field: "tags", value: "品格,坚持" })).toBe(true);
     expect(updateProgress(tmpDir, { topic: "lunyu", item: "论语先进篇第十七章", field: "复习次数", value: "+1" })).toBe(true);
     const p = queryTopicProgress(tmpDir, "lunyu");
-    expect(p[0].items[1]).toMatchObject({ status: "✅", mastery: "熟练", reviewCount: 1, tags: "品格,坚持" });
+    // mastery 自 2026-09-10 计划域起**恒为空串**（掌握度改由服务端 course_progress 视图取最近一次考核）
+    expect(p[0].items[1]).toMatchObject({ status: "✅", reviewCount: 1, tags: "品格,坚持", mastery: "" });
     expect(p[0].learned).toBe(2);
+  });
+
+  it("「掌握度」已更名为「掌握状态」（同 status 列）；旧名报错并列出合法字段", () => {
+    // 2026-09-25 修正：老测试用 field="掌握度" 写掌握度——该名字在 2026-09-10 计划域重构后
+    // 已从 COURSE_FIELD_MAP 移除（掌握度不再是本地字段，改看服务端最近一次考核）。
+    expect(() =>
+      updateProgress(tmpDir, { topic: "lunyu", item: "论语先进篇第十七章", field: "掌握度", value: "熟练" })
+    ).toThrow(/不支持/);
+    // 合法名「掌握状态」落 status 列（与「状态」同一列）
+    expect(updateProgress(tmpDir, { topic: "lunyu", item: "论语先进篇第十六章", field: "掌握状态", value: "熟练" })).toBe(true);
+    const item = queryTopicProgress(tmpDir, "lunyu")[0].items.find((i) => i.title === "论语先进篇第十六章")!;
+    expect(item.status).toBe("熟练");
   });
 
   it("updateProgress：frontmatter 字段（learned/next/updated）不再可手动更新", () => {
