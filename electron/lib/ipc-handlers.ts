@@ -1913,6 +1913,55 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("backup:config:set", (_e, cfg: any) => setBackupSchedulerConfig(cfg));
 
+  // ---- 学习主题打包导出 / 导入（2026-09-25 方案，服务端 topic-package.ts）----
+
+  // 导出预览：主题内容计数 + 资料文件清单（导出对话框打开时拉取）
+  ipcMain.handle("parent:exportPreview", async (_e, topicDir: string) => {
+    try {
+      const { fetchExportPreview } = await import("./topic-package");
+      const data = await fetchExportPreview(topicDir);
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 导出：弹保存框 → 服务端生成 .ltpkg → 落盘
+  ipcMain.handle("parent:exportTopic", async (e: IpcMainInvokeEvent, topicDir: string, files: string[], fileName: string) => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
+      const res = await dialog.showSaveDialog(win!, {
+        title: "导出学习主题包",
+        defaultPath: fileName,
+        filters: [{ name: "学习主题包", extensions: ["ltpkg", "zip"] }],
+      });
+      if (res.canceled || !res.filePath) return { success: false, canceled: true };
+      const { exportTopicPackage } = await import("./topic-package");
+      const r = await exportTopicPackage(topicDir, files || [], res.filePath);
+      return { success: true, file: r.file, bytes: r.bytes };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 导入：弹选择框 → 上传 .ltpkg → 返回导入报告
+  ipcMain.handle("parent:importTopic", async (e: IpcMainInvokeEvent) => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
+      const res = await dialog.showOpenDialog(win!, {
+        title: "选择学习主题包（.ltpkg）",
+        properties: ["openFile"],
+        filters: [{ name: "学习主题包", extensions: ["ltpkg", "zip"] }],
+      });
+      if (res.canceled || !res.filePaths[0]) return { success: false, canceled: true };
+      const { importTopicPackage } = await import("./topic-package");
+      const report = await importTopicPackage(res.filePaths[0]);
+      return { success: true, report };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ISSUE-041 层 C：云端事件轮询配置（设备级，默认开启 2 分钟）
   ipcMain.handle("eventpoll:config:get", () => getEventPollConfig());
   ipcMain.handle("eventpoll:config:set", (_e, cfg: any) => setEventPollConfig(cfg));

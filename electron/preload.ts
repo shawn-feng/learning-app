@@ -302,6 +302,12 @@ const api = {
   parentDeleteMaterial: (topicDir: string, relPath: string) =>
     ipcRenderer.invoke("parent:deleteMaterial", topicDir, relPath),
 
+  // 学习主题打包导出 / 导入（2026-09-25 方案）
+  parentExportPreview: (topicDir: string) => ipcRenderer.invoke("parent:exportPreview", topicDir),
+  parentExportTopic: (topicDir: string, files: string[], fileName: string) =>
+    ipcRenderer.invoke("parent:exportTopic", topicDir, files, fileName),
+  parentImportTopic: () => ipcRenderer.invoke("parent:importTopic"),
+
   // Scheduler config (per-child, managed in parent settings)
   schedulerConfigGet: () => ipcRenderer.invoke("scheduler:config:get"),
   schedulerConfigSet: (childId: string, config: any) =>

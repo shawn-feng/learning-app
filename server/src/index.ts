@@ -17,6 +17,7 @@ import { registerMaterialDocRoutes } from "./routes/materials-doc.js";
 import { registerFilesRoutes } from "./routes/files.js";
 import { registerFsRoutes } from "./routes/fs.js";
 import { registerBackupRoutes } from "./routes/backup.js";
+import { registerTopicPackageRoutes } from "./routes/topic-package.js";
 import { registerSessionsRoutes } from "./routes/sessions.js";
 import { registerAgentRoutes } from "./routes/agent.js";
 import { registerParentAgentRoutes } from "./routes/parent-agent.js";
@@ -60,7 +61,9 @@ app.addHook("onResponse", async (req, reply) => {
   }
 });
 
-void app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } });
+// fileSize 不设限（2026-09-26 用户拍板）：学习主题包要支持整包导入（千字文级别 ≈370MB）；
+// 主题包导入在 topic-package.ts 内自行做白名单/sha256 校验，材料上传沿用各自的业务限制。
+void app.register(multipart, { limits: { fileSize: Infinity } });
 
 registerVersionRoutes(app);
 registerHealthRoutes(app, { db });
@@ -73,6 +76,7 @@ registerMaterialDocRoutes(app, { config, db }); // Web 前端 Phase 0：文档�
 registerFilesRoutes(app, { config, db });
 registerFsRoutes(app, { config, db }); // ISSUE-131 P1：文件区网盘（双端文件管理）
 registerBackupRoutes(app, { config, db });
+registerTopicPackageRoutes(app, { config }); // 学习主题打包导出/导入（2026-09-25）
 registerSessionsRoutes(app, { config, db });
 registerAgentRoutes(app, { config, db });
 registerParentAgentRoutes(app, { config, db });

@@ -141,12 +141,14 @@ export async function serverFetchBinary(path: string, opts: ServerFetchOptions =
   const base = serverBase();
   const headers: Record<string, string> = {};
   if (opts.token) headers["Authorization"] = `Bearer ${opts.token}`;
+  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
 
   let res: Response;
   try {
     res = await fetch(`${base}/api/v1${path}`, {
       method: opts.method ?? "GET",
       headers,
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 60000),
     });
   } catch (e) {

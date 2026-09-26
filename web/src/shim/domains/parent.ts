@@ -113,6 +113,15 @@ export interface ParentTopic {
   htmlCount: number;
 }
 
+/** 服务端 404 = learning-server 版本过旧（无主题打包路由），翻译成可操作的话（与 electron 端 withServerHint 同语义）。 */
+function topicPkgServerHint(err: unknown): Error {
+  const e = err as { status?: number; message?: string };
+  if (e?.status === 404 || /not found/i.test(String(e?.message || ""))) {
+    return new Error("服务端还没有主题打包功能（learning-server 版本过旧）——请更新并重启服务端后重试");
+  }
+  return (err as Error) ?? new Error(String(err));
+}
+
 export const parentDomain = {
   /** parentListTopics: () => Promise<{ success; data?: ParentTopic[]; error? }>（topics+progress 来自服务端 parent_lib，html 计数来自 /materials/list） */
   parentListTopics: async (): Promise<{ success: boolean; data?: ParentTopic[]; error?: string }> => {
@@ -648,6 +657,64 @@ export const parentDomain = {
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
+    }
+  },
+
+  // ---- 学习主题打包导出 / 导入（2026-09-25 方案，对齐 electron/lib/topic-package.ts）----
+
+  /** parentExportPreview: (topicDir) => 预览（GET /parent-lib/export-topic/:key/preview：内容计数 + 资料清单） */
+  parentExportPreview: async (topicDir: string): Promise<{ success: boolean; data?: any; error?: string }> => {
+    try {
+      const data = await http(`/parent-lib/export-topic/${encodeURIComponent(topicDir)}/preview`);
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: topicPkgServerHint(err).message };
+    }
+  },
+
+  /** parentExportTopic: (topicDir, files, fileName) → POST zip 二进制 → Blob → a[download]（浏览器下载，落用户下载目录） */
+  parentExportTopic: async (
+    topicDir: string,
+    files: string[],
+    fileName: string
+  ): Promise<{ success: boolean; file?: string; bytes?: number; canceled?: boolean; error?: string }> => {
+    try {
+      const res = await http<Response>("/parent-lib/export-topic", {
+        method: "POST",
+        body: { topic_key: topicDir, files },
+        raw: true,
+        timeoutMs: 300000, // 带视频资料时传输可达百 MB 级
+      });
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      return { success: true, file: fileName, bytes: blob.size };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** parentImportTopic: () → 选 .ltpkg/.zip → POST /parent-lib/import-topic（multipart）→ 导入报告 */
+  parentImportTopic: async (): Promise<{ success: boolean; report?: any; canceled?: boolean; error?: string }> => {
+    try {
+      const [file] = await pickFiles({ accept: ".ltpkg,.zip" });
+      if (!file) return { success: false, canceled: true };
+      const r = await uploadMultipart<{ ok: boolean; error?: string } & Record<string, any>>(
+        "/parent-lib/import-topic",
+        file,
+        {},
+        { timeoutMs: 300000 }
+      );
+      if (!r || r.ok !== true) return { success: false, error: r?.error || "导入失败：服务端未确认" };
+      return { success: true, report: r };
+    } catch (err) {
+      return { success: false, error: topicPkgServerHint(err).message };
     }
   },
 };

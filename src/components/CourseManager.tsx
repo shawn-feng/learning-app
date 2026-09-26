@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { GraduationCap, BookText, FolderOpen, Plus, ClipboardCheck } from "lucide-react";
+import { GraduationCap, BookText, FolderOpen, Plus, ClipboardCheck, Package, Upload } from "lucide-react";
 import IconButton from "./IconButton";
 import TopicDetail from "./TopicDetail";
 import MaterialManagerModal from "./MaterialManagerModal";
+import TopicExportDialog from "./TopicExportDialog";
+import TopicImportDialog from "./TopicImportDialog";
 
 interface ParentTopic {
   name: string;
@@ -31,6 +33,8 @@ export default function CourseManager() {
   const [newTopic, setNewTopic] = useState({ name: "", topicKey: "" });
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [matTopic, setMatTopic] = useState<ParentTopic | null>(null);
+  const [exportTopic, setExportTopic] = useState<ParentTopic | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     refreshTopics();
@@ -95,6 +99,12 @@ export default function CourseManager() {
         >
           <Plus size={16} /> 新建主题
         </button>
+        <button
+          onClick={() => setImportOpen(true)}
+          style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", color: "#444", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+        >
+          <Upload size={14} /> 导入主题
+        </button>
       </div>
 
       {msg && (
@@ -140,12 +150,33 @@ export default function CourseManager() {
                 <CardBtn icon={ClipboardCheck} title="考核方法" onClick={() => setDetail({ topic: t, tab: "assessMethod" })} />
                 <CardBtn icon={BookText} title="课程详情" primary onClick={() => setDetail({ topic: t, tab: "course" })} />
                 <CardBtn icon={FolderOpen} title="学习资料管理" onClick={() => setMatTopic(t)} />
+                <CardBtn icon={Package} title="打包导出" onClick={() => setExportTopic(t)} />
               </div>
             </div>
           ))}
         </div>
       )}
       {matTopic && <MaterialManagerModal topicDir={matTopic.topicKey} topicName={matTopic.name} onClose={() => setMatTopic(null)} />}
+      {exportTopic && (
+        <TopicExportDialog
+          topic={{ name: exportTopic.name, topicKey: exportTopic.topicKey }}
+          onClose={() => setExportTopic(null)}
+          onDone={(m) => {
+            setExportTopic(null);
+            setMsg(m);
+          }}
+        />
+      )}
+      {importOpen && (
+        <TopicImportDialog
+          onClose={() => setImportOpen(false)}
+          onDone={(m) => {
+            setImportOpen(false);
+            refreshTopics();
+            setMsg(m);
+          }}
+        />
+      )}
     </div>
   );
 }
