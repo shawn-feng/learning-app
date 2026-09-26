@@ -1,16 +1,20 @@
 /**
- * KB P2（2026-09-27）：**陪学线路的推送通道**回归。
+ * KB P2 回归（2026-09-25 修订）：**条目 ↔ 课程绑定**与引用/展示白名单。
  *
- * P1 的两条路是「孩子问了才查」（`kb_lookup`，拉取）。P2 加的是第二条：**一进课条目就在手里**
- * （`courseContextBlock` 注入，推送）。推送比拉取更硬——模型会把它当成"家长已经定了的事"直接讲，
- * 所以这份测试的重心不是"能不能绑上"，而是**门是不是和拉取那条一样严**。
+ * ⚠️ 本轮变化：KB P2 原来的重头戏「**进课推送**」（`courseContextBlock` 把该课挂着的条目注入
+ * system prompt）已按用户决定取消 —— 一节准备材料 = 教学方法 + 教学文案，由 `parent_content`
+ * （type 缺省=lesson）在工具层一次读出，不再预加载条目。随之删除的是
+ * `listEntryBriefsForCourse`（推送读取器）与 `buildCourseKbLines`（推送渲染），本文件里那两段用例
+ * 也一并删除；`kb_entry_links` 本身保留——它是**家长侧的标注**（这条说法是给哪几节课准备的），
+ * 家长工具 `parent_kb_list` 会显示，绑定仍是"不是只写"的。
  *
- * 钉住四条性质：
- * 1. **三条绑定不变式**：课程真实存在 / 只能绑 `published` / 只能绑 `visibility='child'`；
- * 2. **读取时再门控一次**：绑上之后家长撤回或改回草稿，注入必须**立刻**跟着停
- *    （只看"绑定时校验过"等于只挡了第一秒）；
+ * 于是本文件现在钉住：
+ * 1. **三条绑定不变式**：课程真实存在 / 只能绑 `published` / 只能绑 `visibility='child'`
+ *    （保证标注始终对应"孩子此刻真能查到的条目"）；
+ * 2. 家长工具 `parent_kb_bind` 的可用性与报错质量（被拒要说清原因与下一步）；
  * 3. R-1 引用检查认识 `kb_entry_assets.path`，且**不套门控**（草稿条目的引用也算引用）；
- * 4. PDF 已进 `display_content` 白名单（P1 曾以"自定义 scheme 不保证渲染"为由拒绝，P2 实测推翻）。
+ * 4. PDF 已在 `display_content` 白名单里；
+ * 5. 孩子库没有任何 KB 表（五张表只在家长库）。
  */
 import { describe, expect, it, afterAll } from "vitest";
 import fs from "node:fs";
@@ -21,15 +25,12 @@ import { openKb } from "../server/src/db/kb";
 import { openParentLib } from "../server/src/db/parent-lib";
 import { materialsRoot } from "../server/src/db/materials";
 import {
-  KB_COURSE_LIMIT,
   bindEntryToCourse,
-  listEntryBriefsForCourse,
   listKbEntries,
   publishKbEntries,
   saveKbEntries,
 } from "../server/src/db/kb-entries";
 import { createParentKbTools, PARENT_KB_TOOL_NAMES } from "../server/src/agent/parent-kb-tools";
-import { buildCourseKbLines } from "../server/src/agent/session-registry";
 import { displayKindOf } from "../server/src/agent/display-tool";
 import { findMaterialReferences, type FsCtx } from "../server/src/routes/fs";
 
@@ -202,83 +203,9 @@ describe("KB P2：绑定三条不变式（bindEntryToCourse）", () => {
   });
 });
 
-describe("KB P2：注入读取（listEntryBriefsForCourse）——读取时**再门控一次**", () => {
-  it("绑上就能读到：带 title/summary/usage/资料与类型", () => {
-    const title = "注入-带资料";
-    const id = makeEntry(title, {
-      summary: "商朝人把占卜结果刻在龟甲上",
-      assets: ["preqin/media/甲骨文-卜辞拓片.jpg"],
-    });
-    lib.prepare("UPDATE kb_entries SET usage = ? WHERE id = ?").run("先给她看拓片，再讲占卜", id);
-    publishToChild(title);
-    bindEntryToCourse(lib, [id], { topic: "preqin", course: T1 });
-
-    const briefs = listEntryBriefsForCourse(lib, "preqin", T1, childId);
-    const hit = briefs.find((b) => b.id === id)!;
-    expect(hit.summary).toMatch(/龟甲/);
-    expect(hit.usage).toMatch(/拓片/);
-    expect(hit.assets.map((a) => a.path)).toEqual(["preqin/media/甲骨文-卜辞拓片.jpg"]);
-    expect(hit.assets[0].kind).toBe("图片");
-  });
-
-  it("资料类型从扩展名现算：视频（**不落库、不查字段**）", () => {
-    const title = "注入-视频";
-    const id = makeEntry(title, { assets: ["preqin/media/商朝青铜器.mp4"] });
-    publishToChild(title);
-    bindEntryToCourse(lib, [id], { topic: "preqin", course: T1 });
-    const hit = listEntryBriefsForCourse(lib, "preqin", T1, childId).find((b) => b.id === id)!;
-    expect(hit.assets[0].kind).toBe("视频");
-  });
-
-  it("**绑上之后家长撤回 → 注入立刻停**（这是「读时再门控」的核心用例）", () => {
-    const title = "注入-会被撤回";
-    const id = makeEntry(title);
-    publishToChild(title);
-    bindEntryToCourse(lib, [id], { topic: "preqin", course: T1 });
-    expect(listEntryBriefsForCourse(lib, "preqin", T1, childId).map((b) => b.id)).toContain(id);
-
-    publishKbEntries(lib, [title], "parent"); // 撤回：链接行不动
-    expect(linkRows(id)).toHaveLength(1); // 行还在——证明拦住它的**不是**行没了
-    expect(listEntryBriefsForCourse(lib, "preqin", T1, childId).map((b) => b.id)).not.toContain(id);
-  });
-
-  it("**绑上之后改说法 → 退回草稿 → 注入立刻停**（改 summary 的安全属性在推送这条路上同样生效）", () => {
-    const title = "注入-会被改写";
-    const id = makeEntry(title, { summary: "原来的说法" });
-    publishToChild(title);
-    bindEntryToCourse(lib, [id], { topic: "preqin", course: T1 });
-    expect(listEntryBriefsForCourse(lib, "preqin", T1, childId).map((b) => b.id)).toContain(id);
-
-    saveKbEntries(lib, dataDir, parentId, [{ id, title, summary: "被人悄悄改过的说法" }]);
-    expect(listEntryBriefsForCourse(lib, "preqin", T1, childId).map((b) => b.id)).not.toContain(id);
-  });
-
-  it("share 门控与 kb_lookup 同源：只给别的孩子看的条目，这个孩子注入不到", () => {
-    const title = "注入-share 限定";
-    const id = makeEntry(title, { share: otherChildId });
-    publishToChild(title);
-    bindEntryToCourse(lib, [id], { topic: "preqin", course: T1 });
-    expect(listEntryBriefsForCourse(lib, "preqin", T1, childId).map((b) => b.id)).not.toContain(id);
-    expect(listEntryBriefsForCourse(lib, "preqin", T1, otherChildId).map((b) => b.id)).toContain(id);
-  });
-
-  it("没绑过 / 课不存在 → 空数组（**绝不编造课程条目**）", () => {
-    expect(listEntryBriefsForCourse(lib, "preqin", "第九课 不存在", childId)).toEqual([]);
-    expect(listEntryBriefsForCourse(lib, "", T1, childId)).toEqual([]);
-  });
-
-  it(`一节课最多注入 ${KB_COURSE_LIMIT} 条（防御性上限，家长真挂 50 条也别把 prompt 撑爆）`, () => {
-    // 独占一节课，避免污染上面的用例
-    for (let i = 0; i < KB_COURSE_LIMIT + 3; i++) {
-      const title = `上限-${i}`;
-      const id = makeEntry(title);
-      publishToChild(title);
-      bindEntryToCourse(lib, [id], { topic: "preqin", course: "第二课 秦汉" });
-    }
-    const briefs = listEntryBriefsForCourse(lib, "preqin", "第二课 秦汉", childId);
-    expect(briefs.length).toBe(KB_COURSE_LIMIT);
-  });
-});
+// 推送读取（listEntryBriefsForCourse）的整段用例已随「推送取消」删除（2026-09-25）：
+// 它当时守的是「读取时再门控一次」（绑上之后家长撤回/改回草稿 → 注入立刻停）。
+// 现在孩子侧只有 kb_lookup 一条路，同一门控纪律由 test/kb-lookup-gate.test.ts 守。
 
 describe("KB P2：家长工具 parent_kb_bind", () => {
   const tools: any[] = createParentKbTools({ dataDir, parentId });
@@ -377,64 +304,10 @@ describe("KB P2：PDF 进展示白名单（P1 偏差② 撤回）", () => {
   });
 });
 
-describe("KB P2：进课注入的实际文本（buildCourseKbLines）", () => {
-  it("有绑定 → 段落标题带「回答以这些为准」+ 编号 + 说法 + 可展示路径 + 什么时候给她看", () => {
-    const C = "注入文本课";
-    lib.prepare("INSERT INTO courses (topic, title, sort_order) VALUES (?, ?, 9)").run("preqin", C);
-    const title = "注入文本-甲骨文";
-    const id = makeEntry(title, { summary: "商朝人把占卜结果刻在龟甲上", assets: ["preqin/media/甲骨文-卜辞拓片.jpg"] });
-    lib.prepare("UPDATE kb_entries SET usage = ? WHERE id = ?").run("先看拓片", id);
-    publishToChild(title);
-    bindEntryToCourse(lib, [id], { topic: "preqin", course: C });
-
-    const lines = buildCourseKbLines(lib, "preqin", C, childId);
-    expect(lines).toHaveLength(2);
-    expect(lines[0]).toContain("本课知识条目");
-    // P2.1 措辞：原来写「回答以这些为准」，实测里模型会理解成"被问到才引用"——
-    // 改成「讲到相关话题时以这些为准」并显式说明"不必主动一条条念"，把两种误读一次堵掉。
-    expect(lines[0]).toContain("讲到相关话题时以这些为准");
-    expect(lines[0]).toContain("不必主动一条条念");
-    expect(lines[0]).toContain("不许自己补");
-    const body = lines[1];
-    expect(body).toMatch(/^ {2}1\. /); // 编号 + 缩进（进 prompt 后与其它 "- 字段" 区分开）
-    expect(body).toContain(title);
-    expect(body).toContain("龟甲");
-    expect(body).toContain("什么时候给她看：先看拓片");
-    expect(body).toContain("可展示：preqin/media/甲骨文-卜辞拓片.jpg（图片）");
-  });
-
-  it("没绑过 → 空数组（**不产生一个空段落**污染 prompt）", () => {
-    lib.prepare("INSERT INTO courses (topic, title, sort_order) VALUES (?, ?, 10)").run("preqin", "没有条目的课");
-    expect(buildCourseKbLines(lib, "preqin", "没有条目的课", childId)).toEqual([]);
-  });
-
-  it("说法过长 → 截到 300 字带省略号（预算纪律，长内容留在条目里让 kb_lookup 取）", () => {
-    const C = "超长说法课";
-    lib.prepare("INSERT INTO courses (topic, title, sort_order) VALUES (?, ?, 11)").run("preqin", C);
-    const title = "注入文本-超长";
-    const id = makeEntry(title, { summary: "甲".repeat(500) });
-    publishToChild(title);
-    bindEntryToCourse(lib, [id], { topic: "preqin", course: C });
-    const body = buildCourseKbLines(lib, "preqin", C, childId)[1];
-    expect(body).toContain("…");
-    expect(body.length).toBeLessThan(360);
-    expect(body).not.toContain("甲".repeat(301));
-  });
-
-  it("只有资料没有说法的条目也能注入（材料类条目的 value 全在资产上）", () => {
-    const C = "只有资料的课";
-    lib.prepare("INSERT INTO courses (topic, title, sort_order) VALUES (?, ?, 12)").run("preqin", C);
-    const title = "注入文本-只有资料";
-    const id = makeEntry(title, { summary: "", assets: ["preqin/media/商朝青铜器.mp4"] });
-    publishToChild(title);
-    bindEntryToCourse(lib, [id], { topic: "preqin", course: C });
-    const lines = buildCourseKbLines(lib, "preqin", C, childId);
-    expect(lines).toHaveLength(2);
-    expect(lines[1]).toContain(title);
-    expect(lines[1]).toContain("商朝青铜器.mp4（视频）");
-    expect(lines[1]).not.toContain(" — "); // 没说法就不留一个空破折号
-  });
-});
+// 进课注入文本（buildCourseKbLines）的整段用例已随「推送取消」删除（2026-09-25）：
+// 那段守的是「推送该怎么渲染」（300 字截断 / 编号缩进 / 带可展示路径 / 只有资料也能注入）。
+// 现在这节课的材料由 parent_content（type=lesson）在工具层读出，渲染规格见
+// test/parent-content-lesson.test.ts。
 
 describe("KB P2：孩子库一行都没动", () => {
   it("kb_entry_links 等五张表只在家长库（孩子库不该出现它们）", () => {

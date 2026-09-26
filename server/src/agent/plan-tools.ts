@@ -142,35 +142,38 @@ export function resolveTopicKey(lib: DatabaseSync, topic: string): string {
 export function createParentContentTool(deps: PlanToolsDeps) {
   return defineTool({
     name: "parent_content",
-    label: "查主题教学方法 / 课程教学文案 / html 资料路径（家长库）",
+    label: "取一节课程的准备材料（家长库）",
     description:
-      "从家长库读取当前主题的教学方法全文、某课程的教学文案、考核要点、或 html 学习资料路径。\n" +
-      "孩子数据库不存 method 与教学文案（分配主题时只拷贝课程骨架/进度/资料指针），所以**教学需要方法、文案或 html 资料路径、考核需要要点时，必须先调本工具**，不要尝试读孩子库或猜测。\n" +
-      "- type=method：取主题教学方法全文，传 `topic`（主题目录名 lunyu 或中文名）。\n" +
-      "- type=teachingCopy：取课程教学文案，传 `topic` + `course`（课程名）。\n" +
-      "- type=assessRubric：取课程考核要点，传 `topic` + `course`。\n" +
-      "- type=htmlPath：取课程 html 资料相对路径（拿到后用 display_content 展示，path 传该路径），传 `topic` + `course`。",
+      "从家长库读取**这节课的准备材料**。\n" +
+      "孩子数据库不存 method 与教学文案（分配主题时只拷贝课程骨架/进度/资料指针），所以**教学、考核前必须先调本工具**，不要读孩子库、也不要猜。\n" +
+      "- type=lesson（**缺省，准备一节课就用它**）：一次拿全——主题教学方法 + 该课教学文案 + 考核要点 + html 资料路径。**不要为了上课分四次调用**。\n" +
+      "- type=method / teachingCopy / assessRubric / htmlPath：只取其中一项（补读、单独核对时用）。\n" +
+      "拿到 html 资料路径后用 `display_content` 展示（path 传该路径）。",
     parameters: Type.Object({
-      type: Type.String({ description: "method | teachingCopy | assessRubric | htmlPath" }),
+      type: Type.Optional(
+        Type.String({ description: "lesson（缺省，一次拿全）| method | teachingCopy | assessRubric | htmlPath" })
+      ),
       topic: Type.String({ description: "主题目录名（如 lunyu）或中文名" }),
-      course: Type.Optional(Type.String({ description: "teachingCopy / assessRubric / htmlPath 必填：课程名" })),
+      course: Type.Optional(
+        Type.String({ description: "课程名。type=lesson 与 teachingCopy / assessRubric / htmlPath 必填" })
+      ),
     }),
     execute: async (_tc, params) => {
-      const type = String(params?.type ?? "");
+      const type = String(params?.type ?? "lesson").trim() || "lesson";
       const topic = String(params?.topic ?? "").trim();
-      if (!["method", "teachingCopy", "assessRubric", "htmlPath"].includes(type)) {
-        throw new Error("parent_content 的 type 仅支持 method | teachingCopy | assessRubric | htmlPath");
+      if (!["lesson", "method", "teachingCopy", "assessRubric", "htmlPath"].includes(type)) {
+        throw new Error("parent_content 的 type 仅支持 lesson | method | teachingCopy | assessRubric | htmlPath");
       }
       if (!topic) throw new Error("parent_content 需要 topic（主题目录名或中文名）");
       const lib = openParentLib(deps.dataDir, deps.parentId);
       try {
+        const methodRow = lib
+          .prepare("SELECT name, method FROM topics WHERE topic_key = ? OR name = ? LIMIT 1")
+          .get(topic, topic) as { name?: string; method?: string } | undefined;
         if (type === "method") {
-          const row = lib
-            .prepare("SELECT name, method FROM topics WHERE topic_key = ? OR name = ? LIMIT 1")
-            .get(topic, topic) as { name?: string; method?: string } | undefined;
-          if (!row) throw new Error(`家长库中未找到主题「${topic}」（可能未分配或主题名有差异）。`);
-          if (!row.method?.trim()) throw new Error(`主题「${row.name ?? topic}」在家长库尚未填写教学方法。`);
-          return { content: [{ type: "text" as const, text: row.method }], details: {} };
+          if (!methodRow) throw new Error(`家长库中未找到主题「${topic}」（可能未分配或主题名有差异）。`);
+          if (!methodRow.method?.trim()) throw new Error(`主题「${methodRow.name ?? topic}」在家长库尚未填写教学方法。`);
+          return { content: [{ type: "text" as const, text: methodRow.method }], details: {} };
         }
 
         const course = String(params?.course ?? "").trim();
@@ -188,6 +191,29 @@ export function createParentContentTool(deps: PlanToolsDeps) {
             `家长库中未找到课程「${course}」（主题 ${topicKey}）。请先用 kb_query(query=progress + topic + listOnly) 列出该主题的准确课程标题。`
           );
         }
+
+        // 一次拿全：准备一节课（教法 + 文案 + 考核要点 + 资料路径）。
+        // 缺项**不抛错**——上课不该因为家长少填一段就卡住；逐项写明"未填写"，让模型知道哪些是家长没给的
+        // （而不是它没读到），缺项处按常识组织、但不得编造具体数字/人名/引文。
+        if (type === "lesson") {
+          const method = methodRow?.method?.trim();
+          const copy = row.teaching_copy?.trim();
+          const rubric = row.assess_rubric?.trim();
+          const html = row.html_path?.trim();
+          const blocks = [
+            `## 课程：${row.title ?? course}（主题 ${topicKey}${methodRow?.name && methodRow.name !== topicKey ? ` / ${methodRow.name}` : ""}）`,
+            "### 教学方法（本主题：这节课怎么上）",
+            method || "（家长未填写教学方法——按你自己的教学常识组织，但不要编造具体数字、人名、引文）",
+            "### 教学文案（这节课讲什么）",
+            copy || "（家长未填写教学文案——按教学方法与本课资料组织）",
+            "### 考核要点（怎样算通过）",
+            rubric || "（家长未填写考核要点——按教学文案里的关键点判定，讲全即通过）",
+            "### 学习资料（可展示）",
+            html ? `${html}\n（用 display_content 展示，path 传上面这个路径）` : "（本课未登记 html 学习资料）",
+          ];
+          return { content: [{ type: "text" as const, text: blocks.join("\n") }], details: {} };
+        }
+
         if (type === "teachingCopy") {
           const v = row.teaching_copy?.trim();
           if (!v) throw new Error(`课程「${course}」尚未填写教学文案。`);

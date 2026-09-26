@@ -719,11 +719,9 @@ export function withdrawStamp(lib: DatabaseSync, sinceDays = 14): string {
 /**
  * 门控 SQL：安全过滤真源，**不靠提示词**。`?` = childId。
  *
- * 两个使用者共用它，这不是巧合而是硬要求：
- * - `searchKbForChild`（孩子主动问 → 拉取）
- * - `listEntryBriefsForCourse`（进课注入 → 推送）
- * 两条路都必须只放行同一批条目。**推送比拉取更危险**：拉取至少还经过一次提问，
- * 推送是会话一开始就塞进 system prompt，模型会当成"家长已经定了的事"直接讲。
+ * 2026-09-25 起孩子侧只走一条路：`searchKbForChild`（`kb_lookup`，孩子主动问 → 拉取）。
+ * （原第二条路 `listEntryBriefsForCourse`「进课注入 → 推送」已按用户决定取消。）
+ * 凡是能把条目内容送到孩子面前的地方，都必须用这一处门控——**不要另写过滤条件**。
  */
 const GATED_WHERE = "status = 'published' AND visibility = 'child' AND (share = 'all' OR share = ?)";
 
@@ -742,15 +740,16 @@ export interface KbBindResult {
  * 把条目挂到某节课上 / 从课上摘下来。
  *
  * **三条不变式**（都在这里强制，不靠模型自觉）：
- * 1. 课程**必须真实存在**（`courses(topic, title)`）——否则条目挂在一节永远进不来的课上，
- *    家长以为配好了，上课时什么都没发生；
+ * 1. 课程**必须真实存在**（`courses(topic, title)`）——否则条目挂在一节不存在的课上，
+ *    家长以为配好了，回头查绑定列表才发现挂空；
  * 2. 只能挂 `status = 'published'`；
  * 3. 只能挂 `visibility = 'child'`。
  *
- * 2/3 的理由是**同一条**：`kb_entry_links` 是一条**注入通道**——挂上的条目会在会话建立那一刻
- * 被拼进 system prompt，成为「回答以这些为准」。草稿、或"审过了但先不给她看"的条目一旦被挂上，
- * 就等于绕开 `GATED_WHERE`，把家长没确认过的话直接送进课堂。
- * **门控只有一处真源：能进 prompt 的，必须和能进 `kb_lookup` 的是同一批。**
+ * ⚠️ 2026-09-25 起 `kb_entry_links` **不再是一条注入通道**（KB P2 的「进课推送」已按用户决定取消：
+ * 一节准备材料 = 教学方法 + 教学文案，由 `parent_content` 在工具层读出）。绑定现在的作用是
+ * **家长侧的标注**：这条说法是给哪几节课准备的，可查、可摘。孩子侧的内容一律走 `kb_lookup`
+ * （`GATED_WHERE` 那一处真源）。2/3 两条不变式保留，是为了让这份标注始终对应"孩子此刻真能查到的条目"，
+ * 免得出现"挂着的其实是草稿/不给她看的"这种误导。
  */
 export function bindEntryToCourse(
   lib: DatabaseSync,
@@ -823,69 +822,24 @@ export function bindEntryToCourse(
   return out;
 }
 
-export interface KbCourseEntryBrief {
-  id: string;
-  title: string;
-  summary: string;
-  usage: string;
-  seq: number;
-  assets: Array<{ path: string; title: string; kind: string }>;
-}
+// KbCourseEntryBrief（推送用的「该课条目摘要」形状）随推取消一并删除（2026-09-25）。
 
-/** 一节课最多注入几条条目（防御性上限：家长真挂了 50 条也别把 system prompt 撑爆） */
+/**
+ * 一节课最多可挂几条条目（`kb_entry_links` 的防御性上限，防止家长一次挂几十条把绑定列表撑爆）。
+ *
+ * ⚠️ 2026-09-25：它原来同时是「进课注入」的条数上限；**推送已按用户决定取消**（一节准备材料 =
+ * 教学方法 + 教学文案，由 `parent_content` 在工具层一次读出），现在只是绑定列表的长度上限。
+ */
 export const KB_COURSE_LIMIT = 8;
 
 /**
  * 某节课挂着的条目（**只返回孩子此刻真能查到的那些**）。
  *
- * 为什么这里必须**再门控一次**、不能只信"绑定时校验过"：绑定之后家长随时可能
- * 把条目**撤回**（`visibility` 回到 `parent`），或**改回草稿**（改了 `summary` 会自动退回草稿）。
- * 那时 `kb_entry_links` 的行还在——**注入必须在读的时候再判一次**，
- * 否则「绑定时只能绑已发布」这道门只挡住了第一秒，之后句句失效。
- * 门控条件与 `kb_lookup` 用的是同一个 `GATED_WHERE`（同一处真源）。
+ * ⚠️ 2026-09-25：本函数是 KB P2「推送」的读取器，随推送取消已删除。
+ * 保留这条注释是为了记住当初的门控纪律（**读取时再判一次**，不能只信绑定时校验过：
+ * 绑定之后家长随时可能撤回条目或改回草稿，而 `kb_entry_links` 的行还在）。
+ * 现在孩子侧只有一条检索路：`kb_lookup`（`searchKbForChild`，同样用 `GATED_WHERE`）。
  */
-export function listEntryBriefsForCourse(
-  lib: DatabaseSync,
-  topic: string,
-  course: string,
-  childId: string,
-  limit = KB_COURSE_LIMIT
-): KbCourseEntryBrief[] {
-  const t = String(topic ?? "").trim();
-  const c = String(course ?? "").trim();
-  if (!t || !c) return [];
-  const rows = lib
-    .prepare(
-      `SELECT e.id, e.title, e.summary, e.usage, l.seq
-       FROM kb_entry_links l JOIN kb_entries e ON e.id = l.entry_id
-       WHERE l.topic = ? AND l.course = ? AND ${GATED_WHERE}
-       ORDER BY l.seq, e.title
-       LIMIT ${Math.max(1, Math.min(Number(limit) || KB_COURSE_LIMIT, 50))}`
-    )
-    .all(t, c, childId) as Array<Record<string, unknown>>;
-  if (!rows.length) return [];
-
-  const ids = rows.map((r) => String(r.id));
-  const ph = ids.map(() => "?").join(",");
-  const assetRows = lib
-    .prepare(`SELECT entry_id, path, title FROM kb_entry_assets WHERE entry_id IN (${ph}) ORDER BY seq, path`)
-    .all(...ids) as Array<{ entry_id: string; path: string; title: string }>;
-  const byEntry = new Map<string, Array<{ path: string; title: string; kind: string }>>();
-  for (const a of assetRows) {
-    const list = byEntry.get(a.entry_id) ?? [];
-    list.push({ path: a.path, title: a.title ?? "", kind: zhAssetKind(a.path) });
-    byEntry.set(a.entry_id, list);
-  }
-
-  return rows.map((r) => ({
-    id: String(r.id),
-    title: String(r.title),
-    summary: String(r.summary ?? ""),
-    usage: String(r.usage ?? ""),
-    seq: Number(r.seq ?? 0),
-    assets: byEntry.get(String(r.id)) ?? [],
-  }));
-}
 
 // ==================== 检索（孩子侧唯一入口） ====================
 
