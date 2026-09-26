@@ -14,8 +14,8 @@
  *  - 仅 401/403（登录态失效）终止并回调 onError → 上层发 pi:reply_error/pi:reply_end；
  *  - 轮末缓冲：assistant 的 message_end 只累积文本，turn_end/agent_end 才逐条发 pi:reply
  *    （保证工具调用轮的工具卡片不被渲染层 workingIdRef 转正丢弃，2026-09-13 修复语义）；
- *  - 场景台词收集器：scene 会话与主会话共用同一条孩子流，scene:reply* 由收集器在本轮
- *    结束时回发（ipc-handlers.ts sceneCollectors/routeSceneEvent 语义）。
+ *  - 会话收敛（2026-09-25）：一个孩子只有一条主会话（不再有 scene/course 子会话），
+ *    场景台词收集器随场景会话一起删除。
  *
  * 与 Electron 的差异（如实声明）：
  *  - caps 传 "material-panel,mic"（Electron 传 "material-panel"；Web 同样有资料面板与麦克风，
@@ -25,7 +25,6 @@
 import { apiUrl, getStoredToken } from "./server-fetch";
 import { eventBus } from "./event-bus";
 
-export type AgentKind = "main" | "scene" | `course:${string}`;
 export type ParentKind = "parent" | "parent-content";
 
 /** 服务端 SSE 事件（id 用于 Last-Event-ID 重放配对）。 */
@@ -39,14 +38,6 @@ export interface AgentEvent {
 export interface RendererEvent {
   channel: string;
   payload: any;
-}
-
-/** 场景台词收集器（ipc-handlers.ts sceneCollectors 元素签名）。 */
-export interface SceneCollector {
-  onSay: (speaker: string, text: string) => void;
-  onText: (text: string) => void;
-  onEnd: () => void;
-  onError: (err: string) => void;
 }
 
 const TOOL_PREVIEW_LIMIT = 200;
@@ -104,12 +95,9 @@ export function previewToolResult(result: unknown): string | undefined {
 /**
  * 把一条服务端 agent 事件翻译成渲染层通道消息（纯函数；server-agent-client.ts 逐行移植）。
  * 通道名与载荷保持与 Electron 客户端一致，渲染层零改动。
+ * （原第三参 `kind` 只用于区分 main/scene/course，会话收敛 2026-09-25 后删除。）
  */
-export function translateAgentEvent(
-  e: AgentEvent,
-  childId: string,
-  kind: AgentKind | ParentKind
-): RendererEvent | null {
+export function translateAgentEvent(e: AgentEvent, childId: string): RendererEvent | null {
   switch (e.type) {
     case "text_delta":
       return { channel: "pi:streaming", payload: { childId, delta: String(e.data?.delta ?? "") } };
@@ -162,7 +150,7 @@ export function translateAgentEvent(
       // 同样不做路径改写/落盘（正文 content 已内联），Web 无需等价处理。
       return { channel: "pi:display_content", payload: { childId, ...(e.data ?? {}) } };
     case "page_cmd":
-      // 服务端受控下行指令（scene_command / page_action / page_inspect 的统一通道）：
+      // 服务端受控下行指令（page_action / page_inspect 的统一通道）：
       // 翻译回渲染层既有 pi:page:exec 通道（Learn.handlePageExec 据此执行并回执）。
       return {
         channel: "pi:page:exec",
@@ -231,39 +219,10 @@ export function contentThinking(content: unknown[]): string {
   return t.trim();
 }
 
-function safeJson(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return undefined;
-  }
-}
+// safeJson（原先只有场景台词提取在用）已随场景会话下线删除（2026-09-25）。
 
-/**
- * 从场景会话的 assistant 消息里提取「角色台词」（scene_command say）+ 兜底正文。
- * 与本地 scene:prompt 的台词清洗规则一致：本轮有 say 台词 → 聊天只显示台词（与 HTML 字幕同文，
- * 前缀角色名首字母大写）；无 say → 才显示 assistant 正文。
- */
-export function extractSceneLines(message: any): { lines: Array<{ speaker: string; text: string }>; texts: string[] } {
-  const lines: Array<{ speaker: string; text: string }> = [];
-  const texts: string[] = [];
-  if (!message || !Array.isArray(message.content)) return { lines, texts };
-  for (const c of message.content) {
-    if (!c) continue;
-    if (c.type === "text" && typeof c.text === "string" && c.text.trim()) {
-      texts.push(c.text.trim());
-    } else if (c.type === "toolCall" && c.name === "scene_command") {
-      const args = typeof c.arguments === "string" ? safeJson(c.arguments) : c.arguments;
-      const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-      if (a.command === "say" && typeof a.text === "string" && a.text.trim()) {
-        const cid = String(a.character || "").trim();
-        const speaker = cid ? cid.charAt(0).toUpperCase() + cid.slice(1) + ":" : "";
-        lines.push({ speaker, text: a.text.trim() });
-      }
-    }
-  }
-  return { lines, texts };
-}
+// extractSceneLines / 场景台词收集器（addSceneCollector / removeSceneCollector / routeSceneEvent）
+// 已随场景会话下线删除（2026-09-25）：不再有独立 scene 会话，也就没有「台词回发」这条链路。
 
 // ---------------------------------------------------------------------------
 // 轮末缓冲（bridgeAgentEventCore 核心，server-agent-client.ts:571-637 移植）
@@ -305,7 +264,7 @@ function bridgeAgentEventCore(e: AgentEvent, childId: string, bufferKey: string)
   // 新轮开始：清空残留缓冲（上轮异常中断未 flush 的内容不带入本轮）
   if (e.type === "user_message") turnTextBuffers.delete(bufferKey);
 
-  const base = translateAgentEvent(e, childId, "main");
+  const base = translateAgentEvent(e, childId);
   // 注意：message_end 的翻译结果（pi:message_end）也要发——但 pi:reply 的回发已推迟到
   // turn_end（见 turnTextBuffers），这里其余事件照常转发。
   if (base && e.type !== "message_end") send(base.channel, base.payload);
@@ -345,42 +304,6 @@ function bridgeChildAgentEvents(e: AgentEvent, childId: string): void {
 /** 家长侧桥（childId 语义用 "parent" / "parent-content" 表示会话，供前端路由）。 */
 function bridgeParentAgentEvents(e: AgentEvent, kind: ParentKind): void {
   bridgeAgentEventCore(e, kind, `parent:${kind}`);
-}
-
-// ---------------------------------------------------------------------------
-// 场景台词收集器（ipc-handlers.ts:114-127 + scene:prompt 的挂载/摘除，语义移植）
-// ---------------------------------------------------------------------------
-
-const sceneCollectors = new Map<string, SceneCollector[]>();
-
-function routeSceneEvent(childId: string, e: { type: string; data: any }): void {
-  const collectors = sceneCollectors.get(childId);
-  if (!collectors?.length) return;
-  if (e.type === "message_end") {
-    const { lines, texts } = extractSceneLines(e.data?.message);
-    for (const l of lines) for (const c of collectors) c.onSay(l.speaker, l.text);
-    if (!lines.length) for (const t of texts) for (const c of collectors) c.onText(t);
-  } else if (e.type === "turn_end" || e.type === "agent_end") {
-    for (const c of collectors) c.onEnd();
-  } else if (e.type === "error") {
-    for (const c of collectors) c.onError(String(e.data?.message ?? "未知错误"));
-  }
-}
-
-/** 挂载场景收集器（scenePrompt 期间；流上的 message_end/turn_end/error 会派发进来）。 */
-export function addSceneCollector(childId: string, collector: SceneCollector): void {
-  const arr = sceneCollectors.get(childId) ?? [];
-  arr.push(collector);
-  sceneCollectors.set(childId, arr);
-}
-
-/** 摘除场景收集器（scenePrompt 的 finally；ipc-handlers.ts:1375-1381 同款防漏逻辑）。 */
-export function removeSceneCollector(childId: string, collector: SceneCollector): void {
-  const a2 = sceneCollectors.get(childId) ?? [];
-  const i = a2.indexOf(collector);
-  if (i >= 0) a2.splice(i, 1);
-  if (a2.length) sceneCollectors.set(childId, a2);
-  else sceneCollectors.delete(childId);
 }
 
 // ---------------------------------------------------------------------------
@@ -539,7 +462,7 @@ const CHILD_STREAM_CAPS = "material-panel,mic";
 
 /**
  * 订阅某孩子的服务端 agent 事件流（懒建；同一 childId 复用，永久失败/关闭后重建）。
- * 事件经 bridgeChildAgentEvents（pi:* 通道 + 轮末缓冲）与 routeSceneEvent（场景收集器）派发。
+ * 事件经 bridgeChildAgentEvents（pi:* 通道 + 轮末缓冲）派发。
  * 永久失败（401/403）时发 pi:reply_error + pi:reply_end（渲染层弹错误气泡并解禁忙碌态）。
  */
 export function ensureChildStream(childId: string): void {
@@ -556,12 +479,10 @@ export function ensureChildStream(childId: string): void {
         )}&token=${encodeURIComponent(sessionToken())}`,
       (e) => {
         bridgeChildAgentEvents(e, childId);
-        routeSceneEvent(childId, e);
       },
       (err) => {
         send("pi:reply_error", { childId, error: err });
         send("pi:reply_end", { childId });
-        for (const c of sceneCollectors.get(childId) ?? []) c.onError(err);
       }
     )
   );
@@ -614,5 +535,4 @@ export function closeAllSseStreams(): void {
   for (const h of agentStreams.values()) h.close();
   agentStreams.clear();
   turnTextBuffers.clear();
-  sceneCollectors.clear();
 }

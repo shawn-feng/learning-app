@@ -45,7 +45,6 @@ const tools: any[] = [
   createSummarizeConversationTool({ db, dataDir, parentId: PID, childId: CID }),
   pageTools.pageActionTool,
   pageTools.pageInspectTool,
-  pageTools.sceneCommandTool,
 ];
 
 const byName = new Map<string, any>(tools.map((t) => [t.name, t]));
@@ -138,7 +137,7 @@ await run("summarize_conversation", { date: TODAY }, (t) => t.includes("已总�
 console.log("\n== D. page_*（无客户端面板在线 → 预期可理解的超时报错） ==");
 await run("page_inspect", {}, (t) => t.includes("无响应") || t.includes("超时") || t.includes("未响应"), "快照（预期超时）");
 await run("page_action", { action: "read" }, (t) => t.includes("无响应") || t.includes("超时") || t.includes("未响应"), "操作（预期超时）");
-await run("scene_command", { command: "say", character: "steve", text: "test" }, (t) => t.includes("失败") || t.includes("无响应") || t.includes("超时"), "场景指令（预期超时）");
+// scene_command 已随场景会话下线删除（2026-09-25）
 
 db.close();
 

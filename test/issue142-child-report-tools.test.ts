@@ -257,9 +257,9 @@ describe("ISSUE-142 child_mistake_log(list) 返回补关联字段", () => {
   });
 });
 
-describe("ISSUE-142 装配层：通用读写撤掉、场景专用工具就位", () => {
-  it("孩子主会话工具面不含 child_db_describe / read / write，含三个新报告工具", () => {
-    const names = computeChildToolNames({ materialPanel: true }, "main");
+describe("ISSUE-142 装配层：通用读写撤掉、报告工具就位", () => {
+  it("孩子会话工具面不含 child_db_describe / read / write，含三个新报告工具", () => {
+    const names = computeChildToolNames({ materialPanel: true });
     expect(names).not.toContain("child_db_describe");
     expect(names).not.toContain("child_db_read");
     expect(names).not.toContain("child_db_write");
@@ -274,8 +274,10 @@ describe("ISSUE-142 装配层：通用读写撤掉、场景专用工具就位", 
     expect(created.sort()).toEqual([...CHILD_REPORT_TOOL_NAMES].sort());
   });
 
-  it("英语场景会话仍是极窄工具面（不因本次改动被放宽）", () => {
-    const scene = computeChildToolNames({ materialPanel: true }, "scene");
-    expect(scene).toEqual(["display_content", "scene_command", "get_date"]);
+  // 「英语场景会话是极窄工具面」的断言已随场景会话下线删除（2026-09-25）：现在只剩一种会话形态，
+  // 场景演出工具 scene_command 也已从工具面移除（见 server/src/agent/page-tools.ts）。
+  it("scene_command 已不在任何会话的工具面里（场景会话下线）", () => {
+    expect(computeChildToolNames({ materialPanel: true })).not.toContain("scene_command");
+    expect(computeChildToolNames({ materialPanel: false })).not.toContain("scene_command");
   });
 });

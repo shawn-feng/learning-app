@@ -5,12 +5,12 @@ import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildP
 import { getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
 import { startConfigSync, stopConfigSync } from "./config-sync";
-import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, openChildSession, openParentSession, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, extractSceneLines, postPageResult, getParentReport } from "./server-agent-client";
+import { listModels, setModelApiKey, checkProviderAuth, setAppSettings, getModelSettings, streamChildAgent, streamParentAgent, promptChild, promptParent, abortChildAgent, abortParentAgent, bridgeChildAgentEvents, bridgeParentAgentEvents, examGenerateCourse, examGrade, openChildSession, openParentSession, resetChildSession as resetChildSessionServer, resetParentSession as resetParentSessionServer, postPageResult, getParentReport } from "./server-agent-client";
 import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, prewarmTexts, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
+import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
 import { dbQuery, currentSessionToken } from "./client-data";
 import { serverFetch, uploadFileToServer, serverUploadWithFields, serverBase } from "./server-client";
@@ -89,7 +89,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     async (_e, payload: { childId?: string; requestId: string; result: any }) => {
       resolvePageAction(payload?.requestId ?? "", payload?.result ?? {});
       // 服务端 agent 下发的受控操作（page_cmd）回执：把渲染层执行结果回传服务端配对 requestId。
-      // 否则服务端 scene_command 等工具会一直等到「页面无响应（10s 超时）」。
+      // 否则服务端的 page_action / page_inspect 会一直等到「页面无响应（10s 超时）」。
       if (payload?.requestId) {
         void postPageResult(payload.childId ?? "", payload.requestId, payload?.result ?? { ok: true });
       }
@@ -111,23 +111,6 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   const sendToRenderer = (channel: string, payload: any) => {
     getMainWindow()?.webContents.send(channel, payload);
   };
-  // 场景台词收集器：场景对话（scene session）与主会话共用同一条孩子流，
-  // 但场景页监听 scene:* 通道。这里在流事件上额外把「scene_command say 台词 / 正文 / 结束 / 错误」
-  // 派发给当前挂载的场景收集器（仅场景对话期间挂载，其余时间无监听不产生副作用）。
-  const sceneCollectors = new Map<string, Array<{ onSay: (speaker: string, text: string) => void; onText: (text: string) => void; onEnd: () => void; onError: (err: string) => void }>>();
-  const routeSceneEvent = (childId: string, e: { type: string; data: any }) => {
-    const collectors = sceneCollectors.get(childId);
-    if (!collectors?.length) return;
-    if (e.type === "message_end") {
-      const { lines, texts } = extractSceneLines(e.data?.message);
-      for (const l of lines) for (const c of collectors) c.onSay(l.speaker, l.text);
-      if (!lines.length) for (const t of texts) for (const c of collectors) c.onText(t);
-    } else if (e.type === "turn_end" || e.type === "agent_end") {
-      for (const c of collectors) c.onEnd();
-    } else if (e.type === "error") {
-      for (const c of collectors) c.onError(String(e.data?.message ?? "未知错误"));
-    }
-  };
   const ensureChildStream = (childId: string) => {
     const key = `child:${childId}`;
     if (agentStreams.has(key)) return;
@@ -137,12 +120,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         childId,
         onEvent: (e) => {
           bridgeChildAgentEvents(e, childId, sendToRenderer);
-          routeSceneEvent(childId, e);
         },
         onError: (err) => {
           sendToRenderer("pi:reply_error", { childId, error: err });
           sendToRenderer("pi:reply_end", { childId });
-          for (const c of sceneCollectors.get(childId) ?? []) c.onError(err);
         },
       })
     );
@@ -1292,13 +1273,13 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle(
     "pi:start_child",
-    async (_e: IpcMainInvokeEvent, childId: string, courseKey?: string) => {
+    async (_e: IpcMainInvokeEvent, childId: string) => {
       try {
         // 薄客户端：建立服务端 agent 事件流（SSE → pi:* 通道），会话由服务端持久管理。
         ensureChildStream(childId);
-        // 会话历史回填（ISSUE-100 F1 冷路径：走 /open，服务端跨天自动新建裁决后返回当天历史）
-        const session = courseKey ? `course:${courseKey}` : "main";
-        const open = await openChildSession(childId, session === "main" ? undefined : session).catch(
+        // 会话历史回填（ISSUE-100 F1 冷路径：走 /open，服务端跨天自动新建裁决后返回当天历史）。
+        // 会话收敛（2026-09-25）：一个孩子只有一条主会话，不再有 courseKey/子会话。
+        const open = await openChildSession(childId).catch(
           () => ({ messages: [] as any[], materials: [] })
         );
         const history = open.messages;
@@ -1352,12 +1333,11 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       _e: IpcMainInvokeEvent,
       childId: string,
       text: string,
-      images: Array<{ type: "image"; mimeType: string; data: string }> | null,
-      courseKey?: string
+      images: Array<{ type: "image"; mimeType: string; data: string }> | null
     ) => {
       const imgCount = images?.length || 0;
       console.log(
-        `[pi:prompt] child=${childId}${courseKey ? ` course=${courseKey}` : ""} text="${text.slice(0, 50)}" images=${imgCount}`
+        `[pi:prompt] child=${childId} text="${text.slice(0, 50)}" images=${imgCount}`
       );
       // 在途守卫：上一轮未结束时拒绝（服务端也会 409 busy，这里给友好提示）
       if (childBusy) {
@@ -1365,10 +1345,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       }
       childBusy = true;
       try {
-        // 薄客户端：交给服务端 agent。courseKey → course:<key> 会话；主会话 = main。
+        // 薄客户端：交给服务端 agent（会话收敛后固定走主会话）
         ensureChildStream(childId);
-        const session = courseKey ? (`course:${courseKey}` as const) : ("main" as const);
-        await promptChild(childId, text, { session, images: images ?? undefined });
+        await promptChild(childId, text, { images: images ?? undefined });
         return { success: true };
       } catch (err) {
         console.error(`[pi:prompt] error:`, (err as Error).message);
@@ -1381,112 +1360,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   );
 
-  // ISSUE-061：场景对话会话 prompt —— 语音球/场景键盘输入走独立 scene agent（专职扮演，与课程会话解耦）
-  let scenePromptAbort: { stopped: boolean; abort: () => void } | null = null;
-  // 场景对话常用台词预热（首次进入场景会话时后台合成落盘，正式播放命中磁盘缓存零等待）
-  const scenePrewarmDone = new Set<string>();
-  const SCENE_PREWARM_TEXT = [
-    "Hello! Hi!", "I'm Steve.", "What's your name?", "My name is ...", "How are you?", "I'm fine, thank you!",
-    "Nice to meet you!", "Welcome to my home!", "Look! This is my living room.",
-    "What is this?", "This is a sofa.", "This is a table.", "This is a lamp.", "This is a TV.", "This is a window.", "This is a plant.",
-    "What color is it?", "It's black.", "It's red.", "It's yellow.", "It's green.", "It's blue.",
-    "Can you say it?", "Say it with me.", "Let's play together!", "Great job!", "Sit down, please.", "Stand up!",
-    "Goodbye! See you next time!",
-    "sofa", "table", "lamp", "TV", "window", "plant", "picture", "cup",
-  ];
-  // 每个场景课程只预热一次（首次会话准备 / 首条 prompt 都会触发）
-  const sceneTryPrewarm = (childId: string, courseKey: string) => {
-    const k = `${childId}|${courseKey}`;
-    if (scenePrewarmDone.has(k)) return;
-    scenePrewarmDone.add(k);
-    // 预热不阻塞对话：失败静默（下次真实合成兜底）
-    void prewarmTexts(SCENE_PREWARM_TEXT, { provider: "edge-tts" }).catch(() => {});
-  };
-  // ISSUE-061：场景「准备」（场景页就绪后由 Learn 调用）——预建 scene 会话/取课文 + 后台预热 TTS，
-  // 让第一次说话不必等会话初始化；无任何 LLM 对话产出。
-  ipcMain.handle("scene:prepare", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
-    try {
-      // 薄客户端：场景会话在服务端，这里只确保孩子流已建 + 预热台词 TTS（TTS 仍在客户端合成）
-      ensureChildStream(childId);
-      sceneTryPrewarm(childId, courseKey);
-      return { success: true };
-    } catch (err: any) {
-      console.error("[scene:prepare] 失败:", err?.message || err);
-      return { success: false, error: String(err?.message || err) };
-    }
-  });
-  ipcMain.handle("scene:prompt", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string, text: string) => {
-    ensureChildStream(childId);
-    sceneTryPrewarm(childId, courseKey);
-    // 场景台词收集器：挂到孩子流上，本轮结束时把「say 台词 / 兜底正文」一次性回发 scene:reply。
-    const lines: Array<{ speaker: string; text: string }> = [];
-    const texts: string[] = [];
-    const collector = {
-      onSay: (speaker: string, t: string) => lines.push({ speaker, text: t }),
-      onText: (t: string) => texts.push(t),
-      onEnd: () => {
-        if (lines.length) {
-          _e.sender.send("scene:reply", { childId, courseKey, text: lines.map((l) => `${l.speaker} ${l.text}`.trim()).join("\n") });
-        } else if (texts.length) {
-          for (const t of texts) _e.sender.send("scene:reply", { childId, courseKey, text: t });
-        }
-        _e.sender.send("scene:reply_end", { childId, courseKey });
-      },
-      onError: (err: string) => {
-        _e.sender.send("scene:reply_error", { childId, courseKey, error: err });
-        _e.sender.send("scene:reply_end", { childId, courseKey });
-      },
-    };
-    const arr = sceneCollectors.get(childId) ?? [];
-    arr.push(collector);
-    sceneCollectors.set(childId, arr);
-    try {
-      await promptChild(childId, text, { session: "scene" });
-      return { success: true };
-    } catch (err) {
-      _e.sender.send("scene:reply_error", { childId, courseKey, error: friendlyError((err as Error).message) });
-      _e.sender.send("scene:reply_end", { childId, courseKey });
-      return { success: false, error: (err as Error).message };
-    } finally {
-      const a2 = sceneCollectors.get(childId) ?? [];
-      const i = a2.indexOf(collector);
-      if (i >= 0) a2.splice(i, 1);
-      if (a2.length) sceneCollectors.set(childId, a2);
-      else sceneCollectors.delete(childId);
-    }
-  });
-
-  // scene 会话历史：场景对话在服务端持久；走 /open（ISSUE-100 F1 跨天裁决），返回当天场景会话历史。
-  ipcMain.handle("scene:history", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
-    try {
-      const history = (await openChildSession(childId, "scene").catch(() => ({ messages: [] as any[], materials: [] }))).messages;
-      return { success: true, history: history.slice(-80) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // 结束场景对话：服务端会话持久，无需显式释放；仅返回成功。
-  ipcMain.handle("scene:stop", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
-    return { success: true };
-  });
-
-  // 场景转交：孩子离开场景时，让课程会话收尾。转交的逐字摘要需场景会话历史（服务端），
-  // 当前简化为「一句转交指令」，不含逐句记录（联调点：服务端提供场景摘要后补回）。
-  ipcMain.handle("scene:transfer", async (_e: IpcMainInvokeEvent, childId: string, courseKey: string) => {
-    try {
-      const inject =
-        `[系统] 孩子刚刚结束了场景英语的场景互动。请你用在场景里陪伴孩子的角色口吻，` +
-        `给孩子一句简短收尾（英文为主、可带一句中文，不要总结式说教）。`;
-      await promptChild(childId, inject, { session: `course:${courseKey}` });
-      return { success: true };
-    } catch (err) {
-      console.error(`[scene:transfer] error:`, (err as Error).message);
-      _e.sender.send("pi:reply_error", { childId, error: friendlyError((err as Error).message) });
-      _e.sender.send("pi:reply_end", { childId });
-      return { success: false, error: (err as Error).message };
-    }
-  });
+  // 场景会话（scene:prepare/prompt/history/stop/transfer + 台词 TTS 预热）已整体下线（2026-09-25）：
+  // 场景页现在就是普通资料页，孩子的输入一律走 pi:prompt（主会话），不再有「游戏主持人」角色会话。
+  // 对应地，客户端不再需要在孩子流上挂「场景台词收集器」。
 
   // ISSUE-037：家长发送支持 images（对齐 pi:prompt）
   ipcMain.handle("pi:prompt_parent", async (_e: IpcMainInvokeEvent, text: string, images?: Array<{ type: "image"; mimeType: string; data: string }>) => {
@@ -1546,7 +1422,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   // ---- token 用量查询（ISSUE-129）：透传服务端聚合（口径=模型返回字段原样直传） ----
-  // 服务端读取前先做增量扫描（游标幂等）；scope: parent|child|scene|course。
+  // 服务端读取前先做增量扫描（游标幂等）；scope: parent|child（scene|course 只剩历史数据，
+  // 会话收敛 2026-09-25 后不再产生新行）。
   ipcMain.handle("tokenUsage:days", async (_e, params?: { from?: string; to?: string; scope?: string }) => {
     try {
       const token = currentSessionToken();
@@ -1745,7 +1622,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("pi:abort", async (_e: IpcMainInvokeEvent, childId: string) => {
     // ISSUE-095：接通服务端中止——childId 为 "parent"/"parent-content" 时中止家长会话，
-    // 否则视为孩子 id 中止其全部会话（main/scene/course）正在跑的一轮。
+    // 否则视为孩子 id 中止其主会话里正在跑的一轮（会话收敛后一个孩子只有一条会话）。
     // 服务端 session.abort() 等待 agent idle 后返回；结束经 SSE turn_end 推送，前端忙碌态正常解禁。
     try {
       if (childId === "parent" || childId === "parent-content") {
@@ -1983,27 +1860,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // ISSUE-061：场景对话的孩子语音落盘 → data/children/<childId>/voice/scene/<日期>/<时间>.webm
-  // （独立于 uploads/，便于后续挑选分析/发音评测；path=相对 data/，rel=相对该孩子 cwd）
-  ipcMain.handle("voice:scene_save", async (_e: IpcMainInvokeEvent, childId: string, data: ArrayBuffer | Buffer) => {
-    try {
-      const d = new Date();
-      const pad = (n: number) => String(n).padStart(2, "0");
-      const dateDir = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-      const dir = path.join(getChildDir(childId), "voice", "scene", dateDir);
-      fs.mkdirSync(dir, { recursive: true });
-      const name = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${Date.now().toString(36)}.webm`;
-      const full = path.join(dir, name);
-      fs.writeFileSync(full, Buffer.from(data));
-      return {
-        success: true,
-        path: path.join("children", childId, "voice", "scene", dateDir, name).replace(/\\/g, "/"),
-        rel: path.join("voice", "scene", dateDir, name).replace(/\\/g, "/"),
-      };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
+  // 场景语音落盘（voice:scene_save，ISSUE-061）已随场景会话下线删除（2026-09-25）：
+  // 语音球是场景页的输入方式，随场景模式一起去掉；孩子用普通语音输入（voice:save → uploads/）。
 
   // 文件上传落盘（ISSUE-008）：本机缓存 data/children/<childId>/uploads/，按 childId 隔离。
   // ISSUE-125/131 P2 收口：同时上送服务端 files 通道（带 child_id，服务端落 <cid>/uploads/），
@@ -2698,102 +2556,8 @@ function safeJsonParse(s: string): unknown {
 }
 
 // ════════════ 场景会话历史 → 聊天展示记录（scene:history）════════════
-// scene 会话的 jsonl 是对话真源，但 UI 聊天框从不回填——重进孩子模式场景对话「消失」。
-// 恢复时不能原样展示 messages：user 侧混有语音识别前缀/页面事件尾巴/开场指令，
-// assistant 侧混有模型的总结正文（与字幕不一致）。以下按与 scene:prompt 实时回发
-// 完全相同的规则清洗：user 只留孩子的话；assistant 有 say 台词就用台词、无才用正文。
-
-function sceneContentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  const parts: string[] = [];
-  if (Array.isArray(content)) {
-    for (const c of content) {
-      if (c && typeof c === "object" && (c as any).type === "text" && typeof (c as any).text === "string") {
-        parts.push((c as any).text);
-      }
-    }
-  }
-  return parts.join("");
-}
-
-/** 清洗 scene 会话的 user 文本为「孩子实际说的话」；系统注入/无孩子话语返回空串。 */
-function cleanSceneUserText(raw: string): string {
-  if (!raw) return "";
-  let t = raw.replace(/\s+/g, " ").trim();
-  // 系统注入消息（页面就绪清单 / 开场指令 / 课程进入）整体不显示为孩子气泡
-  if (/^\[(页面操作|场景就绪|开场|进入|课堂|系统)[^\]]*\]/.test(t)) return "";
-  // 语音输入格式：「[语音识别输入…] / 文本 / 【附件音频：…】」→ 取中间段
-  const vm = /^\[[^\]]*\]\s*\/\s*([\s\S]*?)(?:\s*\/\s*【附件音频[\s\S]*)?$/.exec(t);
-  if (vm) {
-    t = vm[1].trim();
-  } else {
-    // 剥掉可能残留的 [xxx] 前缀
-    t = t.replace(/^\[[^\]]*\]\s*/, "");
-    // 截断「[页面操作]…」尾巴（可能是「 / [页面操作]」分隔、直接跟在文本后、或换行后）
-    const pi = t.indexOf("[页面操作]");
-    if (pi > 0) t = t.slice(0, pi).replace(/\s*\/?\s*$/, "");
-    t = t.replace(/【附件音频：[\s\S]*?】/g, "");
-    t = t.replace(/\s*\/\s*$/, "").trim();
-  }
-  if (!t || t.startsWith("[") || t.startsWith("【")) return "";
-  return t;
-}
-
-/** 按「轮」把 scene 会话 messages 组装成聊天展示记录（规则同 scene:prompt 实时回发）。 */
-function composeSceneHistoryDisplay(messages: any[]): Array<{ role: "user" | "ai"; text: string; time: string }> {
-  const out: Array<{ role: "user" | "ai"; text: string; time: string }> = [];
-  const fmtClock = (msStr: string) => {
-    const n = Number(msStr);
-    if (!Number.isFinite(n) || n <= 0) return "";
-    const d = new Date(n);
-    const p = (x: number) => String(x).padStart(2, "0");
-    return `${p(d.getHours())}:${p(d.getMinutes())}`;
-  };
-  let say: string[] = [];
-  let texts: string[] = [];
-  let lastTs = "";
-  const flush = () => {
-    if (say.length) {
-      out.push({ role: "ai", text: say.join("\n"), time: fmtClock(lastTs) });
-    } else if (texts.length) {
-      out.push({ role: "ai", text: texts.join("\n"), time: fmtClock(lastTs) });
-    }
-    say = [];
-    texts = [];
-  };
-  for (const m of messages || []) {
-    const role = m?.role;
-    const ts = m?.timestamp ? String(m.timestamp) : "";
-    if (role === "user") {
-      flush();
-      const t = cleanSceneUserText(sceneContentText(m.content));
-      if (t) {
-        out.push({ role: "user", text: t, time: fmtClock(ts) });
-      }
-      if (ts) lastTs = ts;
-    } else if (role === "assistant") {
-      if (ts) lastTs = ts;
-      const cs = m.content || [];
-      for (const c of cs) {
-        if (!c || typeof c !== "object") continue;
-        if (c.type === "text" && typeof c.text === "string" && c.text.trim()) {
-          texts.push(c.text.trim());
-        }
-        if (c.type === "toolCall" && c.name === "scene_command") {
-          const args = typeof c.arguments === "string" ? safeJsonParse(c.arguments) : c.arguments;
-          const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-          if (a.command === "say" && typeof a.text === "string" && a.text.trim()) {
-            const cid = String(a.character || "").trim();
-            const sp = cid ? cid.charAt(0).toUpperCase() + cid.slice(1) + ":" : "";
-            say.push(`${sp} ${a.text.trim()}`.trim());
-          }
-        }
-      }
-    }
-  }
-  flush();
-  return out;
-}
+// 已随场景会话下线删除（2026-09-25）：场景对话不再有独立会话，这段「台词/正文清洗 + 按轮组装」
+// 随之失效（原本只服务于场景历史回填）。若将来恢复场景角色，从 git 历史取回本段即可。
 
 function previewArgs(toolName: string, args: any): string {
   try {

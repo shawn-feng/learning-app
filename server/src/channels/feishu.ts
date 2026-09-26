@@ -241,7 +241,7 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
               });
             } else {
               void import("../agent/session-registry.js").then(({ resetSession }) => {
-                resetSession(b.parent_id, b.child_id, "main");
+                resetSession(b.parent_id, b.child_id);
                 void sendText(openId, "已重置 ✅ 会话已清空，开始全新对话。").catch(() => undefined);
               });
             }
@@ -321,7 +321,7 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
               await abortParentSession(b.parent_id, "parent");
             } else {
               const { abortSession } = await import("../agent/session-registry.js");
-              await abortSession(b.parent_id, b.child_id, "main");
+              await abortSession(b.parent_id, b.child_id);
             }
           }
         );

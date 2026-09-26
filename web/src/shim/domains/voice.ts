@@ -182,23 +182,7 @@ export const voiceDomain = {
   /** voiceDictationStop: () => Promise<{text, error}>（Web 专属扩展）：收尾听写会话并落账。 */
   voiceDictationStop: (): Promise<{ text: string; error: string }> => stopDictation(),
 
-  /** sceneVoiceSave: (childId, data) => Promise<{success; path?; rel?; error?}>（voice:scene_save）
-   *  Electron 落 children/<id>/voice/scene/<date>/；Web 上传 files 通道，path/rel 同为
-   *  服务端 file id（不透明 token，渲染层 readUpload/附件标记语义不变）。 */
-  sceneVoiceSave: async (
-    childId: string,
-    data: ArrayBuffer
-  ): Promise<{ success: boolean; path?: string; rel?: string; error?: string }> => {
-    try {
-      const d = new Date();
-      const pad = (n: number) => String(n).padStart(2, "0");
-      const name = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${Date.now().toString(36)}.webm`;
-      const id = await uploadVoiceFile(childId, name, data);
-      return { success: true, path: id, rel: id };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  },
+  // sceneVoiceSave（场景语音球落盘，voice:scene_save）已随场景会话下线删除（2026-09-25）。
 
   /** voiceConfigGet: () => Promise<{success; config}>（voice:config:get，打码回显）。 */
   voiceConfigGet: async (): Promise<{ success: boolean; config?: SttConfig; error?: string }> => {

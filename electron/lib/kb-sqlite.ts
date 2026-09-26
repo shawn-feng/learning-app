@@ -217,16 +217,11 @@ export function openKbDb(childDir: string): DatabaseSync {
   return db;
 }
 
-// ==================== 英语课子会话数据层（ISSUE-029 终版任务2） ====================
+// ==================== 英语课数据层 ====================
+// parseCourseKey（`<topic>:<title>` 解析）已随英语课子会话下线删除（2026-09-25）：它只服务于
+// 「按课切会话」那条链路，会话收敛后没有任何调用方。
 
-/** courseKey 解析：格式 `<topic>:<title>`（topic=主题目录名，如 english）。非法格式返回 null。 */
-export function parseCourseKey(courseKey: string): { topic: string; title: string } | null {
-  const idx = courseKey.indexOf(":");
-  if (idx <= 0 || idx >= courseKey.length - 1) return null;
-  return { topic: courseKey.slice(0, idx), title: courseKey.slice(idx + 1) };
-}
-
-/** 某课的同步教学内容（英语子会话 systemPrompt 注入用——systemPromptOverride 是同步回调不能 await）。 */
+/** 某课的同步教学内容（服务端 agent 的 parent_content 工具同源；客户端读档场景用）。 */
 export interface CourseLessonSync {
   topic: string;
   title: string;

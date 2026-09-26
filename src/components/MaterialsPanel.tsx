@@ -6,12 +6,10 @@ import IconButton from "./IconButton";
 import { ArrowLeft, PanelRightClose } from "lucide-react";
 import { lookupText, type LookupEntry } from "../lib/dictionary";
 import { WordLookupOverlay, type LookupState } from "./WordLookupOverlay";
-import { useAudioRecorder } from "../hooks/useAudioRecorder";
 import {
   EventThrottler,
   genRequestId,
   injectBridge,
-  SCENE_PAGE_MARKER,
   type MaterialsPanelHandle,
   type PageAction,
   type PageEvent,
@@ -70,12 +68,7 @@ interface Props {
   onCollapse?: () => void;
   /** ISSUE-030：资料字号（px）；驱动列表/正文/markdown 的 --material-font 与 HTML iframe 注入 */
   matFontSize?: number;
-  /** ISSUE-061：场景页就绪（scene:ready）→ 通知 Learn 进入场景对话模式 */
-  onSceneActive?: () => void;
-  /** ISSUE-061：场景语音球录音结束 → (ASR 文本, 录音字节) 交 Learn 落 voice/scene 并发场景会话 */
-  onSceneVoice?: (text: string, data: ArrayBuffer) => void;
-  /** ISSUE-061：场景语音录入错误/失败提示（太短、没听清、ASR 未配置等）——必须让孩子看到，不静默 */
-  onSceneMicNotice?: (msg: string) => void;
+  // 场景模式的三个回调（onSceneActive / onSceneVoice / onSceneMicNotice）已随场景会话下线删除（2026-09-25）
   /** ISSUE-114：孩子 id（查词自动上报错题本用） */
   childId?: string;
 }
@@ -298,7 +291,7 @@ function sceneReadyText(manifest: unknown): string {
 }
 
 const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function MaterialsPanel(
-  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse, matFontSize = 16, onSceneActive, onSceneVoice, onSceneMicNotice, childId },
+  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse, matFontSize = 16, childId },
   ref
 ) {
   const selected = materials.find((m) => m.id === selectedId);
@@ -316,19 +309,6 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   const throttlerRef = useRef(new EventThrottler());
   const onPageEventRef = useRef(onPageEvent);
   onPageEventRef.current = onPageEvent;
-  // ISSUE-061：场景模式回调 ref（handler 在 useEffect 注册一次，闭包必须读最新 props）
-  const onSceneActiveRef = useRef(onSceneActive);
-  onSceneActiveRef.current = onSceneActive;
-  const onSceneVoiceRef = useRef(onSceneVoice);
-  onSceneVoiceRef.current = onSceneVoice;
-  const onSceneMicNoticeRef = useRef(onSceneMicNotice);
-  onSceneMicNoticeRef.current = onSceneMicNotice;
-  // ISSUE-061：场景语音球录音（宿主侧 getUserMedia，iframe 沙箱内无法采集）
-  const recorder = useAudioRecorder();
-  const recorderApiRef = useRef(recorder);
-  recorderApiRef.current = recorder;
-  // 按住说话防抖标记：快速 press/release 时忽略（录音由 stop 判空兜底）
-  const micHoldingRef = useRef(false);
   // ISSUE-011：资料朗读走 edge-tts（与聊天同链路）。audioRef=当前播放；seq 防乱序（新朗读取代旧回执）
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const ttsSeqRef = useRef(0);
@@ -462,8 +442,9 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
       let data: any = data0;
 
       // MATERIAL-BRIDGE-PROTOCOL：页面已改走 PiBridge（page:app）——把场景语义动作归一化回
-      // 下方既有 scene:* 处理分支（ready/item-click/mic.press/mic.release）；其余 scene.* 或
-      // 通用动作保留 page:app 走「app 事件」分支（kind=app 注入 agent）。
+      // 下方既有 scene:* 处理分支（ready/item-click）；其余 scene.* 或通用动作保留 page:app
+      // 走「app 事件」分支（kind=app 注入 agent）。
+      // 会话收敛（2026-09-25）：场景页不再是「角色会话」的宿主，但它的**页面事件**照样上报给主会话。
       if (data0.type === "page:app") {
         const action = String(data0.action ?? "");
         const pl = data0.payload ?? {};
@@ -472,17 +453,13 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
             ? { type: "scene:ready", manifest: pl }
             : action === "scene.item-click"
               ? { type: "scene:child-click", target: pl.target, word: pl.word, zh: pl.zh }
-              : action === "scene.mic.press"
-                ? { type: "scene:mic-press" }
-                : action === "scene.mic.release"
-                  ? { type: "scene:mic-release" }
-                  : null;
+              : null;
         if (mapped) data = mapped;
       }
 
-      // ISSUE-061：场景页上行事件（场景页自身脚本发出，非桥脚本）。
-      // child-click 带语义（单词+中文）→ 转成通用 click 事件走既有节流上抛链给 agent；
-      // mic-press/release 触发宿主录音。
+      // 场景页上行事件（场景页自身脚本发出，非桥脚本）。
+      // child-click 带语义（单词+中文）→ 转成通用 click 事件走既有节流上抛链给 agent。
+      // （mic.press/release 的语音球录音随场景会话下线删除，2026-09-25）
       if (data.type === "scene:child-click") {
         const word = typeof data.word === "string" ? data.word : "";
         const zh = typeof data.zh === "string" ? data.zh : "";
@@ -499,7 +476,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         }
         return;
       }
-      // ISSUE-061：场景页就绪 → 属性清单文本随孩子下一轮消息附带注入 agent（一次）+ 通知 Learn 进入场景模式
+      // 场景页就绪 → 属性清单文本随孩子下一轮消息附带注入 agent（一次）
       if (data.type === "scene:ready") {
         const text = sceneReadyText(data.manifest);
         if (text) {
@@ -511,22 +488,6 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
             detail: { text },
           } as unknown as PageEvent);
         }
-        onSceneActiveRef.current?.();
-        console.warn("[panel-scene] scene:ready 处理完成，触发 onSceneActive", { selected: selected?.filePath, ready: readyRef.current });
-        return;
-      }
-      // ISSUE-061：场景语音球按住说话 → 宿主录音（沙盒 iframe 内无 mic 权限，录音在宿主层）
-      if (data.type === "scene:mic-press") {
-        micHoldingRef.current = true;
-        void recorderApiRef.current.start().catch(() => {
-          micHoldingRef.current = false;
-          scenePost("scene.mic.result", { ok: false, error: "无法访问麦克风，请检查系统权限" });
-        });
-        return;
-      }
-      if (data.type === "scene:mic-release") {
-        micHoldingRef.current = false;
-        void handleSceneMicRelease();
         return;
       }
       if (typeof data.type === "string" && data.type.startsWith("scene:")) return; // 其余 scene: 上行忽略
@@ -643,58 +604,6 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     return () => window.removeEventListener("keydown", onKey);
   }, [showLookup]);
 
-  // 场景页下行控制消息（语音球状态机 / agent 忙闲）——MATERIAL-BRIDGE-PROTOCOL 标准信封
-  // page:app-cmd（页面 PiBridge.on 接收；fire-and-forget，不挂 pending）
-  const scenePost = useCallback((action: string, payload: unknown = null) => {
-    const w = iframeRef.current?.contentWindow;
-    if (w) w.postMessage({ type: "page:app-cmd", requestId: genRequestId(), action, payload }, "*");
-  }, []);
-
-  // ISSUE-061：场景语音球松手 → 停止录音 → ASR → (文本+字节)交 Learn 发场景会话。
-  // 每个阶段都向场景页下行 scene.mic.status / scene.mic.result，按钮有明确交互反馈；
-  // 出错也下行并在聊天提示（不再静默）。
-  const handleSceneMicRelease = useCallback(async () => {
-    const r = recorderApiRef.current;
-    const notice = (msg: string) => onSceneMicNoticeRef.current?.(msg);
-    scenePost("scene.mic.status", { status: "transcribing" }); // 语音球进入「识别中…」
-    const blob = await r.stop();
-    if (!blob) {
-      scenePost("scene.mic.result", { ok: false, error: "没有录到声音，再试一次吧" });
-      return;
-    }
-    if (blob.size < 2000) {
-      // 过短：HTML 端按住时已本地即时提示「太快啦」，这里只补一条聊天提示，避免重复弹跳
-      notice("说话太短啦，按住说完一整句再松手");
-      return;
-    }
-    try {
-      const buf = await blob.arrayBuffer();
-      let tr: any;
-      try {
-        tr = await window.api.voiceTranscribe(buf);
-      } catch (e: any) {
-        const msg = e?.message || "语音识别失败，请检查语音设置";
-        scenePost("scene.mic.result", { ok: false, error: msg });
-        notice(msg);
-        return;
-      }
-      const text = tr?.success ? String(tr.text || "").trim() : "";
-      if (!text) {
-        const msg = tr?.error ? `语音识别失败：${tr.error}` : "没听清你说的话，再说一次好吗？";
-        scenePost("scene.mic.result", { ok: false, error: msg });
-        notice(msg);
-        return;
-      }
-      // 识别成功：回显给孩子看，然后交给 Learn 发场景会话（场景 agent 处理中 Learn 会置 busy）
-      scenePost("scene.mic.result", { ok: true, text });
-      onSceneVoiceRef.current?.(text, buf);
-    } catch {
-      const msg = "处理录音出错，请再试一次";
-      scenePost("scene.mic.result", { ok: false, error: msg });
-      notice(msg);
-    }
-  }, [scenePost]);
-
   // 下行指令：postMessage 到 iframe，requestId 配对等待回执（10s 超时）
   const exec = useCallback(
     (action: PageAction, params?: PageExecParams): Promise<PageExecResultUplink> => {
@@ -715,14 +624,6 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     },
     []
   );
-
-  // ISSUE-061：场景页下行指令（scene_command 工具 → Learn → 此处 → 场景页自身脚本）。
-  // 修复：①切换资料（iframe 重建）后 readyRef 必须在拿到新页面 page:ready 前保持 false，
-  // 否则 agent 在加载竞态里开演的指令会发给尚未就绪的 iframe 而静默丢失（2026-09-07 实测）；
-  // ②带 _rq 请求号并等页面 scene:ack（短超时），页面没回应也能在工具回执里暴露，不再「假成功」。
-  const isScenarioRef = useRef(false);
-  isScenarioRef.current =
-    !!selected && selected.format === "html" && (selected.content ?? "").includes(SCENE_PAGE_MARKER);
 
   // MATERIAL-BRIDGE-PROTOCOL：宿主→页面作者命令（page:app-cmd，页面 PiBridge.on 接收；与 exec 同一套 pending/就绪/超时）。
   // 竞态修复（2026-09-08 实测「no handler for action: scene.say」）：iframe 刚加载/重建时 BRIDGE 的 page:ready
@@ -759,30 +660,10 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     });
   }, []);
 
-  const scene = useCallback(
-    (command: string, params?: Record<string, unknown>): Promise<PageExecResultUplink> => {
-      if (!iframeRef.current?.contentWindow) {
-        return Promise.resolve(failedExec("场景页未打开"));
-      }
-      if (!readyRef.current) {
-        return Promise.resolve(failedExec("场景页加载中，请稍后再试"));
-      }
-      if (!isScenarioRef.current) {
-        return Promise.resolve(failedExec("当前展示的不是场景页"));
-      }
-      // 场景页没有「结束」：完成由 agent 对话提示，不下发 end
-      const allowed = ["say", "move", "act", "show", "hide", "highlight", "update"];
-      if (!allowed.includes(command)) {
-        return Promise.resolve(failedExec(`未知场景指令：${command}`));
-      }
-      // MATERIAL-BRIDGE-PROTOCOL：场景演出命令 = 标准下行 scene.<cmd>（页面 PiBridge.on 接收，
-      // 执行自动回执 page:app-cmd:result；可靠性由 appCmd 的 requestId/就绪 gate/超时底座保证）
-      return appCmd(`scene.${command}`, params ?? {});
-    },
-    [appCmd]
-  );
+  // scene(command, params)（场景演出下行 scene.<cmd>，ISSUE-061）已随场景会话下线删除（2026-09-25）。
+  // 页面作者命令仍可走 appCmd（page:app-cmd），供将来其它受控下行使用。
 
-  // 资料内容/选中项变化 → iframe 即将重建，就绪态立即复位（新页面 page:ready 到达前 scene 指令一律
+  // 资料内容/选中项变化 → iframe 即将重建，就绪态立即复位（新页面 page:ready 到达前指令一律
   // 报「加载中」，不再把指令发给半成品的 iframe）。组件卸载时也复位。
   const contentKey = selected ? `${selected.id}|${(selected.content ?? "").length}` : "none";
   const wasContentKeyRef = useRef(contentKey);
@@ -790,22 +671,6 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     wasContentKeyRef.current = contentKey;
     readyRef.current = false;
   }
-
-  // 场景 agent 忙闲 → 场景页显示「角色回应中…」（孩子消息已发、等回复期间）
-  const sceneAgentBusy = useCallback(
-    (on: boolean) => {
-      scenePost("scene.busy", { busy: !!on });
-    },
-    [scenePost]
-  );
-
-  // 场景页准备状态（Learn 场景就绪后预建会话/预热时展示「正在准备场景伙伴…」）
-  const scenePreparing = useCallback(
-    (on: boolean) => {
-      scenePost("scene.prepare", { status: on ? "loading" : "ready" });
-    },
-    [scenePost]
-  );
 
   // —— MATERIAL-BRIDGE-PROTOCOL：页面 PiBridge.request 的宿主能力处理（page:req → page:app-res）——
   const handleAppRequest = useCallback(
@@ -839,7 +704,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     [speakMaterialText]
   );
 
-  useImperativeHandle(ref, () => ({ exec, scene, sceneAgentBusy, appCmd, scenePreparing }), [exec, scene, sceneAgentBusy, appCmd, scenePreparing]);
+  useImperativeHandle(ref, () => ({ exec, appCmd }), [exec, appCmd]);
 
   // ISSUE-030：资料字号变化 → 运行期下发 iframe（内容未变则 iframe 不重建，靠消息即时生效；
   // 首次挂载的初始化字号由 injectBridge 注入 window.__PI_MAT_FONT，这里只处理后续变更）。

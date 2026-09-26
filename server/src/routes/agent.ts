@@ -4,9 +4,12 @@
  * - GET  /api/v1/agent/:childId/stream    SSE 事件流（token/thinking/工具/结束/错误），支持 Last-Event-ID 重放
  * - POST /api/v1/agent/:childId/prompt    提交一轮输入（等待本轮结束，增量走 stream）
  * - POST /api/v1/agent/:childId/open      打开会话（跨天自动新建裁决 + 返回历史，ISSUE-100 F1）
- * - POST /api/v1/agent/:childId/abort     中止当前一轮（ISSUE-095；session 省略=全部会话）
+ * - POST /api/v1/agent/:childId/abort     中止当前一轮（ISSUE-095）
  * - POST /api/v1/agent/:childId/events    页面事件上行（PiBridge 信封原样透传，累积到下一轮消息前）
  * - POST /api/v1/agent/:childId/page-result  资料页受控操作回执（requestId 配对）
+ *
+ * 会话（2026-09-25 收敛）：**只有一条主会话**，`session` 参数已下线（传 scene / course:<课名> → 400）。
+ * 新建会话只发生在 `/reset` 或跨天自动新建。
  *
  * 鉴权：家长 JWT。SSE 走 EventSource 时无法自定义请求头，故额外接受 `?token=` 查询参数；
  * childId 必须归属该家长（children.parent_id），否则 403——隔离红线。
@@ -17,7 +20,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { agentStreamHub, AgentStreamHub } from "../agent/stream-hub.js";
-import { submitChildPrompt, hasSession, disposeSession, resetSession, abortSession, getChildSessionHistory, openChildSession, type AgentSessionDeps, type ChildSessionKind } from "../agent/session-registry.js";
+import { submitChildPrompt, hasSession, disposeSession, resetSession, abortSession, getChildSessionHistory, openChildSession, type AgentSessionDeps } from "../agent/session-registry.js";
 import { hubFor, hubForChild } from "../agent/page-hub.js";
 import { registerCaps, parseCaps, getCaps } from "../agent/caps.js";
 
@@ -56,6 +59,18 @@ function handleAuthError(err: unknown, reply: any): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * 会话收敛（2026-09-25）：只支持主会话。
+ *
+ * 旧客户端仍可能传 `session=scene` / `session=course:<课名>`。这里**显式 400**，而不是静默当主会话——
+ * 另一种会话的历史混进主会话是最难查的那种坏法（"看起来没坏"）。前端已同步删掉这两条路径。
+ */
+function rejectLegacySession(raw: unknown): string | null {
+  const s = String(raw ?? "").trim();
+  if (!s || s === "main") return null;
+  return "session 已下线：现在只有主会话（main），不再支持 scene / course:<课名>";
 }
 
 export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps): void {
@@ -134,14 +149,8 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
     const body = (req.body ?? {}) as { text?: string; pageEvents?: string; session?: string };
     const text = String(body.text ?? "").trim();
     if (!text) return reply.code(400).send({ error: "text 必填" });
-    // session：main（缺省）/ scene / course:<课程名>——课程与场景各有独立上下文（P3）
-    let kind: ChildSessionKind = "main";
-    const rawSession = String(body.session ?? "").trim();
-    if (rawSession && rawSession !== "main") {
-      if (rawSession === "scene") kind = "scene";
-      else if (rawSession.startsWith("course:")) kind = rawSession as ChildSessionKind;
-      else return reply.code(400).send({ error: "session 只能是 main / scene / course:<课程名>" });
-    }
+    const legacy = rejectLegacySession(body.session);
+    if (legacy) return reply.code(400).send({ error: legacy });
     // 页面事件：优先用调用方显式传入，否则取桥内累积的待附带事件（ISSUE-015 语义）
     const streamKey = AgentStreamHub.key(parentId, childId);
     const hub = hubFor(streamKey, childId);
@@ -151,7 +160,6 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
         : hub.takePending(childId);
     const result = await submitChildPrompt(agentDeps, parentId, childId, text, {
       pendingPageEvents: pending,
-      kind,
     });
     if (!result.ok) {
       return reply.code(result.error?.startsWith("busy") ? 409 : 500).send({ error: result.error });
@@ -205,8 +213,9 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const kind = (req.query as any)?.session === "scene" ? "scene" : (req.query as any)?.session?.startsWith("course:") ? (req.query as any).session : "main";
-    return { messages: getChildSessionHistory(parentId, childId, kind) };
+    const legacy = rejectLegacySession((req.query as any)?.session);
+    if (legacy) return reply.code(400).send({ error: legacy });
+    return { messages: getChildSessionHistory(parentId, childId) };
   });
 
   // —— 打开会话（ISSUE-100 F1 冷路径）：进会话那一刻服务端按「最后消息日期」裁决，
@@ -226,9 +235,9 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const raw = String((req.body as any)?.session ?? "");
-    const kind = raw === "scene" || raw.startsWith("course:") ? (raw as ChildSessionKind) : "main";
-    const messages = await openChildSession(agentDeps, parentId, childId, kind);
+    const legacy = rejectLegacySession((req.body as any)?.session);
+    if (legacy) return reply.code(400).send({ error: legacy });
+    const messages = await openChildSession(agentDeps, parentId, childId);
     // ISSUE-113：一并返回该会话的展示登记（左侧资料列表回填；跨天/重置后已随新会话清空）
     let materialsLimit = 20;
     let materials: Array<Record<string, unknown>> = [];
@@ -238,7 +247,7 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       const settings = readParentSettings(deps.db, deps.config.dataDir, parentId);
       const lim = Number((settings.appSettings as any)?.materialsLimit);
       if (Number.isFinite(lim) && lim > 0) materialsLimit = lim;
-      materials = listDisplays(deps.config.dataDir, parentId, childId, kind, materialsLimit);
+      materials = listDisplays(deps.config.dataDir, parentId, childId, "main", materialsLimit);
     } catch {
       materials = []; // 登记读取失败不阻断历史回填
     }
@@ -260,13 +269,13 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const raw = String((req.body as any)?.session ?? "");
-    const kind = raw === "scene" ? ("scene" as ChildSessionKind) : raw.startsWith("course:") ? (raw as ChildSessionKind) : undefined;
-    resetSession(parentId, childId, kind);
+    const legacy = rejectLegacySession((req.body as any)?.session);
+    if (legacy) return reply.code(400).send({ error: legacy });
+    resetSession(parentId, childId);
     // ISSUE-113：展示登记随会话重置清空（与客户端 pi:reset 返回 materials:[] 语义对齐）
     try {
       const { clearDisplayLog } = await import("../db/displays.js");
-      clearDisplayLog(deps.config.dataDir, parentId, childId, kind);
+      clearDisplayLog(deps.config.dataDir, parentId, childId, "main");
     } catch {
       /* 清理失败不影响重置 */
     }
@@ -274,7 +283,6 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
   });
 
   // —— 中止当前一轮（ISSUE-095）：前端「停止」按钮经主进程 pi:abort 打到这里 ——
-  // session 省略时中止该孩子全部会话（main/scene/course）中正在跑的一轮。
   app.post("/api/v1/agent/:childId/abort", async (req, reply) => {
     let parentId: string;
     try {
@@ -290,10 +298,9 @@ export function registerAgentRoutes(app: FastifyInstance, deps: AgentRoutesDeps)
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const raw = String((req.body as any)?.session ?? "");
-    const kind =
-      raw === "main" || raw === "scene" || raw.startsWith("course:") ? (raw as ChildSessionKind) : undefined;
-    const aborted = await abortSession(parentId, childId, kind);
+    const legacy = rejectLegacySession((req.body as any)?.session);
+    if (legacy) return reply.code(400).send({ error: legacy });
+    const aborted = await abortSession(parentId, childId);
     return { ok: true, aborted };
   });
 

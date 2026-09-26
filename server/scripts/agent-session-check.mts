@@ -28,7 +28,7 @@ import { createPageTools } from "../src/agent/page-tools.js";
 import { hubFor, hubForChild } from "../src/agent/page-hub.js";
 import { computeChildToolNames, sessionSlot } from "../src/agent/session-registry.js";
 import { parseCaps, registerCaps, getCaps } from "../src/agent/caps.js";
-import { buildServerChildPrompt, buildServerScenePrompt } from "../src/agent/prompt.js";
+import { buildServerChildPrompt } from "../src/agent/prompt.js";
 import { learningGuardExtension } from "@pi/agent-core";
 import { createProgrammingTool } from "../src/agent/programming-agent.js";
 
@@ -250,18 +250,7 @@ async function main() {
     check("page_inspect 返回页面快照（来自设备回执）", String(insp.content[0].text).includes("页面里的文字"));
     off2();
 
-    // F3. 场景指令走同一通道（scene.<command>）
-    const sceneCmds: string[] = [];
-    const off3 = agentStreamHub.subscribe(streamKey, (e) => {
-      if (e.type === "page_cmd") {
-        const d = e.data as { action: string; requestId: string };
-        sceneCmds.push(d.action);
-        setTimeout(() => hubForChild("c1")!.resolveAction(d.requestId, { ok: true }), 0);
-      }
-    });
-    await tools.sceneCommandTool.execute("t", { command: "say", character: "steve", text: "Hello" } as any);
-    check("scene_command 映射为 scene.say 下发", sceneCmds.includes("scene.say"));
-    off3();
+    // F3. 场景指令（scene_command → scene.<command>）已随场景会话下线删除（2026-09-25）
 
     // F4. 互动事件累积 → 下一轮消息附带（ISSUE-015 语义）
     const hub = hubFor(streamKey, "c1");
@@ -272,8 +261,8 @@ async function main() {
     // F5. caps 装配：无面板不注册 page_*
     const noCaps = computeChildToolNames({ materialPanel: false });
     const withCaps = computeChildToolNames({ materialPanel: true });
-    check("caps 缺失时不注册 page_*", !noCaps.includes("page_action") && !noCaps.includes("scene_command"));
-    check("caps 含 material-panel 时注册 page_*", withCaps.includes("page_action") && withCaps.includes("page_inspect") && withCaps.includes("scene_command"));
+    check("caps 缺失时不注册 page_*", !noCaps.includes("page_action") && !noCaps.includes("page_inspect"));
+    check("caps 含 material-panel 时注册 page_*", withCaps.includes("page_action") && withCaps.includes("page_inspect"));
     check("caps 解析：逗号串→布尔", (() => {
       const c = parseCaps("material-panel,mic,electron");
       return c.materialPanel && c.mic && c.electron;
@@ -304,22 +293,16 @@ async function main() {
     check("AGENTS 用户版本被注入 system prompt", promptWithRules.includes("先复习再上新内容"));
   }
 
-  console.log("G. P3-3：会话类型 + 编程 agent 工具");
+  console.log("G. P3-3：会话收敛后的工具面 + 编程 agent 工具");
   {
     const gdb = new DatabaseSync(":memory:");
     gdb.exec("CREATE TABLE children (id TEXT PRIMARY KEY, parent_id TEXT, name TEXT);");
     gdb.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT);");
-    // G1. 会话类型工具表
-    const sceneTools = computeChildToolNames({ materialPanel: true }, "scene");
-    check("场景会话只驱动演出（无 kb / 无 create_html_lesson）", sceneTools.includes("scene_command") && !sceneTools.includes("kb_insert") && !sceneTools.includes("create_html_lesson") && !sceneTools.includes("summarize_conversation"));
-    check("场景会话无面板时不注册 scene_command", !computeChildToolNames({ materialPanel: false }, "scene").includes("scene_command"));
-    const courseTools = computeChildToolNames({ materialPanel: false }, "course:论语学而篇第一章");
-    check("课程会话保留记录与出题工具", courseTools.includes("kb_insert") && courseTools.includes("create_html_lesson"));
-    check("sessionSlot 把冒号转成连字符（路径安全）", !sessionSlot("c1", "course:论语学而篇第一章").includes(":"));
-
-    // G2. 场景 prompt
-    const sp = buildServerScenePrompt({ childName: "珊珊", today: "2026-09-12" });
-    check("场景 prompt 是「游戏主持人」口径", sp.includes("游戏主持人") && sp.includes("scene_command"));
+    // G1. 会话收敛（2026-09-25）：只剩一种会话形态；scene_command 已从工具面移除
+    const tools1 = computeChildToolNames({ materialPanel: true });
+    check("唯一会话形态保留记录与出题工具", tools1.includes("kb_insert") && tools1.includes("create_html_lesson"));
+    check("场景演出工具已下线（scene_command 不在工具面）", !tools1.includes("scene_command"));
+    check("会话槽名固定为 <childId>-main（与磁盘既有历史一致）", sessionSlot("c1") === "c1-main");
 
     // G3. 编程 agent 工具：路径沙箱与扩展名校验先于模型检查
     const progChild = createProgrammingTool({ db: gdb, dataDir: tmp, parentId: "p1" }, { scope: "child", childId: "c1" });

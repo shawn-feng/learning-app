@@ -17,7 +17,6 @@ export function sessionToken(): string {
   return getCachedLicense()?.token ?? "";
 }
 
-export type AgentKind = "main" | "scene" | `course:${string}`;
 export type ParentKind = "parent" | "parent-content";
 
 export interface AgentEvent {
@@ -87,8 +86,9 @@ export function previewToolResult(result: unknown): string | undefined {
 /**
  * 把一条服务端 agent 事件翻译成渲染层通道消息（纯函数，便于单测）。
  * 通道名与载荷保持与旧本地实现一致，渲染层零改动。
+ * （原第三参 `kind` 只用于区分 main/scene/course，会话收敛 2026-09-25 后已无意义，删除。）
  */
-export function translateAgentEvent(e: AgentEvent, childId: string, kind: AgentKind | ParentKind): RendererEvent | null {
+export function translateAgentEvent(e: AgentEvent, childId: string): RendererEvent | null {
   switch (e.type) {
     case "text_delta":
       return { channel: "pi:streaming", payload: { childId, delta: String(e.data?.delta ?? "") } };
@@ -139,7 +139,7 @@ export function translateAgentEvent(e: AgentEvent, childId: string, kind: AgentK
       // 资料推送：渲染层 MaterialsPanel 订阅此通道后自动打开（P4 渲染层新增，见联调点）
       return { channel: "pi:display_content", payload: { childId, ...(e.data ?? {}) } };
     case "page_cmd":
-      // 服务端受控下行指令（scene_command / page_action / page_inspect 的统一通道）：
+      // 服务端受控下行指令（page_action / page_inspect 的统一通道）：
       // 翻译回渲染层既有 pi:page:exec 通道（MaterialsPanel.appCmd 据此执行；执行结果经
       // pi:page:exec:result 回传，再由 ipc-handlers 调 postPageResult 送回服务端配对 requestId）。
       return {
@@ -335,17 +335,17 @@ function openSse(buildUrl: () => string, onEvent: (e: AgentEvent) => void, onErr
   };
 }
 
-/** 提交孩子一轮输入（等待本轮结束；流式增量走 streamChildAgent）。 */
+/** 提交孩子一轮输入（等待本轮结束；流式增量走 streamChildAgent）。会话收敛后固定主会话。 */
 export async function promptChild(
   childId: string,
   text: string,
-  opts: { session?: AgentKind; images?: Array<{ type: "image"; mimeType: string; data: string }>; pageEvents?: string } = {},
+  opts: { images?: Array<{ type: "image"; mimeType: string; data: string }>; pageEvents?: string } = {},
   token = sessionToken()
 ): Promise<void> {
   await serverFetch(`/agent/${encodeURIComponent(childId)}/prompt`, {
     method: "POST",
     token,
-    body: { text, session: opts.session ?? "main", pageEvents: opts.pageEvents, images: opts.images },
+    body: { text, pageEvents: opts.pageEvents, images: opts.images },
     timeoutMs: 120000,
   });
 }
@@ -364,7 +364,7 @@ export async function promptParent(
   });
 }
 
-/** 中止孩子 agent 当前一轮（ISSUE-095；session 省略=该孩子全部会话）。 */
+/** 中止孩子 agent 当前一轮（ISSUE-095）。 */
 export async function abortChildAgent(childId: string, session?: string, token = sessionToken()): Promise<void> {
   await serverFetch(`/agent/${encodeURIComponent(childId)}/abort`, {
     method: "POST",
@@ -552,9 +552,9 @@ export async function getChildHistory(childId: string, session?: string, token =
   return mapHistoryMessages(r.messages ?? []);
 }
 
-/** 重置孩子会话（服务端 newSession）。 */
-export async function resetChildSession(childId: string, session?: string, token = sessionToken()): Promise<void> {
-  await serverFetch(`/agent/${encodeURIComponent(childId)}/reset`, { method: "POST", token, body: { session } });
+/** 重置孩子会话（服务端 newSession；会话收敛后固定主会话，不再有 session 参数）。 */
+export async function resetChildSession(childId: string, token = sessionToken()): Promise<void> {
+  await serverFetch(`/agent/${encodeURIComponent(childId)}/reset`, { method: "POST", token, body: {} });
 }
 
 /**
@@ -600,39 +600,8 @@ export function messageText(message: any): string {
   return t;
 }
 
-/**
- * 从场景会话的 assistant 消息里提取「角色台词」（scene_command say）+ 兜底正文。
- * 与本地 scene:prompt 的台词清洗规则一致：本轮有 say 台词 → 聊天只显示台词（与 HTML 字幕同文，
- * 前缀角色名首字母大写）；无 say → 才显示 assistant 正文。
- */
-export function extractSceneLines(message: any): { lines: Array<{ speaker: string; text: string }>; texts: string[] } {
-  const lines: Array<{ speaker: string; text: string }> = [];
-  const texts: string[] = [];
-  if (!message || !Array.isArray(message.content)) return { lines, texts };
-  for (const c of message.content) {
-    if (!c) continue;
-    if (c.type === "text" && typeof c.text === "string" && c.text.trim()) {
-      texts.push(c.text.trim());
-    } else if (c.type === "toolCall" && c.name === "scene_command") {
-      const args = typeof c.arguments === "string" ? safeJson(c.arguments) : c.arguments;
-      const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-      if (a.command === "say" && typeof a.text === "string" && a.text.trim()) {
-        const cid = String(a.character || "").trim();
-        const speaker = cid ? cid.charAt(0).toUpperCase() + cid.slice(1) + ":" : "";
-        lines.push({ speaker, text: a.text.trim() });
-      }
-    }
-  }
-  return { lines, texts };
-}
-
-function safeJson(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return undefined;
-  }
-}
+// extractSceneLines（从 scene_command say 提取角色台词）已随场景会话下线删除（2026-09-25）。
+// 本文件不再需要它，web shim 的同名副本也一并删除。
 
 /**
  * 把服务端 agent 事件流桥接到渲染层（孩子侧）——除 translateAgentEvent 的 pi:* 通道外，
@@ -679,7 +648,7 @@ function bridgeAgentEventCore(
   // 新轮开始：清空残留缓冲（上轮异常中断未 flush 的内容不带入本轮）
   if (e.type === "user_message") turnTextBuffers.delete(bufferKey);
 
-  const base = translateAgentEvent(e, childId, "main");
+  const base = translateAgentEvent(e, childId);
   // 注意：message_end 的翻译结果（pi:message_end）也要发——但 pi:reply 的回发已推迟到
   // turn_end（见 turnTextBuffers），这里其余事件照常转发。
   if (base && e.type !== "message_end") send(base.channel, base.payload);

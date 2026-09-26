@@ -40,13 +40,8 @@ const api = {
   // ISSUE-108：取最近一次家长报表（parent_display_report 推送并落服务端 settings）
   parentReportGet: () => ipcRenderer.invoke("parent-report:get"),
 
-  // ISSUE-061：场景对话会话（scene agent）事件
-  onSceneReply: (callback: (data: { childId: string; courseKey: string; text: string }) => void) =>
-    registerListener("scene:reply", callback),
-  onSceneReplyEnd: (callback: (data: { childId: string; courseKey: string }) => void) =>
-    registerListener("scene:reply_end", callback),
-  onSceneReplyError: (callback: (data: { childId: string; courseKey: string; error: string }) => void) =>
-    registerListener("scene:reply_error", callback),
+  // 场景对话会话（onSceneReply* / scenePrompt / sceneHistory / scenePrepare / sceneStop /
+  // sceneTransfer / sceneVoiceSave）已随场景会话下线删除（2026-09-25）。
   onPiSessionReset: (callback: (data: { childId: string }) => void) =>
     registerListener("pi:session_reset", callback),
   // ISSUE-019/047：课程时间段提醒（上课/下课）+ 孩子端自建定时提醒（custom，type 含 "custom"）
@@ -75,16 +70,14 @@ const api = {
   },
 
   // Pi actions (renderer -> main)
-  // ISSUE-029 任务2：courseKey（<topic>:<title>）有值时进入/路由到课程子会话（英语课），否则主会话
-  piStartChild: (childId: string, courseKey?: string) =>
-    ipcRenderer.invoke("pi:start_child", childId, courseKey),
+  // 会话收敛（2026-09-25）：一个孩子只有一条主会话，courseKey 参数已删除（前端不再切会话）。
+  piStartChild: (childId: string) => ipcRenderer.invoke("pi:start_child", childId),
   piStartParent: () => ipcRenderer.invoke("pi:start_parent"),
   piPrompt: (
     childId: string,
     text: string,
-    images?: Array<{ type: "image"; mimeType: string; data: string }> | null,
-    courseKey?: string
-  ) => ipcRenderer.invoke("pi:prompt", childId, text, images || null, courseKey),
+    images?: Array<{ type: "image"; mimeType: string; data: string }> | null
+  ) => ipcRenderer.invoke("pi:prompt", childId, text, images || null),
   // 文件上传落盘（ISSUE-008）：保存到 data/children/<childId>/uploads/，返回相对路径
   saveUpload: (childId: string, name: string, mime: string, data: ArrayBuffer) =>
     ipcRenderer.invoke("file:save_upload", { childId, name, mime, data }),
@@ -136,19 +129,8 @@ const api = {
   // MATERIAL 保鲜：恢复展示的服务端共享 html 内容刷新（filePath → 最新 content）
   materialsRefresh: (filePath: string) => ipcRenderer.invoke("materials:refresh", filePath),
 
-  // ISSUE-061：场景对话（scene agent）调用
-  scenePrompt: (childId: string, courseKey: string, text: string) =>
-    ipcRenderer.invoke("scene:prompt", childId, courseKey, text),
-  sceneHistory: (childId: string, courseKey: string) =>
-    ipcRenderer.invoke("scene:history", childId, courseKey),
-  scenePrepare: (childId: string, courseKey: string) =>
-    ipcRenderer.invoke("scene:prepare", childId, courseKey),
-  sceneStop: (childId: string, courseKey: string) =>
-    ipcRenderer.invoke("scene:stop", childId, courseKey),
-  sceneTransfer: (childId: string, courseKey: string) =>
-    ipcRenderer.invoke("scene:transfer", childId, courseKey),
-  sceneVoiceSave: (childId: string, data: ArrayBuffer) =>
-    ipcRenderer.invoke("voice:scene_save", childId, data),
+  // 场景对话调用（scenePrompt / sceneHistory / scenePrepare / sceneStop / sceneTransfer /
+  // sceneVoiceSave）已随场景会话下线删除（2026-09-25）。
   piDispose: (childId: string) => ipcRenderer.invoke("pi:dispose", childId),
   piReset: (childId: string) => ipcRenderer.invoke("pi:reset", childId),
   // ISSUE-042：家长会话重置

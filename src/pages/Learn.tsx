@@ -270,24 +270,9 @@ export default function Learn({ child, onExit }: Props) {
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false); // ISSUE-068：停止中锁，保持发送禁用直到 SDK 真正 idle
   const childIdRef = useRef(child.childId);
-  // ISSUE-029 任务2：当前课程子会话（英语课）。空串 = 主会话；`english:<title>` = 英语课按课隔离子会话
-  const [currentCourseKey, setCurrentCourseKey] = useState("");
-  const courseKeyRef = useRef("");
-  const courseTitle = currentCourseKey
-    ? currentCourseKey.slice(currentCourseKey.indexOf(":") + 1) || currentCourseKey
-    : "";
-  // ISSUE-061：场景对话模式——场景页（pi-scenario）就绪后聊天/语音球消息路由到独立 scene 会话，
-  // 孩子课程会话挂起待命；显示场景横条，「结束场景对话」触发转交总结后回到课程会话。
-  const [sceneMode, setSceneMode] = useState(false);
-  const sceneModeRef = useRef(false);
-  const applySceneMode = useCallback((on: boolean) => {
-    sceneModeRef.current = on;
-    setSceneMode(on);
-  }, []);
-  // ISSUE-061：场景对话的会话 key —— 优先用当前课程子会话（courseKeyRef）；
-  // 孩子在主会话直接打开场景资料（未进课程）时，从资料 filePath/title 派生
-  // `<topic>:<title>` 作为 scene 会话隔离 key（不切换课程会话，只建 scene 会话）。
-  const sceneFallbackKeyRef = useRef("");
+  // 会话收敛（2026-09-25）：前端不再主动切会话——一个孩子只有一条主会话，
+  // 课程子会话（ISSUE-029）与场景会话（ISSUE-061）都已下线。
+  // 唯一会「新开一条会话」的入口是聊天框里的 /reset 命令（以及服务端的跨天自动新建）。
   // ISSUE-019：课程时间段提醒横幅（上课/下课；顶部 1/3 区域，常驻到点击关闭；含提醒方式）
   const [classReminder, setClassReminder] = useState<{
     type: "start" | "end" | "custom";
@@ -416,14 +401,11 @@ export default function Learn({ child, onExit }: Props) {
 
   useEffect(() => {
     childIdRef.current = child.childId;
-    courseKeyRef.current = currentCourseKey;
-    // ISSUE-029 任务2：currentCourseKey 变化即切换会话——英语课=按课隔离子会话（干净窗口、
-    // 主进程先 dispose 旧子会话再创建），空串=主会话（continueRecent 带原中文课历史）。
-    // 切换时先清空旧消息/资料，防跨会话残留（随后 pi:start_child 回填新会话 history）。
+    // 进孩子页：清空旧消息/资料，再回填服务端当天会话历史（跨天由服务端裁决新建）。
     setMessages([]);
     setMaterials([]);
     setSelectedMaterialId(null);
-    window.api.piStartChild(child.childId, currentCourseKey || undefined).then((r: any) => {
+    window.api.piStartChild(child.childId).then((r: any) => {
       if (r?.success) {
         if (Array.isArray(r.history) && r.history.length > 0) {
           setMessages(
@@ -462,20 +444,11 @@ export default function Learn({ child, onExit }: Props) {
         if (typeof r.materialsLimit === "number" && r.materialsLimit > 0) {
           materialsLimitRef.current = r.materialsLimit;
         }
-        // ISSUE-029 任务2：进入英语子会话后自动注入开场教学指令——复用 handleSend 完整流程
-        // （hiddenUser 不渲染孩子气泡，但创建工作气泡），thinking/工具调用实时可见，
-        // 孩子能看到 AI 正在准备课程，不再面对空白界面等待。
-        if (currentCourseKey) {
-          const courseTitle = currentCourseKey.slice(currentCourseKey.indexOf(":") + 1);
-          void handleSend(`[进入英语课:${courseTitle}] 我准备好了，请开始本课的英文教学。`, {
-            hiddenUser: true,
-          });
-        }
       } else {
         console.error("Failed to start session:", r?.error);
       }
     });
-  }, [child.childId, currentCourseKey]);
+  }, [child.childId]);
 
   // 更新当前工作气泡（按 id 定位）
   const patchWorking = useCallback((patch: (m: ChatMessage) => ChatMessage) => {
@@ -516,21 +489,11 @@ export default function Learn({ child, onExit }: Props) {
     // ISSUE-008/016：AI 展示新材料（display_content）时自动展开展示区（即便当前折叠）
     setPanelCollapsed(false);
     setSelectedMaterialId(materials[materials.length - 1].id);
-    // 场景课恢复路径：自动打开的资料若本身就是场景页（内容含 pi-scenario 标记），
-    // 同样激活场景模式（不进课程也能与场景对话）。不设 sceneOpenedTurnRef——没有本轮的
-    // 课程 agent 收尾可衔接，仅保证下一条消息路由到 scene 会话。
-    const last = materials[materials.length - 1];
-    if (
-      last &&
-      last.format === "html" &&
-      typeof last.content === "string" &&
-      last.content.includes("pi-scenario")
-    ) {
-      activateSceneFromTool(last.filePath, last.title);
-    }
+    // 会话收敛（2026-09-25）：不再需要「这份资料是不是场景页」的判定——场景页就是普通资料页，
+    // 消息一律发主会话，没有需要切过去的独立角色会话。
   }, [materials]);
 
-  // 把一份资料（display_content 产物）写入 materials 列表并自动打开；场景判定内联。
+  // 把一份资料（display_content 产物）写入 materials 列表并自动打开。
   // 旧路径（tool_end 的 result.details.panelContent）与新路径（pi:display_content 事件）共用。
   function applyDisplayContent(panel: {
     filePath?: string;
@@ -540,15 +503,6 @@ export default function Learn({ child, onExit }: Props) {
     /** KB P1：展示类型（网页/图片/音频/视频/文本），由服务端从扩展名现算后随事件下发；缺省=网页 */
     kind?: MaterialKind;
   }) {
-    // 场景课全托管：命中即置交棒标记并**立即激活场景会话**——不再等 iframe 的
-    // scene.ready（app 内沙箱 iframe 正文脚本可能不执行，曾导致永不跳转）。
-    const isScene =
-      panel.isScene === true ||
-      (typeof panel.content === "string" && panel.content.includes("pi-scenario"));
-    if (isScene) {
-      sceneOpenedTurnRef.current = true;
-      activateSceneFromTool(panel.filePath, panel.title);
-    }
     const filePath = panel.filePath;
     setMaterials((prev) => {
       const lim = materialsLimitRef.current;
@@ -635,15 +589,10 @@ export default function Learn({ child, onExit }: Props) {
   // 正式回复到达 —— 在同一个气泡里替换为正式消息
   const handleReply = useCallback((data: { childId: string; text: string }) => {
     if (data.childId !== childIdRef.current) return;
-    // ISSUE-029 任务2：英语课「举手标记」检测——剥除标记后展示；若在主会话收到标记，
-    // 自动切入对应英语子会话（切换由基础设施完成；子会话打开后会自动注入开场教学指令）。
-    const hand = data.text.match(/\[进入英语课[:：]([^\]]+)\]/);
-    const display = hand ? data.text.replace(/\[进入英语课[:：][^\]]+\]/g, "").trim() : data.text;
-    if (hand && !courseKeyRef.current) {
-      const courseName = hand[1].trim();
-      if (courseName) setCurrentCourseKey(`english:${courseName}`);
-    }
-    if (!display) return; // 回复只剩标记（如刚切会话的过渡轮）则不渲染空气泡
+    // 会话收敛（2026-09-25）：原来的「[进入英语课:课名] 举手标记 → 自动切课程子会话」已删除，
+    // 现在收到什么都只当普通正文展示（模型不再需要这个标记）。
+    const display = data.text;
+    if (!display) return; // 空正文不渲染空气泡
     const id = workingIdRef.current;
     workingIdRef.current = null;
     setMessages((prev) => {
@@ -676,151 +625,11 @@ export default function Learn({ child, onExit }: Props) {
     setBusy(false);
   }, []);
 
-  // ---- ISSUE-061：场景对话（scene agent）----
-  // 场景页（pi-scenario）就绪 → 切场景模式：聊天/语音球消息路由到独立 scene 会话。
-  // 会话 key 优先课程子会话；主会话直接打开的场景资料用 filePath 前段 topic + 资料标题派生，
-  // 保证「不进课程也能用语音球和场景对话」（2026-09-07 实测语音识别成功但无反应=被 courseKey 门槛静默丢弃）。
-  // 场景会话激活的共用实现：
-  //  - 工具级路径（display_content 返回场景页 → handleToolEnd 调用，不依赖 iframe 就绪）
-  //  - 页面就绪路径（iframe scene.ready → handleSceneActive 调用，兜底）
-  // 无课程会话时按资料 filePath/title 派生 `<topic>:<title>` 作 scene 会话 key；
-  // 派生不出（资料缺 filePath/标题）则不激活并明确提示。
-  function activateSceneFromTool(filePath: string | undefined, title: string | undefined) {
-    const ck = courseKeyRef.current;
-    if (!ck) {
-      const fp = String(filePath || "").replace(/^materials\//, "");
-      const topic = fp ? fp.split("/")[0] : "";
-      const t = String(title || "").trim();
-      console.warn("[Learn-scene] 工具激活：无课程会话，尝试按资料派生", { fp, topic, title: t });
-      sceneFallbackKeyRef.current = topic && t ? `${topic}:${t}` : "";
-      if (!sceneFallbackKeyRef.current) {
-        console.warn("[Learn-scene] fallback key 为空 → 场景模式未激活", { fp, title: t });
-        applySceneMode(false);
-        return;
-      }
-    }
-    applySceneMode(true);
-    // 场景就绪：后台预建场景会话/预热（每场景课程首次触发一次），HTML 会显示「正在准备…」
-    const key = resolveSceneKey();
-    if (key && scenePreparedForRef.current !== key) {
-      scenePreparedForRef.current = key;
-      void prepareSceneFlow(key);
-    }
-    // 场景历史回填：场景对话独立持久在 scene jsonl（主/课程会话 history 不含），激活场景会话时
-    // 把历史拉回聊天框——否则每次重进孩子模式，之前的场景对话在 UI 上「消失」（agent 记忆仍在）。
-    if (key) void restoreSceneHistory(key);
-  }
-
-  // 场景会话历史 → 聊天框（scene:history）。仅当该场景确有历史时才替换当前消息，
-  // 保持聊天框 = 场景对话的完整视角（与 piStartChild 恢复主会话 history 的体验对齐）。
-  const sceneHistLoadingRef = useRef("");
-  async function restoreSceneHistory(key: string) {
-    if (!key || sceneHistLoadingRef.current === key) return;
-    sceneHistLoadingRef.current = key;
-    try {
-      const r: any = await window.api.sceneHistory(childIdRef.current, key);
-      if (r?.success && Array.isArray(r.history) && r.history.length) {
-        setMessages(
-          r.history.map((m: any) => ({
-            id: nextId(),
-            role: m.role === "user" ? "user" : "ai",
-            text: typeof m.text === "string" ? m.text : "",
-            time: m.time || nowLabel(),
-          }))
-        );
-      }
-    } catch (e) {
-      console.warn("[Learn-scene] 恢复场景历史失败", e);
-    } finally {
-      sceneHistLoadingRef.current = "";
-    }
-  }
-
-  function handleSceneActive() {
-    const sel = materials.find((m) => m.id === selectedMaterialId);
-    activateSceneFromTool(sel?.filePath, sel?.title);
-  }
-
-  // 场景对话目标会话 key（课程会话优先，其次按资料派生的场景会话）
-  const resolveSceneKey = useCallback(
-    () => courseKeyRef.current || sceneFallbackKeyRef.current || "",
-    []
-  );
-
-  // 场景「准备」（每个场景课程首次就绪触发一次）：预建 scene 会话+取课文+预热 TTS。
-  // 期间 HTML 显示「正在准备场景伙伴…」；就绪后聊天给一条引导（孩子能感知后端在准备）。
-  const scenePreparedForRef = useRef("");
-  // ISSUE-061 全托管：场景课由学习 agent 打开后，课程轮结束即让场景伙伴开场接管
-  const sceneOpenedTurnRef = useRef(false); // 本工作轮学习 agent 是否刚打开过场景资料
-  const sceneIntroDoneRef = useRef<Set<string>>(new Set());
-  const lastAskTextRef = useRef(""); // 最近一次孩子向学习 agent 发送的文本（交棒开场时引用）
-
-  // 共享 html 资料保鲜：恢复后逐份拉服务端最新内容就地替换（scene/课程 html 更新后左侧自动刷新）
-  async function refreshStaleMaterials(mats: Material[]) {
-    const targets = mats.filter(
-      (m) =>
-        (m.kind ?? "html") === "html" &&
-        m.format === "html" &&
-        m.filePath &&
-        !m.filePath.startsWith("outputs/") &&
-        /^[^/]+\/.+\.(html|htm)$/i.test(String(m.filePath).replace(/^materials\//, ""))
-    );
-    for (const m of targets) {
-      try {
-        const r: any = await window.api.materialsRefresh(m.filePath);
-        if (r?.success && typeof r.content === "string" && r.content !== m.content) {
-          setMaterials((prev) => prev.map((x) => (x.id === m.id ? { ...x, content: r.content, time: nowLabel() } : x)));
-        }
-      } catch {
-        /* 单份刷新失败跳过 */
-      }
-    }
-  }
-
-  // 场景伙伴自动开场：只建一个工作气泡并 scenePrompt（不依赖语音球），角色用英文台词接孩子的话
-  const launchSceneIntro = useCallback(
-    async (ck: string) => {
-      if (!ck || sceneIntroDoneRef.current.has(ck)) return;
-      if (workingIdRef.current) return; // 课程 agent 轮还在收尾，等 reply_end 重入
-      sceneIntroDoneRef.current.add(ck);
-      const id = nextId();
-      workingIdRef.current = id;
-      setMessages((prev) => [...prev, { id, role: "ai" as const, text: "", working: true, workingSince: Date.now(), time: nowTime() }]);
-      setBusy(true);
-      materialsPanelRef.current?.sceneAgentBusy(true);
-      const ask = (lastAskTextRef.current || "").slice(0, 140);
-      const promptText = ask
-        ? `[开场] 孩子刚才请求学习本课，原话：「${ask}」。现在场景资料已打开，请你作为场景伙伴正式开场：让在场角色用英语向孩子问好并邀请他开口（一两句英文台词 + 配 1~2 个场景动作即可），然后等待孩子说话。`
-        : "[开场] 孩子打开了本课场景资料。请你作为场景伙伴开场欢迎孩子，并邀请他用英语对话（一两句英文台词 + 简单动作即可），然后等待孩子说话。";
-      const result = await window.api.scenePrompt(child.childId, ck, promptText);
-      if (!result.success && workingIdRef.current === id) {
-        workingIdRef.current = null;
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === id
-              ? { ...m, text: `⚠️ 场景伙伴暂时没准备好：${result.error || "请稍后再试"}`, working: false }
-              : m
-          )
-        );
-        setBusy(false);
-        materialsPanelRef.current?.sceneAgentBusy(false);
-      }
-    },
-    []
-  );
-  const prepareSceneFlow = useCallback(
-    async (ck: string) => {
-      materialsPanelRef.current?.scenePreparing(true);
-      try {
-        await window.api.scenePrepare(childIdRef.current, ck);
-      } catch {
-        /* 准备失败不阻断：首次说话时仍会自动建会话 */
-      }
-      materialsPanelRef.current?.scenePreparing(false);
-      addAiMessage("🎭 场景伙伴已就绪！按住 🎤 语音球说话，或用键盘打字，用英语和角色聊天吧～");
-    },
-    []
-  );
+  // ---- 场景会话（scene agent）整块已下线（2026-09-25）----
+  // 删除内容：场景模式开关、按资料派生 scene key、场景会话历史回填、场景伙伴开场、
+  // 场景「准备」预热、语音球→场景会话、scene:reply* 事件处理、「结束场景对话」转交。
+  // 现在场景页就是普通资料页：它发的 page:event / scene-ready 上报照旧进 agent（主会话），
+  // 语音走普通语音输入（ChatWindow 的麦克风 → 主会话）。
 
   // 学习 agent 回复收尾（pi:reply_end）
   const handleReplyEnd = useCallback(() => {
@@ -844,150 +653,32 @@ export default function Learn({ child, onExit }: Props) {
         })
       );
     }
-    // 场景课全托管：本工作轮学习 agent 刚打开过场景资料 → 课程收尾后由场景伙伴开场接管
-    if (sceneOpenedTurnRef.current && sceneModeRef.current) {
-      sceneOpenedTurnRef.current = false;
-      const ck = resolveSceneKey();
-      if (ck) void launchSceneIntro(ck);
-    }
-  }, [launchSceneIntro, resolveSceneKey]);
+  }, []);
 
-  // 场景语音球：录音结束（voice/scene 已由主进程落盘）+ ASR 文本 → 场景会话
-  const handleSceneVoice = useCallback(
-    async (text: string, buf: ArrayBuffer) => {
-      const ck = resolveSceneKey();
-      if (!ck) {
-        addAiMessage("🎭 还没找到可对话的场景，请让学习伙伴先打开场景资料，或从课程入口进入本课。");
-        return;
-      }
-      if (workingIdRef.current) return; // 上一轮还在进行，忽略本轮
-      let audioRel = "";
+
+  // 共享 html 资料保鲜：恢复后逐份拉服务端最新内容就地替换（课程 html 更新后左侧自动刷新）
+  async function refreshStaleMaterials(mats: Material[]) {
+    const targets = mats.filter(
+      (m) =>
+        (m.kind ?? "html") === "html" &&
+        m.format === "html" &&
+        m.filePath &&
+        !m.filePath.startsWith("outputs/") &&
+        /^[^/]+\/.+\.(html|htm)$/i.test(String(m.filePath).replace(/^materials\//, ""))
+    );
+    for (const m of targets) {
       try {
-        const r: any = await window.api.sceneVoiceSave(childIdRef.current, buf);
-        if (r?.success) audioRel = (r.rel as string) || "";
+        const r: any = await window.api.materialsRefresh(m.filePath);
+        if (r?.success && typeof r.content === "string" && r.content !== m.content) {
+          setMaterials((prev) => prev.map((x) => (x.id === m.id ? { ...x, content: r.content, time: nowLabel() } : x)));
+        }
       } catch {
-        /* 落盘失败不阻断 */
+        /* 单份刷新失败跳过 */
       }
-      const userMsg: ChatMessage = {
-        id: nextId(),
-        role: "user",
-        text,
-        audioPath: "", // 场景语音回放 v1 不做（文件在 voice/scene/，后续挑选分析用）
-        time: nowTime(),
-      };
-      const workingMsg: ChatMessage = {
-        id: nextId(),
-        role: "ai",
-        text: "",
-        thinking: "",
-        tools: [],
-        working: true, workingSince: Date.now(),
-        time: nowTime(),
-      };
-      workingIdRef.current = workingMsg.id;
-      setMessages((prev) => [...prev, userMsg, workingMsg]);
-      setBusy(true);
-      // ISSUE-061：场景页显示「角色回应中…」直到本轮回复到达
-      materialsPanelRef.current?.sceneAgentBusy(true);
-      const attach = audioRel ? `\n【附件音频：${audioRel.split("/").pop()}|${audioRel}】` : "";
-      const promptText =
-        `[语音识别输入，可能存在同音字/断句等识别错误，请结合上下文理解并推理出正确内容]\n${text}${attach}`;
-      const markError = (errText: string) => {
-        const id = workingIdRef.current;
-        workingIdRef.current = null;
-        setMessages((prev) => {
-          if (id && prev.some((m) => m.id === id)) {
-            return prev.map((m) => (m.id === id ? { ...m, text: `⚠️ ${errText}`, working: false } : m));
-          }
-          return [...prev, { id: nextId(), role: "ai", text: `⚠️ ${errText}`, time: nowTime() }];
-        });
-        setBusy(false);
-        materialsPanelRef.current?.sceneAgentBusy(false);
-      };
-      try {
-        const result: any = await window.api.scenePrompt(childIdRef.current, ck, promptText);
-        if (!result?.success) markError(result?.error || "发送失败");
-      } catch (e: any) {
-        markError(e?.message || "网络错误");
-      }
-    },
-    []
-  );
-
-  // scene:reply —— 填到工作气泡（与 handleReply 同款，但不做「举手切课程」标记解析）
-  const handleSceneReply = useCallback((data: { childId: string; courseKey: string; text: string }) => {
-    if (data.childId !== childIdRef.current) return;
-    const text = (data.text || "").trim();
-    if (!text) return;
-    const id = workingIdRef.current;
-    workingIdRef.current = null;
-    setMessages((prev) => {
-      if (id && prev.some((m) => m.id === id)) {
-        return prev.map((m) => (m.id === id ? { ...m, text, working: false } : m));
-      }
-      return [...prev, { id: nextId(), role: "ai", text, time: nowTime() }];
-    });
-    setBusy(false);
-    materialsPanelRef.current?.sceneAgentBusy(false);
-  }, []);
-
-  const handleSceneReplyEnd = useCallback((data: { childId: string }) => {
-    if (data.childId !== childIdRef.current) return;
-    const id = workingIdRef.current;
-    workingIdRef.current = null;
-    setStopping(false);
-    setBusy(false);
-    materialsPanelRef.current?.sceneAgentBusy(false);
-    // ISSUE-126 兜底：同主会话——空轮收尾不再永久「等待模型返回」
-    if (id) {
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== id || !m.working) return m;
-          if (m.text || (m.tools && m.tools.length > 0)) return { ...m, working: false };
-          return {
-            ...m,
-            working: false,
-            text: "⚠️ 本轮没有收到回复（可能已中止，或模型额度用尽/服务异常），可以再试一次。",
-          };
-        })
-      );
     }
-  }, []);
+  }
 
-  const handleSceneReplyError = useCallback((data: { childId: string; error: string }) => {
-    if (data.childId !== childIdRef.current) return;
-    const id = workingIdRef.current;
-    workingIdRef.current = null;
-    setMessages((prev) => {
-      if (id && prev.some((m) => m.id === id)) {
-        return prev.map((m) =>
-          m.id === id ? { ...m, text: `⚠️ ${data.error}`, working: false } : m
-        );
-      }
-      return [...prev, { id: nextId(), role: "ai", text: `⚠️ ${data.error}`, time: nowTime() }];
-    });
-    setBusy(false);
-    setStopping(false);
-    materialsPanelRef.current?.sceneAgentBusy(false);
-  }, []);
 
-  // 「结束场景对话」：立即切回课程会话 UI，主进程把场景记录转交课程 agent 收尾总结
-  const handleEndScene = useCallback(async () => {
-    const ck = resolveSceneKey();
-    applySceneMode(false);
-    sceneFallbackKeyRef.current = ""; // 结束场景对话后清除按资料派生的 key（避免误沿用）
-    if (!ck) return;
-    try {
-      await window.api.sceneTransfer(childIdRef.current, ck);
-    } catch {
-      /* 转交失败不阻断（场景 jsonl 仍是真源） */
-    }
-    try {
-      await window.api.sceneStop(childIdRef.current, ck);
-    } catch {
-      /* 忽略 */
-    }
-  }, [applySceneMode]);
 
 
   // 停止当前轮的 agent 运行（发送按钮变为停止按钮后点击触发）：
@@ -1062,23 +753,14 @@ export default function Learn({ child, onExit }: Props) {
     window.api.pageEvent(childIdRef.current, evt).catch(() => {});
   }, []);
 
-  // 主进程下发的页面指令（agent 调 page_action/page_inspect/scene_command）→ 面板执行 → 回执
+  // 主进程下发的页面指令（agent 调 page_action/page_inspect）→ 面板执行 → 回执
   const handlePageExec = useCallback(
     async (data: { childId: string; requestId: string; action: string; params: any }) => {
       if (data.childId !== childIdRef.current) return;
       const panel = materialsPanelRef.current;
-      // ISSUE-061：action=scene → 场景页下行指令（面板直接 postMessage 给场景页，不走桥白名单）
-      let result: PageExecResultUplink;
-      if (data.action === "scene") {
-        const { command, ...rest } = data.params || {};
-        result = panel
-          ? await panel.scene(String(command ?? ""), rest)
-          : { type: "page:exec:result", requestId: data.requestId, ok: false, error: "当前没有打开的学习资料页面" };
-      } else {
-        result = panel
-          ? await panel.exec(data.action as PageAction, data.params || {})
-          : { type: "page:exec:result", requestId: data.requestId, ok: false, error: "当前没有打开的学习资料页面" };
-      }
+      const result: PageExecResultUplink = panel
+        ? await panel.exec(data.action as PageAction, data.params || {})
+        : { type: "page:exec:result", requestId: data.requestId, ok: false, error: "当前没有打开的学习资料页面" };
       try {
         await window.api.pageExecResult(childIdRef.current, data.requestId, result);
       } catch {
@@ -1101,14 +783,10 @@ export default function Learn({ child, onExit }: Props) {
     window.api.onPiVisionModelSwitched(handleVisionSwitched);
     window.api.onClassReminder(handleClassReminder);
     window.api.onPageExec(handlePageExec);
-    // ISSUE-061：场景会话（scene agent）回复事件
-    window.api.onSceneReply(handleSceneReply);
-    window.api.onSceneReplyEnd(handleSceneReplyEnd);
-    window.api.onSceneReplyError(handleSceneReplyError);
     return () => {
       window.api.piRemoveListeners();
     };
-  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleToolProgress, handleDisplayContent, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec, handleSceneReply, handleSceneReplyEnd, handleSceneReplyError]);
+  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleToolProgress, handleDisplayContent, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec]);
 
   // 向聊天追加一条 AI 消息（命令反馈 / 系统提示用）
   function addAiMessage(text: string) {
@@ -1175,18 +853,10 @@ export default function Learn({ child, onExit }: Props) {
       await handleCommand(trimmed);
       return;
     }
-    // 记录最近一次孩子向学习 agent 说的话（场景交棒开场用）；新轮开始清掉上一轮的“打开过场景”标记
-    lastAskTextRef.current = trimmed;
-    sceneOpenedTurnRef.current = false;
-    // ISSUE-061：场景对话模式（场景页就绪）→ 聊天消息也路由到独立 scene 会话。
-    // 会话 key = 课程子会话优先，未进课程时用当前场景资料派生的 key（resolveSceneKey）。
-    const sceneTargetKey = resolveSceneKey();
-    const useScene = sceneModeRef.current && !!sceneTargetKey;
     const images = opts?.images || [];
     const textFiles = opts?.textFiles || [];
     // 语音输入：先把录音落盘（历史恢复时据此播放），失败不影响发送。
     // 多段（ISSUE-021）由主进程 voice:merge 拼接成单个 WAV；单段沿用原 saveUpload。
-    // 场景模式下单段语音改落 voice/scene 目录（与场景语音球一致，便于挑选分析）。
     let audioPath: string | undefined;
     let audioRef = "";
     let audioData: string | undefined;
@@ -1195,9 +865,7 @@ export default function Learn({ child, onExit }: Props) {
         audioData = opts.audios[0];
         try {
           const buf = base64ToArrayBuffer(opts.audios[0]);
-          const r: any = useScene
-            ? await window.api.sceneVoiceSave(child.childId, buf)
-            : await window.api.saveUpload(child.childId, "语音录音.webm", "audio/webm", buf);
+          const r: any = await window.api.saveUpload(child.childId, "语音录音.webm", "audio/webm", buf);
           if (r?.success) {
             audioPath = r.path as string;
             audioRef = (r.ref as string) || "";
@@ -1302,15 +970,11 @@ export default function Learn({ child, onExit }: Props) {
           data: comma >= 0 ? img.dataUrl.slice(comma + 1) : img.dataUrl,
         };
       });
-      if (useScene) materialsPanelRef.current?.sceneAgentBusy(true); // 场景页「角色回应中…」
-      const result = useScene
-        ? await window.api.scenePrompt(child.childId, sceneTargetKey, promptText)
-        : await window.api.piPrompt(
-            child.childId,
-            promptText,
-            sdkImages.length ? sdkImages : undefined,
-            courseKeyRef.current || undefined
-          );
+      const result = await window.api.piPrompt(
+        child.childId,
+        promptText,
+        sdkImages.length ? sdkImages : undefined
+      );
       if (!result.success) {
         // 若 pi:reply_error 已处理则 workingIdRef 已清空，跳过
         const id = workingIdRef.current;
@@ -1324,7 +988,6 @@ export default function Learn({ child, onExit }: Props) {
             )
           );
           setBusy(false);
-          if (useScene) materialsPanelRef.current?.sceneAgentBusy(false);
         }
       }
     } catch (e: any) {
@@ -1339,7 +1002,6 @@ export default function Learn({ child, onExit }: Props) {
           )
         );
         setBusy(false);
-        if (useScene) materialsPanelRef.current?.sceneAgentBusy(false);
       }
     }
   }
@@ -1563,9 +1225,6 @@ export default function Learn({ child, onExit }: Props) {
               onPageEvent={handlePageEvent}
               onCollapse={() => setPanelCollapsed(true)}
               matFontSize={matFontSize}
-              onSceneActive={handleSceneActive}
-              onSceneVoice={handleSceneVoice}
-              onSceneMicNotice={(msg) => addAiMessage(`🎤 ${msg}`)}
             />
           ) : (
             // ISSUE-016：学习进度等其它展示页同样可折叠（悬浮折叠按钮，不侵入组件内部布局）
@@ -1606,77 +1265,8 @@ export default function Learn({ child, onExit }: Props) {
               </div>
             ) : (
               <>
-                {/* ISSUE-029 任务2：英语课子会话模式横条——显示当前课程 + 退出回主会话 */}
-                {currentCourseKey && (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 8,
-                      padding: "6px 12px",
-                      background: "#E6F1FB",
-                      borderBottom: "1px solid #B5D4F4",
-                      flex: "0 0 auto",
-                    }}
-                  >
-                    <span style={{ fontWeight: 500, fontSize: 13, color: "#0C447C", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {"🌍 英语课 · " + courseTitle}
-                    </span>
-                    <button
-                      onClick={() => {
-                        void handleEndScene(); // 结束场景对话（若有）+ 转交总结
-                        setCurrentCourseKey("");
-                      }}
-                      style={{
-                        border: "none",
-                        background: "transparent",
-                        color: "#185FA5",
-                        cursor: "pointer",
-                        fontSize: 13,
-                        fontWeight: 500,
-                        flex: "0 0 auto",
-                      }}
-                      title="退出英语课，回到主会话"
-                    >
-                      退出英语课 ✕
-                    </button>
-                  </div>
-                )}
-                {/* ISSUE-061：场景对话模式横条——语音球/聊天消息走独立场景角色；可一键结束并转交总结 */}
-                {sceneMode && (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 8,
-                      padding: "6px 12px",
-                      background: "#F1EDFB",
-                      borderBottom: "1px solid #D8CCF2",
-                      flex: "0 0 auto",
-                    }}
-                  >
-                    <span style={{ fontWeight: 600, fontSize: 13, color: "#534AB7", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      🎭 场景英语对话中
-                    </span>
-                    <button
-                      onClick={() => void handleEndScene()}
-                      style={{
-                        border: "none",
-                        background: "transparent",
-                        color: "#534AB7",
-                        cursor: "pointer",
-                        fontSize: 13,
-                        fontWeight: 500,
-                        flex: "0 0 auto",
-                      }}
-                      title="结束场景对话：把本次场景对话记录转交课程助手收尾总结"
-                    >
-                      结束场景对话 ✕
-                    </button>
-                  </div>
-                )}
+                {/* 会话收敛（2026-09-25）：英语课子会话横条与场景对话横条都已删除——
+                    一个孩子只有一条主会话，没有「退出课程/结束场景」这回事了。 */}
                 <div className="chat-resize-handle" onPointerDown={chat.startDrag} title="拖动调整聊天宽度" />
                 <button
                   className="chat-collapse-btn"
@@ -1738,11 +1328,8 @@ export default function Learn({ child, onExit }: Props) {
         <TodoModal
           childId={child.childId}
           onClose={() => setShowTodo(false)}
-          // ISSUE-029 任务2：今日计划里的英语课项点击「进入课程」→ 切到英语子会话
-          onStartCourse={(courseKey) => {
-            setShowTodo(false);
-            setCurrentCourseKey(courseKey);
-          }}
+          // 会话收敛（2026-09-25）：「进入课程」按钮已删除——不再有按课隔离的子会话，
+          // 英语课直接告诉学习伙伴「开始学第 X 课」即可（主会话里它自己取教法与资料）。
         />
       )}
 

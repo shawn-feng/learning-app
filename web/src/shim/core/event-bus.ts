@@ -1,6 +1,6 @@
 /**
  * 极简事件总线（设计方案 §4 core/event-bus.ts）：
- * 供 shim 内部分发 pi:* / scene:* / class:reminder / window:* 等事件，
+ * 供 shim 内部分发 pi:* / class:reminder / window:* 等事件，
  * 承接 preload 的 onXxx(callback) → ipcRenderer.on(channel, wrapper) 语义
  * （后续 Phase 4 的 SSE 翻译层 emit，渲染层 onXxx 订阅）。
  *

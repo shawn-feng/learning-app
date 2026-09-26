@@ -7,7 +7,7 @@
  *  B. createTodayPlanTool：date 缺省今天、date 非法回退今天
  *  C. createParentContentTool：method / teachingCopy / assessRubric / htmlPath + 错误分支
  *    （未找到主题 / 未填方法 / 未找到课程 / 未填文案 / 未登记 html 路径）
- *  D. 工具白名单：computeChildToolNames 含 get_today_plan / parent_content（场景会话不含）
+ *  D. 工具白名单：computeChildToolNames 含 parent_content / 今日计划三件套
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -132,11 +132,12 @@ async function main() {
 
   console.log("D. 工具白名单");
   {
-    const main = computeChildToolNames({ materialPanel: false });
-    check("主会话含 get_today_plan", main.includes("get_today_plan"));
-    check("主会话含 parent_content", main.includes("parent_content"));
-    const scene = computeChildToolNames({ materialPanel: false }, "scene");
-    check("场景会话不含计划工具", !scene.includes("get_today_plan") && !scene.includes("parent_content"));
+    const tools1 = computeChildToolNames({ materialPanel: false });
+    // 2026-09-25 顺手修正：旧断言写的是早已改名的 get_today_plan（服务端已无此工具，
+    // 计划改由三个 child_*_plan_list 承担），这里对齐现名。
+    check("会话含 parent_content（查家长库教法/文案）", tools1.includes("parent_content"));
+    check("会话含今日计划三件套", tools1.includes("child_study_plan_list") && tools1.includes("child_exam_plan_list") && tools1.includes("child_life_plan_list"));
+    // 「场景会话不含计划工具」的断言已随场景会话下线删除（2026-09-25）
   }
 
   console.log(failed ? `\n✗ ${failed} 项失败` : "\n✓ 全部通过");

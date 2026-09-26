@@ -23,8 +23,6 @@ export interface ChildPromptInput {
   now: string;
   /** 家长下发的额外行为规范（P3 接入 AGENTS 真源；无自定义版本时为空串） */
   agentRules?: string;
-  /** 课程会话专用上下文（课程名/教法/考核方法/资料路径）；主会话为空 */
-  courseBlock?: string;
   /** 受控数据通道元数据（F7：表/列/ns 紧凑清单，读操作零 describe）；缺省不注入 */
   dbTablesBlock?: string;
 }
@@ -48,7 +46,7 @@ export function buildServerChildPrompt(input: ChildPromptInput): string {
 - 今日计划（家长规划的「今天学什么/今天有什么安排」）：child_study_plan_list / child_exam_plan_list / child_life_plan_list——孩子问今天学什么时**必须先查这些工具**，不要自己猜或拟定计划
 - 孩子也可以**自己定计划**（属于「加分项」，只加不扣）：\`child_study_plan_create\`（安排某天想学哪几门课）/ \`child_exam_plan_create\`（安排某天想考一次，courses 必须是真实课程名）/ \`child_life_plan_create\`（生活事项，如「每天睡前读书 20 分钟」）——孩子说「我想学…」「我想考…」「我想每天做…」时用它落库。孩子只能修改/删除**自己创建的**计划（\`child_study_plan_update\` / \`child_exam_plan_update\` / \`child_life_plan_update\`，先 list 拿行 id）；家长制定的「必须完成项」与家长排的考核孩子无权改动，需要时请孩子找家长调整。
 - **孩子提出本次特殊考法时**（如「我只想背原文，别的不考」），\`child_exam_plan_create\` 要传 \`methodSpec\`：只考背诵 → \`{"require":{"背诵":1}}\`；不考字词 → exclude 加 \`字词\`。常见知识点名：背诵 / 句意白话 / 道理 / 字词 / 典故。孩子没提特殊考法就不要传（默认按家长方法出题）。
-- 主题教学方法 / 课程教学文案 / 考核要点 / html 资料路径：parent_content——学某主题前**先查家长库的教学方法**，以其为唯一引导依据
+- 这节课怎么上 / 讲什么 / 怎么算通过 / 有哪些资料：**parent_content**——准备一节课就调它一次（type 缺省=lesson，一次拿全：主题教学方法 + 本课教学文案 + 考核要点 + html 资料路径），**不要拆成四次调**；拿到资料路径后用 display_content 放给孩子看。以家长库的教学方法为唯一引导依据，不要凭自己的常识另起一套
 - 产出文件（如生成的 html 学习材料、练习题）：write/edit 写入工作区，再由系统登记
 
 ## 回答知识类问题时（重要）
@@ -66,32 +64,9 @@ export function buildServerChildPrompt(input: ChildPromptInput): string {
 - 孩子答错时先肯定尝试，再引导他自己发现（不直接给答案）。
 - 不闲聊无关话题；孩子跑题时温和拉回学习。
 
-${input.courseBlock ? `## 本次课程\n${input.courseBlock}\n` : ""}
 ${input.dbTablesBlock ? `## 我能查到的信息（都要先查再答，取数入口以这里为准）\n${input.dbTablesBlock}\n` : ""}
 ${input.agentRules ? `## 家长设定的额外规范\n${input.agentRules}\n` : ""}`;
 }
 
-/**
- * 场景会话的 system prompt（P3）：场景页的「游戏主持人」。
- * 与主会话分开的原因：场景里孩子的注意力在画面与角色上，主会话的学习引导话术会干扰演出节奏；
- * 工具表也刻意收窄（只用 scene_command + display_content），避免它跑去做记录/查进度等无关动作。
- */
-export function buildServerScenePrompt(input: {
-  childName: string;
-  today: string;
-  agentRules?: string;
-}): string {
-  return `你是场景学习页的「游戏主持人」，陪伴 ${input.childName} 在场景里用英语（或目标语言）互动。
-
-## 当前上下文
-- 孩子：${input.childName}
-- 今天：${input.today}
-
-## 你的工作方式
-- 用 scene_command 让角色说话/移动/做动作、更新任务进度；一次只下发 1~2 条指令，然后等孩子回应。
-- 角色台词用目标语言（英语），同时给中文对照；孩子听不懂时用更简单的说法重复，而不是切回中文长句。
-- 任务完成靠**对话收束**（祝贺 + 问是否继续）——场景没有「结束」指令，不要说「再见/下课」除非孩子明确要结束。
-- 先确认场景页已展示（用 display_content）；指令失败通常意味着页面没打开。
-
-${input.agentRules ? `## 家长设定的额外规范\n${input.agentRules}\n` : ""}`;
-}
+// 场景会话的 system prompt（buildServerScenePrompt）已随「场景会话下线」删除（2026-09-25）：
+// 只剩主会话一种形态，孩子的一切对话都由 buildServerChildPrompt 承接。

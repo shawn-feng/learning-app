@@ -93,11 +93,9 @@ const RATE_OK = 0.8;
 export default function TodoModal({
   childId,
   onClose,
-  onStartCourse,
 }: {
   childId: string;
   onClose: () => void;
-  onStartCourse?: (courseKey: string) => void;
 }) {
   const [tab, setTab] = useState<"today" | "stats" | "points">("today");
   const [items, setItems] = useState<PlanItem[]>([]);
@@ -206,27 +204,8 @@ export default function TodoModal({
               >
                 {it.title}
               </span>
-              {it.kind === "study" && it.topicKey === "english" && it.status === "pending" && (
-                <button
-                  onClick={() => onStartCourse?.(`english:${it.title}`)}
-                  style={{
-                    display: "inline-block",
-                    marginLeft: 8,
-                    border: "none",
-                    background: "#185FA5",
-                    color: "white",
-                    padding: "3px 10px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 500,
-                    cursor: "pointer",
-                    verticalAlign: "middle",
-                  }}
-                  title="进入英语课专用会话（全程英文教学）"
-                >
-                  🌍 进入课程
-                </button>
-              )}
+              {/* 会话收敛（2026-09-25）：「🌍 进入课程」按钮已删除——不再有按课隔离的子会话。
+                  英语课直接在同一条主会话里学（跟学习伙伴说「开始学这一课」即可）。 */}
               <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
                 {it.dueAt ? `截止 ${fmtTime(it.dueAt)}` : ""}
                 {it.status === "missed" ? " · 未完成" : ""}

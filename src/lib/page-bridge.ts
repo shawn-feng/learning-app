@@ -15,8 +15,9 @@
 export const PAGE_MSG_PREFIX = "page:";
 export const PAGE_MSG_TYPES = ["page:event", "page:ready", "page:exec", "page:exec:result"] as const;
 
-/** ISSUE-061：场景页标记（资料 html 含此 meta 即视为场景页，scene_command 只对该类页面生效） */
-export const SCENE_PAGE_MARKER = 'meta name="pi-scenario" content="1"';
+// ISSUE-061 的 SCENE_PAGE_MARKER（'meta name="pi-scenario" content="1"'）已随场景会话下线删除
+// （2026-09-25）：不再需要「这份资料是不是场景页」这个判据。场景页本身（含 pi-scenario meta）
+// 仍可正常展示，只是不再驱动独立的角色会话。
 
 export type PageEventKind = "open" | "click" | "scroll" | "input" | "submit" | "pagehide" | "tts" | "tts-cancel" | "lookup" | "app";
 
@@ -93,23 +94,11 @@ export interface PageExecDownlink {
 export interface MaterialsPanelHandle {
   exec(action: PageAction, params?: PageExecParams): Promise<PageExecResultUplink>;
   /**
-   * ISSUE-061：场景页下行指令（scene_command 工具）。
-   * 不走桥脚本 DOM 白名单，直接把 {type:"scene:"+command, ...params} postMessage 给场景页
-   * （场景页自带监听）。command ∈ say/move/act/show/highlight/update/end。
-   */
-  scene(command: string, params?: Record<string, unknown>): Promise<PageExecResultUplink>;
-  /**
-   * ISSUE-061：场景 agent 忙闲状态 → 场景页顶部「角色回应中…」提示。
-   * busy=true 在孩子消息已发给场景 agent、等回复期间调用；回复/出错后 busy=false。
-   */
-  sceneAgentBusy(on: boolean): void;
-  /**
    * MATERIAL-BRIDGE-PROTOCOL：宿主→页面作者命令下行（page:app-cmd，页面 PiBridge.on 接收）。
    * requestId 配对 + 就绪 gate + 超时（与 exec 同一套 pending）；DOM 白名单操作请继续用 exec。
    */
   appCmd(action: string, payload?: unknown): Promise<PageExecResultUplink>;
-  /** 场景准备状态（Learn 预建 scene 会话/预热期间展示「正在准备场景伙伴…」） */
-  scenePreparing(on: boolean): void;
+  // scene / sceneAgentBusy / scenePreparing（场景会话专用下行，ISSUE-061）已随场景会话下线删除（2026-09-25）。
 }
 
 /**

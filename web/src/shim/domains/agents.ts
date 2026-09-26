@@ -17,8 +17,6 @@ import { http, httpBinary, uploadMultipart, apiUrl, getStoredParentId, getStored
 import {
   ensureChildStream,
   ensureParentStream,
-  addSceneCollector,
-  removeSceneCollector,
   type ParentKind,
 } from "../core/sse";
 import { queuePageEvent, takePendingPageEvents } from "../core/page-events";
@@ -110,16 +108,16 @@ function mapHistoryMessages(raw: Array<{ role: string; content: unknown[]; times
 // 服务端 agent 调用（server-agent-client.ts 的 prompt/abort/open/reset/pageResult 移植）
 // ---------------------------------------------------------------------------
 
-/** 提交孩子一轮输入（服务端受理即返回，增量走 SSE；session: main / scene / course:<key>）。 */
+/** 提交孩子一轮输入（服务端受理即返回，增量走 SSE；会话收敛后固定主会话）。 */
 async function promptChild(
   childId: string,
   text: string,
-  opts: { session?: string; images?: Array<{ type: "image"; mimeType: string; data: string }>; pageEvents?: string } = {}
+  opts: { images?: Array<{ type: "image"; mimeType: string; data: string }>; pageEvents?: string } = {}
 ): Promise<void> {
   await http(`/agent/${encodeURIComponent(childId)}/prompt`, {
     method: "POST",
     // ipc pi:prompt 不传 pageEvents（渲染层已把页面操作拼进正文），此处保持一致
-    body: { text, session: opts.session ?? "main", pageEvents: opts.pageEvents, images: opts.images },
+    body: { text, pageEvents: opts.pageEvents, images: opts.images },
     timeoutMs: 120000,
   });
 }
@@ -133,9 +131,9 @@ async function promptParent(text: string, opts: { kind?: ParentKind } = {}): Pro
   });
 }
 
-/** 中止孩子 agent 当前一轮（session 省略 = 该孩子全部会话；结束经 SSE turn_end 推送）。 */
+/** 中止孩子 agent 当前一轮（结束经 SSE turn_end 推送）。 */
 async function abortChildAgent(childId: string): Promise<void> {
-  await http(`/agent/${encodeURIComponent(childId)}/abort`, { method: "POST", body: { session: undefined }, timeoutMs: 30000 });
+  await http(`/agent/${encodeURIComponent(childId)}/abort`, { method: "POST", body: {}, timeoutMs: 30000 });
 }
 
 /** 中止家长 agent 当前一轮。 */
@@ -144,17 +142,17 @@ async function abortParentAgent(kind: ParentKind = "parent"): Promise<void> {
 }
 
 /** 打开孩子会话（服务端按落盘会话最后一条消息日期裁决跨天自动新建，返回裁决后的当天历史）。 */
-async function openChildSession(childId: string, session?: string): Promise<HistoryMessage[]> {
+async function openChildSession(childId: string): Promise<HistoryMessage[]> {
   const r = await http<{ messages: Array<{ role: string; content: unknown[]; timestamp?: number | string }> }>(
     `/agent/${encodeURIComponent(childId)}/open`,
-    { method: "POST", body: { session: session ?? "main" } }
+    { method: "POST", body: {} }
   );
   return mapHistoryMessages(r.messages ?? []);
 }
 
-/** 重置孩子会话（服务端 newSession）。 */
+/** 重置孩子会话（服务端 newSession；会话收敛后固定主会话）。 */
 async function resetChildSession(childId: string): Promise<void> {
-  await http(`/agent/${encodeURIComponent(childId)}/reset`, { method: "POST", body: { session: undefined } });
+  await http(`/agent/${encodeURIComponent(childId)}/reset`, { method: "POST", body: {} });
 }
 
 /**
@@ -377,19 +375,7 @@ export const agentsDomain = {
     content?: string;
   }) => void) => subscribe("pi:display_content", callback),
 
-  // ---- 场景对话（scene agent）事件（ISSUE-061；scene 会话与主会话共用孩子流，scenePrompt 期间由收集器回发） ----
-
-  /** onSceneReply: (callback: (data: { childId: string; courseKey: string; text: string }) => void) => void */
-  onSceneReply: (callback: (data: { childId: string; courseKey: string; text: string }) => void) =>
-    subscribe("scene:reply", callback),
-
-  /** onSceneReplyEnd: (callback: (data: { childId: string; courseKey: string }) => void) => void */
-  onSceneReplyEnd: (callback: (data: { childId: string; courseKey: string }) => void) =>
-    subscribe("scene:reply_end", callback),
-
-  /** onSceneReplyError: (callback: (data: { childId: string; courseKey: string; error: string }) => void) => void */
-  onSceneReplyError: (callback: (data: { childId: string; courseKey: string; error: string }) => void) =>
-    subscribe("scene:reply_error", callback),
+  // 场景对话事件（onSceneReply / onSceneReplyEnd / onSceneReplyError）已随场景会话下线删除（2026-09-25）。
 
   /** onPiSessionReset: (callback: (data: { childId: string }) => void) => void（Electron 由 scheduler 定时重置后广播；Web 由 scheduler 域提醒轮询 emit） */
   onPiSessionReset: (callback: (data: { childId: string }) => void) => subscribe("pi:session_reset", callback),
@@ -455,14 +441,13 @@ export const agentsDomain = {
 
   // ---- pi actions（renderer -> main） ----
 
-  /** piStartChild: (childId: string, courseKey?: string) => Promise<{success, history, materials, materialsLimit}> —— 建流 + POST /open 跨天裁决回填当天历史；courseKey → course:<key> 子会话 */
-  piStartChild: async (childId: string, courseKey?: string) => {
+  /** piStartChild: (childId: string) => Promise<{success, history, materials, materialsLimit}> —— 建流 + POST /open 跨天裁决回填当天历史（会话收敛后固定主会话） */
+  piStartChild: async (childId: string) => {
     try {
       // 薄客户端：建立服务端 agent 事件流（SSE → pi:* 通道），会话由服务端持久管理
       ensureChildStream(childId);
       // 会话历史回填（ISSUE-100 F1 冷路径：走 /open，服务端跨天自动新建裁决后返回当天历史）
-      const session = courseKey ? `course:${courseKey}` : "main";
-      const history = await openChildSession(childId, session === "main" ? undefined : session).catch(
+      const history = await openChildSession(childId).catch(
         () => [] as HistoryMessage[]
       );
       // ISSUE-041 云端收件箱（handleCloudInbox）是 Electron 主进程本地投递层，Web 无此层，跳过（差异声明见文件头）
@@ -490,12 +475,11 @@ export const agentsDomain = {
     }
   },
 
-  /** piPrompt: (childId, text, images?, courseKey?) => Promise<{success}> —— images 为内联 base64（dataURL 剥前缀后），courseKey → course:<key> 会话 */
+  /** piPrompt: (childId, text, images?) => Promise<{success}> —— images 为内联 base64（dataURL 剥前缀后）；固定主会话 */
   piPrompt: async (
     childId: string,
     text: string,
-    images?: Array<{ type: "image"; mimeType: string; data: string }> | null,
-    courseKey?: string
+    images?: Array<{ type: "image"; mimeType: string; data: string }> | null
   ) => {
     // 在途守卫：上一轮未结束时拒绝（服务端也会 409 busy，这里给友好提示）
     if (childBusy) {
@@ -504,8 +488,7 @@ export const agentsDomain = {
     childBusy = true;
     try {
       ensureChildStream(childId);
-      const session = courseKey ? `course:${courseKey}` : "main";
-      await promptChild(childId, text, { session, images: images ?? undefined });
+      await promptChild(childId, text, { images: images ?? undefined });
       return { success: true };
     } catch (err) {
       eventBus.emit("pi:reply_error", { childId, error: friendlyError((err as Error).message) });
@@ -645,103 +628,8 @@ export const agentsDomain = {
     }
   },
 
-  // ---- 场景对话（scene agent）调用（ISSUE-061；scene 子会话 session="scene"，与课程会话解耦） ----
-
-  /** scenePrompt: (childId, courseKey, text) => Promise<{success}> —— 挂收集器 → POST prompt(session=scene)；本轮结束把 say 台词/兜底正文回发 scene:reply* */
-  scenePrompt: async (childId: string, courseKey: string, text: string) => {
-    ensureChildStream(childId);
-    // Electron 此处另有 sceneTryPrewarm（edge-tts 台词后台预热）——Web 语音属 Phase 5，此处跳过
-    // 场景台词收集器：挂到孩子流上，本轮结束时把「say 台词 / 兜底正文」一次性回发 scene:reply。
-    const lines: Array<{ speaker: string; text: string }> = [];
-    const texts: string[] = [];
-    const collector = {
-      onSay: (speaker: string, t: string) => lines.push({ speaker, text: t }),
-      onText: (t: string) => texts.push(t),
-      onEnd: () => {
-        if (lines.length) {
-          eventBus.emit("scene:reply", {
-            childId,
-            courseKey,
-            text: lines.map((l) => `${l.speaker} ${l.text}`.trim()).join("\n"),
-          });
-        } else if (texts.length) {
-          for (const t of texts) eventBus.emit("scene:reply", { childId, courseKey, text: t });
-        }
-        eventBus.emit("scene:reply_end", { childId, courseKey });
-      },
-      onError: (err: string) => {
-        eventBus.emit("scene:reply_error", { childId, courseKey, error: err });
-        eventBus.emit("scene:reply_end", { childId, courseKey });
-      },
-    };
-    addSceneCollector(childId, collector);
-    try {
-      await promptChild(childId, text, { session: "scene" });
-      return { success: true };
-    } catch (err) {
-      eventBus.emit("scene:reply_error", { childId, courseKey, error: friendlyError((err as Error).message) });
-      eventBus.emit("scene:reply_end", { childId, courseKey });
-      return { success: false, error: (err as Error).message };
-    } finally {
-      removeSceneCollector(childId, collector);
-    }
-  },
-
-  /** sceneHistory: (childId, courseKey) => Promise<{success, history}> —— 走 /open（scene 会话当天历史，取末 80 条） */
-  sceneHistory: async (childId: string, _courseKey: string) => {
-    try {
-      const history = await openChildSession(childId, "scene").catch(() => [] as HistoryMessage[]);
-      return { success: true, history: history.slice(-80) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  },
-
-  /** scenePrepare: (childId, courseKey) => Promise<{success}> —— 场景页就绪后预建流（会话在服务端；TTS 预热属 Phase 5） */
-  scenePrepare: async (childId: string, _courseKey: string) => {
-    try {
-      ensureChildStream(childId);
-      return { success: true };
-    } catch (err) {
-      console.error("[web-shim scenePrepare] 失败:", (err as Error).message);
-      return { success: false, error: String((err as Error).message) };
-    }
-  },
-
-  /** sceneStop: (childId, courseKey) => Promise<{success}> —— 服务端会话持久，无需显式释放 */
-  sceneStop: async (_childId: string, _courseKey: string) => {
-    return { success: true };
-  },
-
-  /** sceneTransfer: (childId, courseKey) => Promise<{success}> —— 孩子离开场景时向课程会话注入收尾指令（与 ipc 同款文案；逐字摘要待服务端场景摘要能力） */
-  sceneTransfer: async (childId: string, courseKey: string) => {
-    try {
-      const inject =
-        `[系统] 孩子刚刚结束了场景英语的场景互动。请你用在场景里陪伴孩子的角色口吻，` +
-        `给孩子一句简短收尾（英文为主、可带一句中文，不要总结式说教）。`;
-      await promptChild(childId, inject, { session: `course:${courseKey}` });
-      return { success: true };
-    } catch (err) {
-      console.error(`[web-shim sceneTransfer] error:`, (err as Error).message);
-      eventBus.emit("pi:reply_error", { childId, error: friendlyError((err as Error).message) });
-      eventBus.emit("pi:reply_end", { childId });
-      return { success: false, error: (err as Error).message };
-    }
-  },
-
-  /** sceneVoiceSave: (childId, data) => Promise<{success, path, rel}>（voice:scene_save）—— Electron 落本地
-   *  children/<id>/voice/scene/<日期>/<HHMMSS>-<ts36>.webm（path 相对 data/、rel 相对孩子 cwd）；
-   *  Web 走 /files/upload（child_id 关联），path/rel 同为服务端 files 通道相对路径。rel 仅供场景页的
-   *  【附件音频】标记（Learn.handleSceneVoice）——与 Electron 相同，服务端场景会话读不到该路径，
-   *  场景语音回放 v1 也不做（遗留差异如实声明）。 */
-  sceneVoiceSave: async (childId: string, data: ArrayBuffer) => {
-    const d = new Date();
-    const pad = (n: number) => String(n).padStart(2, "0");
-    // 文件名对齐 ipc voice:scene_save：<时分秒>-<ts36>.webm（目录结构无法复刻，仅保留可读命名）
-    const name = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${Date.now().toString(36)}.webm`;
-    const r = await saveChatUpload(childId, name, "audio/webm", data);
-    return r.success ? { success: true, path: r.path, rel: r.path } : r;
-  },
+  // ---- 场景对话调用（scenePrompt / sceneHistory / scenePrepare / sceneStop / sceneTransfer /
+  //      sceneVoiceSave）已随场景会话下线删除（2026-09-25）----
 
   // ---- token 统计（ISSUE-010）----
   // 数据源是 Electron 本地 data/children/<childId>/token-log.jsonl（token-stats.ts）；

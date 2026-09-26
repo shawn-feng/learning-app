@@ -103,52 +103,10 @@ export function createPageTools(deps: PageToolDeps) {
     },
   });
 
-  const sceneCommandTool = defineTool({
-    name: "scene_command",
-    label: "驱动场景演出",
-    description:
-      "驱动**场景页**（带角色扮演的场景资料，如场景英语的客厅场景）的演出。你就是场景的「游戏主持人」。\n\n" +
-      "**command**：`say`（character + text 英文台词 + zh 中文对照）/ `move`（character + x 舞台横坐标 10~1120，或目标名 window/sofa/table/plant/lamp/tv/picture/rug + duration）/ " +
-      "`act`（character + act，如 turn-on-lamp / open-window / sit-sofa / jump / dance）/ `show`（character 登场）/ `highlight`（target）/ `update`（task + progress + total）。\n\n" +
-      "**注意**：一次只下发 1~2 条指令，等孩子回应再继续；场景页没有「结束」指令——任务完成用对话收束；场景页未展示时指令会失败（先用 display_content 展示场景资料）。",
-    parameters: Type.Object({
-      command: Type.Union([
-        Type.Literal("say"),
-        Type.Literal("move"),
-        Type.Literal("act"),
-        Type.Literal("show"),
-        Type.Literal("highlight"),
-        Type.Literal("update"),
-      ], { description: "场景指令类型（无 end——场景没有结束）" }),
-      character: Type.Optional(Type.String({ description: "角色 id（如 steve / maggie）" })),
-      text: Type.Optional(Type.String({ description: "say：角色台词（英文）" })),
-      zh: Type.Optional(Type.String({ description: "say：台词中文对照" })),
-      x: Type.Optional(Type.Union([Type.Number(), Type.String()], { description: "move：横坐标或目标名" })),
-      duration: Type.Optional(Type.Number({ description: "move：移动时长（秒）" })),
-      act: Type.Optional(Type.String({ description: "act：动作名" })),
-      target: Type.Optional(Type.String({ description: "highlight：高亮对象" })),
-      task: Type.Optional(Type.String({ description: "update：任务 id" })),
-      progress: Type.Optional(Type.Number({ description: "update：已完成数" })),
-      total: Type.Optional(Type.Number({ description: "update：总数" })),
-    }),
-    execute: async (_id: string, params: any) => {
-      const { command, ...payload } = params;
-      // 场景演出走与通用受控操作同一条下行通道：action = `scene.<command>`
-      // （与 MATERIAL-BRIDGE-PROTOCOL §5 的 scene.* 命名空间一致，客户端 appCmd 按原名分发）。
-      // 类型上 action 是受控操作的联合类型，这里按协议扩展为场景命名空间，故显式断言。
-      const r = await hub.executeAction(deps.childId, {
-        action: `scene.${command}`,
-        ...payload,
-      } as unknown as PageExecParams);
-      return ok(
-        r.ok
-          ? `场景指令已下发（scene.${command}）`
-          : `场景指令失败：${r.error ?? "无响应"}（请确认已用 display_content 展示场景资料页）`
-      );
-    },
-  });
+  // scene_command（驱动场景页演出）已随「场景会话下线」删除（2026-09-25）：
+  // 场景页现在就是普通资料页，孩子的对话一律走主会话，不再有「游戏主持人」这条独立角色链路。
 
-  return { pageActionTool, pageInspectTool, sceneCommandTool };
+  return { pageActionTool, pageInspectTool };
 }
 
-export const PAGE_TOOL_NAMES = ["page_action", "page_inspect", "scene_command"];
+export const PAGE_TOOL_NAMES = ["page_action", "page_inspect"];
