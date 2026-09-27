@@ -3373,11 +3373,53 @@ iframe.material-pdf {
 }
 
 /* ─── ISSUE-017：资料内选中/双击查词浮层 ─── */
+/* ISSUE-017 优化（2026-09-27）：选词后先出悬浮图标，点击才展开查词弹框 */
+.word-lookup-bubble {
+  position: fixed;
+  z-index: 1000;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: #667eea;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  /* 半透明：尽量不挡住底下的字，悬停时恢复不透明便于点击 */
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+  box-shadow: 0 4px 14px rgba(80, 90, 180, 0.35);
+  animation: word-lookup-bubble-in 0.16s ease-out;
+}
+
+.word-lookup-bubble:hover {
+  background: #5a6fe0;
+  opacity: 0.92;
+}
+
+.word-lookup-bubble:active {
+  transform: scale(0.9);
+}
+
+@keyframes word-lookup-bubble-in {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
 .word-lookup-overlay {
   position: fixed;
   z-index: 1000;
   width: 250px;
-  max-height: 210px;
+  max-height: min(320px, 45vh);
   overflow-y: auto;
   background: #ffffff;
   border: 1px solid #e5e7f5;
@@ -3467,13 +3509,16 @@ iframe.material-pdf {
   font-weight: 500;
 }
 
-/* 无拼音（冷僻字）兜底占位 */
+/* 无拼音（冷僻字）兜底提示 */
 .word-lookup-py-none {
-  color: #bbb;
+  color: #b9b9cc;
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .word-lookup-item .word-lookup-item-speak {
   padding: 4px;
   border-radius: 8px;
   flex: 0 0 auto;
+  align-self: center;
 }

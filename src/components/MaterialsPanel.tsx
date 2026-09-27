@@ -5,7 +5,7 @@ import type { CSSProperties } from "react";
 import IconButton from "./IconButton";
 import { ArrowLeft, PanelRightClose } from "lucide-react";
 import { lookupText, type LookupEntry } from "../lib/dictionary";
-import { WordLookupOverlay, type LookupState } from "./WordLookupOverlay";
+import { WordLookupOverlay, WordLookupBubble, type LookupState } from "./WordLookupOverlay";
 import {
   EventThrottler,
   genRequestId,
@@ -319,16 +319,21 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   // queue 模式把请求串行：播完一条再取下一条；打断模式（资料朗读/点读/查词）维持「新取代旧」。
   const ttsQueueRef = useRef<{ text: string; seq: number }[]>([]);
   const ttsActiveRef = useRef(false);
-  // ISSUE-017：查词浮层状态 + 最近 lookup 时间戳（click 关闭浮层时避开同交互序列）。
+  // ISSUE-017：查词两段式状态（anchor=选中点+查询结果，open=弹框是否展开）+ 最近 lookup
+  // 时间戳（click 关闭浮层时避开同交互序列）。
   // ⚠️ handler 在 useEffect 注册一次，闭包内 state 恒为初值 → 必须用 ref 同步读取（ISSUE-014 教训）
-  const [lookup, setLookup] = useState<LookupState | null>(null);
-  const lookupRef = useRef<LookupState | null>(null);
+  const [lookup, setLookup] = useState<{ anchor: LookupState; open: boolean } | null>(null);
+  const lookupRef = useRef<{ anchor: LookupState; open: boolean } | null>(null);
   const lastLookupAtRef = useRef(0);
-  const showLookup = useCallback((s: LookupState | null) => {
+  const showLookup = useCallback((s: { anchor: LookupState; open: boolean } | null) => {
     lookupRef.current = s;
     setLookup(s);
   }, []);
   const closeLookup = useCallback(() => showLookup(null), [showLookup]);
+  const openLookupPopup = useCallback(() => {
+    const cur = lookupRef.current;
+    if (cur) showLookup({ ...cur, open: true });
+  }, [showLookup]);
 
   // ISSUE-030：资料字号经 CSS 变量下传到列表/正文（作用域限定在孩子端 .content-panel，不波及家长端/聊天）
   const materialFontStyle = { "--material-font": `${matFontSize}px` } as CSSProperties;
@@ -539,17 +544,18 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
           stopMaterialTts();
           return;
         }
-        // ISSUE-017：选中/双击字词 → 本地字典查询 → 浮层展示（不进页面操作记录）
+        // ISSUE-017：选中/双击字词 → 本地字典查询 → 先出悬浮图标（点击才展开弹框，不进页面操作记录）
         if (evt.kind === "lookup") {
           const text = (evt.detail as { text?: string })?.text ?? "";
           const ex = (evt.detail as { x?: number })?.x ?? 0;
           const ey = (evt.detail as { y?: number })?.y ?? 0;
           const entries = lookupText(text);
-          if (!entries.length) return; // 无中文/查不到 → 不弹浮层
+          if (!entries.length) return; // 无中文/查不到 → 不弹
           lastLookupAtRef.current = Date.now();
           const rect = iframeRef.current?.getBoundingClientRect();
           if (!rect) return;
-          showLookup({ x: rect.left + ex, y: rect.top + ey, text, entries });
+          // 鼠标点通常落在选区末行文字上，往下偏移让图标弹在字下方而非盖住选中内容（clamp 兜底边缘）
+          showLookup({ anchor: { x: rect.left + ex, y: rect.top + ey + 12, text, entries }, open: false });
           return;
         }
         // ISSUE-017：点击 iframe 别处（非本次选中交互）或滚动页面 → 关闭查词浮层
@@ -795,10 +801,14 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         ) : (
           <video className="material-media" src={mediaUrl} controls playsInline preload="metadata" />
         )}
-        {/* ISSUE-017：查词浮层（fixed 定位，点击外部空白/Esc/滚动关闭） */}
-        {lookup && (
+        {/* ISSUE-017 优化：选词先出悬浮图标，点击图标才展开查词弹框
+            （fixed 定位；点击外部空白/Esc/滚动收起；弹框展示即记错题本） */}
+        {lookup && !lookup.open && (
+          <WordLookupBubble x={lookup.anchor.x} y={lookup.anchor.y} onOpen={openLookupPopup} />
+        )}
+        {lookup?.open && (
           <WordLookupOverlay
-            state={lookup}
+            state={lookup.anchor}
             onSpeak={speakMaterialText}
             onClose={closeLookup}
             onReport={(text, pinyin, meaning) => {

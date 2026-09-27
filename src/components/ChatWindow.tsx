@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
 import { History, Brain, Volume2, Square, Play, X, Paperclip, Mic, Send } from "lucide-react";
 import IconButton from "./IconButton";
-import { useWordLookup, WordLookupOverlay } from "./WordLookupOverlay";
+import { useWordLookup, WordLookupOverlay, WordLookupBubble } from "./WordLookupOverlay";
 
 export interface ToolCallState {
   id: string;
@@ -1101,11 +1101,14 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         />
       </div>
 
-      {/* ISSUE-031：聊天框选中中文 → 查词浮层（拼音放大 + 多音字分行朗读 + 整段朗读） */}
-      {wordLookup.state && (
+      {/* ISSUE-017 优化：聊天框选中中文 → 先出悬浮图标，点击图标才展开查词弹框（弹框展示即记错题本） */}
+      {wordLookup.anchor && !wordLookup.open && (
+        <WordLookupBubble x={wordLookup.anchor.x} y={wordLookup.anchor.y} onOpen={wordLookup.openPopup} />
+      )}
+      {wordLookup.anchor && wordLookup.open && (
         <WordLookupOverlay
           ref={wordLookup.overlayRef}
-          state={wordLookup.state}
+          state={wordLookup.anchor}
           onSpeak={wordLookup.onSpeak}
           onClose={wordLookup.close}
           onReport={(text, pinyin, meaning) => {

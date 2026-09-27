@@ -21,3 +21,9 @@
   - **扩展到聊天框（2026-09-01 23:0x）**：把查词浮层抽成共享组件 `src/components/WordLookupOverlay.tsx`（导出 `LookupState` / `WordLookupOverlay`(forwardRef) / `useWordLookup` 选区捕获 hook）；`MaterialsPanel.tsx` 删本地副本改引用共享；`ChatWindow.tsx` 接入——`messagesRef` 容器内捕获中文选区 → `lookupText` → 浮层；新增 `speakText`(任意文本 edge-tts) 作 onSpeak；浮层渲染于 ChatWindow 根。灰盒：仅中文触发、点击外部/Esc 关闭、整段朗读可用。
   - 验证：`tsc --noEmit` 对 `MaterialsPanel.tsx`/`ChatWindow.tsx`/`WordLookupOverlay.tsx` 无业务错误（已过滤 @types/node26 环境告警）。
 - **记录时间**：2026-09-01
+
+---
+
+## 设计修正（2026-09-27 晚）：「每音独立朗读播拼音串」撤销
+
+用户回归反馈：读音行 🔊 播出来是英文。原因：`onSpeak(py)` 把带声调的拼音串（如 "piào liang"）喂给中文 edge-tts，拉丁字母按英文读；且 edge-tts 无法指定多音字读哪个音，原「每音播对应拼音」的前提不成立。修正（在 `WordLookupOverlay.tsx`）：🔊 收敛为每词条一个、`onSpeak(en.text)` 播字词本身（中文 TTS 读汉字恒正确），多音字多行拼音保留为纯视觉展示；头部整段朗读不受影响。

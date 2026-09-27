@@ -43,6 +43,19 @@ const MAX_WORD_LEN = 4;
 const CN_RE = /[\u4e00-\u9fa5]/;
 
 /**
+ * 选词查询的选区长度上限：句子级可查（拖选一句话也能出读音），整段复制不查。
+ * ⚠ 与 page-bridge.ts BRIDGE_SCRIPT reportLookup 内的上限保持一致（桥脚本是内联字符串，无法共享导入，靠测试对齐）。
+ */
+export const LOOKUP_MAX_LEN = 30;
+
+/** 选区是否值得弹查词浮层：含中文且去空白后长度在 1..LOOKUP_MAX_LEN。iframe 桥与聊天区 useWordLookup 共用同一口径。 */
+export function canLookupSelection(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t || !CN_RE.test(t)) return false;
+  return t.replace(/\s+/g, "").length <= LOOKUP_MAX_LEN;
+}
+
+/**
  * 查询一段选中文本：整词优先 → 贪心最长词拆分 → 逐字兜底。
  * 非中文字符（英文/数字/符号）跳过不查；查不到的冷僻字返回空拼音/释义（浮层可提示）。
  */

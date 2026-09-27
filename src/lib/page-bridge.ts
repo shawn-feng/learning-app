@@ -261,17 +261,19 @@ export const BRIDGE_SCRIPT = `(function () {
     send({ type: "page:event", kind: "click", detail: d });
   }, true);
 
-  // —— ISSUE-017：选中/双击中文 → 上抛 lookup（父页面浮层显示拼音+释义）——
-  // 只处理非表单元素中的中文选中（1-8 字）；捕获阶段、不 preventDefault/stopPropagation，
+  // —— ISSUE-017：选中/双击中文 → 上抛 lookup（父页面浮层显示拼音）——
+  // 只处理非表单元素中的中文选中；捕获阶段、不 preventDefault/stopPropagation，
   // 不干扰课程脚本自身选中逻辑；坐标相对 iframe 视口，父页面叠加 iframe 偏移定位浮层。
   // mouseup（拖选/单击选中）与 dblclick（双击选词）双通道 + throttled 去重防双报。
+  // 句子级可查（上限与 dictionary.ts LOOKUP_MAX_LEN 一致），整段复制不查。
   var CN_RE = /[\\u4e00-\\u9fa5]/;
+  var LOOKUP_MAX_LEN = 30;
   function reportLookup(x, y) {
     var sel = window.getSelection && window.getSelection();
     if (!sel || sel.isCollapsed) return;
     var text = (sel.toString() || "").replace(/\\s+/g, " ").trim();
     if (!text || !CN_RE.test(text)) return; // 无中文（纯英文/数字/符号）不查
-    if (text.length > 8) return;            // 整段复制不查
+    if (text.replace(/\\s+/g, "").length > LOOKUP_MAX_LEN) return; // 整段复制不查
     var key = "lk:" + text + ":" + Math.round(x / 24) + ":" + Math.round(y / 24);
     if (!throttled(key, 2000)) return;
     send({ type: "page:event", kind: "lookup", detail: { text: text, x: x, y: y } });

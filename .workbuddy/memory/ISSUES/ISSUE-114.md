@@ -65,3 +65,9 @@
 - 接线 `ChildDetailPage.tsx`：TABS 新增「📕 错题本」（排在每日记录之后），包裹面板样式对齐其余 tab。
 - 数据：`mistakesList({childId, limit:200})` 不传 status → 服务端返回全部状态（open+closed），前端自行分组/统计。
 - 验证：electron-vite build 通过（主进程/preload/renderer 三段全绿）；服务端无改动。孩子端 MistakeBookModal 行为不变。
+
+---
+
+## 备注（2026-09-27 晚）：C2 查词上报时机随交互改版调整
+
+查词交互改为两段式（选中先出悬浮图标，点击图标才展开弹框，见 ISSUE-017 优化记录），C2 的上报触发点相应从「浮层出现」变为「孩子点击图标、弹框展开时」——`WordLookupOverlay` 的 `onReport` 机制不变，仅渲染时机收窄。语义变化：从「选中即记」变为「点了才查才记」，信号更主动（更接近 C1 的明确漏洞信号），代价是选中后不点图标的选择不再入本。资料 iframe 与聊天区两条通道一致。

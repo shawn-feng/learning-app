@@ -254,8 +254,16 @@ describe("BRIDGE_SCRIPT：lookup 查词事件（ISSUE-017）", () => {
     expect(sent.some((m: any) => m.kind === "lookup")).toBe(false);
   });
 
-  it("超长选中（>8 字）→ 不上抛（整段复制）", () => {
+  it("句子级选中（10 字，原 8 字上限内会拒）→ 上抛（长句也能查）", () => {
     const { sent, fire } = setupBridge("一二三四五六七八九十");
+    fire("mouseup");
+    const lookup = sent.find((m: any) => m.kind === "lookup");
+    expect(lookup).toBeTruthy();
+    expect(lookup.detail.text).toBe("一二三四五六七八九十");
+  });
+
+  it("超长选中（>30 字，去空白后）→ 不上抛（整段复制）", () => {
+    const { sent, fire } = setupBridge("一二三四五六七八九十".repeat(3) + "一 二 三");
     fire("mouseup");
     expect(sent.some((m: any) => m.kind === "lookup")).toBe(false);
   });
