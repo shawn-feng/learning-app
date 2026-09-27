@@ -37,3 +37,10 @@
 - **去掉资料上方的标题**：MaterialsPanel 加 `bare` 模式（详情视图不渲染返回按钮行与 material-title h2，其余 iframe 沙盒/docUrl/查词浮层/错题上报/资料字号能力原样保留）；CourseDetail 以单条 Material 直喂 + `selectedId="cm-0"` 恒选中 + `bare`。
 - **tab 按钮移到上一行中间**：面包屑行改三段 flex——左（返回+主题+课程名）/ 中（📋 学习情况 · 📚 学习资料，flex:1 居中）/ 右（上一课 n/N 下一课）；原独立 tab 行删除，count 徽标一并去掉（无列表概念了）。
 - **测试**：issue157 测试重写为 3 用例（html_path 返回+前缀归一+正文直读 / 未配置或课程不在库→null / 沙箱形状+归属 403）；tsc 无新增错、双端 build 过、shim 覆盖过。
+
+### 反馈现场排查补记（2026-09-27：「孩子端读不到学习资料」）
+
+- **现象**：课程详情「学习资料」tab 显示空态「这门课还没有配置课程资料」，但家长库 html_path 明明有值（lunyu/论语学而篇第一章.html，1255/1317 门课都配了）。
+- **排查**：用服务端源码 queryHandlers 直跑真实数据 → 闻闻/珊珊都正常返回正文 → op 没问题；查 server package.json `dev` 脚本 = `tsx src/index.ts`（**非 watch 模式**），本地 8788 的进程是改动前启动的旧代码，/db/query 不认识新 op `kb.courses.html_material` → 客户端 catch 后落入空态。
+- **处置**：重启本地 dev 服务端（PID 33732→11332）+ 签家长 JWT 走 HTTP 全链路复验：闻闻/珊珊 200 + contentLen 4610，未订阅论语的小明正确 null。
+- **教训**：**server 的 dev 是非 watch 模式，改服务端代码必须手动重启本地 dev 进程**，否则客户端新 UI + 旧服务端的组合会把「op 不存在」表现成「数据为空」。
