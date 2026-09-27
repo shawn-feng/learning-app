@@ -301,6 +301,35 @@ export default function Learn({ child, onExit }: Props) {
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   // 右侧聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化，与家长端互不干扰）
   const chat = useChatPanel("child", 440);
+  // ISSUE-158 续（用户反馈）：孩子端折叠按钮也上标题栏（全屏右侧两枚，事件协议与家长端共用 ui:*）——
+  // 左=整个图标侧栏隐藏/显示（孩子端侧栏本就是 icon 条，再「折」就是收起整条）；右=聊天面板折叠。
+  const [railHidden, setRailHidden] = useState(() => localStorage.getItem("child:sidebarHidden") === "1");
+  const chatCollapsedRef = useRef(chat.collapsed);
+  useEffect(() => {
+    chatCollapsedRef.current = chat.collapsed;
+  }, [chat.collapsed]);
+  useEffect(() => {
+    const onToggleLeft = () =>
+      setRailHidden((prev) => {
+        localStorage.setItem("child:sidebarHidden", prev ? "0" : "1");
+        return !prev;
+      });
+    const onToggleRight = () => chat.setCollapsed(!chatCollapsedRef.current);
+    window.addEventListener("ui:toggle-left-sidebar", onToggleLeft);
+    window.addEventListener("ui:toggle-right-sidebar", onToggleRight);
+    return () => {
+      window.removeEventListener("ui:toggle-left-sidebar", onToggleLeft);
+      window.removeEventListener("ui:toggle-right-sidebar", onToggleRight);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // 当前态上报标题栏（含挂载初值），供折叠按钮切图标
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("ui:left-sidebar-changed", { detail: { collapsed: railHidden } }));
+  }, [railHidden]);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("ui:right-panel-changed", { detail: { collapsed: chat.collapsed } }));
+  }, [chat.collapsed]);
 
   // TTS 语速（默认正常 1.0x）
   const [rate, setRate] = useState("+0%");
@@ -1056,7 +1085,9 @@ export default function Learn({ child, onExit }: Props) {
   return (
     <div className="learn-page">
       <div className="learn-main">
-        {/* ISSUE-026：孩子端左侧边栏常驻折叠（图标栏），功能交互统一弹框 */}
+        {/* ISSUE-026：孩子端左侧边栏常驻折叠（图标栏），功能交互统一弹框；
+            ISSUE-158 续：标题栏左折叠按钮可把整条图标栏隐藏（railHidden，localStorage 持久化） */}
+        {!railHidden && (
         <div className="learn-sidebar collapsed">
           <div className="sidebar-profile">
             <div className="sidebar-avatar" title={child.name}>{child.avatar}</div>
@@ -1193,6 +1224,7 @@ export default function Learn({ child, onExit }: Props) {
             </button>
           </div>
         </div>
+        )}
 
         <div className="learn-body">
           {panelCollapsed ? (

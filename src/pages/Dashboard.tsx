@@ -62,19 +62,19 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   useEffect(() => {
     const onToggleLeft = () => toggleSidebar();
     const onToggleRight = () => parentChat.setCollapsed(!chatCollapsedRef.current);
-    window.addEventListener("parent:toggle-left-sidebar", onToggleLeft);
-    window.addEventListener("parent:toggle-right-sidebar", onToggleRight);
+    window.addEventListener("ui:toggle-left-sidebar", onToggleLeft);
+    window.addEventListener("ui:toggle-right-sidebar", onToggleRight);
     return () => {
-      window.removeEventListener("parent:toggle-left-sidebar", onToggleLeft);
-      window.removeEventListener("parent:toggle-right-sidebar", onToggleRight);
+      window.removeEventListener("ui:toggle-left-sidebar", onToggleLeft);
+      window.removeEventListener("ui:toggle-right-sidebar", onToggleRight);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent("parent:sidebar-changed", { detail: { collapsed: sidebarCollapsed } }));
+    window.dispatchEvent(new CustomEvent("ui:left-sidebar-changed", { detail: { collapsed: sidebarCollapsed } }));
   }, [sidebarCollapsed]);
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent("parent:right-panel-changed", { detail: { collapsed: parentChat.collapsed } }));
+    window.dispatchEvent(new CustomEvent("ui:right-panel-changed", { detail: { collapsed: parentChat.collapsed } }));
   }, [parentChat.collapsed]);
 
   async function refresh() {

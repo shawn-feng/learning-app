@@ -15,10 +15,11 @@ interface Props {
  * 缩放/DevTools 属调试功能按拍板删除。原「全屏」项（View 菜单深处）提为左上角常驻按钮：
  * 图标随全屏态切换（window:is-fullscreen 初始态 + enter/leave-full-screen 推送）。
  *
- * ISSUE-158 续（用户反馈）：全屏右侧加两枚折叠按钮——左=折叠家长菜单侧栏、右=折叠家长聊天栏。
- * 面板折叠状态持有在 Dashboard（含 localStorage 持久化），经窗口 CustomEvent 解耦：
- * 标题栏发 `parent:toggle-left|right-sidebar` 切换请求，Dashboard 回报
- * `parent:sidebar-changed` / `parent:right-panel-changed`（detail.collapsed）供图标切换。
+ * ISSUE-158 续 + 孩子端同款（用户反馈）：全屏右侧两枚折叠按钮——左=折叠左侧栏、右=折叠右栏。
+ * 仅在有面板可折叠的界面显示（panelToggles：家长中心 / 孩子学习页）。面板折叠状态持有在各页面
+ * （localStorage 持久化），经窗口 CustomEvent 解耦：标题栏发 `ui:toggle-left|right-sidebar`
+ * 切换请求，页面回报 `ui:left-sidebar-changed` / `ui:right-panel-changed`（detail.collapsed）供图标切换。
+ * 两端「折叠」的终态不同：家长左侧栏折成 icon 条、孩子左侧图标条直接隐藏；右侧栏均为收起为窄条/不渲染。
  */
 export default function TitleBar({ panelToggles = false }: Props) {
   const [maximized, setMaximized] = useState(false);
@@ -39,11 +40,11 @@ export default function TitleBar({ panelToggles = false }: Props) {
     if (!panelToggles) return;
     const onLeft = (e: Event) => setLeftCollapsed(!!(e as CustomEvent).detail?.collapsed);
     const onRight = (e: Event) => setRightCollapsed(!!(e as CustomEvent).detail?.collapsed);
-    window.addEventListener("parent:sidebar-changed", onLeft);
-    window.addEventListener("parent:right-panel-changed", onRight);
+    window.addEventListener("ui:left-sidebar-changed", onLeft);
+    window.addEventListener("ui:right-panel-changed", onRight);
     return () => {
-      window.removeEventListener("parent:sidebar-changed", onLeft);
-      window.removeEventListener("parent:right-panel-changed", onRight);
+      window.removeEventListener("ui:left-sidebar-changed", onLeft);
+      window.removeEventListener("ui:right-panel-changed", onRight);
     };
   }, [panelToggles]);
 
@@ -61,17 +62,17 @@ export default function TitleBar({ panelToggles = false }: Props) {
           <>
             <IconButton
               icon={leftCollapsed ? PanelLeftOpen : PanelLeftClose}
-              title={leftCollapsed ? "展开左侧菜单栏" : "折叠左侧菜单栏"}
+              title={leftCollapsed ? "展开左侧栏" : "折叠左侧栏"}
               size={14}
               className="tb-ctrl"
-              onClick={() => window.dispatchEvent(new CustomEvent("parent:toggle-left-sidebar"))}
+              onClick={() => window.dispatchEvent(new CustomEvent("ui:toggle-left-sidebar"))}
             />
             <IconButton
               icon={rightCollapsed ? PanelRightOpen : PanelRightClose}
-              title={rightCollapsed ? "展开右侧聊天栏" : "折叠右侧聊天栏"}
+              title={rightCollapsed ? "展开右侧栏" : "折叠右侧栏"}
               size={14}
               className="tb-ctrl"
-              onClick={() => window.dispatchEvent(new CustomEvent("parent:toggle-right-sidebar"))}
+              onClick={() => window.dispatchEvent(new CustomEvent("ui:toggle-right-sidebar"))}
             />
           </>
         )}
