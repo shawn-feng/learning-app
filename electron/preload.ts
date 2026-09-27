@@ -251,9 +251,9 @@ const api = {
     ipcRenderer.invoke("learning:topic", childId, topic),
   learningCourseSummary: (childId: string, topicName: string, title: string) =>
     ipcRenderer.invoke("learning:courseSummary", childId, topicName, title),
-  // ISSUE-157：课程详情「学习资料」tab——该课可回看资料（展示登记 + html_path 真源聚合）
-  courseMaterials: (childId: string, topic: string, title: string) =>
-    ipcRenderer.invoke("course:materials", childId, topic, title),
+  // ISSUE-157 + 反馈：课程详情「学习资料」tab——只取课程配置的 html_path，点 tab 直接渲染（无列表）
+  courseHtmlMaterial: (childId: string, topic: string, title: string) =>
+    ipcRenderer.invoke("course:htmlMaterial", childId, topic, title),
 
   // Parent library (ISSUE-029)
   parentListTopics: () => ipcRenderer.invoke("parent:listTopics"),
@@ -291,7 +291,10 @@ const api = {
   parentExportPreview: (topicDir: string) => ipcRenderer.invoke("parent:exportPreview", topicDir),
   parentExportTopic: (topicDir: string, files: string[], fileName: string) =>
     ipcRenderer.invoke("parent:exportTopic", topicDir, files, fileName),
-  parentImportTopic: () => ipcRenderer.invoke("parent:importTopic"),
+  parentImportPick: () => ipcRenderer.invoke("parent:importPick"),
+  parentImportInspect: (zipPath: string) => ipcRenderer.invoke("parent:importInspect", zipPath),
+  parentImportApply: (zipPath: string, targetName?: string, targetKey?: string) =>
+    ipcRenderer.invoke("parent:importApply", zipPath, targetName, targetKey),
 
   // Scheduler config (per-child, managed in parent settings)
   schedulerConfigGet: () => ipcRenderer.invoke("scheduler:config:get"),

@@ -520,12 +520,11 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   );
 
-  // ISSUE-157：课程详情「学习资料」tab——该课可回看的资料清单（服务端聚合：
-  // display_contents 展示登记 + 家长库 courses.html_path 真源，正文随行返回，不依赖 agent 重发）
-  ipcMain.handle("course:materials", async (_e, childId: string, topic: string, title: string) => {
+  // ISSUE-157 + 反馈：课程详情「学习资料」tab——只取课程配置的 html_path（服务端读文件正文随行返回）
+  ipcMain.handle("course:htmlMaterial", async (_e, childId: string, topic: string, title: string) => {
     try {
-      const items = await dbQuery("kb.displays.course_materials", { child_id: childId, topic: topic || "", title });
-      return { success: true, items: Array.isArray(items) ? items : [] };
+      const item = await dbQuery("kb.courses.html_material", { child_id: childId, topic: topic || "", title });
+      return { success: true, item };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1842,8 +1841,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  // 导入：弹选择框 → 上传 .ltpkg → 返回导入报告
-  ipcMain.handle("parent:importTopic", async (e: IpcMainInvokeEvent) => {
+  // 导入三步（两阶段导入：先探测冲突 → 家长改名确认 → 再落库）：
+  // ① pick：只弹选择框拿路径，不上传
+  ipcMain.handle("parent:importPick", async (e: IpcMainInvokeEvent) => {
     try {
       const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
       const res = await dialog.showOpenDialog(win!, {
@@ -1852,8 +1852,28 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
         filters: [{ name: "学习主题包", extensions: ["ltpkg", "zip"] }],
       });
       if (res.canceled || !res.filePaths[0]) return { success: false, canceled: true };
-      const { importTopicPackage } = await import("./topic-package");
-      const report = await importTopicPackage(res.filePaths[0]);
+      return { success: true, path: res.filePaths[0] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ② inspect：上传探测（服务端不落库），返回包信息与同名冲突裁决
+  ipcMain.handle("parent:importInspect", async (_e, zipPath: string) => {
+    try {
+      const { inspectTopicPackage } = await import("./topic-package");
+      const info = await inspectTopicPackage(zipPath);
+      return { success: true, info };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // ③ apply：落库导入。targetName/targetKey 来自冲突提示里家长确认（或修改后）的身份
+  ipcMain.handle("parent:importApply", async (_e, zipPath: string, targetName?: string, targetKey?: string) => {
+    try {
+      const { applyTopicPackage } = await import("./topic-package");
+      const report = await applyTopicPackage(zipPath, targetName, targetKey);
       return { success: true, report };
     } catch (err) {
       return { success: false, error: (err as Error).message };

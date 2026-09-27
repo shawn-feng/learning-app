@@ -221,17 +221,17 @@ export const learningDomain = {
     }
   },
 
-  /** courseMaterials: (childId, topic, title) => Promise<{ success; items?; error? }>（ISSUE-157：
-   *  kb.displays.course_materials——该课可回看资料聚合：display_contents 登记匹配 + 家长库 html_path
-   *  真源，正文服务端读文件随行返回；shape 对齐客户端 Material） */
-  courseMaterials: async (
+  /** courseHtmlMaterial: (childId, topic, title) => Promise<{ success; item?: {path,title,content}|null; error? }>
+   *  （ISSUE-157 + 反馈：kb.courses.html_material——只取课程配置的 html_path，正文服务端读文件随行返回；
+   *  点 tab 直接渲染无列表） */
+  courseHtmlMaterial: async (
     childId: string,
     topic: string,
     title: string
-  ): Promise<{ success: boolean; items?: unknown[]; error?: string }> => {
+  ): Promise<{ success: boolean; item?: { path: string; title: string; content: string } | null; error?: string }> => {
     try {
-      const items = await dbQuery("kb.displays.course_materials", { child_id: childId, topic: topic || "", title });
-      return { success: true, items: Array.isArray(items) ? items : [] };
+      const item = await dbQuery("kb.courses.html_material", { child_id: childId, topic: topic || "", title });
+      return { success: true, item };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import IconButton from "./IconButton";
-import MaterialsPanel, { type Material } from "./MaterialsPanel";
+import MaterialsPanel, { kindFromPath } from "./MaterialsPanel";
 import { ArrowLeft, ChevronUp, ChevronDown } from "lucide-react";
 
 /** 课程进度字段（两端钻取共用，字段取自 SQLite courses 表）。 */
@@ -133,11 +133,10 @@ export default function CourseDetail({
   const [loadingExam, setLoadingExam] = useState(false);
   // 两栏视图：当前选中哪条记录
   const [activeKey, setActiveKey] = useState<string | null>(null);
-  // ISSUE-157：详情双 tab——学习情况（原有内容）/ 学习资料（该课可回看资料，不依赖 agent 重发）
+  // ISSUE-157：详情双 tab——学习情况（原有内容）/ 学习资料（点 tab 直接渲染课程 html_path 资料）
   const [tab, setTab] = useState<"learn" | "materials">("learn");
-  // 学习资料 tab：该课资料清单（Material shape，服务端聚合返回）+ 当前选中
-  const [cmItems, setCmItems] = useState<Material[] | null>(null);
-  const [cmSelectedId, setCmSelectedId] = useState<string | null>(null);
+  // 学习资料 tab：该课 html_path 资料（服务端直读正文）；null=加载中，undefined=无资料
+  const [cmItem, setCmItem] = useState<{ path: string; title: string; content: string } | null | undefined>(null);
 
   // 上下键切课（ISSUE-157）：非输入焦点时生效；iframe 内按键不冒泡（聚焦资料时天然不劫持）
   const courseIndex = courseList ? courseList.findIndex((c) => c.title === course.title) : -1;
@@ -162,18 +161,17 @@ export default function CourseDetail({
     return () => window.removeEventListener("keydown", onKey);
   }, [courseList, onSelectCourse, course.title]);
 
-  // 学习资料：按课拉取（展示登记 + html_path 真源，服务端聚合）；切课重置选中
+  // 学习资料：按课拉取课程配置的 html_path（反馈后只此一路，无展示登记聚合、无列表）
   useEffect(() => {
     let cancelled = false;
-    setCmItems(null);
-    setCmSelectedId(null);
+    setCmItem(null);
     window.api
-      .courseMaterials(childId, topicDir, course.title)
+      .courseHtmlMaterial(childId, topicDir, course.title)
       .then((r: any) => {
-        if (!cancelled) setCmItems(r?.success ? r.items || [] : []);
+        if (!cancelled) setCmItem(r?.success ? r.item ?? undefined : undefined);
       })
       .catch(() => {
-        if (!cancelled) setCmItems([]);
+        if (!cancelled) setCmItem(undefined);
       });
     return () => {
       cancelled = true;
@@ -303,11 +301,36 @@ export default function CourseDetail({
 
   return (
     <div className="dashboard-panel">
-      <div className="dash-breadcrumb">
-        <IconButton icon={ArrowLeft} title="返回" onClick={onBack} className="dash-back" />
-        <span className="dash-crumb">{topicName}</span>
-        <span className="dash-crumb-sep">›</span>
-        <span className="dash-crumb-current">{course.title}</span>
+      {/* ISSUE-157 反馈：tab 按钮并入面包屑行（左=返回+课程名，中=双 tab，右=前后课导航） */}
+      <div className="dash-breadcrumb" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <IconButton icon={ArrowLeft} title="返回" onClick={onBack} className="dash-back" style={{ flexShrink: 0 }} />
+        <span className="dash-crumb" style={{ flexShrink: 0 }}>{topicName}</span>
+        <span className="dash-crumb-sep" style={{ flexShrink: 0 }}>›</span>
+        <span className="dash-crumb-current" style={{ flexShrink: 0, maxWidth: "28%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{course.title}</span>
+        {/* 双 tab：学习情况 / 学习资料 */}
+        <span style={{ flex: 1, display: "flex", justifyContent: "center", gap: 8, minWidth: 0 }}>
+          {([
+            ["learn", "📋 学习情况"],
+            ["materials", "📚 学习资料"],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              style={{
+                padding: "4px 14px",
+                borderRadius: 8,
+                border: tab === key ? "2px solid #667eea" : "1px solid #ddd",
+                background: tab === key ? "#eef0ff" : "#fff",
+                color: tab === key ? "#5a67d8" : "#555",
+                fontSize: 13,
+                fontWeight: tab === key ? 600 : 400,
+                cursor: "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
         {/* ISSUE-157：前/后课按钮 + 当前位置（↑/↓ 键同效；顺序=列表展示顺序，不跨主题） */}
         {courseList && courseList.length > 1 && courseIndex >= 0 && (
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
@@ -332,31 +355,6 @@ export default function CourseDetail({
             </button>
           </span>
         )}
-      </div>
-
-      {/* ISSUE-157：详情双 tab——学习情况（原内容）/ 学习资料（按课回看，不用让 AI 重发） */}
-      <div style={{ display: "flex", gap: 8, margin: "10px 0 12px" }}>
-        {([
-          ["learn", "📋 学习情况"],
-          ["materials", `📚 学习资料${cmItems?.length ? `（${cmItems.length}）` : ""}`],
-        ] as const).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            style={{
-              padding: "5px 14px",
-              borderRadius: 8,
-              border: tab === key ? "2px solid #667eea" : "1px solid #ddd",
-              background: tab === key ? "#eef0ff" : "#fff",
-              color: tab === key ? "#5a67d8" : "#555",
-              fontSize: 13,
-              fontWeight: tab === key ? 600 : 400,
-              cursor: "pointer",
-            }}
-          >
-            {label}
-          </button>
-        ))}
       </div>
 
       {tab === "learn" && (
@@ -521,25 +519,36 @@ export default function CourseDetail({
         </>
       )}
 
-      {/* ISSUE-157：学习资料 tab——复用 MaterialsPanel 的渲染块（iframe 沙盒/docUrl/查词浮层/错题上报
-          全部同孩子端左侧面板一套），仅数据源不同（按课聚合，而非会话资料流）；空态在此提示 */}
+      {/* ISSUE-157 反馈：学习资料 tab——点 tab 直接渲染课程 html_path 的资料（bare 模式无返回按钮/无标题；
+          复用 MaterialsPanel 的 iframe 沙盒/docUrl/查词浮层/错题上报/资料字号整套能力），无列表中间层 */}
       {tab === "materials" && (
-        cmItems === null ? (
-          <div className="placeholder" style={{ fontSize: 13 }}>⏳ 正在加载该课资料…</div>
-        ) : cmItems.length === 0 ? (
+        cmItem === null ? (
+          <div className="placeholder" style={{ fontSize: 13 }}>⏳ 正在加载课程资料…</div>
+        ) : cmItem === undefined ? (
           <div className="placeholder" style={{ fontSize: 13 }}>
-            📄<br />这门课还没有展示过的资料，也没有配置课程资料。
+            📄<br />这门课还没有配置课程资料。
             <br />
             <span style={{ fontSize: 12, color: "#999" }}>可以对 AI 老师说「展示这一课的学习资料」。</span>
           </div>
         ) : (
           <MaterialsPanel
-            materials={cmItems}
-            selectedId={cmSelectedId}
-            onOpen={(id) => setCmSelectedId(id)}
-            onBack={() => setCmSelectedId(null)}
+            materials={[
+              {
+                id: "cm-0",
+                format: "html",
+                kind: kindFromPath(cmItem.path),
+                content: cmItem.content,
+                title: cmItem.title,
+                time: "",
+                filePath: cmItem.path,
+              },
+            ]}
+            selectedId="cm-0"
+            onOpen={() => {}}
+            onBack={() => {}}
             matFontSize={matFontSize}
             childId={childId}
+            bare
           />
         )
       )}

@@ -333,24 +333,24 @@ export const queryHandlers: Record<string, QueryHandler> = {
       db.close();
     }
   },
-  // ISSUE-157：进度页课程详情「学习资料」tab 数据源——该课可回看的资料清单（只读聚合，不依赖 agent 重发）。
-  // 两路定位：① display_contents 展示登记（agent 给该孩子展示过的，按 标题/文件名/路径含课程名 保守匹配）；
-  // ② 家长库 courses.html_path（课程显式配置的资料真源，无条件收录、文件存在才算）。
-  // 正文在服务端读文件真源（新鲜）随行返回；shape 对齐客户端 Material（id/format/title/time/filePath/content）。
-  "kb.displays.course_materials": (ctx, args) => {
+  // ISSUE-157 + 反馈（2026-09-27）：进度页课程详情「学习资料」tab——只取**课程配置的 html_path**
+  //（家长库 courses.html_path 真源），正文服务端直读文件随行返回；不再聚合展示登记
+  //（display_contents 匹配已按用户拍板移除——点击 tab 直接进渲染，无列表）。
+  "kb.courses.html_material": (ctx, args) => {
     const childId = requireChildId(ctx, args);
     const topic = str(args.topic, "");
     const title = str(args.title).trim();
     if (!title) throw new ApiError(400, "缺少 title");
     const db = openKb(ctx.dataDir, ctx.parentId, childId);
     try {
-      // 家长库真源：该课配置的 html 资料（topic 兼容 topic_key / 中文名，同 kb.courses.get 口径）
+      // 孩子库行存在性 + topic_key 解析（topic 兼容 topic_key / 中文名，同 kb.courses.get 口径）
+      const row = db
+        .prepare("SELECT topic_key FROM courses WHERE title = ? AND (topic = ? OR topic_key = ?) LIMIT 1")
+        .get(title, topic, topic) as { topic_key?: string } | undefined;
+      if (!row) return null; // 课程不在该孩子库 → 无资料
+      const topicKey = String(row.topic_key || topic || "");
       let htmlPath = "";
       try {
-        const row = db
-          .prepare("SELECT topic_key FROM courses WHERE title = ? AND (topic = ? OR topic_key = ?) LIMIT 1")
-          .get(title, topic, topic) as { topic_key?: string } | undefined;
-        const topicKey = String(row?.topic_key || topic || "");
         const pdb = openParentLib(ctx.dataDir, ctx.parentId);
         try {
           const c = pdb
@@ -361,68 +361,21 @@ export const queryHandlers: Record<string, QueryHandler> = {
           pdb.close();
         }
       } catch {
-        /* 家长库不可用：仅用展示登记 */
+        /* 家长库不可用 → 视为无资料 */
       }
-
-      const stemOf = (p: string) => (p.split("/").pop() ?? "").replace(/\.[^.]+$/, "");
-      const norm = (p: string) => String(p || "").replace(/\\/g, "/").replace(/^\/+/, "").replace(/^materials\//, "").trim();
-      // 展示登记（全部会话种类，最近优先）；materials 行正文走文件真源，workspace 行正文在登记里
-      const rows = db
-        .prepare("SELECT path, title, source, ts FROM display_contents ORDER BY ts DESC LIMIT 200")
-        .all() as Array<{ path: string; title: string; source: string; ts: number }>;
-      const seen = new Set<string>();
-      const matched: Array<{ path: string; title: string; source: string; ts: number }> = [];
-      for (const r of rows) {
-        const p = norm(r.path);
-        if (!p || seen.has(p)) continue;
-        if (String(r.title || "") === title || String(r.title || "").includes(title) || stemOf(p) === title || p.includes(title)) {
-          seen.add(p);
-          matched.push({ path: p, title: String(r.title || stemOf(p)), source: String(r.source || "materials"), ts: Number(r.ts) || 0 });
+      // 沙箱形状：topic/xxx.ext（防 ..、盘符、裸文件名）
+      if (!htmlPath || htmlPath.includes("..") || htmlPath.includes(":") || !/^[^/]+\/.+/i.test(htmlPath)) return null;
+      let content = "";
+      if (/\.(html?|txt|md)$/i.test(htmlPath)) {
+        // 正文直读文件真源（新根优先、旧根兜底）；读不到按空（客户端 docUrl 渲染 / 空态兜底）
+        try {
+          const abs = resolveMaterialFile(ctx.dataDir, ctx.parentId, htmlPath);
+          if (fs.existsSync(abs)) content = fs.readFileSync(abs, "utf-8");
+        } catch {
+          /* 忽略 */
         }
       }
-      if (htmlPath && !seen.has(htmlPath)) {
-        matched.push({ path: htmlPath, title, source: "materials", ts: 0 }); // 显式配置的资料排最后
-        seen.add(htmlPath);
-      }
-
-      const label = (ts: number) => {
-        if (!ts) return "课程资料";
-        const d = new Date(ts);
-        const pad = (n: number) => String(n).padStart(2, "0");
-        return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      };
-      const items = matched.map((m) => {
-        let content = "";
-        const inlineKind = /\.(html?|txt|md)$/i.test(m.path);
-        if (inlineKind && !m.path.startsWith("outputs/") && /^[^/]+\/.+/.test(m.path) && !m.path.includes("..") && !m.path.includes(":")) {
-          // 文件真源直读（新根优先、旧根兜底，同 materials 索引口径）；读不到按空正文
-          try {
-            const abs = resolveMaterialFile(ctx.dataDir, ctx.parentId, m.path);
-            if (fs.existsSync(abs)) content = fs.readFileSync(abs, "utf-8");
-          } catch {
-            /* 忽略 */
-          }
-        } else if (inlineKind && m.path.startsWith("outputs/")) {
-          try {
-            const c = db
-              .prepare("SELECT content FROM display_contents WHERE path = ? ORDER BY ts DESC LIMIT 1")
-              .get(m.path) as { content?: string } | undefined;
-            content = String(c?.content ?? "");
-          } catch {
-            /* 忽略 */
-          }
-        }
-        return {
-          id: `cm-${m.ts}-${m.path}`,
-          format: "html" as const,
-          title: m.title,
-          time: label(m.ts),
-          filePath: m.path,
-          content,
-          source: m.source,
-        };
-      });
-      return items;
+      return { path: htmlPath, title, content };
     } finally {
       db.close();
     }

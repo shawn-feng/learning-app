@@ -28,3 +28,12 @@
 - **上下键切课**：CourseDetail 新 props `courseList`（列表展示顺序 = sortedCourseItems 排序 + 搜索过滤后，不跨主题）/`onSelectCourse`；↑/↓ 键（仅非输入焦点时生效；iframe 内按键不冒泡天然不劫持）+ 头部「上一课/下一课」按钮 + 位置 n/N。LearningDashboard 传同口径列表（切课回写映射回原 CourseItem 对象）；detail 未加载时不启用。
 - **测试**：`test/issue157-course-materials.test.ts` 3 用例（登记匹配+双源正文/同 path 去重/归属 403）；服务端相关回归（kb-query-progress）不受影响；根 tsc 无新增错误；双端 build 通过、web-shim 覆盖通过。
 - **注**：左侧「学习资料」面板未动（会话内最新资料流），两入口并存。
+
+---
+
+## 实施记录二（2026-09-27，用户反馈调整）
+
+- **点 tab 直接进资料渲染，不再进列表**：数据源 op 收窄为 `kb.courses.html_material`（原 `kb.displays.course_materials` 展示登记聚合**整体移除**，按用户拍板只取**课程配置的 html_path** 一路）：孩子库定位课程 topic_key → 家长库 courses.html_path → 服务端直读文件正文随行返回（resolveMaterialFile 双根口径 + 沙箱形状校验 .. / 盘符 / 裸文件名）；未配置/课程不在库/路径非法 → null。IPC `course:materials` → `course:htmlMaterial`，preload/web-shim 同名换（courseMaterials → courseHtmlMaterial，返回 {item|null}）。
+- **去掉资料上方的标题**：MaterialsPanel 加 `bare` 模式（详情视图不渲染返回按钮行与 material-title h2，其余 iframe 沙盒/docUrl/查词浮层/错题上报/资料字号能力原样保留）；CourseDetail 以单条 Material 直喂 + `selectedId="cm-0"` 恒选中 + `bare`。
+- **tab 按钮移到上一行中间**：面包屑行改三段 flex——左（返回+主题+课程名）/ 中（📋 学习情况 · 📚 学习资料，flex:1 居中）/ 右（上一课 n/N 下一课）；原独立 tab 行删除，count 徽标一并去掉（无列表概念了）。
+- **测试**：issue157 测试重写为 3 用例（html_path 返回+前缀归一+正文直读 / 未配置或课程不在库→null / 沙箱形状+归属 403）；tsc 无新增错、双端 build 过、shim 覆盖过。

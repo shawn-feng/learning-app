@@ -71,6 +71,9 @@ interface Props {
   // 场景模式的三个回调（onSceneActive / onSceneVoice / onSceneMicNotice）已随场景会话下线删除（2026-09-25）
   /** ISSUE-114：孩子 id（查词自动上报错题本用） */
   childId?: string;
+  /** ISSUE-157 反馈：裸渲染模式——详情视图不显示返回按钮与资料标题（进度页课程详情内嵌，
+   *  tab 已在上一行、课程名就是标题；列表视图本就不用） */
+  bare?: boolean;
 }
 
 const EXEC_TIMEOUT_MS = 10000;
@@ -291,7 +294,7 @@ function sceneReadyText(manifest: unknown): string {
 }
 
 const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function MaterialsPanel(
-  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse, matFontSize = 16, childId },
+  { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse, matFontSize = 16, childId, bare = false },
   ref
 ) {
   const selected = materials.find((m) => m.id === selectedId);
@@ -728,13 +731,15 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     if ((needsInline && !cleanHtml) || (!needsInline && !mediaUrl)) {
       return (
         <div className="content-panel" style={materialFontStyle}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
-            {onCollapse && (
-              <IconButton icon={PanelRightClose} title="收起学习资料" onClick={onCollapse} className="material-collapse-btn" />
-            )}
-          </div>
-          {selected.title && <h2 className="material-title">{selected.title}</h2>}
+          {!bare && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+              {onCollapse && (
+                <IconButton icon={PanelRightClose} title="收起学习资料" onClick={onCollapse} className="material-collapse-btn" />
+              )}
+            </div>
+          )}
+          {!bare && selected.title && <h2 className="material-title">{selected.title}</h2>}
           <div className="placeholder">
             📄
             <br />
@@ -745,13 +750,15 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     }
     return (
       <div className="content-panel" style={materialFontStyle} onClick={closeLookup}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
-          {onCollapse && (
-            <IconButton icon={PanelRightClose} title="收起学习资料" onClick={onCollapse} className="material-collapse-btn" />
-          )}
-        </div>
-        {selected.title && <h2 className="material-title">{selected.title}</h2>}
+        {!bare && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+            {onCollapse && (
+              <IconButton icon={PanelRightClose} title="收起学习资料" onClick={onCollapse} className="material-collapse-btn" />
+            )}
+          </div>
+        )}
+        {!bare && selected.title && <h2 className="material-title">{selected.title}</h2>}
         {kind === "html" ? (
           <HtmlFrame
             // ISSUE-061 根治：服务端共享资料（filePath 可解析为 materials 相对路径）走真实 URL 顶层文档
