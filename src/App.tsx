@@ -91,7 +91,8 @@ export default function App() {
 
   return (
     <div className="app-root">
-      <TitleBar />
+      {/* ISSUE-158 续：panelToggles 仅家长中心显示（全屏右侧的左/右栏折叠按钮） */}
+      <TitleBar panelToggles={view === "dashboard"} />
       <div className="app-content">{content}</div>
     </div>
   );

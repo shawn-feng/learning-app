@@ -1,7 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
-import { LogOut, UserPlus, MessageSquare, PanelLeftClose, PanelLeftOpen, Home } from "lucide-react";
-import IconButton from "../components/IconButton";
+import { UserPlus, MessageSquare } from "lucide-react";
 import { LoadingBlock } from "../components/Loading";
 import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
@@ -54,6 +53,29 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   }
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
   const parentChat = useChatPanel("parent", 360);
+  // ISSUE-158 续（用户反馈）：折叠开关移到标题栏（全屏右侧两枚）——这里监听切换请求并上报
+  // 当前态供标题栏切图标（窗口 CustomEvent 解耦，TitleBar 与面板状态互不持有）
+  const chatCollapsedRef = useRef(parentChat.collapsed);
+  useEffect(() => {
+    chatCollapsedRef.current = parentChat.collapsed;
+  }, [parentChat.collapsed]);
+  useEffect(() => {
+    const onToggleLeft = () => toggleSidebar();
+    const onToggleRight = () => parentChat.setCollapsed(!chatCollapsedRef.current);
+    window.addEventListener("parent:toggle-left-sidebar", onToggleLeft);
+    window.addEventListener("parent:toggle-right-sidebar", onToggleRight);
+    return () => {
+      window.removeEventListener("parent:toggle-left-sidebar", onToggleLeft);
+      window.removeEventListener("parent:toggle-right-sidebar", onToggleRight);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("parent:sidebar-changed", { detail: { collapsed: sidebarCollapsed } }));
+  }, [sidebarCollapsed]);
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("parent:right-panel-changed", { detail: { collapsed: parentChat.collapsed } }));
+  }, [parentChat.collapsed]);
 
   async function refresh() {
     setChildrenLoading(true);
@@ -103,16 +125,9 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
 
       <div className="dashboard-body">
         <div className={`dashboard-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
-          {/* 顶部工具行：折叠开关 + 返回主页 + 退出登录（折叠态纵向排列，均带悬浮 title） */}
-          <div className="sidebar-tools">
-            <IconButton
-              icon={sidebarCollapsed ? PanelLeftOpen : PanelLeftClose}
-              title={sidebarCollapsed ? "展开菜单" : "折叠菜单"}
-              onClick={toggleSidebar}
-            />
-            <IconButton icon={Home} title="返回主页（孩子模式）" onClick={onEnterChildMode} />
-            <IconButton icon={LogOut} title="退出登录" onClick={onLogout} />
-          </div>
+          {/* ISSUE-158 续（用户反馈）：顶部工具行取消——折叠开关移标题栏、退出登录移主页（主页已有）；
+              菜单区内部滚动，「返回主页」钉在侧栏最下面 */}
+          <div className="sidebar-menu">
           <div
             className="child-card"
             style={{ border: "none" }}
@@ -232,7 +247,20 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
               />
             )}
           </div>
+          </div>
 
+          {/* 底部：返回主页（孩子模式）——注销登录在主页已有，不再重复 */}
+          <div
+            className="child-card sidebar-footer-item"
+            style={{ border: "none" }}
+            title="返回主页（孩子模式）"
+            onClick={onEnterChildMode}
+          >
+            <div className="child-avatar">🏠</div>
+            <div className="child-info">
+              <div className="name">返回主页</div>
+            </div>
+          </div>
         </div>
 
         <div className="dashboard-main">
