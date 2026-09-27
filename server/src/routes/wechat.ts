@@ -265,15 +265,22 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
     const { maskSecret } = await import("../util/mask.js");
     const cfg = readFeishuConfig(deps.db);
     const st = feishuStatus();
+    // ISSUE-163 追加：回显「生效」配置（与 applyFeishuChannel 同优先级：settings → env 兜底），
+    // 否则环境变量兜底跑的部署（如 201）面板全空，看不出渠道实际绑的是哪个 App。
+    const envAppId = process.env.FEISHU_APP_ID || "";
+    const envSecret = process.env.FEISHU_APP_SECRET || "";
+    const appId = cfg?.appId || envAppId;
+    const appSecret = cfg?.appSecret || envSecret;
+    const source = cfg?.appId ? "settings" : envAppId ? "env" : "none";
     return {
       enabled: cfg?.enabled ?? false,
-      appId: cfg?.appId ?? "",
-      hasSecret: Boolean(cfg?.appSecret),
-      // ISSUE-163：回显打码 secret（前6+****+后4），家长可知当前配的是哪把
-      secretMasked: cfg?.appSecret ? maskSecret(cfg.appSecret) : "",
+      appId,
+      hasSecret: Boolean(appSecret),
+      secretMasked: appSecret ? maskSecret(appSecret) : "",
+      source,
+      envFallback: source === "env",
       running: st.running,
       status: st.status,
-      envFallback: Boolean(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET),
     };
   });
 

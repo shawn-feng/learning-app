@@ -76,10 +76,44 @@ it("② maskSecret 边界：空串/短 key 全 */长 key 6+****+4", () => {
   expect(assessMask("sk-abcdefgh12wxyz3456")).toBe("sk-abc****3456");
 });
 
-it("③ /wechat/feishu-config：未配置时 secretMasked 为空（不炸）", async () => {
+it("③ /wechat/feishu-config：settings/env 均未配置时 source=none，不炸", async () => {
+  delete process.env.FEISHU_APP_ID;
+  delete process.env.FEISHU_APP_SECRET;
   const res = await app.inject({ method: "GET", url: "/api/v1/wechat/feishu-config", headers: { authorization: `Bearer ${token}` } });
   expect(res.statusCode).toBe(200);
-  const body = res.json() as { secretMasked?: string; hasSecret?: boolean };
+  const body = res.json() as { secretMasked?: string; hasSecret?: boolean; source?: string; appId?: string };
   expect(body.hasSecret).toBe(false);
   expect(body.secretMasked).toBe("");
+  expect(body.source).toBe("none");
+  expect(body.appId).toBe("");
+});
+
+it("④ /wechat/feishu-config：settings 已配 → 回显 settings 的 appId + 打码 secret，source=settings", async () => {
+  delete process.env.FEISHU_APP_ID;
+  delete process.env.FEISHU_APP_SECRET;
+  const { saveFeishuConfig } = await import("../server/src/channels/feishu");
+  saveFeishuConfig(mainDb, { appId: "cli_a1b2c3", appSecret: "feishuSecretValue12345", enabled: true });
+  const res = await app.inject({ method: "GET", url: "/api/v1/wechat/feishu-config", headers: { authorization: `Bearer ${token}` } });
+  const body = res.json() as { appId: string; secretMasked: string; source: string };
+  expect(body.appId).toBe("cli_a1b2c3");
+  expect(body.secretMasked).toBe("feishu****2345");
+  expect(body.source).toBe("settings");
+  expect(JSON.stringify(body)).not.toContain("feishuSecretValue12345");
+});
+
+it("⑤ /wechat/feishu-config：settings 未配 + env 有值 → 回显 env 生效值，source=env", async () => {
+  mainDb.prepare("DELETE FROM settings WHERE key = 'channel_feishu'").run();
+  process.env.FEISHU_APP_ID = "cli_env987";
+  process.env.FEISHU_APP_SECRET = "envSecretValue987654";
+  try {
+    const res = await app.inject({ method: "GET", url: "/api/v1/wechat/feishu-config", headers: { authorization: `Bearer ${token}` } });
+    const body = res.json() as { appId: string; secretMasked: string; source: string; envFallback: boolean };
+    expect(body.appId).toBe("cli_env987");
+    expect(body.secretMasked).toBe("envSec****7654");
+    expect(body.source).toBe("env");
+    expect(body.envFallback).toBe(true);
+  } finally {
+    delete process.env.FEISHU_APP_ID;
+    delete process.env.FEISHU_APP_SECRET;
+  }
 });

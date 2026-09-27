@@ -83,7 +83,8 @@ export default function FeishuBindPanel() {
       setFeishuHasSecret(!!d.hasSecret);
       setFeishuSecretMasked(String(d.secretMasked || "")); // ISSUE-163
       setFeishuStatus(d.running ? "运行中" : d.status || "未运行");
-      setFeishuEnvFallback(!!d.envFallback && !d.appId);
+      // ISSUE-163 追加：appId/secretMasked 现在回显「生效值」（settings→env 兜底），badge 按 source 显示
+      setFeishuEnvFallback(d.source === "env");
     }
   }, []);
 
@@ -172,7 +173,7 @@ export default function FeishuBindPanel() {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
           <span style={{ fontSize: 14, fontWeight: 700 }}>飞书机器人配置</span>
           <span style={{ fontSize: 12, color: feishuStatus === "运行中" ? "#27754a" : "#98a2b0" }}>{feishuStatus}</span>
-          {feishuEnvFallback && <span style={{ fontSize: 11, color: "#b9770a" }}>（当前使用服务端环境变量中的凭据）</span>}
+          {feishuEnvFallback && <span style={{ fontSize: 11, color: "#b9770a" }}>（配置来自服务端环境变量，下方为当前生效值）</span>}
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
           <input

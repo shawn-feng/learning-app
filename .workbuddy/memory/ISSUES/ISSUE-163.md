@@ -44,3 +44,10 @@
 - `src/pages/Settings.tsx`：keyMasked 状态 + input 下方回显行 + chip ✓；`src/components/FeishuBindPanel.tsx` placeholder 带前缀。
 - web shim：`domains/models.ts` +piGetSettings；`domains/wechat.ts`（feishu get 透传 secretMasked，如该域有对应方法）。
 - 回归：`test/issue163-key-mask.test.ts`（/models/settings keyMasked 形状+不含明文；feishu secretMasked；mask 边界：短 key 全 *、长 key 6+****+4）。
+
+## 追加（同日）：飞书配置回显「生效配置」——环境变量兜底时也能看出绑定的是哪个 App
+
+- 用户反馈：「还有飞书的配置项，不然不知道绑定是哪个」——`GET /wechat/feishu-config` 原本只回设置表里的配置；而渠道实际生效优先级是 settings → env 兜底（applyFeishuChannel 同款）。环境变量兜底跑的部署（如 201）面板上 App ID/Secret 全空但渠道其实在跑，看不出绑的是哪个 App。
+- 修复：GET 改回**生效配置**——`appId = settings?.appId || env FEISHU_APP_ID`、`hasSecret/secretMasked` 按生效 secret 打码、新增 `source: "settings"|"env"|"none"`，`envFallback = source==="env"`。
+- 面板：badge 文案改「配置来自服务端环境变量，下方为当前生效值」（原 `!d.appId` 守卫删除，按 source 显示）；App ID 输入框即显示生效 appId。
+- 测试扩到 5 用例（③ none ④ settings 回显+不含明文 ⑤ env 回显+envFallback=true），本地 dev 实测 none 分支 200 正常。
