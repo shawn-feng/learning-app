@@ -1,7 +1,7 @@
 /**
- * 微信绑定面板（设置 → 微信绑定，2026-09-17）。
- * 展示待确认的绑定请求（未绑定微信号发来消息时 server 自动落一条），家长确认身份后即完成绑定；
- * 同时管理已绑定列表（解绑）。轮询 15s：新微信消息落地后无需刷新页面即可看到。
+ * 飞书绑定面板（设置 → 飞书绑定；2026-09-17 建为微信绑定面板，ISSUE-161 改名——微信渠道已取消）。
+ * 展示待确认的绑定请求（未绑定的飞书账号发来消息时 server 自动落一条），家长确认身份后即完成绑定；
+ * 同时管理已绑定列表（解绑）与飞书机器人配置。轮询 15s：新消息落地后无需刷新页面即可看到。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -51,7 +51,7 @@ const btn: React.CSSProperties = {
   cursor: "pointer",
 };
 
-export default function WeChatBindPanel() {
+export default function FeishuBindPanel() {
   const [requests, setRequests] = useState<BindRequest[]>([]);
   const [bindings, setBindings] = useState<Binding[]>([]);
   const [childrenList, setChildrenList] = useState<Array<{ id: string; name: string }>>([]);
@@ -130,7 +130,7 @@ export default function WeChatBindPanel() {
       const label = role === "child" ? childrenList.find((c) => c.id === childId)?.name || "" : "家长";
       const r = await window.api.wechatBindDecide({ id: req.id, action, role, childId, label });
       if (r?.success && (r.data as any)?.ok) {
-        setNotice(action === "confirm" ? "已绑定 ✅ 对方再发一条微信即可对话" : "已忽略");
+        setNotice(action === "confirm" ? "已绑定 ✅ 对方再发一条飞书消息即可对话" : "已忽略");
         await load();
       } else {
         setNotice(`操作失败：${r?.error || (r?.data as any)?.error || "未知错误"}`);
@@ -153,11 +153,11 @@ export default function WeChatBindPanel() {
 
   return (
     <div style={{ maxWidth: 720 }}>
-      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>📱 微信绑定</div>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>💬 飞书绑定</div>
       <p style={{ color: "#6b7686", fontSize: 13, margin: "0 0 14px" }}>
-        家人用微信（发给 ClawBot）或飞书（发给学习伙伴机器人）发消息即可接入学习伙伴：未绑定的账号会出现在下方
-        「待确认」里，点确认并选择身份（家长/孩子）后，对方就能在对应渠道里直接和 agent 对话。
-        孩子身份只能使用受控功能（考核与积分只读）。
+        家人在飞书里给「学习伙伴」机器人发消息即可接入学习伙伴：未绑定的飞书账号会出现在下方
+        「待确认」里，点确认并选择身份（家长/孩子）后，对方就能在飞书里直接和 agent 对话。
+        孩子身份只能使用受控功能（考核与积分只读）。（原微信渠道已取消。）
       </p>
 
       {notice && (
@@ -202,7 +202,7 @@ export default function WeChatBindPanel() {
 
       <div style={{ fontSize: 14, fontWeight: 700, margin: "6px 0 8px" }}>待确认请求（{requests.length}）</div>
       {requests.length === 0 ? (
-        <div style={{ ...card, color: "#98a2b0", fontSize: 13 }}>暂无。让家人用微信给 ClawBot 发一条消息，请求会自动出现在这里。</div>
+        <div style={{ ...card, color: "#98a2b0", fontSize: 13 }}>暂无。让家人在飞书里给「学习伙伴」机器人发一条消息，请求会自动出现在这里。</div>
       ) : (
         requests.map((r) => (
           <div key={r.id} style={{ ...card, borderColor: "#c9d8ff" }}>
@@ -245,7 +245,7 @@ export default function WeChatBindPanel() {
 
       <div style={{ fontSize: 14, fontWeight: 700, margin: "16px 0 8px" }}>已绑定（{bindings.length}）</div>
       {bindings.length === 0 ? (
-        <div style={{ ...card, color: "#98a2b0", fontSize: 13 }}>还没有绑定任何微信号。</div>
+        <div style={{ ...card, color: "#98a2b0", fontSize: 13 }}>还没有绑定任何飞书账号。</div>
       ) : (
         bindings.map((b) => (
           <div key={b.wechat_id} style={{ ...card, display: "flex", alignItems: "center", gap: 10 }}>

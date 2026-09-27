@@ -224,7 +224,7 @@ export function applyFeishuChannel(deps: { db: DatabaseSync; dataDir: string }):
             openId,
             st === "rejected"
               ? "这个飞书账号还没有绑定学习伙伴。"
-              : "这个飞书账号还没有绑定。家长会在 App「设置 → 微信绑定」里看到确认请求，确认后请再发一次。"
+              : "这个飞书账号还没有绑定。家长会在 App「设置 → 飞书绑定」里看到确认请求，确认后请再发一次。"
           );
           return;
         }

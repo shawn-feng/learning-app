@@ -323,8 +323,8 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
         ok: false,
         code: "unbound",
         reply: rejected
-          ? "这个微信号还没有绑定学习伙伴。"
-          : "这个微信号还没有绑定。家长会在 App「设置 → 微信绑定」里看到确认请求，确认后请再发一次。",
+          ? "这个账号还没有绑定学习伙伴。"
+          : "这个账号还没有绑定。家长会在 App「设置 → 飞书绑定」里看到确认请求，确认后请再发一次。",
       });
     }
 
