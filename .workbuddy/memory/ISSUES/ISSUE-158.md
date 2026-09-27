@@ -26,3 +26,31 @@
 - **家长中心（Dashboard.tsx）**：`dashboard-header` 整块删除（不再有「家长中心」标题条）；「返回主页（孩子模式）/退出登录」移入侧栏顶部工具行（`sidebar-tools`：折叠开关 + Home + LogOut）；「菜单」section-title 删除；每个菜单项补原生 `title` 悬浮提示。
 - **侧栏折叠**：`sidebarCollapsed` state（localStorage `parent:sidebarCollapsed` 持久化，对齐 useChatPanel 范式）；折叠态 CSS `width:68px`、`child-info display:none`（只显 emoji）、child-avatar 缩至 40px、工具行纵向排列、宽度 0.15s 过渡；报表未读红点 absolute 定位折叠态下仍可见。
 - **回归核验**：根 tsc 无新增错误（web 侧 5 个 tsc 错误经 stash 对照确认全部为 HEAD 既有，含并行会话遗留）；双端 `npm run build` 通过；web-shim 覆盖测试通过；TitleBar 双端共用，孩子端自动生效。
+
+---
+
+## 实施记录二（2026-09-27，用户反馈调整）
+
+- **菜单 icon 改小**：`.dashboard-sidebar .child-avatar` 48px/32px 字 → **40px/22px 字**（对齐孩子端 `.sidebar-icon-btn` 40px），菜单卡 padding/gap 同步收紧，name 字号 14px。
+- **返回主页移到侧栏最下面**：侧栏改 flex 列布局（`.sidebar-menu` 内部滚动 + `.sidebar-footer-item` 钉底，浅分隔线），🏠 返回主页卡片常驻底部（折叠态同样居中只显 icon）。
+- **退出登录从侧栏移除**：主页已有该功能，不重复放置（App 传入的 onLogout prop 保留不再使用）。
+- **折叠开关移到标题栏**：全屏按钮右侧两枚——左=折叠家长菜单侧栏（PanelLeftClose/Open）、右=折叠家长聊天栏（PanelRightClose/Open），仅家长中心模式显示（App 传 `panelToggles={view === "dashboard"}`）。状态仍持有在 Dashboard（localStorage 持久化不变），经窗口 CustomEvent 解耦：标题栏发 `parent:toggle-left|right-sidebar` 请求，Dashboard 回报 `parent:sidebar-changed`/`parent:right-panel-changed`（detail.collapsed）供图标切换；侧栏顶部工具行整行取消。
+- **验证**：tsc 无新增错误、双端 build 通过、web-shim 覆盖通过。
+
+---
+
+## 实施记录三（2026-09-27，用户反馈：孩子端同款折叠按钮）
+
+- **孩子端学习页也上标题栏折叠按钮**：App `panelToggles` 扩为 `view === "dashboard" || view === "learn"`；折叠按钮文案泛化（展开/折叠左侧栏、右侧栏）。
+- **事件协议泛化**：`parent:toggle-*`/`parent:sidebar-changed`/`parent:right-panel-changed` → **`ui:toggle-left|right-sidebar` / `ui:left-sidebar-changed` / `ui:right-panel-changed`**（家长/孩子共用一套；Dashboard 同步改名）。
+- **孩子端 Learn 接线**：左=整个图标侧栏**隐藏/显示**（`railHidden`，localStorage `child:sidebarHidden`，条件渲染——孩子端侧栏本就是 icon 条，再折就是收起整条，主区/聊天区自动占满）；右=聊天面板 `chat.collapsed`（原有的 44px 展开窄条与 » 折叠按钮保留）。两态各自上报标题栏切图标。
+- **两端差异**：家长左侧栏折叠终态=68px icon 条；孩子左侧栏折叠终态=整条隐藏；右侧栏两端都是收起。
+- **验证**：tsc 无新增错、双端 build 过、shim 覆盖 + server-agent-client 27/27 过。
+
+---
+
+## 实施记录四（2026-09-27，用户反馈：资料详情头部精简）
+
+- **资料详情视图**（MaterialsPanel 非 bare 模式）：头部「收起学习资料」折叠按钮（PanelRightClose）删除——标题栏已有折叠体系，旧的入口去掉；列表视图的收起按钮保留（收起展示区功能仍可达）。
+- **标题移到返回键右侧同一行**：`[← 返回] [资料标题（单行省略）]` 一行搞定，原来标题独占一行（大字号+12px 下边距）的垂直空间让给资料正文；空内容分支同样处理。bare 模式（课程详情内嵌）不受影响。
+- **验证**：tsc 无新增错、electron build 过。

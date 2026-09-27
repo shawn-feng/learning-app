@@ -34,3 +34,25 @@ checkAuth/authCheck 重写为**服务端权威 + 离线降级**：
 - `test/issue160-auth-persist.test.ts` 4 用例：①本地 expires_at 已过期 + 服务端 200 → 放行并续缓存（死循环主案）；②服务端 401 → 清凭证；③网络错误 → 离线降级放行；④200 但 is_expired=true → 登出。
 - 双端 build、web-shim 覆盖、全量相关测试通过。
 - **生效条件**：web 端需重新部署 web/dist（201 当前 bundle 是 09-24 的）；Electron 随下个客户端包发布。
+
+## 追踪（2026-09-27 下午）：修复按设计工作，用户仍见「刷新即登出」——根因是云端订阅真实过期
+
+- 用户反馈修复后仍被登出；澄清测试环境为**本地 dev web 端（localhost:8788）**，非 201。
+- 排查链（全程只读实证）：
+  1. server-dev.log：/auth/license 全 200、无 401——服务端从未拒绝会话；
+  2. 新 authCheck 仅两种情况登出：响应 `is_expired=true` 或 401；
+  3. 本地 jwtSecret 签 token 实测 /auth/license → `200 + is_expired:true`（expires_at 2026-09-24）；
+  4. 直打云端 `https://www.aixuexihao.top/api/license`（账号 cloud_token）→ 同样 `200 + is_expired:true`；
+  5. ECS 只读探针：认证链路 = learning-server → cloud-service（/opt/learning-cloud，:8000，www 反代；benefit-auth :9001 未接入，配置注释「暂接 www」）；cloud-service 的 app.db subscriptions 表 test@qq.com 行 `status=active, starts_at=2026-08-25, expires_at=2026-09-24`（30 天订阅已过期 3 天）。
+- 结论：**ISSUE-160 修复无问题**（服务端权威生效）。登录链路不校验有效期 → 过期账号能登录；网页每次刷新核验 → 云端判定过期 → 按设计登出。桌面端「正常」是因为旧代码只在启动时检查 + 登录不校验 + 不重启（重启同样会被踢）。
+- 待用户决策：A）云端 UPDATE 该订阅 expires_at 延期（先备份 app.db）；B）过渡期语义调整——benefit-auth 接入前不强制 cloud-service 试用期过期。
+- 旁证：云端订阅表 22 行全为测试账号，无真实家庭账号；201 连不上云端走降级缓存，家庭用户不受影响。云服务缺续期/管理接口（后续 benefit-auth 一并解决）。
+- 补充澄清（同日）：dev 桌面客户端数据目录 = 仓库根 data/（getDataDir 非 packaged 分支），连 127.0.0.1:8788；其 license.json 显示 15:03:15 登录成功（token iat == parents.updated_at 秒级一致），**内容已是 is_expired:true** —— 即云端已判过期但登录照常放行，桌面端"正常"只是登录后整个会话不再校验（下次启动 authCheck 仍会踢）。%APPDATA%\learning-app\app-data 是安装版客户端的独立数据（指向 201，9-24 后未动），与本地 dev 测试无关。
+
+## 解决（2026-09-27 15:5x）：云端订阅延期 30 天（方案 A）
+
+- 用户决策：benefit-auth 未上线前，先把 cloud-service 里 test@qq.com 的订阅延长 1 个月；接入 benefit-auth 后再切权威授权源。
+- 执行：ECS 上先备份（/opt/learning-cloud/database/app.db.bak-20260927-renew）→ UPDATE subscriptions SET expires_at = 2026-10-27T07:54:04Z（now+30d，与注册发订阅 30 天口径一致；原值 2026-09-24T02:02:43Z）WHERE id=f7c4af20… AND parent_id=86a84278…，rowcount=1。
+- 双重复验：云端 /api/license 200 + is_expired:false；本地 /auth/license 200 + is_expired:false（服务端缓存随上游刷新）。
+- 客户端无需任何操作：新 authCheck 每次刷新都会以服务端最新判定覆盖本地缓存，刷新即恢复并保持登录。
+- 遗留：① 登录链路不校验订阅状态（过期账号能登录、首次校验才被踢）——建议后续登录时即拦截提示；② cloud-service 无续期/管理接口，随 benefit-auth 一并解决；③ 201 部署（server.cjs + web/dist）仍待用户确认，与本问题无关。
