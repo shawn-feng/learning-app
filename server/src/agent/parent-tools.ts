@@ -17,6 +17,7 @@ import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串
 import type { DatabaseSync } from "node:sqlite";
 import { openParentLib } from "../db/parent-lib.js";
 import { openKb } from "../db/kb.js";
+import { resolveTopicKey } from "./plan-tools.js"; // topicsTool 的 topic 参数收中文名或目录名
 import {
   isImageAttachment,
   isTextAttachment,
@@ -301,20 +302,28 @@ export function createParentAgentTools(deps: ParentToolDeps) {
   });
 
   // 2026-09-18 库域分工：家长库不再存学习进度——家长侧看进度改为实时聚合名下孩子的孩子库。
-  // 返回 { byTopicKey: 主题→{learned,total}，byCourseTitle: 课程标题→{done,seen,lastReview} }
+  // 2026-09-27 修正口径：**按孩子分列，不再跨孩子合计**——合计数（珊珊315+闻闻195=510）会与按孩子的
+  // parent_child_mastery_report（315/512）对不上，家长 agent 曾把两个数一起报出来（用户实测反馈）。
+  // 返回 { byTopicKey: 主题→按孩子的进度行；byCourseTitle: 课程标题→{done,seen,lastReview}（名下合计，coursesTool 旧口径保留） }
   function familyProgress(): {
-    byTopicKey: Map<string, { learned: number; total: number }>;
+    byTopicKey: Map<string, Array<{ child: string; learned: number; total: number }>>;
+    childOrder: string[];
     byCourseTitle: Map<string, { done: number; seen: number; lastReview: string }>;
   } {
-    const byTopicKey = new Map<string, { learned: number; total: number }>();
+    const byTopicKey = new Map<string, Array<{ child: string; learned: number; total: number }>>();
+    const childOrder: string[] = [];
     const byCourseTitle = new Map<string, { done: number; seen: number; lastReview: string }>();
-    let kids: Array<{ id: string }> = [];
+    let kids: Array<{ id: string; name: string }> = [];
     try {
-      kids = deps.db.prepare("SELECT id FROM children WHERE parent_id = ?").all(deps.parentId) as Array<{ id: string }>;
+      kids = deps.db.prepare("SELECT id, name FROM children WHERE parent_id = ?").all(deps.parentId) as Array<{
+        id: string;
+        name: string;
+      }>;
     } catch {
-      return { byTopicKey, byCourseTitle };
+      return { byTopicKey, childOrder, byCourseTitle };
     }
     for (const k of kids) {
+      childOrder.push(String(k.name));
       let kb: DatabaseSync;
       try {
         kb = openKb(deps.dataDir, deps.parentId, k.id);
@@ -326,10 +335,9 @@ export function createParentAgentTools(deps: ParentToolDeps) {
           .prepare("SELECT topic, learned, total FROM topic_progress")
           .all() as Array<{ topic: string; learned: number; total: number }>;
         for (const r of agg) {
-          const cur = byTopicKey.get(r.topic) ?? { learned: 0, total: 0 };
-          cur.learned += Number(r.learned) || 0;
-          cur.total = Math.max(cur.total, Number(r.total) || 0);
-          byTopicKey.set(r.topic, cur);
+          const rows = byTopicKey.get(r.topic) ?? [];
+          rows.push({ child: String(k.name), learned: Number(r.learned) || 0, total: Number(r.total) || 0 });
+          byTopicKey.set(r.topic, rows);
         }
         const cs = kb
           .prepare("SELECT title, status, last_review FROM courses")
@@ -345,32 +353,59 @@ export function createParentAgentTools(deps: ParentToolDeps) {
         kb.close();
       }
     }
-    return { byTopicKey, byCourseTitle };
+    return { byTopicKey, childOrder, byCourseTitle };
   }
 
   const topicsTool = defineTool({
     name: "parent_library_topics",
-    label: "查看教学主题与进度",
+    label: "查看教学主题与进度（按孩子分列）",
     description:
-      "列出家长库里的教学主题及其进度（已学/总数/下一课）。起草排期或整理资料前用它确认权威主题名（topic_key）。",
-    parameters: Type.Object({}),
-    execute: async () => {
+      "列出家长库的教学主题与**名下孩子**的学习进度（已学/总数）。**按孩子分列，不是合计**——合计数会随孩子数变大，" +
+      "和按孩子的 parent_child_mastery_report 对不上（实测踩过：510=315+195）。\n" +
+      "**何时调用**：核对权威主题名（topic_key）/ 看各主题进度总览。**家长已点名主题问进度时，直接用 " +
+      "parent_child_mastery_report（topic 收中文名或拼音目录名），不必先调本工具**。\n" +
+      "- `topic`：只看某主题（topic_key 或中文名，如 lunyu / 论语）；\n" +
+      "- `child`：只看某孩子（孩子姓名，不确定先 parent_list_children）。",
+    parameters: Type.Object({
+      topic: Type.Optional(
+        Type.String({ description: "主题目录名或中文名（可选；传了只看该主题）" })
+      ),
+      child: Type.Optional(Type.String({ description: "孩子姓名（可选；传了只看该孩子的进度）" })),
+    }),
+    execute: async (_id: string, params: { topic?: string; child?: string }) => {
       const db = openParentLib(deps.dataDir, deps.parentId);
       try {
-        const rows = db
-          .prepare(
-            `SELECT t.name, t.topic_key, t.method,
-                    (SELECT COUNT(*) FROM courses c WHERE c.topic = t.topic_key) AS total
-             FROM topics t ORDER BY t.topic_key`
-          )
-          .all() as Array<{ name: string; topic_key: string; method: string; total: number }>;
+        let rows = db
+          .prepare(`SELECT t.name, t.topic_key, (SELECT COUNT(*) FROM courses c WHERE c.topic = t.topic_key) AS total
+             FROM topics t ORDER BY t.topic_key`)
+          .all() as Array<{ name: string; topic_key: string; total: number }>;
         if (!rows.length) return ok("（家长库暂无教学主题）");
+        const wantTopic = String(params?.topic ?? "").trim();
+        if (wantTopic) {
+          const key = resolveTopicKey(db, wantTopic);
+          rows = rows.filter((r) => r.topic_key === key || r.name === wantTopic);
+          if (!rows.length) return ok(`家长库中未找到主题「${wantTopic}」（可用本工具不带参数列出全部主题名）。`);
+        }
+        // 孩子过滤（按姓名；找不到时把名下孩子列出来）
         const progress = familyProgress();
+        const wantChild = String(params?.child ?? "").trim();
+        const kids = progress.childOrder;
+        if (wantChild && !kids.includes(wantChild)) {
+          return ok(`名下没有叫「${wantChild}」的孩子。名下孩子：${kids.join("、")}（不确定先 parent_list_children）。`);
+        }
+        const showKids = wantChild ? [wantChild] : kids;
         return ok(
           rows
             .map((r) => {
-              const learned = progress.byTopicKey.get(r.topic_key)?.learned ?? 0;
-              return `- ${r.name}（${r.topic_key}）：已学 ${learned}/${r.total}${r.method ? `｜方法：${r.method}` : ""}`;
+              const parts = showKids.map((name) => {
+                const row = (progress.byTopicKey.get(r.topic_key) ?? []).find((x) => x.child === name);
+                return { name, learned: row?.learned ?? 0, total: row?.total || r.total || 0 };
+              });
+              const line =
+                kids.length > 1
+                  ? parts.map((p) => `${p.name} ${p.learned}/${p.total}`).join(" · ")
+                  : `已学 ${parts[0]!.learned}/${parts[0]!.total}`;
+              return `- ${r.name}（${r.topic_key}）：${line}`;
             })
             .join("\n")
         );
@@ -383,18 +418,52 @@ export function createParentAgentTools(deps: ParentToolDeps) {
   const coursesTool = defineTool({
     name: "parent_library_courses",
     label: "查看主题下的课程",
-    description: "列出某主题下的课程（标题/学习进度/资料路径）。改资料前用它核对课程与资料的对应关系。",
+    description:
+      "列出某主题下的课程（标题/学习进度/资料路径）。改资料前用它核对课程与资料的对应关系。\n" +
+      "多孩子家庭的 done/seen 缺省是**名下孩子合计**；要按单个孩子看传 `child`（孩子姓名）。",
     parameters: Type.Object({
       topic: Type.String({ description: "主题目录名（topic_key，如 lunyu）" }),
+      child: Type.Optional(Type.String({ description: "孩子姓名（可选；传了只看该孩子的进度）" })),
     }),
-    execute: async (_id: string, params: { topic: string }) => {
+    execute: async (_id: string, params: { topic: string; child?: string }) => {
       const db = openParentLib(deps.dataDir, deps.parentId);
       try {
         const rows = db
           .prepare(`SELECT title, html_path FROM courses WHERE topic = ? ORDER BY sort_order, title`)
           .all(params.topic) as Array<{ title: string; html_path: string }>;
         if (!rows.length) return ok(`主题「${params.topic}」下没有课程（可用 parent_library_topics 核对 topic 名）`);
+        const wantChild = String(params?.child ?? "").trim();
         const progress = familyProgress();
+        const kidNames = progress.childOrder;
+        if (wantChild && !kidNames.includes(wantChild)) {
+          return ok(`名下没有叫「${wantChild}」的孩子。名下孩子：${kidNames.join("、")}。`);
+        }
+        if (wantChild) {
+          // 按孩子口径：直接读该孩子孩子库的课程状态（✅=已完成；不是名下合计）
+          const kid = deps.db
+            .prepare("SELECT id FROM children WHERE parent_id = ? AND name = ?")
+            .get(deps.parentId, wantChild) as { id: string } | undefined;
+          if (!kid) return ok(`名下没有叫「${wantChild}」的孩子。`);
+          const kb = openKb(deps.dataDir, deps.parentId, kid.id);
+          try {
+            const cs = kb
+              .prepare("SELECT title, status, last_review FROM courses WHERE topic = ?")
+              .all(params.topic) as Array<{ title: string; status: string; last_review: string }>;
+            const byTitle = new Map(cs.map((c) => [String(c.title), c]));
+            return ok(
+              rows
+                .map((r) => {
+                  const c = byTitle.get(r.title);
+                  if (!c) return `- ${r.title}｜未开始｜${r.html_path || "无资料"}`;
+                  const prog = `${c.status === "✅" ? "✅已完成" : "进行中"}｜最近 ${c.last_review || "-"}`;
+                  return `- ${r.title}｜${prog}｜${r.html_path || "无资料"}`;
+                })
+                .join("\n")
+            );
+          } finally {
+            kb.close();
+          }
+        }
         return ok(
           rows
             .map((r) => {

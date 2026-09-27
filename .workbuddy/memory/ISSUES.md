@@ -143,6 +143,8 @@
 
 | 129 | ✅ 已实施（2026-09-21）：token 用量按日期×会话展示。服务端 `token_usage` 表（一行一条 assistant 消息，模型字段原样直传）+ 游标扫描器（读时增量、可回填历史）+ `GET /token-usage/days\|sessions\|dates`（家长 JWT）；客户端 preload/IPC/web-shim 三层接线 + `TokenStatsPanel` 重写为两级视图（日期→渠道行→点开会话明细）；删除旧死代码（token-stats.ts + token:summary/token:log IPC）。验证：tsc 0 错、新测试 3/3、双端 build 通过、真实数据 E2E 冒烟。**已部署 201（0.5.4，2026-09-22）**：首次查询回填 1179 行/26 会话文件，真实消耗首见（09-21 家长助手 184 轮 1962 万 tok）；journal 0 错误。**遗留**：客户端 UI 随下个客户端包发布；考核/worker 的 inMemory 会话不落盘扫不到 | 中 | 2026-09-21 | [详情](ISSUES/ISSUE-129.md) |
 
+| 154 | ✅ **已修复（2026-09-27，0.5.16）**：家长问单主题进度时两个工具口径不一致——`parent_library_topics` 把名下孩子进度**跨孩子合计**（论语 510=珊珊315+闻闻195）与按孩子的 `parent_child_mastery_report`（315/512）对不上；且无 topic 参数（点名主题也全量拉回）、每行附带教学方法全文（token 炸弹）。修复：familyProgress 按孩子分列 + topicsTool 加 topic/child 过滤 + 去方法全文 + coursesTool 加 child 口径 + 技能指引同步（点名主题直接 mastery_report）。测试 5 例 + 关联 88 例全绿；本地 0.5.16 真实数据验证。**未上 201** | 中 | 2026-09-27 | [详情](ISSUES/ISSUE-154.md) |
+
 ## 记录格式（模板）
 
 - **类型**：bug / 需求 / 架构 / UI / 其他

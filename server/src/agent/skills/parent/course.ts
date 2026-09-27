@@ -57,7 +57,7 @@ export const courseSkill: ParentSkill = {
 8. **收尾复述**：这门课现在有什么、孩子那边能看到什么、还差什么。
 
 ## 参数速查（本场景工具）
-- \`parent_library_topics\`：无参数；每个主题给出**权威 \`topic_key\`** 与进度（已学/总数/下一课）。
+- \`parent_library_topics\`：\`topic\`（可选，目录名或中文名）· \`child\`（可选，孩子姓名）；每个主题给出**权威 \`topic_key\`** 与进度（已学/总数，**按孩子分列**）。
 - \`parent_library_courses\`：\`topic\`（必填，\`topic_key\` 如 lunyu）→ 该主题下课程（标题/进度/资料路径）。**"这门课在不在 / 准确叫什么"用它**（也用于核对 \`html_path\` 该挂哪门课）。
 - \`parent_library_course_content\`：\`topic\` + \`title\`（必填）→ 该课知识点（**\`id=\`**）与每个知识点下的题（题干/答案/行为/分值，题也带 **\`id=\`**）。返回的 id 正是 \`items\` 里 \`knowledgePointId\` / \`questionId\` 要用的。
 - \`parent_upsert_topic\`：\`name\`（必填，主题中文名＝**主键**）· \`topic_key\`（必填，目录名）· \`method\` / \`assess_method\` / \`progress\` / \`rules_json\`（缺省 \`{}\`）。**覆盖只更新你给的字段**，没给的保持原样。
