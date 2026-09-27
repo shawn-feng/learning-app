@@ -385,6 +385,8 @@ export default function Learn({ child, onExit }: Props) {
   const [aiEmoji, setAiEmoji] = useState(child.aiEmoji || "🤖");
   const [aiPersonality, setAiPersonality] = useState(child.aiPersonality);
   const [aiSettingsMsg, setAiSettingsMsg] = useState("");
+  // ISSUE-162：孩子端诊断——导出本机客户端日志（无服务端日志入口，孩子凭据无权读取）
+  const [logExportMsg, setLogExportMsg] = useState("");
 
   // Change password
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -1060,6 +1062,23 @@ export default function Learn({ child, onExit }: Props) {
     }
   }
 
+  // ISSUE-162：孩子端导出本机客户端日志（与家长端 app:exportLog 同链路）
+  async function handleExportClientLog() {
+    setLogExportMsg("");
+    try {
+      const r: any = await window.api.appExportLog();
+      if (r?.success && r?.canceled) {
+        setLogExportMsg("已取消导出");
+      } else if (r?.success && r?.filePath) {
+        setLogExportMsg(`已导出：${r.filePath}`);
+      } else {
+        setLogExportMsg(r?.error || "导出失败");
+      }
+    } catch (e) {
+      setLogExportMsg("导出失败：" + String((e as Error)?.message ?? e));
+    }
+  }
+
   async function handleChangePassword() {
     setChangePwdMsg("");
     if (!oldPassword || !newPassword) {
@@ -1512,6 +1531,27 @@ export default function Learn({ child, onExit }: Props) {
                 minHeight: 60,
               }}
             />
+
+            {/* ISSUE-162：诊断——孩子端导出本机客户端日志（排查问题时提交给家长/技术支持） */}
+            <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid #eee" }}>
+              <div style={{ fontSize: 13, color: "#888", marginBottom: 6 }}>
+                遇到问题需要排查时，可导出本机运行日志（不含对话内容与密码）。
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  className="cancel"
+                  style={{ background: "#667eea", color: "#fff", border: "none" }}
+                  onClick={handleExportClientLog}
+                >
+                  导出运行日志
+                </button>
+                {logExportMsg && (
+                  <span style={{ fontSize: 12, color: logExportMsg.startsWith("已导出") || logExportMsg === "已取消导出" ? "#48bb78" : "#cc7b00" }}>
+                    {logExportMsg}
+                  </span>
+                )}
+              </div>
+            </div>
 
             <div className="modal-actions">
               <button className="cancel" onClick={() => setShowAiSettings(false)}>

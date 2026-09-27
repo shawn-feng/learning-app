@@ -20,7 +20,7 @@
  *   `import { startMiscLoops } from "./domains/misc"` 并在 installWebApi() 末尾调用。
  *   未接线时 schedulerConfigGet / childSelect / childAuth 会惰性 ensure，功能不缺失。
  */
-import { getServerBase, setServerBase } from "../core/server-fetch";
+import { getServerBase, setServerBase, http } from "../core/server-fetch";
 import { eventBus } from "../core/event-bus";
 import { startConfigSyncLoop } from "./config";
 import { ensureReminderLoop } from "./scheduler";
@@ -73,6 +73,49 @@ export const miscDomain = {
   /** appGetLogTail: (limit?) => Promise<{ success: true; entries: [] }>（空日志） */
   appGetLogTail: async (_limit?: number): Promise<{ success: boolean; entries: unknown[] }> => {
     return { success: true, entries: [] };
+  },
+
+  // ---- 服务端日志导出（ISSUE-162）：web 端反而畅通——同源带 token 拉取，blob 触发下载 ----
+
+  /** logsExportServerLog: () => 拉取 /logs/server 全文并以 blob 下载 server-log-YYYY-MM-DD.jsonl */
+  logsExportServerLog: async (): Promise<{ success: boolean; filePath?: string; canceled?: boolean; error?: string }> => {
+    try {
+      const r = await http<{ content: string; note?: string }>("/logs/server");
+      const content = r.content || "";
+      if (!content) return { success: false, error: "服务端暂无日志（server-log.jsonl 尚未写入）" };
+      const name = `server-log-${new Date().toISOString().slice(0, 10)}.jsonl`;
+      const blob = new Blob([content], { type: "application/x-ndjson" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      return { success: true, filePath: name };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** logsFetchServerLogTail: (limit?) => 拉全文取尾部 N 条 JSON 行（诊断面板预留） */
+  logsFetchServerLogTail: async (limit?: number): Promise<{ success: boolean; entries: unknown[]; error?: string }> => {
+    try {
+      const r = await http<{ content: string }>("/logs/server");
+      const lines = (r.content || "").split("\n").filter(Boolean);
+      const entries: unknown[] = [];
+      for (const line of lines.slice(-(limit ?? 200))) {
+        try {
+          entries.push(JSON.parse(line));
+        } catch {
+          /* 跳过坏行 */
+        }
+      }
+      return { success: true, entries };
+    } catch (err) {
+      return { success: false, entries: [], error: (err as Error).message };
+    }
   },
 
   // ---- token 统计（服务端无端点 → 空结构；对齐 ipc token:summary / token:list 形态） ----

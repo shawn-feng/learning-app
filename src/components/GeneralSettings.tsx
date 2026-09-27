@@ -25,6 +25,9 @@ export default function GeneralSettings() {
 
   // ---- 诊断：统一应用日志导出（ISSUE-044） ----
   const [exportMsg, setExportMsg] = useState("");
+  // ---- 诊断：服务端日志导出（ISSUE-162，家长端专用） ----
+  const [srvLogMsg, setSrvLogMsg] = useState("");
+  const [srvLogBusy, setSrvLogBusy] = useState(false);
 
   useEffect(() => {
     window.api.materialsLimitGet().then((r: any) => {
@@ -104,6 +107,26 @@ export default function GeneralSettings() {
       }
     } catch (e) {
       setExportMsg("导出失败：" + String((e as Error)?.message ?? e));
+    }
+  }
+
+  // ISSUE-162: 导出服务端日志（server-log.jsonl，家长 JWT 经服务端拉取）
+  async function exportServerLog() {
+    setSrvLogMsg("");
+    setSrvLogBusy(true);
+    try {
+      const r: any = await window.api.logsExportServerLog();
+      if (r?.success && r?.canceled) {
+        setSrvLogMsg("已取消导出");
+      } else if (r?.success && r?.filePath) {
+        setSrvLogMsg(`已导出：${r.filePath}`);
+      } else {
+        setSrvLogMsg(r?.error || "导出失败");
+      }
+    } catch (e) {
+      setSrvLogMsg("导出失败：" + String((e as Error)?.message ?? e));
+    } finally {
+      setSrvLogBusy(false);
     }
   }
 
@@ -269,22 +292,34 @@ export default function GeneralSettings() {
         )}
       </div>
 
-      {/* ISSUE-044: 诊断——导出统一应用日志（client-log.jsonl），供问题排查上报 */}
+      {/* ISSUE-044/162: 诊断——导出客户端日志 + 服务端日志，供问题排查上报 */}
       <div style={{ paddingTop: 16, borderTop: "1px solid #eee" }}>
         <h4 style={{ fontSize: 15, marginBottom: 4 }}>诊断</h4>
         <p style={{ fontSize: 13, color: "#888", margin: "0 0 8px", lineHeight: 1.6 }}>
-          导出本机运行日志（client-log.jsonl）。日志含启动/会话/同步/异常记录，不含对话内容与密钥；用于问题排查时提交给技术支持。
+          导出运行日志用于问题排查：客户端日志（client-log.jsonl）记录本机启动/会话/同步/异常；服务端日志（server-log.jsonl）从服务端拉取。均不含对话内容与密钥。
         </p>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <IconButton
             icon={FileText}
-            title="导出应用日志"
+            title="导出客户端日志"
             onClick={exportClientLog}
             style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
+          />
+          <IconButton
+            icon={Download}
+            title="导出服务端日志"
+            disabled={srvLogBusy}
+            onClick={exportServerLog}
+            style={{ padding: "10px 20px", background: "#48bb78", color: "white", border: "none", borderRadius: 8, cursor: srvLogBusy ? "wait" : "pointer", opacity: srvLogBusy ? 0.6 : 1 }}
           />
           {exportMsg && (
             <span style={{ fontSize: 13, color: exportMsg.startsWith("已导出") ? "#48bb78" : "#cc7b00" }}>
               {exportMsg}
+            </span>
+          )}
+          {srvLogMsg && (
+            <span style={{ fontSize: 13, color: srvLogMsg.startsWith("已导出") || srvLogMsg === "已取消导出" ? "#48bb78" : "#cc7b00" }}>
+              {srvLogMsg}
             </span>
           )}
         </div>

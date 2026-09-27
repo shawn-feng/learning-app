@@ -115,6 +115,17 @@ export function getServerLog(limit = 200): ServerLogEntry[] {
   }
 }
 
+/** 读取日志全文文本（导出用；文件缺失返回空串）。 */
+export function getServerLogText(): string {
+  try {
+    const p = filePath();
+    if (!fs.existsSync(p)) return "";
+    return fs.readFileSync(p, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
 /* ------------------------------------------------------------------ *
  *  console.* 重定向（对称客户端：worker/routes 裸 console 统一落盘）
  * ------------------------------------------------------------------ */

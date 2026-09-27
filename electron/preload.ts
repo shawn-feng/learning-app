@@ -157,6 +157,9 @@ const api = {
   // ISSUE-044: 统一应用日志导出 / 尾部读取（诊断用）
   appExportLog: () => ipcRenderer.invoke("app:exportLog"),
   appGetLogTail: (limit?: number) => ipcRenderer.invoke("app:getLogTail", limit),
+  // ISSUE-162: 服务端日志导出 / 尾部读取（家长端诊断用）
+  logsExportServerLog: () => ipcRenderer.invoke("logs:exportServerLog"),
+  logsFetchServerLogTail: (limit?: number) => ipcRenderer.invoke("logs:fetchServerLogTail", limit),
   piGetModels: () => ipcRenderer.invoke("pi:get_models"),
   // ISSUE-156：piSwitchModel 已删——模型是家长级配置（服务端 app_settings.defaultModel），
   // 会话级切换桩化后孩子端入口已去掉，通道不再保留。

@@ -32,6 +32,7 @@ import { registerWechatRoutes } from "./routes/wechat.js";
 import { registerNamespaceRoutes } from "./routes/namespaces.js";
 import { registerMistakeRoutes } from "./routes/mistakes.js";
 import { registerTokenUsageRoutes } from "./routes/token-usage.js";
+import { registerLogsRoutes } from "./routes/logs.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
 import { initServerLog, logInfo, logError, installServerConsoleRedirect } from "./log.js";
 
@@ -66,6 +67,7 @@ app.addHook("onResponse", async (req, reply) => {
 void app.register(multipart, { limits: { fileSize: Infinity } });
 
 registerVersionRoutes(app);
+registerLogsRoutes(app, { jwtSecret: config.jwtSecret }); // ISSUE-162：日志导出（家长 JWT）
 registerHealthRoutes(app, { db });
 registerAuthRoutes(app, { config, db });
 registerDbRoutes(app, { config, db });

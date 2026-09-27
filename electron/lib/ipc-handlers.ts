@@ -184,6 +184,48 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // 导出服务端日志（server-log.jsonl，家长 JWT 经 /logs/server 拉取后弹保存框）——ISSUE-162
+  ipcMain.handle("logs:exportServerLog", async (e: IpcMainInvokeEvent) => {
+    try {
+      const r = await serverFetch<{ content: string }>("/logs/server", {
+        token: currentSessionToken(),
+        timeoutMs: 30000,
+      });
+      const win = BrowserWindow.fromWebContents(e.sender) ?? getMainWindow();
+      const res = await dialog.showSaveDialog(win!, {
+        title: "导出服务端日志",
+        defaultPath: `server-log-${new Date().toISOString().slice(0, 10)}.jsonl`,
+        filters: [{ name: "JSON Lines", extensions: ["jsonl", "log", "txt"] }],
+      });
+      if (res.canceled || !res.filePath) return { success: true, canceled: true };
+      fs.writeFileSync(res.filePath, r.content || "", "utf-8");
+      return { success: true, filePath: res.filePath };
+    } catch (err) {
+      return { success: false, error: (err as Error).message || "服务端日志拉取失败" };
+    }
+  });
+  // 读取服务端日志最近 N 条（诊断面板预留）——ISSUE-162
+  ipcMain.handle("logs:fetchServerLogTail", async (_e, limit?: number) => {
+    try {
+      const r = await serverFetch<{ content: string }>("/logs/server", {
+        token: currentSessionToken(),
+        timeoutMs: 30000,
+      });
+      const lines = (r.content || "").split("\n").filter(Boolean);
+      const entries: unknown[] = [];
+      for (const line of lines.slice(-(limit ?? 200))) {
+        try {
+          entries.push(JSON.parse(line));
+        } catch {
+          /* 跳过坏行 */
+        }
+      }
+      return { success: true, entries };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("auth:register", async (_e, email: string, password: string) => {
     try {
       const license = await registerAndCache(email, password);

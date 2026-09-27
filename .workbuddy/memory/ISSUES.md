@@ -53,7 +53,7 @@
 | 042 | 家长 agent 也要支持 /reset、新建会话等会话管理命令（对齐孩子端） | 已实施 | 2026-09-02 | [详情](ISSUES/ISSUE-042.md) |
 | 043 | 生产环境珊珊（Mac 客户端）会话未同步上云：家长回看空白 + 服务端每日汇总跳过 | 高 | 2026-09-03 | [详情](ISSUES/ISSUE-043.md) |
 | 043-2 | 现场取证 + 同步机制澄清（2026-09-03 登 201 `192.168.1.201`） | — |  | [详情](ISSUES/ISSUE-043-2.md) |
-| 044 | 客户端 + 服务端统一日志系统（便于远程排查） | 中 | 2026-09-03 | [详情](ISSUES/ISSUE-044.md) |
+| 044 | 客户端 + 服务端统一日志系统（便于远程排查） | ✅ v1 已实施（2026-09-06）：两端 JSONL 落盘+轮转+console 重定向+崩溃捕获+导出入口 | 中 | 2026-09-03 | [详情](ISSUES/ISSUE-044.md) |
 | 045 | 孩子 agent 会话注入：去掉「学习进度概览」，改为注入当天学习计划（无 todolist 则不注入） | 中 | 2026-09-03 | [详情](ISSUES/ISSUE-045.md) |
 | 046 | 学习考核 Ubuntu 客户端点「按住说话」录音按钮提示「没有权限」（Linux 特有媒体权限预检缺失） | P0 | 2026-09-03 | [详情](ISSUES/ISSUE-046.md) |
 | 047 | 孩子端：让 agent 直接制定「定时任务」（到点语音提醒 + 频率设置） | ✅ 已完成 | 2026-09-04 | [详情](ISSUES/ISSUE-047.md) |
@@ -193,3 +193,4 @@
 | 159 | ✅ 已实施（2026-09-27）：**孩子重进会话左侧资料仍清空（ISSUE-113 回归）——Web shim 丢 materials**：201 只读探针逐环节定位——服务端全通（display_contents 珊珊 11 行/闻闻 1 行、/open bundle 实证 return {messages, materials}），**断点在客户端桥**：①Web shim `openChildSession` 只返回 history 丢 materials、piStartChild 硬编码 `materials:[]`（注释「与 ipc 一致」已过时——Electron 侧 ISSUE-113 时已改真实回传）②Electron `openChildSession` 同样丢 materials 而 ipc-handlers.ts:1318 读 `open.materials` → 桌面端实际也是 undefined。修复两处桥函数改返回 {messages, materials}；顺带删 Web shim 残留 `course:${i}` 旧会话参数（会话收敛后吃 400） | 高 | 2026-09-27 | [详情](ISSUES/ISSUE-159.md) |
 | 160 | ✅ 已实施（2026-09-27）：网页端刷新即注销——根因=客户端 checkAuth/authCheck 在云端复核前按**本地缓存 expires_at** 硬登出，而服务端连不上公网时 /auth/license 降级返回的缓存 expires_at 停在旧续期日（201 实测 09-24，is_expired=false），造成「登录成功→刷新即被踢」死循环（session token 本身有效、jwtSecret 未因部署轮换，服务端链路全 200）。修复=双端（Electron auth-manager + web shim auth）重写为服务端权威：200→续缓存放行（is_expired=true 才登出）、401→清凭证、网络错误→离线降级放行；删除本地 expires_at 前置硬检查。测试 4 用例。**生效需重新部署 web/dist（201 bundle 是 09-24 的旧包，ISSUE-159 修复与新 UI 也都在内）**；Electron 随下个客户端包 | 高 | 2026-09-27 | [详情](ISSUES/ISSUE-160.md) |
 | 161 | ✅ 已实施（2026-09-27）：微信绑定改为飞书绑定（微信渠道已取消）——面板 WeChatBindPanel→FeishuBindPanel（git mv），设置页 tab「飞书绑定」（key wechat→feishu），面板/服务端引导文案全部切飞书（原表述让用户去「设置 → 微信绑定」）；飞书渠道本体（SDK 长连接/卡片/斜杠命令/channel=feishu）本就完整，纯产品面改名。保留 /api/v1/wechat/* 路由路径、表名、preload 方法名（内部契约+网关 POST 契约）。tsc/build/shim/wechat-bridge 全过 | 低-中 | 2026-09-27 | [详情](ISSUES/ISSUE-161.md) |
+| 162 | ✅ 已实施（2026-09-27）：日志导出入口补全（ISSUE-044 增强）——服务端 `GET /api/v1/logs/server`（家长 JWT，全文导出）+ `/logs/client` 占位端点；Electron `logs:exportServerLog`（拉取+弹保存框）/`logsFetchServerLogTail` + preload；家长端通用设置→诊断加「导出服务端日志」按钮，孩子端 AI 伙伴设置弹框加「导出运行日志」（仅客户端日志，孩子凭据无权读服务端日志）；web shim logsExportServerLog（blob 下载）/logsFetchServerLogTail。测试 issue162 4 用例，tsc/build 全过，本地 dev 重启后 HTTP 实测 200/401/占位语义全对 | 中 | 2026-09-27 | [详情](ISSUES/ISSUE-162.md) |
