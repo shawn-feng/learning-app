@@ -520,6 +520,17 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   );
 
+  // ISSUE-157：课程详情「学习资料」tab——该课可回看的资料清单（服务端聚合：
+  // display_contents 展示登记 + 家长库 courses.html_path 真源，正文随行返回，不依赖 agent 重发）
+  ipcMain.handle("course:materials", async (_e, childId: string, topic: string, title: string) => {
+    try {
+      const items = await dbQuery("kb.displays.course_materials", { child_id: childId, topic: topic || "", title });
+      return { success: true, items: Array.isArray(items) ? items : [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ISSUE-049：家长端孩子「每日记录」标签页 —— 按日期范围取 daily 条目（服务端 child kb，倒序）。
   // from/to 形如 YYYY-MM-DD；可选 filters：block(分类)/tag(标签)/title(标题模糊)。
   // 返回 {success, entries}；entries 供渲染端左列展示、右栏显 raw 原文。

@@ -251,6 +251,9 @@ const api = {
     ipcRenderer.invoke("learning:topic", childId, topic),
   learningCourseSummary: (childId: string, topicName: string, title: string) =>
     ipcRenderer.invoke("learning:courseSummary", childId, topicName, title),
+  // ISSUE-157：课程详情「学习资料」tab——该课可回看资料（展示登记 + html_path 真源聚合）
+  courseMaterials: (childId: string, topic: string, title: string) =>
+    ipcRenderer.invoke("course:materials", childId, topic, title),
 
   // Parent library (ISSUE-029)
   parentListTopics: () => ipcRenderer.invoke("parent:listTopics"),

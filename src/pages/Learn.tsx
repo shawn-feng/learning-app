@@ -1226,7 +1226,8 @@ export default function Learn({ child, onExit }: Props) {
               >
                 <PanelRightClose size={16} />
               </button>
-              <LearningDashboard childId={child.childId} />
+              {/* ISSUE-157：资料字号透传——进度页课程详情「学习资料」tab 与左侧面板同字号链路 */}
+              <LearningDashboard childId={child.childId} matFontSize={matFontSize} />
             </div>
           )}
           <div

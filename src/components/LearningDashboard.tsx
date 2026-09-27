@@ -96,10 +96,12 @@ interface TopicDetail {
 
 interface Props {
   childId: string;
+  /** ISSUE-157：资料字号透传（学习资料 tab 的 iframe/正文渲染；孩子端从 Learn 传入） */
+  matFontSize?: number;
 }
 
 /** 学习进度看板：汇总各学习主题的进度，来源 learning/{topic}/{topic}.md 的 frontmatter */
-export default function LearningDashboard({ childId }: Props) {
+export default function LearningDashboard({ childId, matFontSize }: Props) {
   const [summary, setSummary] = useState<LearningSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -235,8 +237,12 @@ export default function LearningDashboard({ childId }: Props) {
     );
   }
 
-  // ---------- 单课详情（含课程学习的总结内容 + 考核/复习全景） ----------
+  // ---------- 单课详情（含课程学习的总结内容 + 考核/复习全景 + 双 tab 学习资料/上下键切课 ISSUE-157） ----------
   if (drill?.course) {
+    // 课程列表（上下键/前后按钮切课的顺序）：与下方课程列表同一排序+搜索口径；detail 未加载时不启用
+    const courseNavList = drill.detail
+      ? sortedCourseItems(drill.detail.items).filter((c) => matchesCourseSearch(c, search))
+      : undefined;
     return (
       <CourseDetail
         childId={childId}
@@ -245,6 +251,12 @@ export default function LearningDashboard({ childId }: Props) {
         course={drill.course}
         onBack={goBack}
         courseStatus={courseStatusMap[drill.course.title] ?? null}
+        courseList={courseNavList}
+        onSelectCourse={(c) => {
+          const orig = drill.detail?.items.find((x) => x.title === c.title);
+          if (orig) setDrill((d) => (d ? { ...d, course: orig } : d));
+        }}
+        matFontSize={matFontSize}
       />
     );
   }

@@ -221,6 +221,22 @@ export const learningDomain = {
     }
   },
 
+  /** courseMaterials: (childId, topic, title) => Promise<{ success; items?; error? }>（ISSUE-157：
+   *  kb.displays.course_materials——该课可回看资料聚合：display_contents 登记匹配 + 家长库 html_path
+   *  真源，正文服务端读文件随行返回；shape 对齐客户端 Material） */
+  courseMaterials: async (
+    childId: string,
+    topic: string,
+    title: string
+  ): Promise<{ success: boolean; items?: unknown[]; error?: string }> => {
+    try {
+      const items = await dbQuery("kb.displays.course_materials", { child_id: childId, topic: topic || "", title });
+      return { success: true, items: Array.isArray(items) ? items : [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
   /**
    * learningList: (childId) => Promise<{ success; rootFiles; topics }>（learning:list）。
    * Electron 列孩子本机 learning/ 目录；服务端无对应端点 → 返回与「目录不存在」一致的空结构

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import IconButton from "./IconButton";
-import { ArrowLeft } from "lucide-react";
+import MaterialsPanel, { type Material } from "./MaterialsPanel";
+import { ArrowLeft, ChevronUp, ChevronDown } from "lucide-react";
 
 /** 课程进度字段（两端钻取共用，字段取自 SQLite courses 表）。 */
 /** 掌握档位中文（与 courses.mastery_level 同枚举）。 */
@@ -83,6 +84,12 @@ interface Props {
   topicName: string; // 主题显示名（中文，如 "论语"）
   course: CourseItemLite;
   onBack: () => void;
+  /** ISSUE-157：当前主题内的课程列表（搜索过滤+排序后的展示顺序）——上下键/按钮切课用；缺省不启用切课 */
+  courseList?: CourseItemLite[];
+  /** ISSUE-157：切到相邻课程（由父组件更新 drill.course） */
+  onSelectCourse?: (c: CourseItemLite) => void;
+  /** ISSUE-030：资料字号（学习资料 tab 的 iframe/正文渲染用） */
+  matFontSize?: number;
   /** 考核/复习全景（来自服务端 course_status；缺省不显示考核块） */
   courseStatus?: {
     status?: string;
@@ -108,7 +115,17 @@ interface Props {
  * 数据均取自数据库唯一真源；不再从 materials 文件读取任何内容。
  * 两端（孩子/家长）共用。
  */
-export default function CourseDetail({ childId, topicDir, topicName, course, onBack, courseStatus }: Props) {
+export default function CourseDetail({
+  childId,
+  topicDir,
+  topicName,
+  course,
+  onBack,
+  courseList,
+  onSelectCourse,
+  matFontSize = 16,
+  courseStatus,
+}: Props) {
   const [summaries, setSummaries] = useState<CourseDailySummary[] | null>(null);
   const [loading, setLoading] = useState(false);
   // 该课历次考核（含逐题评语）
@@ -116,6 +133,52 @@ export default function CourseDetail({ childId, topicDir, topicName, course, onB
   const [loadingExam, setLoadingExam] = useState(false);
   // 两栏视图：当前选中哪条记录
   const [activeKey, setActiveKey] = useState<string | null>(null);
+  // ISSUE-157：详情双 tab——学习情况（原有内容）/ 学习资料（该课可回看资料，不依赖 agent 重发）
+  const [tab, setTab] = useState<"learn" | "materials">("learn");
+  // 学习资料 tab：该课资料清单（Material shape，服务端聚合返回）+ 当前选中
+  const [cmItems, setCmItems] = useState<Material[] | null>(null);
+  const [cmSelectedId, setCmSelectedId] = useState<string | null>(null);
+
+  // 上下键切课（ISSUE-157）：非输入焦点时生效；iframe 内按键不冒泡（聚焦资料时天然不劫持）
+  const courseIndex = courseList ? courseList.findIndex((c) => c.title === course.title) : -1;
+  useEffect(() => {
+    if (!courseList || !onSelectCourse || courseList.length < 2) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = (el?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || el?.isContentEditable) return;
+      const idx = courseList.findIndex((c) => c.title === course.title);
+      if (idx < 0) return;
+      if (e.key === "ArrowUp" && idx > 0) {
+        e.preventDefault();
+        onSelectCourse(courseList[idx - 1]!);
+      } else if (e.key === "ArrowDown" && idx < courseList.length - 1) {
+        e.preventDefault();
+        onSelectCourse(courseList[idx + 1]!);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [courseList, onSelectCourse, course.title]);
+
+  // 学习资料：按课拉取（展示登记 + html_path 真源，服务端聚合）；切课重置选中
+  useEffect(() => {
+    let cancelled = false;
+    setCmItems(null);
+    setCmSelectedId(null);
+    window.api
+      .courseMaterials(childId, topicDir, course.title)
+      .then((r: any) => {
+        if (!cancelled) setCmItems(r?.success ? r.items || [] : []);
+      })
+      .catch(() => {
+        if (!cancelled) setCmItems([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [childId, topicDir, course.title]);
 
   useEffect(() => {
     let cancelled = false;
@@ -245,8 +308,59 @@ export default function CourseDetail({ childId, topicDir, topicName, course, onB
         <span className="dash-crumb">{topicName}</span>
         <span className="dash-crumb-sep">›</span>
         <span className="dash-crumb-current">{course.title}</span>
+        {/* ISSUE-157：前/后课按钮 + 当前位置（↑/↓ 键同效；顺序=列表展示顺序，不跨主题） */}
+        {courseList && courseList.length > 1 && courseIndex >= 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
+            <button
+              onClick={() => courseIndex > 0 && onSelectCourse?.(courseList[courseIndex - 1]!)}
+              disabled={courseIndex <= 0}
+              title="上一课（↑）"
+              style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "3px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: courseIndex > 0 ? "pointer" : "default", color: courseIndex > 0 ? "#3b4cca" : "#ccc" }}
+            >
+              <ChevronUp size={14} /> 上一课
+            </button>
+            <span style={{ fontSize: 12, color: "#888" }}>
+              {courseIndex + 1}/{courseList.length}
+            </span>
+            <button
+              onClick={() => courseIndex < courseList.length - 1 && onSelectCourse?.(courseList[courseIndex + 1]!)}
+              disabled={courseIndex >= courseList.length - 1}
+              title="下一课（↓）"
+              style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "3px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: courseIndex < courseList.length - 1 ? "pointer" : "default", color: courseIndex < courseList.length - 1 ? "#3b4cca" : "#ccc" }}
+            >
+              下一课 <ChevronDown size={14} />
+            </button>
+          </span>
+        )}
       </div>
 
+      {/* ISSUE-157：详情双 tab——学习情况（原内容）/ 学习资料（按课回看，不用让 AI 重发） */}
+      <div style={{ display: "flex", gap: 8, margin: "10px 0 12px" }}>
+        {([
+          ["learn", "📋 学习情况"],
+          ["materials", `📚 学习资料${cmItems?.length ? `（${cmItems.length}）` : ""}`],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            style={{
+              padding: "5px 14px",
+              borderRadius: 8,
+              border: tab === key ? "2px solid #667eea" : "1px solid #ddd",
+              background: tab === key ? "#eef0ff" : "#fff",
+              color: tab === key ? "#5a67d8" : "#555",
+              fontSize: 13,
+              fontWeight: tab === key ? 600 : 400,
+              cursor: "pointer",
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "learn" && (
+        <>
       {/* 学习情况（courses 表进度字段） */}
       <div className="lesson-detail-card">
         <div className="lesson-detail-title">
@@ -404,6 +518,31 @@ export default function CourseDetail({ childId, topicDir, topicName, course, onB
           ) : null}
         </div>
       </div>
+        </>
+      )}
+
+      {/* ISSUE-157：学习资料 tab——复用 MaterialsPanel 的渲染块（iframe 沙盒/docUrl/查词浮层/错题上报
+          全部同孩子端左侧面板一套），仅数据源不同（按课聚合，而非会话资料流）；空态在此提示 */}
+      {tab === "materials" && (
+        cmItems === null ? (
+          <div className="placeholder" style={{ fontSize: 13 }}>⏳ 正在加载该课资料…</div>
+        ) : cmItems.length === 0 ? (
+          <div className="placeholder" style={{ fontSize: 13 }}>
+            📄<br />这门课还没有展示过的资料，也没有配置课程资料。
+            <br />
+            <span style={{ fontSize: 12, color: "#999" }}>可以对 AI 老师说「展示这一课的学习资料」。</span>
+          </div>
+        ) : (
+          <MaterialsPanel
+            materials={cmItems}
+            selectedId={cmSelectedId}
+            onOpen={(id) => setCmSelectedId(id)}
+            onBack={() => setCmSelectedId(null)}
+            matFontSize={matFontSize}
+            childId={childId}
+          />
+        )
+      )}
     </div>
   );
 }
