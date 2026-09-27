@@ -398,7 +398,7 @@ export default function ParentChatPanel({
 
   return (
     <div className="parent-chat-panel">
-      <div className="parent-chat-title">家长助手</div>
+      {/* 「家长助手」标题条已去（2026-09-27 用户反馈：省一行高度；面板身份由标题栏与入口区分） */}
       {/* ISSUE-078：透传登录家长真实 id —— 上传/打开/读取附件落到 data/parents/<真实pid>/uploads/，
           与家长 agent 提示词「当前家长」目录一致；未登录时 parentId 为空，ChatWindow 兜底 default */}
       <ChatWindow messages={messages} onSend={handleSend} disabled={busy || stopping} running={busy || stopping} onStop={handleStop} owner="parent" parentId={parentId} />

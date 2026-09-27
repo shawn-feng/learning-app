@@ -362,15 +362,6 @@ input, textarea {
   overflow: hidden;
 }
 
-.parent-chat-title {
-  padding: 10px 16px;
-  font-size: 14px;
-  font-weight: 700;
-  color: #667eea;
-  background: #fff;
-  border-bottom: 1px solid #eee;
-}
-
 /* ===== Child list ===== */
 .child-card {
   display: flex;
