@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
-import { UserPlus, MessageSquare } from "lucide-react";
+import { UserPlus } from "lucide-react";
 import { LoadingBlock } from "../components/Loading";
 import AddChildModal from "../components/AddChildModal";
 import TokenStatsPanel from "../components/TokenStatsPanel";
@@ -424,36 +424,22 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           )}
         </div>
 
-        {/* 右：家长-Agent 常驻聊天（ISSUE-050），可折叠 + 拖拽调宽 */}
-        <div
-          className="dashboard-chat"
-          style={{
-            width: parentChat.collapsed ? 44 : parentChat.width,
-            minWidth: parentChat.collapsed ? 44 : undefined,
-          }}
-        >
-          {parentChat.collapsed ? (
-            <div
-              className="chat-collapsed-bar"
-              title="展开聊天"
-              onClick={() => parentChat.setCollapsed(false)}
+        {/* 右：家长-Agent 常驻聊天（ISSUE-050），可拖拽调宽。
+            ISSUE-158 续（用户反馈）：折叠后的 44px「展开聊天」窄条去掉——折叠态整栏不渲染，
+            展开走标题栏右上角的折叠按钮（PanelRightOpen）；» 折叠按钮保留。 */}
+        {!parentChat.collapsed && (
+          <div className="dashboard-chat" style={{ width: parentChat.width }}>
+            <div className="chat-resize-handle" onPointerDown={parentChat.startDrag} title="拖动调整聊天宽度" />
+            <button
+              className="chat-collapse-btn"
+              title="折叠聊天"
+              onClick={() => parentChat.setCollapsed(true)}
             >
-              <MessageSquare size={20} />
-            </div>
-          ) : (
-            <>
-              <div className="chat-resize-handle" onPointerDown={parentChat.startDrag} title="拖动调整聊天宽度" />
-              <button
-                className="chat-collapse-btn"
-                title="折叠聊天"
-                onClick={() => parentChat.setCollapsed(true)}
-              >
-                »
-              </button>
-              <ParentChatPanel />
-            </>
-          )}
-        </div>
+              »
+            </button>
+            <ParentChatPanel />
+          </div>
+        )}
       </div>
 
       {showAddChild && (
