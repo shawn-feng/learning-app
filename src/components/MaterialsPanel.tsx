@@ -731,15 +731,14 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     if ((needsInline && !cleanHtml) || (!needsInline && !mediaUrl)) {
       return (
         <div className="content-panel" style={materialFontStyle}>
-          {!bare && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
-              {onCollapse && (
-                <IconButton icon={PanelRightClose} title="收起学习资料" onClick={onCollapse} className="material-collapse-btn" />
-              )}
-            </div>
-          )}
-          {!bare && selected.title && <h2 className="material-title">{selected.title}</h2>}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, marginBottom: 8 }}>
+            <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+            {!bare && selected.title && (
+              <h2 className="material-title" style={{ margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {selected.title}
+              </h2>
+            )}
+          </div>
           <div className="placeholder">
             📄
             <br />
@@ -750,15 +749,19 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     }
     return (
       <div className="content-panel" style={materialFontStyle} onClick={closeLookup}>
-        {!bare && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
-            {onCollapse && (
-              <IconButton icon={PanelRightClose} title="收起学习资料" onClick={onCollapse} className="material-collapse-btn" />
-            )}
-          </div>
-        )}
-        {!bare && selected.title && <h2 className="material-title">{selected.title}</h2>}
+        {/* ISSUE-158 续（用户反馈）：详情头部的「收起学习资料」折叠按钮去掉（列表页仍可收起）；
+            标题移到返回键右侧同一行，省一行高度给资料正文 */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, marginBottom: 8 }}>
+          <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+          {!bare && selected.title && (
+            <h2
+              className="material-title"
+              style={{ margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
+              {selected.title}
+            </h2>
+          )}
+        </div>
         {kind === "html" ? (
           <HtmlFrame
             // ISSUE-061 根治：服务端共享资料（filePath 可解析为 materials 相对路径）走真实 URL 顶层文档
