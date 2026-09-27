@@ -10,7 +10,7 @@
  * 服务端实现：server/src/routes/topic-package.ts（包结构/冲突策略见该文件头注释）。
  */
 import fs from "fs";
-import { serverFetch, serverFetchBinary, serverUploadFile, ServerError } from "./server-client";
+import { serverFetch, serverFetchBinary, serverUploadWithFields, ServerError } from "./server-client";
 import { getCachedLicense } from "./auth-manager";
 
 export interface ExportPreviewFile {
@@ -92,13 +92,59 @@ export async function exportTopicPackage(
   return { file: destPath, bytes: zip.length };
 }
 
-/** 导入：上传 .ltpkg，返回服务端导入报告（含 renamed/missing_files/warnings）。 */
-export async function importTopicPackage(zipPath: string): Promise<ImportReport> {
+/** 导入探测报告（服务端 inspect：只解包+冲突裁决，不写任何数据）。 */
+export interface ImportInspect {
+  name: string;
+  topicKey: string;
+  counts: { courses: number; knowledgePoints: number; questions: number; files: number };
+  conflict: { type: "none" | "refresh" | "rename"; suggestedName: string; suggestedKey: string };
+}
+
+/**
+ * 导入探测：上传包到服务端 inspect（不落库），返回冲突信息——
+ * 同名主题时客户端据此提示，并允许家长改主题名/目录名后再 apply。
+ */
+export async function inspectTopicPackage(zipPath: string): Promise<ImportInspect> {
+  let r: (ImportInspect & { error?: string }) | { ok?: false; error?: string };
+  try {
+    r = (await serverUploadWithFields(
+      "/parent-lib/import-topic",
+      { name: zipPath.split(/[\\/]/).pop() || "topic.ltpkg", mime: "application/zip", data: await fs.promises.readFile(zipPath) },
+      { mode: "inspect" },
+      token(),
+      { timeoutMs: 300000 }
+    )) as (ImportInspect & { error?: string }) | { ok?: false; error?: string };
+  } catch (e) {
+    throw withServerHint(e);
+  }
+  if (!r || (r as { name?: string }).name == null) {
+    throw new ServerError(0, (r as { error?: string })?.error || "探测失败：服务端未确认");
+  }
+  return r as ImportInspect;
+}
+
+/**
+ * 导入应用：上传包落库。targetName/targetKey 给出时按家长确认的身份导入
+ * （服务端校验：目录名/主题名与现有主题冲突会拒收并给出可操作提示）；
+ * 缺省走服务端自动冲突策略（同名同目录刷新 / 同名不同目录自动重命名）。
+ */
+export async function applyTopicPackage(
+  zipPath: string,
+  targetName?: string,
+  targetKey?: string
+): Promise<ImportReport> {
+  const fields: Record<string, string> = { mode: "apply" };
+  if (targetName != null) fields.target_name = targetName;
+  if (targetKey != null) fields.target_key = targetKey;
   let r: (ImportReport & { error?: string }) | { ok?: false; error?: string };
   try {
-    r = (await serverUploadFile("/parent-lib/import-topic", zipPath, token(), { timeoutMs: 300000 })) as
-      | (ImportReport & { error?: string })
-      | { ok?: false; error?: string };
+    r = (await serverUploadWithFields(
+      "/parent-lib/import-topic",
+      { name: zipPath.split(/[\\/]/).pop() || "topic.ltpkg", mime: "application/zip", data: await fs.promises.readFile(zipPath) },
+      fields,
+      token(),
+      { timeoutMs: 300000 }
+    )) as (ImportReport & { error?: string }) | { ok?: false; error?: string };
   } catch (e) {
     throw withServerHint(e);
   }

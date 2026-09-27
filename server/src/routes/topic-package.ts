@@ -336,6 +336,78 @@ export function resolveImportIdentity(
   }
 }
 
+/**
+ * 显式目标身份裁决（ISSUE-153 后续：导入同名主题时提示并允许改名）。
+ * topics 主键是 name、courses 以 topic_key 归属，INSERT OR REPLACE 按 name/key 双向碰撞都会
+ * **静默覆盖别人的数据**，所以两条铁律必须在这里挡死：
+ * ① target_key 若已存在，必须属于名为 target_name 的主题（即刷新同一主题），否则拒收；
+ * ② target_name 若已存在，必须就是 target_key 那条（同上），否则拒收。
+ */
+export function resolveTargetIdentity(
+  db: DatabaseSync,
+  pkgKey: string,
+  targetName: string,
+  targetKey: string
+): { name: string; topicKey: string; renamed: boolean; refreshed: boolean } {
+  const name = String(targetName || "").trim();
+  const key = String(targetKey || "").trim();
+  if (!name || !key) throw new ApiError(400, "主题名与目录名不能为空");
+  const byName = db.prepare("SELECT topic_key FROM topics WHERE name = ?").get(name) as
+    | { topic_key: string }
+    | undefined;
+  const byKey = db.prepare("SELECT name FROM topics WHERE topic_key = ?").get(key) as
+    | { name: string }
+    | undefined;
+  if (byKey && byKey.name !== name) {
+    throw new ApiError(400, `目录名「${key}」已被主题「${byKey.name}」使用，请换一个目录名`);
+  }
+  if (byName && byName.topic_key !== key) {
+    throw new ApiError(400, `主题名「${name}」已存在（目录「${byName.topic_key}」），请换一个名字`);
+  }
+  if (!byKey && key !== pkgKey && db.prepare("SELECT 1 FROM courses WHERE topic = ?").get(key)) {
+    // 无主题行却有课程挂在该目录下（孤儿数据）：落库会 REPLACE 别人的课程，拒绝
+    throw new ApiError(400, `目录名「${key}」已有课程数据占用，请换一个目录名`);
+  }
+  return { name, topicKey: key, renamed: key !== pkgKey, refreshed: !!byName };
+}
+
+/** 导入探测（不写任何数据）：解析包 + 冲突裁决，供客户端在落库前提示/让家长改名。 */
+export function inspectTopicImport(
+  dataDir: string,
+  parentId: string,
+  entries: Array<{ path: string; data: Buffer }>
+): {
+  name: string;
+  topicKey: string;
+  counts: { courses: number; knowledgePoints: number; questions: number; files: number };
+  conflict: { type: "none" | "refresh" | "rename"; suggestedName: string; suggestedKey: string };
+} {
+  const manifestEntry = entries.find((e) => e.path === "manifest.json");
+  if (!manifestEntry) throw new ApiError(400, "包内缺少 manifest.json");
+  const manifest = parseManifest(manifestEntry.data.toString("utf-8"));
+  const db = openParentLib(dataDir, parentId);
+  try {
+    const identity = resolveImportIdentity(db, manifest.topic.name, manifest.topic.topic_key);
+    return {
+      name: manifest.topic.name,
+      topicKey: manifest.topic.topic_key,
+      counts: {
+        courses: manifest.courses.length,
+        knowledgePoints: manifest.knowledge_points.length,
+        questions: manifest.question_bank.length,
+        files: manifest.files.length,
+      },
+      conflict: {
+        type: identity.refreshed ? "refresh" : identity.renamed ? "rename" : "none",
+        suggestedName: identity.name,
+        suggestedKey: identity.topicKey,
+      },
+    };
+  } finally {
+    db.close();
+  }
+}
+
 /** 指针前缀改写：值等于旧 key 或以 旧key/ 开头 → 换成新 key 前缀。 */
 export function rewriteTopicRef(value: string, oldKey: string, newKey: string): string {
   const v = String(value || "");
@@ -347,11 +419,13 @@ export function rewriteTopicRef(value: string, oldKey: string, newKey: string): 
 /**
  * 应用一个已解包的主题包：写家长库（单事务）→ 落资料文件。
  * zip 条目以 manifest.files 为白名单（路径 + sha256），额外/篡改条目忽略或报警。
+ * target 显式给出时（客户端冲突提示后家长确认的身份）按其裁决；缺省走自动冲突策略。
  */
 export function applyTopicImport(
   dataDir: string,
   parentId: string,
-  entries: Array<{ path: string; data: Buffer }>
+  entries: Array<{ path: string; data: Buffer }>,
+  target?: { name: string; key: string }
 ): ImportReport {
   const manifestEntry = entries.find((e) => e.path === "manifest.json");
   if (!manifestEntry) throw new ApiError(400, "包内缺少 manifest.json");
@@ -379,7 +453,9 @@ export function applyTopicImport(
 
   const db = openParentLib(dataDir, parentId);
   try {
-    const identity = resolveImportIdentity(db, manifest.topic.name, pkgKey);
+    const identity = target
+      ? resolveTargetIdentity(db, pkgKey, target.name, target.key)
+      : resolveImportIdentity(db, manifest.topic.name, pkgKey);
     const oldKey = pkgKey;
     const newKey = identity.topicKey;
     const fix = (v: string) => rewriteTopicRef(v, oldKey, newKey);
@@ -516,12 +592,22 @@ export function applyTopicImport(
 
 // ==================== 路由 ====================
 
+/** ApiError → 语义化 { error } 响应（默认错误体是 {error:"Bad Request"}，人话提示会丢）。 */
+function fail(reply: { code: (n: number) => { send: (b: unknown) => unknown } }, e: unknown): unknown {
+  if (e instanceof ApiError) return reply.code(e.status).send({ error: e.message });
+  throw e;
+}
+
 export function registerTopicPackageRoutes(app: FastifyInstance, deps: { config: ServerConfig }): void {
   // 导出预览
   app.get("/api/v1/parent-lib/export-topic/:topicKey/preview", async (req, reply) => {
     const parentId = authParent(req, deps.config.jwtSecret);
     const { topicKey } = req.params as { topicKey: string };
-    return previewTopicExport(deps.config.dataDir, parentId, decodeURIComponent(topicKey));
+    try {
+      return previewTopicExport(deps.config.dataDir, parentId, decodeURIComponent(topicKey));
+    } catch (e) {
+      return fail(reply, e);
+    }
   });
 
   // 导出：POST { topic_key, files } → .ltpkg zip 二进制
@@ -530,30 +616,38 @@ export function registerTopicPackageRoutes(app: FastifyInstance, deps: { config:
     const body = (req.body || {}) as { topic_key?: string; files?: string[] };
     const topicKey = String(body.topic_key || "").trim();
     if (!topicKey) return reply.code(400).send({ error: "缺少 topic_key" });
-    const { manifest, fileData } = collectTopicPackage(deps.config.dataDir, parentId, topicKey, body.files || []);
-    const zip = buildTopicPackageZip(manifest, fileData);
-    const d = new Date();
-    const p = (n: number) => String(n).padStart(2, "0");
-    const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
-    // header 文件名保持 ASCII 安全（真实文件名由客户端对话框决定）
-    return reply
-      .header("Content-Type", "application/zip")
-      .header("Content-Disposition", `attachment; filename="topic-${topicKey}-${stamp}.ltpkg"`)
-      .header("X-Topic-Files", String(fileData.size))
-      .send(zip);
+    try {
+      const { manifest, fileData } = collectTopicPackage(deps.config.dataDir, parentId, topicKey, body.files || []);
+      const zip = buildTopicPackageZip(manifest, fileData);
+      const d = new Date();
+      const p = (n: number) => String(n).padStart(2, "0");
+      const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+      // header 文件名保持 ASCII 安全（真实文件名由客户端对话框决定）
+      return reply
+        .header("Content-Type", "application/zip")
+        .header("Content-Disposition", `attachment; filename="topic-${topicKey}-${stamp}.ltpkg"`)
+        .header("X-Topic-Files", String(fileData.size))
+        .send(zip);
+    } catch (e) {
+      return fail(reply, e);
+    }
   });
 
-  // 导入：multipart 上传 .ltpkg → 报告
+  // 导入：multipart 上传 .ltpkg。字段：mode=inspect|apply（缺省 apply，兼容旧客户端）、
+  // target_name/target_key（apply 时显式目标——客户端冲突提示后家长确认的身份）。
+  // inspect 也整包上传（zip 目录在包尾，须收全才能解），大包双传的流式优化留待有痛点再做。
   app.post("/api/v1/parent-lib/import-topic", async (req, reply) => {
     const parentId = authParent(req, deps.config.jwtSecret);
     let zipBuf: Buffer | null = null;
+    const fields: Record<string, string> = {};
     const parts = req.parts();
     for await (const part of parts) {
       if (part.type === "file") {
         const chunks: Buffer[] = [];
         for await (const chunk of part.file) chunks.push(Buffer.from(chunk));
         zipBuf = Buffer.concat(chunks);
-        break;
+      } else if (part.type === "field") {
+        fields[part.fieldname] = String(part.value ?? "");
       }
     }
     if (!zipBuf) return reply.code(400).send({ error: "缺少主题包文件" });
@@ -564,6 +658,17 @@ export function registerTopicPackageRoutes(app: FastifyInstance, deps: { config:
     } catch (e) {
       return reply.code(400).send({ error: `主题包无效：${(e as Error).message}` });
     }
-    return applyTopicImport(deps.config.dataDir, parentId, parsed);
+    try {
+      if (fields.mode === "inspect") {
+        return inspectTopicImport(deps.config.dataDir, parentId, parsed);
+      }
+      const target =
+        fields.target_name != null || fields.target_key != null
+          ? { name: fields.target_name || "", key: fields.target_key || "" }
+          : undefined;
+      return applyTopicImport(deps.config.dataDir, parentId, parsed, target);
+    } catch (e) {
+      return fail(reply, e);
+    }
   });
 }

@@ -22,6 +22,8 @@ import {
   parseManifest,
   safePackageFilePath,
   resolveImportIdentity,
+  resolveTargetIdentity,
+  inspectTopicImport,
   rewriteTopicRef,
 } from "../server/src/routes/topic-package";
 
@@ -262,8 +264,7 @@ describe("导入防护", () => {
   });
 });
 
-describe("冲突裁决与指针改写（纯函数）", () => {
-  it("resolveImportIdentity 三分支：新主题 / 幂等刷新 / 自动重命名", () => {
+describe("冲突裁决与指针改写（纯函数）", () => {  it("resolveImportIdentity 三分支：新主题 / 幂等刷新 / 自动重命名", () => {
     const dir = makeDataDir();
     const db = openParentLib(dir, "p1");
     db.prepare("INSERT INTO topics (name, topic_key, method) VALUES (?, ?, ?)").run("论语", "other", "");
@@ -280,5 +281,113 @@ describe("冲突裁决与指针改写（纯函数）", () => {
     expect(rewriteTopicRef("lunyu", "lunyu", "lunyu-2")).toBe("lunyu-2");
     expect(rewriteTopicRef("other/a.html", "lunyu", "lunyu-2")).toBe("other/a.html");
     expect(rewriteTopicRef("lunyu2/a.html", "lunyu", "lunyu-2")).toBe("lunyu2/a.html");
+  });
+});
+
+describe("inspectTopicImport（两阶段导入：探测）", () => {
+  it("目标库为空 → conflict=none；同名同 key → refresh；同名不同 key → rename 带建议", () => {
+    const src = makeDataDir();
+    seedLunyu(src);
+    const zip = zipUnpack(exportZip(src, false));
+
+    const empty = makeDataDir();
+    const none = inspectTopicImport(empty, "p1", zip);
+    expect(none.name).toBe("论语");
+    expect(none.topicKey).toBe("lunyu");
+    expect(none.counts).toEqual({ courses: 2, knowledgePoints: 1, questions: 1, files: 0 });
+    expect(none.conflict.type).toBe("none");
+
+    const sameKey = makeDataDir();
+    seedLunyu(sameKey); // 目标库已有 论语/lunyu
+    expect(inspectTopicImport(sameKey, "p1", zip).conflict).toMatchObject({
+      type: "refresh",
+      suggestedName: "论语",
+      suggestedKey: "lunyu",
+    });
+
+    const diffKey = makeDataDir();
+    const db = openParentLib(diffKey, "p1");
+    db.prepare("INSERT INTO topics (name, topic_key, method) VALUES (?, ?, ?)").run("论语", "other", "");
+    db.close();
+    const renamed = inspectTopicImport(diffKey, "p1", zip);
+    expect(renamed.conflict.type).toBe("rename");
+    expect(renamed.conflict).toMatchObject({ suggestedName: "论语 (2)", suggestedKey: "lunyu-2" });
+  });
+
+  it("包无效（缺 manifest）时探测报错", () => {
+    const dir = makeDataDir();
+    expect(() => inspectTopicImport(dir, "p1", [{ path: "files/x/f.txt", data: Buffer.from("x") }])).toThrow(/manifest/);
+  });
+});
+
+describe("显式目标导入（冲突提示后家长改定的身份）", () => {
+  it("改名换目录导入：四处前缀同步改写，renamed=true", () => {
+    const src = makeDataDir();
+    seedLunyu(src);
+    const dst = makeDataDir();
+    const report = applyTopicImport(dst, "p1", zipUnpack(exportZip(src, true)), {
+      name: "论语精选",
+      key: "lunyu-jx",
+    });
+    expect(report.topic).toEqual({ name: "论语精选", topicKey: "lunyu-jx" });
+    expect(report.renamed).toBe(true);
+    expect(report.refreshed).toBe(false);
+
+    const db = openParentLib(dst, "p1");
+    const c1 = db.prepare("SELECT * FROM courses WHERE topic = 'lunyu-jx' AND title = '第一课'").get() as any;
+    expect(c1).toMatchObject({ html_path: "lunyu-jx/lesson1.html", material: "lunyu-jx/a.mp4", uuid: "uuid-c1" });
+    db.close();
+    expect(fs.existsSync(path.join(materialsRoot(dst, "p1"), "lunyu-jx", "lesson1.html"))).toBe(true);
+    expect(fs.existsSync(path.join(materialsRoot(dst, "p1"), "lunyu", "lesson1.html"))).toBe(false);
+  });
+
+  it("保持原名原目录 = 刷新（refreshed=true）；非法组合拒收且不落库", () => {
+    const src = makeDataDir();
+    seedLunyu(src);
+    const dst = makeDataDir();
+    seedLunyu(dst); // 目标库已有 论语/lunyu
+    const zip = zipUnpack(exportZip(src, false));
+
+    // 显式同名同目录 → 刷新
+    const report = applyTopicImport(dst, "p1", zip, { name: "论语", key: "lunyu" });
+    expect(report.refreshed).toBe(true);
+    expect(report.renamed).toBe(false);
+
+    // 目录名被别的主题占用 → 拒收
+    expect(() => applyTopicImport(dst, "p1", zip, { name: "新名字", key: "lunyu" })).toThrow(/已被主题/);
+    // 主题名被别的目录占用 → 拒收
+    expect(() => applyTopicImport(dst, "p1", zip, { name: "论语", key: "other-key" })).toThrow(/已存在（目录/);
+    // 空名字 → 拒收
+    expect(() => applyTopicImport(dst, "p1", zip, { name: "  ", key: "abc" })).toThrow(/不能为空/);
+
+    // 拒收后不落库：库中没有 新名字/other-key/abc
+    const db = openParentLib(dst, "p1");
+    expect((db.prepare("SELECT COUNT(*) AS c FROM topics WHERE name = '新名字'").get() as any).c).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS c FROM topics WHERE topic_key = 'other-key'").get() as any).c).toBe(0);
+    db.close();
+  });
+
+  it("resolveTargetIdentity 校验矩阵", () => {
+    const dir = makeDataDir();
+    const db = openParentLib(dir, "p1");
+    db.prepare("INSERT INTO topics (name, topic_key, method) VALUES (?, ?, ?)").run("论语", "lunyu", "");
+    // 新名字新目录 → ok
+    expect(resolveTargetIdentity(db, "pkg", "新主题", "xin")).toMatchObject({ name: "新主题", topicKey: "xin", renamed: true, refreshed: false });
+    // 原名原目录（包 key 一致）→ 刷新且无改写
+    expect(resolveTargetIdentity(db, "lunyu", "论语", "lunyu")).toMatchObject({ refreshed: true, renamed: false });
+    // 刷新同一主题但包内目录不同（pkg→lunyu）：指针确实被改写，renamed=true 是对的
+    expect(resolveTargetIdentity(db, "pkg", "论语", "lunyu")).toMatchObject({ refreshed: true, renamed: true });
+    // 目录被占 → 拒
+    expect(() => resolveTargetIdentity(db, "pkg", "别的名字", "lunyu")).toThrow(/已被主题/);
+    // 名字被占 → 拒
+    expect(() => resolveTargetIdentity(db, "pkg", "论语", "other")).toThrow(/已存在（目录/);
+    // 孤儿课程目录 → 拒
+    db.prepare(
+      "INSERT INTO courses (topic, title, uuid) VALUES (?, ?, ?)"
+    ).run("orphan", "课", "uuid-o1");
+    expect(() => resolveTargetIdentity(db, "pkg", "新主题", "orphan")).toThrow(/课程数据占用/);
+    // 空值 → 拒
+    expect(() => resolveTargetIdentity(db, "pkg", "", "abc")).toThrow(/不能为空/);
+    db.close();
   });
 });

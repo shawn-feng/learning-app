@@ -78,6 +78,7 @@ export default function CourseManager() {
       <h3 style={{ margin: 0, marginBottom: 4 }}>课程管理</h3>
       <p className="desc" style={{ margin: "0 0 12px" }}>
         每个学习主题一张卡片，进入后维护课程、教学方法与资料，或让 AI 协助创建课程。
+        主题可「打包导出」成文件发给另一套学习伙伴，对方点「导入主题」一键使用。
       </p>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
@@ -99,11 +100,12 @@ export default function CourseManager() {
         >
           <Plus size={16} /> 新建主题
         </button>
+        {/* 导入是独立的页面级动作：与新建表单拉开距离 + 醒目样式（此前贴在新建按钮旁，被当成表单的一部分而找不到） */}
         <button
           onClick={() => setImportOpen(true)}
-          style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", color: "#444", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+          style={{ marginLeft: "auto", padding: "7px 16px", borderRadius: 6, border: "1px solid #667eea", background: "#f4f6ff", color: "#4a58b8", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}
         >
-          <Upload size={14} /> 导入主题
+          <Upload size={15} /> 导入主题
         </button>
       </div>
 
@@ -123,7 +125,9 @@ export default function CourseManager() {
       )}
 
       {topics.length === 0 ? (
-        <p style={{ color: "#888", fontSize: 13 }}>家长库暂无主题。可先新建主题，或在「孩子管理 → 学习主题」里迁移存量资料。</p>
+        <p style={{ color: "#888", fontSize: 13 }}>
+          家长库暂无主题。可先新建主题、点右上角「导入主题」从主题包文件导入，或在「孩子管理 → 学习主题」里迁移存量资料。
+        </p>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
           {topics.map((t) => (

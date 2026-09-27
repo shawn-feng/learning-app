@@ -122,6 +122,9 @@ function topicPkgServerHint(err: unknown): Error {
   return (err as Error) ?? new Error(String(err));
 }
 
+/** 两阶段导入的「已选包文件」暂存（parentImportPick 存 → Inspect/Apply 用；fileRef=文件名，仅作展示）。 */
+let lastImportFile: File | null = null;
+
 export const parentDomain = {
   /** parentListTopics: () => Promise<{ success; data?: ParentTopic[]; error? }>（topics+progress 来自服务端 parent_lib，html 计数来自 /materials/list） */
   parentListTopics: async (): Promise<{ success: boolean; data?: ParentTopic[]; error?: string }> => {
@@ -700,18 +703,56 @@ export const parentDomain = {
     }
   },
 
-  /** parentImportTopic: () → 选 .ltpkg/.zip → POST /parent-lib/import-topic（multipart）→ 导入报告 */
-  parentImportTopic: async (): Promise<{ success: boolean; report?: any; canceled?: boolean; error?: string }> => {
+  // 两阶段导入（对齐 electron 端）：inspect 上传探测（服务端不落库，返回同名冲突裁决）；
+  // apply 带 mode=apply(+target) 落库。选中的 File 由 parentImportPick 暂存到上方模块变量。
+
+  /** parentImportPick: () → 浏览器选 .ltpkg/.zip，暂存 File 返回 fileRef */
+  parentImportPick: async (): Promise<{ success: boolean; fileRef?: string; canceled?: boolean; error?: string }> => {
     try {
       const [file] = await pickFiles({ accept: ".ltpkg,.zip" });
       if (!file) return { success: false, canceled: true };
-      const r = await uploadMultipart<{ ok: boolean; error?: string } & Record<string, any>>(
+      lastImportFile = file;
+      return { success: true, fileRef: file.name };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** parentImportInspect: (fileRef) → mode=inspect 上传探测，返回包信息与冲突裁决 */
+  parentImportInspect: async (fileRef: string): Promise<{ success: boolean; info?: any; error?: string }> => {
+    try {
+      if (!lastImportFile) return { success: false, error: "尚未选择主题包文件" };
+      const r = await uploadMultipart<Record<string, any> & { error?: string }>(
         "/parent-lib/import-topic",
-        file,
-        {},
+        lastImportFile,
+        { mode: "inspect" },
         { timeoutMs: 300000 }
       );
-      if (!r || r.ok !== true) return { success: false, error: r?.error || "导入失败：服务端未确认" };
+      if (r?.name == null) return { success: false, error: r?.error || "探测失败：服务端未确认" };
+      return { success: true, info: r };
+    } catch (err) {
+      return { success: false, error: topicPkgServerHint(err).message };
+    }
+  },
+
+  /** parentImportApply: (fileRef, targetName?, targetKey?) → mode=apply 落库导入，返回报告 */
+  parentImportApply: async (
+    fileRef: string,
+    targetName?: string,
+    targetKey?: string
+  ): Promise<{ success: boolean; report?: any; error?: string }> => {
+    try {
+      if (!lastImportFile) return { success: false, error: "尚未选择主题包文件" };
+      const fields: Record<string, string> = { mode: "apply" };
+      if (targetName != null) fields.target_name = targetName;
+      if (targetKey != null) fields.target_key = targetKey;
+      const r = await uploadMultipart<Record<string, any> & { error?: string }>(
+        "/parent-lib/import-topic",
+        lastImportFile,
+        fields,
+        { timeoutMs: 300000 }
+      );
+      if (r?.ok !== true) return { success: false, error: r?.error || "导入失败：服务端未确认" };
       return { success: true, report: r };
     } catch (err) {
       return { success: false, error: topicPkgServerHint(err).message };

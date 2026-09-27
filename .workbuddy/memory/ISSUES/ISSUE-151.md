@@ -5,7 +5,7 @@
 - **现状（已核实代码）**：
   | 通道 | 限制 | 位置 |
   |---|---|---|
-  | **multipart 上传**（/files/upload 聊天附件、/materials/upload 等） | **200MB**（全局 multipart 注册，所有 multipart 通道共用） | `server/src/index.ts:63` `limits: { fileSize: 200*1024*1024 }` |
+  | **multipart 上传**（/files/upload 聊天附件、/materials/upload 等） | **200MB**（全局 multipart 注册，所有 multipart 通道共用） | `server/src/index.ts:63` `limits: { fileSize: 200*1024*1024 }`。⚠ **2026-09-26 勘误**：ISSUE-153 按用户拍板已**取消单包 200MB 上限**（服务端校验 + multipart Infinity + 对话框三处，随 0.5.12 部署 201）——导出/上传通道实际上限已放开，本行 200MB 为旧值，分通道限额拍板时以「Infinity 现状」为基准 |
   | **课程资料入库** putMaterial（/materials/upload 入库、parent_put_material） | **2MB** 单文件 | `parent-materials.ts:29` `MAX_PUT_BYTES` |
   | **孩子 agent fs 写工具**（write/edit） | **2MB** 单次写入 | `fs-tools.ts:17` `MAX_WRITE_BYTES` |
   | **JSON body**（非 multipart 接口；**含孩子聊天内联 base64 图片** `POST /agent/:childId/prompt` 的 images——ISSUE-125 未修前的链路） | **未显式配置 → fastify 默认 1MiB** | index.ts 无 bodyLimit 配置 |
