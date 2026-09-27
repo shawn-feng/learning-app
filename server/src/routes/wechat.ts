@@ -262,12 +262,15 @@ export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
     }
     void parentId;
     const { readFeishuConfig, feishuStatus } = await import("../channels/feishu.js");
+    const { maskSecret } = await import("../util/mask.js");
     const cfg = readFeishuConfig(deps.db);
     const st = feishuStatus();
     return {
       enabled: cfg?.enabled ?? false,
       appId: cfg?.appId ?? "",
       hasSecret: Boolean(cfg?.appSecret),
+      // ISSUE-163：回显打码 secret（前6+****+后4），家长可知当前配的是哪把
+      secretMasked: cfg?.appSecret ? maskSecret(cfg.appSecret) : "",
       running: st.running,
       status: st.status,
       envFallback: Boolean(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET),

@@ -19,6 +19,7 @@ import { getServerSecret, encryptJson, decryptJson } from "../crypto.js";
 import { bumpConfigRevision } from "../db.js";
 import { listProviderModels, getWorkerRuntime, PROVIDER_REGISTRATIONS, getProviderEmbedding } from "@pi/agent-core";
 import { readParentSettings } from "../worker/scheduler.js";
+import { maskSecret } from "../util/mask.js";
 
 interface ModelsDeps {
   config: ServerConfig;
@@ -142,7 +143,7 @@ export function registerModelRoutes(app: FastifyInstance, deps: ModelsDeps): voi
     }
   });
 
-  // 读取当前 app_settings + auth 脱敏态（供设置页回显；auth 只回 provider 名 + 是否有 key，不回明文）。
+  // 读取当前 app_settings + auth 脱敏态（供设置页回显；auth 只回 provider 名 + 打码 key，不回明文）。
   app.get("/api/v1/models/settings", async (req, reply) => {
     let parentId: string;
     try {
@@ -159,9 +160,12 @@ export function registerModelRoutes(app: FastifyInstance, deps: ModelsDeps): voi
     for (const pid of Object.keys(auth)) if (!merged.has(pid)) merged.set(pid, !!(auth as any)[pid]?.key);
     const providers = [...merged.entries()].map(([provider, hasKey]) => {
       const cap = getProviderEmbedding(provider);
+      // ISSUE-163：回显打码 key（前6+****+后4），设置页可知当前用的是哪把
+      const keyMasked = hasKey ? maskSecret(String((auth as any)[provider].key ?? "")) : "";
       return {
         provider,
         hasKey,
+        keyMasked,
         embedding: cap ? { supported: true, model: cap.model } : { supported: false },
       };
     });

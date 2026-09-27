@@ -65,6 +65,7 @@ export default function FeishuBindPanel() {
   const [feishuEnabled, setFeishuEnabled] = useState(false);
   const [feishuStatus, setFeishuStatus] = useState("");
   const [feishuHasSecret, setFeishuHasSecret] = useState(false);
+  const [feishuSecretMasked, setFeishuSecretMasked] = useState(""); // ISSUE-163：打码回显
   const [feishuEnvFallback, setFeishuEnvFallback] = useState(false);
 
   const load = useCallback(async () => {
@@ -80,6 +81,7 @@ export default function FeishuBindPanel() {
       setFeishuAppId(d.appId || "");
       setFeishuEnabled(!!d.enabled);
       setFeishuHasSecret(!!d.hasSecret);
+      setFeishuSecretMasked(String(d.secretMasked || "")); // ISSUE-163
       setFeishuStatus(d.running ? "运行中" : d.status || "未运行");
       setFeishuEnvFallback(!!d.envFallback && !d.appId);
     }
@@ -182,7 +184,11 @@ export default function FeishuBindPanel() {
           <input
             value={feishuSecret}
             onChange={(e) => setFeishuSecret(e.target.value)}
-            placeholder={feishuHasSecret ? "App Secret 已保存，留空保持不变" : "App Secret"}
+            placeholder={
+              feishuHasSecret
+                ? `App Secret 已保存${feishuSecretMasked ? `（${feishuSecretMasked}）` : ""}，留空保持不变`
+                : "App Secret"
+            }
             type="password"
             style={{ border: "1px solid #ddd", borderRadius: 8, padding: "7px 10px", fontSize: 13, width: 240 }}
           />

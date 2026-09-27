@@ -39,6 +39,8 @@ export default function Settings() {
   const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
+  // ISSUE-163：各 provider 已存 key 的打码回显（前6+****+后4），provider id → keyMasked
+  const [keyMasked, setKeyMasked] = useState<Record<string, string>>({});
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [defaultModel, setDefaultModel] = useState(() => localStorage.getItem("defaultModel") || "");
   // ISSUE-020：编程 agent 模型（空 = 未启用，create_html_lesson 不可用）。
@@ -85,6 +87,20 @@ export default function Settings() {
     }).catch(() => {});
   }, []);
 
+  // ISSUE-163：加载各 provider 已存 key 的打码前缀（挂载 + 保存 key 后刷新）
+  function refreshKeyMasked() {
+    window.api.piGetSettings?.().then((r: any) => {
+      if (r?.success && Array.isArray(r.providers)) {
+        const m: Record<string, string> = {};
+        for (const p of r.providers) if (p?.provider) m[p.provider] = p.keyMasked || "";
+        setKeyMasked(m);
+      }
+    }).catch(() => {});
+  }
+  useEffect(() => {
+    refreshKeyMasked();
+  }, []);
+
   async function handleSetDefault(provider: string, modelId: string) {
     const key = `${provider}/${modelId}`;
     setDefaultModel(key);
@@ -119,6 +135,7 @@ export default function Settings() {
       setApiKey("");
       const models = await window.api.piGetModels();
       if (Array.isArray(models)) setAvailableModels(models);
+      refreshKeyMasked(); // ISSUE-163：保存后刷新打码回显
       setKeyStatus("API key 已保存");
     } else {
       setKeyStatus(`保存失败: ${result.error}`);
@@ -178,13 +195,17 @@ export default function Settings() {
                 key={p.id}
                 className={`provider-chip ${selectedProvider === p.id ? "active" : ""}`}
                 onClick={() => setSelectedProvider(p.id)}
+                title={keyMasked[p.id] ? `已配置 Key：${keyMasked[p.id]}` : "未配置 Key"}
               >
                 {p.name}
+                {keyMasked[p.id] && (
+                  <span style={{ marginLeft: 4, color: selectedProvider === p.id ? "#fff" : "#27ae60", fontSize: 12 }}>✓</span>
+                )}
               </div>
             ))}
           </div>
 
-          <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 12, marginBottom: 4 }}>
             <input
               type="password"
               placeholder={`API key (${PROVIDERS.find((p) => p.id === selectedProvider)?.keyHint})`}
@@ -205,6 +226,13 @@ export default function Settings() {
               保存
             </button>
           </div>
+
+          {/* ISSUE-163：当前 provider 已存 key 的打码回显 */}
+          <p style={{ fontSize: 12, color: keyMasked[selectedProvider] ? "#27ae60" : "#98a2b0", margin: "0 0 12px" }}>
+            {keyMasked[selectedProvider]
+              ? `当前已保存：${keyMasked[selectedProvider]}（重新输入并保存可更换）`
+              : "该 provider 尚未配置 API key"}
+          </p>
 
           {keyStatus && <p style={{ fontSize: 13, color: keyStatus.startsWith("保存失败") ? "red" : "#667eea", marginBottom: 16 }}>{keyStatus}</p>}
 

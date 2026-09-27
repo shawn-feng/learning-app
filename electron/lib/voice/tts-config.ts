@@ -97,5 +97,6 @@ export function applyTtsConfigPatch(patch: {
 export function maskSecret(v: string): string {
   if (!v) return "";
   if (v.length <= 8) return "*".repeat(v.length);
-  return v.slice(0, 3) + "****" + v.slice(-4);
+  // ISSUE-163：前 3 → 前 6（sk-/tp- 类统一前缀无区分度，多露 3 位才认得出是哪把 key）
+  return v.slice(0, 6) + "****" + v.slice(-4);
 }

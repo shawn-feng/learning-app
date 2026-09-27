@@ -264,6 +264,16 @@ export const modelsDomain = {
     }
   },
 
+  /** piGetSettings: () => 模型设置全量（providers 含打码 keyMasked，模型配置页回显）——ISSUE-163 */
+  piGetSettings: async (): Promise<{ success: boolean; appSettings?: Record<string, unknown>; providers?: Array<{ provider: string; hasKey: boolean; keyMasked?: string; embedding?: unknown }>; error?: string }> => {
+    try {
+      const r = await http<{ appSettings: Record<string, unknown>; providers: Array<{ provider: string; hasKey: boolean; keyMasked?: string; embedding?: unknown }> }>("/models/settings");
+      return { success: true, appSettings: r.appSettings, providers: r.providers };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
   /** piCheckProvider: (provider) => Promise<{ success: boolean; status?: boolean; error?: string }>（POST /models/check，30s 真实探测） */
   piCheckProvider: async (provider: string): Promise<{ success: boolean; status?: boolean; error?: string }> => {
     try {

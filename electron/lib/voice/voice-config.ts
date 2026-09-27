@@ -95,11 +95,11 @@ export function saveVoiceConfig(config: VoiceConfig): void {
   fs.writeFileSync(getVoiceConfigPath(), JSON.stringify(config, null, 2), "utf-8");
 }
 
-// 打码：只回显首 3 位 + **** + 尾 4 位
+// 打码：只回显首 6 位 + **** + 尾 4 位（ISSUE-163：前 3 位对 sk- 类 key 无区分度）
 export function maskSecret(v: string): string {
   if (!v) return "";
   if (v.length <= 8) return "*".repeat(v.length);
-  return v.slice(0, 3) + "****" + v.slice(-4);
+  return v.slice(0, 6) + "****" + v.slice(-4);
 }
 
 // 返回打码后的配置（供前端展示，绝不返回明文密钥）

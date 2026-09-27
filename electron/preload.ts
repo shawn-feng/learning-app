@@ -161,6 +161,8 @@ const api = {
   logsExportServerLog: () => ipcRenderer.invoke("logs:exportServerLog"),
   logsFetchServerLogTail: (limit?: number) => ipcRenderer.invoke("logs:fetchServerLogTail", limit),
   piGetModels: () => ipcRenderer.invoke("pi:get_models"),
+  // ISSUE-163：模型设置全量（providers 含打码 keyMasked，模型配置页回显用）
+  piGetSettings: () => ipcRenderer.invoke("pi:get_settings"),
   // ISSUE-156：piSwitchModel 已删——模型是家长级配置（服务端 app_settings.defaultModel），
   // 会话级切换桩化后孩子端入口已去掉，通道不再保留。
   piGetDefaultModel: () => ipcRenderer.invoke("pi:get_default_model"),

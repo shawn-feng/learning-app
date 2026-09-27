@@ -48,11 +48,11 @@ export function loadAssessmentConfig(db: DatabaseSync, parentId: string, dataDir
   };
 }
 
-/** 打码单个字段：空串返回空串；否则只露首尾，中间 ***。绝不返回明文密钥。 */
+/** 打码单个字段：空串返回空串；否则只露首尾，中间 ****。绝不返回明文密钥。（ISSUE-163：对齐 6/4 语义） */
 export function maskSecret(v: string): string {
   if (!v) return "";
-  if (v.length <= 4) return "****";
-  return `${v.slice(0, 2)}***${v.slice(-2)}`;
+  if (v.length <= 8) return "*".repeat(v.length);
+  return `${v.slice(0, 6)}****${v.slice(-4)}`;
 }
 
 /** 返回打码后的配置（供前端展示，绝不返回明文密钥）。 */

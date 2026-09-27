@@ -113,7 +113,7 @@ export const opsDomain = {
     }
   },
 
-  /** wechatFeishuGet: () => Promise<{success, data?: {enabled,appId,hasSecret,running,status,envFallback}}> */
+  /** wechatFeishuGet: () => Promise<{success, data?: {enabled,appId,hasSecret,secretMasked,running,status,envFallback}}>（secretMasked=打码回显，ISSUE-163） */
   wechatFeishuGet: async (): Promise<{ success: boolean; data?: unknown; error?: string }> => {
     try {
       if (!requireToken()) return { success: false, error: "未登录" };

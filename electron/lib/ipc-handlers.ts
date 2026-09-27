@@ -1101,6 +1101,16 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // 全量模型设置（providers 含打码 keyMasked，供模型配置页回显）——ISSUE-163
+  ipcMain.handle("pi:get_settings", async () => {
+    try {
+      const s = await getModelSettings();
+      return { success: true, appSettings: s.appSettings, providers: s.providers };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("pi:set_default_model", async (_e: IpcMainInvokeEvent, key: string) => {
     try {
       await setAppSettings({ defaultModel: key || "" });
