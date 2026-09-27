@@ -1,110 +1,38 @@
-import { useState, useEffect, useRef } from "react";
-import { Minus, Square, Copy, X } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Minus, Square, Copy, X, Maximize, Minimize } from "lucide-react";
 import IconButton from "./IconButton";
 
-interface MenuItem {
-  /** separator 项无标题（既有 tsc 修复：separator 分隔线不强制 label） */
-  label?: string;
-  action?: () => void;
-  separator?: boolean;
-}
-
-interface Menu {
-  label: string;
-  items: MenuItem[];
-}
-
-const MENUS: Menu[] = [
-  {
-    label: "File",
-    items: [{ label: "退出", action: () => window.api.windowClose() }],
-  },
-  {
-    label: "Edit",
-    items: [
-      { label: "撤销", action: () => window.api.editUndo() },
-      { label: "重做", action: () => window.api.editRedo() },
-      { separator: true },
-      { label: "剪切", action: () => window.api.editCut() },
-      { label: "复制", action: () => window.api.editCopy() },
-      { label: "粘贴", action: () => window.api.editPaste() },
-    ],
-  },
-  {
-    label: "View",
-    items: [
-      { label: "全屏", action: () => window.api.windowFullscreenToggle() },
-      { separator: true },
-      { label: "放大", action: () => window.api.viewZoomIn() },
-      { label: "缩小", action: () => window.api.viewZoomOut() },
-      { label: "重置缩放", action: () => window.api.viewZoomReset() },
-      { separator: true },
-      { label: "开发者工具", action: () => window.api.viewDevtools() },
-    ],
-  },
-  {
-    label: "Window",
-    items: [
-      { label: "最小化", action: () => window.api.windowMinimize() },
-      { label: "最大化", action: () => window.api.windowMaximizeToggle() },
-      { label: "关闭", action: () => window.api.windowClose() },
-    ],
-  },
-];
-
+/**
+ * 自定义标题栏（双端共用：家长 Dashboard 与孩子 Learn 顶部）。
+ *
+ * ISSUE-158（2026-09-27）：原 File/Edit/View/Window 下拉菜单整组移除——
+ * 窗口控制由右上三键承担；Edit 剪切/复制/粘贴/撤销快捷键由 Chromium 在可编辑区域原生处理；
+ * 缩放/DevTools 属调试功能按拍板删除。原「全屏」项（View 菜单深处）提为左上角常驻按钮：
+ * 图标随全屏态切换（window:is-fullscreen 初始态 + enter/leave-full-screen 推送）。
+ */
 export default function TitleBar() {
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [maximized, setMaximized] = useState(false);
-  const barRef = useRef<HTMLDivElement>(null);
+  const [fullscreen, setFullscreen] = useState(false);
   // Web 版（window.api.__web）：浏览器窗口无最小化/最大化/关闭控制权 → 隐藏右侧窗口按钮（保留标题）
   const isWeb = !!window.api?.__web;
 
   useEffect(() => {
     window.api.windowIsMaximized().then((m: boolean) => setMaximized(!!m));
     window.api.onWindowMaximized((m: boolean) => setMaximized(!!m));
+    window.api.windowIsFullscreen().then((f: boolean) => setFullscreen(!!f));
+    window.api.onWindowFullscreen((f: boolean) => setFullscreen(!!f));
   }, []);
-
-  useEffect(() => {
-    function onClickOutside(e: MouseEvent) {
-      if (barRef.current && !barRef.current.contains(e.target as Node)) {
-        setOpenMenu(null);
-      }
-    }
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, []);
-
-  function runItem(item: MenuItem) {
-    setOpenMenu(null);
-    item.action?.();
-  }
 
   return (
-    <div className="title-bar" ref={barRef}>
+    <div className="title-bar">
       <div className="title-bar-menus">
-        {MENUS.map((menu) => (
-          <div key={menu.label} className="tb-menu">
-            <button
-              className={`tb-menu-btn ${openMenu === menu.label ? "open" : ""}`}
-              onClick={() => setOpenMenu(openMenu === menu.label ? null : menu.label)}
-            >
-              {menu.label}
-            </button>
-            {openMenu === menu.label && (
-              <div className="tb-menu-dropdown">
-                {menu.items.map((item, i) =>
-                  item.separator ? (
-                    <div key={i} className="tb-menu-sep" />
-                  ) : (
-                    <button key={i} className="tb-menu-item" onClick={() => runItem(item)}>
-                      {item.label}
-                    </button>
-                  )
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+        <IconButton
+          icon={fullscreen ? Minimize : Maximize}
+          title={fullscreen ? "退出全屏" : "全屏"}
+          size={14}
+          className="tb-ctrl"
+          onClick={() => window.api.windowFullscreenToggle()}
+        />
       </div>
 
       <div className="title-bar-title">学习伙伴</div>

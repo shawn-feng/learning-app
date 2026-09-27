@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **156** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **158** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -188,3 +188,5 @@
 | 155 | 新增模型供应商「魔芋AI」客户端看不到——**key 录入 UI 写死在客户端**（Settings.tsx:26 硬编码 PROVIDERS 数组；模型列表本身走 GET /models 动态下发不受影响）。现场客户端包构建于魔芋加入前 → 设置页无魔芋 key 录入行 → 无处填令牌 → **答案=现状确实要升级客户端**。治本：`GET /models/settings` 补 name/keyHint 元数据（接口本已回 hasKey）+ Settings.tsx 改渲染该接口（删本地数组）→ 以后加供应商只发服务端，客户端零改动 | 中 | 2026-09-27 | [详情](ISSUES/ISSUE-155.md) |
 | 156 | 孩子端「模型」弹框是死 UI（切换桩化后仍展示可选：选了白选、对死桩重试 5×500ms 白等 2.5s、selected 显示与实际脱节）——**✅ 拍板直接去掉**：删 Learn.tsx 图标+弹框+state、ModelSelector.tsx 整文件、pi:switch_model 死桩；**保留 piGetModels/piGetDefaultModel**（家长设置+视觉设置在用）。附 201 核查（二次核实修正）：孩子 agent 实际模型=**moyu/DeepSeek-V4.1-flash**（per-parent settings 权威行 + 珊珊/闻闻两会话 jsonl 均实证；无前缀全局行 defaultModel=mimo 是兜底缺省非实际在用；pickWorkerModel 优先 per-parent defaultModel、兜底 qwen-tokenplan/deepseek-v4-flash-0731；换模型对已存在会话不生效=model-sync 已知设计） | 低 | 2026-09-27 | [详情](ISSUES/ISSUE-156.md) |
 | 156 | ✅ 已实施（2026-09-27 拍板直接去掉）：孩子端「模型」弹框死 UI 清理——Learn.tsx 删 Bot 图标按钮/showModel state/弹框块（含「ModelSelector 必须常驻挂载」遗留注释），ModelSelector.tsx 整文件删除（唯一消费方是 Learn），piSwitchModel 死桩三层删除（preload/ipc `pi:switch_model`/web-shim）；piGetModels/piGetDefaultModel/listModels 保留（设置页/视觉设置在用）。tsc 无新增错误、双端 build 通过、shim 覆盖通过。附核查（只读探针）：201 两孩子 agent 实际模型=魔芋 DeepSeek-V4.1-flash（per-parent app_settings.defaultModel 权威 + 会话 jsonl 实证；全局行仅兜底缺省） | 低 | 2026-09-27 | [详情](ISSUES/ISSUE-156.md) |
+| 157 | ✅ 已实施（2026-09-27）：孩子端「学习进度」课程详情增强：①课程页**双 tab**（学习情况=现有 CourseDetail + **学习资料**——直接看展示在左侧的资料，不用让 agent 重发；复用 MaterialsPanel 渲染块，资料定位 display_contents→courses.html_path）②课程详情内 **↑/↓ 键切换课程**（LearningDashboard 传课程列表+index,列表顺序不跨主题,前/后课按钮+位置指示）③左侧「学习资料」面板不动（会话最新流 vs 按课程定点回看两入口并存）。回归：ISSUE-113 回填/030 资料字号/017 查词浮层接上、iframe 聚焦不劫持键盘、goBack 链不变 | 中 | 2026-09-27 | [详情](ISSUES/ISSUE-157.md) |
+| 158 | ✅ 已实施（2026-09-27）：家长/孩子界面布局精简：①家长中心去「家长中心」标题+「菜单」两字，「返回主页/注销登录」移左侧边栏，侧栏可折叠（折叠态只显示 emoji icon、悬浮 title 显示名称、localStorage 持久化）②TitleBar 删 File/Edit/View/Window 菜单（MENUS 数组整块），只留一个全屏/退出全屏切换按钮（windowFullscreenToggle 现成；需补 fullscreen 状态监听；Edit 快捷键原生生效需回归输入框；缩放/DevTools 默认删）——TitleBar 双端共用一次改完 | 低-中 | 2026-09-27 | [详情](ISSUES/ISSUE-158.md) |

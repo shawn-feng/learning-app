@@ -386,19 +386,10 @@ const api = {
   windowFullscreenToggle: () => ipcRenderer.invoke("window:fullscreen-toggle"),
   onWindowMaximized: (callback: (maximized: boolean) => void) =>
     registerListener("window:maximized-changed", callback),
-
-  // Edit menu
-  editUndo: () => ipcRenderer.invoke("edit:undo"),
-  editRedo: () => ipcRenderer.invoke("edit:redo"),
-  editCut: () => ipcRenderer.invoke("edit:cut"),
-  editCopy: () => ipcRenderer.invoke("edit:copy"),
-  editPaste: () => ipcRenderer.invoke("edit:paste"),
-
-  // View menu
-  viewDevtools: () => ipcRenderer.invoke("view:devtools"),
-  viewZoomIn: () => ipcRenderer.invoke("view:zoom-in"),
-  viewZoomOut: () => ipcRenderer.invoke("view:zoom-out"),
-  viewZoomReset: () => ipcRenderer.invoke("view:zoom-reset"),
+  // ISSUE-158：标题栏全屏切换按钮的图标态（is-fullscreen 初始态 + fullscreen-changed 推送）
+  windowIsFullscreen: () => ipcRenderer.invoke("window:is-fullscreen"),
+  onWindowFullscreen: (callback: (fullscreen: boolean) => void) =>
+    registerListener("window:fullscreen-changed", callback),
 
   // 学习考核（EXAM-REQUIREMENTS.md）
   examConfig: (childId: string, scheduleId?: string, courses?: string) =>

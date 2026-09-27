@@ -270,6 +270,37 @@ input, textarea {
   border-right: 1px solid #eee;
   padding: 16px;
   overflow-y: auto;
+  transition: width 0.15s ease;
+}
+
+/* ISSUE-158：侧栏顶部工具行（折叠开关 + 返回主页 + 退出登录，原顶栏动作移此） */
+.dashboard-sidebar .sidebar-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+/* ISSUE-158：折叠态——只显示 emoji icon（悬浮 title 显示名称），宽度收窄、文字隐藏 */
+.dashboard-sidebar.collapsed {
+  width: 68px;
+  padding: 12px 10px;
+}
+.dashboard-sidebar.collapsed .sidebar-tools {
+  flex-direction: column;
+  gap: 6px;
+}
+.dashboard-sidebar.collapsed .child-card {
+  justify-content: center;
+  padding: 8px 0;
+}
+.dashboard-sidebar.collapsed .child-info {
+  display: none;
+}
+.dashboard-sidebar.collapsed .child-avatar {
+  font-size: 24px;
+  width: 40px;
+  height: 40px;
 }
 
 .dashboard-sidebar .section-title {

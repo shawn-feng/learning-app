@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
-import { ArrowLeft, LogOut, UserPlus, MessageSquare } from "lucide-react";
+import { LogOut, UserPlus, MessageSquare, PanelLeftClose, PanelLeftOpen, Home } from "lucide-react";
 import IconButton from "../components/IconButton";
 import { LoadingBlock } from "../components/Loading";
 import AddChildModal from "../components/AddChildModal";
@@ -42,6 +42,16 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   const [reportUnread, setReportUnread] = useState(false);
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
+  // ISSUE-158：侧栏折叠态（折叠后只显示 emoji icon、悬浮 title 显示名称），localStorage 持久化
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem("parent:sidebarCollapsed") === "1"
+  );
+  function toggleSidebar() {
+    setSidebarCollapsed((prev) => {
+      localStorage.setItem("parent:sidebarCollapsed", prev ? "0" : "1");
+      return !prev;
+    });
+  }
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
   const parentChat = useChatPanel("parent", 360);
 
@@ -89,20 +99,24 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
 
   return (
     <div className="dashboard">
-      <div className="dashboard-header">
-        <h1>家长中心</h1>
-        <div className="actions">
-          <IconButton icon={ArrowLeft} title="返回主页" onClick={onEnterChildMode} />
-          <IconButton icon={LogOut} title="退出登录" onClick={onLogout} />
-        </div>
-      </div>
+      {/* ISSUE-158：顶部「家长中心」标题条删除——返回主页/退出登录移入左侧栏顶部工具行 */}
 
       <div className="dashboard-body">
-        <div className="dashboard-sidebar">
-          <div className="section-title">菜单</div>
+        <div className={`dashboard-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
+          {/* 顶部工具行：折叠开关 + 返回主页 + 退出登录（折叠态纵向排列，均带悬浮 title） */}
+          <div className="sidebar-tools">
+            <IconButton
+              icon={sidebarCollapsed ? PanelLeftOpen : PanelLeftClose}
+              title={sidebarCollapsed ? "展开菜单" : "折叠菜单"}
+              onClick={toggleSidebar}
+            />
+            <IconButton icon={Home} title="返回主页（孩子模式）" onClick={onEnterChildMode} />
+            <IconButton icon={LogOut} title="退出登录" onClick={onLogout} />
+          </div>
           <div
             className="child-card"
             style={{ border: "none" }}
+            title="孩子管理"
             onClick={() => {
               setView("children");
               setDetailChild(null);
@@ -116,6 +130,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
+            title="课程管理"
             onClick={() => setView("courses")}
           >
             <div className="child-avatar">📚</div>
@@ -126,6 +141,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
+            title="题库"
             onClick={() => {
               setView("bank");
               setDetailChild(null);
@@ -140,6 +156,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
+            title="文件"
             onClick={() => {
               setView("files");
               setDetailChild(null);
@@ -154,6 +171,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
+            title="定时任务"
             onClick={() => {
               setView("scheduler");
               setDetailChild(null);
@@ -167,6 +185,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
+            title="Token 消耗"
             onClick={() => setView("tokens")}
           >
             <div className="child-avatar">📈</div>
@@ -177,6 +196,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none" }}
+            title="设置"
             onClick={() => setView("settings")}
           >
             <div className="child-avatar">⚙️</div>
@@ -187,6 +207,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           <div
             className="child-card"
             style={{ border: "none", position: "relative" }}
+            title="报表"
             onClick={() => {
               setView("report");
               setDetailChild(null);

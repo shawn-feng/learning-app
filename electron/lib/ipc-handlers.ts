@@ -2229,26 +2229,15 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     const w = getMainWindow();
     if (!w) return;
     w.setFullScreen(!w.isFullScreen());
+    // 状态推送由 main.ts 的 enter/leave-full-screen 事件统一发出（异步，无需在此 send）
   });
 
-  // Edit 菜单：作用于当前聚焦的可编辑元素
-  ipcMain.handle("edit:undo", () => getMainWindow()?.webContents.undo());
-  ipcMain.handle("edit:redo", () => getMainWindow()?.webContents.redo());
-  ipcMain.handle("edit:cut", () => getMainWindow()?.webContents.cut());
-  ipcMain.handle("edit:copy", () => getMainWindow()?.webContents.copy());
-  ipcMain.handle("edit:paste", () => getMainWindow()?.webContents.paste());
+  // ISSUE-158：标题栏全屏切换按钮的初始态
+  ipcMain.handle("window:is-fullscreen", () => getMainWindow()?.isFullScreen() ?? false);
 
-  // View 菜单
-  ipcMain.handle("view:devtools", () => getMainWindow()?.webContents.toggleDevTools());
-  ipcMain.handle("view:zoom-in", () => {
-    const wc = getMainWindow()?.webContents;
-    if (wc) wc.setZoomLevel(wc.getZoomLevel() + 0.5);
-  });
-  ipcMain.handle("view:zoom-out", () => {
-    const wc = getMainWindow()?.webContents;
-    if (wc) wc.setZoomLevel(wc.getZoomLevel() - 0.5);
-  });
-  ipcMain.handle("view:zoom-reset", () => getMainWindow()?.webContents.setZoomLevel(0));
+  // ISSUE-158：edit:*（undo/redo/cut/copy/paste）与 view:*（devtools/zoom）死桩已随标题栏
+  // File/Edit/View/Window 菜单一起删除——可编辑区域的 Ctrl+C/V 等编辑快捷键由 Chromium 原生处理，
+  // 不依赖菜单；缩放/DevTools 属调试功能，按拍板移除。
 
   // ==================== 学习考核（EXAM-REQUIREMENTS.md） ====================
   // 取孩子考核配置（v3 两段式：无 courses → 选课段 selectionPrompt+candidates；带 courses → 出卷段 rubric+scoringPrompt；

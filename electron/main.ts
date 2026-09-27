@@ -104,6 +104,13 @@ function createWindow() {
   mainWindow.on("unmaximize", () => {
     mainWindow?.webContents.send("window:maximized-changed", false);
   });
+  // ISSUE-158：全屏状态推送（标题栏全屏切换按钮的图标态；toggle 经 setFullScreen 异步触发这两个事件）
+  mainWindow.on("enter-full-screen", () => {
+    mainWindow?.webContents.send("window:fullscreen-changed", true);
+  });
+  mainWindow.on("leave-full-screen", () => {
+    mainWindow?.webContents.send("window:fullscreen-changed", false);
+  });
 
   if (process.env["ELECTRON_RENDERER_URL"]) {
     mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);

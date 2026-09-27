@@ -1,19 +1,17 @@
 /**
- * window 域（Phase 2 实现）：窗口控制 + Edit 菜单 + View 菜单。
+ * window 域（Phase 2 实现）：窗口控制；Edit/View 菜单通道已随 ISSUE-158 标题栏精简删除。
  *
  * Web 语义（设计方案 §2 #12：窗口控制为浏览器天然能力，TitleBar web 分支隐藏窗口按钮）：
  *   - windowMinimize / windowMaximizeToggle / windowClose：浏览器页面无法控制宿主窗口
- *     （且 TitleBar 的 web 分支本就隐藏这些按钮）→ no-op resolve，保证菜单项可安全点击。
+ *     → no-op resolve（TitleBar web 分支本就隐藏这些按钮）。
  *   - windowFullscreenToggle：唯一有真实浏览器等价物的项——document.documentElement
  *     的 Fullscreen API 切换（对齐 webContents.setFullScreen 语义）；失败静默 resolve。
  *   - windowIsMaximized / onWindowMaximized：浏览器无最大化概念，恒 false（Phase 1 已定），
  *     事件经 eventBus 派发（本域永不触发）。
- *   - Edit 菜单（edit:undo/redo/cut/copy/paste → webContents.undo/…）：映射
- *     document.execCommand，作用于当前聚焦的可编辑元素；paste 受浏览器权限限制，
- *     execCommand 失败时经 Clipboard API 读文本 + insertText 兜底（TitleBar 菜单不消费返回值）。
- *   - View 菜单：zoom 对齐 ipc view:zoom-in/out 的 webContents.setZoomLevel(±0.5) 语义
- *     （Electron zoomFactor = 1.2^zoomLevel，即每档约 ±9.5%，reset=0 → 1.0x），经
- *     document.body.style.zoom 应用；devtools 为浏览器 F12 能力，no-op。
+ *   - windowIsFullscreen / onWindowFullscreen（ISSUE-158）：Fullscreen API 的
+ *     document.fullscreenElement 初值 + fullscreenchange 事件（全屏按钮图标态）。
+ *   - （ISSUE-158：edit:* 走 document.execCommand 的通道与 view:zoom/devtools no-op 已删——
+ *     标题栏菜单移除后无消费方；编辑快捷键由浏览器/Chromium 原生处理。）
  */
 import { eventBus } from "../core/event-bus";
 
@@ -48,61 +46,12 @@ export const windowDomain = {
     eventBus.on("window:maximized-changed", (m) => callback(!!m));
   },
 
-  // ---- Edit 菜单（对齐 ipc edit:undo/redo/cut/copy/paste；作用于当前聚焦的可编辑元素） ----
+  /** windowIsFullscreen: () => Promise<boolean>（document.fullscreenElement 初值） */
+  windowIsFullscreen: async (): Promise<boolean> => !!document.fullscreenElement,
 
-  /** editUndo: () => Promise<boolean>（document.execCommand("undo")） */
-  editUndo: async (): Promise<boolean> => document.execCommand("undo"),
-
-  /** editRedo: () => Promise<boolean>（document.execCommand("redo")） */
-  editRedo: async (): Promise<boolean> => document.execCommand("redo"),
-
-  /** editCut: () => Promise<boolean>（document.execCommand("cut")） */
-  editCut: async (): Promise<boolean> => document.execCommand("cut"),
-
-  /** editCopy: () => Promise<boolean>（document.execCommand("copy")） */
-  editCopy: async (): Promise<boolean> => document.execCommand("copy"),
-
-  /** editPaste: () => Promise<boolean>（execCommand("paste") 被浏览器普遍禁用 → Clipboard API 读文本 + insertText 兜底；再失败静默返回 false，渲染层不消费返回值） */
-  editPaste: async (): Promise<boolean> => {
-    if (document.execCommand("paste")) return true;
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) return document.execCommand("insertText", false, text);
-    } catch {
-      // 无剪贴板读权限（未授权/非聚焦可编辑元素）→ 静默
-    }
-    return false;
-  },
-
-  // ---- View 菜单（对齐 ipc view:devtools / view:zoom-in|out|reset） ----
-
-  /** viewDevtools: () => Promise<void>（浏览器自带 F12 开发者工具，no-op） */
-  viewDevtools: async (): Promise<void> => {},
-
-  /** viewZoomIn: () => Promise<void>（对齐 setZoomLevel(+0.5)：zoomFactor = 1.2^level） */
-  viewZoomIn: async (): Promise<void> => {
-    applyZoomLevel(zoomLevel + 0.5);
-  },
-
-  /** viewZoomOut: () => Promise<void>（对齐 setZoomLevel(-0.5)） */
-  viewZoomOut: async (): Promise<void> => {
-    applyZoomLevel(zoomLevel - 0.5);
-  },
-
-  /** viewZoomReset: () => Promise<void>（对齐 setZoomLevel(0)：zoomFactor 回 1） */
-  viewZoomReset: async (): Promise<void> => {
-    applyZoomLevel(0);
+  /** onWindowFullscreen: (callback) => void（订阅浏览器 fullscreenchange 事件；Electron 走 preload 同名通道） */
+  onWindowFullscreen: (callback: (fullscreen: boolean) => void): void => {
+    const handler = () => callback(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
   },
 };
-
-// ---------------------------------------------------------------------------
-// Zoom（webContents.setZoomLevel 语义：zoomFactor = 1.2^level，档距 0.5 ≈ ±9.5%）
-// ---------------------------------------------------------------------------
-
-let zoomLevel = 0;
-
-function applyZoomLevel(level: number): void {
-  zoomLevel = Math.max(-6, Math.min(6, level)); // 0.2x ~ 3.0x，防溢出（Electron 同有内部上下限）
-  const factor = Math.pow(1.2, zoomLevel);
-  document.body.style.zoom = factor === 1 ? "" : String(factor);
-}
