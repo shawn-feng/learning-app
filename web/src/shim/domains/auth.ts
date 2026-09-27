@@ -42,24 +42,6 @@ async function loginAndCache(
   return license;
 }
 
-/** 云端复核（对齐 verifyLicenseWithCloud）：401 → 无效；网络错误 → null（降级）。 */
-async function verifyLicenseWithCloud(
-  token: string
-): Promise<{ valid: boolean; max_children: number } | null> {
-  try {
-    const data = await http<{ license: WebLicense }>("/auth/license", { token });
-    return {
-      valid: data.license.is_expired !== true,
-      max_children: typeof data.license.max_children === "number" ? data.license.max_children : 0,
-    };
-  } catch (err) {
-    if (err instanceof WebServerError && err.status === 401) {
-      return { valid: false, max_children: 0 };
-    }
-    return null; // 网络错误 / 服务端不可达 → 由调用方降级
-  }
-}
-
 export const authDomain = {
   /** authLogin: (email: string, password: string) => Promise<{ success: boolean; license?: WebLicense; error?: string }> */
   authLogin: async (email: string, password: string) => {
@@ -83,31 +65,40 @@ export const authDomain = {
 
   /**
    * authCheck: () => Promise<{ authenticated: boolean; license: WebLicense | null }>
-   * 对齐 checkAuth（auth-manager.ts:176-205）：
-   * 无凭证 → 未登录；本地过期 → 清凭证未登录；本地有效 → 云端复核，
-   * 云端明确无效 → 强制登出，云端不可达 → 降级放行（信任本地）。
-   * 差异：Web 无「未配置服务端地址」分支（同源是合法默认，dev 经 Vite proxy）。
+   * ISSUE-160 重写（刷新即注销修复）：不再凭本地缓存的 expires_at 硬登出——本地缓存可能
+   * 滞后于云端续期（服务端连不上公网时 /auth/license 返回的也是降级旧缓存），曾造成
+   * 「登录成功 → 刷新即被踢回登录页」死循环。以服务端 /auth/license 为权威：
+   *   200 → 用返回的 license 续本地缓存并放行；license.is_expired=true → 清凭证登出；
+   *   401（session token 失效 / 云端判定授权失效）→ 清凭证回登录页；
+   *   网络错误/服务端不可达 → 离线降级放行（不把已登录用户踢出）。
    */
   authCheck: async (): Promise<{ authenticated: boolean; license: WebLicense | null }> => {
     const license = getStoredLicense();
     if (!license) return { authenticated: false, license: null };
 
-    const expired =
-      license.is_expired ||
-      (license.expires_at && new Date(license.expires_at).getTime() < Date.now());
-    if (expired) {
-      clearStoredLicense();
-      return { authenticated: false, license: null };
+    try {
+      const data = await http<{ license: LicenseData }>("/auth/license", { token: license.token });
+      const fresh: WebLicense = {
+        ...data.license,
+        email: license.email,
+        token: license.token,
+        cached_at: new Date().toISOString(),
+      };
+      if (fresh.is_expired) {
+        clearStoredLicense();
+        return { authenticated: false, license: null };
+      }
+      saveLicense(fresh);
+      return { authenticated: true, license: fresh };
+    } catch (err) {
+      if (err instanceof WebServerError && err.status === 401) {
+        // session token 失效，或服务端能连上公网且公网判定授权失效 → 重新登录
+        clearStoredLicense();
+        return { authenticated: false, license: null };
+      }
+      // 网络错误 / 服务端不可达：离线降级，保留登录态
+      return { authenticated: true, license };
     }
-
-    const cloud = await verifyLicenseWithCloud(license.token);
-    if (cloud !== null && !cloud.valid) {
-      clearStoredLicense();
-      return { authenticated: false, license: null };
-    }
-    // cloud === null：云端连不上，离线降级放行
-
-    return { authenticated: true, license };
   },
 
   /** authLogout: () => Promise<{ success: boolean }>（清凭证 + parentId 回 default） */

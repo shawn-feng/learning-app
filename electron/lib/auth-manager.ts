@@ -176,14 +176,6 @@ export async function verifyParentPassword(
 export async function checkAuth(): Promise<{ authenticated: boolean; license: License | null }> {
   const license = getCachedLicense();
   if (!license) return { authenticated: false, license: null };
-  // 凭证在有效期内才视为已登录，过期则清除并回到登录页
-  const expired =
-    license.is_expired ||
-    (license.expires_at && new Date(license.expires_at).getTime() < Date.now());
-  if (expired) {
-    clearCachedLicense();
-    return { authenticated: false, license: null };
-  }
 
   // SPLIT：未配置服务端地址 → 一律视为未登录（回到带配置区的登录页）。
   // 否则用户被旧凭证直接带进主页，而主页/家长中心又依赖服务端验证，形成死循环。
@@ -192,14 +184,31 @@ export async function checkAuth(): Promise<{ authenticated: boolean; license: Li
     return { authenticated: false, license: null };
   }
 
-  // 本地判断没过期，仍向云端确认一次，防止改本地 license.json 绕过
-  const cloud = await verifyLicenseWithCloud(license.token);
-  if (cloud !== null && !cloud.valid) {
-    // 云端明确判定过期 / token 失效 → 强制登出
-    clearCachedLicense();
-    return { authenticated: false, license: null };
+  // ISSUE-160：不再凭本地缓存的 expires_at 硬登出——本地缓存可能滞后于云端续期
+  //（服务端连不上公网时 /auth/license 返回的也是降级旧缓存），曾造成
+  // 「登录成功 → 重启/刷新即被踢回登录页」的死循环。
+  // 以服务端 /auth/license 为权威：200 → 用返回的 license 续本地缓存并放行；
+  // 401（session token 失效 / 云端判定授权失效）→ 清凭证回登录页；网络错误 → 离线降级放行。
+  try {
+    const data = await fetchLicense(license.token);
+    const fresh: License = {
+      ...data,
+      email: license.email,
+      token: license.token,
+      cached_at: new Date().toISOString(),
+    };
+    if (fresh.is_expired) {
+      clearCachedLicense();
+      return { authenticated: false, license: null };
+    }
+    cacheLicense(fresh);
+    return { authenticated: true, license: fresh };
+  } catch (err) {
+    if (err instanceof ServerError && err.status === 401) {
+      clearCachedLicense();
+      return { authenticated: false, license: null };
+    }
+    // 连不上服务端：离线降级，信任本地、保留登录态（不因网络问题把已登录用户踢出）
+    return { authenticated: true, license };
   }
-  // cloud === null 表示云端连不上，离线降级：信任本地判断，放行
-
-  return { authenticated: true, license };
 }
