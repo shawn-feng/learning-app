@@ -158,8 +158,8 @@ const api = {
   appExportLog: () => ipcRenderer.invoke("app:exportLog"),
   appGetLogTail: (limit?: number) => ipcRenderer.invoke("app:getLogTail", limit),
   piGetModels: () => ipcRenderer.invoke("pi:get_models"),
-  piSwitchModel: (childId: string, provider: string, modelId: string) =>
-    ipcRenderer.invoke("pi:switch_model", childId, provider, modelId),
+  // ISSUE-156：piSwitchModel 已删——模型是家长级配置（服务端 app_settings.defaultModel），
+  // 会话级切换桩化后孩子端入口已去掉，通道不再保留。
   piGetDefaultModel: () => ipcRenderer.invoke("pi:get_default_model"),
   piSetDefaultModel: (key: string) => ipcRenderer.invoke("pi:set_default_model", key),
   piGetProgrammingModel: () => ipcRenderer.invoke("pi:get_programming_model"),

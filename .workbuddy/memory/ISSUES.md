@@ -6,7 +6,7 @@
 > 原 ISSUE-001 ~ 052 为旧架构（一体化 Electron）时期记录，已整体归档至 `ISSUES-archive-2026-08-30.md`，不在本清单保留。
 > 本清单只记录新架构下的问题。
 
-> 共 **153** 条 issue（详情见 `ISSUES/` 目录）。
+> 共 **156** 条 issue（详情见 `ISSUES/` 目录）。
 
 | 编号 | 标题 | 优先级 | 记录时间 | 详情 |
 |------|------|--------|----------|------|
@@ -185,3 +185,6 @@
 | 151 | 上传文件大小限制现状梳理——multipart **200MB** 全局（/files/upload、/materials/upload 共用，index.ts:63）；课程资料入库 putMaterial **2MB**；孩子 agent fs 写 **2MB**；**JSON body 未显式配置=fastify 默认 1MiB**（孩子聊天内联 base64 图片链路隐患）；客户端无预检。问题：①JSON 1MiB 隐藏坑 ②口径不统一无产品语义——2MB 拦视频资料（ISSUE-056/141 视频形态）③无预检 ④与 ISSUE-131 网盘耦合。待拍板：分通道限制表/uploads 与 materials 差异化、bodyLimit 显式化、客户端预检、网盘 UI 标注 | 低-中 | 2026-09-22 | [详情](ISSUES/ISSUE-151.md) |
 | 152 | 需要评估的地方应支持「**自然语言标准 + LLM 判断**」——背诵通过线写死 90 只是其一：阿里云 SSECP 已返回分项（accuracy/integrity/fluency/prosody），客户端却只拿总分比数字线（`ExamView.tsx:467` `recitePass \|\| 90`；能配 85 但表达不了「准确度 90 且流利度 80 以上」这类组合标准），pointGot 线性换算与 aiComment 模板也写死；同场考核口径割裂（文字题已是 LLM+rubric 判分 `exam-engine.ts:141`、retake 已是自然语言 `exam.ts:304`，背诵题却是客户端数字阈值）。建议：方法/排期加自然语言标准字段（缺省回落 recitePass 默认 90），SSECP 评测后把分项+标准交判分 LLM 下结论，客户端按要求回填 correct/pointGot/aiComment，LLM 不可用回落数字线；模式可推广到所有「按标准下结论」处 | 中 | 2026-09-26 | [详情](ISSUES/ISSUE-152.md) |
 | 153 | ✅ **已修复（2026-09-26，服务端 0.5.12 已部署 201）**：导出对话框**文件名不显示**（只剩勾选框和体积）——根因 = 全局样式 `.modal input{width:100%}`（styles.css:388，本意是弹窗文本框）把 checkbox 撑到 259px，吃光整行空间，`flex-basis:0 + min-width:0` 的文件名列被挤成 0 宽。定位方法：1:1 静态复刻正常 → 挂完整构建 CSS 复现（span 实测 0px）→ 逐元素量宽度锁定 checkbox。修复 = 对话框 3 个 checkbox 内联重置 `width:auto`（CHECKBOX_STYLE，TopicExportDialog）+ 文件名加 title 悬浮。**防复发建议（待拍板）**：把 `.modal input` 收窄为文本输入选择器（需回归全部弹窗表单）或约定 checkbox 必须内联重置。**同轮**：按用户拍板取消单包 200MB 上限（服务端校验 + multipart Infinity + 对话框三处），377MB 千字文整包从 201 导出/跨机导入实证通过。**关联待拍板**：千字文部分课程 `courses.material` 存描述性长文本而非 `topic/file` 路径，导入报告 missing_files 会误列（详见详情内关联发现段） | 低（已修复） | 2026-09-26 | [详情](ISSUES/ISSUE-153.md) |
+| 155 | 新增模型供应商「魔芋AI」客户端看不到——**key 录入 UI 写死在客户端**（Settings.tsx:26 硬编码 PROVIDERS 数组；模型列表本身走 GET /models 动态下发不受影响）。现场客户端包构建于魔芋加入前 → 设置页无魔芋 key 录入行 → 无处填令牌 → **答案=现状确实要升级客户端**。治本：`GET /models/settings` 补 name/keyHint 元数据（接口本已回 hasKey）+ Settings.tsx 改渲染该接口（删本地数组）→ 以后加供应商只发服务端，客户端零改动 | 中 | 2026-09-27 | [详情](ISSUES/ISSUE-155.md) |
+| 156 | 孩子端「模型」弹框是死 UI（切换桩化后仍展示可选：选了白选、对死桩重试 5×500ms 白等 2.5s、selected 显示与实际脱节）——**✅ 拍板直接去掉**：删 Learn.tsx 图标+弹框+state、ModelSelector.tsx 整文件、pi:switch_model 死桩；**保留 piGetModels/piGetDefaultModel**（家长设置+视觉设置在用）。附 201 核查（二次核实修正）：孩子 agent 实际模型=**moyu/DeepSeek-V4.1-flash**（per-parent settings 权威行 + 珊珊/闻闻两会话 jsonl 均实证；无前缀全局行 defaultModel=mimo 是兜底缺省非实际在用；pickWorkerModel 优先 per-parent defaultModel、兜底 qwen-tokenplan/deepseek-v4-flash-0731；换模型对已存在会话不生效=model-sync 已知设计） | 低 | 2026-09-27 | [详情](ISSUES/ISSUE-156.md) |
+| 156 | ✅ 已实施（2026-09-27 拍板直接去掉）：孩子端「模型」弹框死 UI 清理——Learn.tsx 删 Bot 图标按钮/showModel state/弹框块（含「ModelSelector 必须常驻挂载」遗留注释），ModelSelector.tsx 整文件删除（唯一消费方是 Learn），piSwitchModel 死桩三层删除（preload/ipc `pi:switch_model`/web-shim）；piGetModels/piGetDefaultModel/listModels 保留（设置页/视觉设置在用）。tsc 无新增错误、双端 build 通过、shim 覆盖通过。附核查（只读探针）：201 两孩子 agent 实际模型=魔芋 DeepSeek-V4.1-flash（per-parent app_settings.defaultModel 权威 + 会话 jsonl 实证；全局行仅兜底缺省） | 低 | 2026-09-27 | [详情](ISSUES/ISSUE-156.md) |

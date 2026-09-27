@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelRightOpen, PanelRightClose, Bot, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell, BookMarked, FolderOpen } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell, BookMarked, FolderOpen } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, type TextFileAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { kindFromPath, type Material, type MaterialKind } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
-import ModelSelector from "../components/ModelSelector";
 import TodoModal from "../components/TodoModal";
 import MistakeBookModal from "../components/MistakeBookModal";
 import MyRemindersModal from "../components/MyRemindersModal";
@@ -294,7 +293,6 @@ export default function Learn({ child, onExit }: Props) {
 
   // ISSUE-026：孩子端左侧边栏常驻折叠（图标栏），所有功能交互统一走弹框
   const [showView, setShowView] = useState(false); // 切换展示页
-  const [showModel, setShowModel] = useState(false); // 模型
   const [showRate, setShowRate] = useState(false); // 朗读语速
   const [showFontPanel, setShowFontPanel] = useState(false); // 字号设置弹框（ISSUE-106：聊天字号 + 资料字号合并入口）
   const [showClass, setShowClass] = useState(false); // 今日课程
@@ -1075,14 +1073,6 @@ export default function Learn({ child, onExit }: Props) {
 
             <button
               className="sidebar-icon-btn"
-              title="模型"
-              onClick={() => setShowModel(true)}
-            >
-              <Bot size={20} />
-            </button>
-
-            <button
-              className="sidebar-icon-btn"
               title={`朗读语速 ${RATE_OPTIONS.find((o) => o.value === rate)?.display || "1.0x"}`}
               onClick={() => setShowRate(true)}
             >
@@ -1366,22 +1356,8 @@ export default function Learn({ child, onExit }: Props) {
         </div>
       )}
 
-      {/* ISSUE-026：模型弹框——⚠️ ModelSelector 必须常驻挂载（卸载重挂会重新拉模型并切回默认），
-          因此本弹框恒在 DOM（display 控制显隐），组件不卸载 */}
-      <div
-        className="modal-overlay"
-        style={{ display: showModel ? "flex" : "none" }}
-        onClick={() => setShowModel(false)}
-      >
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <h2>选择模型</h2>
-          <div className="sidebar-section-label">模型</div>
-          <ModelSelector childId={child.childId} />
-          <div className="modal-actions">
-            <button className="cancel" onClick={() => setShowModel(false)}>关闭</button>
-          </div>
-        </div>
-      </div>
+      {/* ISSUE-156：孩子端「模型」弹框已删除——agent 服务端化后模型是家长级配置，
+          切换桩化（选了白选 + ModelSelector 死桩重试 2.5s），入口无意义 */}
 
       {/* ISSUE-026：朗读语速弹框 */}
       {showRate && (

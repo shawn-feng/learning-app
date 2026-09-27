@@ -48,7 +48,7 @@ export default function Settings() {
   const [programmingModelDraft, setProgrammingModelDraft] = useState("");
   // 语音模型（TTS 音色）已在 VoiceSettings 独立配置；此处仅保留文本模型相关状态
 
-  // 初始值以主进程存储（app-settings.json）为准，与 ModelSelector / 会话建链同源；
+  // 初始值以主进程存储（app-settings.json）为准，与会话建链同源；
   // 若主进程尚无记录但有旧的 localStorage 值，则迁移过去。
   useEffect(() => {
     window.api.piGetDefaultModel().then((r: any) => {

@@ -1665,10 +1665,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  ipcMain.handle("pi:switch_model", async (_e: IpcMainInvokeEvent, childId: string, provider: string, modelId: string) => {
-    // 薄客户端：模型为家长级（服务端 app_settings.defaultModel），不再有「会话级」模型切换。
-    return { success: false, error: "模型已改为家长级（服务端），请在设置页修改默认模型。" };
-  });
+  // ISSUE-156：pi:switch_model 死桩已删——模型是家长级配置（服务端 app_settings.defaultModel），
+  // 会话级切换自 agent 服务端化（ISSUE-081）起即无条件失败，孩子端入口一并移除。
 
   ipcMain.handle("pi:set_api_key", async (_e: IpcMainInvokeEvent, provider: string, apiKey: string) => {
     try {

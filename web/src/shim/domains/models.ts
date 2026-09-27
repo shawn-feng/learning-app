@@ -2,9 +2,9 @@
  * models 域（Phase 2 实现）——移植 electron/lib/ipc-handlers.ts 的 pi:* 模型通道 +
  * electron/lib/server-agent-client.ts / voice/tts-config.ts 的语义：
  *   - piGetModels：GET /models → 直接返回 [{provider,id,name,input}] 数组（ipc 形态，
- *     ModelSelector 用 Array.isArray 消费）；失败返回 {success:false,error}（同 ipc）。
- *   - piSwitchModel：薄客户端已改为家长级模型（服务端 app_settings.defaultModel），
- *     与 ipc pi:switch_model 一致返回引导到设置页的错误。
+ *     Settings 用 Array.isArray 消费）；失败返回 {success:false,error}（同 ipc）。
+ *   - （ISSUE-156：piSwitchModel 已随孩子端模型入口一起删除——模型是家长级配置，
+ *     不再有会话级切换，孩子端无此通道。）
  *   - 默认/编程/视觉模型：GET /models/settings 读 app_settings.<field>；
  *     写走 POST /models/app_settings 合并端点（绝无整键覆盖，ISSUE-097）。
  *     默认模型维度为**家长级**（无 childId 维度，与 Electron 一致）。
@@ -171,15 +171,6 @@ export const modelsDomain = {
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
-  },
-
-  /** piSwitchModel: (childId, provider, modelId) => Promise<{ success: false; error: string }>（薄客户端：模型已收口家长级，对齐 ipc） */
-  piSwitchModel: async (
-    _childId: string,
-    _provider: string,
-    _modelId: string
-  ): Promise<{ success: boolean; error: string }> => {
-    return { success: false, error: "模型已改为家长级（服务端），请在设置页修改默认模型。" };
   },
 
   /** piGetDefaultModel: () => Promise<{ success: boolean; key: string; error?: string }>（app_settings.defaultModel） */
