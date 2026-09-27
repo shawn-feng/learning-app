@@ -1,5 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { translateAgentEvent, parseSseChunk, messageText, bridgeChildAgentEvents, previewArgs, previewToolResult } from "../electron/lib/server-agent-client";
+
+// ISSUE-159：openChildSession 依赖 HTTP —— serverFetch 与登录态 mock 掉（本文件其余用例全是纯函数，不受影响）
+vi.mock("../electron/lib/auth-manager", () => ({ getCachedLicense: () => ({ token: "test-token" }) }));
+vi.mock("../electron/lib/server-client", () => ({
+  serverBase: "http://test",
+  ServerError: class ServerError extends Error {},
+  serverFetch: vi.fn(),
+}));
+import { serverFetch } from "../electron/lib/server-client";
+import { openChildSession } from "../electron/lib/server-agent-client";
 
 describe("parseSseChunk", () => {
   it("解析单条事件（id/event/data）", () => {
@@ -160,5 +170,27 @@ describe("previewArgs / previewToolResult（工具入参/结果预览）", () =>
     expect(previewToolResult({ text: "直接文本" })).toBe("直接文本");
     expect(previewToolResult({ code: 0, msg: "success" })).toBe('{"code":0,"msg":"success"}');
     expect(previewToolResult(null)).toBeUndefined();
+  });
+});
+
+describe("openChildSession（ISSUE-159：materials 不再被丢弃）", () => {
+  it("返回 {messages, materials} 双字段，shape 对齐服务端 /open", async () => {
+    (serverFetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [{ role: "user", content: [{ type: "text", text: "你好" }], timestamp: 1 }],
+      materials: [{ id: "dsp-1", format: "html", title: "资料A", time: "09-27 10:00", filePath: "lunyu/a.html", content: "" }],
+    });
+    const r = await openChildSession("c1");
+    expect(r.messages.length).toBe(1);
+    expect(r.materials).toHaveLength(1);
+    expect(r.materials[0]).toMatchObject({ filePath: "lunyu/a.html", format: "html" });
+  });
+
+  it("服务端未回 materials（旧版兼容）→ 兜底空数组；请求固定主会话", async () => {
+    const fn = serverFetch as unknown as ReturnType<typeof vi.fn>;
+    fn.mockResolvedValue({ messages: [] });
+    const r = await openChildSession("c1");
+    expect(r.messages).toEqual([]);
+    expect(r.materials).toEqual([]);
+    expect(fn.mock.calls[0]![1]).toMatchObject({ method: "POST", body: { session: "main" } });
   });
 });

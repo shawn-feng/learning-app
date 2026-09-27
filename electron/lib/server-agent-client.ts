@@ -562,13 +562,25 @@ export async function resetChildSession(childId: string, token = sessionToken())
  * 跨天自动新建会话后返回裁决后的历史——进会话加载历史一律走本入口（替代 getChildHistory），
  * 保证用户一进来看到的就是当天会话（不会先见旧消息、发消息时突然清空）。
  * getChildHistory（/history）保留给「回顾历史」类只读场景。
+ *
+ * ISSUE-159：服务端 /open 还返回 display_contents 展示登记（ISSUE-113 会话资料回填）——
+ * 此前本函数只回 messages、把 materials 丢掉，桌面端 pi:start_child 的 open.materials 恒为
+ * undefined（左侧资料清空的同病）；现改返回 {messages, materials} 双字段（shape 对齐服务端）。
  */
-export async function openChildSession(childId: string, session?: string, token = sessionToken()): Promise<HistoryMessage[]> {
-  const r = await serverFetch<{ messages: Array<{ role: string; content: unknown[]; timestamp?: number }> }>(
-    `/agent/${encodeURIComponent(childId)}/open`,
-    { method: "POST", token, body: { session: session ?? "main" } }
-  );
-  return mapHistoryMessages(r.messages ?? []);
+export interface OpenChildSession {
+  messages: HistoryMessage[];
+  materials: Array<{ id: string; format: "html"; title: string; time: string; filePath: string; content: string }>;
+}
+
+export async function openChildSession(childId: string, session?: string, token = sessionToken()): Promise<OpenChildSession> {
+  const r = await serverFetch<{
+    messages: Array<{ role: string; content: unknown[]; timestamp?: number }>;
+    materials?: OpenChildSession["materials"];
+  }>(`/agent/${encodeURIComponent(childId)}/open`, { method: "POST", token, body: { session: session ?? "main" } });
+  return {
+    messages: mapHistoryMessages(r.messages ?? []),
+    materials: Array.isArray(r.materials) ? r.materials : [],
+  };
 }
 
 /**

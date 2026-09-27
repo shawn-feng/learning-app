@@ -141,13 +141,21 @@ async function abortParentAgent(kind: ParentKind = "parent"): Promise<void> {
   await http("/parent-agent/abort", { method: "POST", body: { kind }, timeoutMs: 30000 });
 }
 
-/** 打开孩子会话（服务端按落盘会话最后一条消息日期裁决跨天自动新建，返回裁决后的当天历史）。 */
-async function openChildSession(childId: string): Promise<HistoryMessage[]> {
-  const r = await http<{ messages: Array<{ role: string; content: unknown[]; timestamp?: number | string }> }>(
-    `/agent/${encodeURIComponent(childId)}/open`,
-    { method: "POST", body: {} }
-  );
-  return mapHistoryMessages(r.messages ?? []);
+/** 打开孩子会话（服务端按落盘会话最后一条消息日期裁决跨天自动新建，返回裁决后的当天历史）。
+ *  ISSUE-159：服务端 /open 同时返回 display_contents 展示登记（ISSUE-113 会话资料回填）——
+ *  此前本函数只回 history、把 materials 丢掉，Web 端重进资料恒空；现返回 {history, materials}。 */
+async function openChildSession(childId: string): Promise<{
+  history: HistoryMessage[];
+  materials: Array<{ id: string; format: "html"; title: string; time: string; filePath: string; content: string }>;
+}> {
+  const r = await http<{
+    messages: Array<{ role: string; content: unknown[]; timestamp?: number | string }>;
+    materials?: Array<{ id: string; format: "html"; title: string; time: string; filePath: string; content: string }>;
+  }>(`/agent/${encodeURIComponent(childId)}/open`, { method: "POST", body: {} });
+  return {
+    history: mapHistoryMessages(r.messages ?? []),
+    materials: Array.isArray(r.materials) ? r.materials : [],
+  };
 }
 
 /** 重置孩子会话（服务端 newSession；会话收敛后固定主会话）。 */
@@ -441,18 +449,18 @@ export const agentsDomain = {
 
   // ---- pi actions（renderer -> main） ----
 
-  /** piStartChild: (childId: string) => Promise<{success, history, materials, materialsLimit}> —— 建流 + POST /open 跨天裁决回填当天历史（会话收敛后固定主会话） */
+  /** piStartChild: (childId: string) => Promise<{success, history, materials, materialsLimit}> —— 建流 + POST /open 跨天裁决回填当天历史与展示登记资料（会话收敛后固定主会话） */
   piStartChild: async (childId: string) => {
     try {
       // 薄客户端：建立服务端 agent 事件流（SSE → pi:* 通道），会话由服务端持久管理
       ensureChildStream(childId);
-      // 会话历史回填（ISSUE-100 F1 冷路径：走 /open，服务端跨天自动新建裁决后返回当天历史）
-      const history = await openChildSession(childId).catch(
-        () => [] as HistoryMessage[]
+      // 历史 + 资料一并回填（ISSUE-100 F1 历史冷路径 + ISSUE-113 展示登记回填；
+      // ISSUE-159：此前 shim 把 materials 硬编码 []，Web 端重进资料恒空）
+      const open = await openChildSession(childId).catch(
+        () => ({ history: [] as HistoryMessage[], materials: [] })
       );
       // ISSUE-041 云端收件箱（handleCloudInbox）是 Electron 主进程本地投递层，Web 无此层，跳过（差异声明见文件头）
-      // 历史与资料由服务端会话/display_content 推送驱动；materials 返回空（与 ipc 一致）
-      return { success: true, history, materials: [], materialsLimit: await fetchMaterialsLimit() };
+      return { success: true, history: open.history, materials: open.materials, materialsLimit: await fetchMaterialsLimit() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
