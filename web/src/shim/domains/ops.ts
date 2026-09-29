@@ -29,10 +29,12 @@ export const opsDomain = {
     }
   },
 
-  /** mistakesList: ({childId,status?,kind?,limit?}) => Promise<{success, mistakes?}> */
+  /** mistakesList: ({childId,status?,kind?,limit?}) => Promise<{success, data?: {mistakes}}>
+   *  ⚠️ 返回形态必须对齐 electron IPC（ipc-handlers 包 data）：组件读 r.data?.mistakes——
+   *  曾写成扁平 {success, mistakes}，web 端错题本永远渲染空列表（ISSUE-114 回归，2026-09-29）。 */
   mistakesList: async (
     payload: { childId: string; status?: string; kind?: string; limit?: number }
-  ): Promise<{ success: boolean; mistakes?: unknown[]; error?: string }> => {
+  ): Promise<{ success: boolean; data?: { mistakes?: unknown[] }; error?: string }> => {
     try {
       if (!requireToken()) return { success: false, error: "未登录" };
       const qs = new URLSearchParams();
@@ -42,39 +44,39 @@ export const opsDomain = {
       const data = await http<{ mistakes?: unknown[] }>(
         `/kb/${encodeURIComponent(payload.childId)}/mistakes?${qs.toString()}`
       );
-      return { success: true, mistakes: data?.mistakes ?? [] };
+      return { success: true, data: { mistakes: data?.mistakes ?? [] } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   },
 
-  /** mistakeReport: ({childId,kind,content,...}) => Promise<{success}>（上报生字词/错题/薄弱点） */
+  /** mistakeReport: ({childId,kind,content,...}) => Promise<{success, data?: {ok}}>（上报生字词/错题/薄弱点；形态对齐 electron IPC） */
   mistakeReport: async (
     payload: { childId: string; kind: "unknown_word" | "wrong_question" | "weak_point"; content: string; detail?: string; source?: string; course?: string }
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; data?: { ok: boolean }; error?: string }> => {
     try {
       if (!requireToken()) return { success: false, error: "未登录" };
       await http(`/kb/${encodeURIComponent(payload.childId)}/mistakes`, {
         method: "POST",
         body: payload,
       });
-      return { success: true };
+      return { success: true, data: { ok: true } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   },
 
-  /** mistakeAction: ({childId,id,action}) => Promise<{success}>（mastered/dismiss/reopen） */
+  /** mistakeAction: ({childId,id,action}) => Promise<{success, data?: {ok}}>（mastered/dismiss/reopen；形态对齐 electron IPC） */
   mistakeAction: async (
     payload: { childId: string; id: string; action: "mastered" | "dismiss" | "reopen" }
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; data?: { ok: boolean }; error?: string }> => {
     try {
       if (!requireToken()) return { success: false, error: "未登录" };
       await http(`/kb/${encodeURIComponent(payload.childId)}/mistakes/action`, {
         method: "POST",
         body: { id: payload.id, action: payload.action },
       });
-      return { success: true };
+      return { success: true, data: { ok: true } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -177,6 +179,43 @@ export const opsDomain = {
     try {
       if (!requireToken()) return { success: false, error: "未登录" };
       const data = await http<unknown>("/wechat/bindings", { method: "POST", body: { action: "remove", wechatId } });
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  // —— 开放 API 密钥（2026-09-28，设置 → 开放接口）——
+
+  /** openApiKeyGet: () => Promise<{success, data?: {key: {...prefix/用量} | null}}> */
+  openApiKeyGet: async (): Promise<{ success: boolean; data?: { key: unknown }; error?: string }> => {
+    try {
+      if (!requireToken()) return { success: false, error: "未登录" };
+      const data = await http<{ key: unknown }>("/apikeys");
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** openApiKeyCreate: ({child_id?, label?}) => Promise<{success, data?: {key, secret}}>（secret 仅此一次） */
+  openApiKeyCreate: async (
+    payload: { child_id?: string; label?: string }
+  ): Promise<{ success: boolean; data?: { key: unknown; secret: string }; error?: string }> => {
+    try {
+      if (!requireToken()) return { success: false, error: "未登录" };
+      const data = await http<{ key: unknown; secret: string }>("/apikeys", { method: "POST", body: payload ?? {} });
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** openApiKeyRevoke: () => Promise<{success, data?: {ok}}> */
+  openApiKeyRevoke: async (): Promise<{ success: boolean; data?: { ok: boolean }; error?: string }> => {
+    try {
+      if (!requireToken()) return { success: false, error: "未登录" };
+      const data = await http<{ ok: boolean }>("/apikeys", { method: "DELETE" });
       return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };
