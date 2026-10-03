@@ -39,6 +39,11 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   // ISSUE-108：报表区内容（服务端 SSE display_content 推送 / 挂载时读回最近一次）
   const [report, setReport] = useState<ParentReport | null>(null);
   const [reportUnread, setReportUnread] = useState(false);
+  // ISSUE-167：服务端连接状态（断连降级横幅——失联时列表静默回退本机数据，必须可见化）
+  const [conn, setConn] = useState<any>(null);
+  const connDegraded = conn?.connected === false;
+  const connRef = useRef(false);
+  connRef.current = connDegraded;
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
   // ISSUE-158：侧栏折叠态（折叠后只显示 emoji icon、悬浮 title 显示名称），localStorage 持久化
@@ -90,6 +95,46 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   useEffect(() => {
     refresh();
   }, []);
+
+  // ISSUE-167：连接状态——挂载读快照 + 订阅断连恢复推送（Electron）+ 降级期间 30s 轮询兜底
+  // （推送监听可能被 piRemoveListeners 清掉；web 端无推送，靠轮询读 shim 状态探活）。
+  // 恢复时自动重拉孩子列表并撤横幅——把「退出家长重登」这个手工恢复动作自动化。
+  useEffect(() => {
+    let mounted = true;
+    window.api.serverConnectionState?.().then((s: any) => {
+      if (mounted && s) setConn(s);
+    }).catch(() => {});
+    window.api.onServerConnectionChanged?.((s: any) => {
+      if (!mounted || !s) return;
+      const recovered = connRef.current && s.connected !== false;
+      setConn(s);
+      if (recovered) void refresh();
+    });
+    const poll = setInterval(async () => {
+      if (!connRef.current) return;
+      try {
+        const s = await window.api.serverConnectionState?.();
+        if (mounted && s) setConn(s);
+      } catch {
+        /* ignore */
+      }
+    }, 30_000);
+    return () => {
+      mounted = false;
+      clearInterval(poll);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function retryConnection() {
+    try {
+      const s = await window.api.serverRetryConnection?.();
+      if (s) setConn(s);
+      if (s?.connected !== false) await refresh();
+    } catch {
+      /* ignore */
+    }
+  }
 
   // ISSUE-108：报表区——挂载读回最近一次；家长会话推送新报表（display_content, source=report）时更新并自动切到报表页
   useEffect(() => {
@@ -264,6 +309,45 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
         </div>
 
         <div className="dashboard-main">
+          {/* ISSUE-167：断连降级常驻横幅——失联时列表会静默回退本机数据，必须让家长看见环境切换 */}
+          {connDegraded && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                flexWrap: "wrap",
+                marginBottom: 12,
+                padding: "10px 14px",
+                border: "1px solid #f0d0a0",
+                background: "#fff8ec",
+                borderRadius: 10,
+              }}
+            >
+              <span style={{ fontSize: 13, color: "#8a5a00", flex: 1, minWidth: 260, lineHeight: 1.6 }}>
+                ⚠ 已断开{conn.url ? `与服务端（${conn.url}）` : "与服务端"}的连接，当前显示的是<strong>本机数据</strong>（仅离线可用）。
+                {typeof conn.lastServerChildCount === "number" && (
+                  <> 服务器上次同步 {conn.lastServerChildCount} 个孩子，本机当前 {children.length} 个——请勿在本地孩子里产生新记录。</>
+                )}{" "}
+                断连期间会自动重连，恢复后列表自动刷新。
+              </span>
+              <button
+                onClick={retryConnection}
+                style={{
+                  padding: "6px 16px",
+                  background: "#fff",
+                  color: "#8a5a00",
+                  border: "1px solid #e0b96a",
+                  borderRadius: 8,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                重试连接
+              </button>
+            </div>
+          )}
           {view === "children" && !detailChild && (
             <div>
               {childrenLoading ? (
@@ -350,8 +434,10 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           )}
 
-          {/* ISSUE-007：孩子详情页（tabs 组织，替代原弹窗） */}
-          {detailChild && (
+          {/* ISSUE-007：孩子详情页（tabs 组织，替代原弹窗）。
+              ISSUE-169：详情是「孩子管理」视图的子页——只在 view==="children" 时渲染；
+              侧栏切到其它菜单（或报表推送自动切视图）时立即离开详情，不再被详情盖住。 */}
+          {view === "children" && detailChild && (
             <ChildDetailPage
               child={detailChild}
               onBack={() => setDetailChild(null)}
@@ -362,11 +448,11 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             />
           )}
 
-          {view === "courses" && !detailChild && <CourseManager />}
-          {view === "bank" && !detailChild && <QuestionBankPanel />}
+          {view === "courses" && <CourseManager />}
+          {view === "bank" && <QuestionBankPanel />}
 
           {/* ISSUE-131 P1：文件区网盘（家长根 = workspaces/<pid> 整棵虚拟树 + materials/uploads） */}
-          {view === "files" && !detailChild && (
+          {view === "files" && (
             <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1, maxWidth: 980 }}>
               <FilesPanel />
             </div>
@@ -374,14 +460,14 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
 
           {/* ISSUE-130：学习计划/学习考核/积分 三个 view 已删除，入口并入孩子详情（ChildDetailPage） */}
 
-          {view === "scheduler" && !detailChild && <SchedulerTasksPanel children={children} />}
+          {view === "scheduler" && <SchedulerTasksPanel children={children} />}
 
-          {view === "tokens" && !detailChild && <TokenStatsPanel childrenList={children} />}
+          {view === "tokens" && <TokenStatsPanel childrenList={children} />}
 
-          {view === "settings" && !detailChild && <Settings />}
+          {view === "settings" && <Settings />}
 
           {/* ISSUE-108：报表区——家长 agent 经 parent_display_report 推送的 markdown 汇总 */}
-          {view === "report" && !detailChild && (
+          {view === "report" && (
             <div>
               {report ? (
                 <div

@@ -4,6 +4,7 @@
  */
 import fs from "fs";
 import { getServerUrl } from "./config";
+import { noteServerReachable, noteServerUnreachable } from "./connection-state";
 
 export class ServerError extends Error {
   constructor(
@@ -39,7 +40,7 @@ export function serverBase(): string {
 }
 
 export interface ServerFetchOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   /** 服务端 session token（登录后由服务端签发） */
   token?: string;
@@ -68,8 +69,11 @@ export async function serverFetch<T = unknown>(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15000),
     });
   } catch (e) {
+    // ISSUE-167：网络不可达/超时 = 断连记账（拿到任意 HTTP 响应=可达，在下方记账）
+    noteServerUnreachable();
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 15000));
   }
+  noteServerReachable();
 
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;
@@ -115,8 +119,10 @@ export async function uploadFileToServer(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
+    noteServerUnreachable();
     throw new ServerError(0, describeFetchError(e, timeoutMs));
   }
+  noteServerReachable();
   if (!res.ok) {
     let detail = `附件上传失败 (HTTP ${res.status})`;
     try {
@@ -152,8 +158,10 @@ export async function serverFetchBinary(path: string, opts: ServerFetchOptions =
       signal: AbortSignal.timeout(opts.timeoutMs ?? 60000),
     });
   } catch (e) {
+    noteServerUnreachable();
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 60000));
   }
+  noteServerReachable();
 
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;
@@ -191,8 +199,10 @@ export async function serverUploadFile(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 120000),
     });
   } catch (e) {
+    noteServerUnreachable();
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 120000));
   }
+  noteServerReachable();
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;
     try {
@@ -238,8 +248,10 @@ export async function serverUploadWithFields(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 120000),
     });
   } catch (e) {
+    noteServerUnreachable();
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 120000));
   }
+  noteServerReachable();
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;
     try {

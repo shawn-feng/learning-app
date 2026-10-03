@@ -20,7 +20,13 @@
  *   `import { startMiscLoops } from "./domains/misc"` 并在 installWebApi() 末尾调用。
  *   未接线时 schedulerConfigGet / childSelect / childAuth 会惰性 ensure，功能不缺失。
  */
-import { getServerBase, setServerBase, http } from "../core/server-fetch";
+import {
+  getServerBase,
+  setServerBase,
+  http,
+  getWebConnectionSnapshot,
+  noteServerReachableWeb,
+} from "../core/server-fetch";
 import { eventBus } from "../core/event-bus";
 import { startConfigSyncLoop } from "./config";
 import { ensureReminderLoop } from "./scheduler";
@@ -54,6 +60,43 @@ export const miscDomain = {
   serverSetConfig: async (url: string): Promise<{ url: string }> => {
     const saved = setServerBase(url);
     return { url: saved };
+  },
+
+  // ---- ISSUE-167：失联降级横幅（连接状态 / 重试探活） ----
+  // 状态记账在 core/server-fetch（任意 HTTP 响应=可达，网络抛错=断连）。
+  // 与 Electron 的差异：无主进程探活监视器——降级期间由 Dashboard 30s 轮询本方法，
+  // 处于断连态时顺手探一次 /health，恢复即翻回 connected（横幅自愈）。
+
+  /** serverConnectionState: () => Promise<{configured, url, connected, lastErrorAt?, recoveredAt?, lastServerChildCount?}> */
+  serverConnectionState: async () => {
+    const snap = getWebConnectionSnapshot();
+    if (snap.configured && !snap.connected) {
+      try {
+        await http("/health", { method: "GET", timeoutMs: 5000 });
+        noteServerReachableWeb();
+      } catch {
+        /* 仍不可达：保持断连态 */
+      }
+    }
+    // lastServerChildCount：Electron 由 listChildren 记账；Web 孩子列表同走服务端，
+    // 降级时的本机列表来自 localStorage，数量差异展示交由页面现有数据即可（不重复记账）。
+    return { ...getWebConnectionSnapshot() };
+  },
+
+  /** serverRetryConnection: () => Promise<快照>（立即探活一次，无论成败返回最新状态） */
+  serverRetryConnection: async () => {
+    try {
+      await http("/health", { method: "GET", timeoutMs: 5000 });
+      noteServerReachableWeb();
+    } catch {
+      /* 不可达：快照 connected=false */
+    }
+    return { ...getWebConnectionSnapshot() };
+  },
+
+  /** onServerConnectionChanged: Web 无主进程推送（Dashboard 轮询兜底），no-op 订阅对齐签名 */
+  onServerConnectionChanged: (_callback: (data: any) => void): void => {
+    void _callback;
   },
 
   // ---- 应用版本（真实现，对齐 ipc app:get_version 返回形态） ----

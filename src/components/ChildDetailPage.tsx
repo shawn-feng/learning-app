@@ -9,6 +9,7 @@ import ChildExamPlans from "./ChildExamPlans";
 import RewardPanel from "./RewardPanel";
 import ChildDailyPanel from "./ChildDailyPanel";
 import ChildMistakeBook from "./ChildMistakeBook";
+import ChildCustomRules from "./ChildCustomRules";
 
 interface Props {
   child: any;
@@ -25,6 +26,7 @@ const TABS = [
   { key: "topics", label: "📚 学习主题" },
   { key: "exam", label: "🎯 考核计划" },
   { key: "reward", label: "✨ 积分" },
+  { key: "rules", label: "📝 自定义规范" },
   { key: "account", label: "🔑 账号密码" },
   { key: "review", label: "💬 对话回顾" },
 ] as const;
@@ -165,6 +167,13 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
       {tab === "reward" && (
         <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
           <RewardPanel children={[child]} />
+        </div>
+      )}
+
+      {/* ISSUE-136 #7：家长自定义层（追加进孩子 agent system prompt，建会话时读一次） */}
+      {tab === "rules" && (
+        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column" }}>
+          <ChildCustomRules childId={child.childId} />
         </div>
       )}
 

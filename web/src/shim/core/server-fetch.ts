@@ -171,6 +171,47 @@ export function encodeMaterialId(relPosix: string): string {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// ---------------------------------------------------------------------------
+// 连接状态记账（ISSUE-167：失联降级横幅）。语义与 electron/lib/connection-state.ts 一致：
+// 任意 HTTP 响应 = 服务端可达；fetch 抛错（网络不可达/超时）= 断连；未配置服务端地址
+// （同源模式 base 为空串）不算断连。misc 域的 serverConnectionState / 重试探活消费此处状态。
+// ---------------------------------------------------------------------------
+let connConnected = true;
+let connLastErrorAt: string | null = null;
+let connRecoveredAt: string | null = null;
+
+export function noteServerReachableWeb(): void {
+  if (!connConnected) {
+    connConnected = true;
+    connRecoveredAt = new Date().toISOString();
+  }
+}
+
+export function noteServerUnreachableWeb(): void {
+  // getServerBase 为空（同源模式）也照记：同源服务端挂了一样是断连，横幅如实展示
+  connConnected = false;
+  connLastErrorAt = new Date().toISOString();
+}
+
+export interface WebConnectionSnapshot {
+  configured: boolean;
+  url: string;
+  connected: boolean;
+  lastErrorAt: string | null;
+  recoveredAt: string | null;
+}
+
+export function getWebConnectionSnapshot(): WebConnectionSnapshot {
+  const url = getServerBase();
+  return {
+    configured: !!url,
+    url,
+    connected: connConnected,
+    lastErrorAt: connLastErrorAt,
+    recoveredAt: connRecoveredAt,
+  };
+}
+
 /** 非 2xx → WebServerError（透传服务端 {error} 字段）。 */
 async function raiseHttpError(res: Response): Promise<never> {
   let detail = `服务端错误 (HTTP ${res.status})`;
@@ -211,11 +252,13 @@ async function request(path: string, opts: HttpOptions, defaultTimeoutMs: number
       signal: controller.signal,
     });
   } catch (e) {
+    noteServerUnreachableWeb();
     throw new WebServerError(0, describeFetchError(e, timeoutMs));
   } finally {
     clearTimeout(timer);
   }
 
+  noteServerReachableWeb();
   if (!res.ok) await raiseHttpError(res);
   return res;
 }

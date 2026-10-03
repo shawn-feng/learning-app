@@ -737,14 +737,18 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     if ((needsInline && !cleanHtml) || (!needsInline && !mediaUrl)) {
       return (
         <div className="content-panel" style={materialFontStyle}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, marginBottom: 8 }}>
-            <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
-            {!bare && selected.title && (
-              <h2 className="material-title" style={{ margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {selected.title}
-              </h2>
-            )}
-          </div>
+          {/* bare 模式（进度页课程详情内嵌）：整个头部行不渲染——返回箭头是死按钮（onBack 为 no-op），
+              去掉后资料正文上移占满（ISSUE-170） */}
+          {!bare && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, marginBottom: 8 }}>
+              <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+              {selected.title && (
+                <h2 className="material-title" style={{ margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {selected.title}
+                </h2>
+              )}
+            </div>
+          )}
           <div className="placeholder">
             📄
             <br />
@@ -756,18 +760,22 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     return (
       <div className="content-panel" style={materialFontStyle} onClick={closeLookup}>
         {/* ISSUE-158 续（用户反馈）：详情头部的「收起学习资料」折叠按钮去掉（列表页仍可收起）；
-            标题移到返回键右侧同一行，省一行高度给资料正文 */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, marginBottom: 8 }}>
-          <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
-          {!bare && selected.title && (
-            <h2
-              className="material-title"
-              style={{ margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-            >
-              {selected.title}
-            </h2>
-          )}
-        </div>
+            标题移到返回键右侧同一行，省一行高度给资料正文。
+            ISSUE-170：bare 模式（进度页课程详情内嵌，ISSUE-157）整个头部行不渲染——
+            此前只藏标题、返回箭头仍渲染（且 onBack 为 no-op 纯死按钮），白占一行高度 */}
+        {!bare && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, marginBottom: 8 }}>
+            <IconButton icon={ArrowLeft} title="返回列表" onClick={onBack} className="material-back" />
+            {selected.title && (
+              <h2
+                className="material-title"
+                style={{ margin: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {selected.title}
+              </h2>
+            )}
+          </div>
+        )}
         {kind === "html" ? (
           <HtmlFrame
             // ISSUE-061 根治：服务端共享资料（filePath 可解析为 materials 相对路径）走真实 URL 顶层文档

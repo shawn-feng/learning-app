@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { getChildDir, getChildrenDir, getServerUrl } from "./config";
 import { initChildDirectory } from "./user-init";
 import { serverFetch } from "./server-client";
+import { noteServerChildren, recentlyDegraded } from "./connection-state";
 import { currentSessionToken } from "./client-data";
 
 export interface ChildProfile {
@@ -175,7 +176,10 @@ export async function listChildren(): Promise<ChildProfile[]> {
             //    本地 bcrypt），家长在详情页显式保存/重置密码时经 syncProfileToServer（forcePassword）
             //    正式上云。
             // ② 服务端：PATCH 无 forcePassword 标志时忽略 passwordHash 字段（防任何路径覆盖）。
-            if (!lp.passwordHash) {
+            // ⚠️ ISSUE-167 第三道闸：刚发生过断连（10 分钟内）不做自动上云——降级期间本机残留的
+            //    开发环境孩子/脏详情，不在恢复连接后的第一次列表刷新就同步上去；等下一轮常规刷新
+            //    （或家长显式保存）再走同步。
+            if (!lp.passwordHash && !recentlyDegraded(10 * 60_000)) {
               try {
                 await serverFetch(`/children/${c.id}`, {
                   method: "PATCH",
@@ -212,10 +216,12 @@ export async function listChildren(): Promise<ChildProfile[]> {
           }
           out.push(placeholder);
         }
+        // ISSUE-167：记下服务端真源的孩子数量（断连降级横幅展示「服务器 vs 本机」数量差异用）
+        noteServerChildren(out.length);
         return out;
       }
     } catch {
-      // 服务端不可用/会话失效 → 回退本地扫描
+      // 服务端不可用/会话失效 → 回退本地扫描（断连已由 serverFetch 记账，主页横幅可见化）
     }
   }
   return readLocalProfiles();
