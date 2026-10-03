@@ -563,6 +563,11 @@ export function hasSession(parentId: string, childId: string): boolean {
   return entries.has(keyOf(parentId, childId));
 }
 
+/** 某孩子当前一轮是否在跑（开放 API /open/agent/status 用）：会话未建立 = 不忙。 */
+export function isChildBusy(parentId: string, childId: string): boolean {
+  return entries.get(keyOf(parentId, childId))?.busy === true;
+}
+
 /**
  * 中止该孩子会话当前的一轮（ISSUE-095）：调 SDK 的 session.abort()（中止当前操作并等待 agent idle）。
  * 会话收敛后一个孩子只有一条会话（2026-09-25），不再需要 kind 维度。

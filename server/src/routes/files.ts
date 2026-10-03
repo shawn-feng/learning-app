@@ -75,15 +75,15 @@ export function resolveStoredFileAbs(
   return candidates[0];
 }
 
-/** P2 写入根：按 scope 落盘（家长/孩子各自 uploads 子区）。 */
-function uploadsWriteRoot(dataDir: string, parentId: string, childId: string | null): string {
+/** P2 写入根：按 scope 落盘（家长/孩子各自 uploads 子区）。开放 API 裸流上传共用。 */
+export function uploadsWriteRoot(dataDir: string, parentId: string, childId: string | null): string {
   return childId
     ? path.join(dataDir, "workspaces", parentId, childId, "uploads")
     : path.join(dataDir, "workspaces", parentId, "uploads");
 }
 
-/** 扩展名白名单化（防路径注入），如 ".mp4" / "" */
-function safeExt(originalName: string): string {
+/** 扩展名白名单化（防路径注入），如 ".mp4" / ""。开放 API 裸流上传共用。 */
+export function safeExt(originalName: string): string {
   const ext = path.extname(originalName).toLowerCase();
   return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : "";
 }

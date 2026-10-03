@@ -3,7 +3,7 @@
  *
  * 形态：201 上的 OpenClaw gateway 装微信渠道插件（@tencent-weixin/openclaw-weixin）收发微信，
  * 配套 learning-bridge 插件用 before_agent_reply 钩子把消息 POST 到本路由；本路由
- * 复用现有会话注册表（submitParentPrompt / submitChildPrompt）+ agentStreamHub 聚合最终文本。
+ * 复用现有会话注册表（submitParentPrompt / submitChildPrompt）+ turn-runner 聚合最终文本。
  * OpenClaw 自己的 LLM 不参与——学习服务端的 agent 是唯一大脑。
  *
  * 鉴权：connector 令牌（env WECHAT_CONNECTOR_TOKEN）或仅限本机回环地址（OpenClaw 与 server 同机）。
@@ -12,9 +12,9 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { agentStreamHub } from "../agent/stream-hub.js";
 import { submitParentPrompt } from "../agent/parent-registry.js";
 import { submitChildPrompt } from "../agent/session-registry.js";
+import { runTurn } from "../agent/turn-runner.js";
 import { verifySession } from "../auth/jwt.js";
 import type { ServerConfig } from "../config.js";
 
@@ -29,8 +29,6 @@ function authParent(req: { headers: Record<string, string | string[] | undefined
   if (!token) throw new Error("缺少 session token");
   return verifySession(token, secret).parent_id;
 }
-
-const TURN_TIMEOUT_MS = 240_000;
 
 /** 当前请求是否通过桥接鉴权：令牌匹配，或来自本机回环。 */
 function authConnector(req: { ip?: string; headers: Record<string, string | string[] | undefined> }): boolean {
@@ -47,87 +45,7 @@ function nowStr(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-/** 一轮的过程快照（供渠道做"思考中/工具调用/作答中"的实时展示） */
-export interface TurnProgress {
-  thinking: string;
-  tools: Array<{ name: string; done: boolean; error?: boolean }>;
-  text: string;
-}
-
-/** 提交一轮并聚合最终文本：先订阅再提交，text_delta 累积，turn_end/error 收口。
- *  onProgress 给定时，每个 thinking/text/tool 事件都会带最新快照回调一次（节流由调用方负责）。
- *  onTimeout 给定时，超时先回调它（渠道用 session.abort() 解除会话卡死），再收口返回部分回复。 */
-export async function runTurn(
-  submit: () => Promise<{ ok: boolean; error?: string }>,
-  hubKey: string,
-  timeoutMs = TURN_TIMEOUT_MS,
-  onProgress?: (p: TurnProgress) => void,
-  onTimeout?: () => void | Promise<void>
-): Promise<{ ok: boolean; reply: string; error?: string }> {
-  let text = "";
-  let thinking = "";
-  const tools = new Map<string, { name: string; done: boolean; error?: boolean }>();
-  let finished: (() => void) | null = null;
-  const done = new Promise<void>((resolve) => {
-    finished = resolve;
-  });
-  let errorMessage: string | null = null;
-  const snapshot = (): TurnProgress => ({
-    thinking,
-    tools: [...tools.values()].map((t) => ({ ...t })),
-    text,
-  });
-  const unsubscribe = agentStreamHub.subscribe(hubKey, (e) => {
-    if (e.type === "text_delta") {
-      text += String((e.data as any)?.delta ?? "");
-      onProgress?.(snapshot());
-    } else if (e.type === "thinking_delta") {
-      thinking += String((e.data as any)?.delta ?? "");
-      onProgress?.(snapshot());
-    } else if (e.type === "tool_start") {
-      const callId = String((e.data as any)?.toolCallId ?? "");
-      tools.set(callId, { name: String((e.data as any)?.toolName ?? "工具"), done: false });
-      onProgress?.(snapshot());
-    } else if (e.type === "tool_end") {
-      const callId = String((e.data as any)?.toolCallId ?? "");
-      const t = tools.get(callId);
-      if (t) {
-        t.done = true;
-        t.error = (e.data as any)?.isError === true;
-      }
-      onProgress?.(snapshot());
-    } else if (e.type === "error") {
-      errorMessage = errorMessage ?? String((e.data as any)?.message ?? "agent 出错");
-      finished?.();
-    } else if (e.type === "turn_end") {
-      finished?.();
-    }
-  });
-  const timer = setTimeout(() => {
-    errorMessage = errorMessage ?? `等待超时（${Math.round(timeoutMs / 1000)}s）`;
-    void (async () => {
-      try {
-        await onTimeout?.();
-      } catch (err) {
-        console.error("[wechat] 超时中止会话失败:", (err as Error)?.message || err);
-      }
-      finished?.();
-    })();
-  }, timeoutMs);
-  try {
-    const sub = await submit();
-    if (!sub.ok) {
-      return { ok: false, reply: "", error: sub.error ?? "提交失败" };
-    }
-    await done;
-  } finally {
-    clearTimeout(timer);
-    unsubscribe();
-  }
-  if (errorMessage && !text) return { ok: false, reply: "", error: errorMessage };
-  const reply = text.trim() || "（这轮没有文本回复）";
-  return { ok: true, reply: errorMessage ? `${reply}\n\n（${errorMessage}）` : reply };
-}
+/** 一轮聚合（runTurn）已提为公共模块 agent/turn-runner.ts —— 微信桥/飞书/开放 API 共用 */
 
 export function registerWechatRoutes(app: FastifyInstance, deps: Deps): void {
   // —— 绑定管理（家长 JWT；绑定 = 微信号 → 家长本人 / 某个孩子）——

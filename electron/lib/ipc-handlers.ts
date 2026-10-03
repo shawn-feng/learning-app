@@ -10,9 +10,12 @@ import { fetchMaterialContent } from "./media-protocol";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { getMaskedConfig, applyVoiceConfigPatch, transcribeAudio, synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
+import { synthesize, TTS_VOICES, getMaskedTtsConfig, applyTtsConfigPatch } from "./voice";
+import { importLegacyVoiceConfigToServer } from "./voice/voice-config";
 import { getLearningSummary, getTopicProgress, getCourseDailySummary, fetchProgressRemote } from "./learning-summary";
 import { dbQuery, currentSessionToken } from "./client-data";
+import { getConnectionSnapshot, onConnectionChange } from "./connection-state";
+import { startConnectionMonitor, retryConnectionNow } from "./connection-monitor";
 import { serverFetch, uploadFileToServer, serverUploadWithFields, serverBase } from "./server-client";
 import { formatLocalDate } from "./dates";
 import { listChildren } from "./child-auth";
@@ -42,6 +45,7 @@ import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
 import { listWechatBindRequests, decideWechatBindRequest, listWechatBindings, addWechatBinding, removeWechatBinding, getFeishuConfig, saveFeishuConfig } from "./wechat";
+import { getOpenApiKey, createOpenApiKey, revokeOpenApiKey } from "./openapi";
 import { listNamespaces, decideNamespace, setNamespaceStatus } from "./namespaces";
 import { mistakeReport, mistakesList, mistakeAction } from "./mistakes";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
@@ -391,6 +395,39 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     return await listChildren();
   });
 
+  // ISSUE-167：失联降级可见化——主页横幅读状态 / 手动重试 / 断连恢复推送。
+  // 状态记账在 server-client.ts fetch 家族（任意 HTTP 响应=可达，网络抛错=断连）。
+  ipcMain.handle("server:connectionState", () => getConnectionSnapshot());
+  ipcMain.handle("server:retryConnection", async () => retryConnectionNow());
+  onConnectionChange((snap) => {
+    const w = getMainWindow();
+    if (w && !w.isDestroyed()) w.webContents.send("server:connection-changed", snap);
+  });
+  startConnectionMonitor();
+
+  // —— 开放 API 密钥（2026-09-28）：设置 → 开放接口 ——
+  ipcMain.handle("openapi:keyGet", async () => {
+    try {
+      return { success: true, data: await getOpenApiKey() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("openapi:keyCreate", async (_e, payload: { child_id?: string; label?: string }) => {
+    try {
+      return { success: true, data: await createOpenApiKey(payload ?? {}) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle("openapi:keyRevoke", async () => {
+    try {
+      return { success: true, data: await revokeOpenApiKey() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle("child:select", async (_e, childId: string) => {
     const profile = getProfile(childId);
     if (!profile) return { success: false, error: "孩子不存在" };
@@ -459,9 +496,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
 
   ipcMain.handle("child:getAgentsMd", async (_e, childId: string) => {
     // ISSUE-033 + SPLIT M8-B：AGENTS 用户版本唯一真源在服务端（本地缓存为离线降级）。
-    // 编辑器实时读：先远程取，无用户版本返回代码默认（buildAgentsMd）。
+    // ISSUE-136 #7（2026-09-28）：child 语义收敛为「家长自定义层」（追加在 system prompt 末尾），
+    // 无用户版本返回空底稿——不再回代码默认稿（getDefaultPrompt 已随旧全文编辑器下线，此处原为悬空引用）。
     const { content: userVer, status } = await fetchAgentPromptRemote("child", childId);
-    return { content: userVer !== null ? userVer : getDefaultPrompt("child", childId), network: status === "network" };
+    return { content: userVer ?? "", network: status === "network" };
   });
 
   ipcMain.handle("child:saveAgentsMd", async (_e, childId: string, content: string) => {
@@ -482,9 +520,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     // SPLIT M8-B：编辑器实时读服务端（远程取 + 缓存兜底）
     const { content: userVer, status } = await fetchAgentPromptRemote(scope, ref);
     if (userVer !== null) return { content: userVer, customized: true, network: status === "network" };
-    // 无用户版本：区分 scope——家长默认提示词不可整体改，编辑器显示空、只填「追加补充」
-    // （buildParentPrompt 会把它追加在默认后）；孩子 AGENTS 可整体定制，返回代码默认当编辑底稿。
-    return { content: scope === "parent" ? "" : getDefaultPrompt(scope, ref), customized: false, network: status === "network" };
+    // 无用户版本一律返回空底稿：家长侧本就是「只填追加补充」；孩子侧自 ISSUE-136 #7 起语义收敛为
+    // 「家长自定义层」（追加在 system prompt 末尾，server/src/agent/prompt.ts），同样从空开始——
+    // 不再回代码默认稿（getDefaultPrompt 已随旧全文编辑器下线，此处原为悬空引用，首调即 ReferenceError）。
+    return { content: "", customized: false, network: status === "network" };
   });
 
   ipcMain.handle("agents:save", async (_e, scope: string, ref: string, content: string) => {
@@ -2136,26 +2175,57 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     return { success: true, parentId: getCurrentParentId() };
   });
 
-  // Voice (STT) config + transcribe
+  // Voice (STT) — ISSUE-165：配置与转录上收服务端（家长 JWT，多设备以服务端为唯一真源）。
+  // config:get：服务端无落库配置且本机存在旧 voice-config.json 时做一次性导入后退役本机文件；
+  // transcribe：本机 webm → 16k wav（ffmpeg）→ 上送 /asr/transcribe（凭证与回退顺序都在服务端）。
+  // 服务端不可达时语音输入不可用（云端 ASR 本就要网），报错透传服务端语义化提示。
   ipcMain.handle("voice:config:get", async () => {
-    return { success: true, config: getMaskedConfig() };
+    try {
+      const token = currentSessionToken();
+      const data = await serverFetch<{ config: unknown; stored: boolean }>("/asr/config", {
+        method: "GET",
+        token,
+        timeoutMs: 15000,
+      });
+      if (!data.stored) {
+        const imported = await importLegacyVoiceConfigToServer(token);
+        if (imported) return { success: true, config: imported };
+      }
+      return { success: true, config: data.config };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   ipcMain.handle("voice:config:set", async (_e, patch: any) => {
     try {
-      applyVoiceConfigPatch(patch);
-      return { success: true, config: getMaskedConfig() };
+      const data = await serverFetch<{ config: unknown }>("/asr/config", {
+        method: "PUT",
+        body: patch,
+        token: currentSessionToken(),
+        timeoutMs: 15000,
+      });
+      return { success: true, config: data.config };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
 
   ipcMain.handle("voice:transcribe", async (_e, audio: ArrayBuffer, onlyProvider?: string) => {
+    let buf: Buffer | null = null;
     try {
-      const buf = Buffer.from(audio);
-      const text = await transcribeAudio(buf, onlyProvider);
+      buf = Buffer.from(audio);
+      const { webmToWav16k } = await import("./voice/audio");
+      const wav = await webmToWav16k(buf);
+      const data = await serverUploadWithFields(
+        "/asr/transcribe",
+        { name: "audio.wav", mime: "audio/wav", data: wav },
+        onlyProvider ? { provider: onlyProvider } : {},
+        currentSessionToken(),
+        { timeoutMs: 60000 }
+      ) as { text?: string };
       // 返回原始录音（base64，webm/opus），供前端播放
-      return { success: true, text, audio: buf.toString("base64") };
+      return { success: true, text: String(data.text ?? ""), audio: buf.toString("base64") };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

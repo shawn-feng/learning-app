@@ -1,6 +1,6 @@
 {
   "name": "learning-server",
-  "version": "0.5.17",
+  "version": "0.5.19",
   "description": "学习伙伴服务端：数据唯一真源 + 认证代理 + materials/大文件（SPLIT 架构）",
   "private": true,
   "type": "module",
@@ -13,6 +13,7 @@
     "probe:registry-drift": "tsx probe-registry-drift.ts"
   },
   "dependencies": {
+    "@andresaya/edge-tts": "^1.8.0",
     "@earendil-works/pi-coding-agent": "0.84.1",
     "@fastify/multipart": "^10.1.1",
     "@fastify/static": "^10.1.3",

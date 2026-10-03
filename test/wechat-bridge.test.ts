@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { agentStreamHub } from "../server/src/agent/stream-hub";
-import { runTurn } from "../server/src/routes/wechat";
+// runTurn 已提为公共模块（微信桥/飞书/开放 API 共用）
+import { runTurn } from "../server/src/agent/turn-runner";
 
 describe("wechat runTurn", () => {
   it("聚合 text_delta 并在 turn_end 收口", async () => {

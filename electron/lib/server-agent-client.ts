@@ -90,6 +90,11 @@ export function previewToolResult(result: unknown): string | undefined {
  */
 export function translateAgentEvent(e: AgentEvent, childId: string): RendererEvent | null {
   switch (e.type) {
+    case "user_message":
+      // 跨端轮次（语音设备/微信桥等非本端发起）：渲染层据此补建 user 气泡 + working 气泡，
+      // 使外来轮次的思考/工具过程与本地轮次同管线渲染。text 为完整 prompt（含渠道指令前缀），
+      // 显示层负责剥离（Learn.tsx handleUserMessage）。
+      return { channel: "pi:user_message", payload: { childId, text: String(e.data?.text ?? "") } };
     case "text_delta":
       return { channel: "pi:streaming", payload: { childId, delta: String(e.data?.delta ?? "") } };
     case "thinking_delta":

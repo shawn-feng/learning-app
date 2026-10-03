@@ -337,6 +337,11 @@ export const agentsDomain = {
   onPiStreaming: (callback: (data: { childId: string; delta?: string; thinkingDelta?: string }) => void) =>
     subscribe("pi:streaming", callback),
 
+  /** onPiUserMessage: (callback: (data: { childId, text }) => void) => void
+   * 跨端轮次开始（语音设备/微信桥等非本端发起的消息）：渲染层据此补建 user + working 气泡 */
+  onPiUserMessage: (callback: (data: { childId: string; text: string }) => void) =>
+    subscribe("pi:user_message", callback),
+
   /** onPiThinking: (callback: (data: { childId: string; delta: string; complete?: boolean }) => void) => void（message_end 思考补发带 complete=true） */
   onPiThinking: (callback: (data: { childId: string; delta: string }) => void) => subscribe("pi:thinking", callback),
 
@@ -680,7 +685,7 @@ export const agentsDomain = {
 
   // ---- AGENTS.md 编辑（服务端 agents 库 db RPC；ipc 侧经 agent-prompts.ts 同一 op） ----
 
-  /** childGetAgentsMd: (childId: string) => Promise<{content, network}> —— 无用户版本时 ipc 回退主进程代码默认稿（getDefaultPrompt），Web 无法重建默认稿返回空串（渲染层当前未消费；遗留差异） */
+  /** childGetAgentsMd: (childId: string) => Promise<{content, network}> —— 无用户版本返回空串（ISSUE-136 #7 起两端语义一致：child=「家长自定义层」追加稿，不回代码默认稿；渲染层当前未消费） */
   childGetAgentsMd: async (childId: string) => {
     try {
       const r = await dbQuery<{ content: string | null }>("agents.get", { scope: "child", ref: childId });
@@ -706,7 +711,7 @@ export const agentsDomain = {
     try {
       const r = await dbQuery<{ content: string | null }>("agents.get", { scope, ref });
       if (r.content !== null) return { content: r.content, customized: true, network: false };
-      // 无用户版本：ipc 孩子侧回 getDefaultPrompt（代码默认稿）、家长侧返回空——Web 均返回空（无本地默认稿，遗留差异）
+      // 无用户版本：两端一致返回空（ISSUE-136 #7 起 ipc 孩子侧也不回代码默认稿，自定义层从空开始）
       return { content: "", customized: false, network: false };
     } catch {
       return { content: "", customized: false, network: true };

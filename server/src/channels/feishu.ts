@@ -14,7 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import * as lark from "@larksuiteoapi/node-sdk";
 import { submitParentPrompt } from "../agent/parent-registry.js";
 import { submitChildPrompt } from "../agent/session-registry.js";
-import { runTurn, type TurnProgress } from "../routes/wechat.js";
+import { runTurn, type TurnProgress } from "../agent/turn-runner.js";
 
 export const FEISHU_SETTINGS_KEY = "channel_feishu";
 

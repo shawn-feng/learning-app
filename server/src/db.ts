@@ -110,6 +110,23 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_id);
+    -- 开放 API 密钥（2026-09-28）：一账号一有效键（部分唯一索引强制）。
+    -- 只存 sha256(key)，不存明文；prefix 供设置页展示与鉴权候选定位（前 12 位）。
+    -- child_id = 默认对话孩子（生成时在设置页选定；请求可用 child_id 覆盖，归属校验照做）。
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      key_hash TEXT NOT NULL,
+      prefix TEXT NOT NULL,
+      child_id TEXT NOT NULL DEFAULT '',
+      label TEXT NOT NULL DEFAULT '',
+      last_used_at TEXT,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_api_keys_active ON api_keys(parent_id) WHERE revoked_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
     -- 会话 jsonl 增量同步（方案B 阶段①）：行级索引供家长回顾；child_id 全局唯一，
     -- 归属校验在路由层（children.parent_id）强制，故不重复存 parent_id。
     CREATE TABLE IF NOT EXISTS session_messages (

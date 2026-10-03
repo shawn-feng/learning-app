@@ -15,6 +15,8 @@ import { registerConfigRoutes } from "./routes/config.js";
 import { registerMaterialsRoutes } from "./routes/materials.js";
 import { registerMaterialDocRoutes } from "./routes/materials-doc.js";
 import { registerFilesRoutes } from "./routes/files.js";
+import { registerApiKeysRoutes } from "./routes/apikeys.js";
+import { registerOpenApiRoutes } from "./routes/open-api.js";
 import { registerFsRoutes } from "./routes/fs.js";
 import { registerBackupRoutes } from "./routes/backup.js";
 import { registerTopicPackageRoutes } from "./routes/topic-package.js";
@@ -33,6 +35,7 @@ import { registerNamespaceRoutes } from "./routes/namespaces.js";
 import { registerMistakeRoutes } from "./routes/mistakes.js";
 import { registerTokenUsageRoutes } from "./routes/token-usage.js";
 import { registerLogsRoutes } from "./routes/logs.js";
+import { registerAsrRoutes } from "./routes/asr.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
 import { initServerLog, logInfo, logError, installServerConsoleRedirect } from "./log.js";
 
@@ -68,6 +71,7 @@ void app.register(multipart, { limits: { fileSize: Infinity } });
 
 registerVersionRoutes(app);
 registerLogsRoutes(app, { jwtSecret: config.jwtSecret }); // ISSUE-162：日志导出（家长 JWT）
+registerAsrRoutes(app, { config, db }); // ISSUE-165：ASR 配置/转录上收服务端（家长 JWT）
 registerHealthRoutes(app, { db });
 registerAuthRoutes(app, { config, db });
 registerDbRoutes(app, { config, db });
@@ -76,6 +80,8 @@ registerConfigRoutes(app, { config, db });
 registerMaterialsRoutes(app, { config, db });
 registerMaterialDocRoutes(app, { config, db }); // Web 前端 Phase 0：文档网关（附加式）
 registerFilesRoutes(app, { config, db });
+registerApiKeysRoutes(app, { config, db }); // 开放 API 密钥管理（家长 JWT）
+registerOpenApiRoutes(app, { config, db }); // 开放 API（API Key 鉴权，第三方/ESP32 接入）
 registerFsRoutes(app, { config, db }); // ISSUE-131 P1：文件区网盘（双端文件管理）
 registerBackupRoutes(app, { config, db });
 registerTopicPackageRoutes(app, { config }); // 学习主题打包导出/导入（2026-09-25）

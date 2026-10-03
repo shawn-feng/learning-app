@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { logInfo } from "../log.js";
 
 function ffmpegCandidates(): string[] {
   const list: string[] = [];
@@ -18,7 +19,9 @@ let probing: Promise<string> | null = null;
 
 function runFfmpegVersion(bin: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile(bin, ["-version"], { timeout: 15000 }, (err) => {
+    // windowsHide：子进程不挂到父进程的控制台/窗口站——长运行进程的终端会话失效后，
+    // 新建控制台子进程会以 0xC0000142 (STATUS_DLL_INIT_FAILED) 整批失败（2026-10-01 实测）
+    execFile(bin, ["-version"], { timeout: 15000, windowsHide: true }, (err) => {
       if (err) reject(err);
       else resolve();
     });
@@ -31,15 +34,17 @@ export function probeFfmpeg(): Promise<string> {
   if (probing) return probing;
   probing = (async () => {
     const errors: string[] = [];
-    for (const bin of ffmpegCandidates()) {
-      try {
-        await runFfmpegVersion(bin);
-        cachedFfmpeg = bin;
-        return bin;
-      } catch (e) {
-        errors.push(`${bin}: ${(e as Error).message.split("\n")[0]}`);
-      }
+  for (const bin of ffmpegCandidates()) {
+    try {
+      await runFfmpegVersion(bin);
+      cachedFfmpeg = bin;
+      // 探测结果落日志：转码报错时能对上"服务端当时用的是哪个 ffmpeg"（PATH/FFMPEG_BIN 差异排查）
+      logInfo("ffmpeg", "probe resolved", { bin });
+      return bin;
+    } catch (e) {
+      errors.push(`${bin}: ${(e as Error).message.split("\n")[0]}`);
     }
+  }
     throw new Error(
       `未找到可用的 ffmpeg（${errors.join("；")}）。请安装 ffmpeg 或设置 FFMPEG_BIN 环境变量指向有效可执行文件`
     );
@@ -51,8 +56,22 @@ export function probeFfmpeg(): Promise<string> {
 
 // 把 webm/opus 音频转成 16kHz / 16bit / 单声道 WAV（智聆 / 声希评测输入）
 export async function webmToWav16k(input: Buffer): Promise<Buffer> {
-  const MIN_WEBM_BYTES = 2000;
-  if (input.length < MIN_WEBM_BYTES) {
+  return toWav16k(input);
+}
+
+/**
+ * 通用音频转码：任意输入 → 16kHz / 16bit / 单声道 WAV。
+ * - inputFormat="auto"（默认）：自描述格式（wav/webm/opus/mp3/amr…），ffmpeg 按内容探测；
+ * - inputFormat="s16le"：**裸 PCM**（嵌入式设备直传，无文件头），必须给 sampleRate/channels
+ *   才能正确解读（开放 API 语音消息的 ESP32 48k 录音直传路径）。
+ * 输出一律 16k/单声道/16bit PCM WAV（ASR/评测的标准输入）。
+ */
+export async function toWav16k(
+  input: Buffer,
+  opts: { inputFormat?: "auto" | "s16le"; sampleRate?: number; channels?: number } = {}
+): Promise<Buffer> {
+  const MIN_BYTES = 2000;
+  if (input.length < MIN_BYTES) {
     return Promise.reject(
       new Error(
         `录音数据过短或为空（${input.length} 字节），无法解析。请按住麦克风说完整的一句话再松手。`
@@ -60,11 +79,17 @@ export async function webmToWav16k(input: Buffer): Promise<Buffer> {
     );
   }
 
+  const inputFormat = opts.inputFormat ?? "auto";
+  if (inputFormat === "s16le" && (!opts.sampleRate || opts.sampleRate <= 0)) {
+    return Promise.reject(new Error("裸 PCM 上传必须提供 sample_rate（录音采样率，如 48000）"));
+  }
+
   const ffmpegPath = await probeFfmpeg();
   return new Promise((resolve, reject) => {
+    const ext = inputFormat === "s16le" ? "raw" : "webm";
     const tmpIn = path.join(
       os.tmpdir(),
-      `assess-in-${Date.now()}-${Math.random().toString(36).slice(2)}.webm`
+      `assess-in-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
     );
     const tmpOut = path.join(
       os.tmpdir(),
@@ -72,23 +97,32 @@ export async function webmToWav16k(input: Buffer): Promise<Buffer> {
     );
     fs.writeFileSync(tmpIn, input);
 
-    const args = ["-y", "-i", tmpIn, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", tmpOut];
+    // 裸 PCM：输入侧显式声明格式（-f s16le -ar X -ac Y），否则 ffmpeg 按内容自探测
+    const inputArgs =
+      inputFormat === "s16le"
+        ? ["-f", "s16le", "-ar", String(opts.sampleRate), "-ac", String(opts.channels ?? 1)]
+        : [];
+    const args = ["-y", ...inputArgs, "-i", tmpIn, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", tmpOut];
 
     execFile(
       ffmpegPath,
       args,
-      { timeout: 30000, maxBuffer: 1024 * 1024 * 64 },
+      { timeout: 30000, maxBuffer: 1024 * 1024 * 64, windowsHide: true },
       (err, _stdout, stderr) => {
         if (err) {
+          // 完整 stderr 尾部 + 退出码原样带回（不做关键词过滤）——转码失败的原因必须可归因
+          //（2026-10-01 实测教训：按关键词过滤会漏掉 Permission denied 类错误，导致只剩空详情）
           const detail = String(stderr || "")
+            .trim()
             .split("\n")
-            .filter((l) => /Error|Invalid|End of file|not found|No such/i.test(l))
-            .slice(0, 3)
+            .slice(-6)
             .map((l) => l.trim())
-            .join(" | ");
+            .join(" | ")
+            .slice(-600);
+          const exitCode = (err as any).code ?? "unknown";
           reject(
             new Error(
-              `音频转换失败（ffmpeg，输入 ${input.length} 字节，已保留原始文件 ${tmpIn}）` +
+              `音频转换失败（ffmpeg exit=${exitCode}，输入 ${input.length} 字节，已保留原始文件 ${tmpIn}）` +
                 (detail ? `：${detail}` : `：${(err as Error).message.split("\n")[0]}`)
             )
           );

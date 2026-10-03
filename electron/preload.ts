@@ -13,6 +13,9 @@ const api = {
   // Pi events (main -> renderer)
   onPiStreaming: (callback: (data: { childId: string; delta?: string; thinkingDelta?: string }) => void) =>
     registerListener("pi:streaming", callback),
+  // 跨端轮次开始（语音设备/微信桥等非本端发起的消息）：渲染层据此补建 user + working 气泡
+  onPiUserMessage: (callback: (data: { childId: string; text: string }) => void) =>
+    registerListener("pi:user_message", callback),
   onPiThinking: (callback: (data: { childId: string; delta: string }) => void) =>
     registerListener("pi:thinking", callback),
   onPiToolStart: (callback: (data: any) => void) =>
@@ -199,6 +202,15 @@ const api = {
   // Children
   childAdd: (data: any) => ipcRenderer.invoke("child:add", data),
   childList: () => ipcRenderer.invoke("child:list"),
+  // ISSUE-167：失联降级横幅（连接状态快照 / 手动重试 / 断连恢复推送）
+  serverConnectionState: () => ipcRenderer.invoke("server:connectionState"),
+  serverRetryConnection: () => ipcRenderer.invoke("server:retryConnection"),
+  onServerConnectionChanged: (callback: (data: any) => void) =>
+    registerListener("server:connection-changed", callback),
+  // 开放 API 密钥（设置 → 开放接口）
+  openApiKeyGet: () => ipcRenderer.invoke("openapi:keyGet"),
+  openApiKeyCreate: (payload: { child_id?: string; label?: string }) => ipcRenderer.invoke("openapi:keyCreate", payload),
+  openApiKeyRevoke: () => ipcRenderer.invoke("openapi:keyRevoke"),
   // 微信桥：绑定请求与绑定管理
   wechatBindRequests: () => ipcRenderer.invoke("wechat:bindRequests"),
   wechatBindDecide: (payload: { id: string; action: "confirm" | "reject"; role?: "parent" | "child"; childId?: string; label?: string }) =>

@@ -508,6 +508,36 @@ export default function Learn({ child, onExit }: Props) {
     patchWorking((m) => ({ ...m, tools: [...(m.tools || []), call] }));
   }, [patchWorking]);
 
+  // 语音渠道指令前缀（voice 路由注入，见 routes/open-api.ts）——显示时剥离，会话历史保留
+  const VOICE_CHANNEL_PREFIX_RE = /^（这条消息来自语音设备。[^）]*）\n\n/;
+
+  // 跨端轮次开始（语音设备/微信桥等非本端发起）：补建 user 气泡 + working 气泡，
+  // 使外来轮次的思考/工具/流式文本与本地轮次同管线渲染（此前这些事件因 workingIdRef
+  // 为空被 patchWorking 全部丢弃——用户消息与过程都看不到，退出重进才靠历史补全）。
+  // 去重：本地轮进行中（workingIdRef 非空）说明气泡已自建，忽略该事件。
+  const handleUserMessage = useCallback((data: { childId: string; text: string }) => {
+    if (data.childId !== childIdRef.current) return;
+    if (workingIdRef.current) return;
+    const display = String(data.text || "")
+      .replace(VOICE_CHANNEL_PREFIX_RE, "")
+      .trim();
+    if (!display) return;
+    const userMsg: ChatMessage = { id: nextId(), role: "user", text: display, time: nowTime() };
+    const workingMsg: ChatMessage = {
+      id: nextId(),
+      role: "ai",
+      text: "",
+      thinking: "",
+      tools: [],
+      working: true,
+      workingSince: Date.now(),
+      time: nowTime(),
+    };
+    workingIdRef.current = workingMsg.id;
+    setMessages((prev) => [...prev, userMsg, workingMsg]);
+    setBusy(true);
+  }, []);
+
   // ISSUE-014（核心修复）：AI 展示新材料（display_content）或恢复历史后，自动打开最新一份资料。
   // ⚠️ 不能像旧实现那样在 setMaterials 的 updater 里给外部变量赋值、再同步读取——React 18 中
   // updater 异步执行（render 阶段才跑），同步检查时变量必然还是 null，导致「自动弹开」从未生效
@@ -804,6 +834,7 @@ export default function Learn({ child, onExit }: Props) {
     window.api.onPiReplyEnd(handleReplyEnd);
     window.api.onPiReplyError(handleReplyError);
     window.api.onPiThinking(handleThinking);
+    window.api.onPiUserMessage(handleUserMessage);
     window.api.onPiToolStart(handleToolStart);
     window.api.onPiToolEnd(handleToolEnd);
     window.api.onPiToolProgress(handleToolProgress);
@@ -815,7 +846,7 @@ export default function Learn({ child, onExit }: Props) {
     return () => {
       window.api.piRemoveListeners();
     };
-  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleToolStart, handleToolEnd, handleToolProgress, handleDisplayContent, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec]);
+  }, [handleReply, handleReplyEnd, handleReplyError, handleThinking, handleUserMessage, handleToolStart, handleToolEnd, handleToolProgress, handleDisplayContent, handleSessionReset, handleVisionSwitched, handleClassReminder, handlePageExec]);
 
   // 向聊天追加一条 AI 消息（命令反馈 / 系统提示用）
   function addAiMessage(text: string) {

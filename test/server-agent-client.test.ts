@@ -39,6 +39,10 @@ describe("parseSseChunk", () => {
 
 describe("translateAgentEvent（服务端 SSE → 渲染层 pi:* 通道，契约不变）", () => {
   const childId = "c1";
+  it("user_message → pi:user_message（跨端轮次：渲染层据此补建 user+working 气泡）", () => {
+    const r = translateAgentEvent({ id: 0, type: "user_message", data: { text: "（这条消息来自语音设备。回复要求：…）\n\n饺子，你好" } }, childId);
+    expect(r).toEqual({ channel: "pi:user_message", payload: { childId, text: "（这条消息来自语音设备。回复要求：…）\n\n饺子，你好" } });
+  });
   it("text_delta → pi:streaming", () => {
     const r = translateAgentEvent({ id: 1, type: "text_delta", data: { delta: "好" } }, childId);
     expect(r).toEqual({ channel: "pi:streaming", payload: { childId, delta: "好" } });

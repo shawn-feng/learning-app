@@ -9,6 +9,7 @@ import BackupSettings from "../components/BackupSettings";
 import GeneralSettings from "../components/GeneralSettings";
 import FeishuBindPanel from "../components/FeishuBindPanel";
 import NamespacePanel from "../components/NamespacePanel";
+import OpenApiSettings from "../components/OpenApiSettings";
 // ISSUE-144 P5：家长「场景口径」编辑器（按场景覆盖助手口径，存服务端 agents 库）
 import SceneSkillSettings from "../components/SceneSkillSettings";
 
@@ -35,7 +36,7 @@ const PROVIDERS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "voice" | "evaluation" | "vision" | "scheduler" | "feishu" | "scene" | "ns" | "general" | "backup">("models");
+  const [tab, setTab] = useState<"models" | "voice" | "evaluation" | "vision" | "scheduler" | "feishu" | "scene" | "ns" | "openapi" | "general" | "backup">("models");
   const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
@@ -162,6 +163,7 @@ export default function Settings() {
             ["feishu", "飞书绑定"],
             ["scene", "场景口径"],
             ["ns", "自定义数据"],
+            ["openapi", "开放接口"],
             ["backup", "数据备份"],
             ["general", "通用设置"],
           ] as const
@@ -347,6 +349,7 @@ export default function Settings() {
       {tab === "feishu" && <FeishuBindPanel />}
       {tab === "scene" && <SceneSkillSettings />}
       {tab === "ns" && <NamespacePanel />}
+      {tab === "openapi" && <OpenApiSettings />}
       {tab === "general" && <GeneralSettings />}
     </div>
   );
