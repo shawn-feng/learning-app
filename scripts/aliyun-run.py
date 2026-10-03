@@ -18,7 +18,10 @@ def main():
     args = ap.parse_args()
     import re as _re
     _d = {}
-    for _ln in open(os.path.join(ROOT, "aliyun-aksk.txt"), encoding="utf-8").read().splitlines():
+    _ak = os.path.join(ROOT, "aliyun-aksk.txt")
+    if not os.path.exists(_ak):
+        _ak = os.path.join(ROOT, "docs", "aliyun-aksk.txt")
+    for _ln in open(_ak, encoding="utf-8").read().splitlines():
         _m = _re.match(r"^accessKey(Id|Secret)\s+(.+)$", _ln.strip())
         if _m:
             _d[_m.group(1)] = _m.group(2).strip()
