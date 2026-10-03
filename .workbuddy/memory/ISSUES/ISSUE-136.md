@@ -299,7 +299,7 @@
    **E5 话术归属**仍待定（考核页 / 考核 agent / 孩子 agent）；
 5. ~~**H1 是否给对话出口**~~ → **已定（2026-09-23）**：**给**（提示词见 §三 [域 H] H1，**工具见 `ISSUE-140`**，两者必须一起落地）；
 6. **F5 走哪条路线**（`ISSUE-137`）；
-7. **②家长自定义层的编辑入口要不要一并恢复**（通道在、界面丢了，见文档 §2.3 / `ISSUE-083`）。
+7. ~~**②家长自定义层的编辑入口要不要一并恢复**（通道在、界面丢了，见文档 §2.3 / `ISSUE-083`）~~ → **已拍板恢复并落地（2026-09-28）**：孩子详情页新增「📝 自定义规范」tab（`src/components/ChildCustomRules.tsx`，scope=`child`/ref=childId，走既有 `agents.get/save/history/restore` db-op；保存/清空/历史回退，最多 50 版）。**语义收敛为纯追加层**：无自定义时编辑框为空、不预填代码默认稿（旧 `AgentPromptEditor` 的「整体定制」语义废弃）；内容以「## 家长设定的额外规范」整段追加在 system prompt 末尾（`server/src/agent/prompt.ts:68`），建会话时读一次、重开会话生效。顺带修复 `electron/lib/ipc-handlers.ts` 两处 `getDefaultPrompt` 悬空引用（child:getAgentsMd / agents:get——旧编辑器删除时的遗留，首调即 ReferenceError），无用户版本统一返回空底稿（与 web shim 既有语义一致）。验证：electron-vite/web 构建过、改动文件 typecheck 0 新增报错、issue144 45 例全绿、child scope db-op 往返（保存/读回）临时服务端实测通过。
 
 ## 七、验收
 

@@ -71,3 +71,11 @@
 ## 备注（2026-09-27 晚）：C2 查词上报时机随交互改版调整
 
 查词交互改为两段式（选中先出悬浮图标，点击图标才展开弹框，见 ISSUE-017 优化记录），C2 的上报触发点相应从「浮层出现」变为「孩子点击图标、弹框展开时」——`WordLookupOverlay` 的 `onReport` 机制不变，仅渲染时机收窄。语义变化：从「选中即记」变为「点了才查才记」，信号更主动（更接近 C1 的明确漏洞信号），代价是选中后不点图标的选择不再入本。资料 iframe 与聊天区两条通道一致。
+
+---
+
+## 线上事故记录（2026-09-29）：web 端错题本全空——数据无恙，shim 形态 bug，已修复并部署 201
+
+- 用户报告本地 dev + 201 生产、孩子/家长界面错题本全空。排查：数据两端完好（本地 13 条 / 201 珊珊 231 条且持续新增），服务端 HTTP 直测（自签家长 JWT）均正常返回——空的是 **web 端**渲染。
+- 根因：web shim `ops.mistakesList` 返回扁平 `{success, mistakes}`，组件按 electron IPC 契约读 `r.data?.mistakes` → HTTP 200 拿到数据仍渲染空列表；`mistakeAction` 同病（`data.ok` 缺失，成功误报失败）。electron 走真 IPC 形态正确——「昨天还能看到」= 看的是 electron 客户端。
+- 修复 commit 6317cc3：shim 三方法（list/report/action）返回 `{success, data}` 对齐 ipc-handlers；web typecheck ops.ts 清零；已部署 201（bundle index-iC1EsYe6.js，sha256 校验一致，HTTP 200）。详见 2026-09-29.md（含部署顺带带上 ISSUE-165 web 语音 shim 的说明）。
