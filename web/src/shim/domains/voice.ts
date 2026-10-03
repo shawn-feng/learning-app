@@ -1,6 +1,7 @@
 /**
  * voice 域（Phase 5 实现）：TTS（Electron 主进程 edge-tts → MP3 → Web speechSynthesis）、
- * STT（ffmpeg 转 wav + 云端 provider → SpeechRecognition 并行听写）、
+ * STT（ISSUE-165 起与 Electron 同链路：浏览器解码 16k WAV → POST /asr/transcribe 服务端转写，
+ * 服务端不可达/未配置时降级浏览器 SpeechRecognition 并行听写）、
  * 多段录音合并（ffmpeg PCM → WebAudio 解码 + 纯 JS 重采样 + WAV 编码）、
  * 场景课录音保存、语音配置。签名逐条摘自 electron/preload.ts，返回形状逐通道对齐
  * electron/lib/ipc-handlers.ts（voice:scene_save 1679 / config:get,set 1838-1849 /
@@ -10,13 +11,12 @@
  *   - voiceTts：浏览器 speechSynthesis 无法产出 MP3 buffer → 按映射表返回「标记对象」
  *     {success:true, audio:""}，未分支调用点安全 no-op；实际播报一律走 voiceSpeak
  *     （渲染层播放点 web 分支已改道，见 ChatWindow/MaterialsPanel/Learn）。
- *   - voiceTranscribe：浏览器无法转写传入 buffer → 返回并行听写会话（voice/stt.ts，
- *     由 useAudioRecorder web 分支驱动）的识别文本 + 传入音频 base64。
+ *   - voiceTranscribe：录音上送服务端转录（与 Electron 同一份 ASR 配置/凭证）；
+ *     失败时降级并行听写会话（voice/stt.ts，由 useAudioRecorder web 分支驱动）的识别文本。
  *   - voiceMerge：WebAudio 解码 → 纯 JS 重采样混单 → 16k/单声道/16bit WAV（voice/wav.ts），
  *     上传服务端 files 通道拿 id 作 path（对齐 files 域的不透明 token 语义，历史消息可回放）。
- *   - voiceConfigGet/Set：STT 配置存 localStorage "web.voiceConfig"，打码/补丁语义对齐
- *     electron/lib/voice/voice-config.ts；Web 用浏览器引擎无需凭证，首次默认开启
- *     （Chrome/Edge 支持 SpeechRecognition 即 enabled=true，对齐 Electron「语音自动开启」决策）。
+ *   - voiceConfigGet/Set：服务端 /asr/config（打码回显、补丁保存，家长 JWT 自动附带），
+ *     多设备与 Electron 共用同一份配置；本域不再读 localStorage（旧 "web.voiceConfig" 废弃）。
  *   - piGetTtsConfig/piSetTtsConfig：**不在此域**——models.ts（Phase 2）已实现且共用
  *     localStorage "web.ttsConfig" 存储；本域若重复实现会因 install 展开顺序覆盖它。
  * Web 专属扩展方法（Electron preload 无此签名面，渲染层一律 window.api.__web 守卫后调用）：
@@ -59,102 +59,10 @@ async function uploadVoiceFile(childId: string, originalName: string, buffer: Ar
 }
 
 // ---------------------------------------------------------------------------
-// 语音输入（STT）配置 —— localStorage "web.voiceConfig"，语义对齐 voice/voice-config.ts
+// 语音输入（STT）配置 —— ISSUE-165（2026-09-28）起以服务端为真源（GET/PUT /asr/config，
+// 与 Electron 同一份配置、同一套凭证）；浏览器听写不再依赖 localStorage 配置，
+// 仅作转录降级兜底（服务端不可达/未配置时保留旧 Web 行为）。
 // ---------------------------------------------------------------------------
-
-type SttProviderId = "qwen" | "qwen-tokenplan" | "mimo" | "mimo-tokenplan";
-
-const STT_PROVIDER_ORDER: SttProviderId[] = ["qwen", "qwen-tokenplan", "mimo", "mimo-tokenplan"];
-
-interface SttConfig {
-  enabled: boolean;
-  provider: SttProviderId;
-  providers: Record<string, Record<string, string>>;
-}
-
-const LS_KEY_STT = "web.voiceConfig";
-
-/** 默认配置。enabled 初值 = 浏览器支持 SpeechRecognition（对齐 Electron「语音自动开启」：
- *  Web 的浏览器引擎无需凭证即可用，支持即视为「已配置」）。 */
-function defaultSttConfig(): SttConfig {
-  return {
-    enabled: isSttSupported(),
-    provider: "qwen",
-    providers: {
-      qwen: { apiKey: "" },
-      "qwen-tokenplan": { apiKey: "", endpoint: "" },
-      mimo: { apiKey: "" },
-      "mimo-tokenplan": { apiKey: "", endpoint: "" },
-    },
-  };
-}
-
-function loadSttConfig(): SttConfig {
-  try {
-    const raw = localStorage.getItem(LS_KEY_STT);
-    const def = defaultSttConfig();
-    if (!raw) return def;
-    const parsed = JSON.parse(raw);
-    return {
-      enabled: !!parsed.enabled,
-      provider: STT_PROVIDER_ORDER.includes(parsed.provider) ? parsed.provider : "qwen",
-      providers: { ...def.providers, ...(parsed.providers || {}) },
-    };
-  } catch {
-    return defaultSttConfig();
-  }
-}
-
-function saveSttConfig(config: SttConfig): void {
-  try {
-    localStorage.setItem(LS_KEY_STT, JSON.stringify(config, null, 2));
-  } catch {
-    /* 隐私模式等场景静默 */
-  }
-}
-
-/** 打码（对齐 voice-config.ts maskSecret：首 3 + **** + 尾 4）。 */
-function maskSecret(v: string): string {
-  if (!v) return "";
-  if (v.length <= 8) return "*".repeat(v.length);
-  return v.slice(0, 3) + "****" + v.slice(-4);
-}
-
-/** 打码后的配置（绝不返回明文密钥；对齐 getMaskedConfig 的全字段打码）。 */
-function getMaskedSttConfig(): SttConfig {
-  const cfg = loadSttConfig();
-  const masked: SttConfig = { enabled: cfg.enabled, provider: cfg.provider, providers: {} };
-  for (const [pname, creds] of Object.entries(cfg.providers)) {
-    const m: Record<string, string> = {};
-    for (const [k, v] of Object.entries(creds || {})) {
-      m[k] = maskSecret(v);
-    }
-    masked.providers[pname] = m;
-  }
-  return masked;
-}
-
-/** 应用补丁（对齐 applyVoiceConfigPatch：字段「空值或含 *」视为未修改，跳过保留原值）。 */
-function applySttConfigPatch(patch: {
-  enabled?: boolean;
-  provider?: string;
-  providers?: Record<string, Record<string, string>>;
-}): void {
-  const cfg = loadSttConfig();
-  if (patch.enabled !== undefined) cfg.enabled = !!patch.enabled;
-  if (patch.provider && STT_PROVIDER_ORDER.includes(patch.provider as SttProviderId)) {
-    cfg.provider = patch.provider as SttProviderId;
-  }
-  for (const [pname, creds] of Object.entries(patch.providers || {})) {
-    if (!cfg.providers[pname]) cfg.providers[pname] = {};
-    for (const [k, v] of Object.entries(creds || {})) {
-      if (v && !v.includes("*")) {
-        cfg.providers[pname][k] = v;
-      }
-    }
-  }
-  saveSttConfig(cfg);
-}
 
 // ---------------------------------------------------------------------------
 // window.api 方法
@@ -184,20 +92,32 @@ export const voiceDomain = {
 
   // sceneVoiceSave（场景语音球落盘，voice:scene_save）已随场景会话下线删除（2026-09-25）。
 
-  /** voiceConfigGet: () => Promise<{success; config}>（voice:config:get，打码回显）。 */
-  voiceConfigGet: async (): Promise<{ success: boolean; config?: SttConfig; error?: string }> => {
-    return { success: true, config: getMaskedSttConfig() };
+  /** voiceConfigGet: () => Promise<{success; config}>（voice:config:get，服务端打码回显）。 */
+  voiceConfigGet: async (): Promise<{ success: boolean; config?: unknown; error?: string }> => {
+    try {
+      const data = await http<{ config: unknown; stored?: boolean }>("/asr/config", {
+        method: "GET",
+        timeoutMs: 15000,
+      });
+      return { success: true, config: data.config };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   },
 
-  /** voiceConfigSet: (patch) => Promise<{success; config?; error?}>（voice:config:set，补丁合并语义）。 */
+  /** voiceConfigSet: (patch) => Promise<{success; config?; error?}>（voice:config:set，服务端补丁保存）。 */
   voiceConfigSet: async (patch: {
     enabled?: boolean;
     provider?: string;
     providers?: Record<string, Record<string, string>>;
-  }): Promise<{ success: boolean; config?: SttConfig; error?: string }> => {
+  }): Promise<{ success: boolean; config?: unknown; error?: string }> => {
     try {
-      applySttConfigPatch(patch || {});
-      return { success: true, config: getMaskedSttConfig() };
+      const data = await http<{ config: unknown }>("/asr/config", {
+        method: "PUT",
+        body: patch || {},
+        timeoutMs: 15000,
+      });
+      return { success: true, config: data.config };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -205,13 +125,14 @@ export const voiceDomain = {
 
   /**
    * voiceTranscribe: (audio, onlyProvider?) => Promise<{success; text?; audio?; error?}>（voice:transcribe）。
-   * Web 无法转写传入 buffer（无云端 ASR 通道）：识别文本来自并行听写会话（voiceDictation*，
-   * 由 useAudioRecorder web 分支驱动），audio=传入音频的 base64（对齐 ipc 返回，供前端播放）。
-   * onlyProvider 在 Web 无对应引擎，忽略（签名兼容）。浏览器不支持 → success:false 带明确错误。
+   * ISSUE-165 起与 Electron 同链路：webm → 浏览器解码 16k mono WAV → POST /asr/transcribe
+   * （服务端按 ASR 配置转写；onlyProvider 传设置页「测试该服务」）。服务端不可达/未配置时
+   * 降级并行听写会话结果（useAudioRecorder web 分支驱动，保留旧 Web 开箱即用行为）。
+   * audio=传入音频的 base64（对齐 ipc 返回，供前端播放）。
    */
   voiceTranscribe: async (
     audio: ArrayBuffer,
-    _onlyProvider?: string
+    onlyProvider?: string
   ): Promise<{ success: boolean; text?: string; audio?: string; error?: string }> => {
     let b64 = "";
     try {
@@ -219,15 +140,35 @@ export const voiceDomain = {
     } catch {
       /* 空/异常音频：不阻断文本返回 */
     }
-    if (!isSttSupported()) {
-      return { success: false, error: "当前浏览器不支持语音识别（需 Chrome/Edge）", audio: b64 };
+    // 听写结果先取出（一次性消费）：服务端链路失败时作降级文本
+    const dict = consumeDictationResult();
+    try {
+      const pcm = await decodeAudioToMono16k(audio);
+      const wav = encodeWav16kMono([pcm]);
+      const form = new FormData();
+      form.append("file", new Blob([wav], { type: "audio/wav" }), "audio.wav");
+      if (onlyProvider) form.append("provider", onlyProvider);
+      const res = await http<Response>("/asr/transcribe", {
+        method: "POST",
+        body: form,
+        raw: true,
+        timeoutMs: 60000,
+      });
+      const data = (await res.json()) as { text?: string };
+      return { success: true, text: data.text ?? "", audio: b64 };
+    } catch (err) {
+      const serverErr = (err as Error).message;
+      if (dict.text) return { success: true, text: dict.text, audio: b64 };
+      if (dict.error) return { success: false, error: dict.error, audio: b64 };
+      if (!isSttSupported()) {
+        return {
+          success: false,
+          error: `服务端转录不可用（${serverErr}），且当前浏览器不支持语音识别（需 Chrome/Edge）`,
+          audio: b64,
+        };
+      }
+      return { success: false, error: serverErr, audio: b64 };
     }
-    const { text, error } = consumeDictationResult();
-    if (error && !text) {
-      return { success: false, error, audio: b64 };
-    }
-    // 对齐 ipc：success 时 {text, audio}；静音/无结果 text=""，走渲染层现有容错
-    return { success: true, text, audio: b64 };
   },
 
   /**

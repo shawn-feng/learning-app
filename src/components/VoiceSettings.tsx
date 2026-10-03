@@ -239,6 +239,7 @@ export default function VoiceSettings() {
       <h4 style={{ fontSize: 15, marginTop: 8, marginBottom: 4 }}>语音输入（识别）</h4>
       <p className="desc">
         配置语音识别服务（千问 / 小米 MiMo，各分按量与 token-plan 套餐）。API Key 留空时自动复用「模型配置」里对应 provider 的 Key。
+        配置保存在服务端，所有设备共用同一份；转录也在服务端执行（本机仅录音转码上传）。
         可配置多个服务，其中一个是默认服务——识别时优先用默认服务，若默认服务不可用（未配置凭证或识别失败），会自动切换到其他已配置的服务。
       </p>
 
