@@ -5,6 +5,39 @@
 > 公网：`https://auth.aixuexihao.top`（nginx → 127.0.0.1:9001）
 > 方式：阿里云云助手 RunCommand（无需 SSH）+ OSS 私有桶签名 URL 中转
 
+## v0.5 抖音经营任务对接（2026-09-28 已上线）
+
+- **新模块 `app/business.py`**：抖音「经营任务」对接层——client_token（POST /oauth/client_token/，内存缓存）、
+  活动创建/查询（POST /dy_open_api/apps/v3/activity/create/、/query/，鉴权=client_token，scope=open.business.task_manage）、
+  查询用户是否完成（POST /dy_open_api/apps/v3/activity/query_activity_user_completion_status/，
+  鉴权=用户级 token，scope=open.business.task_verify）。
+  ⚠️ 该端点实测返回**顶层 err_no/err_msg** 形状（非文档示例的 data.error_code），解析器两种都兼容。
+- **mock/live 双模式**（.env `DOUYIN_BUSINESS_TASK_MODE`，默认 mock）：经营任务能力（task_manage/task_verify）
+  审批通过前为 mock——完成查询一律未完成并带 mock 标记、任务保持 claimed、不虚发权益；
+  「去完成」跳转链接照常工作。审批通过后改 `live` 并重启即自动验证。
+  live 接线已验证：带假 token 真调抖音返回 `err_no=28001008 access_token 过期`（端点/鉴权头/解析链路全通）。
+- **验证器** `DouyinBusinessTaskVerifier`（verifiers.py）：`bt_*` 任务类型
+  （bt_like 点赞 / bt_follow 关注 / bt_finish 完播 / bt_share 转发 / bt_comment 评论），
+  target_config 需 activity_id + business_task_id（live）+ target_url（跳转）。
+  apps.py 建任务白名单已放开 bt_*（auto 可用；like_comment/repost 仍强制 manual）。
+- **新端点** `POST /api/me/tasks/{instance_id}/check`：用户跳抖音完成后回来点「我完成了」触发重验
+  （领取时也会自动验一次；auto 任务专用，platform token 过期先走 refresh_token 续期）。
+- **任务墙 UI**（/me）：bt_* 任务显示中文类型标签；未领取且有 target_url → 「去完成」+「领取任务」双按钮；
+  claimed 态 → 「我完成了，验证」按钮（未查到完成记录弹提示，含 mock 说明）。
+- **演示任务种子** `seed_demo_tasks.py`（仓库 benefit-auth/）：幂等灌 5 条 demo-bt-* 任务
+  （内置演示 App app_demo_builtin），target_url 默认占位（发现页/用户搜索页），
+  可 `--video-url/--user-url` 指定真实目标后重跑更新。
+- **顺手修两个存量 bug（routers/me.py）**：`_auto_verify_if_possible` 把 `aiosqlite.Row` 当 dict 用
+  （`task.get()` / `account.get()`）→ **领取 auto 任务必 500、自动验证从未真正跑过**（实例建出但 verify_detail 恒 '{}'）。
+  现已 dict() 化。publish_video 验证路径迁到已确认的 `/oauth/video/list/`（旧路径返回 HTML 兜底页）。
+- **部署**：整包 app/ + seed_demo_tasks.py（备份 /opt/backups/app-20260928-125748.tar.gz、app-20260928-125935.tar.gz）；
+  OSS 签名 URL 用 Python V1 签名生成（tmp/deploy/_oss_sign.py，PUT 上传 + GET 中转），云助手 RunCommand 执行。
+- **生产验证**：health 200（www/auth 双入口）、种子 5 任务落库、/me 页含新按钮、页面 JS `node --check` 通过、
+  /api/me/tasks 无 token 401。**待用户真机验证**：www 扫码登录 → 看到任务列表 → 点「去完成」跳抖音。
+- **切 live 前提（用户侧 P0）**：开放平台控制台申请 `open.business.task_manage` / `open.business.task_verify`
+  能力 → 批准后创建真活动（activity_create），把 activity_id/business_task_id 回填任务 target_config，
+  .env 加 DOUYIN_BUSINESS_TASK_MODE=live 重启。
+
 ## v0.4 视频互动数据分析（2026-09-21 已上线）
 
 - **抖音互动数据接入**（`platforms/douyin.py` + `routers/me.py`）：

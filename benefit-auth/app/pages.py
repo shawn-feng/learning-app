@@ -457,18 +457,58 @@ async function load() {
 
   const t = await api('/api/me/tasks');
   const tl = document.getElementById('taskList'); tl.innerHTML = '';
-  (t.tasks || []).forEach(task => {
+  const acts = (t.tasks || []).slice().sort((a, b) =>
+    ((a.my_status === 'granted' || a.my_status === 'rejected') ? 1 : 0) -
+    ((b.my_status === 'granted' || b.my_status === 'rejected') ? 1 : 0));
+  const BT_LABELS = { bt_like:'点赞视频', bt_follow:'关注账号', bt_finish:'完播视频', bt_share:'转发视频', bt_comment:'评论视频' };
+  const GO_TEXT = { bt_like:'去点赞', bt_follow:'去关注', bt_finish:'去看完', bt_share:'去转发', bt_comment:'去评论' };
+  acts.forEach(task => {
     const statusMap = { claimed:['已领取','claimed'], submitted:['待审核','submitted'], granted:['已完成','granted'], rejected:['未通过','rejected'], null:['未领取','none'] };
     const [label, cls] = statusMap[task.my_status || 'null'];
+    const typeLabel = BT_LABELS[task.task_type] || task.task_type;
+    const tc = task.target_config || {};
+    const targetLine = tc.target_name
+      ? `<div style="margin-top:6px;color:#334155">🎯 目标账号：<b>${tc.target_name}</b>${tc.video_title ? ' · 视频：《' + tc.video_title + '》' : ''}</div>`
+      : '';
     const div = document.createElement('div'); div.className = 'task';
     div.innerHTML = `
       <div class="row">
-        <div><div class="t-title">${task.title}</div><div class="t-app">来自 ${task.app_name} · ${task.platform||''}</div></div>
+        <div><div class="t-title">${task.title}</div><div class="t-app">来自 ${task.app_name} · ${typeLabel}${task.platform? ' · '+task.platform : ''}</div></div>
         <span class="badge ${cls}">${label}</span>
       </div>
-      <div class="t-desc">${task.description || ''}</div>
+      <div class="t-desc">${task.description || ''}${targetLine}</div>
       <div class="t-reward">🎁 ${rewardText(task.reward_config)}</div>`;
-    if (task.can_claim) {
+    const targetUrl = (task.target_config && task.target_config.target_url) || '';
+    const isBT = String(task.task_type || '').startsWith('bt_') && task.verify_mode === 'auto';
+    const verifyBtn = () => {
+      const btn = document.createElement('button');
+      btn.className = 'btn-mini primary'; btn.textContent = '我完成了，验证'; btn.style.marginTop = '8px';
+      btn.onclick = async () => {
+        const r = await api('/api/me/tasks/' + task.task_id + '/direct-verify', { method: 'POST' });
+        const note = (r.verify && r.verify.detail && r.verify.detail.note) ? ('\\n' + r.verify.detail.note) : '';
+        if (r.status === 'claimed') alert('还没查到完成记录，去抖音完成后再来验证～' + note);
+        else if (r.detail) alert(r.detail);
+        load();
+      };
+      return btn;
+    };
+    if (isBT && (task.can_claim || task.my_status === 'claimed')) {
+      if (targetUrl) {
+        const go = document.createElement('button');
+        go.className = 'btn-mini primary'; go.textContent = GO_TEXT[task.task_type] || '去完成'; go.style.marginTop = '8px'; go.style.marginRight = '8px';
+        go.onclick = () => window.open(targetUrl, '_blank');
+        div.appendChild(go);
+      }
+      div.appendChild(verifyBtn());
+    } else if (task.can_claim && targetUrl) {
+      const go = document.createElement('button');
+      go.className = 'btn-mini primary'; go.textContent = GO_TEXT[task.task_type] || '去完成'; go.style.marginTop = '8px'; go.style.marginRight = '8px';
+      go.onclick = () => window.open(targetUrl, '_blank');
+      const btn = document.createElement('button');
+      btn.className = 'btn-mini'; btn.textContent = '领取任务'; btn.style.marginTop = '8px';
+      btn.onclick = async () => { await api('/api/me/tasks/' + task.task_id + '/claim', { method:'POST' }); load(); };
+      div.appendChild(go); div.appendChild(btn);
+    } else if (task.can_claim) {
       const btn = document.createElement('button');
       btn.className = 'btn-mini primary'; btn.textContent = '领取任务'; btn.style.marginTop = '8px';
       btn.onclick = async () => { await api('/api/me/tasks/' + task.task_id + '/claim', { method:'POST' }); load(); };
@@ -545,7 +585,7 @@ function openBind(platform) {
   }, 3000);
 }
 
-const UPGRADE_SCOPES = 'user_info,video.list.bind,video.data,video.comment';
+const UPGRADE_SCOPES = 'user_info,open.business.task_verify';
 
 async function loadVideos(acc) {
   const vl = document.getElementById('videoList'); vl.innerHTML = '';

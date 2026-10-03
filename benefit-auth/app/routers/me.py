@@ -287,7 +287,7 @@ async def claim_task(task_id: str, user_id: str = Depends(get_current_user), db=
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Task not found or not active")
-    task = rows[0]
+    task = dict(rows[0])  # aiosqlite.Row 无 .get()，验证器/grant 需要 dict
 
     # 领取次数限制（含 rejected 可重试）
     claimed = (await db.execute_fetchall(
@@ -324,7 +324,13 @@ async def _auto_verify_if_possible(instance_id: str, task: dict, user_id: str, d
     if not accounts:
         return {"task_instance_id": instance_id, "status": "claimed", "note": "awaiting platform bind"}
 
-    account = accounts[0]
+    account = dict(accounts[0])  # aiosqlite.Row 无 .get()，验证器需要 dict
+    # 平台 token 过期先用 refresh_token 续期（经营任务完成查询需要有效用户级 token）
+    try:
+        provider = get_provider(task.get("platform") or "douyin")
+        account = await _ensure_valid_token(db, account, provider)
+    except Exception:  # noqa: BLE001
+        pass
     inst_rows = await db.execute_fetchall("SELECT * FROM task_instances WHERE id=?", (instance_id,))
     instance = dict(inst_rows[0])
     instance["task_type"] = task["task_type"]
@@ -343,6 +349,65 @@ async def _auto_verify_if_possible(instance_id: str, task: dict, user_id: str, d
     await db.commit()
     return {"task_instance_id": instance_id, "status": "granted" if result.ok else "claimed",
             "verify": result.to_dict()}
+
+
+# ---------- 重新验证（用户跳转平台完成任务后，回来触发再验证） ----------
+@router.post("/tasks/{instance_id}/check")
+async def check_task(instance_id: str, user_id: str = Depends(get_current_user), db=Depends(get_db)):
+    """对已领取（claimed）的 auto 任务重新跑一次验证。
+
+    经营任务（bt_*）场景：用户点「去完成」跳抖音操作后，回来点「我完成了」触发完成状态查询。
+    """
+    rows = await db.execute_fetchall(
+        "SELECT * FROM task_instances WHERE id=? AND user_id=?", (instance_id, user_id))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task instance not found")
+    inst = rows[0]
+    if inst["status"] != "claimed":
+        raise HTTPException(status_code=409, detail=f"Task already {inst['status']}")
+
+    tasks = await db.execute_fetchall("SELECT * FROM tasks WHERE id=?", (inst["task_id"],))
+    if not tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task = dict(tasks[0])  # aiosqlite.Row 无 .get()
+    if task["verify_mode"] != "auto":
+        raise HTTPException(status_code=400, detail="manual 任务请提交凭证，不支持自动验证")
+    return await _auto_verify_if_possible(instance_id, task, user_id, db)
+
+
+# ---------- 免领取直接验证（bt_* 经营任务：去完成 → 直接验证） ----------
+@router.post("/tasks/{task_id}/direct-verify")
+async def direct_verify(task_id: str, user_id: str = Depends(get_current_user), db=Depends(get_db)):
+    """免领取直接验证：无实例则自动领取（max_times 限额照常生效），再跑自动验证。"""
+    now = _now()
+    rows = await db.execute_fetchall(
+        """SELECT * FROM tasks WHERE id=? AND status='active'
+           AND (start_at IS NULL OR start_at <= ?) AND (end_at IS NULL OR end_at >= ?)""",
+        (task_id, now, now))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found or not active")
+    task = dict(rows[0])
+    if task["verify_mode"] != "auto":
+        raise HTTPException(status_code=400, detail="该任务需领取后提交凭证")
+
+    inst = await db.execute_fetchall(
+        """SELECT * FROM task_instances WHERE task_id=? AND user_id=?
+           AND status IN ('claimed','submitted') ORDER BY claimed_at DESC""",
+        (task_id, user_id))
+    if inst:
+        instance_id = inst[0]["id"]
+    else:
+        claimed = (await db.execute_fetchall(
+            "SELECT COUNT(*) c FROM task_instances WHERE task_id=? AND user_id=?",
+            (task_id, user_id)))[0]["c"]
+        if claimed >= (task["max_times_per_user"] or 1):
+            raise HTTPException(status_code=409, detail="该任务参与次数已达上限")
+        instance_id = new_id()
+        await db.execute(
+            "INSERT INTO task_instances (id, task_id, user_id, status, claimed_at) VALUES (?,?,?,?,?)",
+            (instance_id, task_id, user_id, "claimed", now))
+        await db.commit()
+    return await _auto_verify_if_possible(instance_id, task, user_id, db)
 
 
 # ---------- 提交完成凭证（manual 模式） ----------

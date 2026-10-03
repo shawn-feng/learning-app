@@ -71,8 +71,16 @@ learning-app 不自己对接抖音，改为把用户引导到本网站完成抖�
 ## 5. 任务模型（App 侧）
 
 - 任务新增 **`platform`** 字段（默认 `douyin`），验证器按平台路由。
-- 任务类型新增 **`repost`**（转发/分享），与 `like_comment`（点赞评论）一样**无开放查询接口，必须 `verify_mode=manual`**（创建时强制校验，否则 400）。
-- 自动验证类型（抖音）：`follow_account` / `publish_video` / `bind_account` / `fans_reach`。
+- 任务类型新增 **经营任务系列 `bt_*`**（走抖音「经营任务」开放能力，`verify_mode=auto`）：
+  `bt_like` 点赞视频 / `bt_follow` 关注账号 / `bt_finish` 完播视频 / `bt_share` 转发视频 / `bt_comment` 评论视频。
+  `target_config` 约定：`target_url`（用户去完成的跳转链接，任务墙「去完成」按钮用）、
+  `activity_id` / `business_task_id`（平台活动/任务 id，创建活动后回填，live 模式验证必填）。
+- **mock/live 双模式**（服务器 `.env` 的 `DOUYIN_BUSINESS_TASK_MODE`，默认 `mock`）：
+  能力 `open.business.task_manage` / `open.business.task_verify` 未审批前用 mock——
+  完成查询一律未完成并带 mock 标记，任务保持 claimed，不虚发权益；审批通过后切 `live`。
+- 任务类型 **`repost`**（旧转发，人工审核）与 `like_comment`（点赞评论，人工审核）保留兼容——
+  新任务建议直接用 `bt_share` / `bt_like`/`bt_comment`（经营任务可自动查询完成状态）。
+- 自动验证类型（抖音直连）：`follow_account` / `publish_video` / `bind_account` / `fans_reach`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

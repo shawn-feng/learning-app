@@ -81,9 +81,13 @@ async def app_token(req: AppTokenRequest, db=Depends(get_db)):
 
 
 # ---------- 任务管理 ----------
-_TASK_TYPES = {"follow_account", "publish_video", "bind_account", "fans_reach", "like_comment", "repost"}
+_TASK_TYPES = {
+    "follow_account", "publish_video", "bind_account", "fans_reach", "like_comment", "repost",
+    # 经营任务系列（抖音「经营任务」开放能力，自动查询完成状态；见 app/business.py）
+    "bt_like", "bt_follow", "bt_finish", "bt_share", "bt_comment",
+}
 _VERIFY_MODES = {"auto", "manual"}
-# 平台无开放查询接口、只能人工审核的任务类型
+# 平台无开放查询接口、只能人工审核的任务类型（bt_* 走经营任务能力可自动验证，不在其列）
 _MANUAL_ONLY_TYPES = {"like_comment", "repost"}
 
 

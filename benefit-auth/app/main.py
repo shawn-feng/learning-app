@@ -1,7 +1,10 @@
 """权益认证中台 - 独立认证服务入口"""
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
+from .campaign import campaign_loop
 from .database import init_db
 from .routers import account, apps, me, oauth
 from .pages import login_page, me_page
@@ -17,6 +20,7 @@ app.include_router(oauth.router)
 @app.on_event("startup")
 async def startup():
     await init_db()
+    asyncio.create_task(campaign_loop())
 
 
 @app.get("/health")

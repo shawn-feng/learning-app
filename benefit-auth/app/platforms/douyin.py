@@ -21,9 +21,12 @@ class DouyinProvider(PlatformProvider):
     # 登录 scope 直接带全量能力 scope（用户授权方案：让用户扫码时一并批准），
     # 控制台能力审批通过后用户勾选即可；未通过前行为二选一：授权页忽略该 scope 或报
     # 「应用scope权限不足」——后者用 DOUYIN_LOGIN_SCOPES=user_info 降级，无需改代码。
-    default_scopes = ["user_info", "video.list.bind", "video.data", "video.comment"]
+    default_scopes = ["user_info", "video.list.bind", "video.data", "video.comment",
+                      "open.business.task_verify"]
     # 升级授权（mode=upgrade）合并的 scope 列表
-    advanced_scopes = ["video.list.bind", "video.data", "video.comment"]
+    # open.business.task_verify（经营任务核销）：查「用户是否完成任务」必须用带此 scope 的用户级
+    # token（2026-09-28 控制台已审批通过，「是否需用户授权=是」→ 登录/升级时向用户申请）。
+    advanced_scopes = ["video.list.bind", "video.data", "video.comment", "open.business.task_verify"]
     authorize_base = "https://open.douyin.com/platform/oauth/connect"
     api_base = "https://open.douyin.com"
 

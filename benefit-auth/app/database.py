@@ -113,6 +113,12 @@ CREATE TABLE IF NOT EXISTS whitelist (
     UNIQUE(platform, platform_user_id)
 );
 
+-- 运行设置（campaign 每日推广视频等键值配置）
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
 -- 视频互动记录（授权用户视频下的评论者，用于互动数据分析与用户定位）
 CREATE TABLE IF NOT EXISTS video_interactions (
     id TEXT PRIMARY KEY,                -- 平台评论 id（前缀平台名保证全局唯一，如 douyin:<cid>）
