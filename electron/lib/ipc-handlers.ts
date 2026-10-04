@@ -45,7 +45,7 @@ import { getMaterialsLimit, setMaterialsLimit } from "./app-settings";
 
 import { getExamConfig, getExamCoursesForSchedule, uploadExamVoice, submitExamAttempt, listExamAttempts, getExamCourseRecords, getExamAudioDataUrl, getExamPending, getExamSchedules, createExamSchedule, startExamSchedule, completeExamSchedule, cancelExamSchedule, getFixedExamConfig, saveFixedExamConfig, getCourseStatus } from "./exam";
 import { listWechatBindRequests, decideWechatBindRequest, listWechatBindings, addWechatBinding, removeWechatBinding, getFeishuConfig, saveFeishuConfig } from "./wechat";
-import { getOpenApiKey, createOpenApiKey, revokeOpenApiKey } from "./openapi";
+import { getOpenApiKeys, createOpenApiKey, revokeOpenApiKey } from "./openapi";
 import { listNamespaces, decideNamespace, setNamespaceStatus } from "./namespaces";
 import { mistakeReport, mistakesList, mistakeAction } from "./mistakes";
 import { checkForUpdatesManually, downloadUpdate, quitAndInstall } from "./updater";
@@ -405,10 +405,10 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
   startConnectionMonitor();
 
-  // —— 开放 API 密钥（2026-09-28）：设置 → 开放接口 ——
+  // —— 开放 API 密钥（2026-09-28；2026-10-04 多键制）：设置 → 开放接口 ——
   ipcMain.handle("openapi:keyGet", async () => {
     try {
-      return { success: true, data: await getOpenApiKey() };
+      return { success: true, data: await getOpenApiKeys() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -420,9 +420,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       return { success: false, error: (err as Error).message };
     }
   });
-  ipcMain.handle("openapi:keyRevoke", async () => {
+  ipcMain.handle("openapi:keyRevoke", async (_e, id: string) => {
     try {
-      return { success: true, data: await revokeOpenApiKey() };
+      return { success: true, data: await revokeOpenApiKey(String(id ?? "")) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

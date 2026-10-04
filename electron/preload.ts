@@ -207,10 +207,10 @@ const api = {
   serverRetryConnection: () => ipcRenderer.invoke("server:retryConnection"),
   onServerConnectionChanged: (callback: (data: any) => void) =>
     registerListener("server:connection-changed", callback),
-  // 开放 API 密钥（设置 → 开放接口）
+  // 开放 API 密钥（设置 → 开放接口；多键制：Get 返回 {keys:[…]}，Revoke 按 id）
   openApiKeyGet: () => ipcRenderer.invoke("openapi:keyGet"),
   openApiKeyCreate: (payload: { child_id?: string; label?: string }) => ipcRenderer.invoke("openapi:keyCreate", payload),
-  openApiKeyRevoke: () => ipcRenderer.invoke("openapi:keyRevoke"),
+  openApiKeyRevoke: (id: string) => ipcRenderer.invoke("openapi:keyRevoke", id),
   // 微信桥：绑定请求与绑定管理
   wechatBindRequests: () => ipcRenderer.invoke("wechat:bindRequests"),
   wechatBindDecide: (payload: { id: string; action: "confirm" | "reject"; role?: "parent" | "child"; childId?: string; label?: string }) =>

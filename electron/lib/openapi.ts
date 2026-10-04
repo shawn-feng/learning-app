@@ -1,6 +1,6 @@
 /**
- * 开放 API 密钥客户端 API（2026-09-28）：查询 / 生成 / 吊销，全部走家长 JWT。
- * 服务端设计：docs/开放API-设计方案-2026-09-28.md（一账号一有效键，完整 Key 仅生成时返回一次）。
+ * 开放 API 密钥客户端 API（2026-09-28；2026-10-04 起多键制）：列表 / 生成 / 按 id 吊销，全部走家长 JWT。
+ * 服务端设计：docs/开放API-设计方案-2026-09-28.md（完整 Key 仅生成时返回一次，库里只有 hash）。
  */
 import { currentSessionToken } from "./client-data";
 import { serverFetch } from "./server-client";
@@ -15,8 +15,8 @@ export interface OpenApiKeyInfo {
   created_at: string;
 }
 
-export async function getOpenApiKey(): Promise<{ key: OpenApiKeyInfo | null }> {
-  return serverFetch<{ key: OpenApiKeyInfo | null }>("/apikeys", {
+export async function getOpenApiKeys(): Promise<{ keys: OpenApiKeyInfo[] }> {
+  return serverFetch<{ keys: OpenApiKeyInfo[] }>("/apikeys", {
     method: "GET",
     token: currentSessionToken(),
     timeoutMs: 15000,
@@ -35,8 +35,10 @@ export async function createOpenApiKey(payload: {
   });
 }
 
-export async function revokeOpenApiKey(): Promise<{ ok: boolean }> {
-  return serverFetch<{ ok: boolean }>("/apikeys", {
+export async function revokeOpenApiKey(id: string): Promise<{ ok: boolean; revoked: string }> {
+  const keyId = String(id ?? "").trim();
+  if (!keyId) throw new Error("缺少要吊销的 Key id");
+  return serverFetch<{ ok: boolean; revoked: string }>(`/apikeys?id=${encodeURIComponent(keyId)}`, {
     method: "DELETE",
     token: currentSessionToken(),
     timeoutMs: 15000,

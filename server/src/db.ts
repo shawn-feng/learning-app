@@ -110,8 +110,8 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent_id);
-    -- 开放 API 密钥（2026-09-28）：一账号一有效键（部分唯一索引强制）。
-    -- 只存 sha256(key)，不存明文；prefix 供设置页展示与鉴权候选定位（前 12 位）。
+    -- 开放 API 密钥（2026-09-28）：多键制（2026-10-04 起放开）——一账号可同时保留多把有效键
+    -- （一台设备一把，独立吊销）。只存 sha256(key)，不存明文；prefix 供设置页展示与鉴权候选定位（前 12 位）。
     -- child_id = 默认对话孩子（生成时在设置页选定；请求可用 child_id 覆盖，归属校验照做）。
     CREATE TABLE IF NOT EXISTS api_keys (
       id TEXT PRIMARY KEY,
@@ -125,7 +125,8 @@ export function openDb(dataDir: string): DatabaseSync {
       created_at TEXT NOT NULL,
       revoked_at TEXT
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_api_keys_active ON api_keys(parent_id) WHERE revoked_at IS NULL;
+    -- 旧「一账号一有效键」唯一索引（ux_api_keys_active）随多键制废止：存量库启动时静默丢弃
+    DROP INDEX IF EXISTS ux_api_keys_active;
     CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
     -- 会话 jsonl 增量同步（方案B 阶段①）：行级索引供家长回顾；child_id 全局唯一，
     -- 归属校验在路由层（children.parent_id）强制，故不重复存 parent_id。

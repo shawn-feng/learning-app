@@ -185,13 +185,13 @@ export const opsDomain = {
     }
   },
 
-  // —— 开放 API 密钥（2026-09-28，设置 → 开放接口）——
+  // —— 开放 API 密钥（2026-09-28；2026-10-04 多键制：Get 返回 {keys}，Revoke 按 id）——
 
-  /** openApiKeyGet: () => Promise<{success, data?: {key: {...prefix/用量} | null}}> */
-  openApiKeyGet: async (): Promise<{ success: boolean; data?: { key: unknown }; error?: string }> => {
+  /** openApiKeyGet: () => Promise<{success, data?: {keys: [...]}}> */
+  openApiKeyGet: async (): Promise<{ success: boolean; data?: { keys: unknown }; error?: string }> => {
     try {
       if (!requireToken()) return { success: false, error: "未登录" };
-      const data = await http<{ key: unknown }>("/apikeys");
+      const data = await http<{ keys: unknown }>("/apikeys");
       return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -211,11 +211,13 @@ export const opsDomain = {
     }
   },
 
-  /** openApiKeyRevoke: () => Promise<{success, data?: {ok}}> */
-  openApiKeyRevoke: async (): Promise<{ success: boolean; data?: { ok: boolean }; error?: string }> => {
+  /** openApiKeyRevoke: (id) => Promise<{success, data?: {ok, revoked}}> */
+  openApiKeyRevoke: async (id: string): Promise<{ success: boolean; data?: { ok: boolean; revoked: string }; error?: string }> => {
     try {
       if (!requireToken()) return { success: false, error: "未登录" };
-      const data = await http<{ ok: boolean }>("/apikeys", { method: "DELETE" });
+      const keyId = String(id ?? "").trim();
+      if (!keyId) throw new Error("缺少要吊销的 Key id");
+      const data = await http<{ ok: boolean; revoked: string }>(`/apikeys?id=${encodeURIComponent(keyId)}`, { method: "DELETE" });
       return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };

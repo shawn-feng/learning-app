@@ -1,6 +1,6 @@
 /**
  * 开放 API（API Key）回归（2026-09-28）：
- * - apikeys 管理组：生命周期（生成/查询/吊销/再生成）、一账号一键（409）、完整 Key 不回显；
+ * - apikeys 管理组：生命周期（生成/查询/按 id 吊销/再生成）、多键制（可并存、上限 409）、完整 Key 不回显；
  * - open 组：Key 鉴权（无/坏/吊销 → 401）、child 归属（403/400）、prompt 校验（400）；
  * - chat 的 NDJSON 形状契约（progress…final 行）——未配置模型时终态就是 ok:false 的 final 行，
  *   正好锁住"最后一行必为 final"的协议；
@@ -63,15 +63,15 @@ function auth(key: string) {
   return { authorization: `Bearer ${key}` };
 }
 
-describe("apikeys 管理组（家长 JWT）", () => {
+describe("apikeys 管理组（家长 JWT，多键制）", () => {
   it("无 JWT → 401；有 JWT 初始无键", async () => {
     expect((await app.inject({ method: "GET", url: "/api/v1/apikeys" })).statusCode).toBe(401);
     const res = await app.inject({ method: "GET", url: "/api/v1/apikeys", headers: auth(jwt) });
     expect(res.statusCode).toBe(200);
-    expect(res.json().key).toBeNull();
+    expect(res.json().keys).toEqual([]);
   });
 
-  it("生成：一次性返回完整 Key（laxk_ 前缀 + prefix 12 位）；重复生成 409；查询永不回完整 Key", async () => {
+  it("生成：一次性返回完整 Key（laxk_ 前缀 + prefix 12 位）；可并存多把；查询永不回完整 Key；按 id 吊销", async () => {
     const create = await app.inject({
       method: "POST",
       url: "/api/v1/apikeys",
@@ -85,35 +85,56 @@ describe("apikeys 管理组（家长 JWT）", () => {
     expect(key.prefix).toHaveLength(12);
     expect(secret.startsWith(key.prefix)).toBe(true);
 
-    const dup = await app.inject({ method: "POST", url: "/api/v1/apikeys", headers: auth(jwt), payload: {} });
-    expect(dup.statusCode).toBe(409);
-
-    const list = await app.inject({ method: "GET", url: "/api/v1/apikeys", headers: auth(jwt) });
-    expect(list.statusCode).toBe(200);
-    expect(list.json().key.prefix).toBe(key.prefix);
-    expect(JSON.stringify(list.json())).not.toContain(secret);
-    revokedKey = secret;
-
-    const del = await app.inject({ method: "DELETE", url: "/api/v1/apikeys", headers: auth(jwt) });
-    expect(del.statusCode).toBe(200);
-    const delAgain = await app.inject({ method: "DELETE", url: "/api/v1/apikeys", headers: auth(jwt) });
-    expect(delAgain.statusCode).toBe(404);
-
-    // 再生成：这次不绑孩子（后续 open 组用例显式带 child_id）
+    // 多键制：再生成一把不报 409
     const create2 = await app.inject({ method: "POST", url: "/api/v1/apikeys", headers: auth(jwt), payload: {} });
     expect(create2.statusCode).toBe(200);
     apiKey = create2.json().secret;
+
+    const list = await app.inject({ method: "GET", url: "/api/v1/apikeys", headers: auth(jwt) });
+    expect(list.statusCode).toBe(200);
+    const keys = list.json().keys;
+    expect(keys).toHaveLength(2);
+    expect(keys.map((k: { prefix: string }) => k.prefix)).toContain(key.prefix);
+    expect(JSON.stringify(list.json())).not.toContain(secret);
+    revokedKey = secret;
+
+    // 吊销：不带 id → 400；带 id → 200；重复吊销同一把 → 404；另一把不受影响
+    const delNoId = await app.inject({ method: "DELETE", url: "/api/v1/apikeys", headers: auth(jwt) });
+    expect(delNoId.statusCode).toBe(400);
+    const del = await app.inject({ method: "DELETE", url: `/api/v1/apikeys?id=${key.id}`, headers: auth(jwt) });
+    expect(del.statusCode).toBe(200);
+    const delAgain = await app.inject({ method: "DELETE", url: `/api/v1/apikeys?id=${key.id}`, headers: auth(jwt) });
+    expect(delAgain.statusCode).toBe(404);
+    const listAfter = await app.inject({ method: "GET", url: "/api/v1/apikeys", headers: auth(jwt) });
+    expect(listAfter.json().keys).toHaveLength(1);
   });
 
-  it("child_id 不归属 → 403", async () => {
+  it("child_id 不归属 → 403；有效键达上限 → 409", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/apikeys",
       headers: auth(jwt),
       payload: { child_id: otherChildId },
     });
-    // 已有有效键，先撞 409 也应先校验归属？——实现按"先归属校验后存在性校验"均可接受，这里锁行为：
-    expect([403, 409]).toContain(res.statusCode);
+    expect(res.statusCode).toBe(403);
+
+    // 当前有效 1 把（上限 10）：补到上限后再生成 → 409；吊销一把后恢复可生成
+    for (let i = 0; i < 9; i++) {
+      const r = await app.inject({ method: "POST", url: "/api/v1/apikeys", headers: auth(jwt), payload: {} });
+      expect(r.statusCode).toBe(200);
+    }
+    const overflow = await app.inject({ method: "POST", url: "/api/v1/apikeys", headers: auth(jwt), payload: {} });
+    expect(overflow.statusCode).toBe(409);
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/apikeys?id=${(await app.inject({ method: "GET", url: "/api/v1/apikeys", headers: auth(jwt) })).json().keys[0].id}`,
+      headers: auth(jwt),
+    });
+    expect(del.statusCode).toBe(200);
+    // 吊销的 keys[0] 可能正是 apiKey 指向的键——重建一把并把 apiKey 指过去，供后续 open 组使用
+    const recreate = await app.inject({ method: "POST", url: "/api/v1/apikeys", headers: auth(jwt), payload: {} });
+    expect(recreate.statusCode).toBe(200);
+    apiKey = recreate.json().secret;
   });
 });
 

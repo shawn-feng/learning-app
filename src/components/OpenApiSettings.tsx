@@ -1,6 +1,6 @@
 /**
- * 开放 API 面板（设置 → 开放接口；2026-09-28）。
- * 一账号一有效 Key：生成（一次性展示完整 Key）→ 查看（只显示 prefix + 用量）→ 吊销 / 重新生成。
+ * 开放 API 面板（设置 → 开放接口；2026-09-28，2026-10-04 改多键制）。
+ * 一账号可并存多把 Key（一台设备一把，独立吊销）：列表（只显示 prefix + 用量）→ 生成（一次性展示完整 Key）→ 按 Key 吊销。
  * 绑定默认孩子：Key 的对话对象（第三方请求可用 child_id 覆盖）。
  * 服务端：server/src/routes/apikeys.ts（管理）+ open-api.ts（第三方调用）。
  */
@@ -15,6 +15,8 @@ interface KeyInfo {
   request_count: number;
   created_at: string;
 }
+
+const MAX_KEYS = 10;
 
 const card: React.CSSProperties = {
   background: "#fff",
@@ -39,7 +41,7 @@ function fmtTime(iso: string | null): string {
 }
 
 export default function OpenApiSettings() {
-  const [keyInfo, setKeyInfo] = useState<KeyInfo | null>(null);
+  const [keys, setKeys] = useState<KeyInfo[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [children, setChildren] = useState<Array<{ id: string; name: string }>>([]);
   const [childId, setChildId] = useState("");
@@ -56,7 +58,8 @@ export default function OpenApiSettings() {
     setErr("");
     const r = await window.api.openApiKeyGet();
     if (r?.success) {
-      setKeyInfo((r.data as any)?.key ?? null);
+      const list = (r.data as any)?.keys;
+      setKeys(Array.isArray(list) ? list : []);
     } else {
       setErr(r?.error || "读取失败");
     }
@@ -96,52 +99,23 @@ export default function OpenApiSettings() {
     }
   }
 
-  async function handleRevoke() {
+  async function handleRevoke(k: KeyInfo) {
     setErr("");
     const c = await window.api.confirmDialog({
       title: "吊销 API Key",
-      message: "确认吊销当前 API Key？",
-      detail: "吊销后所有正在使用这个 Key 的第三方设备立即失去访问权限（401）。吊销后可以再生成新 Key。",
+      message: `确认吊销 ${k.prefix}…${k.label ? `（${k.label}）` : ""}？`,
+      detail: "吊销后正在使用这把 Key 的第三方设备立即失去访问权限（401），其它 Key 不受影响。",
       confirmLabel: "吊销",
     });
     if (!c) return;
     setBusy(true);
     try {
-      const r = await window.api.openApiKeyRevoke();
+      const r = await window.api.openApiKeyRevoke(k.id);
       if (!r?.success) {
         setErr(r?.error || "吊销失败");
         return;
       }
-      setNotice("已吊销。第三方设备下次请求将收到 401。");
-      await load();
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleRegenerate() {
-    setErr("");
-    const c = await window.api.confirmDialog({
-      title: "重新生成 API Key",
-      message: "确认重新生成 API Key？",
-      detail: "旧 Key 立即失效（第三方设备需更新为新 Key），新 Key 只展示一次。",
-      confirmLabel: "重新生成",
-    });
-    if (!c) return;
-    setBusy(true);
-    try {
-      await window.api.openApiKeyRevoke();
-      // 重新生成沿用原绑定与备注
-      const r = await window.api.openApiKeyCreate(
-        keyInfo ? { child_id: keyInfo.child_id || undefined, label: keyInfo.label || undefined } : {}
-      );
-      if (!r?.success) {
-        setErr(r?.error || "重新生成失败");
-        await load();
-        return;
-      }
-      setSecret(String((r.data as any)?.secret ?? ""));
-      setCopied(false);
+      setNotice(`已吊销 ${k.prefix}…。使用它的第三方设备下次请求将收到 401。`);
       await load();
     } finally {
       setBusy(false);
@@ -158,6 +132,7 @@ export default function OpenApiSettings() {
   }
 
   const childName = (id: string) => children.find((c) => c.id === id)?.name || id || "（未绑定）";
+  const atCap = keys.length >= MAX_KEYS;
 
   return (
     <div className="settings-section">
@@ -165,78 +140,89 @@ export default function OpenApiSettings() {
       <p className="desc">
         生成 API Key 后，第三方系统（如 ESP32 硬件、自动化脚本）可以通过开放 API 与服务端 agent 对话，
         能力与 app 内聊天框一致（文字 / 图片 / 文件 / 音频附件、思考过程、工具调用）。
-        每个账号同时只有一个有效 Key。
+        每个账号可创建多把 Key（上限 {MAX_KEYS} 把）——建议一台设备一把，可独立吊销互不影响。
       </p>
 
       {err && <p style={{ color: "#c0392b", fontSize: 13 }}>{err}</p>}
       {notice && <p style={{ color: "#27ae60", fontSize: 13 }}>{notice}</p>}
 
+      {/* Key 列表 */}
       {!loaded ? (
         <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>
-      ) : keyInfo ? (
+      ) : keys.length === 0 ? (
         <div style={card}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-            <strong style={{ fontSize: 14 }}>当前 API Key</strong>
-            <span style={{ fontSize: 12, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 10px" }}>
-              {keyInfo.prefix}…
-            </span>
-          </div>
-          <div style={{ fontSize: 13, color: "#444", lineHeight: 1.9 }}>
-            <div>默认对话对象：{childName(keyInfo.child_id)}</div>
-            {keyInfo.label && <div>备注：{keyInfo.label}</div>}
-            <div>创建时间：{fmtTime(keyInfo.created_at)}</div>
-            <div>最近使用：{fmtTime(keyInfo.last_used_at)}（累计 {keyInfo.request_count} 次请求）</div>
-          </div>
-          <p style={{ fontSize: 12, color: "#98a2b0", margin: "8px 0 12px" }}>
-            完整 Key 仅在生成时展示一次，此处只显示前缀。遗失请重新生成。
-          </p>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleRegenerate} disabled={busy} style={{ ...btn, background: "#667eea", color: "#fff" }}>
-              重新生成
-            </button>
-            <button onClick={handleRevoke} disabled={busy} style={{ ...btn, background: "#fff", color: "#c0392b", border: "1px solid #e6b3ac" }}>
-              吊销
-            </button>
-          </div>
+          <div style={{ fontSize: 14 }}>还没有 API Key，用下方表单生成第一把。</div>
         </div>
       ) : (
-        <div style={card}>
-          <div style={{ fontSize: 14, marginBottom: 10 }}>还没有 API Key —— 生成一个：</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <select
-              value={childId}
-              onChange={(e) => setChildId(e.target.value)}
-              style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 180 }}
-            >
-              <option value="">（不绑定，请求须带 child_id）</option>
-              {children.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-            <input
-              placeholder="备注（可选，如：客厅的硬件）"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              style={{ flex: 1, minWidth: 200, padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8 }}
-            />
-            <button onClick={handleCreate} disabled={busy} style={{ ...btn, background: "#667eea", color: "#fff" }}>
-              生成 API Key
-            </button>
+        keys.map((k) => (
+          <div key={k.id} style={card}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 14 }}>{k.label || "API Key"}</strong>
+              <span style={{ fontSize: 12, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 10px" }}>
+                {k.prefix}…
+              </span>
+            </div>
+            <div style={{ fontSize: 13, color: "#444", lineHeight: 1.9 }}>
+              <div>默认对话对象：{childName(k.child_id)}</div>
+              <div>
+                创建时间：{fmtTime(k.created_at)}　·　最近使用：{fmtTime(k.last_used_at)}（累计 {k.request_count} 次请求）
+              </div>
+            </div>
+            <p style={{ fontSize: 12, color: "#98a2b0", margin: "8px 0 12px" }}>
+              完整 Key 仅在生成时展示一次，此处只显示前缀。遗失请吊销这把后重新生成。
+            </p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => handleRevoke(k)} disabled={busy} style={{ ...btn, background: "#fff", color: "#c0392b", border: "1px solid #e6b3ac" }}>
+                吊销这把
+              </button>
+            </div>
           </div>
-          <p style={{ fontSize: 12, color: "#98a2b0", margin: "8px 0 0" }}>
-            建议绑定默认孩子：硬件端无需关心 childId，直接对话即可。
-          </p>
-        </div>
+        ))
       )}
+
+      {/* 生成表单（达上限时隐藏） */}
+      <div style={card}>
+        <div style={{ fontSize: 14, marginBottom: 10 }}>
+          {atCap ? `已达上限（${MAX_KEYS} 把）——先吊销不用的 Key 再生成。` : "生成新 Key："}
+        </div>
+        {!atCap && (
+          <>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <select
+                value={childId}
+                onChange={(e) => setChildId(e.target.value)}
+                style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 180 }}
+              >
+                <option value="">（不绑定，请求须带 child_id）</option>
+                {children.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                placeholder="备注（可选，如：客厅的硬件 / ESP32）"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                style={{ flex: 1, minWidth: 200, padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8 }}
+              />
+              <button onClick={handleCreate} disabled={busy} style={{ ...btn, background: "#667eea", color: "#fff" }}>
+                生成 API Key
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: "#98a2b0", margin: "8px 0 0" }}>
+              建议绑定默认孩子：硬件端无需关心 childId，直接对话即可。
+            </p>
+          </>
+        )}
+      </div>
 
       {/* 完整 Key 一次性展示 */}
       {secret && (
         <div style={{ ...card, border: "2px solid #667eea" }}>
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>API Key 已生成（仅此一次展示）</div>
           <p style={{ fontSize: 12, color: "#c0392b", margin: "0 0 10px" }}>
-            请立即复制并保存到第三方设备。关闭本弹窗后无法再次查看，只能重新生成。
+            请立即复制并保存到第三方设备。关闭本弹窗后无法再次查看，只能吊销后重新生成。
           </p>
           <code
             style={{

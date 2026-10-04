@@ -1,11 +1,11 @@
 /**
  * 开放 API 密钥管理（家长 JWT）：
- * - GET    /api/v1/apikeys   查询当前有效键（脱敏：只回 prefix，绝不回完整 Key）
- * - POST   /api/v1/apikeys   生成（一账号一有效键，已有 → 409；响应**一次性**返回完整 Key）
- * - DELETE /api/v1/apikeys   吊销（第三方立即 401）；吊销后可再生成新键
+ * - GET    /api/v1/apikeys      查询当前全部有效键（脱敏：只回 prefix，绝不回完整 Key）
+ * - POST   /api/v1/apikeys      生成（多键制：一账号可并存多把，上限 10 把；响应**一次性**返回完整 Key）
+ * - DELETE /api/v1/apikeys?id=  吊销指定键（第三方立即 401）；不传 id → 400
  *
- * 安全：库里只存 sha256(key)；比较走 timingSafeEqual（open-api 鉴权侧）；
- * 重新生成 = DELETE + POST（前端两步，服务端不提供"原地换键"避免误触丢键）。
+ * 安全：库里只存 sha256(key)；比较走 timingSafeEqual（open-api 鉴权侧）。
+ * 多键动机：一台设备一把（ESP32 / 脚本 / 其它第三方），可独立吊销而不影响其它设备。
  */
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -18,6 +18,9 @@ interface ApiKeysDeps {
   config: ServerConfig;
   db: DatabaseSync;
 }
+
+/** 单账号同时保留的有效键上限（防失控；真实场景一台设备一把，10 足够） */
+export const MAX_API_KEYS_PER_PARENT = 10;
 
 function authParent(req: { headers: Record<string, string | string[] | undefined> }, secret: string): string {
   const header = req.headers.authorization;
@@ -49,14 +52,14 @@ export function registerApiKeysRoutes(app: FastifyInstance, deps: ApiKeysDeps): 
       if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
       throw err;
     }
-    const row = deps.db
+    const rows = deps.db
       .prepare(
-        "SELECT id, prefix, child_id, label, last_used_at, request_count, created_at FROM api_keys WHERE parent_id = ? AND revoked_at IS NULL"
+        "SELECT id, prefix, child_id, label, last_used_at, request_count, created_at FROM api_keys WHERE parent_id = ? AND revoked_at IS NULL ORDER BY created_at ASC"
       )
-      .get(parentId) as
-      | { id: string; prefix: string; child_id: string; label: string; last_used_at: string | null; request_count: number; created_at: string }
-      | undefined;
-    return { key: row ?? null };
+      .all(parentId) as Array<
+      { id: string; prefix: string; child_id: string; label: string; last_used_at: string | null; request_count: number; created_at: string }
+    >;
+    return { keys: rows };
   });
 
   app.post("/api/v1/apikeys", async (req, reply) => {
@@ -74,10 +77,14 @@ export function registerApiKeysRoutes(app: FastifyInstance, deps: ApiKeysDeps): 
       const owned = deps.db.prepare("SELECT 1 FROM children WHERE id = ? AND parent_id = ?").get(childId, parentId);
       if (!owned) return reply.code(403).send({ error: "无权关联该孩子" });
     }
-    const existing = deps.db
-      .prepare("SELECT id FROM api_keys WHERE parent_id = ? AND revoked_at IS NULL")
-      .get(parentId);
-    if (existing) return reply.code(409).send({ error: "已存在有效 API Key（先吊销旧键再生成）" });
+    const nActive = (
+      deps.db
+        .prepare("SELECT COUNT(*) AS n FROM api_keys WHERE parent_id = ? AND revoked_at IS NULL")
+        .get(parentId) as { n: number }
+    ).n;
+    if (nActive >= MAX_API_KEYS_PER_PARENT) {
+      return reply.code(409).send({ error: `有效 Key 已达上限（${MAX_API_KEYS_PER_PARENT} 把），请先吊销不用的键` });
+    }
 
     const { key, hash, prefix } = generateApiKey();
     const now = new Date().toISOString();
@@ -99,10 +106,13 @@ export function registerApiKeysRoutes(app: FastifyInstance, deps: ApiKeysDeps): 
       if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
       throw err;
     }
+    // 按 id 吊销（多键制）；query 传参避免 DELETE body 的 Content-Type 坑
+    const id = String((req.query as { id?: string }).id ?? "").trim();
+    if (!id) return reply.code(400).send({ error: "缺少 id 参数（要吊销哪把 Key）" });
     const r = deps.db
-      .prepare("UPDATE api_keys SET revoked_at = ? WHERE parent_id = ? AND revoked_at IS NULL")
-      .run(new Date().toISOString(), parentId);
-    if (r.changes === 0) return reply.code(404).send({ error: "没有有效的 API Key" });
-    return { ok: true };
+      .prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND parent_id = ? AND revoked_at IS NULL")
+      .run(new Date().toISOString(), id, parentId);
+    if (r.changes === 0) return reply.code(404).send({ error: "Key 不存在或已吊销" });
+    return { ok: true, revoked: id };
   });
 }
