@@ -52,6 +52,7 @@ export default function OpenApiSettings() {
   // 一次性展示完整 Key（关掉弹窗后不再可见）
   const [secret, setSecret] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [showExample, setShowExample] = useState(false);
 
   const load = useCallback(async () => {
@@ -122,12 +123,53 @@ export default function OpenApiSettings() {
     }
   }
 
+  /**
+   * 复制到剪贴板，返回是否成功。
+   * ⚠️ 网页端跑在局域网 HTTP（http://<内网IP>:8788）时不是安全上下文，navigator.clipboard
+   * 会被浏览器整体禁用——降级走 execCommand（需用户手势，点击回调内调用即满足）。
+   */
   async function copySecret() {
+    let ok = false;
     try {
-      await navigator.clipboard.writeText(secret);
-      setCopied(true);
+      if (window.isSecureContext && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(secret);
+        ok = true;
+      }
     } catch {
-      setCopied(false);
+      ok = false;
+    }
+    if (!ok) {
+      // 降级：临时 textarea 选中 → execCommand('copy')
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = secret;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        ok = false;
+      }
+    }
+    setCopied(ok);
+    setCopyFailed(!ok);
+    if (!ok) {
+      // 仍失败（极少数浏览器策略）：把 Key 全文选中，让用户 Ctrl+C 手动复制
+      try {
+        const el = document.getElementById("openapi-secret-text");
+        if (el) {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        }
+      } catch {
+        /* 选中失败不阻断提示 */
+      }
     }
   }
 
@@ -225,6 +267,7 @@ export default function OpenApiSettings() {
             请立即复制并保存到第三方设备。关闭本弹窗后无法再次查看，只能吊销后重新生成。
           </p>
           <code
+            id="openapi-secret-text"
             style={{
               display: "block",
               background: "#f6f8fa",
@@ -238,11 +281,26 @@ export default function OpenApiSettings() {
           >
             {secret}
           </code>
+          {copyFailed && (
+            <p style={{ fontSize: 12, color: "#c0392b", margin: "8px 0 0" }}>
+              ⚠️ 自动复制被浏览器拦截（局域网 HTTP 页面的安全限制）。已为你选中上方 Key 全文——请按 Ctrl+C（Mac ⌘C）手动复制。
+            </p>
+          )}
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button onClick={copySecret} style={{ ...btn, background: "#27ae60", color: "#fff" }}>
-              {copied ? "已复制 ✓" : "复制 Key"}
+            <button
+              onClick={copySecret}
+              style={{ ...btn, background: copied ? "#27ae60" : "#667eea", color: "#fff" }}
+            >
+              {copied ? "已复制 ✓" : copyFailed ? "再试一次复制" : "复制 Key"}
             </button>
-            <button onClick={() => setSecret("")} style={{ ...btn, background: "#fff", border: "1px solid #ddd" }}>
+            <button
+              onClick={() => {
+                setSecret("");
+                setCopied(false);
+                setCopyFailed(false);
+              }}
+              style={{ ...btn, background: "#fff", border: "1px solid #ddd" }}
+            >
               我已保存，关闭
             </button>
           </div>
