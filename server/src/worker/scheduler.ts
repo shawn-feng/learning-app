@@ -70,6 +70,16 @@ export function readParentSettings(db: DatabaseSync, dataDir: string, parentId: 
 }
 
 export function startWorkerScheduler(deps: WorkerSchedulerDeps): void {
+  // 错题整理任务（ISSUE-114）：懒注册——mistake-sorting 依赖 agent/exam-engine（→scheduler），
+  // 静态 import 会成环；此处启动时运行时 import（此时 scheduler/tasks 均已完成模块求值，安全）。
+  void (async () => {
+    try {
+      const { registerMistakeSortingTask } = await import("./mistake-sorting.js");
+      registerMistakeSortingTask();
+    } catch (e) {
+      console.error("[worker] mistake-sorting 注册失败:", (e as Error).message);
+    }
+  })();
   cron.schedule("*/2 * * * *", async () => {
     // 顺序执行：先 plan（carry→gen），再 stat，最后 recording。保证 carry 行在 gen 前落库、todolist 在 stat 前生成。
     try { await runPlanTick(deps); } catch (e) { console.error("[worker] plan tick failed:", (e as Error).message); }

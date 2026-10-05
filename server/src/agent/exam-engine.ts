@@ -206,12 +206,23 @@ export function judgeChoice(
 
 // ==================== JSON 解析 ====================
 
-/** 从 LLM 输出里提取 JSON（剥 markdown 围栏、截第一个 { 到最后一个 }）。 */
+/** 从 LLM 输出里提取 JSON（剥 markdown 围栏、截第一个 { 到最后一个 }；顶级数组取 [ ... ]）。 */
 export function extractJson(text: string): any {
   if (!text) return null;
   let t = text.trim();
   const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) t = fence[1]!.trim();
+  // 顶级数组（如批产出题清单）先于对象判断，否则截 {..} 会切坏数组
+  if (t.startsWith("[")) {
+    const ae = t.lastIndexOf("]");
+    if (ae > 0) {
+      try {
+        return JSON.parse(t.slice(0, ae + 1));
+      } catch {
+        /* 落回对象截取 */
+      }
+    }
+  }
   const s = t.indexOf("{");
   const e = t.lastIndexOf("}");
   if (s < 0 || e <= s) return null;

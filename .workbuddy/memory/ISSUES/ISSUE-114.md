@@ -91,3 +91,20 @@
 - 兼容：wrongSeeds 保留（issue135 测试不断）；examMistakeSynced 哨兵在路由侧退役（attempt id 每次提交新生成，哨兵本就永不命中），db 函数保留供 worker 兜底路径。
 - 测试：mistakes.test 新增 3 例（原题合并/复发重开、masterByQuestion 边界、attachQuestionStems 含家长库夹具），相关 4 文件 25 例全绿；server tsc 仅剩 topic-package.ts 存量 Buffer 报错（非本次改动）；electron-vite build 过。
 - 待办：本地 dev 服务端与 201 需重启/部署后生效（服务端改动，客户端重打包后弹框显示题干）。
+
+---
+
+## 方案 B/C 合并定案（2026-09-29 深夜）：错题整理主题——字词成知识点 + LLM 分层归类（worker 任务）
+
+用户定案：专门建「错题整理」主题；查词字词 → 主题下「字词」课程的知识点并自动出考核题；无法归类到既有知识点的错题 → LLM 分层分析（主题→课程→知识点）挂既有知识点，挂不上则归入错题整理主题下的归类课程。此前的 C 案疑虑（污染知识点表）由「专属主题隔离」化解。
+
+- **新任务** `server/src/worker/mistake-sorting.ts`（type=mistake_sorting，每 2 小时 :17 触发 + catchUp latest；scheduler 启动时懒注册避免 tasks→exam-engine→scheduler 静态环）：
+  - 扫孩子库 open 且 knowledge_point_id='' 的条目（≤40/轮）→ 一次性 LLM 会话三轮：①字词准入（只收 ≤6 字真字词，界面文案/长句跳过→knowledge_point_id='skipped' 终止重分析）+错题主题定位（带建议知识点名）②按选中主题列课程/知识点名单要求**逐字匹配** ③字词批量出题（读音/释义简答，stem 不含答案）。
+  - 落库全幂等：ensureSortingTopic/Course（name=topic_key='错题整理'，同值规避 getMethodSpec/getCourseUuid 双匹配口径）、ensureKnowledgePoint（UNIQUE(course_uuid,name)）、attachGeneratedQuestion（kp 已挂题跳过）、note='错题整理任务自动生成'。
+  - 主题课程自动分配进孩子库（topics+courses 带 uuid 锚点，INSERT OR IGNORE）——家长才能对这些课排考核（ISSUE-123 课程名校验的前提）。
+  - method_spec.perChild[孩子].require = 该孩子 open 错题关联的知识点名（≤40）——「字词」课程全孩子共享但**各考各的薄弱词**，复用 attachStructuredQuestions 既有 perChild 机制零改动。
+  - mistake_book.knowledge_point_id 非空=已处理（分类成功的挂 kpId+name 快照→错题本 UI 知识点 chip/聚合可用）；LLM 失败抛错→调度器不记 worker_state 下轮自愈；出题失败遗留的 kp 由 pendingQ 预检补齐（skip 判定含待出题数）。
+- **顺手修复**：extractJson 顶级数组解析（此前截 {..} 会把数组切坏成 null——本次出题 0 道的直接原因）。
+- **真实冒烟（本地 dev，珊珊 11 条字词）**：9 条建 kp 并关联、2 条噪音被 LLM 拦截、出题 8/9（1 条留给下轮=上限机制按设计工作）、孩子库分配+perChild require 全部正确。
+- 未做/边界：不加家长审核环节（题库 note 有自动生成标记，家长可删）；mastered 词不自动出考核范围（require 只按 open 名单）；201 部署后生效。
+- 测试 test/mistake-sorting.test.ts 6 例（ensure 幂等/分配/关联/perChild/prompt 契约）全绿。
