@@ -9,6 +9,9 @@ import os from "node:os";
 import path from "node:path";
 import { openKb } from "../server/src/db/kb";
 import { openParentLib } from "../server/src/db/parent-lib";
+import { openDb } from "../server/src/db";
+import { buildEffectiveChildConfig } from "../server/src/db/task-runs";
+import { mistakeSortingTask } from "../server/src/worker/mistake-sorting";
 import {
   SORTING_TOPIC,
   WORD_COURSE,
@@ -142,6 +145,49 @@ describe("错题整理：孩子库分配与错题关联", () => {
     } finally {
       parent.close();
     }
+  });
+});
+
+describe("错题整理：家长调度配置（定时任务页可控）", () => {
+  const mainDb = openDb(dataDir);
+  mainDb
+    .prepare("INSERT OR IGNORE INTO parents (id,email,created_at,updated_at) VALUES (?,?,?,?)")
+    .run(parentId, "ms@test", new Date().toISOString(), new Date().toISOString());
+  mainDb
+    .prepare("INSERT OR IGNORE INTO children (id,parent_id,name,created_at,updated_at) VALUES (?,?,?,?,?)")
+    .run(childId, parentId, "珊珊", new Date().toISOString(), new Date().toISOString());
+
+  const addSortingTask = (id: string, time: string) => {
+    const now = new Date().toISOString();
+    mainDb
+      .prepare(
+        `INSERT INTO scheduler_tasks (id, parent_id, name, type, time, extra_json, enabled, owner, frequency, created_at, updated_at)
+         VALUES (?, ?, ?, 'mistake_sorting', ?, '{}', 1, 'parent', 'daily', ?, ?)`
+      )
+      .run(id, parentId, `错题整理 ${time}`, time, now, now);
+    mainDb
+      .prepare("INSERT INTO scheduler_task_assignments (task_id, child_id, enabled, created_at) VALUES (?, ?, 1, ?)")
+      .run(id, childId, now);
+  };
+
+  it("未创建任务 → 有效配置 disabled；points 返回空（opt-in）", () => {
+    const eff = buildEffectiveChildConfig(mainDb, parentId);
+    expect(eff[childId].mistakeSorting.enabled).toBe(false);
+    expect(mistakeSortingTask.points({} as any)).toEqual([]);
+    expect(mistakeSortingTask.points({ mistakeSorting: { enabled: false, times: ["08:17"] } } as any)).toEqual([]);
+  });
+
+  it("创建任务并分配 → 有效配置 enabled + 多行时间去重排序；points 透传过滤", () => {
+    addSortingTask("ms-t1", "08:17");
+    addSortingTask("ms-t2", "20:17");
+    addSortingTask("ms-t3", "08:17"); // 与 t1 同时刻 → 去重
+    const eff = buildEffectiveChildConfig(mainDb, parentId);
+    expect(eff[childId].mistakeSorting).toEqual({ enabled: true, times: ["08:17", "20:17"] });
+    expect(mistakeSortingTask.points({ mistakeSorting: eff[childId].mistakeSorting } as any)).toEqual(["08:17", "20:17"]);
+    // 非法时间点被过滤
+    expect(
+      mistakeSortingTask.points({ mistakeSorting: { enabled: true, times: ["8:17", "bad", "22:17"] } } as any)
+    ).toEqual(["22:17"]);
   });
 });
 

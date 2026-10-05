@@ -36,6 +36,8 @@ export interface WorkerSchedulerChildConfig {
   classTemplates?: Array<{ id?: string; name?: string; times?: Array<{ start?: string; end?: string; label?: string }> }>;
   classWeek?: { [day: number]: string | null };
   todo?: { enabled?: boolean; genTime?: string; statTime?: string };
+  /** 错题整理（ISSUE-114）：家长在「定时任务」页创建 mistake_sorting 任务并分配孩子后生效；未创建 = 不跑 */
+  mistakeSorting?: { enabled?: boolean; times?: string[] };
 }
 
 export interface WorkerTaskCtx {

@@ -141,7 +141,8 @@ function resolveChildConfig(
   if (!legacy && !eff) return undefined;
   const base: WorkerSchedulerChildConfig = legacy ? JSON.parse(JSON.stringify(legacy)) : {};
   if (!eff) return base;
-  const hasTask = eff.recording.enabled || eff.todo.enabled || eff.autoNewSession.enabled;
+  const hasTask =
+    eff.recording.enabled || eff.todo.enabled || eff.autoNewSession.enabled || eff.mistakeSorting.enabled;
   if (!hasTask) return base;
   return {
     ...base,
@@ -157,6 +158,7 @@ function resolveChildConfig(
       statTime: eff.todo.enabled ? eff.todo.statTime : "",
     },
     autoNewSession: { ...eff.autoNewSession },
+    mistakeSorting: { ...eff.mistakeSorting },
   };
 }
 

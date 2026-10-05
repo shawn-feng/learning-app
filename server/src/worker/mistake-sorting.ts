@@ -8,6 +8,9 @@
  * 同时：把主题课程分配进孩子库（家长才能对这些课排考核）、维护 method_spec.perChild
  * （require=该孩子 open 错题的知识点——兄弟孩子共用「字词」课程但各考各的词）。
  *
+ * **调度由家长控制**：家长中心「定时任务」页创建 mistake_sorting 任务并分配孩子后才触发
+ * （times=家长设的时间点，多行任务时间去重）；未创建该任务 = 不跑（opt-in，与 autoNewSession 同口径）。
+ *
  * 幂等/状态：mistake_book.knowledge_point_id 非空 = 已处理（含关联到既有 kp 的）；
  * 家长库侧全部按唯一键 ensure（topics.name / courses(topic,title) / kp UNIQUE(course_uuid,name) /
  * ckq 复合主键 / 题目按 bridge 是否已挂判断），任务重跑安全。
@@ -215,7 +218,13 @@ async function chat(deps: ExamEngineDeps, session: any, prompt: string): Promise
 
 export const mistakeSortingTask: WorkerTask = {
   type: "mistake_sorting",
-  points: () => ["00:17", "02:17", "04:17", "06:17", "08:17", "10:17", "12:17", "14:17", "16:17", "18:17", "20:17", "22:17"],
+  // 家长可控（2026-09-29）：「定时任务」页创建 mistake_sorting 任务并分配孩子后才跑；
+  // times=家长设置的全部触发点（多行任务时间去重，buildEffectiveChildConfig 汇总）；未创建 = 不跑
+  points: (cfg) => {
+    const c = cfg.mistakeSorting;
+    if (!c?.enabled) return [];
+    return (c.times ?? []).filter((t) => /^\d{2}:\d{2}$/.test(t)).sort();
+  },
   catchUp: "latest",
   async run(ctx: WorkerTaskCtx): Promise<WorkerRunResult | void> {
     if (!ctx.auth || Object.keys(ctx.auth).length === 0) return { status: "skip", message: "未配置模型 key" };

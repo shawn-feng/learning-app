@@ -11,7 +11,7 @@ interface ChildItem {
 interface SchedulerTask {
   id: string;
   name: string;
-  type: "recording" | "auto_new_session" | "reminder" | "custom";
+  type: "recording" | "auto_new_session" | "reminder" | "custom" | "mistake_sorting";
   time: string;
   extra: Record<string, unknown>;
   enabled: boolean;
@@ -68,6 +68,12 @@ const TYPE_META: Record<SchedulerTask["type"], { label: string; icon: string; hi
     label: "孩子自建提醒",
     icon: "🔔",
     hint: "孩子通过对话设置的定时提醒（到点语音播报；家长可在此关闭/删除）",
+  },
+  // ISSUE-114 错题整理：查词字词/错题经 LLM 归类成知识点并自动出巩固题
+  mistake_sorting: {
+    label: "错题整理",
+    icon: "📕",
+    hint: "把孩子的查词字词与错题自动整理成「错题整理」主题的知识点并出巩固题（AI 分析；考核只出该孩子自己的薄弱点）",
   },
   // ISSUE-116：自定义任务——自然语言指令到点由服务端无头 agent 执行
   custom: {

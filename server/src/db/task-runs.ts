@@ -12,7 +12,7 @@
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
-export type SchedulerTaskType = "recording" | "todo_gen" | "todo_stat" | "auto_new_session" | "reminder" | "custom";
+export type SchedulerTaskType = "recording" | "todo_gen" | "todo_stat" | "auto_new_session" | "reminder" | "custom" | "mistake_sorting";
 
 /** 家长中心「定时任务」页可创建的任务类型（todo_gen / todo_stat 已下线，不再创建）。 */
 export const SCHEDULER_TASK_TYPES: SchedulerTaskType[] = [
@@ -20,6 +20,7 @@ export const SCHEDULER_TASK_TYPES: SchedulerTaskType[] = [
   "auto_new_session",
   "reminder",
   "custom",
+  "mistake_sorting",
 ];
 
 export interface SchedulerTaskRow {
@@ -53,6 +54,8 @@ export interface EffectiveChildConfig {
    * 建第二个不同时间的自动新建会话会被静默忽略——珊珊 18:30 未触发即此因）。
    */
   autoNewSession: { enabled: boolean; hour: number; minute: number; times?: string[] };
+  /** 错题整理（ISSUE-114）：家长在定时任务页创建 mistake_sorting 任务并分配孩子后生效；times=全部触发点 */
+  mistakeSorting: { enabled: boolean; times: string[] };
 }
 
 /** 记录一次执行结果。 */
@@ -210,6 +213,7 @@ export function buildEffectiveChildConfig(
     recording: { enabled: false, times: [], onNewSession: false },
     todo: { enabled: false, genTime: "", statTime: "" },
     autoNewSession: { enabled: false, hour: 21, minute: 0 },
+    mistakeSorting: { enabled: false, times: [] },
   };
 
   const result: Record<string, EffectiveChildConfig> = {};
@@ -243,6 +247,11 @@ export function buildEffectiveChildConfig(
       cfg.autoNewSession.minute = Number.isFinite(m) ? m : 0;
       // 全部时间点（多任务共存；去重排序，供 worker 逐点触发）
       cfg.autoNewSession.times = [...new Set(autos.map((t) => t.time).filter((t) => /^\d{2}:\d{2}$/.test(t)))].sort();
+    }
+    const sortings = tasksFor.filter((t) => t.type === "mistake_sorting");
+    if (sortings.length > 0) {
+      cfg.mistakeSorting.enabled = true;
+      cfg.mistakeSorting.times = [...new Set(sortings.map((t) => t.time).filter((t) => /^\d{2}:\d{2}$/.test(t)))].sort();
     }
     result[c.id] = cfg;
   }
