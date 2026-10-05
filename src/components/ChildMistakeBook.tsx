@@ -9,6 +9,8 @@ interface MistakeItem {
   id: string;
   kind: "wrong_question" | "unknown_word" | "weak_point";
   content: string;
+  /** 原题题干（服务端按 question_id 从题库读回；有值时优先显示） */
+  question_stem?: string;
   detail: string;
   source: string;
   course_ref: string;
@@ -179,7 +181,10 @@ export default function ChildMistakeBook({ childId }: { childId: string }) {
                         {KIND_META[m.kind]?.icon ?? "•"}
                       </span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, fontWeight: 700 }}>{m.content}</div>
+                        <div style={{ fontSize: 14, fontWeight: 700 }}>{m.question_stem?.trim() || m.content}</div>
+                        {m.question_stem?.trim() && m.question_stem.trim() !== m.content && (
+                          <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 2 }}>{m.content}</div>
+                        )}
                         {m.detail && (
                           <div style={{ fontSize: 12, color: "#5a6478", marginTop: 3, lineHeight: 1.5 }}>{m.detail}</div>
                         )}

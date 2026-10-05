@@ -20,7 +20,7 @@ import { verifySession } from "../auth/jwt.js";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { getRetakeCountInRate, maybeCreateRetakePlan, setRetakeCountInRate } from "../exam-retake.js";
-import { examMistakeSynced, upsertMistake } from "../db/mistakes.js";
+import { masterByQuestion, upsertExamMistake } from "../db/mistakes.js";
 import { persistExamResult } from "../exam-results.js";
 import { attachStructuredQuestions, attachPlanQuestions, buildPlanSpecEntries, parsePlanCourses, type PlanCourseSpec } from "../assess-selection.js";
 import {
@@ -1354,20 +1354,26 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       req.log.error({ err, childId, planId }, "考核结果落库失败");
       return reply.code(500).send({ error: `考核结果保存失败：${String((err as Error)?.message || err)}` });
     }
-    // ===== ⑥ 错题本同步（ISSUE-114 C3，从 worker 前移）=====
-    // (source_ref=attempt, question_id) 幂等哨兵：同一场的同一题只同步一次，重复提交不刷 count。
-    for (const m of persisted.wrongSeeds) {
+    // ===== ⑥ 错题本同步（ISSUE-114 C3；2026-09-29 改按原题 question_id 闭环）=====
+    // exam 的 content 拼考试标题/得分、每场必变，content 去重键对 exam 来源失效——
+    // 做错的题按 question_id 匹配存量条目（count+1 / 复发重开），做对的题自动标掌握（重考做对→mastered）；
+    // 无 question_id 的错题退回 content upsert（旧行为）。
+    for (const m of persisted.questionSeeds) {
       try {
-        if (examMistakeSynced(deps.config.dataDir, parentId, childId, id, m.questionId)) continue;
-        upsertMistake(deps.config.dataDir, parentId, childId, {
+        if (m.correct) {
+          masterByQuestion(deps.config.dataDir, parentId, childId, m.questionId);
+          continue;
+        }
+        upsertExamMistake(deps.config.dataDir, parentId, childId, {
           kind: "wrong_question",
-          content: `${examTitle}·${m.course}·${m.kpId || "题目"}（${m.got}/${m.max}）`,
+          content: `${examTitle}·${m.course}·${m.kpName || m.kpId || "题目"}（${m.got}/${m.max}）`,
           detail: m.comment,
           source: "exam",
           source_ref: id,
           question_id: m.questionId,
           course_ref: m.course,
           knowledge_point_id: m.kpId,
+          knowledge_point_name: m.kpName,
         });
       } catch (err) {
         req.log.warn({ err }, "考核错题写入错题本失败（考核结果已保留）");

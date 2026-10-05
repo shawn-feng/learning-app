@@ -12,6 +12,8 @@ export interface MistakeItem {
   detail: string;
   source: string;
   question_id: string;
+  /** 原题题干（服务端按 question_id 从题库读回；无原题/题已删则缺省） */
+  question_stem?: string;
   course_ref: string;
   knowledge_point_id: string;
   knowledge_point_name: string;

@@ -165,6 +165,9 @@ describe("ISSUE-135 P0-a 考核结果落库", () => {
     expect(out.kpRecords).toBe(2); // kpA 显式 + kpB 由挂载表回退
     expect(out.speechArchived).toBe(1);
     expect(out.wrongSeeds).toHaveLength(3); // 口径与旧 worker 一致：**未拿满分**即进错题本（9/10、4/10、8/10 都算）
+    expect(out.wrongSeeds.every((s) => "kpName" in s)).toBe(true); // 2026-09-29：错题本补知识点名称快照
+    expect(out.questionSeeds).toHaveLength(3); // 全量题目素材（供做对→mastered 闭环）
+    expect(out.questionSeeds.every((s) => s.correct === false)).toBe(true); // 本场全错（未拿满分）
 
     const kb = openKb(dataDir, parentId, childId);
     try {

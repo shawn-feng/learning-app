@@ -8,6 +8,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { openKb } from "./kb.js";
+import { openParentLib } from "./parent-lib.js";
 
 export type MistakeKind = "wrong_question" | "unknown_word" | "weak_point";
 export type MistakeStatus = "open" | "mastered" | "dismissed";
@@ -151,5 +152,112 @@ export function examMistakeSynced(
       .get(sourceRef, questionId);
   } finally {
     db.close();
+  }
+}
+
+/**
+ * 考核错题按**原题**闭环（2026-09-29）：考核的 content 拼了考试标题/得分、每场必变，
+ * content 去重键对 exam 来源天然失效——改按 question_id 匹配存量条目：
+ * 命中未 dismiss 的行 → count+1 / last_seen 刷新 / 复发重开 open（补齐 kp 名称快照与课程）；
+ * 未命中 → 走 content upsert 新建。返回 (行, 是否新建)。
+ */
+export function upsertExamMistake(
+  dataDir: string,
+  parentId: string,
+  childId: string,
+  m: MistakeUpsert & { content: string }
+): { row: MistakeRow; created: boolean } {
+  const questionId = String(m.question_id ?? "").trim();
+  const db = openKb(dataDir, parentId, childId);
+  try {
+    if (questionId) {
+      const existing = db
+        .prepare(
+          `SELECT * FROM mistake_book
+            WHERE question_id = ? AND kind = 'wrong_question' AND status != 'dismissed'
+            ORDER BY last_seen DESC LIMIT 1`
+        )
+        .get(questionId) as unknown as MistakeRow | undefined;
+      if (existing) {
+        const now = nowIso();
+        db.prepare(
+          `UPDATE mistake_book SET
+             count = count + 1, last_seen = ?, updated_at = ?, status = 'open',
+             detail = CASE WHEN ? != '' THEN ? ELSE detail END,
+             knowledge_point_id = CASE WHEN knowledge_point_id = '' THEN ? ELSE knowledge_point_id END,
+             knowledge_point_name = CASE WHEN knowledge_point_name = '' THEN ? ELSE knowledge_point_name END,
+             course_ref = CASE WHEN course_ref = '' THEN ? ELSE course_ref END
+           WHERE id = ?`
+        ).run(
+          now, now,
+          String(m.detail ?? ""), String(m.detail ?? ""),
+          String(m.knowledge_point_id ?? ""), String(m.knowledge_point_name ?? ""), String(m.course_ref ?? ""),
+          existing.id
+        );
+        const row = db.prepare("SELECT * FROM mistake_book WHERE id = ?").get(existing.id) as unknown as MistakeRow;
+        return { row, created: false };
+      }
+    }
+    return { row: upsertMistake(dataDir, parentId, childId, m), created: true };
+  } finally {
+    db.close();
+  }
+}
+
+/** 考核做对 → 该原题的 open 错题条目自动标掌握（返回关闭行数；dismissed 不动）。 */
+export function masterByQuestion(
+  dataDir: string,
+  parentId: string,
+  childId: string,
+  questionId: string
+): number {
+  const qid = String(questionId ?? "").trim();
+  if (!qid) return 0;
+  const db = openKb(dataDir, parentId, childId);
+  try {
+    const now = nowIso();
+    const r = db
+      .prepare(
+        `UPDATE mistake_book
+           SET status = 'mastered', mastered_at = ?, updated_at = ?
+         WHERE question_id = ? AND kind = 'wrong_question' AND status = 'open'`
+      )
+      .run(now, now, qid);
+    return Number(r.changes);
+  } finally {
+    db.close();
+  }
+}
+
+/** 清单附题干：按 question_id 从家长库 question_bank 取 stem（跨文件联不了表，读侧批量补）。
+ *  家长库不可达/题已删 → 原样返回，不阻断清单。 */
+export function attachQuestionStems<T extends { question_id?: string }>(
+  dataDir: string,
+  parentId: string,
+  rows: T[]
+): Array<T & { question_stem?: string }> {
+  const ids = [...new Set(rows.map((r) => String(r.question_id ?? "").trim()).filter(Boolean))];
+  if (!ids.length) return rows;
+  try {
+    const parent = openParentLib(dataDir, parentId);
+    try {
+      const map = new Map<string, string>();
+      for (const chunk of Array.from({ length: Math.ceil(ids.length / 200) }, (_, i) => ids.slice(i * 200, (i + 1) * 200))) {
+        const placeholders = chunk.map(() => "?").join(",");
+        const found = parent
+          .prepare(`SELECT id, stem FROM question_bank WHERE id IN (${placeholders})`)
+          .all(...chunk) as Array<{ id: string; stem: string }>;
+        for (const q of found) map.set(q.id, q.stem);
+      }
+      if (!map.size) return rows;
+      return rows.map((r) => {
+        const stem = map.get(String(r.question_id ?? "").trim());
+        return stem ? { ...r, question_stem: stem } : r;
+      });
+    } finally {
+      parent.close();
+    }
+  } catch {
+    return rows;
   }
 }

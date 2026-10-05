@@ -79,3 +79,15 @@
 - 用户报告本地 dev + 201 生产、孩子/家长界面错题本全空。排查：数据两端完好（本地 13 条 / 201 珊珊 231 条且持续新增），服务端 HTTP 直测（自签家长 JWT）均正常返回——空的是 **web 端**渲染。
 - 根因：web shim `ops.mistakesList` 返回扁平 `{success, mistakes}`，组件按 electron IPC 契约读 `r.data?.mistakes` → HTTP 200 拿到数据仍渲染空列表；`mistakeAction` 同病（`data.ok` 缺失，成功误报失败）。electron 走真 IPC 形态正确——「昨天还能看到」= 看的是 electron 客户端。
 - 修复 commit 6317cc3：shim 三方法（list/report/action）返回 `{success, data}` 对齐 ipc-handlers；web typecheck ops.ts 清零；已部署 201（bundle index-iC1EsYe6.js，sha256 校验一致，HTTP 200）。详见 2026-09-29.md（含部署顺带带上 ISSUE-165 web 语音 shim 的说明）。
+
+---
+
+## 方案 A 落地（2026-09-29 晚）：考核错题按原题 question_id 闭环 + 读侧附题干 + kpName 快照
+
+用户评估定案（错题入题库 B 案缓行、字词建知识点 C 案不做，见 2026-09-29.md）后先做 A：
+- **读侧附题干**：`attachQuestionStems`（db/mistakes.ts）按 question_id 跨库读家长库 question_bank.stem，挂到清单行 `question_stem`；GET /kb/:childId/mistakes 与 child_mistake_log list 都接了。前端（孩子弹框 + 家长 tab）标题优先显示真题干，摘要串（考核·课程·知识点（得分））退为小字。家长库不可达/题已删不阻断清单。
+- **kpName 快照补齐**：exam-results 的 seed 补 `kpName`（courses 挂载表反查后本就在手边，此前没传进错题本）——考核错题的知识点名称从「显示为空」恢复，聚合视图可用。
+- **考核错题按原题闭环**：新增 `upsertExamMistake`（按 question_id 匹配存量条目：count+1/复发重开/补空快照；无原题退回 content upsert 旧行为）+ `masterByQuestion`（做对→该原题全部 open 条目自动 mastered）。routes/exam 提交后同步改走 questionSeeds（全量题目素材，含 correct 标志）：做错 upsert、做对 master。**修复了 exam 来源 content 拼接（标题·得分）导致去重失效、同知识点每场另立条目的问题**（201 上「每日习惯养成背诵 · 2026/9/28」「…9/29」各一条即此症）。
+- 兼容：wrongSeeds 保留（issue135 测试不断）；examMistakeSynced 哨兵在路由侧退役（attempt id 每次提交新生成，哨兵本就永不命中），db 函数保留供 worker 兜底路径。
+- 测试：mistakes.test 新增 3 例（原题合并/复发重开、masterByQuestion 边界、attachQuestionStems 含家长库夹具），相关 4 文件 25 例全绿；server tsc 仅剩 topic-package.ts 存量 Buffer 报错（非本次改动）；electron-vite build 过。
+- 待办：本地 dev 服务端与 201 需重启/部署后生效（服务端改动，客户端重打包后弹框显示题干）。

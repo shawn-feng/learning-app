@@ -7,11 +7,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openKb } from "../server/src/db/kb";
+import { openParentLib } from "../server/src/db/parent-lib";
 import {
   upsertMistake,
   listMistakes,
   examMistakeSynced,
   setMistakeStatus,
+  upsertExamMistake,
+  masterByQuestion,
+  attachQuestionStems,
 } from "../server/src/db/mistakes";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "mistakes-"));
@@ -76,5 +80,84 @@ describe("ISSUE-114：错题本", () => {
     expect(listMistakes(dataDir, parentId, cid4, { status: "open" }).length).toBe(0);
     expect(setMistakeStatus(dataDir, parentId, cid4, m.id, "open")).toBe(true);
     expect(listMistakes(dataDir, parentId, cid4, { status: "open" }).length).toBe(1);
+  });
+
+  // ===== 2026-09-29：考核错题按原题 question_id 闭环 =====
+
+  it("upsertExamMistake：同 question_id 合并 count+1；mastered 复发重开；content 每场不同也命中同一条", () => {
+    const cid5 = childOf();
+    const a = upsertExamMistake(dataDir, parentId, cid5, {
+      kind: "wrong_question", content: "考核A·论语·知之为知之（6/10）", detail: "第一次卡住",
+      source: "exam", source_ref: "attempt-a", question_id: "q-x", course_ref: "论语",
+    });
+    expect(a.created).toBe(true);
+    // 另一场考核同题再错：content 不同（标题/得分变了），按 question_id 命中同一条
+    const b = upsertExamMistake(dataDir, parentId, cid5, {
+      kind: "wrong_question", content: "考核B·论语·知之为知之（8/10）", detail: "又错了",
+      source: "exam", source_ref: "attempt-b", question_id: "q-x", course_ref: "论语",
+      knowledge_point_name: "知之为知之",
+    });
+    expect(b.created).toBe(false);
+    expect(b.row.id).toBe(a.row.id);
+    expect(b.row.count).toBe(2);
+    expect(b.row.status).toBe("open");
+    expect(b.row.knowledge_point_name).toBe("知之为知之"); // 空快照被补齐
+    expect(b.row.detail).toBe("又错了"); // 非空 detail 覆盖
+    // 标掌握后再错 → 复发重开 open（未掌握的证据）
+    setMistakeStatus(dataDir, parentId, cid5, a.row.id, "mastered");
+    const c = upsertExamMistake(dataDir, parentId, cid5, {
+      kind: "wrong_question", content: "考核C·论语·知之为知之（5/10）",
+      source: "exam", source_ref: "attempt-c", question_id: "q-x", course_ref: "论语",
+    });
+    expect(c.created).toBe(false);
+    expect(c.row.status).toBe("open");
+    expect(c.row.count).toBe(3);
+  });
+
+  it("masterByQuestion：做对→open 条目自动 mastered；dismissed 不动；无命中返回 0", () => {
+    const cid6 = childOf();
+    const m1 = upsertMistake(dataDir, parentId, cid6, {
+      kind: "wrong_question", content: "温故而知新（4/10）", source: "exam", question_id: "q-y",
+    });
+    const m2 = upsertMistake(dataDir, parentId, cid6, {
+      kind: "wrong_question", content: "温故而知新（7/10）", source: "exam", question_id: "q-y",
+    });
+    expect(m2.count).toBe(1); // 直接 upsertMistake：content 含得分不同 → 另立一条（exam 路由走 upsertExamMistake 才按原题合并）
+    setMistakeStatus(dataDir, parentId, cid6, m2.id, "dismissed");
+    const closed = masterByQuestion(dataDir, parentId, cid6, "q-y");
+    expect(closed).toBe(1); // m1 open → mastered；m2 dismissed 不动
+    const rows = listMistakes(dataDir, parentId, cid6, {});
+    expect(rows.find((r) => r.id === m1.id)?.status).toBe("mastered");
+    expect(rows.find((r) => r.id === m2.id)?.status).toBe("dismissed");
+    expect(masterByQuestion(dataDir, parentId, cid6, "q-zz")).toBe(0);
+  });
+
+  it("attachQuestionStems：按 question_id 从家长库题库补题干；无原题/题已删原样返回", () => {
+    const cid7 = childOf();
+    const pid = `parent-mk-${cid7}`;
+    const parent = openParentLib(dataDir, pid);
+    try {
+      parent.prepare(
+        "INSERT INTO question_bank (id, stem, answer, scoring, options, note, knowledge_summary, created_at, updated_at) VALUES (?, ?, ?, ?, '[]', '', '', datetime('now'), datetime('now'))"
+      ).run("q-live", "「学而时习之」的「习」是什么意思？", "温习、实践", "答对即可");
+    } finally {
+      parent.close();
+    }
+    const withLive = upsertMistake(dataDir, pid, cid7, {
+      kind: "wrong_question", content: "考核·习（6/10）", source: "exam", question_id: "q-live",
+    });
+    const withGone = upsertMistake(dataDir, pid, cid7, {
+      kind: "wrong_question", content: "考核·已删题（6/10）", source: "exam", question_id: "q-deleted",
+    });
+    const rows = attachQuestionStems(dataDir, pid, listMistakes(dataDir, pid, cid7, {}));
+    const live = rows.find((r) => r.id === withLive.id) as typeof withLive & { question_stem?: string };
+    const gone = rows.find((r) => r.id === withGone.id) as typeof withGone & { question_stem?: string };
+    expect(live.question_stem).toContain("学而时习之");
+    expect(gone.question_stem).toBeUndefined();
+    // 无原题条目（question_id 空）不影响
+    const plain = attachQuestionStems(dataDir, pid, [
+      { id: "m-plain", question_id: "", content: "曙" },
+    ]);
+    expect(plain[0]).toEqual({ id: "m-plain", question_id: "", content: "曙" });
   });
 });

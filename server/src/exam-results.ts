@@ -121,10 +121,17 @@ export interface ExamResultInput {
 export interface ExamResultMistakeSeed {
   course: string;
   kpId: string;
+  /** 知识点名称快照（家长库查得；写错题本展示/聚合用，缺省空） */
+  kpName: string;
   questionId: string;
   got: number;
   max: number;
   comment: string;
+}
+
+/** 全量题目素材（含做对的）：做对的题供错题本按原题自动标掌握（重考做对→mastered）。 */
+export interface ExamResultQuestionSeed extends ExamResultMistakeSeed {
+  correct: boolean;
 }
 
 export interface ExamResultOutput {
@@ -136,6 +143,8 @@ export interface ExamResultOutput {
   speechArchived: number;
   /** 错题素材（供调用方同步错题本；本模块不碰 mistake_book，避免双写口径分散）。 */
   wrongSeeds: ExamResultMistakeSeed[];
+  /** 全量题目素材（含做对的）：调用方按 correct 分流——做错 upsert、做对 masterByQuestion。 */
+  questionSeeds: ExamResultQuestionSeed[];
 }
 
 /**
@@ -189,6 +198,7 @@ export function persistExamResult(input: ExamResultInput): ExamResultOutput {
     }
     const detailRows: DetailRow[] = [];
     const wrongSeeds: ExamResultMistakeSeed[] = [];
+    const questionSeeds: ExamResultQuestionSeed[] = [];
     let seq = 0;
     for (const q of perQuestion) {
       const courseName = String(q.course ?? "").trim();
@@ -240,8 +250,10 @@ export function persistExamResult(input: ExamResultInput): ExamResultOutput {
         max,
         comment: String(q.aiComment ?? ""),
       });
-      if (got != null && max != null && max > 0 && got < max) {
-        wrongSeeds.push({ course: courseName, kpId, questionId, got, max, comment: String(q.aiComment ?? "") });
+      if (got != null && max != null && max > 0) {
+        const seed = { course: courseName, kpId, kpName, questionId, got, max, comment: String(q.aiComment ?? "") };
+        questionSeeds.push({ ...seed, correct: got >= max });
+        if (got < max) wrongSeeds.push(seed);
       }
     }
     // 课程 uuid 解析不到（课程已从家长库删除）时用 `name:<课程名>` 占位：既保住数据，又保证 (plan_id,course_uuid) 唯一。
@@ -443,6 +455,7 @@ export function persistExamResult(input: ExamResultInput): ExamResultOutput {
       kpRecords,
       speechArchived,
       wrongSeeds,
+      questionSeeds,
     };
   } finally {
     kb.close();

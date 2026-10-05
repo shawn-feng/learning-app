@@ -17,7 +17,7 @@
  */
 import { defineTool } from "./tool-kit.js";
 import { Type } from "typebox";
-import { listMistakes, setMistakeStatus, upsertMistake, type MistakeStatus } from "../db/mistakes.js";
+import { listMistakes, setMistakeStatus, upsertMistake, attachQuestionStems, type MistakeStatus } from "../db/mistakes.js";
 
 export interface ChildDbToolDeps {
   dataDir: string;
@@ -94,10 +94,11 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
         const status = ["open", "mastered", "dismissed"].includes(String(params.status))
           ? (params.status as MistakeStatus)
           : "open";
-        const rows = listMistakes(deps.dataDir, deps.parentId, deps.childId, {
-          status: status as MistakeStatus,
-          limit: 30,
-        });
+        const rows = attachQuestionStems(
+          deps.dataDir,
+          deps.parentId,
+          listMistakes(deps.dataDir, deps.parentId, deps.childId, { status: status as MistakeStatus, limit: 30 })
+        );
         if (!rows.length) return ok(`错题本（${status}）暂时是空的。`);
         const KIND_ZH: Record<string, string> = { wrong_question: "错题", unknown_word: "生字词", weak_point: "薄弱点" };
         const lines = rows.map((r) => {
@@ -105,8 +106,10 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
           if (String(r.course_ref ?? "").trim()) rel.push(`课程：${String(r.course_ref).trim()}`);
           if (String(r.knowledge_point_name ?? "").trim()) rel.push(`知识点：${String(r.knowledge_point_name).trim()}`);
           if (String(r.question_id ?? "").trim()) rel.push("有原题可重做");
+          // 有原题的条目显示题库真源题干（摘要 content 是「考核·课程·知识点（得分）」拼接串）
+          const title = String(r.question_stem ?? "").trim() || r.content;
           return (
-            `- [${r.id}] ${KIND_ZH[r.kind] ?? r.kind}：${r.content}${r.count > 1 ? `（${r.count} 次）` : ""}` +
+            `- [${r.id}] ${KIND_ZH[r.kind] ?? r.kind}：${title}${r.count > 1 ? `（${r.count} 次）` : ""}` +
             `${r.detail ? `｜${cut(r.detail, 80)}` : ""}${rel.length ? `｜${rel.join(" ｜ ")}` : ""}`
           );
         });

@@ -14,6 +14,7 @@ import {
   listMistakes,
   setMistakeStatus,
   upsertMistake,
+  attachQuestionStems,
   type MistakeKind,
   type MistakeStatus,
   type MistakeUpsert,
@@ -79,11 +80,13 @@ export function registerMistakeRoutes(app: FastifyInstance, deps: MistakeDeps): 
     const status = ["open", "mastered", "dismissed"].includes(String(q.status)) ? (q.status as MistakeStatus) : undefined;
     const kind = KINDS.includes(q.kind as MistakeKind) ? (q.kind as MistakeKind) : undefined;
     return withChild(req, childId, async (parentId) => {
-      const mistakes = listMistakes(deps.config.dataDir, parentId, childId, {
+      const rows = listMistakes(deps.config.dataDir, parentId, childId, {
         status,
         kind,
         limit: Number(q.limit) || 50,
       });
+      // 有原题的条目附题干真源（跨库读家长库 question_bank；展示层优先显示真题干）
+      const mistakes = attachQuestionStems(deps.config.dataDir, parentId, rows);
       return reply.code(200).send({ mistakes });
     });
   });
