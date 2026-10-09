@@ -191,6 +191,11 @@ const api = {
   authRegister: (email: string, password: string) =>
     ipcRenderer.invoke("auth:register", email, password),
   authCheck: () => ipcRenderer.invoke("auth:check"),
+  authDouyinLogin: () => ipcRenderer.invoke("auth:douyin-login"),
+  authParentStatus: () => ipcRenderer.invoke("auth:parent-status"),
+  authSetPassword: (password: string) => ipcRenderer.invoke("auth:set-password", password),
+  authDouyinResetPassword: (password: string) => ipcRenderer.invoke("auth:douyin-reset-password", password),
+  openExternal: (url: string) => ipcRenderer.invoke("shell:open_external", url),
   authLogout: () => ipcRenderer.invoke("auth:logout"),
   authVerify: (email: string, password: string) =>
     ipcRenderer.invoke("auth:verify", email, password),

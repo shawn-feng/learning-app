@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 
 export interface ServerConfig {
   port: number;
-  /** 公网认证基址（暂接 www，benefit-auth 就绪后切换） */
+  /** 公网认证基址（2026-10-08 已切 benefit-auth：/api/account/* 兼容端点） */
   upstreamBase: string;
   jwtSecret: string;
   tokenTtlDays: number;
@@ -13,12 +13,14 @@ export interface ServerConfig {
 }
 
 const DEFAULT_PORT = 8788;
-const DEFAULT_UPSTREAM = "https://www.aixuexihao.top";
+const DEFAULT_UPSTREAM = "https://auth.aixuexihao.top"; // 2026-10-08 认证切换：cloud-service → benefit-auth
 const DEFAULT_TTL_DAYS = 7;
 
 /**
  * 加载服务端配置；首次启动生成 jwtSecret 并落盘。
  * 环境变量可覆盖：SERVER_PORT / SERVER_DATA_DIR / UPSTREAM_BASE / JWT_SECRET
+ * 注意：本服务装在用户机器上，不得存放任何 SK/secret——抖音扫码换码由云端
+ * benefit-auth 直接消费授权码（免 secret），client_id（公开 AK）只存在客户端。
  */
 export function loadConfig(): ServerConfig {
   const dataDir =

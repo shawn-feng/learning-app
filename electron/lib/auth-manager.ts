@@ -94,7 +94,7 @@ export function clearCachedLicense(): void {
 }
 
 /** 登录成功后：记录当前家长 id（本地配置按家长分区）+ 迁移旧全局配置到家长目录。 */
-function activateParentSession(parentId: string): void {
+export function activateParentSession(parentId: string): void {
   try {
     setCurrentParentId(parentId);
     migrateLegacyConfigToParent(parentId);
@@ -160,6 +160,26 @@ export async function registerAndCache(
   return license;
 }
 
+/** 家长账号状态：是否已设置密码（抖音扫码家长首次为否，需先设置） */
+export async function fetchParentStatus(): Promise<{ has_password: boolean; email: string }> {
+  const license = getCachedLicense();
+  if (!license) throw new Error("未登录");
+  return serverFetch<{ has_password: boolean; email: string }>("/auth/parent-status", {
+    token: license.token,
+  });
+}
+
+/** 设置家长密码（抖音家长首次进家长中心；设置后即可用密码验证进入） */
+export async function setParentPassword(password: string): Promise<void> {
+  const license = getCachedLicense();
+  if (!license) throw new Error("未登录");
+  await serverFetch("/auth/set-password", {
+    method: "POST",
+    body: { password },
+    token: license.token,
+  });
+}
+
 // 进入家长中心时验证家长密码（走公网，以云端为准），同时刷新 token/license
 export async function verifyParentPassword(
   email: string,
@@ -198,8 +218,10 @@ export async function checkAuth(): Promise<{ authenticated: boolean; license: Li
       cached_at: new Date().toISOString(),
     };
     if (fresh.is_expired) {
-      clearCachedLicense();
-      return { authenticated: false, license: null };
+      // 待解锁（任务门禁 TaskGate 轮询）是预期状态：保留本地凭证，权益到手后
+      // 下一轮轮询即可自动放行。不能清凭证——清了之后门禁页没有 token 可查，
+      // 会永远卡在「等待检测中」（2026-10-08 实测 bug）。
+      return { authenticated: false, license: fresh };
     }
     cacheLicense(fresh);
     return { authenticated: true, license: fresh };

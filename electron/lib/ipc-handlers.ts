@@ -1,6 +1,8 @@
 import {
   getCurrentParentId, ipcMain, app, BrowserWindow, dialog, shell, screen, type IpcMainInvokeEvent } from "electron";
 import { loginAndCache, registerAndCache, checkAuth, getCachedLicense, clearCachedLicense, verifyParentPassword, verifyLicenseWithCloud } from "./auth-manager";
+import { douyinLoginFlow, douyinResetParentPassword } from "./douyin-login";
+import { fetchParentStatus, setParentPassword } from "./auth-manager";
 import { addChild, listChildren, authChild, getProfile, deleteChild, resetChildPassword, updateChildProfile, changeChildPassword } from "./child-auth";
 import { getChildDir, getUploadsDir, pruneUploads, getServerUrl, setServerUrl , getCurrentParentId } from "./config";
 import { getAgentPrompt, saveAgentPrompt, listAgentPromptHistory, restoreAgentPromptVersion, prefetchAgents, fetchAgentPromptRemote } from "./agent-prompts";
@@ -270,6 +272,59 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     clearCachedLicense();
     stopConfigSync();
     return { success: true };
+  });
+
+  // 抖音扫码登录（benefit-auth IdP）：本地回调收 code → 服务端换会话；
+  // needs_task=true 表示初始待解锁，渲染层引导去个人中心完成任务并轮询 authCheck。
+  ipcMain.handle("auth:douyin-login", async () => {
+    try {
+      const result = await douyinLoginFlow();
+      if (result.success) {
+        void prefetchAgents().catch(() => {});
+        startConfigSync();
+      }
+      return result;
+    } catch (err) {
+      return {
+        success: false, needs_task: false, license: null, email: "",
+        benefit_user_token: "", me_url: "", error: (err as Error).message,
+      };
+    }
+  });
+
+  ipcMain.handle("auth:parent-status", async () => {
+    try {
+      return await fetchParentStatus();
+    } catch (err) {
+      return { has_password: true, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle("auth:set-password", async (_e, password: string) => {
+    try {
+      await setParentPassword(password);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 忘记家长中心密码：抖音重新扫码确认身份后直接重置（无需旧密码）
+  ipcMain.handle("auth:douyin-reset-password", async (_e, password: string) => {
+    try {
+      return await douyinResetParentPassword(password);
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 打开系统浏览器（任务中心/授权页）；仅允许 http(s)
+  ipcMain.handle("shell:open_external", async (_e, url: string) => {
+    if (typeof url === "string" && /^https?:\/\//i.test(url)) {
+      await shell.openExternal(url);
+      return { success: true };
+    }
+    return { success: false, error: "invalid url" };
   });
 
   ipcMain.handle("child:add", async (_e, data: any) => {

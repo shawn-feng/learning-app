@@ -12,6 +12,7 @@ import NamespacePanel from "../components/NamespacePanel";
 import OpenApiSettings from "../components/OpenApiSettings";
 // ISSUE-144 P5：家长「场景口径」编辑器（按场景覆盖助手口径，存服务端 agents 库）
 import SceneSkillSettings from "../components/SceneSkillSettings";
+import AccountSettings from "../components/AccountSettings";
 
 // ISSUE-039 + token-plan 拆分：
 // 仅保留国内/已确认的 provider，移除国外 provider（anthropic / google / openrouter / groq）。
@@ -36,7 +37,7 @@ const PROVIDERS = [
 ];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "voice" | "evaluation" | "vision" | "scheduler" | "feishu" | "scene" | "ns" | "openapi" | "general" | "backup">("models");
+  const [tab, setTab] = useState<"models" | "voice" | "evaluation" | "vision" | "scheduler" | "feishu" | "scene" | "ns" | "openapi" | "general" | "backup" | "account">("models");
   const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
@@ -166,6 +167,7 @@ export default function Settings() {
             ["openapi", "开放接口"],
             ["backup", "数据备份"],
             ["general", "通用设置"],
+            ["account", "账号安全"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -351,6 +353,7 @@ export default function Settings() {
       {tab === "ns" && <NamespacePanel />}
       {tab === "openapi" && <OpenApiSettings />}
       {tab === "general" && <GeneralSettings />}
+      {tab === "account" && <AccountSettings />}
     </div>
   );
 }

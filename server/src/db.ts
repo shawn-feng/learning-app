@@ -37,6 +37,19 @@ export function openDb(dataDir: string): DatabaseSync {
       }
     }
   }
+  // benefit-auth 接入（2026-09-21）：parents 幂等补抖音身份两列（新建库由 CREATE TABLE 直接带上）
+  {
+    const hasParents = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='parents'").get();
+    if (hasParents) {
+      const parentCols = db.prepare("PRAGMA table_info(parents)").all() as Array<{ name: string }>;
+      if (!parentCols.some((c) => c.name === "benefit_user_id")) {
+        db.exec("ALTER TABLE parents ADD COLUMN benefit_user_id TEXT");
+      }
+      if (!parentCols.some((c) => c.name === "benefit_user_token")) {
+        db.exec("ALTER TABLE parents ADD COLUMN benefit_user_token TEXT");
+      }
+    }
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
@@ -48,6 +61,8 @@ export function openDb(dataDir: string): DatabaseSync {
       plan TEXT,
       cloud_token TEXT,
       license_json TEXT,
+      benefit_user_id TEXT,
+      benefit_user_token TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );

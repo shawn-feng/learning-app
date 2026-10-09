@@ -23,6 +23,10 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
   const [parentPassword, setParentPassword] = useState("");
   const [parentError, setParentError] = useState("");
   const [parentLoading, setParentLoading] = useState(false);
+  // 抖音扫码家长首次进家长中心：无密码 → 先设置（verify=验证 / setup=设置 / reset=忘记密码,扫码重置）
+  const [parentPwdMode, setParentPwdMode] = useState<"verify" | "setup" | "reset">("verify");
+  const [parentNewPassword, setParentNewPassword] = useState("");
+  const [parentNewConfirm, setParentNewConfirm] = useState("");
 
   // 孩子密码验证
   const [childPassword, setChildPassword] = useState("");
@@ -46,7 +50,61 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
     });
   }, []);
 
+  async function openParentAuth() {
+    setShowParentAuth(true);
+    setParentPassword("");
+    setParentError("");
+    setParentNewPassword("");
+    setParentNewConfirm("");
+    setParentPwdMode("verify");
+    try {
+      const status = await window.api.authParentStatus();
+      if (status && status.has_password === false) setParentPwdMode("setup");
+    } catch {
+      /* 查询失败按已设密码处理，走原验证流程 */
+    }
+  }
+
+  function startParentReset() {
+    setParentError("");
+    setParentPassword("");
+    setParentPwdMode("reset");
+  }
+
   async function handleParentEnter() {
+    setParentError("");
+    if (parentPwdMode === "setup" || parentPwdMode === "reset") {
+      if (!parentNewPassword || parentNewPassword.length < 8) {
+        setParentError("密码至少 8 位");
+        return;
+      }
+      if (parentNewPassword !== parentNewConfirm) {
+        setParentError("两次输入的密码不一致");
+        return;
+      }
+      setParentLoading(true);
+      try {
+        if (parentPwdMode === "setup") {
+          const result = await window.api.authSetPassword(parentNewPassword);
+          if (!result.success) {
+            setParentError(result.error || "设置失败，请重试");
+            return;
+          }
+        } else {
+          // 忘记密码：弹窗已确认新密码 → 打开浏览器抖音扫码确认身份 → 服务端直接重置
+          const result = await window.api.authDouyinResetPassword(parentNewPassword);
+          if (!result.success) {
+            setParentError(result.error || "重置失败，请重试");
+            return;
+          }
+        }
+        setShowParentAuth(false);
+        onEnterParent();
+      } finally {
+        setParentLoading(false);
+      }
+      return;
+    }
     if (!parentPassword) {
       setParentError("请输入密码");
       return;
@@ -115,7 +173,7 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
 
       {/* 家长入口 */}
       <div className="avatars">
-        <div className="avatar-card parent-card" onClick={() => { setParentPassword(""); setParentError(""); setShowParentAuth(true); }}>
+        <div className="avatar-card parent-card" onClick={openParentAuth}>
           <div className="avatar">👨‍👩‍👧</div>
           <div className="name">家长</div>
           <div style={{ fontSize: 12, color: "#888" }}>家长中心</div>
@@ -176,7 +234,23 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
       {showParentAuth && (
         <div className="modal-overlay" onClick={() => setShowParentAuth(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>家长验证</h2>
+            <h2>
+              {parentPwdMode === "setup"
+                ? "设置家长密码"
+                : parentPwdMode === "reset"
+                  ? "重置家长密码"
+                  : "家长验证"}
+            </h2>
+            {parentPwdMode === "setup" && (
+              <p style={{ fontSize: 13, color: "#667eea", marginBottom: 10 }}>
+                检测到你是抖音扫码登录，首次进入请设置家长密码（用于以后验证）
+              </p>
+            )}
+            {parentPwdMode === "reset" && (
+              <p style={{ fontSize: 13, color: "#667eea", marginBottom: 10 }}>
+                输入新密码后，将打开浏览器用抖音扫码确认身份，确认后密码即重置
+              </p>
+            )}
             {parentError && (
               <div style={{ color: "red", marginBottom: 12 }}>
                 {parentError}
@@ -198,21 +272,54 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
                 )}
               </div>
             )}
-            <label>家长账号</label>
-            <input value={email} disabled style={{ background: "#f5f5f5", color: "#888" }} />
-            <label>密码</label>
-            <input
-              type="password"
-              value={parentPassword}
-              onChange={(e) => setParentPassword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleParentEnter()}
-              autoFocus
-              placeholder="请输入家长密码"
-            />
+            {parentPwdMode === "verify" ? (
+              <>
+                <label>家长密码</label>
+                <input
+                  type="password"
+                  value={parentPassword}
+                  onChange={(e) => setParentPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleParentEnter()}
+                  autoFocus
+                  placeholder="请输入家长密码"
+                />
+                <div
+                  style={{ fontSize: 12, color: "#667eea", marginTop: 8, cursor: "pointer", textAlign: "right" }}
+                  onClick={startParentReset}
+                >
+                  忘记密码？抖音扫码重置
+                </div>
+              </>
+            ) : (
+              <>
+                <label>{parentPwdMode === "setup" ? "设置密码（至少 8 位）" : "新密码（至少 8 位）"}</label>
+                <input
+                  type="password"
+                  value={parentNewPassword}
+                  onChange={(e) => setParentNewPassword(e.target.value)}
+                  autoFocus
+                  placeholder={parentPwdMode === "setup" ? "设置家长密码" : "输入新密码"}
+                />
+                <label>确认密码</label>
+                <input
+                  type="password"
+                  value={parentNewConfirm}
+                  onChange={(e) => setParentNewConfirm(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleParentEnter()}
+                  placeholder="再次输入密码"
+                />
+              </>
+            )}
             <div className="modal-actions">
               <button className="cancel" onClick={() => setShowParentAuth(false)}>取消</button>
               <button className="confirm" onClick={handleParentEnter} disabled={parentLoading}>
-                {parentLoading ? "验证中..." : "进入家长中心"}
+                {parentLoading
+                  ? "处理中..."
+                  : parentPwdMode === "setup"
+                    ? "设置并进入"
+                    : parentPwdMode === "reset"
+                      ? "扫码确认并重置"
+                      : "进入家长中心"}
               </button>
             </div>
           </div>
