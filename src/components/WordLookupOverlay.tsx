@@ -73,6 +73,9 @@ export const WordLookupBubble = forwardRef<HTMLButtonElement, {
       title="查看读音"
       aria-label="查看选中字词的读音"
       onMouseDown={(e) => e.stopPropagation()}
+      // ISSUE-171：mouseup 也拦——否则点图标的 mouseup 冒泡到 document 的选区监听，
+      // 会把仍存活的文本选区当「新选词」重锚定 + 收回弹框（与随后 click 的 onOpen 竞态闪跳）
+      onMouseUp={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         onOpen();
@@ -89,7 +92,8 @@ export const WordLookupBubble = forwardRef<HTMLButtonElement, {
  * - 多音字多个读音分行展示（视觉信息）；🔊 每个词条一个、朗读字词本身——
  *   2026-09-27 修正：原设计「每个读音播拼音串」中文 TTS 会按英文读，且 edge-tts 无法指定多音字读音；
  * - 头部「朗读选中文本」按钮播放整段选中文本；
- * - fixed 定位在选中坐标旁；点击浮层内部不关闭（stopPropagation），外部/Esc 关闭由父级处理。
+ * - fixed 定位在选中坐标旁；弹框内部 mousedown/mouseup/click 全部 stopPropagation（ISSUE-171：
+ *   内部点击既不触发「点外部关闭」，也不会把残留选区当新选词重锚定），外部/Esc 关闭由父级处理。
  */
 export const WordLookupOverlay = forwardRef<HTMLDivElement, {
   state: LookupState;
@@ -125,6 +129,13 @@ export const WordLookupOverlay = forwardRef<HTMLDivElement, {
       ref={setRootRef}
       className="word-lookup-overlay"
       style={{ left: x, top: y }}
+      // ISSUE-171：mousedown/mouseup/click 全部拦在弹框内——此前只拦 click，
+      // 点 🔊 的 mouseup 冒泡到 document 的选区监听（useWordLookup onUp），Chromium 点按钮
+      // 不清文本选区 → 被当「新选词」重锚定 + setOpen(false) → 弹框连同按钮被卸载，
+      // click 永远派发不到 🔊 → 播报不响、弹框消失。拦下后：内部点击不关框、播报正常触发；
+      // 「点外部关闭」由外部 mousedown 直达 document 保证，语义不变。
+      onMouseDown={(e) => e.stopPropagation()}
+      onMouseUp={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
       role="dialog"
       aria-label="字词读音"
