@@ -38,6 +38,35 @@
   能力 → 批准后创建真活动（activity_create），把 activity_id/business_task_id 回填任务 target_config，
   .env 加 DOUYIN_BUSINESS_TASK_MODE=live 重启。
 
+## 每日视频互动任务机制（2026-09-21 上线，替代静态任务）
+
+- **任务规则**：每天 00:10（ECS cron `/etc/cron.d/benefit-daily-task`）调
+  `POST /api/admin/daily-task` 生成当日任务「X月X日 · 官方视频互动任务」：
+  对官方抖音号当日视频完成 完播/点赞/评论/转发 **任意一项**，提交凭证**人工审核**，
+  通过发放 **vip_days 7**（云端按「完成当天 +7 天、不叠加」折算进订阅）。
+  任务当天 23:59 (+08:00) 过期，次日生成新任务 → 驱动每周持续做任务。
+- **任务类型**：新增 `video_interact`（manual-only，见 apps.py `_TASK_TYPES`）。
+- **管理端**（X-Admin-Token，值在 /opt/benefit-auth/.env 的 BENEFIT_ADMIN_TOKEN）：
+  - 审核页：`https://www.aixuexihao.top/admin/reviews?token=<BENEFIT_ADMIN_TOKEN>`（书签收藏）
+  - API：POST /api/admin/daily-task（幂等）｜GET /api/admin/pending-reviews｜POST /api/admin/review
+- **每日视频轮换**：编辑 `/opt/benefit-auth/daily-videos.json` 的 `videos` 列表
+  （按天轮换链接进任务描述）；不配置则描述为「打开官方抖音号主页看最新视频」。
+- **旧任务已全部下线**（7 个：5 个 demo-bt_* 积分任务 + 绑定抖音账号 + 关注官方抖音号）；
+  demo-bt_* 属内置 demo 应用 app_demo_builtin。
+- 已知限制：完播/点赞/评论/转发无平台查询 API，只能人工审核（每日约 1 分钟）；
+  bt_* 经营任务能力审批通过后可换自动验证（business.py 目前 mock）。
+- E2E 已实测：领取→提交凭证→审核通过→7 天权益→云端折算（2026-10-07→10-14）。
+
+## IdP 应用注册：学习伙伴（2026-09-21，配合 App 抖音扫码登录）
+
+- `POST /api/app/register` 注册「学习伙伴」：app_id=`app_2cd2b7263372a407`，
+  redirect_uri=`http://127.0.0.1:17888/callback`（Electron 本地回调）；secret 存云端/LAN server .env。
+- 任务（app token 经 /api/app/tasks 创建）：绑定抖音账号(+30天,bind_account,auto)、
+  关注官方抖音号(+30天,follow_account,auto,target=站长抖音 open_id)。
+- 用途：App 家长端抖音扫码登录（/oauth/authorize → /oauth/token → 云端 /api/auth/douyin-login）
+  + 权益门禁（云端 /api/license 每次查询经 /api/app/users/{uid}/entitlements 同步 vip_days）。
+- 零代码改动，纯存量 API。
+
 ## v0.4 视频互动数据分析（2026-09-21 已上线）
 
 - **抖音互动数据接入**（`platforms/douyin.py` + `routers/me.py`）：

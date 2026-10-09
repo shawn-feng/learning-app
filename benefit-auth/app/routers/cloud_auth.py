@@ -6,8 +6,8 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from .database import get_db
-from .security import decode_token
+from ..database import get_db
+from ..security import decode_token
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 JWT_SECRET = os.environ.get("JWT_SECRET", "learning-app-dev-secret-key-change-in-production-32bytes")
@@ -63,7 +63,7 @@ async def get_current_parent(request: Request):
 @router.post("/register")
 async def register(req: RegisterRequest, db=Depends(get_db)):
     existing = await db.execute_fetchall(
-        "SELECT id FROM parents WHERE email = ?", (req.email,)
+        "SELECT id FROM compat_parents WHERE email = ?", (req.email,)
     )
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -72,13 +72,13 @@ async def register(req: RegisterRequest, db=Depends(get_db)):
     password_hash = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
 
     await db.execute(
-        "INSERT INTO parents (id, email, password_hash) VALUES (?, ?, ?)",
+        "INSERT INTO compat_parents (id, email, password_hash) VALUES (?, ?, ?)",
         (parent_id, req.email, password_hash),
     )
 
     now = datetime.now(timezone.utc)
     await db.execute(
-        """INSERT INTO subscriptions (id, parent_id, plan, max_children, features, starts_at, expires_at, status)
+        """INSERT INTO compat_subscriptions (id, parent_id, plan, max_children, features, starts_at, expires_at, status)
            VALUES (?, ?, 'basic', 4, '["learning"]', ?, ?, 'active')""",
         (str(uuid.uuid4()), parent_id, now.isoformat(), (now + timedelta(days=30)).isoformat()),
     )
@@ -91,7 +91,7 @@ async def register(req: RegisterRequest, db=Depends(get_db)):
 @router.post("/login")
 async def login(req: LoginRequest, db=Depends(get_db)):
     rows = await db.execute_fetchall(
-        "SELECT id, password_hash FROM parents WHERE email = ?", (req.email,)
+        "SELECT id, password_hash FROM compat_parents WHERE email = ?", (req.email,)
     )
     if not rows:
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -108,7 +108,7 @@ async def login(req: LoginRequest, db=Depends(get_db)):
 async def get_me(parent_id: str = Depends(get_current_parent), db=Depends(get_db)):
     """返回当前登录家长的信息（网页个人页使用）"""
     rows = await db.execute_fetchall(
-        "SELECT id, email, created_at FROM parents WHERE id = ?", (parent_id,)
+        "SELECT id, email, created_at FROM compat_parents WHERE id = ?", (parent_id,)
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Parent not found")
@@ -133,7 +133,7 @@ async def douyin_login(req: DouyinLoginRequest, db=Depends(get_db)):
     info_email = (urows[0]["email"] if urows else "") or ""
 
     rows = await db.execute_fetchall(
-        "SELECT id, email FROM parents WHERE benefit_user_id = ?", (benefit_user_id,)
+        "SELECT id, email FROM compat_parents WHERE benefit_user_id = ?", (benefit_user_id,)
     )
     is_new = not rows
     if rows:
@@ -143,18 +143,18 @@ async def douyin_login(req: DouyinLoginRequest, db=Depends(get_db)):
         # 邮箱仅作账号标识：优先用中台注册邮箱，否则用抖音占位邮箱（保证唯一）
         email = info_email.strip().lower() or f"douyin_{benefit_user_id[:12]}@douyin.local"
         suffix = 0
-        while await db.execute_fetchall("SELECT 1 FROM parents WHERE email = ?", (email,)):
+        while await db.execute_fetchall("SELECT 1 FROM compat_parents WHERE email = ?", (email,)):
             suffix += 1
             email = f"douyin_{benefit_user_id[:12]}_{suffix}@douyin.local"
         password_hash = bcrypt.hashpw(secrets.token_hex(24).encode(), bcrypt.gensalt()).decode()
         now = datetime.now(timezone.utc)
         await db.execute(
-            "INSERT INTO parents (id, email, password_hash, benefit_user_id, password_set) VALUES (?, ?, ?, ?, 0)",
+            "INSERT INTO compat_parents (id, email, password_hash, benefit_user_id, password_set) VALUES (?, ?, ?, ?, 0)",
             (parent_id, email, password_hash, benefit_user_id),
         )
         # 初始订阅即时过期（抖音家长走「完成任务→加权益」解锁；邮箱注册的 30 天体验不受影响）
         await db.execute(
-            """INSERT INTO subscriptions (id, parent_id, plan, max_children, features, starts_at, expires_at, status)
+            """INSERT INTO compat_subscriptions (id, parent_id, plan, max_children, features, starts_at, expires_at, status)
                VALUES (?, ?, 'douyin', 4, '["learning"]', ?, ?, 'active')""",
             (str(uuid.uuid4()), parent_id, now.isoformat(), now.isoformat()),
         )
@@ -168,7 +168,7 @@ async def douyin_login(req: DouyinLoginRequest, db=Depends(get_db)):
 async def parent_status(parent_id: str = Depends(get_current_parent), db=Depends(get_db)):
     """家长账号状态（LAN server 代理用）：是否已设置密码（抖音家长首次为否）"""
     rows = await db.execute_fetchall(
-        "SELECT id, email, password_set FROM parents WHERE id = ?", (parent_id,)
+        "SELECT id, email, password_set FROM compat_parents WHERE id = ?", (parent_id,)
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Parent not found")
@@ -188,7 +188,7 @@ async def set_password(req: SetPasswordRequest, parent_id: str = Depends(get_cur
         raise HTTPException(status_code=400, detail="密码过长")
     password_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
     await db.execute(
-        "UPDATE parents SET password_hash = ?, password_set = 1 WHERE id = ?",
+        "UPDATE compat_parents SET password_hash = ?, password_set = 1 WHERE id = ?",
         (password_hash, parent_id),
     )
     await db.commit()

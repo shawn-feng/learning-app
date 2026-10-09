@@ -104,6 +104,68 @@ curl -sS -X POST http://127.0.0.1:8000/api/version \
 - 页面为 FastAPI 直接渲染的纯内联 HTML（`cloud-service/app/pages.py`），无外部依赖。
 - token 存于浏览器 localStorage；如需更高安全可改为 httpOnly Cookie（当前为纯 JSON API，localStorage 为最简方案）。
 
+## ⚠️ 架构合并（2026-10-09 方案A' 已上线）：单服务单库
+
+learning-cloud（:8000）与 benefit-auth（:9001）**已合并为一个服务**：合并版跑在
+**benefit-auth（:9001）**，nginx 全部流量（含原 /api/version、/api/auth、/api/license、
+/api/sync、/download）已切换到 9001；**learning-cloud 已 stop+disable**（文件保留可回滚）。
+
+- 合并内容：原 cloud-service 的认证兼容面（/api/auth/register|login|me|douyin-login|
+  parent-status|set-password + /api/license，compat_parents/compat_subscriptions 表）、
+  版本分发（/api/version + /download）、消息交换（/api/sync）全部并入 benefit-auth。
+- 数据：learning-cloud 的 app.db 五张表已迁入 benefit.db（21 parents/22 subs/11 versions）。
+- .env 合一：/opt/benefit-auth/.env 现含 JWT_SECRET（旧 cloud 会话验签）、ADMIN_TOKEN、
+  DOWNLOAD_DIR=/opt/learning-cloud/download、DAILY_VIDEOS_FILE 等。
+- 回滚：`systemctl stop benefit-auth && systemctl start learning-cloud benefit-auth(旧单元不可用,
+  用备份目录) + nginx 9001→8000 切回`；备份在 /opt/backups/merge-20261009-112017。
+- 部署方式变更：**只需部署/重启 benefit-auth 一个服务**；learning-cloud 不再部署。
+- 本地仓库：cloud-service/app（合并版源码，单 app.db）；benefit-auth/app 为旧独立版（已停用）。
+
+## 抖音扫码登录 + 权益门禁（2026-09-21 接入 benefit-auth IdP）
+
+家长登录界面新增「抖音扫码登录」：抖音扫码 → benefit-auth 认证 → 自动找/建家长账号；
+无权益的账号进入「任务门禁」页（打开中台个人中心做任务），**每次查有效期时云端自动把
+新完成的任务权益折算进订阅有效期**，客户端轮询到有效后自动进主页。
+
+```
+Electron 登录页「抖音扫码登录」
+  → 本地回调 http://127.0.0.1:17888/callback + 系统浏览器打开
+     https://www.aixuexihao.top/oauth/authorize?client_id=<学习伙伴 app_id>
+  → 扫码授权 → 302 回本地带 code
+  → LAN server POST /api/v1/auth/douyin（code→benefit token→云端建号→license→会话）
+  → 云端 POST /api/auth/douyin-login（localhost:9001 /oauth/userinfo 核验身份）
+  → 云端 GET /api/license 每次调用：benefit-auth 拉取新权益(vip_days) → 幂等延长订阅
+```
+
+| 项 | 值 |
+|---|---|
+| benefit-auth 应用 | 学习伙伴 `app_2cd2b7263372a407`（secret 只存 ECS benefit-auth `.env`，不入库不入码；LAN server 免 secret 纯转发） |
+| redirect_uri | `http://127.0.0.1:17888/callback`（客户端本地回调端口固定 17888） |
+| 中台任务 | 绑定抖音账号(+30天,自动)、关注官方抖音号(+30天,自动)；用 app token 经 /api/app/tasks 管理 |
+| 云端 .env | BENEFIT_BASE=http://127.0.0.1:9001 / BENEFIT_APP_ID / BENEFIT_APP_SECRET |
+| LAN server 配置 | **无 SK**（0.5.23 起：抖音换码由云端 benefit-auth 免 secret 消费授权码，本端纯转发；client_id 公开 AK 只在客户端） |
+
+### 登录形态简化（2026-09-21 第二批，随上一批同客户端发布）
+- **中台注册界面已下线**（benefit-auth 首页只剩账号登录+抖音扫码；新用户抖音扫码自动注册）。
+  后端 /api/account/register 保留但无 UI 入口。
+- **App 登录页只留「抖音扫码登录」**（+服务端地址配置）；注销后再登录同样只能扫码。
+- **家长中心入口弹窗只输密码**（不显示账号）：抖音家长首次进入=设置密码；
+  「忘记密码？抖音扫码重置」= 输新密码→浏览器扫码确认→LAN
+  `POST /api/v1/auth/douyin-reset-password`（code→benefit_user_id→云端重置）→直接进入。
+- **家长中心内改密码**：设置 →「账号安全」标签（走 session 鉴权 /api/auth/set-password）。
+- 云端新增：`GET /api/auth/parent-status`、`POST /api/auth/set-password`（已部署，E2E 通过）。
+
+### 上线清单
+- [x] 云端已部署（/api/auth/douyin-login + license 权益同步，E2E 实测通过 2026-09-21）
+- [ ] LAN server 换新版 server.cjs（≥0.5.21，含 /api/v1/auth/douyin），201 部署须用户同意；
+      systemd 或 server-config.json 配 BENEFIT_CLIENT_ID/SECRET
+- [ ] 客户端发新版（登录页抖音按钮 + 任务门禁页；本地 dev 可先测）
+
+### 降级/回滚
+- 抖音登录不影响既有邮箱登录；LAN server 未配 BENEFIT_* 时 /api/v1/auth/douyin 返回 503 提示未配置。
+- 云端 benefit-auth 不可达时 license 同步静默跳过（照常返回当前有效期）。
+- 回滚云端：恢复备份 tar（/opt/backups/learning-cloud-app-<ts>.tar.gz）。
+
 ## 安全清单
 
 - [x] JWT_SECRET 为 64 字符随机值，仅存服务器 `/opt/learning-cloud/.env`（600）

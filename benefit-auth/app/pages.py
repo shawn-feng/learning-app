@@ -188,204 +188,6 @@ a { color:var(--primary); text-decoration:none; }
 .c-tag.me { background:#e0f2fe; color:#0369a1; }
 """
 
-# ==================== 首页 ====================
-_INDEX_PAGE = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>南昌嗯吧嗯互动数据分析工具</title>
-<style>%CSS%</style>
-</head>
-<body>
-<!-- 顶部导航 -->
-<div class="nav">
-  <div class="nav-inner">
-    <div class="brand"><div class="brand-badge">嗯</div>南昌嗯吧嗯互动数据分析工具</div>
-    <div class="nav-actions">
-      <a class="btn btn-outline" href="#features">服务介绍</a>
-      <button class="btn btn-primary" id="navLoginBtn">登 录</button>
-    </div>
-  </div>
-</div>
-
-<!-- Hero -->
-<header class="hero">
-  <div class="hero-badge">🚀 面向第三方 App 的一站式认证中台</div>
-  <h1>一个账号，完成各平台的<br><span class="grad">互动数据分析</span></h1>
-  <p class="lead">
-    南昌嗯吧嗯互动数据分析工具：登录并绑定平台账号，自动完成各平台的视频互动数据分析，任务进度与结果实时可见。
-  </p>
-  <div class="hero-actions">
-    <button class="btn btn-primary" id="heroLoginBtn" style="height:48px;padding:0 30px;font-size:15px">扫码登录分析互动数据</button>
-    <a class="btn btn-outline" href="#features" style="height:48px;padding:0 30px;font-size:15px">了解服务</a>
-  </div>
-</header>
-
-<!-- 能力卡片 -->
-<section class="section" id="features">
-  <h2>核心能力</h2>
-  <p class="sub2">从认证到兑付，全流程托管</p>
-  <div class="cards">
-    <div class="card">
-      <div class="icon">🔐</div>
-      <h3>统一认证</h3>
-      <p>用户通过抖音等自媒体平台扫码即可登录，无需单独注册。中台统一管理用户身份与平台账号绑定。</p>
-    </div>
-    <div class="card">
-      <div class="icon">📋</div>
-      <h3>营销任务</h3>
-      <p>App 自主创建任务（关注、发布、点赞评论等），配置完成条件与奖励，任务状态实时可见、可人工审核。</p>
-    </div>
-    <div class="card">
-      <div class="icon">🎁</div>
-      <h3>权益发放</h3>
-      <p>任务完成自动发放权益并安全存储，App 通过开放接口查询用户权益，按权益情况提供服务与核销。</p>
-    </div>
-    <div class="card">
-      <div class="icon">⚙️</div>
-      <h3>开放接入</h3>
-      <p>App 注册即得 app_id / app_secret，通过标准 REST API 创建任务、查询权益，几分钟完成对接。</p>
-    </div>
-    <div class="card">
-      <div class="icon">🔍</div>
-      <h3>智能验证</h3>
-      <p>关注、发布等任务由平台开放 API 自动验证；点赞评论等提交凭证后人工审核，杜绝刷单。</p>
-    </div>
-    <div class="card">
-      <div class="icon">🛡️</div>
-      <h3>安全合规</h3>
-      <p>JWT 双 Token（App/用户）隔离权限，密钥哈希存储，HTTPS 全链路加密，权益记录可追溯。</p>
-    </div>
-  </div>
-</section>
-
-<!-- 已支持平台 -->
-<section class="section">
-  <h2>支持登录的平台</h2>
-  <p class="sub2">更多平台接入中</p>
-  <div class="platforms" id="platWall">
-    <div class="plat-chip on"><span class="dot"></span>抖音</div>
-    <div class="plat-chip soon"><span class="dot"></span>快手</div>
-    <div class="plat-chip soon"><span class="dot"></span>小红书</div>
-    <div class="plat-chip soon"><span class="dot"></span>B 站</div>
-    <div class="plat-chip soon"><span class="dot"></span>微信</div>
-  </div>
-</section>
-
-<footer class="footer">© 2026 南昌嗯吧嗯互动数据分析工具<br><a class="icp-link" href="https://beian.miit.gov.cn/#/Integrated/recordQuery" target="_blank" rel="noopener noreferrer">赣ICP备2026020397号-1</a><span class="icp-sep">|</span><a class="icp-link" href="https://beian.mps.gov.cn/#/query/webSearch" target="_blank" rel="noopener noreferrer"><img src="https://beian.mps.gov.cn/web/assets/logo01.6189a29f.png" alt="公安备案">赣公网安备36011102001315号</a></footer>
-
-<!-- 登录弹层 -->
-<div class="overlay" id="loginOverlay">
-  <div class="modal">
-    <div class="modal-head">
-      <h3 id="modalTitle">选择登录平台</h3>
-      <button class="modal-close" id="closeBtn">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="msg" id="msg"></div>
-      <!-- 视图1：平台列表 -->
-      <div id="viewPlats">
-        <div class="plat-grid">
-          <button class="plat-item" data-platform="douyin">
-            <span class="plogo" style="background:#111827">抖</span>
-            <span><span class="pname">抖音</span><br><span class="pstatus">扫码快捷登录</span></span>
-          </button>
-          <button class="plat-item" disabled>
-            <span class="plogo" style="background:#ff6a00">快</span>
-            <span><span class="pname">快手</span><br><span class="pstatus">即将上线</span></span>
-          </button>
-          <button class="plat-item" disabled>
-            <span class="plogo" style="background:#ff2442">红</span>
-            <span><span class="pname">小红书</span><br><span class="pstatus">即将上线</span></span>
-          </button>
-          <button class="plat-item" disabled>
-            <span class="plogo" style="background:#00a1d6">B</span>
-            <span><span class="pname">哔哩哔哩</span><br><span class="pstatus">即将上线</span></span>
-          </button>
-        </div>
-        <p style="font-size:12px;color:#94a3b8;text-align:center;margin-top:16px">首次登录将自动创建账号 · 登录即同意《用户协议》</p>
-      </div>
-      <!-- 视图2：二维码 -->
-      <div id="viewQr" style="display:none">
-        <div class="back-link" id="backBtn">← 返回平台选择</div>
-        <div class="qr-box" id="qrBox"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-const overlay = document.getElementById('loginOverlay');
-const msg = document.getElementById('msg');
-const viewPlats = document.getElementById('viewPlats');
-const viewQr = document.getElementById('viewQr');
-const qrBox = document.getElementById('qrBox');
-
-function openLogin() { overlay.classList.add('show'); msg.className='msg'; msg.textContent=''; showPlats(); }
-function closeLogin() { overlay.classList.remove('show'); stopPolling(); }
-function showPlats() { viewQr.style.display='none'; viewPlats.style.display='block'; document.getElementById('modalTitle').textContent='选择登录平台'; }
-function showMsg(text, type) { msg.className='msg '+(type||'error'); msg.textContent=text; }
-
-document.getElementById('navLoginBtn').addEventListener('click', openLogin);
-document.getElementById('heroLoginBtn').addEventListener('click', openLogin);
-document.getElementById('closeBtn').addEventListener('click', closeLogin);
-overlay.addEventListener('click', (e) => { if (e.target === overlay) closeLogin(); });
-document.getElementById('backBtn').addEventListener('click', showPlats);
-
-// /login 直接展开登录
-if (location.pathname === '/login') openLogin();
-
-// ---------- 二维码登录 ----------
-let pollTimer = null;
-function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
-
-document.querySelectorAll('.plat-item[data-platform]').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    btn.disabled = true;
-    viewPlats.style.display='none'; viewQr.style.display='block';
-    document.getElementById('modalTitle').textContent='扫码登录 · 抖音';
-    qrBox.innerHTML = '<div class="spin"></div><p class="qr-hint" style="margin-top:10px">正在生成二维码…</p>';
-    try {
-      const res = await fetch('/api/oauth/douyin/qrcode');
-      const data = await res.json();
-      if (!res.ok) {
-        qrBox.innerHTML = '<p style="color:#94a3b8;font-size:14px;padding:20px 0">⚠️ ' + (data.detail || '二维码生成失败') + '</p>';
-        return;
-      }
-      qrBox.innerHTML =
-        '<img src="' + data.qr_data_url + '" alt="登录二维码">' +
-        '<div class="qr-title">打开抖音 App 扫码登录</div>' +
-        '<div class="qr-hint">使用抖音「扫一扫」扫描二维码，<br>在手机上确认授权后自动登录</div>';
-      startPolling(data.qr_code);
-    } catch (err) {
-      qrBox.innerHTML = '<p style="color:#94a3b8;font-size:14px;padding:20px 0">网络错误，请重试</p>';
-    } finally {
-      btn.disabled = false;
-    }
-  });
-});
-
-async function startPolling(qrCode) {
-  stopPolling();
-  pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch('/api/oauth/douyin/status?qr_code=' + encodeURIComponent(qrCode));
-      const data = await res.json();
-      if (data.status === 'complete') {
-        stopPolling();
-        localStorage.setItem('benefit_token', data.token);
-        qrBox.innerHTML = '<div class="qr-title">✅ 登录成功！</div><div class="qr-hint">正在跳转个人中心…</div>';
-        setTimeout(() => location.href = '/me', 800);
-      }
-    } catch (e) { /* 忽略瞬时错误 */ }
-  }, 2000);
-}
-</script>
-</body>
-</html>
-"""
-
 # ==================== 个人页 ====================
 _ME_PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -412,13 +214,12 @@ _ME_PAGE = """<!DOCTYPE html>
     <h2 style="margin:18px 0 10px">🔗 平台账号</h2>
     <div id="bindList"><div class="task">加载中…</div></div>
 
-    <h2 style="margin:18px 0 10px">🎬 我的抖音视频</h2>
-    <div id="videoList"><div class="task">加载中…</div></div>
-
-    <h2 style="margin:18px 0 10px">📋 各应用任务</h2>
+    <h2 style="margin:18px 0 10px">📋 最新任务</h2>
     <div id="taskList"><div class="task">加载中…</div></div>
 
     <h2 style="margin:18px 0 10px">🎁 我的权益</h2>
+    <div id="vipSummary"></div>
+    <h2 style="margin:18px 0 10px;font-size:14px;color:#475569">📜 权益获取记录</h2>
     <div id="entList"><div class="task">加载中…</div></div>
 
     <a class="logout" href="#" id="logout">退出登录</a>
@@ -453,41 +254,69 @@ async function load() {
   document.getElementById('bindNowBtn').onclick = () => openBind('douyin');
 
   loadBindings(acc);
-  loadVideos(acc);
 
   const t = await api('/api/me/tasks');
   const tl = document.getElementById('taskList'); tl.innerHTML = '';
   const acts = (t.tasks || []).slice().sort((a, b) =>
     ((a.my_status === 'granted' || a.my_status === 'rejected') ? 1 : 0) -
     ((b.my_status === 'granted' || b.my_status === 'rejected') ? 1 : 0));
-  const BT_LABELS = { bt_like:'点赞视频', bt_follow:'关注账号', bt_finish:'完播视频', bt_share:'转发视频', bt_comment:'评论视频' };
-  const GO_TEXT = { bt_like:'去点赞', bt_follow:'去关注', bt_finish:'去看完', bt_share:'去转发', bt_comment:'去评论' };
-  acts.forEach(task => {
+  const BT_LABELS = { bt_like:'点赞视频', bt_follow:'关注账号', bt_finish:'完播视频', bt_share:'转发视频', bt_comment:'评论视频', bt_interact:'互动任务' };
+  const GO_TEXT = { bt_like:'去点赞', bt_follow:'去关注', bt_finish:'去看完', bt_share:'去转发', bt_comment:'去评论', bt_interact:'去完成' };
+  // 最新任务：只展示最近一条（可做的排最前），历史任务不再罗列
+  acts.slice(0, 1).forEach(task => {
     const statusMap = { claimed:['已领取','claimed'], submitted:['待审核','submitted'], granted:['已完成','granted'], rejected:['未通过','rejected'], null:['未领取','none'] };
     const [label, cls] = statusMap[task.my_status || 'null'];
     const typeLabel = BT_LABELS[task.task_type] || task.task_type;
     const tc = task.target_config || {};
-    const targetLine = tc.target_name
-      ? `<div style="margin-top:6px;color:#334155">🎯 目标账号：<b>${tc.target_name}</b>${tc.video_title ? ' · 视频：《' + tc.video_title + '》' : ''}</div>`
-      : '';
+    // 官方账号二维码：码即入口，右侧只说扫码后做什么 + 显著权益
+    const qrGuide = task.task_type === 'bt_interact' ? `
+      <div style="display:flex;gap:14px;margin-top:12px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:12px;padding:12px">
+        <img src="/static/douyin-account-qr.jpg" alt="官方账号抖音二维码"
+             style="width:120px;height:auto;border-radius:10px;flex-shrink:0">
+        <div style="display:flex;flex-direction:column;justify-content:space-between;min-width:0;flex:1">
+          <div style="font-size:13.5px;color:#334155;line-height:2.05">
+            扫码进入「${tc.target_name || '官方账号'}」主页，任选一条视频<br>
+            <b>完播 · 点赞 · 评论 · 转发</b>，四件事都做完<br>
+            回来点「我完成了，验证」，自动检测通过即解锁
+          </div>
+          <div style="margin-top:8px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;
+                      border-radius:10px;padding:9px 12px;font-size:16px;font-weight:700;text-align:center">
+            🎁 完成即得 ${rewardText(task.reward_config)}
+          </div>
+        </div>
+      </div>` : '';
+    const rewardLine = task.task_type === 'bt_interact' ? '' :
+      `<div class="t-reward">🎁 ${rewardText(task.reward_config)}</div>`;
     const div = document.createElement('div'); div.className = 'task';
     div.innerHTML = `
       <div class="row">
         <div><div class="t-title">${task.title}</div><div class="t-app">来自 ${task.app_name} · ${typeLabel}${task.platform? ' · '+task.platform : ''}</div></div>
         <span class="badge ${cls}">${label}</span>
       </div>
-      <div class="t-desc">${task.description || ''}${targetLine}</div>
-      <div class="t-reward">🎁 ${rewardText(task.reward_config)}</div>`;
+      <div style="margin-top:10px">${qrGuide}${rewardLine}</div>`;
     const targetUrl = (task.target_config && task.target_config.target_url) || '';
     const isBT = String(task.task_type || '').startsWith('bt_') && task.verify_mode === 'auto';
+    const hasFallback = !!(task.target_config && task.target_config.manual_fallback);
+    const proofForm = () => {
+      const form = document.createElement('div'); form.style.marginTop = '8px';
+      form.innerHTML = `<input placeholder="做的是转发？粘贴转发凭证（截图说明/分享链接）" style="width:100%;padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px">
+        <button class="btn-mini" style="margin-top:6px">提交凭证人工审核</button>`;
+      form.querySelector('button').onclick = async () => {
+        const val = form.querySelector('input').value.trim();
+        if (!val) return;
+        await api('/api/me/tasks/' + task.task_instance_id + '/submit', { method:'POST', body: JSON.stringify({ proof_url: val }) });
+        load();
+      };
+      return form;
+    };
     const verifyBtn = () => {
       const btn = document.createElement('button');
       btn.className = 'btn-mini primary'; btn.textContent = '我完成了，验证'; btn.style.marginTop = '8px';
       btn.onclick = async () => {
         const r = await api('/api/me/tasks/' + task.task_id + '/direct-verify', { method: 'POST' });
         const note = (r.verify && r.verify.detail && r.verify.detail.note) ? ('\\n' + r.verify.detail.note) : '';
-        if (r.status === 'claimed') alert('还没查到完成记录，去抖音完成后再来验证～' + note);
-        else if (r.detail) alert(r.detail);
+        if (r.detail) alert(r.detail);
+        else if (r.status === 'claimed') alert('还没查到完成记录（完播/点赞/评论任一即可）' + note + (hasFallback ? '\\n若你做的是转发，请在下方提交凭证。' : ''));
         load();
       };
       return btn;
@@ -500,6 +329,7 @@ async function load() {
         div.appendChild(go);
       }
       div.appendChild(verifyBtn());
+      if (hasFallback) div.appendChild(proofForm());
     } else if (task.can_claim && targetUrl) {
       const go = document.createElement('button');
       go.className = 'btn-mini primary'; go.textContent = GO_TEXT[task.task_type] || '去完成'; go.style.marginTop = '8px'; go.style.marginRight = '8px';
@@ -530,14 +360,32 @@ async function load() {
   if (!(t.tasks||[]).length) tl.innerHTML = '<div class="task" style="color:#94a3b8">暂无任务</div>';
 
   const e = await api('/api/me/entitlements');
+
+  // 当前权益摘要：VIP 剩余天数 + 到期时间
+  const vs = document.getElementById('vipSummary'); vs.innerHTML = '';
+  const vip = e.vip || {};
+  if (vip.expires_at && !vip.is_expired) {
+    const exp = new Date(vip.expires_at);
+    const remain = (vip.remaining_days != null) ? vip.remaining_days
+      : Math.max(0, Math.ceil((exp - new Date()) / 86400000));
+    vs.innerHTML = '<div class="task" style="text-align:center;padding:16px">'
+      + '<div style="font-size:26px;font-weight:700;color:#7c3aed">VIP · 剩余 ' + remain + ' 天</div>'
+      + '<div style="color:#64748b;font-size:13px;margin-top:4px">到期时间：' + exp.toLocaleString('zh-CN', {hour12: false}) + '</div>'
+      + '</div>';
+  } else {
+    vs.innerHTML = '<div class="task" style="text-align:center;color:#94a3b8;padding:14px">当前无可用 VIP 权益，完成上方任务即可获得</div>';
+  }
+
+  // 权益获取记录（每次完成任务获得的权益，按时间倒序）
   const el = document.getElementById('entList'); el.innerHTML = '';
   (e.entitlements || []).forEach(ent => {
+    const when = ent.granted_at ? new Date(String(ent.granted_at).replace(' ', 'T') + 'Z').toLocaleString('zh-CN', {hour12: false}) : '';
     const d = document.createElement('div'); d.className = 'ent';
-    d.innerHTML = `<div><b>${ent.task_title || '权益'}</b><br><span style="color:#64748b">${ent.app_name||''} · ${ent.status}</span></div>
-      <div style="color:#7c3aed;font-weight:600">${rewardText(ent.reward_code)}</div>`;
+    d.innerHTML = `<div><b>${rewardText(ent.reward_code)}</b><br><span style="color:#64748b">${ent.task_title || ''}${ent.app_name ? ' · 来自 ' + ent.app_name : ''}</span></div>
+      <div style="color:#94a3b8;font-size:12px">${when}</div>`;
     el.appendChild(d);
   });
-  if (!(e.entitlements||[]).length) el.innerHTML = '<div class="task" style="color:#94a3b8">暂无权益</div>';
+  if (!(e.entitlements||[]).length) el.innerHTML = '<div class="task" style="color:#94a3b8">暂无获取记录</div>';
 }
 
 async function loadBindings(acc) {
@@ -551,16 +399,11 @@ async function loadBindings(acc) {
   }
   bound.forEach(a => {
     const scopes = (a.scopes||'').split(',').filter(Boolean);
-    const hasVideo = scopes.includes('video.list.bind');
     const row = document.createElement('div'); row.className = 'bind-row';
     row.innerHTML = `<span class="bind-name">${a.platform} · ${a.nickname||''}</span>`
       + `<span class="bind-scope">${scopes.join(', ') || '无'}</span>`;
-    const up = document.createElement('button');
-    up.className = 'btn-mini ghost'; up.textContent = hasVideo ? '刷新授权' : '升级视频权限'; up.style.marginLeft = '8px';
-    up.onclick = () => { location.href = '/api/oauth/' + a.platform + '/authorize?mode=upgrade&scopes=' + encodeURIComponent(UPGRADE_SCOPES) + '&token=' + encodeURIComponent(TOKEN); };
-    row.appendChild(up);
     const un = document.createElement('button');
-    un.className = 'btn-mini ghost'; un.textContent = '解绑'; un.style.marginLeft='4px';
+    un.className = 'btn-mini ghost'; un.textContent = '解绑'; un.style.marginLeft='8px';
     un.onclick = async () => { if (confirm('确认解绑 '+a.platform+'？')) { await api('/api/me/bindings/'+a.platform, {method:'DELETE'}); loadBindings(acc); } };
     row.appendChild(un);
     bl.appendChild(row);
@@ -583,142 +426,6 @@ function openBind(platform) {
   const iv = setInterval(async () => {
     try { await api('/api/me/bindings'); clearInterval(iv); loadBindings(); } catch(e) {}
   }, 3000);
-}
-
-const UPGRADE_SCOPES = 'user_info,open.business.task_verify';
-
-async function loadVideos(acc) {
-  const vl = document.getElementById('videoList'); vl.innerHTML = '';
-  const douyin = (acc||[]).find(a => a.platform === 'douyin');
-  if (!douyin) { vl.innerHTML = '<div class="task" style="color:#94a3b8">请先绑定抖音</div>'; return; }
-  const scopes = (douyin.scopes||'').split(',');
-  if (!scopes.includes('video.list.bind')) {
-    const wrap = document.createElement('div');
-    wrap.className = 'task'; wrap.style.textAlign = 'center'; wrap.style.padding = '18px';
-    wrap.innerHTML = '<div style="font-size:14px;font-weight:600;margin-bottom:6px">还没有视频读取权限</div>'
-      + '<div style="font-size:12.5px;color:#64748b;margin-bottom:12px">授权后可查看你的抖音视频列表（请用电脑打开授权页并扫码）</div>';
-    const btn = document.createElement('button');
-    btn.className = 'btn-mini primary'; btn.textContent = '授权获取视频权限';
-    btn.onclick = () => { location.href = '/api/oauth/douyin/authorize?mode=upgrade&scopes=' + encodeURIComponent(UPGRADE_SCOPES) + '&token=' + encodeURIComponent(TOKEN); };
-    wrap.appendChild(btn);
-    vl.appendChild(wrap);
-    return;
-  }
-  try {
-    const v = await api('/api/me/douyin/videos');
-    const list = v.videos || [];
-    if (!list.length) { vl.innerHTML = '<div class="task" style="color:#94a3b8">暂无视频</div>'; return; }
-
-    // 批量取视频互动统计（点赞/评论数）；未授权 video.data 时降级为提示
-    const ids = list.map(x => x.item_id).filter(Boolean);
-    let stats = {}, statsDetail = '';
-    if (ids.length) {
-      const s = await api('/api/me/douyin/videos/stats?ids=' + encodeURIComponent(ids.join(',')));
-      if (s.detail) statsDetail = s.detail; else stats = s.stats || {};
-    }
-
-    list.forEach(item => {
-      const wrap = document.createElement('div'); wrap.className = 'vcmt';
-      const div = document.createElement('div'); div.className = 'video';
-      const cover = item.cover_url || (item.video && item.video.cover) || '';
-      const when = item.create_time ? new Date(item.create_time * 1000).toLocaleDateString() : '';
-      const st = stats[item.item_id];
-      const statTxt = st
-        ? '❤ ' + (st.like_count ?? 0) + ' · 💬 ' + (st.comment_count ?? 0) + ' · ▶ ' + (st.play_count ?? 0)
-        : (statsDetail ? '互动统计：' + statsDetail : '');
-      const info = document.createElement('div');
-      const t = document.createElement('div'); t.className = 'vtitle'; t.textContent = (item.title||'未命名视频').slice(0,40);
-      const m = document.createElement('div'); m.className = 'vmeta'; m.textContent = when || '';
-      const s2 = document.createElement('div'); s2.className = 'vstat'; s2.textContent = statTxt;
-      info.appendChild(t); info.appendChild(m); info.appendChild(s2);
-      const img = document.createElement('img'); img.src = cover || ''; img.alt = 'cover';
-      div.appendChild(img); div.appendChild(info);
-
-      const btn = document.createElement('button');
-      btn.className = 'btn-mini ghost'; btn.textContent = '互动明细'; btn.style.marginTop = '6px';
-      const area = document.createElement('div'); area.style.display = 'none';
-      btn.onclick = () => toggleVideoComments(area, item.item_id, btn);
-      info.appendChild(btn); info.appendChild(area);
-      wrap.appendChild(div); wrap.appendChild(area);
-      vl.appendChild(wrap);
-    });
-  } catch(e) {
-    vl.innerHTML = '<div class="task" style="color:#b91c1c">' + (e.message || '加载失败') + '</div>';
-  }
-}
-
-async function toggleVideoComments(area, itemId, btn) {
-  if (area.style.display !== 'none') { area.style.display = 'none'; btn.textContent = '互动明细'; return; }
-  area.style.display = 'block';
-  area.innerHTML = '<div class="task" style="color:#94a3b8">加载互动明细中…</div>';
-  let data;
-  try { data = await api('/api/me/douyin/videos/' + encodeURIComponent(itemId) + '/comments?cursor=0&count=20'); }
-  catch(e) { area.innerHTML = '<div class="task" style="color:#b91c1c">' + (e.message || '加载失败') + '</div>'; return; }
-  area.innerHTML = '';
-  if (data.detail) {
-    const hint = document.createElement('div'); hint.className = 'task'; hint.style.color = '#92400e';
-    hint.textContent = data.detail + '，请升级授权后重试';
-    const up = document.createElement('button');
-    up.className = 'btn-mini primary'; up.textContent = '升级授权'; up.style.marginTop = '6px';
-    up.onclick = () => { location.href = '/api/oauth/douyin/authorize?mode=upgrade&scopes=' + encodeURIComponent(UPGRADE_SCOPES) + '&token=' + encodeURIComponent(TOKEN); };
-    area.appendChild(hint); area.appendChild(up);
-    return;
-  }
-  const cs = data.comments || [];
-  if (!cs.length) { const empty = document.createElement('div'); empty.className = 'task'; empty.style.color = '#94a3b8'; empty.textContent = '暂无评论'; area.appendChild(empty); }
-  cs.forEach(c => {
-    const row = document.createElement('div'); row.className = 'cmt';
-    const av = document.createElement('img'); av.src = c.avatar_url || ''; av.alt = '';
-    const body = document.createElement('div'); body.style.minWidth = '0';
-    const nick = document.createElement('div'); nick.className = 'c-nick';
-    nick.textContent = c.nickname || '抖音用户';
-    if (c.is_author) { const tg = document.createElement('span'); tg.className = 'c-tag me'; tg.textContent = '作者本人'; nick.appendChild(tg); }
-    else if (c.matched_user) { const tg = document.createElement('span'); tg.className = 'c-tag ok'; tg.textContent = '本站用户' + (c.matched_user.nickname ? '·' + c.matched_user.nickname : ''); nick.appendChild(tg); }
-    const txt = document.createElement('div'); txt.className = 'c-text'; txt.textContent = c.content || '';
-    const when = c.create_time ? new Date(c.create_time * 1000).toLocaleDateString() : '';
-    const idline = c.douyin_no ? ('抖音号:' + c.douyin_no) : (c.interactor_open_id ? ('open_id:' + c.interactor_open_id.slice(0, 12) + '…') : '身份未返回');
-    const meta = document.createElement('div'); meta.className = 'c-meta';
-    meta.textContent = [when, '❤' + (c.digg_count||0), '回复' + (c.reply_count||0), idline].filter(Boolean).join(' · ');
-    body.appendChild(nick); body.appendChild(txt); body.appendChild(meta);
-    row.appendChild(av); row.appendChild(body);
-    area.appendChild(row);
-  });
-  if (data.has_more) {
-    const more = document.createElement('button');
-    more.className = 'btn-mini ghost'; more.textContent = '加载更多评论'; more.style.marginTop = '8px';
-    more.onclick = () => loadMoreComments(area, itemId, data.cursor, more);
-    area.appendChild(more);
-  }
-}
-
-async function loadMoreComments(area, itemId, cursor, btn) {
-  btn.disabled = true; btn.textContent = '加载中…';
-  let data;
-  try { data = await api('/api/me/douyin/videos/' + encodeURIComponent(itemId) + '/comments?cursor=' + (cursor||0) + '&count=20'); }
-  catch(e) { btn.textContent = '加载失败，点击重试'; btn.disabled = false; return; }
-  const frag = document.createDocumentFragment();
-  (data.comments || []).forEach(c => {
-    const row = document.createElement('div'); row.className = 'cmt';
-    const av = document.createElement('img'); av.src = c.avatar_url || ''; av.alt = '';
-    const body = document.createElement('div'); body.style.minWidth = '0';
-    const nick = document.createElement('div'); nick.className = 'c-nick'; nick.textContent = c.nickname || '抖音用户';
-    if (c.is_author) { const tg = document.createElement('span'); tg.className = 'c-tag me'; tg.textContent = '作者本人'; nick.appendChild(tg); }
-    else if (c.matched_user) { const tg = document.createElement('span'); tg.className = 'c-tag ok'; tg.textContent = '本站用户' + (c.matched_user.nickname ? '·' + c.matched_user.nickname : ''); nick.appendChild(tg); }
-    const txt = document.createElement('div'); txt.className = 'c-text'; txt.textContent = c.content || '';
-    const when = c.create_time ? new Date(c.create_time * 1000).toLocaleDateString() : '';
-    const idline = c.douyin_no ? ('抖音号:' + c.douyin_no) : (c.interactor_open_id ? ('open_id:' + c.interactor_open_id.slice(0, 12) + '…') : '身份未返回');
-    const meta = document.createElement('div'); meta.className = 'c-meta';
-    meta.textContent = [when, '❤' + (c.digg_count||0), '回复' + (c.reply_count||0), idline].filter(Boolean).join(' · ');
-    body.appendChild(nick); body.appendChild(txt); body.appendChild(meta);
-    row.appendChild(av); row.appendChild(body);
-    frag.appendChild(row);
-  });
-  area.insertBefore(frag, btn);
-  if (data.has_more) {
-    btn.disabled = false; btn.textContent = '加载更多评论';
-    btn.dataset.cursor = data.cursor || 0;
-    btn.onclick = () => loadMoreComments(area, itemId, data.cursor, btn);
-  } else { btn.remove(); }
 }
 
 function rewardText(rc) {
@@ -809,20 +516,13 @@ _HOME_LOGIN_PAGE = """<!DOCTYPE html>
     <div class="lp-title">登录</div>
     <div class="lp-sub">选择账号登录，或使用平台账号快捷登录</div>
 
-    <!-- 上：账号登录 -->
+    <!-- 上：账号登录（仅登录；注册已下线，新用户抖音扫码自动注册） -->
     <div class="lp-sec-h">账号登录</div>
     <div id="acctLogin">
       <input class="acct-input" type="email" id="liEmail" placeholder="邮箱" autocomplete="email">
       <input class="acct-input" type="password" id="liPwd" placeholder="密码" autocomplete="current-password">
       <button class="btn btn-primary acct-btn" id="liBtn">登 录</button>
-      <div class="acct-switch">没有账号？<a id="toReg">注册账户</a></div>
-    </div>
-    <div id="acctReg" style="display:none">
-      <input class="acct-input" type="email" id="rgEmail" placeholder="邮箱" autocomplete="email">
-      <input class="acct-input" type="password" id="rgPwd" placeholder="设置密码（至少 8 位）" autocomplete="new-password">
-      <input class="acct-input" type="password" id="rgPwd2" placeholder="再次输入密码" autocomplete="new-password">
-      <button class="btn btn-primary acct-btn" id="rgBtn">注 册</button>
-      <div class="acct-switch">已有账号？<a id="toLogin">直接登录</a></div>
+      <div class="acct-switch">没有账号？<span style="cursor:default">使用下方抖音扫码，自动注册</span></div>
     </div>
     <div class="msg" id="acctMsg"></div>
 
@@ -862,17 +562,9 @@ document.querySelectorAll('.plat-item[data-platform]').forEach(btn => {
   });
 });
 
-// ---------- 账号登录 / 注册（上下切换表单） ----------
+// ---------- 账号登录（注册已下线：新用户抖音扫码自动注册） ----------
 const acctMsg = document.getElementById('acctMsg');
 const $id = (id) => document.getElementById(id);
-
-function showAcct(mode) {
-  acctMsg.className = 'msg'; acctMsg.textContent = '';
-  $id('acctLogin').style.display = mode === 'register' ? 'none' : 'block';
-  $id('acctReg').style.display = mode === 'register' ? 'block' : 'none';
-}
-$id('toReg').addEventListener('click', () => showAcct('register'));
-$id('toLogin').addEventListener('click', () => showAcct('login'));
 
 async function acctPost(mode, body, btn, busyText) {
   btn.disabled = true; const old = btn.textContent; btn.textContent = busyText;
@@ -894,14 +586,7 @@ $id('liBtn').addEventListener('click', () => {
   if (!email || !pwd) { acctMsg.className = 'msg error'; acctMsg.textContent = '请填写邮箱和密码'; return; }
   acctPost('login', { email, password: pwd }, $id('liBtn'), '登录中…');
 });
-$id('rgBtn').addEventListener('click', () => {
-  const email = $id('rgEmail').value.trim(), p1 = $id('rgPwd').value, p2 = $id('rgPwd2').value;
-  if (!email || !p1) { acctMsg.className = 'msg error'; acctMsg.textContent = '请填写邮箱和密码'; return; }
-  if (p1 !== p2) { acctMsg.className = 'msg error'; acctMsg.textContent = '两次输入的密码不一致'; return; }
-  acctPost('register', { email, password: p1 }, $id('rgBtn'), '注册中…');
-});
 $id('liPwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') $id('liBtn').click(); });
-$id('rgPwd2').addEventListener('keydown', (e) => { if (e.key === 'Enter') $id('rgBtn').click(); });
 </script>
 </body>
 </html>

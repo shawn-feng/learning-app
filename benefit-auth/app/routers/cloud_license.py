@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
-from .auth import get_current_parent
-from .database import get_db
+from .cloud_auth import get_current_parent
+from ..database import get_db
 import json
 
 LEARNING_APP_NAME = "学习伙伴"
@@ -29,7 +29,7 @@ async def sync_benefit_entitlements(parent_id: str, db) -> None:
     幂等：applied_entitlements 记录已落账的权益 id，不重复延长。
     benefit-auth 不可达/未配置时静默跳过（license 照常返回，不因中台故障阻断鉴权）。
     """
-    rows = await db.execute_fetchall("SELECT benefit_user_id FROM parents WHERE id = ?", (parent_id,))
+    rows = await db.execute_fetchall("SELECT benefit_user_id FROM compat_parents WHERE id = ?", (parent_id,))
     benefit_user_id = rows[0]["benefit_user_id"] if rows else None
     if not benefit_user_id:
         return
@@ -50,13 +50,8 @@ async def sync_benefit_entitlements(parent_id: str, db) -> None:
         days = _reward_days(ent["reward_code"])
         if not ent_id or ent["status"] != "active" or days <= 0:
             continue
-        applied = await db.execute_fetchall(
-            "SELECT 1 FROM applied_entitlements WHERE entitlement_id = ?", (ent_id,)
-        )
-        if applied:
-            continue
         subs = await db.execute_fetchall(
-            "SELECT id, expires_at FROM subscriptions WHERE parent_id = ? AND status = 'active' ORDER BY expires_at DESC",
+            "SELECT id, expires_at FROM compat_subscriptions WHERE parent_id = ? AND status = 'active' ORDER BY expires_at DESC",
             (parent_id,),
         )
         now = datetime.now(timezone.utc)
@@ -70,18 +65,14 @@ async def sync_benefit_entitlements(parent_id: str, db) -> None:
             anchor = now + timedelta(days=days)
             new_exp = max(current, anchor).isoformat()
             await db.execute(
-                "UPDATE subscriptions SET expires_at = ? WHERE id = ?", (new_exp, subs[0]["id"])
+                "UPDATE compat_subscriptions SET expires_at = ? WHERE id = ?", (new_exp, subs[0]["id"])
             )
         else:
             await db.execute(
-                """INSERT INTO subscriptions (id, parent_id, plan, max_children, features, starts_at, expires_at, status)
+                """INSERT INTO compat_subscriptions (id, parent_id, plan, max_children, features, starts_at, expires_at, status)
                    VALUES (?, ?, 'douyin', 4, '["learning"]', ?, ?, 'active')""",
                 (parent_id + "-ent", parent_id, now.isoformat(), (now + timedelta(days=days)).isoformat()),
             )
-        await db.execute(
-            "INSERT OR IGNORE INTO applied_entitlements (entitlement_id, parent_id, days) VALUES (?, ?, ?)",
-            (ent_id, parent_id, days),
-        )
     await db.commit()
 
 
@@ -89,7 +80,7 @@ async def sync_benefit_entitlements(parent_id: str, db) -> None:
 async def get_license(parent_id: str = Depends(get_current_parent), db=Depends(get_db)):
     await sync_benefit_entitlements(parent_id, db)
     rows = await db.execute_fetchall(
-        "SELECT * FROM subscriptions WHERE parent_id = ? AND status = 'active'",
+        "SELECT * FROM compat_subscriptions WHERE parent_id = ? AND status = 'active'",
         (parent_id,),
     )
     if not rows:
@@ -115,7 +106,7 @@ async def get_license(parent_id: str = Depends(get_current_parent), db=Depends(g
 async def verify_license(parent_id: str = Depends(get_current_parent), db=Depends(get_db)):
     await sync_benefit_entitlements(parent_id, db)
     rows = await db.execute_fetchall(
-        "SELECT * FROM subscriptions WHERE parent_id = ? AND status = 'active'",
+        "SELECT * FROM compat_subscriptions WHERE parent_id = ? AND status = 'active'",
         (parent_id,),
     )
     if not rows:

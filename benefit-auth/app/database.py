@@ -119,6 +119,13 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL DEFAULT ''
 );
 
+-- 旧 cloud parent_id 身份映射（认证切换：email/benefit_user_id → 201 数据空间的 parent_id）
+CREATE TABLE IF NOT EXISTS legacy_parents (
+    email TEXT PRIMARY KEY,
+    parent_id TEXT NOT NULL,
+    benefit_user_id TEXT DEFAULT ''
+);
+
 -- 视频互动记录（授权用户视频下的评论者，用于互动数据分析与用户定位）
 CREATE TABLE IF NOT EXISTS video_interactions (
     id TEXT PRIMARY KEY,                -- 平台评论 id（前缀平台名保证全局唯一，如 douyin:<cid>）
@@ -139,6 +146,60 @@ CREATE TABLE IF NOT EXISTS video_interactions (
 );
 CREATE INDEX IF NOT EXISTS idx_video_interactions_item ON video_interactions(platform, item_id);
 CREATE INDEX IF NOT EXISTS idx_video_interactions_interactor ON video_interactions(interactor_open_id);
+
+-- ============ 旧 cloud-service 兼容域（2026-09-21 方案A' 合并） ============
+-- 旧版 LAN server（≤0.5.20）仍调 /api/auth/* + /api/license（cloud JWT + bcrypt 凭证 +
+-- subscriptions 有效期）；新协议见 legacy.py /api/account/*。
+-- 注意：legacy_parents 是并行「认证切换」的身份映射表，兼容域表用 compat_ 前缀。
+CREATE TABLE IF NOT EXISTS compat_parents (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    benefit_user_id TEXT,
+    password_set INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS compat_subscriptions (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT NOT NULL REFERENCES compat_parents(id),
+    plan TEXT NOT NULL DEFAULT 'basic',
+    max_children INTEGER NOT NULL DEFAULT 4,
+    features TEXT,
+    starts_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE IF NOT EXISTS app_versions (
+    version TEXT PRIMARY KEY,
+    release_date TEXT NOT NULL,
+    release_notes TEXT,
+    download_url TEXT,
+    min_version TEXT NOT NULL DEFAULT '0.0.0',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 消息交换（ISSUE-041）：家长→孩子数据包暂存 + 孩子→家长进度摘要
+CREATE TABLE IF NOT EXISTS sync_deliveries (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    payload TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sync_deliveries_pending
+    ON sync_deliveries(parent_id, child_id, status);
+
+CREATE TABLE IF NOT EXISTS sync_progress (
+    parent_id TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    summary TEXT,
+    updated_at DATETIME,
+    requested_at DATETIME,
+    PRIMARY KEY (parent_id, child_id)
+);
 """
 
 

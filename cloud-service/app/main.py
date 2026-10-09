@@ -1,3 +1,11 @@
+"""学习伙伴云服务（合并版，2026-09-21 方案A）
+
+learning-cloud（家长账号/订阅/版本/消息交换）+ benefit-auth（抖音登录 IdP/任务/权益）
+合并为单服务：一个进程、一个数据库、一套部署。
+对外 URL 与合并前完全一致（Electron / LAN server / nginx 无需改动）：
+  /api/auth/* /api/license /api/version /api/sync /download   （原 learning-cloud）
+  /oauth/* /api/me/* /api/app/* /api/account/* /api/admin/*   （原 benefit-auth）
+"""
 import os
 from typing import Optional
 
@@ -10,16 +18,22 @@ from .database import init_db, get_db
 from .auth import router as auth_router
 from .license import router as license_router
 from .sync import router as sync_router
-from .pages import login_page, register_page, me_page
+# benefit-auth 合并路由（抖音登录 IdP / 个人中心 / 任务权益 / 管理端）
+from .routers import account, admin, apps, me, oauth
+from .pages import login_page, me_page
 
-app = FastAPI(title="Learning App Cloud Service", version="0.1.0")
+app = FastAPI(title="Learning App Cloud Service", version="0.2.0")
 
 app.include_router(auth_router)
 app.include_router(license_router)
 app.include_router(sync_router)
+app.include_router(account.router)
+app.include_router(admin.router)
+app.include_router(apps.router)
+app.include_router(me.router)
+app.include_router(oauth.router)
 
 # ISSUE-040: App 安装包静态托管目录（electron-updater 从这里拉 latest.yml + 安装包 + blockmap）。
-# 目录不存在会在 startup 时创建（见 startup()）。
 DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/opt/learning-cloud/download")
 
 # ISSUE-040: 版本登记接口的管理员 token（环境变量配置；未配置时写接口返回 503）
@@ -43,28 +57,19 @@ class VersionRecord(BaseModel):
     min_version: str = "0.0.0"
 
 
-# ---------- 网页认证页面（认证统一走 /auth/*，不占根路径） ----------
+# ---------- 网页页面（www 首页/登录 = 权益中台两栏页；个人中心 = 任务/权益） ----------
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """域名根目录：直接展示登录页"""
     return login_page()
 
 
-@app.get("/auth/login", response_class=HTMLResponse)
-async def auth_login():
-    """认证登录页"""
+@app.get("/login", response_class=HTMLResponse)
+async def login():
     return login_page()
-
-
-@app.get("/auth/register", response_class=HTMLResponse)
-async def auth_register():
-    """认证注册页"""
-    return register_page()
 
 
 @app.get("/me", response_class=HTMLResponse)
 async def profile_page():
-    """用户个人页（当前为空壳，前端校验 token）"""
     return me_page()
 
 
@@ -74,7 +79,7 @@ async def startup():
     # 确保安装包目录存在后挂载静态目录（/download/，Nginx 正则已放行）
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     app.mount("/download", StaticFiles(directory=DOWNLOAD_DIR), name="download")
-    # ISSUE-040: 无版本记录时写入种子版本，保证 /api/version 始终有值
+    # 无版本记录时写入种子版本，保证 /api/version 始终有值
     async for db in get_db():
         rows = await db.execute_fetchall("SELECT version FROM app_versions LIMIT 1")
         if not rows:
@@ -89,7 +94,7 @@ async def startup():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "services": ["learning-cloud", "benefit-auth"], "merged": True}
 
 
 @app.get("/api/version")
@@ -107,7 +112,7 @@ async def app_version(db=Depends(get_db)):
         "release_date": row["release_date"],
         "release_notes": row["release_notes"] or "",
         "download_url": row["download_url"],
-        "min_version": row["min_version"] or "0.0.0",
+        "min_version": row["min_version"],
     }
 
 
@@ -131,3 +136,10 @@ async def set_app_version(rec: VersionRecord, request: Request, db=Depends(get_d
     )
     await db.commit()
     return {"success": True, "version": rec.version}
+
+
+# ---------- 管理审核页（原 benefit-auth /admin/reviews） ----------
+@app.get("/admin/reviews", response_class=HTMLResponse)
+async def admin_reviews_page(token: str = ""):
+    """管理审核页（每日互动任务凭证审核）"""
+    return await admin.admin_page_html_view(token=token)
