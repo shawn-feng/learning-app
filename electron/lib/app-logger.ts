@@ -21,7 +21,7 @@ export interface ClientLogEntry {
   ts: string; // ISO
   level: LogLevel;
   scope: "client";
-  component: string; // 模块标签：main / ipc / pi-session / sync / scheduler / kb-lint / mac 等
+  component: string; // 模块标签：main / ipc / pi-session / sync / scheduler / mac 等
   msg: string;
   childId?: string;
   parentId?: string;

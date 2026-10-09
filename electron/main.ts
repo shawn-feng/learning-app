@@ -19,7 +19,6 @@ import { installConsoleRedirect, installCrashHandlers, logInfo } from "./lib/app
 import { getDataDir } from "./lib/config";
 import { registerIpcHandlers } from "./lib/ipc-handlers";
 import { startScheduler, runCatchUp } from "./lib/scheduler";
-import { lintAllChildren } from "./lib/kb-lint";
 import { registerCustomSchemes, registerMediaProtocol, registerAssetProtocol, registerAppProtocol, setAssetDocRenderer } from "./lib/media-protocol";
 import { serveMaterialDocument } from "./lib/material-doc";
 import { initUpdater, silentCheckForUpdates } from "./lib/updater";
@@ -208,27 +207,6 @@ app.whenReady().then(() => {
   registerIpcHandlers(getMainWindow);
   startScheduler(); // 本地 cron，无网络请求，立即注册
 
-  // 数据格式校验（SPEC 5.5）：启动时跑一次 + 运行期间每 24h。只报告不修改，
-  // 报告落各孩子目录 lint-report.md；error=0 时结构健康（warning 为字段不在白名单的历史基线）。
-  const lintOnce = () => {
-    try {
-      const results = lintAllChildren(getDataDir());
-      const errs = results.reduce(
-        (n, r) => n + r.issues.filter((i) => (i.severity ?? "error") === "error").length,
-        0
-      );
-      const warnings = results.reduce(
-        (n, r) => n + r.issues.filter((i) => i.severity === "warning").length,
-        0
-      );
-      console.log(`[kb-lint] 检查 ${results.length} 个孩子: error=${errs} warning=${warnings}（报告见各孩子 lint-report.md）`);
-      if (errs > 0) console.warn(`[kb-lint] ⚠️ ${errs} 条结构性违规，详见各孩子 lint-report.md`);
-    } catch (e) {
-      console.error("[kb-lint] 检查失败:", e);
-    }
-  };
-  lintOnce();
-  setInterval(lintOnce, 24 * 60 * 60 * 1000);
   createWindow();
   // ISSUE-040: 注册自动更新事件推送（需在窗口创建后，事件才能送达渲染层）
   initUpdater(getMainWindow);
