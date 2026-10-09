@@ -108,3 +108,5 @@
 - **真实冒烟（本地 dev，珊珊 11 条字词）**：9 条建 kp 并关联、2 条噪音被 LLM 拦截、出题 8/9（1 条留给下轮=上限机制按设计工作）、孩子库分配+perChild require 全部正确。
 - 未做/边界：不加家长审核环节（题库 note 有自动生成标记，家长可删）；mastered 词不自动出考核范围（require 只按 open 名单）；201 部署后生效。
 - 测试 test/mistake-sorting.test.ts 6 例（ensure 幂等/分配/关联/perChild/prompt 契约）全绿。
+
+**调度家长化（2026-09-29 深夜，commit a98dae9）**：错题整理任务从内置固定时刻改为**家长可控**——定时任务页新增「📕 错题整理」任务类型（scheduler_tasks type=mistake_sorting），家长创建+分配孩子才触发（opt-in，多行任务时间去重排序、非法时间过滤）；EffectiveChildConfig/resolveChildConfig 同步扩展。⚠ 行为变化：此前默认每 2 小时跑，现**未创建任务=不跑**，部署后需家长在定时任务页添加一次。
