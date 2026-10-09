@@ -33,6 +33,73 @@ export interface ProgrammingDeps {
 
 const sessions = new Map<string, AgentSession>();
 
+/**
+ * ISSUE-172 P0：嵌套编程会话的错误收集器。
+ *
+ * 为什么需要：嵌套 pi 会话里模型调用失败（HTTP 401/400…）表现为 assistant 消息
+ * stopReason="error" + errorMessage，SDK 把它当一次正常结束——外层只见「没写出来」，
+ * journal/server-log 零错误日志（ISSUE-172 三次失败全盲）。write/edit 工具失败同理
+ * （tool_execution_end isError=true）。本收集器挂在 session.subscribe 上：
+ *   - observe(event)：捕获模型错误/中止/工具错误，去重后落清单并即时 console.error（进 server-log）；
+ *   - summarize()：失败文案附真实底层错误（对症处理用——400→compat、401→auth 时序）。
+ */
+export interface ProgrammingIssue {
+  kind: "model" | "tool" | "abort";
+  label: string;
+}
+
+export function createProgrammingIssueCollector() {
+  const issues: ProgrammingIssue[] = [];
+  const seen = new Set<string>();
+  const truncate = (s: unknown, n: number): string => {
+    const t = String(s ?? "").replace(/\s+/g, " ").trim();
+    return t.length > n ? `${t.slice(0, n)}…` : t;
+  };
+  return {
+    issues,
+    observe(event: any): void {
+      // 工具执行失败（write/edit 被沙箱拒绝、路径非法等）
+      if (event?.type === "tool_execution_end" && event?.isError) {
+        const name = String(event?.toolName ?? "tool");
+        const result = event?.result;
+        const text = Array.isArray(result?.content)
+          ? result.content.map((c: any) => c?.text ?? "").join(" ")
+          : String(result ?? "");
+        const key = `tool:${event.toolCallId ?? `${name}:${issues.length}`}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        issues.push({ kind: "tool", label: `工具 ${name} 执行失败：${truncate(text, 300)}` });
+        console.error(`[programming-agent] 工具错误：${name} ${truncate(text, 500)}`);
+        return;
+      }
+      // 模型调用失败/中止：assistant 消息 stopReason=error/aborted（message_end 与 turn_end
+      // 各派发一次同一消息 → 按时间戳去重）
+      const msg = event?.message;
+      if ((event?.type === "message_end" || event?.type === "turn_end") && msg?.role === "assistant") {
+        const stop = String(msg.stopReason ?? "");
+        if (stop !== "error" && stop !== "aborted") return;
+        const key = `model:${msg.timestamp ?? msg.responseId ?? issues.length}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        if (stop === "aborted") {
+          issues.push({ kind: "abort", label: "生成被中止（用户停止或超时打断）" });
+          return;
+        }
+        issues.push({
+          kind: "model",
+          label: `模型调用失败（${msg.provider ?? "?"}/${msg.model ?? "?"}）：${truncate(msg.errorMessage, 300)}`,
+        });
+        console.error(
+          `[programming-agent] 模型错误（${msg.provider ?? "?"}/${msg.model ?? "?"}）：${truncate(msg.errorMessage, 800)}`
+        );
+      }
+    },
+    summarize(): string {
+      return issues.map((i) => i.label).join("；");
+    },
+  };
+}
+
 export function buildProgrammingPrompt(): string {
   return `你是「编程 agent」，专门负责把需求描述变成一份可直接给孩子用的 HTML 学习资料。
 
@@ -295,13 +362,15 @@ export async function generateHtmlLesson(
   const t0 = Date.now();
   // ISSUE-146 P0：① 子会话事件 → 节流后的可读进度；② 15s 心跳，保证「黑洞期」也有进度可看；
   // ③ signal → session.abort()，让父层的「停止」按钮能真的打断这场生成（旧版做不到）。
+  // ISSUE-172 P0：订阅**无条件挂**（此前只在传 onProgress 时挂）——错误收集不依赖进度回调，
+  // 否则直调路径（脚本/测试/部分工具调用）下模型错误依旧全盲。
+  const collector = createProgrammingIssueCollector();
   const reporter = createProgressReporter(hooks?.onProgress);
-  const unsubscribe = hooks?.onProgress
-    ? session.subscribe((event: any) => {
-        const label = describeProgrammingEvent(event);
-        if (label) reporter.report(label);
-      })
-    : undefined;
+  const unsubscribe = session.subscribe((event: any) => {
+    collector.observe(event);
+    const label = describeProgrammingEvent(event);
+    if (label) reporter.report(label);
+  });
   const heartbeat = hooks?.onProgress
     ? setInterval(() => reporter.report(`生成中…（已 ${((Date.now() - t0) / 60000).toFixed(1)} 分钟）`), 15000)
     : null;
@@ -314,6 +383,14 @@ export async function generateHtmlLesson(
   }
   try {
     await session.prompt(prompt);
+  } catch (err) {
+    // ISSUE-172：会话级异常（SDK 抛错而非降级成 stopReason=error）也要留痕 + 带上下文上抛
+    const summary = collector.summarize();
+    console.error(`[programming-agent] 会话异常结束（${input.outputPath}）：`, (err as Error)?.message ?? err);
+    throw new Error(
+      `编程 agent 会话异常结束：${(err as Error)?.message ?? err}` +
+        (summary ? `；底层错误：${summary}` : "")
+    );
   } finally {
     // ⚠️ 必须退订：编程会话按 sessionKey **复用**，不退订会让订阅者随每次生成累积
     hooks?.signal?.removeEventListener("abort", onAbort);
@@ -324,11 +401,20 @@ export async function generateHtmlLesson(
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
   if (!fs.existsSync(resolved) || fs.statSync(resolved).size < 100) {
+    const summary = collector.summarize();
     throw new Error(
-      `编程 agent 未能成功写入 ${input.outputPath}（文件不存在或为空）。常见原因与处理：` +
-        `① 未按要求的绝对路径落盘——可换更明确的需求重试（强调「把完整 HTML 写到 ${resolved}」）；` +
-        `② 生成中途出错/内容被截断——可重试；若反复失败，检查「编程 agent 模型」是否可用或换模型再试`
+      `编程 agent 未能成功写入 ${input.outputPath}（文件不存在或为空）。` +
+        (summary
+          ? `底层错误（对症处理用）：${summary}。`
+          : "会话正常结束但没有写出文件——可能模型没有调用 write（可重试一次，强调写出绝对路径）。") +
+        `常见原因与处理：① 底层 4xx/鉴权错误 → 检查「编程 agent 模型」凭证/兼容性，或在设置页换备用编程模型；` +
+        `② 未按要求的绝对路径落盘——可换更明确的需求重试（强调「把完整 HTML 写到 ${resolved}」）；` +
+        `③ 生成中途出错/内容被截断——可重试`
     );
+  }
+  if (collector.issues.length > 0) {
+    // 文件写出来了但过程中有错误（如首轮失败重试成功）——放行但留痕
+    console.warn(`[programming-agent] 生成完成但过程有错误：${collector.summarize()}`);
   }
   console.log(
     `[programming-agent] 生成完成 ${input.outputPath}（${fs.statSync(resolved).size}B，耗时 ${elapsed}s）`
