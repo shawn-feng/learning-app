@@ -247,6 +247,15 @@ async function synthReplyAudio(
       config, db, parentId, childId,
       `reply-${Date.now()}${ext}`, r.mime, r.buffer
     );
+    // 登记映射（open_tts_audio）：GET /open/agent/history 按时间就近把链接回填到往期 assistant 消息。
+    // best effort——登记失败只影响历史回填，不吞当轮响应。
+    try {
+      db.prepare(
+        "INSERT OR REPLACE INTO open_tts_audio (file_id, parent_id, child_id, turn_at, voice, sample_rate, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(saved.id, parentId, childId, new Date().toISOString(), r.voice, rate ?? null, r.mime, saved.size, new Date().toISOString());
+    } catch (err) {
+      console.error("[openapi] tts audio registry insert failed:", (err as Error).message);
+    }
     return {
       audio: {
         ref: saved.ref,
@@ -260,6 +269,53 @@ async function synthReplyAudio(
   } catch (err) {
     return { audio_error: (err as Error).message };
   }
+}
+
+/**
+ * 历史回填 TTS 音频链接：把该孩子的 open_tts_audio 登记行按「时间就近」配到 assistant 消息上。
+ * 匹配规则：assistant 消息 m 的音频 = turn_at ∈ [m.timestamp, 下一 assistant 消息.timestamp) 内
+ * 最早的一条（TTS 合成发生在回复落会话之后、下一轮之前）。纯函数便于单测。
+ */
+export function attachTtsAudioToMessages(
+  messages: Array<Record<string, unknown>>,
+  ttsRows: Array<{ file_id: string; turn_at: string; voice: string; sample_rate: number | null; mime: string; size: number }>
+): void {
+  const synthTs = ttsRows
+    .map((r) => ({ ...r, ts: Date.parse(r.turn_at) }))
+    .filter((r) => Number.isFinite(r.ts))
+    .sort((a, b) => a.ts - b.ts);
+  if (!synthTs.length) return;
+  const used = new Set<string>();
+  const assistantIdx = messages
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => String(m?.role ?? "") === "assistant");
+  assistantIdx.forEach(({ m, i }, k) => {
+    const ts = Number(m?.timestamp);
+    if (!Number.isFinite(ts)) return;
+    // 下一 assistant 消息若缺 timestamp（不该发生，防御）：向后找最近一个有时间戳的作为窗口右界
+    let nextTs = Infinity;
+    for (let j = k + 1; j < assistantIdx.length; j++) {
+      const t = Number(assistantIdx[j].m?.timestamp);
+      if (Number.isFinite(t)) {
+        nextTs = t;
+        break;
+      }
+    }
+    const hit = synthTs.find((r) => r.ts >= ts && r.ts < nextTs && !used.has(r.file_id));
+    if (!hit) return;
+    used.add(hit.file_id);
+    messages[i] = {
+      ...m,
+      audio: {
+        ref: `files/${hit.file_id}`,
+        url: `/api/v1/open/files/${hit.file_id}`,
+        mime: hit.mime,
+        size: hit.size,
+        voice: hit.voice,
+        ...(hit.sample_rate ? { sample_rate: hit.sample_rate } : {}),
+      },
+    };
+  });
 }
 
 export function registerOpenApiRoutes(app: FastifyInstance, deps: OpenApiDeps): void {
@@ -768,6 +824,17 @@ export function registerOpenApiRoutes(app: FastifyInstance, deps: OpenApiDeps): 
     try {
       const childId = resolveChildId(deps.db, auth, (req.query as any)?.child_id);
       const messages = await openChildSession(agentDeps, auth.parentId, childId);
+      // TTS 下载链接回填：往期 assistant 回复的语音（open_tts_audio 登记行，时间就近匹配）
+      try {
+        const ttsRows = deps.db
+          .prepare(
+            "SELECT file_id, turn_at, voice, sample_rate, mime, size FROM open_tts_audio WHERE parent_id = ? AND child_id = ? ORDER BY turn_at DESC LIMIT 500"
+          )
+          .all(auth.parentId, childId) as Array<{ file_id: string; turn_at: string; voice: string; sample_rate: number | null; mime: string; size: number }>;
+        attachTtsAudioToMessages(messages as Array<Record<string, unknown>>, ttsRows);
+      } catch (err) {
+        console.error("[openapi] history tts attach failed:", (err as Error).message);
+      }
       return { messages };
     } catch (err) {
       if (authError(reply, err)) return;

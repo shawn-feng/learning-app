@@ -14,7 +14,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { openDb } from "../server/src/db";
 import { registerApiKeysRoutes } from "../server/src/routes/apikeys";
-import { registerOpenApiRoutes } from "../server/src/routes/open-api";
+import { registerOpenApiRoutes, attachTtsAudioToMessages } from "../server/src/routes/open-api";
 import { signSession } from "../server/src/auth/jwt";
 import type { ServerConfig } from "../server/src/config";
 import type { FastifyInstance } from "fastify";
@@ -237,4 +237,45 @@ describe("files/raw 裸流上传", () => {
     const lines = chat.body.split("\n").filter((l) => l.trim());
     expect(JSON.parse(lines[lines.length - 1]).type).toBe("final");
   }, 30000);
+});
+
+describe("attachTtsAudioToMessages（history TTS 回填）", () => {
+  const base = 1_700_000_000_000;
+  const msg = (role: string, ts: number) => ({ role, content: [{ type: "text", text: "x" }], timestamp: ts });
+
+  it("回复的音频落在 [本回复, 下一回复) 窗口内 → 回填；否则不回填", () => {
+    const messages = [
+      msg("user", base),
+      msg("assistant", base + 1000), // 回复A：窗口 [A, B)
+      msg("user", base + 60_000),
+      msg("assistant", base + 61_000), // 回复B：窗口 [B, ∞)
+    ];
+    const rows = [
+      { file_id: "a-file", turn_at: new Date(base + 2000).toISOString(), voice: "v", sample_rate: 16000, mime: "audio/wav", size: 111 },
+      { file_id: "b-file", turn_at: new Date(base + 62_000).toISOString(), voice: "v", sample_rate: null, mime: "audio/wav", size: 222 },
+    ];
+    attachTtsAudioToMessages(messages, rows);
+    expect((messages[1] as any).audio.url).toBe("/api/v1/open/files/a-file");
+    expect((messages[1] as any).audio.sample_rate).toBe(16000);
+    expect((messages[3] as any).audio.url).toBe("/api/v1/open/files/b-file");
+    expect((messages[3] as any).audio.sample_rate).toBeUndefined();
+    expect((messages[0] as any).audio).toBeUndefined();
+  });
+
+  it("一回复多条登记只取最早一条；无 timestamp 的 assistant 消息跳过、不充当窗口右界", () => {
+    const messages = [
+      msg("assistant", base), // 窗口 [base, base+120s)
+      msg("assistant", base + 120_000), // 窗口 [base+120s, ∞)（后面无有时间戳的回复）
+      { role: "assistant", content: [{ type: "text", text: "x" }] }, // 无 timestamp → 本身跳过，也不截断前一个窗口
+    ];
+    const rows = [
+      { file_id: "late", turn_at: new Date(base + 300_000).toISOString(), voice: "v", sample_rate: null, mime: "audio/wav", size: 3 },
+      { file_id: "early-1", turn_at: new Date(base + 1000).toISOString(), voice: "v", sample_rate: null, mime: "audio/wav", size: 1 },
+      { file_id: "early-2", turn_at: new Date(base + 2000).toISOString(), voice: "v", sample_rate: null, mime: "audio/wav", size: 2 },
+    ];
+    attachTtsAudioToMessages(messages, rows);
+    expect((messages[0] as any).audio.url).toBe("/api/v1/open/files/early-1");
+    expect((messages[1] as any).audio.url).toBe("/api/v1/open/files/late");
+    expect((messages[2] as any).audio).toBeUndefined();
+  });
 });

@@ -143,6 +143,21 @@ export function openDb(dataDir: string): DatabaseSync {
     -- 旧「一账号一有效键」唯一索引（ux_api_keys_active）随多键制废止：存量库启动时静默丢弃
     DROP INDEX IF EXISTS ux_api_keys_active;
     CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+    -- 开放 API 的 TTS 回复音频登记（2026-10-04）：合成成功时记一行（文件本体走 files 通道），
+    -- GET /open/agent/history 按时间就近把下载链接回填到对应 assistant 消息上——
+    -- 没有这张表，往期回复的 TTS 音频只存在于当轮 NDJSON 的 final 行里，历史查不到。
+    CREATE TABLE IF NOT EXISTS open_tts_audio (
+      file_id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      child_id TEXT NOT NULL,
+      turn_at TEXT NOT NULL,
+      voice TEXT NOT NULL DEFAULT '',
+      sample_rate INTEGER,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_open_tts_audio_child ON open_tts_audio(parent_id, child_id, turn_at);
     -- 会话 jsonl 增量同步（方案B 阶段①）：行级索引供家长回顾；child_id 全局唯一，
     -- 归属校验在路由层（children.parent_id）强制，故不重复存 parent_id。
     CREATE TABLE IF NOT EXISTS session_messages (

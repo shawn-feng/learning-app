@@ -190,6 +190,17 @@ GET  /api/v1/open/agent/history     → {"messages": [{role, content[], timestam
 
 `history` 的 `messages[].content` 是原始 content blocks 数组，**包含 thinking 块和 tool 调用块**——第三方回放完整过程可直接用。请求带 `?child_id=` 可覆盖 Key 默认孩子。
 
+**TTS 音频回填（2026-10-04 起，server 0.5.25+）**：开启过 TTS 的往期回复，对应 assistant 消息上会带 `audio` 字段（与当轮 `final.audio` 同构），设备可按链接重拉历史回复的语音播报：
+
+```json
+{"role":"assistant","content":[…],"timestamp":1760000000000,
+ "audio":{"ref":"files/<uuid>","url":"/api/v1/open/files/<uuid>","mime":"audio/wav","size":153644,"voice":"zh-CN-XiaoxiaoNeural","sample_rate":16000}}
+```
+
+- 匹配按「时间就近」：音频归到紧随其后的那条 assistant 回复；没开 TTS 的回复没有 `audio` 字段（用 `audio in msg` 判断，不要假定存在）；
+- 下载同样带 API Key；链接为相对路径，跟随设备当前 base；
+- 注意 history 的跨天副作用不变（进会话即裁决当天会话），回填只覆盖**当天会话**内的回复。
+
 ### 5.6 附件上传（两种形态）
 
 **A. 裸流（推荐 ESP32 使用）**——body 就是文件原始字节：
