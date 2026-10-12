@@ -31,7 +31,7 @@ export default function VisionSettings() {
     const r = await window.api.piSetVisionModel(visionModelDraft);
     if (r?.success) {
       setVisionModel(visionModelDraft);
-      setStatus(`默认视觉模型已保存：${visionModelDraft || "自动（qwen/qwen3-vl-flash）"}`);
+      setStatus(`默认视觉模型已保存：${visionModelDraft || "系统默认"}`);
     } else {
       setStatus(`保存失败: ${r?.error || ""}`);
     }
@@ -42,8 +42,8 @@ export default function VisionSettings() {
       <h3>视觉配置</h3>
       <p className="desc">
         孩子在对话中发送图片时，会话会自动切换到这里设置的「默认视觉模型」来识别图片内容。
-        可用的视觉模型来自「模型配置」注册的多模态 provider（千问 Qwen3-VL、小米 MiMo 全模态等），
-        使用前需先在「模型配置」里保存对应 provider 的 API Key。
+        启用自定义模型渠道后，优先使用此处选择的自定义视觉模型（未选择时自动使用已配置的自定义
+        视觉模型）。
       </p>
 
       <div style={{ marginBottom: 12, fontSize: 13, color: "#888" }}>默认视觉模型：</div>
@@ -53,7 +53,7 @@ export default function VisionSettings() {
           onChange={(e) => setVisionModelDraft(e.target.value)}
           style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 300 }}
         >
-          <option value="">自动（qwen/qwen3-vl-flash）</option>
+          <option value="">系统默认</option>
           {visionModels.map((m: any) => (
             <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
               {m.name}（{m.provider}/{m.id}）

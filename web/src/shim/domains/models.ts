@@ -231,6 +231,28 @@ export const modelsDomain = {
     }
   },
 
+  /** piGetModelChannel: () => 模型渠道三态（builtin=内置 / custom=自定义 / off=停用，缺省 builtin） */
+  piGetModelChannel: async (): Promise<{ success: boolean; channel: string; error?: string }> => {
+    try {
+      const ch = await getAppSettingsField("modelChannel");
+      return { success: true, channel: ch === "custom" || ch === "off" ? ch : "builtin" };
+    } catch (err) {
+      return { success: false, channel: "builtin", error: (err as Error).message };
+    }
+  },
+
+  /** piSetModelChannel: (channel) => 设置模型渠道（开一个自动关另一个，服务端单值存储） */
+  piSetModelChannel: async (channel: string): Promise<{ success: boolean; channel: string; error?: string }> => {
+    try {
+      const ch = channel === "custom" || channel === "off" ? channel : "builtin";
+      await setAppSettingsField("modelChannel", ch);
+      eventBus.emit("pi:model_channel_changed", ch);
+      return { success: true, channel: ch };
+    } catch (err) {
+      return { success: false, channel: "builtin", error: (err as Error).message };
+    }
+  },
+
   /** piGetTtsConfig: () => Promise<{ success: boolean; config: TtsConfig; voices: Array<{provider,voiceId,name}> }>（打码配置 + 音色清单） */
   piGetTtsConfig: async (): Promise<{
     success: boolean;
@@ -283,6 +305,16 @@ export const modelsDomain = {
         timeoutMs: 30000,
       });
       return { success: true, status: r.status === true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** tokenhubQuotaGet: () => 大模型配额（ISSUE-174）：官方口径 + 本地口径聚合（GET /tokenhub/quota） */
+  tokenhubQuotaGet: async (): Promise<any> => {
+    try {
+      const r = await http<Record<string, unknown>>("/tokenhub/quota");
+      return { success: true, ...r };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

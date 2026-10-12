@@ -132,6 +132,10 @@ export default function FilesPanel({
 
   // uploads 区整区收敛（P1）：按条目自身路径判区（检索结果可能来自任意目录）
   const readOnlyEntry = (e: FsEntry) => e.path === "uploads" || e.path.startsWith("uploads/");
+  // ISSUE-177 F4：家长根视图的保留区条目（materials/uploads 区根）——服务端 guardZoneRoot 恒 400，
+  // 与其让家长点了删除看远处红条，不如直接不出现删除/改名/移动，行内给「系统区」徽标。
+  const zoneRootEntry = (e: FsEntry) =>
+    !cwd && e.type === "dir" && (e.path === "materials" || e.path === "uploads");
 
   const load = useCallback(
     async (path: string) => {
@@ -295,9 +299,12 @@ export default function FilesPanel({
       setRenameTarget(null);
       return;
     }
-    if (!(await confirmRefsIfNeeded(renameTarget.path, "重命名", confirm))) return;
+    // ISSUE-177 F2：预检确认弹窗用户点「仍然执行」＝已确认，把 confirm:true 传进首次请求，
+    // 不再触发服务端 needsConfirm 的第二次弹窗（handleNeedsConfirm 仅作状态变化的兜底）。
+    const confirmed = await confirmRefsIfNeeded(renameTarget.path, "重命名", confirm);
+    if (!confirmed) return;
     const r = await run(() =>
-      window.api.fsRename({ path: renameTarget.path, newName, confirm, childId })
+      window.api.fsRename({ path: renameTarget.path, newName, confirm: confirmed, childId })
     );
     if (await handleNeedsConfirm(r, renameTarget.path, "重命名", (c) =>
       window.api.fsRename({ path: renameTarget.path, newName, confirm: c, childId })
@@ -309,8 +316,10 @@ export default function FilesPanel({
   };
 
   const handleDelete = async (e: FsEntry, confirm = false) => {
-    if (!(await confirmRefsIfNeeded(e.path, "删除", confirm))) return;
-    const r = await run(() => window.api.fsDelete({ path: e.path, confirm, childId }));
+    // ISSUE-177 F2：同上——预检确认后直接带 confirm:true，消除「二次弹窗、取消即静默」
+    const confirmed = await confirmRefsIfNeeded(e.path, "删除", confirm);
+    if (!confirmed) return;
+    const r = await run(() => window.api.fsDelete({ path: e.path, confirm: confirmed, childId }));
     if (await handleNeedsConfirm(r, e.path, "删除", (c) =>
       window.api.fsDelete({ path: e.path, confirm: c, childId })
     )) {
@@ -325,9 +334,11 @@ export default function FilesPanel({
 
   const handleMoveTo = async (confirm = false) => {
     if (!moveTarget) return;
-    if (!(await confirmRefsIfNeeded(moveTarget.path, "移动", confirm))) return;
+    // ISSUE-177 F2：同上——预检确认后直接带 confirm:true
+    const confirmed = await confirmRefsIfNeeded(moveTarget.path, "移动", confirm);
+    if (!confirmed) return;
     const r = await run(() =>
-      window.api.fsMove({ from: moveTarget.path, toDir: cwd, confirm, childId })
+      window.api.fsMove({ from: moveTarget.path, toDir: cwd, confirm: confirmed, childId })
     );
     if (await handleNeedsConfirm(r, moveTarget.path, "移动", (c) =>
       window.api.fsMove({ from: moveTarget.path, toDir: cwd, confirm: c, childId })
@@ -651,9 +662,9 @@ export default function FilesPanel({
             {search ? "没有匹配的文件或文件夹，换个关键词试试。" : "空目录。上传文件或新建文件夹开始整理。"}
           </div>
         ) : (
-          displayed.map((e) => (
+          displayed.map((e, i) => (
             <div
-              key={e.path}
+              key={`${e.path}-${i}`}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -720,7 +731,7 @@ export default function FilesPanel({
                     {e.type === "file" && (
                       <button style={btnMini} disabled={busy} onClick={() => handleDownload(e)}>下载</button>
                     )}
-                    {!readOnlyEntry(e) && (
+                    {!readOnlyEntry(e) && !zoneRootEntry(e) && (
                       <>
                         <button
                           style={btnMini}
@@ -742,7 +753,14 @@ export default function FilesPanel({
                         原始件
                       </span>
                     )}
-                    <button style={btnDanger} disabled={busy} onClick={() => handleDelete(e, false)}>删除</button>
+                    {zoneRootEntry(e) && (
+                      <span style={{ fontSize: 11, color: "#b3bac6" }} title="系统保留区（课程资料库/上传原始件），不支持改名或删除">
+                        系统区
+                      </span>
+                    )}
+                    {!zoneRootEntry(e) && (
+                      <button style={btnDanger} disabled={busy} onClick={() => handleDelete(e, false)}>删除</button>
+                    )}
                   </span>
                 </>
               )}

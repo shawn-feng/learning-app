@@ -12,19 +12,16 @@ import NamespacePanel from "../components/NamespacePanel";
 import OpenApiSettings from "../components/OpenApiSettings";
 // ISSUE-144 P5：家长「场景口径」编辑器（按场景覆盖助手口径，存服务端 agents 库）
 import SceneSkillSettings from "../components/SceneSkillSettings";
+import CustomPromptEditor from "../components/CustomPromptEditor";
 import AccountSettings from "../components/AccountSettings";
+// ISSUE-174：大模型配额面板（TokenHub 统一模型接入）
+import TokenHubQuotaPanel from "../components/TokenHubQuotaPanel";
 
-// ISSUE-039 + token-plan 拆分：
-// 仅保留国内/已确认的 provider，移除国外 provider（anthropic / google / openrouter / groq）。
-// qwen（按量付费）与 qwen-tokenplan（token-plan 套餐）是**两个完全独立的 provider**：
-//   - 各自的 API Key 不相同（用户明确：按量与 token-plan 的 key 是两套）；
-//   - 各自的 base URL 也不相同（dashscope.aliyuncs.com vs token-plan.cn-beijing.maas.aliyuncs.com）；
-//   - 故 Settings 提供两个独立 key 入口，分别写入 auth.json 的 qwen / qwen-tokenplan 段，互不拷贝。
-// - openai 用户未点名删除，默认保留；minimax 为新增的国内 provider。
-// 注：DeepSeek 有两处独立通道，互不冲突——
-//   ① qwen-tokenplan/deepseek-v4-*：百炼 token-plan 套餐内的 DeepSeek，走 token-plan key + token-plan URL；
-//   ② SDK 内置 deepseek/*：DeepSeek 官方直连，走用户自己的 deepseek key（auth.json 的 deepseek 段）。
-//   两者都在白名单 ALLOWED_MODEL_PROVIDERS 中保留，故这里 deepseek 也要给独立 key 入口。
+// ISSUE-174（2026-10-10 调整版）：模型渠道三态开关（app_settings.modelChannel，用户拍板）——
+// ① 「AI模型」= 内置渠道（TokenHub 托管 Key）：开关控制启停，配额直显，**不展示模型来源与列表**；
+// ② 「自定义模型」= 自定义 provider 渠道：独立开关，启用即自动停用内置（两开关镜像同一状态，
+//    服务端单值存储，互斥）；自定义渠道内保留 Key 录入 / 默认 / 视觉 / 编程 / 语音配置。
+
 const PROVIDERS = [
   { id: "qwen", name: "通义千问 (按量付费)", keyHint: "sk-..." },
   { id: "qwen-tokenplan", name: "通义千问 (token-plan 套餐)", keyHint: "sk-...（与按量不同的 key）" },
@@ -36,8 +33,33 @@ const PROVIDERS = [
   { id: "mimo-tokenplan", name: "小米 MiMo (token-plan 套餐)", keyHint: "tp-...（套餐 Key，与按量不同）" },
 ];
 
+type ModelChannel = "builtin" | "custom" | "off";
+
+/** 开关样式组件（两处渠道开关共用） */
+function ChannelToggle(props: { checked: boolean; onToggle: (next: boolean) => void }) {
+  const { checked, onToggle } = props;
+  return (
+    <button
+      onClick={() => onToggle(!checked)}
+      role="switch"
+      aria-checked={checked}
+      style={{
+        width: 52, height: 28, borderRadius: 14, border: "none", cursor: "pointer",
+        background: checked ? "#667eea" : "#cbd5e1", position: "relative", flexShrink: 0, padding: 0,
+        transition: "background .2s",
+      }}
+    >
+      <span style={{
+        position: "absolute", top: 3, left: checked ? 27 : 3, width: 22, height: 22,
+        borderRadius: "50%", background: "white", transition: "left .2s", boxShadow: "0 1px 3px rgba(0,0,0,.2)",
+      }} />
+    </button>
+  );
+}
+
 export default function Settings() {
-  const [tab, setTab] = useState<"models" | "voice" | "evaluation" | "vision" | "scheduler" | "feishu" | "scene" | "ns" | "openapi" | "general" | "backup" | "account">("models");
+  const [tab, setTab] = useState<"tokenhub" | "models" | "evaluation" | "scheduler" | "feishu" | "scene" | "prompt" | "ns" | "openapi" | "general" | "backup" | "account">("tokenhub");
+  // ---- 自定义模型渠道（保留原有 provider Key 录入 UI） ----
   const [selectedProvider, setSelectedProvider] = useState("qwen");
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<string>("");
@@ -45,15 +67,36 @@ export default function Settings() {
   const [keyMasked, setKeyMasked] = useState<Record<string, string>>({});
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   const [defaultModel, setDefaultModel] = useState(() => localStorage.getItem("defaultModel") || "");
-  // ISSUE-020：编程 agent 模型（空 = 未启用，create_html_lesson 不可用）。
-  // programmingModel = 已保存值（显示「当前已保存」）；programmingModelDraft = 下拉暂存（未保存的选择）。
-  // 两者独立：下拉不跟随上方 provider 切换、保存走独立按钮，与「默认模型」配置互不耦合。
+  // 编程 agent 模型：programmingModel = 已保存值；programmingModelDraft = 下拉暂存
   const [programmingModel, setProgrammingModel] = useState("");
   const [programmingModelDraft, setProgrammingModelDraft] = useState("");
-  // 语音模型（TTS 音色）已在 VoiceSettings 独立配置；此处仅保留文本模型相关状态
+  // 模型渠道三态：builtin=内置 AI 模型 / custom=自定义模型 / off=停用（两 tab 开关镜像此状态）
+  const [modelChannel, setModelChannel] = useState<ModelChannel>("builtin");
 
-  // 初始值以主进程存储（app-settings.json）为准，与会话建链同源；
-  // 若主进程尚无记录但有旧的 localStorage 值，则迁移过去。
+  useEffect(() => {
+    window.api.piGetModelChannel?.().then((r: any) => {
+      if (r?.success && (r.channel === "custom" || r.channel === "off")) setModelChannel(r.channel);
+    }).catch(() => {});
+  }, []);
+
+  /** 渠道切换：服务端单值存储，开一个自动关另一个；off = 内置/自定义全停。 */
+  async function switchChannel(next: ModelChannel) {
+    if (next === modelChannel) return;
+    if (next === "custom" && !Object.values(keyMasked).some((v) => v)) {
+      if (!confirm("尚未配置任何自定义模型的 API Key，启用后 AI 功能将不可用（可在下方录入 Key）。确定启用自定义模型？")) return;
+    }
+    if (next === "off" && modelChannel === "builtin") {
+      if (!confirm("关闭内置 AI 模型后，孩子端 AI 功能将不可用（除非已启用自定义模型）。确定关闭？")) return;
+    }
+    const r = await window.api.piSetModelChannel?.(next);
+    if (r?.success) {
+      setModelChannel(next);
+      setKeyStatus("");
+    } else {
+      setKeyStatus(`渠道切换失败: ${r?.error || ""}`);
+    }
+  }
+
   useEffect(() => {
     window.api.piGetDefaultModel().then((r: any) => {
       if (r?.success && r.key) {
@@ -70,7 +113,6 @@ export default function Settings() {
     }).catch(() => {});
   }, []);
 
-  // 编程 agent 模型初始值（主进程 app-settings.json 为准）；草稿同步为已保存值
   useEffect(() => {
     window.api.piGetProgrammingModel().then((r: any) => {
       if (r?.success) {
@@ -81,15 +123,13 @@ export default function Settings() {
     }).catch(() => {});
   }, []);
 
-  // 初始化时自动加载模型列表：保证「编程 agent 模型」下拉与「设为默认」列表
-  // 首次打开页面即有选项（此前只靠「保存 key / 手动刷新」填充，下拉空导致无法指定）。
   useEffect(() => {
     window.api.piGetModels().then((models: any) => {
       if (Array.isArray(models)) setAvailableModels(models);
     }).catch(() => {});
   }, []);
 
-  // ISSUE-163：加载各 provider 已存 key 的打码前缀（挂载 + 保存 key 后刷新）
+  // ISSUE-163：加载各 provider 已存 key 的打码前缀
   function refreshKeyMasked() {
     window.api.piGetSettings?.().then((r: any) => {
       if (r?.success && Array.isArray(r.providers)) {
@@ -112,14 +152,12 @@ export default function Settings() {
     setKeyStatus(r?.success ? `已将 ${modelId} 设为默认模型` : `默认模型保存失败: ${r?.error || ""}`);
   }
 
-  // ISSUE-020：编程 agent 模型「保存」动作（由独立按钮触发，不随下拉 onChange 即时保存）。
-  // modelId 为空 = 停用。
   async function handleSaveProgramming(provider: string, modelId: string) {
     const key = modelId ? `${provider}/${modelId}` : "";
     const r = await window.api.piSetProgrammingModel(key);
     if (r?.success) {
-      setProgrammingModel(key); // 已保存值更新
-      setKeyStatus(key ? `已保存编程 agent 模型：${modelId}` : "已停用编程 agent 模型");
+      setProgrammingModel(key);
+      setKeyStatus(key ? `已保存编程 agent 模型：${modelId}` : "编程 agent 模型已恢复系统默认");
     } else {
       setKeyStatus(`编程 agent 模型保存失败: ${r?.error || ""}`);
     }
@@ -133,11 +171,10 @@ export default function Settings() {
     }
     const result = await window.api.piSetApiKey(selectedProvider, apiKey.trim());
     if (result.success) {
-      setKeyStatus("已保存。正在获取可用模型...");
       setApiKey("");
       const models = await window.api.piGetModels();
       if (Array.isArray(models)) setAvailableModels(models);
-      refreshKeyMasked(); // ISSUE-163：保存后刷新打码回显
+      refreshKeyMasked();
       setKeyStatus("API key 已保存");
     } else {
       setKeyStatus(`保存失败: ${result.error}`);
@@ -153,16 +190,16 @@ export default function Settings() {
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <h3 style={{ marginBottom: 16 }}>设置</h3>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap" }}>
         {(
           [
-            ["models", "模型配置"],
-            ["vision", "视觉配置"],
-            ["voice", "语音配置"],
+            ["tokenhub", "AI模型"],
+            ["models", "自定义模型"],
             ["evaluation", "发音评测"],
             ["scheduler", "定时任务"],
             ["feishu", "飞书绑定"],
             ["scene", "场景口径"],
+            ["prompt", "自定义说明"],
             ["ns", "自定义数据"],
             ["openapi", "开放接口"],
             ["backup", "数据备份"],
@@ -186,11 +223,65 @@ export default function Settings() {
         ))}
       </div>
 
+      {/* ============ ① AI模型：内置渠道启停开关 + 配额直显（不展示来源/模型列表） ============ */}
+      {tab === "tokenhub" && (
+        <div className="settings-section">
+          <h3>AI模型</h3>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 12, padding: "14px 16px",
+            background: modelChannel === "builtin" ? "#f0f4ff" : "#f8fafc",
+            border: modelChannel === "builtin" ? "1px solid #dfe4ff" : "1px solid #e2e8f0",
+            borderRadius: 10, marginBottom: 16,
+          }}>
+            <span style={{ fontSize: 22 }}>{modelChannel === "builtin" ? "✅" : "⏸️"}</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>
+                内置 AI 模型{modelChannel === "builtin" ? " · 已启用" : " · 已停用"}
+              </div>
+              <div style={{ fontSize: 12, color: "#667", marginTop: 2 }}>
+                {modelChannel === "builtin"
+                  ? "AI 助手 / 视觉理解 / 编程 agent 均使用内置模型，按账号配额计费，无需任何配置。"
+                  : "已停用：当前" + (modelChannel === "custom" ? "使用「自定义模型」页配置的模型。" : "AI 功能不可用（自定义模型也未启用）。")}
+              </div>
+            </div>
+            <ChannelToggle checked={modelChannel === "builtin"} onToggle={(v) => switchChannel(v ? "builtin" : "off")} />
+          </div>
+
+          {/* ISSUE-174 调整：配额直接展示在本页，不再单独一个标签 */}
+          <TokenHubQuotaPanel />
+
+          {keyStatus && <p style={{ fontSize: 13, color: keyStatus.startsWith("渠道切换失败") || keyStatus.startsWith("保存失败") ? "red" : "#667eea", marginTop: 12 }}>{keyStatus}</p>}
+        </div>
+      )}
+
+      {/* ============ ② 自定义模型：独立开关（启用即停用内置）+ provider 渠道配置 ============ */}
       {tab === "models" && (
         <div className="settings-section">
-          <h3>模型配置</h3>
+          <h3>自定义模型</h3>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 12, padding: "14px 16px",
+            background: modelChannel === "custom" ? "#f0f4ff" : "#f8fafc",
+            border: modelChannel === "custom" ? "1px solid #dfe4ff" : "1px solid #e2e8f0",
+            borderRadius: 10, marginBottom: 12,
+          }}>
+            <span style={{ fontSize: 22 }}>{modelChannel === "custom" ? "✅" : "⏸️"}</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>
+                自定义模型{modelChannel === "custom" ? " · 已启用" : " · 已停用"}
+              </div>
+              <div style={{ fontSize: 12, color: "#667", marginTop: 2 }}>
+                {modelChannel === "custom"
+                  ? "已启用：内置 AI 模型已自动停用，全部功能改用下方配置的自定义模型。"
+                  : modelChannel === "builtin"
+                    ? "内置 AI 模型启用中：下方配置会保存，但仅在启用自定义模型后生效（启用即自动停用内置模型）。"
+                    : "AI 模型当前整体停用：内置与自定义模型均未启用。"}
+              </div>
+            </div>
+            <ChannelToggle checked={modelChannel === "custom"} onToggle={(v) => switchChannel(v ? "custom" : "off")} />
+          </div>
           <p className="desc">
-            配置一个或多个模型提供商。所有孩子共用这些模型。配置后可在孩子学习时选择使用。
+            可选：配置自己的模型提供商 API Key。启用自定义模型后，所有 AI 功能优先使用此处配置
+            （默认 / 视觉 / 编程 / 语音），内置模型停用。
           </p>
 
           <div className="provider-list">
@@ -231,7 +322,6 @@ export default function Settings() {
             </button>
           </div>
 
-          {/* ISSUE-163：当前 provider 已存 key 的打码回显 */}
           <p style={{ fontSize: 12, color: keyMasked[selectedProvider] ? "#27ae60" : "#98a2b0", margin: "0 0 12px" }}>
             {keyMasked[selectedProvider]
               ? `当前已保存：${keyMasked[selectedProvider]}（重新输入并保存可更换）`
@@ -242,22 +332,15 @@ export default function Settings() {
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <h4 style={{ fontSize: 15 }}>当前可用模型（{PROVIDERS.find((p) => p.id === selectedProvider)?.name || selectedProvider}）</h4>
-            <IconButton
-              icon={RefreshCw}
-              title="刷新模型"
-              onClick={handleRefreshModels}
-            />
+            <IconButton icon={RefreshCw} title="刷新模型" onClick={handleRefreshModels} />
           </div>
 
           {(() => {
-            const filtered = availableModels.filter((m) => m.provider === selectedProvider);
-            if (availableModels.length === 0) {
-              return <p style={{ color: "#888", fontSize: 13 }}>还没有可用的模型，先保存一个 API key。</p>;
-            }
+            const filtered = availableModels.filter((m: any) => m.provider === selectedProvider);
             if (filtered.length === 0) {
               return <p style={{ color: "#888", fontSize: 13 }}>该 provider 暂无可用模型，请确认已保存其 API key 后点「刷新」。</p>;
             }
-            return filtered.map((m) => {
+            return filtered.map((m: any) => {
               const modelKey = `${m.provider}/${m.id}`;
               const isDefault = defaultModel === modelKey;
               return (
@@ -290,7 +373,8 @@ export default function Settings() {
           <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #eee" }}>
             <h4 style={{ fontSize: 15, marginBottom: 4 }}>编程 agent 模型</h4>
             <p style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>
-              用于自动生成 / 修改孩子学习的 HTML 资料（create_html_lesson 工具）。独立于上方「默认模型」配置，不跟随 provider 切换；选好后点「保存」生效，未选择则功能不可用。
+              用于自动生成 / 修改孩子学习的 HTML 资料。未选择（或所选 provider 未配 Key）时使用系统默认 TokenHub 模型；
+              列表含 TokenHub 模型（无需 Key）与已配置的自定义模型。
             </p>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <select
@@ -299,10 +383,10 @@ export default function Settings() {
                 disabled={availableModels.length === 0}
                 style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 260 }}
               >
-                <option value="">未启用（默认）</option>
-                {availableModels.map((m) => (
+                <option value="">系统默认（TokenHub）</option>
+                {availableModels.map((m: any) => (
                   <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                    {m.name}（{m.provider}/{m.id}）
+                    {m.name}（{m.provider}/{m.id}）{m.provider === "tokenhub" ? " · 无需Key" : ""}
                   </option>
                 ))}
               </select>
@@ -326,21 +410,20 @@ export default function Settings() {
                 保存编程 agent 模型
               </button>
             </div>
-            {availableModels.length === 0 && (
-              <p style={{ fontSize: 12, color: "#c0392b", marginTop: 6 }}>
-                暂无可用模型：请先在「API key」区配置并保存一个模型提供商的 key，模型列表加载后可在这里选择编程 agent 模型。
-              </p>
-            )}
             {programmingModel && (
               <p style={{ fontSize: 12, color: "#667eea", marginTop: 6 }}>当前已保存的编程 agent 模型：{programmingModel}</p>
             )}
           </div>
+
+          {/* ISSUE-174 调整：视觉 / 语音模型并入自定义模型渠道（原独立标签取消） */}
+          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #eee" }}>
+            <VisionSettings />
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <VoiceSettings />
+          </div>
         </div>
       )}
-
-      {tab === "vision" && <VisionSettings />}
-
-      {tab === "voice" && <VoiceSettings />}
 
       {tab === "evaluation" && <AssessmentSettings />}
 
@@ -350,6 +433,26 @@ export default function Settings() {
 
       {tab === "feishu" && <FeishuBindPanel />}
       {tab === "scene" && <SceneSkillSettings />}
+
+      {/* ISSUE-175：家长 agent 全局自定义层——追加在家长助手 system prompt 末尾，重开会话生效 */}
+      {tab === "prompt" && (
+        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column" }}>
+          <CustomPromptEditor
+            scope="parent"
+            refId=""
+            title="自定义说明"
+            entityLabel="家长助手"
+            description={
+              <>
+                给家长助手追加的个性化要求（例如：「汇报时先说结论再列细节」「每天结束时给我一句总结」），对助手的**所有场景**生效。
+                内容整段**追加**在助手行为规范的最末尾；基础规范由系统维护，这里改不到。
+                想调整某个场景的具体说法（而非全局要求），用旁边的「场景口径」。
+              </>
+            }
+            placeholder={"在这里写给家长助手的额外要求，一行一条即可，例如：\n· 汇报先给结论，再列细节\n· 提到分数时同时说明错因类别"}
+          />
+        </div>
+      )}
       {tab === "ns" && <NamespacePanel />}
       {tab === "openapi" && <OpenApiSettings />}
       {tab === "general" && <GeneralSettings />}

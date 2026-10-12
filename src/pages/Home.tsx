@@ -39,6 +39,21 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
   const [serverDirty, setServerDirty] = useState(false);
   const [serverMsg, setServerMsg] = useState("");
 
+  // ISSUE-174：大模型额度提醒——官方口径「已耗尽」或「剩余<10%」时主页顶部横幅（购买=联系管理员充值）
+  const [quotaBanner, setQuotaBanner] = useState<"" | "low" | "empty">("");
+  useEffect(() => {
+    (window.api as any).tokenhubQuotaGet?.().then((r: any) => {
+      if (!r?.success || !r.remote?.quota) return;
+      const { cycleCredits, cycleUsed, quotaStatus } = r.remote.quota;
+      const credits = cycleCredits || 0;
+      if (quotaStatus === "inactive" || (credits > 0 && cycleUsed >= credits)) {
+        setQuotaBanner("empty");
+      } else if (credits > 0 && (credits - cycleUsed) / credits < 0.1) {
+        setQuotaBanner("low");
+      }
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     setChildrenLoading(true);
     window.api
@@ -165,6 +180,24 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
           <span>退出账号</span>
         </button>
       </div>
+
+      {/* ISSUE-174：大模型额度提醒横幅 */}
+      {quotaBanner && (
+        <div
+          onClick={() => onEnterParent()}
+          style={{
+            maxWidth: 560, width: "100%", margin: "0 auto 16px", padding: "10px 16px",
+            borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 600,
+            background: quotaBanner === "empty" ? "rgba(229,62,62,.92)" : "rgba(246,173,85,.92)",
+            color: "#fff",
+          }}
+          title="点击进入家长中心查看配额"
+        >
+          {quotaBanner === "empty"
+            ? "⛔ 今日大模型额度已用完，AI 伙伴暂时不可用——请联系管理员充值"
+            : "⚠️ 今日大模型额度剩余不足 10%，用完请联系管理员充值"}
+        </div>
+      )}
 
       <h1>学习伙伴</h1>
       <p style={{ color: "rgba(255,255,255,0.85)", marginTop: -20, marginBottom: 24 }}>

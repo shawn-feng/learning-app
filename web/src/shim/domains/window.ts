@@ -54,4 +54,9 @@ export const windowDomain = {
     const handler = () => callback(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", handler);
   },
+
+  /** openExternal: (url) => Promise<void>（新标签打开外链；TaskGate 打开 benefit-auth 个人中心用） */
+  openExternal: async (url: string): Promise<void> => {
+    window.open(url, "_blank", "noopener");
+  },
 };

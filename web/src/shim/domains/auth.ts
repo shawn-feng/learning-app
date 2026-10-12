@@ -42,6 +42,78 @@ async function loginAndCache(
   return license;
 }
 
+// ==================== 抖音扫码登录（网页版，与 App 客户端同一 IdP 链路） ====================
+// Electron：本地回调端口 17888 收 code；Web：learning-server 托管在局域网多变的 host:port，
+// 无法注册固定本地回调 → redirect_uri 指向云端桥页 /oauth/web-callback，由它把 code 交还：
+//   popup（桌面主流）：postMessage 回本页，体验与 App 内授权窗口一致；
+//   同 tab（弹窗被拦截/移动端）：整页跳转，桥页按 state 里的回跳 origin 带回 code，
+//     回跳后由 main.tsx 的 handleDouyinAuthRedirect 在启动时完成换会话。
+const CLOUD_BASE = "https://www.aixuexihao.top";
+const BENEFIT_CLIENT_ID = "app_2cd2b7263372a407"; // 公开 AK（SK 只在云端 benefit-auth）
+const WEB_CALLBACK = `${CLOUD_BASE}/oauth/web-callback`;
+const DOUYIN_STATE_KEY = "web.douyinState";
+
+function randomHex(len = 16): string {
+  const b = new Uint8Array(len);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+/** state = base64url(JSON {r: 随机数, ret: 回跳 origin})；IdP 原样回传，桥页/本页各自解析 */
+function packState(ret: string): string {
+  const json = JSON.stringify({ r: randomHex(8), ret });
+  const bytes = new TextEncoder().encode(json);
+  let bin = "";
+  bytes.forEach((x) => (bin += String.fromCharCode(x)));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** 授权码 → 会话 + license 并缓存（对齐 electron douyinLoginFlow 的服务端交互部分） */
+export async function exchangeDouyinCode(
+  code: string
+): Promise<{ license: WebLicense; benefit_user_token: string }> {
+  const data = await http<{
+    session_token: string;
+    license: LicenseData;
+    email: string;
+    benefit_user_token: string;
+  }>("/auth/douyin", { method: "POST", body: { code, redirect_uri: WEB_CALLBACK } });
+  const licenseResp = await http<{ license: LicenseData }>("/auth/license", {
+    token: data.session_token,
+  });
+  const license: WebLicense = {
+    ...licenseResp.license,
+    email: data.email,
+    token: data.session_token,
+    cached_at: new Date().toISOString(),
+  };
+  saveLicense(license);
+  return { license, benefit_user_token: data.benefit_user_token };
+}
+
+/**
+ * 同 tab 回跳处理（main.tsx 启动时调用）：桥页带 #auth-code 回来 → 校验 state → 换会话缓存。
+ * 成功/失败都清掉 hash 与暂存 state；失败静默（启动后仍停在登录页）。
+ */
+export async function handleDouyinAuthRedirect(): Promise<void> {
+  const hash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const params = new URLSearchParams(hash);
+  const code = params.get("auth-code");
+  if (!code) return;
+  const incoming = params.get("state") || "";
+  const stored = localStorage.getItem(DOUYIN_STATE_KEY) || "";
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  localStorage.removeItem(DOUYIN_STATE_KEY);
+  if (!stored || incoming !== stored) return; // state 不符（CSRF/过期）→ 丢弃
+  try {
+    await exchangeDouyinCode(code);
+  } catch {
+    /* 换码失败 → 停在登录页，用户可重试 */
+  }
+}
+
 export const authDomain = {
   /** authLogin: (email: string, password: string) => Promise<{ success: boolean; license?: WebLicense; error?: string }> */
   authLogin: async (email: string, password: string) => {
@@ -85,8 +157,10 @@ export const authDomain = {
         cached_at: new Date().toISOString(),
       };
       if (fresh.is_expired) {
-        clearStoredLicense();
-        return { authenticated: false, license: null };
+        // 待解锁（任务门禁 TaskGate 轮询）是预期状态：保留本地凭证，权益到手后
+        // 下一轮轮询即可自动放行。不能清凭证——清了门禁页没有 token 可查，
+        // 会永远卡在「等待检测中」（2026-10-08 实测 bug，与 electron auth-manager 同步修复）。
+        return { authenticated: false, license: fresh };
       }
       saveLicense(fresh);
       return { authenticated: true, license: fresh };
@@ -98,6 +172,92 @@ export const authDomain = {
       }
       // 网络错误 / 服务端不可达：离线降级，保留登录态
       return { authenticated: true, license };
+    }
+  },
+
+  /**
+   * authDouyinLogin: 抖音扫码登录（网页版）。
+   * 返回形状与 Electron douyinLoginFlow 一致：{success, needs_task, license, email,
+   * benefit_user_token, me_url, error?}。popup 主路径经 postMessage 收 code；
+   * 弹窗被拦截时整页跳转授权页（同 tab 路径，回跳后由启动钩子完成登录，本 Promise 不再 resolve）。
+   */
+  authDouyinLogin: async (): Promise<{
+    success: boolean;
+    needs_task: boolean;
+    license: WebLicense | null;
+    email: string;
+    benefit_user_token: string;
+    me_url: string;
+    error?: string;
+  }> => {
+    const state = packState(window.location.origin);
+    localStorage.setItem(DOUYIN_STATE_KEY, state);
+    const authorizeUrl =
+      `${CLOUD_BASE}/oauth/authorize?client_id=${encodeURIComponent(BENEFIT_CLIENT_ID)}` +
+      `&redirect_uri=${encodeURIComponent(WEB_CALLBACK)}&response_type=code&state=${encodeURIComponent(state)}`;
+
+    const popup = window.open(authorizeUrl, "douyin-auth", "width=500,height=700");
+    if (!popup) {
+      // 弹窗被拦截 → 同 tab 跳转；授权后桥页带 #auth-code 跳回，启动钩子完成登录
+      window.location.href = authorizeUrl;
+      return new Promise(() => {}); // 页面即将离开，永不 resolve
+    }
+
+    try {
+      const { code, msgState } = await new Promise<{ code: string; msgState: string }>(
+        (resolve, reject) => {
+          let settled = false;
+          const cleanup = () => {
+            window.removeEventListener("message", onMsg);
+            clearInterval(closedIv);
+            clearTimeout(timeout);
+          };
+          const finish = (fn: () => void) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            fn();
+          };
+          const onMsg = (e: MessageEvent) => {
+            if (e.origin !== CLOUD_BASE && e.origin !== "https://auth.aixuexihao.top") return;
+            const d = e.data as { source?: string; code?: string; state?: string };
+            if (!d || d.source !== "benefit-auth-oauth") return;
+            finish(() => resolve({ code: String(d.code || ""), msgState: String(d.state || "") }));
+          };
+          // 用户手关弹窗且无消息 → 视为取消（留 800ms 余量等 postMessage 先到）
+          const closedIv = setInterval(() => {
+            if (popup.closed) {
+              setTimeout(() => finish(() => reject(new Error("授权窗口已关闭，请重试"))), 800);
+            }
+          }, 400);
+          const timeout = setTimeout(
+            () => finish(() => reject(new Error("授权超时（5 分钟），请重试"))),
+            5 * 60 * 1000
+          );
+          window.addEventListener("message", onMsg);
+        }
+      );
+      if (!code) throw new Error("授权未返回授权码");
+      if (msgState !== state) throw new Error("state 校验失败，请重试");
+      const { license, benefit_user_token } = await exchangeDouyinCode(code);
+      return {
+        success: true,
+        needs_task: license.is_expired === true,
+        license,
+        email: license.email,
+        benefit_user_token,
+        me_url: `${CLOUD_BASE}/me?token=${encodeURIComponent(benefit_user_token)}`,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        needs_task: false,
+        license: null,
+        email: "",
+        benefit_user_token: "",
+        me_url: "",
+        error: (err as Error).message,
+      };
     }
   },
 

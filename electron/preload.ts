@@ -143,6 +143,8 @@ const api = {
     ipcRenderer.invoke("tokenUsage:days", params || {}),
   tokenUsageSessions: (date: string, scope?: string) =>
     ipcRenderer.invoke("tokenUsage:sessions", date, scope),
+  // 大模型配额（ISSUE-174 TokenHub 统一模型接入）：官方口径 + 本地口径聚合
+  tokenhubQuotaGet: () => ipcRenderer.invoke("tokenhub:quota"),
   piListSessions: (childId: string) => ipcRenderer.invoke("pi:listSessions", childId),
   piGetSessionMessages: (childId: string, file: string) =>
     ipcRenderer.invoke("pi:getSessionMessages", childId, file),
@@ -170,6 +172,9 @@ const api = {
   // 会话级切换桩化后孩子端入口已去掉，通道不再保留。
   piGetDefaultModel: () => ipcRenderer.invoke("pi:get_default_model"),
   piSetDefaultModel: (key: string) => ipcRenderer.invoke("pi:set_default_model", key),
+  // 模型渠道三态开关（ISSUE-174 调整）：builtin=内置 AI 模型 / custom=自定义模型 / off=停用
+  piGetModelChannel: () => ipcRenderer.invoke("pi:get_model_channel"),
+  piSetModelChannel: (channel: string) => ipcRenderer.invoke("pi:set_model_channel", channel),
   piGetProgrammingModel: () => ipcRenderer.invoke("pi:get_programming_model"),
   piSetProgrammingModel: (key: string) => ipcRenderer.invoke("pi:set_programming_model", key),
   piGetVisionModel: () => ipcRenderer.invoke("pi:get_vision_model"),

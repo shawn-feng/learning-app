@@ -46,7 +46,6 @@ export const TTS_VOICES: Array<{ provider: string; voiceId: string; name: string
   })),
   ...MIMO_TTS_VOICES.map((voiceId) => ({ provider: "mimo", voiceId, name: `MiMo·${voiceId}` })),
   ...MIMO_TTS_VOICES.map((voiceId) => ({
-    provider: "mimo-tokenplan",
     voiceId,
     name: `MiMo(套餐)·${voiceId}`,
   })),
@@ -143,6 +142,21 @@ async function synthesizeEdgeTts(
   return tts.toBuffer();
 }
 
+// 服务端合成（ISSUE-174 续，2026-10-12）：本机 edge-tts 通道已被微软 403 拒绝（实测复现），
+// 且管理端「语音合成模型」（minimax-speech-*，家长托管 Key）只能在服务端调用（Key 不出服务端）。
+// edge 分支优先调 POST /tts/synthesize（家长 JWT；builtin 渠道 → TokenHub 合成，custom/off → edge），
+// 失败回落本地 edge-tts（服务端不可达/未登录时老行为兜底）。返回 24kHz MP3（与本地 edge 相同）。
+async function synthesizeViaServer(clean: string, rate: string, volume: string): Promise<Buffer> {
+  const { serverFetchBinary } = await import("../server-client");
+  const { currentSessionToken } = await import("../client-data");
+  return await serverFetchBinary("/tts/synthesize", {
+    method: "POST",
+    body: { text: clean, rate, volume },
+    token: currentSessionToken(),
+    timeoutMs: 30000,
+  });
+}
+
 // 合成语音，返回 MP3 Buffer（带 LRU 缓存）。
 // provider 优先级：显式 opts.provider > 设置页「语音合成」默认（tts-config）> edge-tts（免费）。
 // voice 优先级：显式 opts.voice > 设置页该 provider 默认音色 > edge-tts 按文本语言自动选（中文晓晓/英文英音）。
@@ -155,8 +169,15 @@ export async function synthesize(text: string, opts: TtsOptions = {}): Promise<B
   const provider = (opts.provider || cfg.provider || "edge-tts") as TtsProviderId;
   const pcfg = cfg.providers[provider] || {};
   const isEdge = provider === "edge-tts";
-  const voice = opts.voice || pcfg.voice || (isEdge ? detectVoice(clean) : "");
-  if (!voice && !isEdge) throw new Error("语音合成缺省音色未配置，请先在设置中选择朗读音色");
+  // 各引擎默认音色（2026-10-10 用户拍板：设置页不再选音色，统一用默认；显式 opts.voice 仍可覆盖）
+  const PROVIDER_DEFAULT_VOICE: Record<string, string> = {
+    qwen: QWEN_TTS_VOICES[0],
+    "qwen-tokenplan": QWEN_TTS_VOICES[0],
+    mimo: MIMO_TTS_VOICES[0],
+    "mimo-tokenplan": MIMO_TTS_VOICES[0],
+  };
+  const voice = opts.voice || pcfg.voice || (isEdge ? detectVoice(clean) : PROVIDER_DEFAULT_VOICE[provider] || "");
+  if (!voice) throw new Error("语音合成缺省音色未配置，请先在设置中选择朗读音色");
 
   const rate = opts.rate ?? DEFAULT_RATE;
   const volume = opts.volume ?? "100%";
@@ -192,7 +213,12 @@ export async function synthesize(text: string, opts: TtsOptions = {}): Promise<B
       break;
     case "edge-tts":
     default:
-      buf = await synthesizeEdgeTts(clean, voice, rate, volume);
+      // 服务端合成优先（TokenHub/edge 由服务端按渠道分发）；失败回落本地 edge-tts
+      try {
+        buf = await synthesizeViaServer(clean, rate, volume);
+      } catch {
+        buf = await synthesizeEdgeTts(clean, voice, rate, volume);
+      }
       break;
   }
 

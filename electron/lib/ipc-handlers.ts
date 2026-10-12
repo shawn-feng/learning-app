@@ -1216,6 +1216,33 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
+  // 模型渠道三态开关（ISSUE-174 调整：builtin=内置 TokenHub / custom=自定义 / off=停用；
+  // 两处设置页开关镜像同一状态，开一个自动关另一个）
+  ipcMain.handle("pi:get_model_channel", async () => {
+    try {
+      const s = await getModelSettings();
+      const ch = s.appSettings?.modelChannel;
+      return { success: true, channel: ch === "custom" || ch === "off" ? ch : "builtin" };
+    } catch (err) {
+      return { success: false, error: (err as Error).message, channel: "builtin" };
+    }
+  });
+
+  ipcMain.handle("pi:set_model_channel", async (_e: IpcMainInvokeEvent, ch: string) => {
+    try {
+      const channel = ch === "custom" || ch === "off" ? ch : "builtin";
+      await setAppSettings({ modelChannel: channel });
+      // 语音跟随渠道（用户 2026-10-10 拍板）：内置/停用 → TTS 锁回 Edge（免费）；自定义 → 用户所选引擎
+      if (channel !== "custom") {
+        applyTtsConfigPatch({ provider: "edge-tts", providers: {} });
+      }
+      getMainWindow()?.webContents.send("pi:model_channel_changed", channel);
+      return { success: true, channel };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ISSUE-020：编程 agent 模型（未配置 = 空串，create_html_lesson 不可用）
   ipcMain.handle("pi:get_programming_model", async () => {
     try {
@@ -1615,6 +1642,18 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       if (scope) qs.set("scope", scope);
       const data = await serverFetch<{ sessions?: unknown[] }>(`/token-usage/sessions?${qs.toString()}`, { token });
       return { success: true, sessions: data?.sessions ?? [] };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 大模型配额（ISSUE-174 TokenHub 统一模型接入）：官方口径 + 本地口径聚合，服务端透传
+  ipcMain.handle("tokenhub:quota", async () => {
+    try {
+      const token = currentSessionToken();
+      if (!token) return { success: false, error: "未登录" };
+      const data = await serverFetch<Record<string, unknown>>("/tokenhub/quota", { token });
+      return { success: true, ...data };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
