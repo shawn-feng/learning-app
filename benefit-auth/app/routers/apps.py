@@ -5,12 +5,13 @@ App 注册 → 获得 app_id/app_secret → 换取 app_token → 创建任务 / 
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from ..database import get_db, new_id
 from ..deps import get_current_app
 from ..security import create_app_token, gen_app_credentials, hash_secret, verify_secret
+from .. import ratelimit
 from ..platforms import is_supported
 
 router = APIRouter(prefix="/api/app", tags=["app"])
@@ -68,13 +69,29 @@ async def register_app(req: RegisterAppRequest, db=Depends(get_db)):
 
 
 @router.post("/token")
-async def app_token(req: AppTokenRequest, db=Depends(get_db)):
+async def app_token(req: AppTokenRequest, request: Request, db=Depends(get_db)):
+    # 防猜 secret：错 5 次锁该 app_id 15 分钟（ratelimit，SQLite 持久）
+    locked, remain = await ratelimit.acct_status(
+        db, f"app:{req.app_id}", ratelimit.APP_TOKEN_FAILS, ratelimit.APP_TOKEN_LOCK_S)
+    if locked:
+        raise HTTPException(status_code=429, detail=f"失败次数过多，已临时锁定（约 {remain//60+1} 分钟）")
     rows = await db.execute_fetchall("SELECT * FROM apps WHERE app_id = ?", (req.app_id,))
     if not rows:
-        raise HTTPException(status_code=401, detail="Invalid app credentials")
+        locked_now, _ = await ratelimit.acct_record_fail(
+            db, f"app:{req.app_id}", ratelimit.APP_TOKEN_FAILS, ratelimit.APP_TOKEN_LOCK_S)
+        detail = "Invalid app credentials"
+        if locked_now:
+            detail += f"（失败次数过多，已锁定约 {ratelimit.APP_TOKEN_LOCK_S//60} 分钟）"
+        raise HTTPException(status_code=401, detail=detail)
     app = rows[0]
     if not verify_secret(req.app_secret, app["app_secret_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid app credentials")
+        locked_now, _ = await ratelimit.acct_record_fail(
+            db, f"app:{req.app_id}", ratelimit.APP_TOKEN_FAILS, ratelimit.APP_TOKEN_LOCK_S)
+        detail = "Invalid app credentials"
+        if locked_now:
+            detail += f"（失败次数过多，已锁定约 {ratelimit.APP_TOKEN_LOCK_S//60} 分钟）"
+        raise HTTPException(status_code=401, detail=detail)
+    await ratelimit.acct_reset(db, f"app:{req.app_id}")
     if app["status"] != "active":
         raise HTTPException(status_code=403, detail="App disabled")
     return {"app_token": create_app_token(app["app_id"]), "expires_in": 86400}

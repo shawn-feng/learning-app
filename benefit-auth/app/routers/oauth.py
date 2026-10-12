@@ -281,6 +281,18 @@ async def callback(platform: str, code: str, state: str, response: Response, db=
                 refresh_token=refresh_token, token_expires_at=expires_at,
                 scopes=granted_scopes or ",".join(provider.default_scopes),
             )
+            # 新用户注册即发放 TokenHub Key（ISSUE-174：管理端可配初始配额/有效期/模型绑定；
+            # 失败不阻断登录——首次使用模型时物化循环会兜底重试）
+            try:
+                from ..database import get_setting
+                from .. import tokenhub as _th
+                _sid = await get_setting(db, "tokenhub_ak", "") or __import__("os").environ.get("TOKENHUB_SECRET_ID", "")
+                _skey = await get_setting(db, "tokenhub_sk", "") or __import__("os").environ.get("TOKENHUB_SECRET_KEY", "")
+                if _sid and _skey:
+                    _th.set_runtime_config(_sid, _skey)
+                    await _th.ensure_user_key(db, user_id)
+            except Exception as _e:  # noqa: BLE001
+                print("[oauth] 新用户 TokenHub 发放失败(稍后兜底):", str(_e)[:120], flush=True)
         await db.commit()
         token = create_user_token(user_id)
         item["token"] = token
@@ -527,6 +539,65 @@ async def idp_userinfo(user_id: str = Depends(get_current_user), db=Depends(get_
         "email": u["email"],
         "platform_accounts": [dict(a) for a in accounts],
     }
+
+
+# ==================== 网页端回调桥页 ====================
+# redirect_uri 指向本页（注册于 apps.redirect_uris）。网页版（learning-server 托管，局域网
+# 多种 host:port）无法像 Electron 那样注册固定本地回调，故由云端桥页把 code 交还发起页：
+#   popup 场景：window.opener 存在 → postMessage {source, code, state} 后自关；
+#   同 tab 场景（弹窗被拦截/移动端）：state 内含回跳 origin（base64url JSON {r, ret}），
+#     校验 ret 属局域网/本机后带 #auth-code 跳回（防开放跳转：公网 ret 一律拒绝）。
+@router.get("/oauth/web-callback", response_class=HTMLResponse)
+async def web_callback(code: str = "", state: str = ""):
+    return HTMLResponse(_web_callback_page(code, state))
+
+
+def _web_callback_page(code: str, state: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>授权完成</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+background:#f5f6fa;color:#0f172a;min-height:100vh;display:flex;align-items:center;justify-content:center}}
+.card{{background:#fff;border-radius:20px;padding:36px;max-width:420px;width:92%;text-align:center;
+box-shadow:0 12px 40px rgba(15,23,42,.08)}}
+.big{{font-size:46px}} h2{{font-size:20px;margin:10px 0 6px;color:#047857}}
+.tip{{color:#64748b;font-size:13px;line-height:1.7;margin-top:12px}}
+</style></head>
+<body><div class="card">
+<div class="big">✅</div>
+<h2>授权完成</h2>
+<div class="tip" id="tip">正在返回应用…</div>
+</div>
+<script>
+const code = {json.dumps(code)};
+const state = {json.dumps(state)};
+function done(text) {{ document.getElementById('tip').textContent = text; }}
+(function () {{
+  // popup：code 经 postMessage 交还发起页，随后自关
+  try {{
+    if (window.opener && !window.opener.closed) {{
+      window.opener.postMessage({{ source: "benefit-auth-oauth", code: code, state: state }}, "*");
+      setTimeout(() => window.close(), 200);
+      return;
+    }}
+  }} catch (e) {{ /* 跨域 opener 访问受限时走同 tab 分支 */ }}
+  // 同 tab：state（base64url JSON {{r, ret}}）内含回跳 origin，仅限局域网/本机
+  try {{
+    let b64 = state.replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const payload = JSON.parse(atob(b64));
+    const ret = String(payload.ret || "");
+    const ok = /^https?:\\/\\/(localhost|127\\.0\\.0\\.1|192\\.168\\.\\d+\\.\\d+|10\\.\\d+\\.\\d+\\.\\d+|172\\.(1[6-9]|2\\d|3[01])\\.\\d+\\.\\d+)(:\\d+)?$/.test(ret);
+    if (ok) {{
+      location.replace(ret + "/#auth-code=" + encodeURIComponent(code) + "&state=" + encodeURIComponent(state));
+      return;
+    }}
+  }} catch (e) {{ /* state 解析失败 → 显示完成页 */ }}
+  done("授权已完成，请回到应用继续。若未自动返回，请手动关闭本页。");
+}})();
+</script></body></html>"""
 
 
 # ==================== 未登录授权续接页 ====================

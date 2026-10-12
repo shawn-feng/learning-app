@@ -11,8 +11,10 @@ from typing import Optional
 
 from .database import init_db, get_db
 from .poller import poll_loop
-from .routers import account, admin, apps, cloud_auth, cloud_license, legacy, me, oauth, sync
+from .routers import account, admin, apps, legacy, me, oauth, sync
+from .routers import admin_portal, deprecated, tokenhub_routes
 from .pages import login_page, me_page
+from . import tokenhub
 
 app = FastAPI(title="Benefit Auth Center", version="0.2.0")
 
@@ -31,9 +33,13 @@ app.include_router(apps.router)
 app.include_router(me.router)
 app.include_router(oauth.router)
 app.include_router(legacy.router)
+# TokenHub 统一模型接入（ISSUE-174）：家长 Key 发放/配额 + 管理门户（两步登录 + 配额后台）
+app.include_router(tokenhub_routes.router)
+app.include_router(admin_portal.router)
+# 登录安全裁剪（ISSUE-174 安全轮）：已下线的旧账密/订阅接口 → 410
+app.include_router(deprecated.router)
 # 旧 cloud-service 兼容路由（老 LAN server 的认证上游 + 消息交换）
-app.include_router(cloud_auth.router)
-app.include_router(cloud_license.router)
+# （2026-10-10 安全裁剪：/api/auth/* 账密族已下线 → deprecated.router 410；cloud_auth.py 仅余 get_current_parent）
 app.include_router(sync.router)
 
 
@@ -48,6 +54,8 @@ async def startup():
     await init_db()
     # 每分钟自动检测任务完成（用户无需回站点「验证」）；campaign 循环已停用（被每日 cron 机制取代）
     asyncio.create_task(poll_loop())
+    # TokenHub 轮换后续（ISSUE-174）：次日恢复档位 + 30 分钟后回收旧 Key
+    asyncio.create_task(tokenhub.restore_loop())
     # App 安装包目录（/download/，nginx 正则放行）+ 种子版本
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     app.mount("/download", StaticFiles(directory=DOWNLOAD_DIR), name="download")

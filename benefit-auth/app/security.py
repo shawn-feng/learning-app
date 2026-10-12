@@ -73,6 +73,19 @@ def create_user_token(user_id: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+ADMIN_TOKEN_TTL_HOURS = 8
+
+
+def create_admin_token(username: str) -> str:
+    """管理后台会话 token（两步登录通过后签发，Cookie 携带）"""
+    payload = {
+        "sub": username,
+        "typ": "admin",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=ADMIN_TOKEN_TTL_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
 def decode_token(token: str) -> dict | None:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])

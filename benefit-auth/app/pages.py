@@ -478,12 +478,6 @@ _HOME_LOGIN_PAGE = """<!DOCTYPE html>
 .lp-sec-h { font-size:13px; font-weight:700; color:#334155; margin-bottom:10px; }
 .lp-divider { display:flex; align-items:center; gap:10px; color:#94a3b8; font-size:12px; margin:18px 0 14px; }
 .lp-divider::before, .lp-divider::after { content:""; flex:1; height:1px; background:var(--line); }
-/* 账号密码登录 / 注册 */
-.acct-input { width:100%; padding:11px 12px; border:1.5px solid var(--line); border-radius:10px; font-size:14px; margin-bottom:10px; background:#fff; }
-.acct-input:focus { outline:none; border-color:var(--primary); }
-.acct-btn { width:100%; }
-.acct-switch { text-align:center; font-size:12.5px; color:var(--muted); margin-top:12px; }
-.acct-switch a { cursor:pointer; font-weight:600; }
 .acct-tip { font-size:12px; color:#94a3b8; text-align:center; margin-top:14px; line-height:1.6; }
 @media (max-width: 920px) {
   .home-layout { flex-direction:column; gap:32px; padding-top:5vh; }
@@ -504,7 +498,7 @@ _HOME_LOGIN_PAGE = """<!DOCTYPE html>
       登录并绑定你的平台账号，即可自动完成各平台的视频互动数据分析，任务进度与结果实时可见。
     </p>
     <ul class="feat">
-      <li><span class="fi">🔐</span><span><b>统一认证</b>：支持账号注册登录，也可用抖音等平台账号扫码快捷登录</span></li>
+      <li><span class="fi">🔐</span><span><b>统一认证</b>：抖音扫码快捷登录，自动创建账号</span></li>
       <li><span class="fi">📹</span><span><b>视频互动数据分析</b>：绑定平台账号后，自动分析你的视频互动数据</span></li>
       <li><span class="fi">📋</span><span><b>任务中心</b>：任务领取、进度与审核状态实时可见</span></li>
       <li><span class="fi">🎁</span><span><b>权益兑付</b>：任务完成自动发放权益，App 内直接使用</span></li>
@@ -514,21 +508,9 @@ _HOME_LOGIN_PAGE = """<!DOCTYPE html>
   <!-- 右：登录区域 -->
   <section class="login-panel">
     <div class="lp-title">登录</div>
-    <div class="lp-sub">选择账号登录，或使用平台账号快捷登录</div>
+    <div class="lp-sub">使用抖音扫码快捷登录（自动创建账号）</div>
 
-    <!-- 上：账号登录（仅登录；注册已下线，新用户抖音扫码自动注册） -->
-    <div class="lp-sec-h">账号登录</div>
-    <div id="acctLogin">
-      <input class="acct-input" type="email" id="liEmail" placeholder="邮箱" autocomplete="email">
-      <input class="acct-input" type="password" id="liPwd" placeholder="密码" autocomplete="current-password">
-      <button class="btn btn-primary acct-btn" id="liBtn">登 录</button>
-      <div class="acct-switch">没有账号？<span style="cursor:default">使用下方抖音扫码，自动注册</span></div>
-    </div>
-    <div class="msg" id="acctMsg"></div>
-
-    <div class="lp-divider">或</div>
-
-    <!-- 下：平台账号登录 -->
+    <!-- 平台账号登录（2026-10-10 账密登录已下线：防撞库，ISSUE-174） -->
     <div class="lp-sec-h">平台账号登录</div>
     <div id="viewPlats" class="plat-grid">
       <button class="plat-item" data-platform="douyin">
@@ -562,31 +544,6 @@ document.querySelectorAll('.plat-item[data-platform]').forEach(btn => {
   });
 });
 
-// ---------- 账号登录（注册已下线：新用户抖音扫码自动注册） ----------
-const acctMsg = document.getElementById('acctMsg');
-const $id = (id) => document.getElementById(id);
-
-async function acctPost(mode, body, btn, busyText) {
-  btn.disabled = true; const old = btn.textContent; btn.textContent = busyText;
-  try {
-    const res = await fetch('/api/account/' + mode, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (!res.ok) { acctMsg.className = 'msg error'; acctMsg.textContent = data.detail || '操作失败，请重试'; return; }
-    localStorage.setItem('benefit_token', data.token);
-    location.href = '/me';
-  } catch (e) {
-    acctMsg.className = 'msg error'; acctMsg.textContent = '网络错误，请重试';
-  } finally { btn.disabled = false; btn.textContent = old; }
-}
-
-$id('liBtn').addEventListener('click', () => {
-  const email = $id('liEmail').value.trim(), pwd = $id('liPwd').value;
-  if (!email || !pwd) { acctMsg.className = 'msg error'; acctMsg.textContent = '请填写邮箱和密码'; return; }
-  acctPost('login', { email, password: pwd }, $id('liBtn'), '登录中…');
-});
-$id('liPwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') $id('liBtn').click(); });
 </script>
 </body>
 </html>

@@ -111,6 +111,30 @@ DOUYIN_API_BASE=https://open.douyin.com
 ```
 > 抖音开放平台后台需确认：应用回调域名 `https://auth.aixuexihao.top/api/oauth/douyin/callback`，并已申请 `video.list` 等 scope（用于“网站获取用户视频”场景）。
 
+## TokenHub 统一模型接入 .env 补充项（ISSUE-174，2026-10-09，**待部署时写入**）
+```
+# 腾讯云 TokenHub 管控 API 凭证（CAM 子用户 learning-app，QcloudTokenHubFullAccess；
+# 明文在仓库 docs/tencent-aksk.txt，切勿提交）
+TOKENHUB_SECRET_ID=AKID…
+TOKENHUB_SECRET_KEY=…
+TOKENHUB_REGION=ap-guangzhou
+```
+- **管理员账密与 SMTP 授权码不用配 env**：init_db 播种 `79734745@qq.com` / `123456`，部署后登录
+  `https://auth.aixuexihao.top/admin/login` 在后台页面里改密码、配 SMTP 授权码（都有页面入口）。
+  未配 SMTP 时登录为单因素（账密直进），后台有黄色横幅提醒；配好并「发送测试邮件」通过后自动启用二次验证。
+- 默认日配额 500 万 tokens/用户（DB settings 键 `tokenhub_default_daily_credits`，后台页可改）。
+
+## ✅ TokenHub 版已部署生产（2026-10-09 17:09）
+
+- **方式**：复用既有通道——`tmp/deploy/_oss_sign.py`（OSS put + 900s 签名 URL）→ `scripts/aliyun-run.py`（云助手 RunCommand）。
+  包=`app/ + requirements.txt`（无新增依赖：邮件用 stdlib smtplib，二维码/httpx 已有），备份 `/opt/backups/app-before-tokenhub-20261009-*.tar.gz`。
+- **`.env` 幂等追加**：`TOKENHUB_SECRET_ID/SECRET_KEY/TOKENHUB_REGION`（chmod 600 保留）。
+- **部署后自检（服务器内网）**：py_compile_ok、svc active、/health ok、`/admin/login` 200、`/api/tokenhub/key` 无凭证 401、settings 种子三行（admin_username/admin_password_hash/admin_email）。
+- **公网验收**：/health ok；种子登录（79734745@qq.com/123456，SMTP 未配→单因素直进）200 + Cookie；后台 `/api/admin-portal/tokenhub/keys` 返回 `tokenhubConfigured:true`、默认配额 500 万。
+- **端到端实测（已清理）**：注册临时用户 → `GET /api/tokenhub/key` 真实发放 `ak-20261009-e288d4eb…`（500万/天 active）→ 该 Key 数据面 `/v1/models` 200 → 删除 Key + 清测试用户/Key 行，库归零。
+- **踩坑**：OSS 签名 URL 文件由 Windows python 写出带 `\r`，且组装脚本时误把 URL 展开留在服务器端执行（服务器无此文件→curl 空 URL 报 error 3）——URL 须本地展开、`tr -d '\r'` 后内联进脚本。
+- **待用户操作**：登录后台改掉默认密码 `123456`；「邮箱验证(SMTP)」填 QQ 授权码（点「发送测试邮件」验证）→ 之后管理员登录自动启用邮箱二维码二次验证。
+
 ## 验证结果（生产实跑）
 | 检查 | 结果 |
 |---|---|
@@ -140,3 +164,70 @@ DOUYIN_API_BASE=https://open.douyin.com
 3. 用户抖音扫码登录后回跳 `?code=...`，后端 `POST /oauth/token` 换 user/app token。
 4. 用 `GET /api/app/users/{user_id}/completions` 查询该用户在本站完成的任务，自行换算“时长/孩子数”等业务权限。
 详见 `benefit-auth/INTEGRATION.md`。
+
+## 管理后台重构 + 验证码二次验证（2026-10-09 17:2x，fix1~fix3 连续三 hotfix）
+
+- fix1：后台保存/改密按钮 JS 裸变量引用带连字符元素 id → 请求根本没发出（"保存没反应"根因）；改显式 getElementById。
+- fix2：邮件中文 preamble 裸输出 → smtplib sendmail ASCII 编码 UnicodeEncodeError（"测试邮件报 ascii codec"根因）；preamble 改 ASCII。
+- fix3（重构）：侧边分类菜单（🧊 TokenHub / 🔒 安全设置）；**TokenHub ak/sk 页面可配**（settings tokenhub_ak/tokenhub_sk，DB 优先 env 兜底，SecretId 打码显示 + 测试连通按钮）；Key 列表只显示用户 ID + Key 前 10 位；**二次验证改邮箱 6 位验证码**（账密通过→邮箱收码→登录页输码→直进后台；错 5 次作废）——SMTP 一旦配置即默认启用。TokenHub ak/sk 也可不再依赖 env（页面配置存 DB）。
+- 累计备份：/opt/backups/app-before-tokenhub-{部署,fix1,fix2,fix3}-*.tar.gz。
+
+## 默认模型四下拉（2026-10-10，已部署 fix4）
+- 后台 TokenHub 菜单新增「🎛️ 默认模型」：文本/视觉（TokenHub 数据面，新建 Key 自动绑定）/语音转录（DashScope）/语音合成（Edge TTS）四下拉；公开只读端点 `GET /api/tokenhub/model-config` 供 LAN server 同步。
+- 新发放 Key 自动绑定 text+vision+embedding(kinfra-text-embedding-0.6b)；绑定失败回落全模型。改默认模型只影响新 Key，存量改绑 = 后台删除重建（server 自动轮换）。
+
+## 批量轮换（2026-10-10，已部署 fix5）
+- 管理端改文本/视觉默认模型 → 自动批量轮换所有存量 Key（双 Key 平滑：先建新后回收旧，家长零断服）；新 Key **继承旧 Key 剩余配额**，原档位次日起由后台 restore_loop 自动调回。
+- 后台 Key 列表新增「轮换」行按钮（单 Key 手动轮换）。tokenhub_keys 表加 4 列（自动迁移）。
+
+## 用户管理菜单（2026-10-10，已部署 fix7）
+- 后台新增「👥 用户管理」：全部用户 + Key 全量信息；查询（关键字/状态/配额区间/剩余区间/最近使用）+ 排序 + 详情弹窗 + CSV 导出。
+- 数据源含 DescribeUsageRankList 按天扫描（近 14 天）→ 最近使用时间/活跃天数；用量缓存 10 分钟、describe 缓存 60 秒。
+
+## 初始配额/有效期 + 注册即发放（2026-10-10，已部署 fix8）
+- TokenHub 菜单新增「新用户初始配额与有效期」设置（settings tokenhub_validity_days，默认 365 天）；新用户抖音扫码注册时自动发放 Key（oauth.py 钩子，失败兜底）。
+- Key 有效期到期由后台循环自动禁用；用户管理页可续期（自动重新启用）/调额。tokenhub_keys 加 expires_at 列（自动迁移）。
+
+## 重置周期可配 + Key 自愈（2026-10-10，已部署 fix9）
+- 「新用户初始配额与有效期」增加重置周期：按日（默认）/按月（每月起始日可设 1~31）/总量不重置；发放、轮换继承、调额全按周期执行。
+- Key 被删自愈：/api/tokenhub/key|quota 遇 ResourceNotFound 自动重建新 Key。
+- ⚠️ 运维注意：清理腾讯侧 Key 前必须过滤测试前缀，误删生产 Key 会在 ≤5 分钟内自愈重建（家长无感窗口为物化循环间隔）。
+
+## 调额支持重置周期（2026-10-10，已部署 fix10）
+- 用户管理「调额」弹窗化：配额 + 重置周期（保持/按日/按月+起始日/总量）一次调整；手工调整清除排队的自动恢复档位；CSV 增周期列。
+
+## 按模型用量视图（2026-10-10，已部署 fix11）
+- 腾讯 `DescribeUsageRankList` `Dimension=model` 实测支持：按模型汇总账号整体 token 用量（默认 top8、无分页参数、分钟级延迟；`Limit` 不是合法请求参数）。
+- TokenHub 菜单新增「📊 按模型用量（官方口径 · 账号整体）」：1/7/14/30 天查询，表格展示 模型/输入/输出/合计；`GET /api/admin-portal/tokenhub/usage-models`。家长级实时拆分走 app 本地统计（server 0.5.24 `/tokenhub/quota` 的 `local.categories`）。
+- 部署：OSS（tmp/benefit-auth-fix11-20261010.tar.gz）+ RunCommand，备份 /opt/backups/app-before-fix11-*.tar.gz；py_compile_ok、svc active、服务器侧 grep 确认新代码（loadUsageModels×2 / usage_by_models×1）。
+
+## ASR 入 Key 绑定 + wand-asr-v1（2026-10-10，已部署 fix12 + 批量轮换）
+- 实测：hy-asr-3.0-preview 已从 TokenHub 服务列表下线；wand-asr-v1 计费由用户开通后付费（402→过）。
+- ensure_user_key / rotate_user_key 均追加绑定管理端 ASR 默认（TokenHub 模型才绑；存量 hy-asr 自动换 wand-asr-v1）；管理页 ASR 下拉修正（去 hy-asr，wand-asr-v1 置首）。
+- 运维：default_models.asr→wand-asr-v1 + rotate_all_keys（2 把 Key 全部轮换，继承 2000万/100万，旧 Key 30 分钟自动回收）。踩坑：独立运维脚本进程没有 systemd env，需自行解析 /opt/benefit-auth/.env 并 set_runtime_config。
+- ⚠️ 轮换后复测发现**账号级问题（与轮换无关，新旧 Key 同样）**：deepseek/deepseek-flash 402 401008「免费试用额度耗尽且后付费未开通」——此前整个账号一直跑在免费试用上，当日下午耗尽。需在控制台为 text/vision 模型开通后付费。wand-asr-v1 当前所有 Key 均 400「模型或服务不存在」（开通前后从 402 变 400），需在控制台「在线推理服务列表」核对该服务状态/确切 ID。
+
+## fix13/fix14：ASR 模型定版 hy-asr-3.0-preview + Key 改回全模型（2026-10-10 晚）
+- 全模型探针扫描定论：**wand-asr-v1 已从网关下线**（400 400004，全模型 Key 亦然）；**hy-asr-3.0-preview 路由正常**（402=需开后付费）。管理端 ASR 默认切回 hy-asr-3.0-preview（fix13），去掉 fix12 的 hy→wand 映射。
+- **fix14**：家长 Key 改回 `BindType=all`（保留 Quotas 限额）——实测按模型 ID 绑定会让语音服务路由解析失败（400「不存在」），全模型 Key 一切正常；模型调用全由服务端发起，绑定无安全收益。注意 CreateApiKey 的 BindType 是必填参数。
+- 云端又两轮轮换（继承配额正常），现网两把 Key 均为 all-bound；本地 dev 已物化并回归文本 200。
+- **遗留（腾讯侧）**：hy-asr-3.0-preview 开启后付费后同样报 400「模型或服务不存在」（开启前 402）——与 wand-asr-v1 同款模式：**语音服务「开启后付费」动作疑似把服务置坏**（文本服务开启后 200 正常）。需控制台核对「在线推理服务列表」中两个语音服务的状态/服务 ID，必要时提工单。
+
+## fix16：撤销 asr-audio 中转 + ASR 定版 asrproxy data 直传（2026-10-10 晚，用户否决中转方案）
+- 用户找到官方文档：语音识别走**专用代理端点** `/v1/wand/asrproxy/sync_transcribe`（另有 async_create/tasks 异步），不是 chat/completions——此前 chat 路由上的一切 400 均为「路由不在那里」。
+- 请求二选一：`{model, input_url:<公网URL>}` 或 **`{model, data:<裸base64>}`**（实测 data URI 不行、必须裸 base64；报错 "one of input_url or data is required" 自证字段）。同步回 `{status:"completed", output:{text[,sentences],subtitle_url}, usage:{total_tokens}}`，与文本同池计费（实测 hy-asr 一次 72 tokens）。
+- **fix16 = 删除 fix15 的 asr-audio 中转端点**（用户明确要求不得经 benefit-auth 中转语音文件），server 端 transcribeTokenhub 改为 data 直传（无 ctx/无 upstreamBase）。服务现状：hy-asr-3.0-preview 后付费已开通、直传 200；wand-asr-v1 网关无此服务。
+
+## fix17/17b：官方按模型用量家长端点（2026-10-10 晚）
+- `GET /api/tokenhub/usage-models?days=N`（家长 JWT）：DescribeUsageRankList Dimension=model，
+  **Period=3600**（日粒度聚合视图延迟大，近24h只出零头；小时视图新鲜，Stats 仍为区间总量）。
+  LAN server 配额面板「今日分类消耗」用此数据保证与 CycleUsed 同源一致。
+
+## fix18：默认模型下拉动态列出平台全部同类型模型（2026-10-10 晚）
+- `DescribeModelList` 分页拉全量（Limit 必须<100，Offset 翻页；10 分钟缓存），按 ModelType+名称分四类：
+  Text(32)/Multimodal+Text含vision(6→vision)/Speech含asr(2→asr)/Speech含tts·speech·indextts(7→tts)；
+  Vision 类型是图视频**生成**模型不进下拉，音乐/配音/音色设计/Embedding 也不进。
+- `GET /api/admin-portal/tokenhub/platform-models`：精选实测项在前，其余按 id 排序；下拉用
+  optgroup「—— 平台全部同类型模型 ——」分隔。拉取失败回落精选静态清单。
+- **同 fix18 顺带修正**：POST /tokenhub/models 取消「换默认模型→批量轮换」（Key 已 BindType=all，
+  轮换无模型效果纯属churn）；默认模型经 /model-config 实时下发，保存即生效。页面说明文案同步更新。

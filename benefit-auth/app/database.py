@@ -200,6 +200,45 @@ CREATE TABLE IF NOT EXISTS sync_progress (
     requested_at DATETIME,
     PRIMARY KEY (parent_id, child_id)
 );
+
+-- ============ TokenHub 统一模型接入（ISSUE-174，2026-10-09） ============
+-- 每个中台用户（家长）一把腾讯云 TokenHub 普通密钥；LAN server 凭用户 JWT 换取。
+CREATE TABLE IF NOT EXISTS tokenhub_keys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,                  -- 中台用户 users.id（家长身份唯一锚点）
+    api_key_id TEXT NOT NULL,               -- TokenHub ApiKeyId（ak-…）
+    api_key TEXT NOT NULL DEFAULT '',       -- 明文 sk-…（DescribeApiKey 可随时取回）
+    status TEXT NOT NULL DEFAULT 'active',  -- active / disabled / deleted
+    quota_cycle_unit TEXT NOT NULL DEFAULT 'd',
+    quota_cycle_credits INTEGER NOT NULL DEFAULT 5000000,
+    note TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    -- 模型轮换（2026-10-10）：双 Key 平滑换绑 + 次日恢复档位
+    pending_restore_credits INTEGER NOT NULL DEFAULT 0,  -- >0 = 待恢复的原档位（新 Key 当期先用"继承的剩余量"）
+    restore_after_date TEXT NOT NULL DEFAULT '',          -- 恢复档位最早日期（轮换次日）
+    pending_delete_key_id TEXT NOT NULL DEFAULT '',       -- 待删除的旧 Key（30 分钟平滑窗口后回收）
+    rotated_at TEXT NOT NULL DEFAULT '',                  -- 最近一次轮换时间（UTC）
+    expires_at TEXT NOT NULL DEFAULT ''                   -- Key 有效期截止日（YYYY-MM-DD，空=不过期；到期后台自动禁用）
+);
+CREATE INDEX IF NOT EXISTS idx_tokenhub_keys_user ON tokenhub_keys(user_id);
+
+-- 管理员登录挑战（账密通过后发邮件二维码确认；id 留在登录浏览器，token 走邮件，二者分离）
+CREATE TABLE IF NOT EXISTS admin_login_challenges (
+    id TEXT PRIMARY KEY,                    -- 登录页轮询用（不出现在邮件里）
+    approve_token TEXT NOT NULL UNIQUE,     -- 邮件确认链接用（不回传登录页）
+    approved INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL
+);
+
+-- 登录防撞库：账号/app_id 失败计数与锁定（重启不掉锁； ratelimit.acct_* 读写）
+CREATE TABLE IF NOT EXISTS login_lockouts (
+    subject TEXT PRIMARY KEY,               -- 如 admin:<username> / app:<app_id>
+    fails INTEGER NOT NULL DEFAULT 0,
+    locked_until REAL NOT NULL DEFAULT 0,   -- epoch 秒（重启后仍有效）
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -217,7 +256,30 @@ async def init_db():
         await db.executescript(SCHEMA)
         await db.commit()
         await _migrate(db)
+        await _seed_admin(db)
         await db.commit()
+
+
+async def _seed_admin(db):
+    """管理员凭证种子（ISSUE-174）：首次启动写入默认账密，之后一律以 DB 为准（管理页可改密）。"""
+    from .security import hash_password
+
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES ('admin_username', ?) "
+        "ON CONFLICT(key) DO NOTHING",
+        (os.environ.get("ADMIN_USERNAME", "79734745@qq.com"),),
+    )
+    # 默认密码 123456（用户登录后在管理页自行修改）；env ADMIN_PASSWORD 仅在 DB 为空时作为种子
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES ('admin_password_hash', ?) "
+        "ON CONFLICT(key) DO NOTHING",
+        (hash_password(os.environ.get("ADMIN_PASSWORD", "123456")),),
+    )
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES ('admin_email', ?) "
+        "ON CONFLICT(key) DO NOTHING",
+        (os.environ.get("ADMIN_EMAIL", "79734745@qq.com"),),
+    )
 
 
 async def _migrate(db):
@@ -241,6 +303,31 @@ async def _migrate(db):
     cols5 = {r["name"] for r in (await db.execute_fetchall("PRAGMA table_info(video_interactions)"))}
     if "raw" not in cols5:
         await db.execute("ALTER TABLE video_interactions ADD COLUMN raw TEXT DEFAULT ''")
+
+    # TokenHub 模型轮换列（ISSUE-174 第五轮，2026-10-10）
+    cols6 = {r["name"] for r in (await db.execute_fetchall("PRAGMA table_info(tokenhub_keys)"))}
+    for col, ddl in (
+        ("pending_restore_credits", "ALTER TABLE tokenhub_keys ADD COLUMN pending_restore_credits INTEGER NOT NULL DEFAULT 0"),
+        ("restore_after_date", "ALTER TABLE tokenhub_keys ADD COLUMN restore_after_date TEXT NOT NULL DEFAULT ''"),
+        ("pending_delete_key_id", "ALTER TABLE tokenhub_keys ADD COLUMN pending_delete_key_id TEXT NOT NULL DEFAULT ''"),
+        ("rotated_at", "ALTER TABLE tokenhub_keys ADD COLUMN rotated_at TEXT NOT NULL DEFAULT ''"),
+        ("expires_at", "ALTER TABLE tokenhub_keys ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''"),
+    ):
+        if col not in cols6:
+            await db.execute(ddl)
+
+
+async def get_setting(db, key: str, default: str = "") -> str:
+    """settings 键值读取（管理页配置的凭证/开关等；值均为字符串）"""
+    rows = await db.execute_fetchall("SELECT value FROM settings WHERE key=?", (key,))
+    return rows[0]["value"] if rows else default
+
+
+async def set_setting(db, key: str, value: str) -> None:
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
 
 
 def now_iso() -> str:
