@@ -599,7 +599,8 @@ describe("ISSUE-144 A 路线：说明下沉到技能，工具块只留结构与�
     // KB P3 阶段④：再加 `clip` 参数（同上）→ 49 把 / **16731**（+190）。
     // **增量全是结构，不是文风**：参数 Schema 是校验与类型转换的依据，压不掉。
     // 上限随工具面增减同步调，防"加工具悄悄突破预算"。**下次再加工具前先看这条余量**（现剩 269）。
-    expect(afterTotal).toBeLessThan(17000);
+    // ISSUE-178：+parent_transfer_upload（转存上传原始件到资料库）→ 预算放宽 17000 → 17500
+    expect(afterTotal).toBeLessThan(17500);
     expect(beforeTotal).toBeGreaterThan(20500);
   });
 

@@ -101,15 +101,38 @@ describe("ASR 配置真源（ISSUE-165）", () => {
     expect(getAuthEnvelopeKey(db, SECRET, PARENT, "mimo", false)).toBe("");
   });
 
-  it("候选顺序：默认服务在前；通道可用 = 自身 key 或 auth 封套兜底任一存在", () => {
+  it("候选顺序（custom 渠道）：默认服务在前；通道可用 = 自身 key 或 auth 封套兜底任一存在", () => {
     const db = openTestDb();
     seedAuthEnvelope(db, { qwen: { type: "api_key", key: "sk-payg-key" } });
 
     const cfg: AsrConfig = defaultAsrConfig();
     cfg.provider = "qwen";
     cfg.providers["mimo-tokenplan"].apiKey = "sk-mimo-tp"; // 非默认但自身有 key
-    // qwen：key 留空但有封套兜底 → 可用；qwen-tokenplan/mimo：无 key 无兜底 → 不可用
-    const candidates = getTranscribeCandidates(db, SECRET, PARENT, cfg);
+    // custom 渠道：qwen key 留空但有封套兜底 → 可用；qwen-tokenplan/mimo 无 key 无兜底 → 不可用
+    const candidates = getTranscribeCandidates(db, SECRET, PARENT, cfg, "custom");
     expect(candidates.map((c) => c.id)).toEqual(["qwen", "mimo-tokenplan"]);
+  });
+
+  it("渠道门控（2026-10-10 拍板）：builtin 仅 TokenHub（带封套真实 Key）；custom 排除 TokenHub；off 为空", () => {
+    const db = openTestDb();
+    seedAuthEnvelope(db, {
+      tokenhub: { type: "api_key", key: "sk-th-managed" },
+      qwen: { type: "api_key", key: "sk-payg-key" },
+    });
+    const cfg: AsrConfig = defaultAsrConfig();
+    cfg.provider = "qwen";
+    cfg.providers["mimo-tokenplan"].apiKey = "sk-mimo-tp";
+
+    // builtin（内置 AI 模型开启）：语音只走 TokenHub，自配通道即使有 Key 也不出现
+    const builtin = getTranscribeCandidates(db, SECRET, PARENT, cfg, "builtin");
+    expect(builtin.map((c) => c.id)).toEqual(["tokenhub"]);
+    expect(builtin[0].creds.apiKey).toBe("sk-th-managed");
+
+    // custom（自定义模型启用）：TokenHub 排除，只用自配通道
+    const custom = getTranscribeCandidates(db, SECRET, PARENT, cfg, "custom");
+    expect(custom.map((c) => c.id)).toEqual(["qwen", "mimo-tokenplan"]);
+
+    // off（AI 模型停用）：无候选，调用方报「AI 模型已停用」
+    expect(getTranscribeCandidates(db, SECRET, PARENT, cfg, "off")).toEqual([]);
   });
 });

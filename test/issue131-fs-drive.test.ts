@@ -172,6 +172,10 @@ describe("ISSUE-131 workspace 区（家长/孩子全量管理）", () => {
     expect(byPath.get(CID)?.label).toBe("娃 的工作区");
     expect(byPath.get("parent")?.label).toBe("家长工作区");
     expect(byPath.get("materials")?.label).toBe("课程资料库");
+    // ISSUE-177 F1：P2 归并后物理列表与虚拟区条目同名——根列表每条 path 必须唯一（合并补 label，不重复前置）
+    expect(new Set(names).size).toBe(names.length);
+    expect(r.entries.filter((e) => e.path === "materials")).toHaveLength(1);
+    expect(r.entries.filter((e) => e.path === "uploads")).toHaveLength(1);
   });
 
   it("新建文件夹 → 重命名 → 移动 → 删除 全链路（孩子 scope）", () => {

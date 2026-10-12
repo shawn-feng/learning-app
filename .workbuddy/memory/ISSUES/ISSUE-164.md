@@ -364,3 +364,36 @@
 - 2026-10-08（卡片再精简，用户指定）：任务卡删除文字描述（"打开抖音…①②③④"）与「🎯 目标账号」行，
   卡片只保留：标题行（任务名+状态徽章）→ 二维码卡片（码 + 扫码后 3 步 + 紫色权益横幅）。
   描述仍存于 DB（direct-verify 等接口用），仅页面不渲染。部署 t-hz06zfj8v6bu9s0 ✓。
+- 2026-10-10（**跨会话部署事故**：密码登录 404 "Not Found"）：用户反映客户端密码登录报 not found
+  （密码正确），抖音扫码重置后能进。
+  - **根因**：10-10 13:08 另一会话部署了 benefit-auth「方案A' 合并版」（cloud-service 并入：
+    新增 sync/admin_portal/deprecated/tokenhub_routes/cloud_auth/cloud_license 等模块，
+    重写 main.py），其 main.py 的 import 与 include **遗漏了 account 路由器** →
+    `/api/account/login`+`/register` 整体消失 → FastAPI 默认 404 `{"detail":"Not Found"}`
+    被 LAN server 原样转发为 `{"error":"Not Found"}`。扫码重置走 legacy 路由器（健在）故能进。
+  - **修复**：ECS main.py 最小补丁（import 加 account + include_router(account.router)，
+    备份 /opt/backups/main.py.*.bak）→ 重启 → login 404→401「邮箱或密码错误」（test@qq.com
+    当前密码是用户 10-08 22:14 set-password 自设 + 10-10 扫码重置的新密码，非 123456）。
+  - **仓库对齐**：ECS 合并版 app/ 全量快照（410KB）已拉回本地 benefit-auth/（新增 6 个合并模块
+    文件 + 合并版 main.py 含本补丁），本地 py_compile 通过——防止以后从本地全量部署把合并版冲掉。
+  - **教训**：多会话并行改 benefit-auth 时，部署前必须先拉取 ECS 现网版本 diff，禁止盲推本地副本。
+  - 诊断注意：该 FastAPI 版本 app.routes 中 include 的路由显示为 _IncludedRouter 包装对象，
+    不能用 path 字符串过滤判断路由是否存在，要用 TestClient 实测。
+- 2026-10-11（**网页端抖音扫码登录上线**，用户指定"只做1，与客户端一致"）：
+  - **架构**：网页版（learning-server 同源托管，LAN host:port 多变）不能像 Electron 注册固定
+    本地回调 → redirect_uri 指向**云端桥页** `https://www.aixuexihao.top/oauth/web-callback`
+    （已追加进 apps.redirect_uris）：
+    - popup 主路径（桌面）：桥页 postMessage {source:'benefit-auth-oauth', code, state} 回发起页后自关；
+    - 同 tab 路径（弹窗被拦截/移动端）：state 携带 base64url({r,ret}) 回跳 origin，桥页校验
+      ret 属局域网/本机（正则白名单，防公网钓鱼换码）后带 #auth-code 跳回；web main.tsx 启动钩子
+      handleDouyinAuthRedirect 校验 state 暂存值 → /auth/douyin 换会话 → 缓存 → 清 hash。
+  - **web shim**：auth.ts 新增 authDouyinLogin（弹窗 500×700、5min 超时、手关取消、state 校验、
+    返回形状对齐 electron douyinLoginFlow）+ exchangeDouyinCode 导出；authCheck 过期**保留凭证**
+    （修与 electron 同源的 TaskGate 死循环 bug）；window 域补 openExternal（TaskGate 用）。
+  - **验证**（ECS invoke t-hz06zny0dnq3aww + e2e）：web-callback 200/公网 200；redirect_uris 双值；
+    TestClient 全链路——authorize(redirect=web-callback) 307 发码 → 桥页含 code+postMessage →
+    douyin-code-login 200 parent=86a84278 → 码一次性 401；login/old 流程回归 401/401 正常。
+    本地 dev server 已服务新构建 web/dist（index-UOXyQAIl.js）。
+  - **待用户**：浏览器打开 LAN 服务端地址（如 http://127.0.0.1:8788/）→ 抖音扫码登录真机测。
+  - 部署安全：先拉 ECS 现网快照逐文件 diff（仅 oauth.py 真实差异，main/security 为行尾符），
+    避免覆盖并行会话改动（10-10 事故教训落实）。

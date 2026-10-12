@@ -48,7 +48,7 @@ describe("qwen ASR 响应文本提取（ISSUE-052，服务端实现）", () => {
           },
         })
       );
-    const text = await transcribeQwen(
+    const { text } = await transcribeQwen(
       wav,
       { apiKey: "sk-test", endpoint: "https://dashscope.aliyuncs.com/.../generation" },
       ""
@@ -75,7 +75,7 @@ describe("qwen ASR 响应文本提取（ISSUE-052，服务端实现）", () => {
         },
       })
     );
-    const text = await transcribeQwen(
+    const { text } = await transcribeQwen(
       wav,
       { apiKey: "sk-sp-test", endpoint: "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation" },
       ""
@@ -87,7 +87,7 @@ describe("qwen ASR 响应文本提取（ISSUE-052，服务端实现）", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       okResponse({ output: { text: "only output text", request_id: "req" } })
     );
-    const text = await transcribeQwen(wav, { apiKey: "sk-sp-test", endpoint: "https://token-plan.../generation" }, "");
+    const { text } = await transcribeQwen(wav, { apiKey: "sk-sp-test", endpoint: "https://token-plan.../generation" }, "");
     expect(text).toBe("only output text");
   });
 
@@ -123,7 +123,7 @@ describe("qwen ASR 响应文本提取（ISSUE-052，服务端实现）", () => {
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(okResponse({ output: { text: "兜底识别" } }));
-    const text = await transcribeQwen(wav, { endpoint: "dashscope" }, "sk-fallback");
+    const { text } = await transcribeQwen(wav, { endpoint: "dashscope" }, "sk-fallback");
     expect(text).toBe("兜底识别");
     const [url, init] = spy.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-fallback");
