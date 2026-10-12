@@ -11,6 +11,7 @@
  * - GET  /api/v1/exam/course-records/:childId 每课程考核记录表（最近考核/掌握/难点/亮点/计划复习）
  * 鉴权：家长 JWT；childId 必须归属该家长。语音大文件复用 files 通道（child_id 关联）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
@@ -93,7 +94,7 @@ export const SCORING_PROMPT = `你是孩子的学习考核评估老师。今天�
 
 /** 下发判分 prompt：把 {{TODAY}} 占位符替换为服务器当天日期（判分口径仍服务端单一真源）。 */
 export function buildScoringPrompt(): string {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = nowLocalIso().slice(0, 10);
   return SCORING_PROMPT.replaceAll("{{TODAY}}", today);
 }
 
@@ -261,8 +262,8 @@ export function ensureTodayExamPlans(db: DatabaseSync, dataDir: string, parentId
           JSON.stringify({ courses: entries } as { courses: PlanCourseSpec[] }),
           `${day} 00:00:00`,
           `${day} 23:59:59`,
-          now.toISOString(),
-          now.toISOString()
+          toLocalIso(now),
+          toLocalIso(now)
         );
         n++;
       }
@@ -1089,7 +1090,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         )
         .get(childId, day, examName) as { id: string } | undefined;
       if (dup) return { ok: true, id: dup.id, duplicated: true, name: examName };
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       const scopeJson = JSON.stringify({
         courses: entries,
         ...(scopeIn.note ? { note: String(scopeIn.note) } : {}),
@@ -1123,7 +1124,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     const kb = openKb(deps.config.dataDir, parentId, hit.childId);
     try {
       kb.prepare("UPDATE exam_plans SET status = 'started', updated_at = ? WHERE id = ? AND status = 'pending'").run(
-        new Date().toISOString(),
+        nowLocalIso(),
         id
       );
     } finally {
@@ -1148,8 +1149,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     try {
       kb.prepare("UPDATE exam_plans SET status = 'done', attempt_id = ?, done_at = ?, updated_at = ? WHERE id = ?").run(
         attemptId,
-        new Date().toISOString(),
-        new Date().toISOString(),
+        nowLocalIso(),
+        nowLocalIso(),
         id
       );
     } finally {
@@ -1176,7 +1177,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     const kb = openKb(deps.config.dataDir, parentId, hit.childId);
     try {
       kb.prepare("UPDATE exam_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
-        new Date().toISOString(),
+        nowLocalIso(),
         id
       );
     } finally {
@@ -1215,7 +1216,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         return reply.code(400).send({ error: `场次「${row.title}」已开考完成，不能取消（成绩需保留）` });
       }
       kb.prepare("UPDATE exam_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
-        new Date().toISOString(),
+        nowLocalIso(),
         row.id
       );
       return { ok: true };
@@ -1288,7 +1289,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     };
     deps.db
       .prepare("INSERT OR REPLACE INTO settings (key, value_json, updated) VALUES (?, ?, ?)")
-      .run(`exam_fixed:${parentId}`, JSON.stringify(next), new Date().toISOString());
+      .run(`exam_fixed:${parentId}`, JSON.stringify(next), nowLocalIso());
     // ISSUE-115：重考是否计入评分档（传了才改；默认不计入）
     if (typeof body.retakeCountInRate === "boolean") {
       setRetakeCountInRate(deps.db, parentId, body.retakeCountInRate);
@@ -1327,7 +1328,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       if (handleAuthError(err, reply)) return;
       throw err;
     }
-    const now = new Date().toISOString();
+    const now = nowLocalIso();
     // attemptId 只是「本次提交」的溯源标识（写入 exam_plans.attempt_id，供考核记录界面按计划匹配）；不再有主库场次表。
     const id = `exam_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const submittedAt = String(body.submittedAt ?? now);

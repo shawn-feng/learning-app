@@ -10,6 +10,7 @@
  *
  * zip 实现零外部依赖（与 electron/lib/backup.ts 同款：deflateRaw + 手写 ZIP 结构）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -224,7 +225,7 @@ function collectBackupEntries(deps: BackupDeps, parentId: string): ZipEntry[] {
       JSON.stringify(
         {
           tool: "学习伙伴数据备份（服务端用户数据）",
-          createdAt: new Date().toISOString(),
+          createdAt: nowLocalIso(),
           fileCount: entries.length,
           note: "仅含家长库与孩子学习库（课程/进度/生活记录）；不含账号、模型 API key、登录凭证、材料大文件。",
         },

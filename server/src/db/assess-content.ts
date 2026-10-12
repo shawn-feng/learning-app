@@ -28,8 +28,8 @@ CREATE TABLE IF NOT EXISTS question_bank (
   answer     TEXT NOT NULL,
   scoring    TEXT,
   point_max  INTEGER NOT NULL DEFAULT 10,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
 -- 知识点（每课的考核要点）：挂在课下，name=知识点名、detail=详细描述（教学内容/考核要点）。
@@ -271,11 +271,11 @@ export function saveQuestion(
         : JSON.stringify(Array.isArray(q.options) ? q.options : []);
     if (cur === null) {
       db.prepare(
-        "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, behavior = ?, note = ?, knowledge_summary = ?, updated_at = datetime('now') WHERE id = ?"
+        "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, behavior = ?, note = ?, knowledge_summary = ?, updated_at = datetime('now','localtime') WHERE id = ?"
       ).run(q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary, id);
     } else {
       db.prepare(
-        "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, behavior = ?, note = ?, knowledge_summary = ?, options = ?, updated_at = datetime('now') WHERE id = ?"
+        "UPDATE question_bank SET stem = ?, answer = ?, scoring = ?, point_max = ?, behavior = ?, note = ?, knowledge_summary = ?, options = ?, updated_at = datetime('now','localtime') WHERE id = ?"
       ).run(q.stem, q.answer, scoring, pointMax, behavior, note, knowledgeSummary, cur, id);
     }
   } else {

@@ -1,3 +1,4 @@
+import { nowLocalIso, toLocalIso } from "./util/time.js";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -410,7 +411,7 @@ function migrateStudyPlanV2(db: DatabaseSync): void {
       id: string; parent_id: string; child_id: string; date: string; content: string;
       origin: string; active: number; created_at: string; updated_at: string;
     }>;
-    const now = new Date().toISOString();
+    const now = nowLocalIso();
     db.exec("BEGIN");
     db.exec("DROP TABLE IF EXISTS study_plan_items");
     db.exec(`

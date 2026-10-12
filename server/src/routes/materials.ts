@@ -7,6 +7,7 @@
  *  - DELETE /materials/:id   删文件（新/旧根哪里有删哪里）
  * 索引表已删（决策 1）：磁盘即真源，列表=walk，无索引漂移。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -109,7 +110,7 @@ export function registerMaterialsRoutes(app: FastifyInstance, deps: MaterialsDep
     const diagFile = path.join(deps.config.dataDir, "_materials-content.log");
     const logLine = (o: Record<string, unknown>) => {
       try {
-        fs.appendFileSync(diagFile, JSON.stringify({ ts: new Date().toISOString(), ...o }) + "\n");
+        fs.appendFileSync(diagFile, JSON.stringify({ ts: nowLocalIso(), ...o }) + "\n");
       } catch {
         /* 日志失败不阻断 */
       }
@@ -271,7 +272,7 @@ export function registerMaterialsRoutes(app: FastifyInstance, deps: MaterialsDep
         path: relPosix,
         type: inferType(relPosix),
         size: stat.size,
-        updated_at: stat.mtime.toISOString(),
+        updated_at: toLocalIso(stat.mtime),
       },
     };
   });

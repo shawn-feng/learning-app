@@ -16,6 +16,7 @@
  * ckq 复合主键 / 题目按 bridge 是否已挂判断），任务重跑安全。
  * LLM 失败 → 抛错 → 调度器不记 worker_state，下一桶自愈重试。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { openKb } from "../db/kb.js";
@@ -112,7 +113,7 @@ export function linkMistakeToKp(
   kpName: string
 ): void {
   kb.prepare("UPDATE mistake_book SET knowledge_point_id = ?, knowledge_point_name = ?, updated_at = ? WHERE id = ?")
-    .run(kpId, kpName.slice(0, 200), new Date().toISOString(), mistakeId);
+    .run(kpId, kpName.slice(0, 200), nowLocalIso(), mistakeId);
 }
 
 /** 主题分配进孩子库：topics + 该主题全部课程（带 uuid 锚点），INSERT OR IGNORE 幂等。 */
@@ -312,7 +313,7 @@ export const mistakeSortingTask: WorkerTask = {
         for (const w of words) {
           if (!acceptIds.has(w.id)) {
             kbChild.prepare("UPDATE mistake_book SET knowledge_point_id = 'skipped', updated_at = ? WHERE id = ?")
-              .run(new Date().toISOString(), w.id);
+              .run(nowLocalIso(), w.id);
             continue;
           }
           const kpId = ensureKnowledgePoint(parent, wordCourseUuid, w.content, w.detail);

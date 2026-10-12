@@ -11,6 +11,7 @@
  * - 边界（issue 定稿）：owner 仅 parent；产物（提醒）可见、过程不进孩子/家长对话 UI；
  *   in-flight 内存锁防两个 tick 并发跑同一 (任务, 孩子)。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { readParentSettings } from "./scheduler.js";
 import { createWorkerEphemeralSession, hhmm, type WorkerTaskCtx } from "./tasks.js";
@@ -81,7 +82,7 @@ export function isCustomTaskDue(t: CustomTaskRow, now: Date): boolean {
 
 /** 触发即占位：推进 last_fired_at（once 同时置 expired），防重叠 tick 双跑。 */
 function claimFire(db: DatabaseSync, t: CustomTaskRow, now: Date): void {
-  const ts = now.toISOString();
+  const ts = toLocalIso(now);
   if ((t.frequency || "daily") === "once") {
     db.prepare("UPDATE scheduler_tasks SET last_fired_at = ?, expired = 1, updated_at = ? WHERE id = ?").run(ts, ts, t.id);
   } else {
@@ -222,8 +223,8 @@ export async function executeCustomTask(
       point: task.time,
       status,
       message,
-      startedAt: startedAt.toISOString(),
-      finishedAt: new Date().toISOString(),
+      startedAt: toLocalIso(startedAt),
+      finishedAt: nowLocalIso(),
     });
   } catch (e) {
     console.error(`[worker:custom] record task_runs failed (${task.id} ${childId}):`, (e as Error).message);

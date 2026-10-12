@@ -11,6 +11,7 @@
  * 设计：不用 pino transport（依赖 worker 线程，esbuild 单文件打包 + pkg 部署下易断），
  * 直接 appendFileSync，与客户端 app-logger 对称。日志绝不影响主流程（吞异常）。
  */
+import { nowLocalIso, toLocalIso } from "./util/time.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -83,7 +84,7 @@ function pruneLog(p: string): void {
 }
 
 export function log(level: LogLevel, component: string, msg: string, meta: Partial<ServerLogEntry> = {}): void {
-  const entry: ServerLogEntry = { ts: new Date().toISOString(), level, scope: "server", component, msg, ...meta };
+  const entry: ServerLogEntry = { ts: nowLocalIso(), level, scope: "server", component, msg, ...meta };
   appendEntry(entry);
 }
 export function logInfo(component: string, msg: string, meta: Partial<ServerLogEntry> = {}): void {
@@ -167,7 +168,7 @@ export function installServerConsoleRedirect(): void {
 }
 
 function baseEntry(level: LogLevel, component: string): ServerLogEntry {
-  return { ts: new Date().toISOString(), level, scope: "server", component, msg: "" };
+  return { ts: nowLocalIso(), level, scope: "server", component, msg: "" };
 }
 
 function stringifyArgs(args: unknown[]): string {

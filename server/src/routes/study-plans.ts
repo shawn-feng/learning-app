@@ -11,6 +11,7 @@
  * - DELETE /api/v1/study-plans/:id                        删除单行
  * 鉴权：家长 JWT；childId 归属校验；行归属按 parent_id。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
@@ -360,7 +361,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
         continue;
       }
       const id = crypto.randomUUID();
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       const courseUuid = titleToUuid.get(courseName) || "";
       // 计划域重构：写入孩子 kb study_plans（窗口=当天 00:00:00 ~ 23:59:59；
       // creator=parent → 必须完成项 / creator=child → 孩子自选加分项）
@@ -418,7 +419,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
     }
     if (sets.length > 0) {
       sets.push("updated_at = ?");
-      vals.push(new Date().toISOString());
+      vals.push(nowLocalIso());
       const kb = openKb(deps.config.dataDir ?? "", parentId, found.childId);
       try {
         kb.prepare(`UPDATE study_plans SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
@@ -450,7 +451,7 @@ export function registerStudyPlanRoutes(app: FastifyInstance, deps: StudyPlanDep
       const st = String(found.row.status ?? "");
       if (st === "done" || st === "missed") {
         kb.prepare("UPDATE study_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
-          new Date().toISOString(),
+          nowLocalIso(),
           id
         );
         softDeleted = true;

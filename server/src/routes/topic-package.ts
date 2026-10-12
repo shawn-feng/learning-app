@@ -16,6 +16,7 @@
  * 导入遇「同名但不同 topic_key」→ 自动重命名（name 加 " (2)"、topic_key 加 "-2"），课程归属、
  * html_path / material 指针、落盘目录四处前缀同步改写。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -218,7 +219,7 @@ export function collectTopicPackage(
     manifest = {
       kind: TOPIC_PACKAGE_KIND,
       schema_version: TOPIC_PACKAGE_SCHEMA_VERSION,
-      created_at: new Date().toISOString(),
+      created_at: nowLocalIso(),
       source: { server_version: SERVER_VERSION },
       topic,
       courses,

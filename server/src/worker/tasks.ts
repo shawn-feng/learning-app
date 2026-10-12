@@ -24,6 +24,7 @@ import {
   type CoreSessionDeps,
 } from "@pi/agent-core";
 import { createWorkerKbTools, formatLocalDate } from "./kb-tools.js";
+import { getSystemDefaultModels } from "../auth/tokenhub.js";
 
 /** 与客户端 scheduler.ts 的 SchedulerChildConfig 对齐（结构兼容，缺省字段调用方已补齐）。 */
 export interface WorkerSchedulerChildConfig {
@@ -108,7 +109,7 @@ export async function createWorkerEphemeralSession(
   customTools: any[]
 ) {
   const runtime = await getWorkerRuntime(ctx.dataDir, ctx.parentId, ctx.auth);
-  const model = pickWorkerModel(runtime, ctx.appSettings);
+  const model = pickWorkerModel(runtime, ctx.appSettings, ctx.auth, getSystemDefaultModels().text);
   return createEphemeralSession({
     deps: CORE_SESSION_DEPS,
     runtime,

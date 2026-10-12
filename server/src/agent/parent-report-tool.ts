@@ -9,6 +9,7 @@
  *   `GET /api/v1/parent-agent/report` 读回。
  * 与孩子侧 display_content（HTML 沙盒 iframe）不同：markdown 是受信文本，无需落文件/沙箱。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { Type } from "typebox";
 import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
@@ -32,7 +33,7 @@ export function saveParentReport(db: DatabaseSync, parentId: string, report: Par
   db.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated) VALUES (?, ?, ?)").run(
     `${KEY_PREFIX}${parentId}`,
     JSON.stringify(report),
-    new Date().toISOString()
+    nowLocalIso()
   );
 }
 

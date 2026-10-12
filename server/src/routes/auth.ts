@@ -1,3 +1,4 @@
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
@@ -13,10 +14,18 @@ import {
   type LicenseData,
 } from "../auth/proxy.js";
 import { signSession, verifySession } from "../auth/jwt.js";
+import { ensureParentTokenHubKey } from "../auth/tokenhub.js";
 
 interface AuthDeps {
   config: ServerConfig;
   db: DatabaseSync;
+}
+
+/** 登录成功后即时换取 TokenHub Key（ISSUE-174；失败静默不阻塞登录，后台循环会重试）。 */
+function hookTokenHubKey(deps: AuthDeps, parentId: string): void {
+  void ensureParentTokenHubKey(deps.config, deps.db, parentId).catch((e) => {
+    console.warn(`[tokenhub] 登录后换取失败（${parentId}）: ${(e as Error).message}`);
+  });
 }
 
 function bearerToken(authHeader: string | undefined): string {
@@ -41,7 +50,7 @@ async function authenticate(
       : await upstreamRegister(deps.config.upstreamBase, email, password);
   const license = await upstreamLicense(deps.config.upstreamBase, cloud.token);
 
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   deps.db
     .prepare(
       `INSERT INTO parents (id, email, plan, cloud_token, license_json, created_at, updated_at)
@@ -68,6 +77,7 @@ async function authenticate(
     deps.config.jwtSecret,
     deps.config.tokenTtlDays
   );
+  hookTokenHubKey(deps, cloud.parent_id);
   // cloud token 只存服务端，不下发客户端
   return { session_token, license };
 }
@@ -117,7 +127,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
       const cloud = await upstreamDouyinCodeLogin(deps.config.upstreamBase, code, redirect_uri);
       const license = await upstreamLicense(deps.config.upstreamBase, cloud.token);
 
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       deps.db
         .prepare(
           `INSERT INTO parents (id, email, plan, cloud_token, license_json, benefit_user_id, benefit_user_token, created_at, updated_at)
@@ -148,6 +158,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
         deps.config.jwtSecret,
         deps.config.tokenTtlDays
       );
+      hookTokenHubKey(deps, cloud.parent_id);
       return {
         session_token,
         license,
@@ -273,7 +284,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
       );
       deps.db
         .prepare("UPDATE parents SET license_json = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(license), new Date().toISOString(), payload.parent_id);
+        .run(JSON.stringify(license), nowLocalIso(), payload.parent_id);
       return { license };
     } catch (err) {
       if (err instanceof ApiError) {

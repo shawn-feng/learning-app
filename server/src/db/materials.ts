@@ -11,6 +11,7 @@
  * 外部引用语法（courses.html_path 的 `topic/file`、display 的 `materials/topic/...`）不变，
  * 物理根变化全部由本模块单点吸收。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
@@ -116,7 +117,7 @@ function metaFor(abs: string, relPosix: string): MaterialMeta {
     path: relPosix,
     type: inferType(relPosix),
     size: stat.size,
-    updated_at: stat.mtime.toISOString(),
+    updated_at: toLocalIso(stat.mtime),
   };
 }
 

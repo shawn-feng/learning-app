@@ -2,6 +2,7 @@
  * 配置下发（DESIGN-SPLIT §7）：客户端每 2 分钟轮询 /config/revision，
  * 不一致则拉 /config 全量；家长端经 /config/set 改配置并自增 revision。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
@@ -95,7 +96,7 @@ export function registerConfigRoutes(app: FastifyInstance, deps: ConfigDeps): vo
         "INSERT INTO settings (key, value_json, updated) VALUES (?, ?, ?) " +
           "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated = excluded.updated"
       )
-      .run(keyFor(parentId, key.trim()), stored, new Date().toISOString());
+      .run(keyFor(parentId, key.trim()), stored, nowLocalIso());
     const revision = bumpConfigRevision(deps.db);
     return { ok: true, revision };
   });

@@ -7,12 +7,21 @@
 
 const QWEN_ASR_ENDPOINT_PAYG = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 
+/** 转录结果（usage 为响应里返回的 token 计数；通道不返回时为 0，仅供用量统计）。 */
+export interface AsrTranscription {
+  text: string;
+  usage: { input: number; output: number; total: number };
+}
+
+const n0 = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
 /** 千问（阿里云百炼）语音识别：qwen-audio-3.0-asr-flash，DashScope 原生接口（非 OpenAI 兼容）。 */
 export async function transcribeQwen(
   wav: Buffer,
   creds: Record<string, string>,
-  fallbackKey: string
-): Promise<string> {
+  fallbackKey: string,
+  model?: string
+): Promise<AsrTranscription> {
   const isTokenPlan = (creds.endpoint || "").includes("token-plan");
   const apiKey = (creds.apiKey || "").trim() || fallbackKey;
   if (!apiKey) {
@@ -32,7 +41,7 @@ export async function transcribeQwen(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "qwen-audio-3.0-asr-flash",
+      model: model?.trim() || "qwen-audio-3.0-asr-flash",
       input: {
         messages: [
           {
@@ -99,7 +108,14 @@ export async function transcribeQwen(
 
   const text = pickText(json);
   if (text.trim()) {
-    return text.trim();
+    return {
+      text: text.trim(),
+      usage: {
+        input: n0(json?.usage?.input_tokens),
+        output: n0(json?.usage?.output_tokens),
+        total: n0(json?.usage?.total_tokens),
+      },
+    };
   }
   const { code, message } = pickError(json);
   if (isNoSpeech(code, message)) {
@@ -109,14 +125,51 @@ export async function transcribeQwen(
   throw new Error(`千问识别失败: ${code ? `[${code}] ` : ""}${shown}`);
 }
 
+const TOKENHUB_ASR_ENDPOINT = "https://tokenhub.tencentmaas.com/v1/wand/asrproxy/sync_transcribe";
+
+/** TokenHub 语音识别（hy-asr-3.0-preview，官方 asrproxy 专用端点，音频 base64 直传）。
+ *  2026-10-10 实测定版：
+ *  - chat/completions + input_audio 对语音模型一律 400「模型或服务不存在」（语音不在 chat 网关上）；
+ *  - 正确路径 = POST /v1/wand/asrproxy/sync_transcribe：{model, input_url} 或 **{model, data: 裸base64}**
+ *    （二选一；data URI 不是合法 URL 会 400 校验错）；同步返回
+ *    {status:"completed", output:{text[,sentences]}, usage:{total_tokens}}，与文本同池计费。 */
+export async function transcribeTokenhub(
+  wav: Buffer,
+  creds: Record<string, string>,
+  fallbackKey: string
+): Promise<AsrTranscription> {
+  const apiKey = (creds.apiKey || "").trim() || fallbackKey;
+  if (!apiKey) throw new Error("TokenHub 语音识别缺少 API Key（家长 Key 未发放）");
+  const model = (creds.model || "").trim() || "hy-asr-3.0-preview";
+  const res = await fetch(TOKENHUB_ASR_ENDPOINT, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, data: wav.toString("base64") }),
+  });
+  const json: any = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = json?.error?.message_zh || json?.error?.message || `HTTP ${res.status}`;
+    throw new Error(`TokenHub 语音识别失败: ${msg}`);
+  }
+  const output = json?.output ?? {};
+  const text: string =
+    output.text || (output.sentences || []).map((s: any) => s?.text || "").join("") || "";
+  if (!String(text).trim()) throw new Error("没有识别到语音");
+  return {
+    text: String(text).trim(),
+    usage: { input: 0, output: 0, total: n0(json?.usage?.total_tokens) },
+  };
+}
+
 const MIMO_ASR_ENDPOINT_PAYG = "https://api.xiaomimimo.com/v1/chat/completions";
 
 /** 小米 MiMo 语音识别（mimo-v2.5-asr）：OpenAI Chat Completions 兼容接口。 */
 export async function transcribeMimo(
   wav: Buffer,
   creds: Record<string, string>,
-  fallbackKey: string
-): Promise<string> {
+  fallbackKey: string,
+  model?: string
+): Promise<AsrTranscription> {
   const isTokenPlan = (creds.endpoint || "").includes("token-plan");
   const apiKey = (creds.apiKey || "").trim() || fallbackKey;
   if (!apiKey) {
@@ -136,7 +189,7 @@ export async function transcribeMimo(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "mimo-v2.5-asr",
+      model: model?.trim() || "mimo-v2.5-asr",
       messages: [
         {
           role: "user",
@@ -152,8 +205,16 @@ export async function transcribeMimo(
   }
   const data = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   };
   const text = data?.choices?.[0]?.message?.content;
   if (!text) throw new Error("MiMo 未识别到语音");
-  return text;
+  return {
+    text,
+    usage: {
+      input: n0(data?.usage?.prompt_tokens),
+      output: n0(data?.usage?.completion_tokens),
+      total: n0(data?.usage?.total_tokens),
+    },
+  };
 }

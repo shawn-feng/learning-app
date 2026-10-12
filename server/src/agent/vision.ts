@@ -14,6 +14,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { CoreSessionDeps } from "@pi/agent-core";
 import { getWorkerRuntime, pickVisionModel } from "@pi/agent-core";
+import { getSystemDefaultModels } from "../auth/tokenhub.js";
+import { VISION_IMAGE_MAX_BYTES, bytesLabel } from "../util/limits.js";
 
 const DEPS: CoreSessionDeps = {
   createAgentSession,
@@ -70,8 +72,15 @@ export async function describeImageViaVision(
   image: VisionImageInput,
   question?: string
 ): Promise<string> {
+  // ISSUE-151：图片要外发视觉模型 → 设限（base64 长度反推原始字节，误差 ≤3 字符可忽略）
+  const approxBytes = Math.floor((image.data.length * 3) / 4);
+  if (approxBytes > VISION_IMAGE_MAX_BYTES) {
+    throw new Error(
+      `图片超出外发限制（${bytesLabel(VISION_IMAGE_MAX_BYTES)}）：请压缩图片或降低分辨率后重试`
+    );
+  }
   const runtime = await getWorkerRuntime(opts.dataDir, opts.parentId, opts.auth);
-  const model = pickVisionModel(runtime, opts.appSettings);
+  const model = pickVisionModel(runtime, opts.appSettings, opts.auth, getSystemDefaultModels().vision);
 
   const loader = new DefaultResourceLoader({
     cwd: opts.agentDir,

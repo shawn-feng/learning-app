@@ -9,6 +9,7 @@
  * SCHEDULER_TASK_TYPES 不再列出，便于家长中心「定时任务」页不再呈现这两个类型。
  * 旧数据库里若仍存在 todo_gen / todo_stat 任务行，仅在 effective config 旧路径中**忽略**（不影响 recording / auto_new_session）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
@@ -344,7 +345,7 @@ export interface ReminderView {
 /** 创建一条提醒任务：scheduler_tasks(type=reminder) + 分配给孩子（enabled=1）。返回 task id。 */
 export function createReminderTask(db: DatabaseSync, input: ReminderInput): string {
   const id = crypto.randomUUID();
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   // interval 类从「创建时刻」起算首次间隔，故 last_fired_at 置为 now（首次 fire = now + intervalMinutes）；
   // 其余类型（once/daily/weekly）置 NULL，由到期判定按目标时刻/日期触发。
   const initialLastFired = input.frequency === "interval" ? now : null;
@@ -479,7 +480,7 @@ export function takeDueReminders(db: DatabaseSync, parentId: string, childId: st
     )
     .all(parentId, childId) as unknown as Array<Record<string, unknown>>;
   const due: DueReminder[] = [];
-  const ts = now.toISOString();
+  const ts = toLocalIso(now);
   for (const r of rows) {
     if (!isReminderDue(r, now)) continue;
     due.push({

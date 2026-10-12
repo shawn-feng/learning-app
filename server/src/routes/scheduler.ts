@@ -8,6 +8,7 @@
  * - GET  /api/v1/scheduler/effective-config      任务+分配 → 每孩子有效配置（客户端合并推 scheduler_config）
  * 鉴权：家长 JWT；assign 的 childId 必须归属该家长。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
@@ -149,7 +150,7 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       return reply.code(400).send({ error: "custom 类型需要 instruction（自然语言任务指令）" });
     }
     const id = crypto.randomUUID();
-    const now = new Date().toISOString();
+    const now = nowLocalIso();
     deps.db
       .prepare(
         "INSERT INTO scheduler_tasks (id, parent_id, name, type, time, extra_json, enabled, instruction, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"
@@ -199,7 +200,7 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       .prepare(
         "UPDATE scheduler_tasks SET name = ?, time = ?, extra_json = ?, enabled = ?, instruction = ?, updated_at = ? WHERE id = ?"
       )
-      .run(nextName, nextTime, nextExtra, nextEnabled, nextInstruction, new Date().toISOString(), id);
+      .run(nextName, nextTime, nextExtra, nextEnabled, nextInstruction, nowLocalIso(), id);
     return { ok: true };
   });
 
@@ -250,7 +251,7 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
         "INSERT INTO scheduler_task_assignments (task_id, child_id, enabled, created_at) VALUES (?, ?, ?, ?) " +
           "ON CONFLICT(task_id, child_id) DO UPDATE SET enabled = excluded.enabled"
       )
-      .run(id, childId, enabled === false ? 0 : 1, new Date().toISOString());
+      .run(id, childId, enabled === false ? 0 : 1, nowLocalIso());
     return { ok: true };
   });
 

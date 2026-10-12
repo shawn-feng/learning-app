@@ -22,6 +22,7 @@
  *   parent_exam_plan_list         查看孩子考核计划（孩子库 exam_plans；行 id，改/删/开考前先 list）
  *   parent_exam_plan_cancel       取消/删除孩子库考核计划（软删 active=0/status=cancelled，done 不可取消；考核结果在孩子库结果三表）
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import { Type } from "typebox";
 import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
@@ -218,7 +219,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       const dup = db.prepare("SELECT id FROM children WHERE parent_id = ? AND name = ?").get(parentId, name);
       if (dup) throw new Error(`已存在名为「${name}」的孩子（请换名字或编辑现有孩子）。`);
       const id = crypto.randomUUID();
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       const profile: Record<string, unknown> = { createdAt: now };
       if (String(params.aiName ?? "").trim()) profile.aiName = String(params.aiName).trim();
       if (String(params.aiEmoji ?? "").trim()) profile.aiEmoji = String(params.aiEmoji).trim();
@@ -266,7 +267,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       const changed: string[] = [];
       const newName = String(params.name ?? "").trim();
       if (newName) {
-        db.prepare("UPDATE children SET name = ?, updated_at = ? WHERE id = ?").run(newName, new Date().toISOString(), child.id);
+        db.prepare("UPDATE children SET name = ?, updated_at = ? WHERE id = ?").run(newName, nowLocalIso(), child.id);
         changed.push(`改名「${newName}」`);
       }
       if (String(params.aiName ?? "").trim()) {
@@ -292,7 +293,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       }
       db.prepare("UPDATE children SET profile_json = ?, updated_at = ? WHERE id = ?").run(
         JSON.stringify(merged),
-        new Date().toISOString(),
+        nowLocalIso(),
         child.id
       );
       return ok(`已更新「${newName || child.name}」${changed.length ? `（${changed.join("、")}）` : "（无字段变化）"}。`);
@@ -419,7 +420,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
             const topicKey = it.topicKey;
             const courseUuid = titleToUuid.get(it.courseName) || "";
             const id = crypto.randomUUID();
-            const now = new Date().toISOString();
+            const now = nowLocalIso();
             kb.prepare(
               `INSERT INTO study_plans (id,parent_id,child_id,topic_key,course_uuid,course_name,mode,creator,origin,carry_from,recurrence_id,
                  start_at,due_at,status,result,done_at,task_type,count_in_rate,points,active,created_at,updated_at)
@@ -550,7 +551,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           // exam_course_results.plan_id）都指向计划行，硬删会让历史记录失联成孤儿；统一软删，对齐考核侧口径。
           if (row.status === "done" || row.status === "missed") {
             kb.prepare("UPDATE study_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
-              new Date().toISOString(),
+              nowLocalIso(),
               row.id
             );
             return ok(
@@ -565,13 +566,13 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           const date = String(params.date ?? "").trim();
           if (!validDate(date)) throw new Error(`reschedule 需要 date（YYYY-MM-DD）：${date}`);
           kb.prepare("UPDATE study_plans SET start_at = ?, due_at = ?, updated_at = ? WHERE id = ?").run(
-            `${date} 00:00:00`, `${date} 23:59:59`, new Date().toISOString(), row.id
+            `${date} 00:00:00`, `${date} 23:59:59`, nowLocalIso(), row.id
           );
           return ok(`已将「${child.name}」的「${row.course_name}」从 ${(row.start_at || "").slice(0, 10)} 改到 ${date}。`);
         }
         const mode = String(params.mode ?? "").trim().toLowerCase();
         if (mode !== "new" && mode !== "review") throw new Error("setmode 的 mode 仅支持 new / review");
-        kb.prepare("UPDATE study_plans SET mode = ?, updated_at = ? WHERE id = ?").run(mode, new Date().toISOString(), row.id);
+        kb.prepare("UPDATE study_plans SET mode = ?, updated_at = ? WHERE id = ?").run(mode, nowLocalIso(), row.id);
         return ok(`已将「${child.name}」的「${row.course_name}」设为${mode === "review" ? "复习" : "新学"}。`);
       } finally {
         kb.close();
@@ -634,7 +635,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
             continue;
           }
           const id = crypto.randomUUID();
-          const now = new Date().toISOString();
+          const now = nowLocalIso();
           kb.prepare(
             `INSERT INTO life_plans
                (id,parent_id,child_id,title,creator,origin,carry_from,recurrence_id,start_at,due_at,status,result,done_at,
@@ -709,7 +710,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         if (act === "complete") {
           // ISSUE-099 F1：家长 agent 直标完成的兜底入口——recording 把生活计划判成 unknown、
           // 或 done 信号退化成 raw 文本时，家长可在对话里一句话确认完成。
-          const nowTs = new Date().toISOString();
+          const nowTs = nowLocalIso();
           const todayStr = nowTs.slice(0, 10);
           const r = kb
             .prepare("UPDATE life_plans SET status='done', done_at=?, result='生活完成（家长确认）', updated_at=? WHERE id=? AND status IN ('pending','missed')")
@@ -729,14 +730,14 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           if (!validDate(date)) throw new Error(`reschedule 需要 date（YYYY-MM-DD）：${date}`);
           const oldTime = (row.start_at || "").length > 11 ? (row.start_at || "").slice(11) : "00:00:00";
           kb.prepare("UPDATE life_plans SET start_at = ?, due_at = ?, updated_at = ? WHERE id = ?").run(
-            `${date} 00:00:00`, `${date} ${oldTime.slice(0, 8)}`, new Date().toISOString(), row.id
+            `${date} 00:00:00`, `${date} ${oldTime.slice(0, 8)}`, nowLocalIso(), row.id
           );
           return ok(`已将「${child.name}」的生活计划「${row.title}」改到 ${date}。`);
         }
         const title = String(params.title ?? "").trim();
         if (!title) throw new Error("rename 需要 title（新名称）");
         if (title.length > 200) throw new Error("title 过长（≤200 字）");
-        kb.prepare("UPDATE life_plans SET title = ?, updated_at = ? WHERE id = ?").run(title, new Date().toISOString(), row.id);
+        kb.prepare("UPDATE life_plans SET title = ?, updated_at = ? WHERE id = ?").run(title, nowLocalIso(), row.id);
         return ok(`已将「${child.name}」的生活计划改名为「${title}」。`);
       } finally {
         kb.close();
@@ -848,7 +849,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
             `「${child.name}」${day} 已有同名未考考核计划「${title}」，未重复创建（换一个名字可同天多场；需更换内容请先取消原计划）。`
           );
         }
-        const now = new Date().toISOString();
+        const now = nowLocalIso();
         // ISSUE-115：retake = 当天重考标准（自然语言）；''=不重考
         const retake = String(params.retake ?? "").trim();
         kb.prepare(
@@ -1010,7 +1011,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           throw new Error(`考核计划「${row.title}」已考完，不能取消（成绩需保留，可在考核记录里查看）。`);
         }
         kb.prepare("UPDATE exam_plans SET active = 0, status = 'cancelled', updated_at = ? WHERE id = ?").run(
-          new Date().toISOString(),
+          nowLocalIso(),
           row.id
         );
         return ok(`已取消「${child.name}」的考核计划「${row.title}」（软删除，历史保留、不计入完成率）。`);
@@ -1126,7 +1127,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
             continue;
           }
           const id = crypto.randomUUID();
-          const now = new Date().toISOString();
+          const now = nowLocalIso();
           kb.prepare(
             `INSERT INTO plan_recurrences
                (id,parent_id,child_id,plan_type,payload_json,rule,weekday,start_date,end_date,last_expanded_date,enabled,created_at,updated_at)
@@ -1218,7 +1219,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           kb.prepare("DELETE FROM plan_recurrences WHERE id = ?").run(row.id);
           return ok(`已删除重复计划规则「${label}」。`);
         }
-        kb.prepare("UPDATE plan_recurrences SET enabled = ?, updated_at = ? WHERE id = ?").run(act === "enable" ? 1 : 0, new Date().toISOString(), row.id);
+        kb.prepare("UPDATE plan_recurrences SET enabled = ?, updated_at = ? WHERE id = ?").run(act === "enable" ? 1 : 0, nowLocalIso(), row.id);
         return ok(`已${act === "enable" ? "启用" : "停用"}重复计划规则「${label}」。`);
       } finally {
         kb.close();
@@ -1278,7 +1279,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       }
       if (frequency === "once" && !params.fireAt) throw new Error("once 需提供 fireAt（ISO 目标时间）");
       const id = crypto.randomUUID();
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       db
         .prepare(
           `INSERT INTO scheduler_tasks (id, parent_id, name, type, time, extra_json, enabled, owner, frequency,

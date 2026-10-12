@@ -14,6 +14,7 @@
  * ⚠️ 只有生活域需要 recording 参与（写 daily 证据）；学习/考核各有确定性信号源（courses / 考核提交）。
  * ⚠️ 本模块为服务端进程内 worker，直接 openKb 读写孩子库（家长端/客户端仍走 kb RPC op）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { openKb } from "../db/kb.js";
@@ -306,7 +307,7 @@ function applySignals(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): numb
  *  的 pending 行时只置 missed、不再复制——家长已把该任务排到后续天时，无条件复制会造出同名重复行。 */
 function expireAndCarry(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): { missed: number; carried: number } {
   const now = nowStr(ctx.now);
-  const nowIso = ctx.now.toISOString();
+  const nowIso = toLocalIso(ctx.now);
   let missed = 0;
   let carried = 0;
 
@@ -544,7 +545,7 @@ interface SettleResult {
 export function settleRewards(ctx: WorkerTaskCtx, kb: DatabaseSync, today: string): SettleResult {
   const cfg = loadRewardConfig(kb, ctx.childId);
   const now = nowStr(ctx.now);
-  const nowIso = ctx.now.toISOString();
+  const nowIso = toLocalIso(ctx.now);
   const out: SettleResult = { earned: 0, deducted: 0, ledgerRows: 0 };
   const yd = new Date(ctx.now);
   yd.setDate(yd.getDate() - 1);

@@ -10,11 +10,12 @@
  *     判定沿用客户端规则：endpoint 含 "token-plan" 即套餐段；
  *   - 打码：GET 永远只回 apiKey 打码（前6+****+后4）；endpoint 非凭证，明文回显。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { encryptJson, decryptJson } from "../crypto.js";
 import { maskSecret } from "../util/mask.js";
 
-export type AsrProviderId = "qwen" | "qwen-tokenplan" | "mimo" | "mimo-tokenplan";
+export type AsrProviderId = "qwen" | "qwen-tokenplan" | "mimo" | "mimo-tokenplan" | "tokenhub";
 
 export interface AsrConfig {
   enabled: boolean;
@@ -26,13 +27,14 @@ const QWEN_TOKENPLAN_ASR_ENDPOINT =
   "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 const MIMO_TOKENPLAN_ASR_ENDPOINT = "https://token-plan-cn.xiaomimimo.com/v1/chat/completions";
 
-export const ASR_PROVIDER_ORDER: AsrProviderId[] = ["qwen", "qwen-tokenplan", "mimo", "mimo-tokenplan"];
+export const ASR_PROVIDER_ORDER: AsrProviderId[] = ["tokenhub", "qwen", "qwen-tokenplan", "mimo", "mimo-tokenplan"];
 
 export function defaultAsrConfig(): AsrConfig {
   return {
     enabled: false,
-    provider: "qwen",
+    provider: "tokenhub",
     providers: {
+      tokenhub: { apiKey: "" },
       qwen: { apiKey: "" },
       "qwen-tokenplan": { apiKey: "", endpoint: QWEN_TOKENPLAN_ASR_ENDPOINT },
       mimo: { apiKey: "" },
@@ -75,7 +77,7 @@ export function writeAsrConfig(db: DatabaseSync, secret: Buffer, parentId: strin
   db.prepare(
     `INSERT INTO settings (key, value_json, updated) VALUES (?,?,?)
      ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated=excluded.updated`
-  ).run(asrKey(parentId), enc, new Date().toISOString());
+  ).run(asrKey(parentId), enc, nowLocalIso());
 }
 
 /**
@@ -141,27 +143,105 @@ export function isChannelConfigured(
 ): boolean {
   const creds = cfg.providers[id] || {};
   if ((creds.apiKey || "").trim()) return true;
+  if (id === "tokenhub") {
+    // TokenHub 通道：用家长自己的托管 Key（auth 封套 tokenhub 段）
+    const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(`${parentId}:auth`) as
+      | { value_json?: string }
+      | undefined;
+    if (!row?.value_json) return false;
+    const auth = decryptJson(secret, row.value_json) as Record<string, any> | null;
+    const key = auth?.tokenhub?.key;
+    return typeof key === "string" && key.trim().length > 0;
+  }
   const family = id.startsWith("mimo") ? "mimo" : "qwen";
   const isTokenPlan = (creds.endpoint || "").includes("token-plan");
   return getAuthEnvelopeKey(db, secret, parentId, family, isTokenPlan).length > 0;
 }
 
-/** 生成识别候选：默认服务在前，其余已配置的按固定顺序在后（对齐客户端 getTranscribeCandidates）。 */
+/** 服务端兜底通道 key（ISSUE-174：TokenHub 数据面无音频端点，家长零配置时由服务端统一持有现有通道 key）。
+ *  env：ASR_FALLBACK_DASHSCOPE_KEY（千问按量，优先）/ ASR_FALLBACK_MIMO_KEY（MiMo）。 */
+export function getEnvFallbackChannel(): { id: AsrProviderId; creds: Record<string, string> } | null {
+  const dashscope = (process.env.ASR_FALLBACK_DASHSCOPE_KEY || "").trim();
+  if (dashscope) return { id: "qwen", creds: { apiKey: dashscope } };
+  const mimo = (process.env.ASR_FALLBACK_MIMO_KEY || "").trim();
+  if (mimo) return { id: "mimo", creds: { apiKey: mimo } };
+  return null;
+}
+
+/** 家长模型渠道（app_settings.modelChannel，与文本/视觉同一开关）：
+ *  builtin=内置（语音走 TokenHub）/ custom=自定义（语音走自配通道）/ off=全停。
+ *  用户 2026-10-10 拍板：开启 AI 模型 → 语音用 TokenHub；关闭（切自定义）→ 才用自定义模型。 */
+export type VoiceChannel = "builtin" | "custom" | "off";
+
+/** 读家长模型渠道（缺 app_settings 或值非法 → builtin）。 */
+export function readVoiceChannel(db: DatabaseSync, parentId: string): VoiceChannel {
+  const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(`${parentId}:app_settings`) as
+    | { value_json?: string }
+    | undefined;
+  if (!row?.value_json) return "builtin";
+  try {
+    const v = JSON.parse(row.value_json)?.modelChannel;
+    return v === "custom" || v === "off" ? v : "builtin";
+  } catch {
+    return "builtin";
+  }
+}
+
+/** 生成识别候选（渠道感知，用户 2026-10-10 拍板）：
+ *  - builtin：仅 TokenHub（托管 Key，额度同池；语音后付费未开通时 402 上抛为可读错误）+ env 兜底；
+ *  - custom：仅家长自配通道（自身 Key 或 auth 封套同厂商兜底），默认服务在前；
+ *  - off：空（调用方报「AI 模型已停用」）。 */
 export function getTranscribeCandidates(
   db: DatabaseSync,
   secret: Buffer,
   parentId: string,
-  cfg: AsrConfig
+  cfg: AsrConfig,
+  channel: VoiceChannel = "builtin"
 ): Array<{ id: AsrProviderId; creds: Record<string, string> }> {
+  if (channel === "off") return [];
   const out: Array<{ id: AsrProviderId; creds: Record<string, string> }> = [];
+  if (channel === "builtin") {
+    if (hasTokenHubKey(db, secret, parentId)) {
+      out.push({ id: "tokenhub", creds: { apiKey: getTokenHubKey(db, secret, parentId) } });
+    }
+    if (!out.length) {
+      const fb = getEnvFallbackChannel();
+      if (fb) out.push(fb);
+    }
+    return out;
+  }
   const pushIfConfigured = (id: AsrProviderId) => {
     if (isChannelConfigured(db, secret, parentId, cfg, id)) {
       out.push({ id, creds: cfg.providers[id] || {} });
     }
   };
-  if (ASR_PROVIDER_ORDER.includes(cfg.provider)) pushIfConfigured(cfg.provider);
+  if (cfg.provider !== "tokenhub" && ASR_PROVIDER_ORDER.includes(cfg.provider)) {
+    pushIfConfigured(cfg.provider);
+  }
   for (const id of ASR_PROVIDER_ORDER) {
-    if (id !== cfg.provider) pushIfConfigured(id);
+    if (id === "tokenhub" || id === cfg.provider) continue;
+    pushIfConfigured(id);
   }
   return out;
+}
+
+export function hasTokenHubKey(db: DatabaseSync, secret: Buffer, parentId: string): boolean {
+  const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(`${parentId}:auth`) as
+    | { value_json?: string }
+    | undefined;
+  if (!row?.value_json) return false;
+  const auth = decryptJson(secret, row.value_json) as Record<string, any> | null;
+  return typeof auth?.tokenhub?.key === "string" && !!auth.tokenhub.key.trim();
+}
+
+/** 家长 TokenHub 托管 Key（auth 封套 tokenhub 段；未发放/未登录 → 空串）。
+ *  ASR 候选与 TTS 渠道共用（烧同一把家长配额）。 */
+export function getTokenHubKey(db: DatabaseSync, secret: Buffer, parentId: string): string {
+  const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(`${parentId}:auth`) as
+    | { value_json?: string }
+    | undefined;
+  if (!row?.value_json) return "";
+  const auth = decryptJson(secret, row.value_json) as Record<string, any> | null;
+  const key = auth?.tokenhub?.key;
+  return typeof key === "string" ? key.trim() : "";
 }

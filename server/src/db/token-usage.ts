@@ -11,6 +11,7 @@
  * 已知边界：考核出题/判分、recording 汇总等 ephemeral 会话是 SessionManager.inMemory()，不落盘，
  * 扫不到（见 ISSUE-129「已知边界」）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -34,6 +35,149 @@ export interface TokenUsageRow {
   totalTokens: number;
   cost: number;
 }
+
+// ---------------------------------------------------------------------------
+// 模型类别（ISSUE-174 配额面板四类拆分：文本 / 视觉识别 / 语音识别 / 语音合成）
+// ---------------------------------------------------------------------------
+
+export type ModelCategory = "text" | "vision" | "asr" | "tts";
+
+export const MODEL_CATEGORY_NAMES: Record<ModelCategory, string> = {
+  text: "文本（含编程）",
+  vision: "视觉识别",
+  asr: "语音识别",
+  tts: "语音合成",
+};
+
+/** 按模型名归类（TokenHub/自定义模型命名习惯：vision/-vl/-5v=视觉；asr/audio=语音识别；
+ *  tts/minimax-speech=合成——minimax-speech-* 是 TokenHub TTS 系，名字里没有 tts 字样）。 */
+export function classifyModelCategory(model: string): ModelCategory {
+  const m = String(model || "").toLowerCase();
+  if (!m) return "text";
+  if (m.includes("tts") || m.includes("minimax-speech")) return "tts";
+  if (m.includes("asr") || m.includes("sensevoice") || m.includes("paraformer") || m.includes("audio")) {
+    return "asr";
+  }
+  if (m.includes("vision") || m.includes("-vl") || m.includes("vl-") || m.includes("-5v") || m.includes("4v")) {
+    return "vision";
+  }
+  return "text";
+}
+
+export interface CategoryTotals {
+  text: number;
+  vision: number;
+  asr: number;
+  tts: number;
+}
+
+export interface CategoryDayRow extends CategoryTotals {
+  date: string;
+}
+
+/** 合成用量落库共享体：TokenHub 语音（识别/合成）与文本同池扣配额，但不经 agent 会话
+ *  （不落 jsonl，扫描器扫不到），成功后在此补一行合成记录（scope="parent"、slot=通道）。
+ *  仅 TokenHub 通道记录（其他通道不消耗该家长 TokenHub 配额，记入会污染口径）。 */
+function recordSyntheticTokenUsage(
+  db: DatabaseSync,
+  parentId: string,
+  slot: "asr" | "tts",
+  model: string,
+  usage: { input?: number; output?: number; total?: number }
+): void {
+  const ts = Date.now();
+  const entryId = `${slot}-${ts}-${Math.random().toString(36).slice(2, 8)}`;
+  db.prepare(
+    `INSERT OR REPLACE INTO token_usage
+       (parent_id, session_file, entry_id, ts, date, scope, child_id, slot, model, stop_reason,
+        input, cache_read, cache_write, output, reasoning, total_tokens, cost)
+     VALUES (?,?,?,?,?, 'parent', '', ?, ?, 'stop', ?, 0, 0, ?, 0, ?, 0)`
+  ).run(
+    parentId,
+    slot,
+    entryId,
+    ts,
+    localDateOf(ts),
+    slot,
+    model,
+    num(usage.input),
+    num(usage.output),
+    num(usage.total)
+  );
+}
+
+/** ASR 用量落库（转录成功后调用；session_file="asr"、slot="asr"）。 */
+export function recordAsrTokenUsage(
+  db: DatabaseSync,
+  parentId: string,
+  model: string,
+  usage: { input?: number; output?: number; total?: number }
+): void {
+  recordSyntheticTokenUsage(db, parentId, "asr", model, usage);
+}
+
+/** TTS 用量落库（TokenHub 合成成功后调用；session_file="tts"、slot="tts"）。 */
+export function recordTtsTokenUsage(
+  db: DatabaseSync,
+  parentId: string,
+  model: string,
+  usage: { input?: number; output?: number; total?: number }
+): void {
+  recordSyntheticTokenUsage(db, parentId, "tts", model, usage);
+}
+
+/** 内置（TokenHub）模型匹配：只有这些模型的消耗计入「大模型配额」（与文本同池扣减）。
+ *  自定义模型的用量不消耗 TokenHub 配额，绝不能混入（用户 2026-10-10 拍板）。
+ *  需兼容带 provider 前缀与裸 id 两种形态（TokenHub 回包的 model 字段两种都出现过）。 */
+export function isTokenHubModel(model: string): boolean {
+  const m = String(model || "").toLowerCase();
+  if (!m) return false;
+  const tail = m.includes("/") ? m.slice(m.indexOf("/") + 1) : m;
+  if (tail === "deepseek-flash") return true;                        // 内置文本/编程
+  if (tail === "deepseek-v4-flash-vision-exp") return true;          // 内置视觉
+  if (tail === "hy-asr-3.0-preview" || tail === "wand-asr-v1") return true; // 内置语音识别
+  if (tail.startsWith("minimax-speech-")) return true;               // 内置语音合成（管理端默认模型）
+  return false;
+}
+
+/** 近 N 天（含今日）按「日期 × 模型类别」聚合的 TokenHub 配额消耗（本地准实时口径）。
+ *  仅统计内置模型：自定义模型用量不消耗该配额，不计入。 */
+export function queryTokenUsageByCategory(
+  db: DatabaseSync,
+  parentId: string,
+  days = 7
+): { today: CategoryTotals; byDay: CategoryDayRow[] } {
+  const since = localDateOf(Date.now() - (days - 1) * 86400_000);
+  const rows = db
+    .prepare(
+      `SELECT date, model, SUM(total_tokens) AS tokens, SUM(cost) AS cost
+       FROM token_usage WHERE parent_id = ? AND date >= ? AND model != ''
+       GROUP BY date, model`
+    )
+    .all(parentId, since) as Array<{ date: string; model: string; tokens: number; cost: number }>;
+  const byDayMap = new Map<string, CategoryDayRow>();
+  const today = new Date().toLocaleDateString("sv-SE");
+  const empty = (): CategoryDayRow => ({ date: "", text: 0, vision: 0, asr: 0, tts: 0, total: 0, cost: 0 });
+  for (const r of rows) {
+    if (!isTokenHubModel(r.model)) continue; // 自定义模型不计入配额面板
+    let day = byDayMap.get(r.date);
+    if (!day) {
+      day = empty();
+      day.date = r.date;
+      byDayMap.set(r.date, day);
+    }
+    const cat = classifyModelCategory(r.model);
+    day[cat] += r.tokens || 0;
+    day.total += r.tokens || 0;
+    day.cost += r.cost || 0;
+  }
+  const todayRow = byDayMap.get(today) ?? empty();
+  return {
+    today: { text: todayRow.text, vision: todayRow.vision, asr: todayRow.asr, tts: todayRow.tts },
+    byDay: [...byDayMap.values()].sort((a, b) => (a.date < b.date ? -1 : 1)),
+  };
+}
+
 
 function num(v: unknown): number {
   const n = Number(v);
@@ -154,7 +298,7 @@ export function scanTokenUsageIntoDb(
       );
       inserted++;
     }
-    setCursor.run(parentId, fileKey, processed, new Date().toISOString());
+    setCursor.run(parentId, fileKey, processed, nowLocalIso());
   }
   return inserted;
 }

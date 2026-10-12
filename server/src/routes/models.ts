@@ -10,6 +10,7 @@
  * 为什么单独成路由而不是让客户端反复 fetch+merge /config：合并逻辑（auth 的 {provider:{type,key}} 封套、
  * app_settings 的读改写）若放在每个客户端，会出现「两设备并发改 key 互相覆盖」的竞态；收口到服务端一处。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import type { ServerConfig } from "../config.js";
@@ -17,9 +18,10 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { getServerSecret, encryptJson, decryptJson } from "../crypto.js";
 import { bumpConfigRevision } from "../db.js";
-import { listProviderModels, getWorkerRuntime, PROVIDER_REGISTRATIONS, getProviderEmbedding } from "@pi/agent-core";
+import { listProviderModels, getWorkerRuntime, PROVIDER_REGISTRATIONS, getProviderEmbedding, TOKENHUB_PROVIDER_ID } from "@pi/agent-core";
 import { readParentSettings } from "../worker/scheduler.js";
 import { maskSecret } from "../util/mask.js";
+import { ensureParentTokenHubKey, fetchTokenHubQuota, fetchTokenHubUsageModels } from "../auth/tokenhub.js";
 
 interface ModelsDeps {
   config: ServerConfig;
@@ -71,10 +73,12 @@ export function registerModelRoutes(app: FastifyInstance, deps: ModelsDeps): voi
         "INSERT INTO settings (key, value_json, updated) VALUES (?, ?, ?) " +
           "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated = excluded.updated"
       )
-      .run(keyFor(parentId, key), stored, new Date().toISOString());
+      .run(keyFor(parentId, key), stored, nowLocalIso());
     bumpConfigRevision(deps.db);
   }
 
+  // ISSUE-174 调整：保留全量 provider 模型列表（自定义模型渠道），tokenhub 作为系统默认
+  // provider 也在列表中（其模型无需用户配置 Key）。
   app.get("/api/v1/models", async (req, reply) => {
     try {
       authParent(req, deps.config.jwtSecret);
@@ -152,6 +156,10 @@ export function registerModelRoutes(app: FastifyInstance, deps: ModelsDeps): voi
       if (handleAuthError(err, reply)) return;
       throw err;
     }
+    // ISSUE-174：懒触发 TokenHub Key 物化（封套缺失时异步换取，不阻塞本响应）
+    void ensureParentTokenHubKey(deps.config, deps.db, parentId).catch(() => {
+      /* 静默：后台循环会重试 */
+    });
     const appSettings = (readSetting(parentId, "app_settings") as Record<string, unknown>) ?? {};
     const auth = (readSetting(parentId, "auth") as Record<string, any>) ?? {};
     // ISSUE-111：合并注册表全量 provider（含未配 key 的）+ 向量化能力提示（provider 内置声明，零配置）
@@ -170,5 +178,100 @@ export function registerModelRoutes(app: FastifyInstance, deps: ModelsDeps): voi
       };
     });
     return { appSettings, providers };
+  });
+
+  // 大模型配额（ISSUE-174，设置页「大模型配额」面板）：
+  // remote = 云端官方口径（网关统计，CycleUsed 有分钟级以上到账延迟）；local = 本地 token_usage
+  // 按日累计（准实时）。两者并列展示，硬限额由腾讯网关强制，展示延迟不影响扣减。
+  app.get("/api/v1/tokenhub/quota", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    void ensureParentTokenHubKey(deps.config, deps.db, parentId).catch(() => {
+      /* 静默 */
+    });
+    const row = deps.db.prepare("SELECT cloud_token FROM parents WHERE id = ?").get(parentId) as
+      | { cloud_token?: string }
+      | undefined;
+    const cloudToken = (row?.cloud_token || "").trim();
+    let remote = null;
+    let remoteError = "";
+    if (cloudToken) {
+      try {
+        remote = await fetchTokenHubQuota(deps.config.upstreamBase, cloudToken);
+        if (!remote) remoteError = "云端服务暂不可达";
+      } catch (e) {
+        remoteError = (e as Error).message;
+      }
+    } else {
+      remoteError = "家长未登录云端（无法获取官方配额）";
+    }
+    const children = deps.db
+      .prepare("SELECT id FROM children WHERE parent_id = ?")
+      .all(parentId) as Array<{ id: string }>;
+    const { scanTokenUsageIntoDb } = await import("../db/token-usage.js");
+    scanTokenUsageIntoDb(deps.db, deps.config.dataDir, parentId, children.map((c) => c.id));
+    // 四类拆分 + 今日/近7天（仅内置 TokenHub 模型——自定义模型不消耗该配额，不能混入）
+    const { queryTokenUsageByCategory, classifyModelCategory } = await import("../db/token-usage.js");
+    const categories = queryTokenUsageByCategory(deps.db, parentId, 7);
+    const today = categories.today;
+    const todayTotal = today.text + today.vision + today.asr + today.tts;
+    const days = categories.byDay
+      .map((d) => ({ date: d.date, tokens: d.total, cost: d.cost }))
+      .slice(-7);
+    // 官方分类：模型占比取自 DescribeUsageRankList（该视图聚合滞后约1小时，直接用永远追不上
+    // 实时 CycleUsed），按占比把**实时 CycleUsed** 折算到四类——总和精确等于「今日已用」。
+    // 视图拉不到/当日无数据时置 null，面板回落本地记录。
+    let officialCategories: { text: number; vision: number; asr: number; tts: number } | null = null;
+    let officialCategoriesNote = "";
+    const cycleUsed = remote?.quota?.cycleUsed ?? 0;
+    const officialRows = cloudToken
+      ? await fetchTokenHubUsageModels(deps.config.upstreamBase, cloudToken, 1).catch(() => [])
+      : [];
+    const rankTotal = officialRows.reduce((s, r) => s + (r.total || 0), 0);
+    if (officialRows.length && rankTotal > 0 && cycleUsed > 0) {
+      const alloc: Record<string, number> = { text: 0, vision: 0, asr: 0, tts: 0 };
+      for (const r of officialRows) alloc[classifyModelCategory(r.model)] += (cycleUsed * (r.total || 0)) / rankTotal;
+      // 整数化 + 余差归占比最大的类，保证 sum === CycleUsed
+      const rounded: Record<string, number> = {};
+      let used = 0;
+      for (const k of Object.keys(alloc)) {
+        rounded[k] = Math.floor(alloc[k]);
+        used += rounded[k];
+      }
+      let diff = cycleUsed - used;
+      for (const k of Object.keys(alloc).sort((a, b) => alloc[b] - alloc[a])) {
+        if (diff <= 0) break;
+        rounded[k] += 1;
+        diff -= 1;
+      }
+      officialCategories = {
+        text: rounded.text,
+        vision: rounded.vision,
+        asr: rounded.asr,
+        tts: rounded.tts,
+      };
+      officialCategoriesNote = "按官方模型占比折算到当前已用（占比视图有约1小时延迟）";
+    }
+    return {
+      remote,
+      remoteError,
+      local: {
+        today: todayTotal,
+        days,
+        categories,
+      },
+      officialCategories,
+      officialCategoriesNote,
+      modelInfo: {
+        provider: TOKENHUB_PROVIDER_ID,
+        textModel: "deepseek/deepseek-flash",
+        visionModel: "deepseek/deepseek-v4-flash-vision-exp",
+      },
+    };
   });
 }

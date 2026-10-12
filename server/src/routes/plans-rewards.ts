@@ -18,6 +18,7 @@
  * 本文件的 `POST /plans/status` 是设计认可的**家长审计权**例外（§13.3：撤销虚报 / 取消计划），
  * 属于人对系统的显式修正，不是自动判定——不要把它扩展成通用的状态编辑器。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto, { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
@@ -277,7 +278,7 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
         | { id: string; status: string }
         | undefined;
       if (!row) return reply.code(404).send({ error: "计划不存在" });
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       const note = String(body.note ?? "");
       if (action === "cancel") {
         // 取消 = 不计分母、不再 carry（停止无限累积的唯一手段）；仅家长可操作
@@ -349,7 +350,7 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
         return { ok: true, skipped: true, planId: dup.id, message: "同名计划当天已存在（待完成），未重复创建" };
       }
       const id = randomUUID();
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       kb.prepare(
         `INSERT INTO life_plans
            (id,parent_id,child_id,title,creator,origin,carry_from,recurrence_id,start_at,due_at,status,result,done_at,
@@ -402,7 +403,7 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
         return { ok: true, skipped: true, planId: dup.id, message: "同天已有同名自请考核，未重复创建" };
       }
       const id = randomUUID();
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       const scopeJson = JSON.stringify({ courses, ...(note ? { note } : {}) });
       kb.prepare(
         `INSERT INTO exam_plans
@@ -626,7 +627,7 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
         body.childNoDeduct === undefined ? (cur?.child_no_deduct == null ? 1 : Number(cur.child_no_deduct)) : body.childNoDeduct ? 1 : 0;
       const optionalPoints =
         body.optionalPoints === undefined ? Number(cur?.optional_points ?? 5) : Math.round(Number(body.optionalPoints) || 0);
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       kb.prepare(
         `INSERT INTO reward_configs (child_id, todo_tiers_json, exam_tiers_json, todo_gate_parent_min_rate,
            exam_gate_parent_min_score, child_no_deduct, optional_points, updated)
@@ -681,7 +682,7 @@ export function registerPlanRewardRoutes(app: FastifyInstance, deps: Deps): void
         | undefined;
       const balance = Number(balRow?.balance ?? 0);
       if (balance < cost) return reply.code(400).send({ error: `积分不足（余额 ${balance}，需要 ${cost}）` });
-      const now = new Date().toISOString();
+      const now = nowLocalIso();
       const day = todayLocal();
       const id = crypto.randomUUID();
       kb.exec("BEGIN");

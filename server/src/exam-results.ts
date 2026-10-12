@@ -14,6 +14,7 @@
  * - 拆出来单独成模块是为了可测：写入口径（幂等、知识点回退、档位阈值）都能在单测里直接验证。
  * - 知识点 id 是家长库 `knowledge_points.id` 的跨文件逻辑引用（无 FK），带 name 快照防悬挂。
  */
+import { nowLocalIso, toLocalIso } from "./util/time.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { openKb } from "./db/kb.js";
@@ -152,7 +153,7 @@ export interface ExamResultOutput {
  * 全过程单库单连接；返回统计供路由日志与错题本同步使用。
  */
 export function persistExamResult(input: ExamResultInput): ExamResultOutput {
-  const now = input.now ?? new Date().toISOString();
+  const now = input.now ?? nowLocalIso();
   const submittedAt = input.submittedAt || now;
   const perQuestion = Array.isArray(input.perQuestion) ? (input.perQuestion as Array<Record<string, unknown>>) : [];
   const reinforcePlan =
@@ -496,7 +497,7 @@ export interface BackfillExamKpOutput {
  * 幂等（已有 records 的计划跳过），可在部署后对新库重跑。
  */
 export function backfillExamKpRecords(input: BackfillExamKpInput): BackfillExamKpOutput {
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   const out: BackfillExamKpOutput = { plansScanned: 0, plansBackfilled: 0, recordsWritten: 0, duplicateRowsDropped: 0, rowsWithoutKp: 0, issues: [] };
   if (input.rebuild && !input.planIds?.length) {
     throw new Error("rebuild 只能与 planIds 同用（防误删全量知识点记录）");

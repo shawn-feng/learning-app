@@ -12,6 +12,7 @@
  * 与客户端实现的差别：会话 cwd 用服务端工作区、模型凭据取服务端家长设置、
  * 审计写服务端 `exam-audit/`（prompt 原文默认不落盘，避免把家长/孩子的长文本无意义落库）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import path from "node:path";
 import {
   createAgentSession,
@@ -21,6 +22,7 @@ import {
 import fs from "node:fs";
 import { createCorePaths, getWorkerRuntime, pickWorkerModel } from "@pi/agent-core";
 import { readParentSettings } from "../worker/scheduler.js";
+import { getSystemDefaultModels } from "../auth/tokenhub.js";
 
 // ==================== 类型 ====================
 
@@ -259,11 +261,11 @@ export function auditExamEvent(
 ): void {
   try {
     const withPrompts = process.env["EXAM_AUDIT_PROMPTS"] === "1";
-    const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const day = nowLocalIso().slice(0, 10).replace(/-/g, "");
     const dir = path.join(deps.dataDir, "exam-audit", deps.childId || "unknown");
     fs.mkdirSync(dir, { recursive: true });
     const safe = withPrompts ? payload : Object.fromEntries(Object.entries(payload).filter(([k]) => k !== "prompt" && k !== "scoringPrompt"));
-    fs.appendFileSync(path.join(dir, `${day}.jsonl`), JSON.stringify({ ts: new Date().toISOString(), phase, ...safe }) + "\n");
+    fs.appendFileSync(path.join(dir, `${day}.jsonl`), JSON.stringify({ ts: nowLocalIso(), phase, ...safe }) + "\n");
   } catch (e) {
     console.error("[exam-audit] 写入失败（不影响考核）:", (e as Error).message);
   }
@@ -274,7 +276,7 @@ export function auditExamEvent(
 export async function createExamSession(deps: ExamEngineDeps, systemPrompt: string) {
   const settings = readParentSettings(deps.db, deps.dataDir, deps.parentId);
   const runtime = await getWorkerRuntime(deps.dataDir, deps.parentId, settings.auth);
-  const model = pickWorkerModel(runtime, settings.appSettings);
+  const model = pickWorkerModel(runtime, settings.appSettings, settings.auth, getSystemDefaultModels().text);
   const paths = createCorePaths(deps.dataDir);
   // ISSUE-131 P2：考核会话运行区进孩子 scratch（cwd 与 .pi 不再长在工作区/资产区）
   const cwd = paths.childScratchDir(deps.parentId, deps.childId);

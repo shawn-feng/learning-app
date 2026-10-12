@@ -20,7 +20,18 @@ import {
 } from "@earendil-works/pi-coding-agent";
 // ISSUE-134：统一还原字符串化参数（内含 SDK defineTool）
 import { defineTool } from "./tool-kit.js";
-import { createCorePaths, getWorkerRuntime, learningGuardExtension, resolveWithin } from "@pi/agent-core";
+import {
+  createCorePaths,
+  getWorkerRuntime,
+  learningGuardExtension,
+  resolveWithin,
+  resolveConfiguredModelKey,
+  resolveModelChannel,
+  firstCustomModelKey,
+  TOKENHUB_PROVIDER_ID,
+  WORKER_DEFAULT_MODEL,
+} from "@pi/agent-core";
+import { getSystemDefaultModels } from "../auth/tokenhub.js";
 import { legacyMaterialsRoot,
   materialsRoot } from "../db/materials.js";
 import { readParentSettings } from "../worker/scheduler.js";
@@ -124,8 +135,13 @@ export function buildProgrammingPrompt(): string {
 - 接收宿主/agent 下行命令：PiBridge.on(action, function(payload){...})；handler 可返回 {data} 或 Promise 作为回执；PiBridge.off(action, handler) 注销；
 - 交互密集或语义型页面在 <head> 声明 <meta name="pi-bridge" content="capture=manual">，让"只有 emit 的操作"才被上报；
 - action 用小写连字符命名（submit-answer、scene.say、scene.act、scene.ready 等）；自定义 action 的 payload 里带 semantic 字段自解释；
-- 场景互动类页面：角色/物品由页面绘制；下行用 PiBridge.on 注册 scene.say{character,text,zh} / scene.move{character,x,duration} / scene.act{character,act} / scene.show|hide{character} / scene.highlight{target} / scene.update{task,progress,total} / scene.busy{busy} / scene.mic.status{status}；上行 emit('scene.ready', manifest) 报属性清单、emit('scene.item-click', {target,word,zh}) 报点物品、emit('scene.mic.press' | 'scene.mic.release') 触发宿主录音。
-完整协议规范见仓库根 MATERIAL-BRIDGE-PROTOCOL.md（正文约定以上述为准）。`;
+- 场景互动类页面：角色/物品由页面绘制；下行用 PiBridge.on 注册 scene.say{character,text,zh} / scene.move{character,x,duration} / scene.act{character,act} / scene.show|hide{character} / scene.highlight{target} / scene.update{task,progress,total} / scene.busy{busy} / scene.mic.status{status}；上行 emit('scene.ready', manifest) 报属性清单、emit('scene.item-click', {target,word,zh}) 报点物品、emit('scene.mic.press' | 'scene.mic.release') 触发宿主录音。以上即完整协议（正文约定为准，无外部文档可读）。
+
+## 环境事实（ISSUE-178：先看清边界，不要盲猜路径）
+- 你的工作目录（cwd）= 本家长的**课程资料真源根**：里面第一层是各学习主题目录（如 lunyu/、hanzigong/），资料都按 \`<topic>/<文件>\` 组织。**动手前先 ls 看现有目录结构与文件名**（含扩展名），不要凭记忆或猜测拼路径。
+- 你**只能**访问资料真源根以内的文件。uploads/（上传原始件）、scratch/、parent/、孩子目录等**都在你够不到的地方**——需求里出现这些前缀的路径时不要尝试读取（必失败），要引用其中的文件请让调用方先转存进 \`<topic>/media/\` 并在需求里给出**资料真源相对路径**。
+- 需求里给的路径若 read 失败（不存在/扩展名不对），先用 ls 列出所在目录核对实际文件名，**不要连续猜不同前缀/扩展名**（每次失败都会记入日志）。
+- 页面内引用同真源内的图片/音频用**相对路径**（相对页面所在目录，如 \`media/foo.png\` 或 \`../<topic>/media/foo.png\`）。`;
 }
 
 /**
@@ -200,24 +216,32 @@ async function getProgrammingSession(
   if (existing) return existing;
 
   const settings = readParentSettings(deps.db, deps.dataDir, deps.parentId);
+  // 渠道感知（modelChannel：builtin=内置 TokenHub / custom=自定义 / off=停用）：
+  // 编程模型优先级 = 渠道池内的用户 programmingModel → 管理端系统默认文本模型 → 渠道兜底。
+  const channel = resolveModelChannel(settings.appSettings);
+  if (channel === "off") {
+    throw new Error("AI 模型已被停用（家长设置 → AI模型）：如需使用请重新启用内置 AI 模型。");
+  }
   const programmingKey =
     typeof settings.appSettings?.["programmingModel"] === "string"
       ? String(settings.appSettings["programmingModel"])
       : "";
-  if (!programmingKey) {
+  const parsed =
+    resolveConfiguredModelKey(programmingKey, settings.auth, channel) ??
+    resolveConfiguredModelKey(getSystemDefaultModels().text, settings.auth, channel) ??
+    (channel === "custom" ? firstCustomModelKey(settings.auth) : null);
+  const provider = parsed?.provider ?? TOKENHUB_PROVIDER_ID;
+  const modelId = parsed?.modelId ?? WORKER_DEFAULT_MODEL;
+  const runtime = await getWorkerRuntime(deps.dataDir, deps.parentId, settings.auth);
+  const model = runtime.getModel(provider, modelId);
+  if (!model) {
     // 带 parentId 便于诊断「设置页显示已配置但 agent 报未配置」类问题（ISSUE-097）：
     // 立刻能看出 agent 读的是哪个家长的服务端 app_settings，是否与设置页登录账号一致。
     throw new Error(
-      `编程 agent 未配置模型（家长 ${deps.parentId} 的服务端 app_settings 无 programmingModel）：` +
-        `请到「设置 → 模型配置」选择「编程 agent 模型」并保存后重试`
+      `编程 agent 模型不可用：${provider}/${modelId}（家长 ${deps.parentId} 的 TokenHub Key ` +
+        `未就绪：确认设备已联网、家长已登录过（云端换取 Key），稍后重试）`
     );
   }
-  const runtime = await getWorkerRuntime(deps.dataDir, deps.parentId, settings.auth);
-  const sep = programmingKey.indexOf("/");
-  const provider = sep > 0 ? programmingKey.slice(0, sep) : programmingKey;
-  const modelId = sep > 0 ? programmingKey.slice(sep + 1) : "";
-  const model = provider && modelId ? runtime.getModel(provider, modelId) : undefined;
-  if (!model) throw new Error(`编程 agent 模型不可用：${programmingKey}（请到设置页重新选择）`);
 
   fs.mkdirSync(agentDir, { recursive: true });
   const loader = new DefaultResourceLoader({
@@ -235,7 +259,7 @@ async function getProgrammingSession(
     model,
     sessionManager: SessionManager.inMemory(),
     resourceLoader: loader,
-    tools: ["read", "write", "edit"],
+    tools: ["read", "write", "edit", "ls"], // ISSUE-178 F1：加 ls——看目录而不是猜路径
     customTools: [],
   });
   sessions.set(key, session);
@@ -316,6 +340,40 @@ export interface GenerateHtmlLessonHooks {
   signal?: AbortSignal;
 }
 
+/**
+ * ISSUE-178 F5：需求文本里提及的相对路径预检——存在/不存在 + 同目录实际文件名一并附进 prompt，
+ * 模型不用靠 read ENOENT 试错（2026-10-09 生产 9 连 ENOENT 的土壤）。
+ * 只做只读探测，不改任何文件；能解析进 base 的路径才检查（其余如 uploads/… 由环境事实段解释）。
+ */
+export function probeRequirementPaths(base: string, requirement: string): string {
+  const RE = /[\w\-.\u4e00-\u9fa5/]+\.(?:png|jpe?g|gif|svg|webp|mp3|wav|m4a|mp4|webm|pdf|html?|css|js)/gi;
+  const hits = [...new Set((requirement.match(RE) ?? []).map((x) => x.replace(/^\/+/, "")))];
+  const lines: string[] = [];
+  for (const rel of hits) {
+    let abs: string;
+    try {
+      abs = resolveWithin(base, rel);
+    } catch {
+      continue;
+    }
+    if (fs.existsSync(abs)) {
+      lines.push(`- ✓ ${rel}（已核对存在）`);
+      continue;
+    }
+    const dir = path.dirname(abs);
+    let hint = "目录也不存在";
+    if (fs.existsSync(dir)) {
+      const names = fs
+        .readdirSync(dir)
+        .filter((n) => !n.startsWith("."))
+        .slice(0, 10);
+      hint = names.length ? `该目录下实际有：${names.join("、")}` : "该目录存在但为空";
+    }
+    lines.push(`- ✗ ${rel}（不存在；${hint}——用实际文件名，或先 ls 核对）`);
+  }
+  return lines.length ? `\n\n## 路径核对结果（调用方预检）\n${lines.join("\n")}` : "";
+}
+
 /** 生成/修改一份 HTML 资料并落盘（含沙箱校验与落盘校验）。
  * @param workspaceRoot 非 materials 输出的落盘根（孩子调用时=孩子工作区）；不传时=家长侧，恒落资料真源。
  * @param hooks 进度回报与中止传播（ISSUE-146 P0；不传＝行为同旧版）
@@ -357,7 +415,7 @@ export async function generateHtmlLesson(
     existedBefore
       ? `原文件已存在（${resolved}），请先 read 原文件，在保留原有内容结构的基础上按需求修改，改完用 write 覆盖同一绝对路径。`
       : "文件还不存在，请用 write 创建；写完确认落盘成功。",
-  ].join("\n");
+  ].join("\n") + probeRequirementPaths(base, input.requirement);
 
   const t0 = Date.now();
   // ISSUE-146 P0：① 子会话事件 → 节流后的可读进度；② 15s 心跳，保证「黑洞期」也有进度可看；
@@ -458,6 +516,7 @@ export function createProgrammingTool(
       : "让编程 agent 按需求制作/修改一份 HTML 学习资料，并写入课程资料真源。\n\n" +
         "**何时调用**：需要给某课生成互动练习页、绘本页、小游戏时（家长描述好需求与交互）。\n" +
         "**path**：资料真源相对路径 `<topic>/<文件>.html`，如 `lunyu/lesson-01.html`（与 parent_put_material 同语法；兼容旧 `materials/` 前缀写法）。必须以 .html/.htm 结尾。\n" +
+        "**重要边界**：编程 agent 只能读**课程资料真源**（materials），够不到 uploads/ 等其它区域——需求里要引用上传的图片/音频时，先用 `parent_transfer_upload` 把文件转存进 `<topic>/media/`，再在 requirement 里给**资料真源相对路径**（如 `schoolwork/media/xxx.png`）。\n" +
         "**注意**：编程 agent 未配置模型时会明确报错，需家长先到设置页选择「编程 agent 模型」。",
     parameters: Type.Object({
       title: Type.String({ description: "资料标题（如「论语学而篇 互动练习」）" }),

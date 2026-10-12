@@ -5,6 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
+import { JSON_BODY_LIMIT } from "./util/limits.js";
 import { openDb, dbHealth } from "./db.js";
 import { registerVersionRoutes } from "./routes/version.js";
 import { registerHealthRoutes } from "./routes/health.js";
@@ -36,7 +37,9 @@ import { registerMistakeRoutes } from "./routes/mistakes.js";
 import { registerTokenUsageRoutes } from "./routes/token-usage.js";
 import { registerLogsRoutes } from "./routes/logs.js";
 import { registerAsrRoutes } from "./routes/asr.js";
+import { registerTtsRoutes } from "./routes/tts.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
+import { startTokenHubKeySync } from "./auth/tokenhub.js";
 import { initServerLog, logInfo, logError, installServerConsoleRedirect } from "./log.js";
 
 const config = loadConfig();
@@ -46,7 +49,9 @@ const db = openDb(config.dataDir);
 
 // maxParamLength：默认 100 会把携带 JWT 的长路径参数（/materials/p/:token/*，Web 资料文档网关）
 // 直接 414；放宽到 1024（业务层参数校验不受影响）
-const app = Fastify({ logger: true, maxParamLength: 1024 });
+// bodyLimit：JSON body 全局 16MB（ISSUE-151 拍板 2026-10-11：外发类兜底——孩子聊天内联 base64
+// 图片等；fastify 默认 1MiB 曾是隐藏坑。存储类大文件一律走 multipart 不受限）
+const app = Fastify({ logger: true, maxParamLength: 1024, bodyLimit: JSON_BODY_LIMIT });
 
 // ISSUE-044: 访问日志落盘（method/path/status/durMs/reqId/ip），供 tail -f server-log.jsonl 排查
 app.addHook("onResponse", async (req, reply) => {
@@ -65,13 +70,15 @@ app.addHook("onResponse", async (req, reply) => {
   }
 });
 
-// fileSize 不设限（2026-09-26 用户拍板）：学习主题包要支持整包导入（千字文级别 ≈370MB）；
-// 主题包导入在 topic-package.ts 内自行做白名单/sha256 校验，材料上传沿用各自的业务限制。
+// fileSize 不设限（ISSUE-151 拍板 2026-10-11：存储类——app 客户端 → server 落盘的通道一律不限，
+// 局域网/本机传输；2026-09-26 起取消 200MB。**外发类**（server 收到后转发第三方的：ASR/评测/视觉）
+// 在各自入口设限，见 util/limits.ts）；主题包导入在 topic-package.ts 内自行做白名单/sha256 校验。
 void app.register(multipart, { limits: { fileSize: Infinity } });
 
 registerVersionRoutes(app);
 registerLogsRoutes(app, { jwtSecret: config.jwtSecret }); // ISSUE-162：日志导出（家长 JWT）
 registerAsrRoutes(app, { config, db }); // ISSUE-165：ASR 配置/转录上收服务端（家长 JWT）
+registerTtsRoutes(app, { config, db }); // ISSUE-174 续：客户端朗读合成上收服务端（家长 JWT，TokenHub/edge 分发）
 registerHealthRoutes(app, { db });
 registerAuthRoutes(app, { config, db });
 registerDbRoutes(app, { config, db });
@@ -106,6 +113,8 @@ registerTokenUsageRoutes(app, { config, db, dataDir: config.dataDir });
     .catch((err) => console.error("[feishu] 渠道启动失败:", (err as Error)?.message || err));
 }
 startWorkerScheduler({ dataDir: config.dataDir, db });
+// TokenHub Key 物化循环（ISSUE-174）：后台每 5 分钟为有 cloud_token 的家长换取/刷新 TokenHub Key
+startTokenHubKeySync(config, db);
 
 // ── Web 前端静态托管（部署形态，2026-09-16）────────────────────────────────
 // `web/dist` 存在时（`npm --prefix web run build` 产物），由本服务同源托管网页：

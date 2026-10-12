@@ -1,5 +1,6 @@
 // 发音评测服务配置（服务端唯一真源，按家长隔离，落 settings 表 key="<parentId>:assessment"，AES-256-GCM 加密）。
 // 早期 Electron 本地 assessment-config.json 已废弃：凭证统一收归服务端（多端共享、密钥不落客户端明文）。
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { getServerSecret, encryptJson, decryptJson } from "../crypto.js";
 import type { AssessmentProviderId } from "./types.js";
@@ -103,6 +104,6 @@ export function applyAssessmentConfigPatch(
   db.prepare(
     "INSERT INTO assessment_config (parent_id, value_json, updated) VALUES (?, ?, ?) " +
       "ON CONFLICT(parent_id) DO UPDATE SET value_json = excluded.value_json, updated = excluded.updated"
-  ).run(parentId, stored, new Date().toISOString());
+  ).run(parentId, stored, nowLocalIso());
   return cfg;
 }

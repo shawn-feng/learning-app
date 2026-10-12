@@ -23,6 +23,7 @@
  * ⇒ **`published` + `parent` 是合法且常见的状态**。
  * 门控一律在 SQL 里（`GATED_WHERE`），**绝不靠提示词**。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -163,7 +164,7 @@ export const KB_RISK_SEED: ReadonlyArray<{ term: string; note: string }> = [
  * 家长自己加的说明（`note`）也不会被代码覆盖。
  */
 function seedRiskTerms(db: DatabaseSync): void {
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   const stmt = db.prepare(
     "INSERT OR IGNORE INTO kb_risk_terms (term, note, enabled, origin, created_at, updated_at) VALUES (?, ?, 1, 'seed', ?, ?)"
   );
@@ -204,7 +205,7 @@ export function updateRiskTerms(
   db: DatabaseSync,
   change: { add?: Array<{ term: string; note?: string }>; remove?: string[] }
 ): RiskTermChange {
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   const out: RiskTermChange = { added: [], removed: [], rejected: [] };
   const upsert = db.prepare(
     `INSERT INTO kb_risk_terms (term, note, enabled, origin, created_at, updated_at) VALUES (?, ?, ?, 'parent', ?, ?)
@@ -353,7 +354,7 @@ export function saveKbEntries(
   const list = (entries ?? []).filter((e) => String(e?.title ?? "").trim());
   if (!list.length) throw new Error("parent_kb_save 需要至少一条 entries（每条要有 title）");
 
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   const allAssets = (assets ?? []).filter((a) => String(a?.path ?? "").trim());
   // 先校验全部资产路径（含存在性），任何一条不合法就整批不写——避免"写了一半"
   const checkedAssets = allAssets.map((a) => {
@@ -599,7 +600,7 @@ export function publishKbEntries(
   const keys = (idsOrTitles ?? []).map((s) => String(s ?? "").trim()).filter(Boolean);
   if (!keys.length) throw new Error("parent_kb_publish 需要 entry_ids（id 或精确标题）");
   if (visibility !== "child" && visibility !== "parent") throw new Error(`visibility 只能是 child / parent，收到：${visibility}`);
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   const out: KbPublishResult = { published: [], withdrawn: [], missing: [], refused: [] };
   for (const key of keys) {
     const row = getKbEntry(lib, key);
@@ -687,7 +688,7 @@ export function deleteKbEntries(lib: DatabaseSync, keys: string[]): KbDeleteResu
  * `sinceDays` 是防噪音的：三个月前撤回的条目，孩子早不可能在当前会话里提过。
  */
 export function countWithdrawn(lib: DatabaseSync, sinceDays = 14): number {
-  const cutoff = new Date(Date.now() - Math.max(1, sinceDays) * 86_400_000).toISOString();
+  const cutoff = toLocalIso(new Date(Date.now() - Math.max(1, sinceDays) * 86_400_000));
   const row = lib
     .prepare("SELECT COUNT(*) AS n FROM kb_entries WHERE status = 'published' AND visibility = 'parent' AND updated_at >= ?")
     .get(cutoff) as { n?: number } | undefined;
@@ -703,7 +704,7 @@ export function countWithdrawn(lib: DatabaseSync, sinceDays = 14): number {
  * 「要不要在 system prompt 里挂纪律」看条数，而「要不要往会话里插一条新提醒」看**变化**。
  */
 export function withdrawStamp(lib: DatabaseSync, sinceDays = 14): string {
-  const cutoff = new Date(Date.now() - Math.max(1, sinceDays) * 86_400_000).toISOString();
+  const cutoff = toLocalIso(new Date(Date.now() - Math.max(1, sinceDays) * 86_400_000));
   const row = lib
     .prepare(
       `SELECT COUNT(*) AS n, COALESCE(MAX(updated_at), '') AS latest
@@ -778,7 +779,7 @@ export function bindEntryToCourse(
     throw new Error(`课程不存在：主题 ${topic} / 课程 ${course}${hint}。先核对课程名，别猜。`);
   }
 
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   const seqRaw = opts?.seq;
   const explicitSeq = seqRaw === undefined || seqRaw === null || String(seqRaw).trim() === "" ? null : Number(seqRaw);
   if (explicitSeq !== null && !Number.isFinite(explicitSeq)) throw new Error(`seq 必须是数字，收到：${String(seqRaw)}`);
@@ -1040,7 +1041,7 @@ export function recordKbGap(
 ): { count: number; created: boolean } {
   const q = String(question ?? "").trim();
   if (!q) return { count: 0, created: false };
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   const hitsJson = JSON.stringify(hits.map((h) => ({ id: h.id, title: h.title })));
   const existing = lib
     .prepare("SELECT id, count FROM kb_gaps WHERE child_id = ? AND question = ? AND status = 'open' LIMIT 1")

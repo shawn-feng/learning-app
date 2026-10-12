@@ -10,6 +10,7 @@
  * 服务端即真源，不依赖客户端推送时机）；无任务分配的孩子回退旧 settings scheduler_config（老客户端兼容）。
  * 注：本调度器在 learning-server 进程内，设备 7x24 在线 → 客户端关机/休眠不再导致漏跑。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import cron from "node-cron";
 import { DatabaseSync } from "node:sqlite";
 import { getServerSecret, decryptJson } from "../crypto.js";
@@ -243,8 +244,8 @@ async function runTaskAtPoint(
       point,
       status,
       message,
-      startedAt: startedAt.toISOString(),
-      finishedAt: new Date().toISOString(),
+      startedAt: toLocalIso(startedAt),
+      finishedAt: nowLocalIso(),
     });
   } catch (e) {
     console.error(`[worker] record task_runs failed (${task.type} ${childId}):`, (e as Error).message);
@@ -263,7 +264,7 @@ async function runTaskAtPoint(
       deps.db,
       childId,
       task.type,
-      at.toISOString(),
+      toLocalIso(at),
       JSON.stringify({ date: today, points: [...ran].sort() })
     );
   }

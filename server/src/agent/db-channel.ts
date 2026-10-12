@@ -13,6 +13,7 @@
  *
  * 本模块刻意**不依赖 agent 框架**（纯函数 + DatabaseSync），便于 vitest 直测。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { embeddedColumn } from "./embeddings.js";
@@ -330,7 +331,7 @@ export function sqlVal(v: unknown): null | number | bigint | string {
   const t = typeof v;
   if (t === "string" || t === "number" || t === "bigint") return v as string | number | bigint;
   if (t === "boolean") return v ? 1 : 0;
-  if (v instanceof Date) return v.toISOString();
+  if (v instanceof Date) return toLocalIso(v);
   return JSON.stringify(v);
 }
 
@@ -632,7 +633,7 @@ export function executeWrite(db: DatabaseSync, specs: TableSpec[], req: WriteReq
           if (c.confirm) confirmHints.push(c.desc);
         }
         const setSql = sets.map(([c]) => `${c} = ?`).join(", ");
-        const touch = spec.touchUpdatedAt ? `, updated_at = datetime('now')` : "";
+        const touch = spec.touchUpdatedAt ? `, updated_at = datetime('now','localtime')` : "";
         db.prepare(`UPDATE ${spec.table} SET ${setSql}${touch} WHERE ${whereSql}`).run(
           ...sets.map(([, v]) => sqlVal(v)),
           ...whereVals

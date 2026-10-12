@@ -7,6 +7,7 @@
  * 安全：库里只存 sha256(key)；比较走 timingSafeEqual（open-api 鉴权侧）。
  * 多键动机：一台设备一把（ESP32 / 脚本 / 其它第三方），可独立吊销而不影响其它设备。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
@@ -87,7 +88,7 @@ export function registerApiKeysRoutes(app: FastifyInstance, deps: ApiKeysDeps): 
     }
 
     const { key, hash, prefix } = generateApiKey();
-    const now = new Date().toISOString();
+    const now = nowLocalIso();
     const id = crypto.randomUUID();
     deps.db
       .prepare(
@@ -111,7 +112,7 @@ export function registerApiKeysRoutes(app: FastifyInstance, deps: ApiKeysDeps): 
     if (!id) return reply.code(400).send({ error: "缺少 id 参数（要吊销哪把 Key）" });
     const r = deps.db
       .prepare("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND parent_id = ? AND revoked_at IS NULL")
-      .run(new Date().toISOString(), id, parentId);
+      .run(nowLocalIso(), id, parentId);
     if (r.changes === 0) return reply.code(404).send({ error: "Key 不存在或已吊销" });
     return { ok: true, revoked: id };
   });

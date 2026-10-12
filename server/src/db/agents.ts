@@ -2,6 +2,7 @@
  * AGENTS 用户版本库（schema 平移自 electron/lib/agent-prompts.ts）。
  * 路径：<dataDir>/agents.sqlite（全局；scope/ref 区分孩子/家长）
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 
@@ -75,7 +76,7 @@ export function saveAgentPrompt(
 ): void {
   const db = openAgents(dataDir);
   try {
-    const now = new Date().toISOString();
+    const now = nowLocalIso();
     const trimmed = content.trim();
     db.exec("BEGIN");
     try {

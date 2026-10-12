@@ -73,6 +73,7 @@ import {
   toolProgressText,
 } from "./session-activity.js";
 import { learningGuardExtension as guardExtension } from "@pi/agent-core";
+import { getSystemDefaultModels } from "../auth/tokenhub.js";
 
 const CORE_SESSION_DEPS: CoreSessionDeps = {
   createAgentSession,
@@ -267,7 +268,7 @@ async function ensureEntry(
   const paths = createCorePaths(deps.dataDir);
   const settings = readParentSettings(deps.db, deps.dataDir, parentId);
   const runtime = await getWorkerRuntime(deps.dataDir, parentId, settings.auth);
-  const model = pickWorkerModel(runtime, settings.appSettings);
+  const model = pickWorkerModel(runtime, settings.appSettings, settings.auth, getSystemDefaultModels().text);
 
   const kbTools = createWorkerKbTools({
     dataDir: deps.dataDir,

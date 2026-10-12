@@ -9,6 +9,7 @@
  * 事件：im.message.receive_v1（只处理单聊 text 消息；群聊/媒体后续分期）。
  * 幂等：飞书可能重推事件，按 message_id 去重（10 分钟内存窗）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import * as lark from "@larksuiteoapi/node-sdk";
@@ -54,7 +55,7 @@ export function saveFeishuConfig(db: DatabaseSync, cfg: FeishuChannelConfig): vo
   db.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated) VALUES (?, ?, ?)").run(
     FEISHU_SETTINGS_KEY,
     JSON.stringify({ appId: cfg.appId, appSecret: cfg.appSecret, enabled: cfg.enabled }),
-    new Date().toISOString()
+    nowLocalIso()
   );
 }
 

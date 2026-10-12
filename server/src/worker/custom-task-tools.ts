@@ -11,6 +11,7 @@
  * 白名单原则（待拍板①）：custom 会话只见 get_date/kb_query/kb_insert/kb_update（复用 worker kb 工具）
  * + 本文件两工具——不含积分/考核/计划写等高危能力。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { Type } from "typebox";
 import { defineTool } from "../agent/tool-kit.js"; // ISSUE-134：统一还原字符串化参数
@@ -216,11 +217,11 @@ export function createRemindersTool(db: DatabaseSync, parentId: string, childId:
              WHERE parent_id = ? AND type = 'reminder' AND enabled = 1 AND expired = 0
                AND extra_json LIKE ?`
           )
-          .run(new Date().toISOString(), parentId, sourceLike);
+          .run(nowLocalIso(), parentId, sourceLike);
         disabled = Number(r.changes);
       }
 
-      const nowIso = new Date().toISOString();
+      const nowIso = nowLocalIso();
       const created: string[] = [];
       const skipped: string[] = [];
       for (const raw of list) {
@@ -247,7 +248,7 @@ export function createRemindersTool(db: DatabaseSync, parentId: string, childId:
           d.setDate(d.getDate() + 1);
           const [h, m] = time.split(":");
           d.setHours(Number(h), Number(m), 0, 0);
-          fireAt = d.toISOString();
+          fireAt = toLocalIso(d);
         }
         // 精确去重：该孩子同 text+time+frequency 且未过期的提醒已存在 → 跳过
         const dup = db

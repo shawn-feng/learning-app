@@ -15,6 +15,7 @@
  * 已随通用数据 API 退场——**归纳所需素材一律由本文件的读工具一次给全**（`mastery_plan_context`），
  * 模型不再需要"自己再查一点"。真缺什么，就为该场景补一把工具。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
@@ -181,7 +182,7 @@ export function createMasteryTask(
   const time = String(overrides?.time ?? "").trim() || DEFAULT_MASTERY_TASK_TIME;
   const instruction = String(overrides?.instruction ?? "").trim() || DEFAULT_MASTERY_TASK_INSTRUCTION;
   const taskId = `${DEFAULT_MASTERY_TASK_ID_PREFIX}${parentId}`;
-  const now = new Date().toISOString();
+  const now = nowLocalIso();
   const existing = db.prepare("SELECT 1 FROM scheduler_tasks WHERE id = ?").get(taskId);
   if (!existing) {
     db.prepare(
@@ -212,7 +213,7 @@ export function findMasteryTaskId(db: DatabaseSync, parentId: string): string | 
 // ==================== 工具 ====================
 
 export function createMasteryTools(deps: MasteryToolDeps) {
-  const nowIso = () => new Date().toISOString();
+  const nowIso = () => nowLocalIso();
 
   /** ① 待归纳范围：缺结果的学习计划 + 最近有动静、需要刷新掌握的课程。 */
   const todoList = defineTool({

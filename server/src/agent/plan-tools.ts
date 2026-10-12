@@ -14,6 +14,7 @@
  * 数据源：计划表在孩子 kb（openKb(dataDir, parentId, childId)），窗口覆盖当天 = 「今天的计划」。
  * 教学方法在家长库（openParentLib(dataDir, parentId)）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import { defineTool } from "./tool-kit.js"; // ISSUE-134：统一还原字符串化参数
 import { Type } from "typebox";
@@ -357,7 +358,7 @@ export function createChildLifePlanCreateTool(deps: PlanToolsDeps) {
           return { content: [{ type: "text" as const, text: `「${title}」当天已存在（待完成），未重复创建。` }], details: {} };
         }
         const id = crypto.randomUUID();
-        const now = new Date().toISOString();
+        const now = nowLocalIso();
         kb.prepare(
           `INSERT INTO life_plans
              (id,parent_id,child_id,title,creator,origin,carry_from,recurrence_id,start_at,due_at,status,result,done_at,
@@ -453,14 +454,14 @@ export function createChildLifePlanUpdateTool(deps: PlanToolsDeps) {
           if (!validDate(date)) throw new Error(`reschedule 需要 date（YYYY-MM-DD）：${date}`);
           const oldTime = (row.start_at || "").length > 11 ? (row.start_at || "").slice(11) : "00:00:00";
           kb.prepare("UPDATE life_plans SET start_at = ?, due_at = ?, updated_at = ? WHERE id = ?").run(
-            `${date} 00:00:00`, `${date} ${oldTime.slice(0, 8)}`, new Date().toISOString(), row.id
+            `${date} 00:00:00`, `${date} ${oldTime.slice(0, 8)}`, nowLocalIso(), row.id
           );
           return { content: [{ type: "text" as const, text: `已将「${row.title}」改到 ${date}。` }], details: {} };
         }
         const title = String(params?.title ?? "").trim();
         if (!title) throw new Error("rename 需要 title（新名称）");
         if (title.length > 200) throw new Error("title 过长（≤200 字）");
-        kb.prepare("UPDATE life_plans SET title = ?, updated_at = ? WHERE id = ?").run(title, new Date().toISOString(), row.id);
+        kb.prepare("UPDATE life_plans SET title = ?, updated_at = ? WHERE id = ?").run(title, nowLocalIso(), row.id);
         return { content: [{ type: "text" as const, text: `已将生活计划改名为「${title}」。` }], details: {} };
       } finally {
         kb.close();
@@ -563,7 +564,7 @@ export function createChildStudyPlanCreateTool(deps: PlanToolsDeps) {
             continue;
           }
           const id = crypto.randomUUID();
-          const now = new Date().toISOString();
+          const now = nowLocalIso();
           kb.prepare(
             `INSERT INTO study_plans
                (id,parent_id,child_id,topic_key,course_uuid,course_name,mode,creator,origin,carry_from,recurrence_id,
@@ -673,7 +674,7 @@ export function createChildExamPlanCreateTool(deps: PlanToolsDeps) {
           return { content: [{ type: "text" as const, text: `「${title}」当天已存在（待考），未重复创建。` }], details: {} };
         }
         const id = crypto.randomUUID();
-        const now = new Date().toISOString();
+        const now = nowLocalIso();
         // methodSpec（本次特殊考法，如只考背诵）
         const ms = params?.methodSpec as { require?: Record<string, number>; exclude?: string[]; recitePass?: number } | undefined;
         // 兜底：孩子把「只考背诵」只写进了 note 而没转 methodSpec（note 不参与出题范围计算）→ 自动推断
@@ -770,7 +771,7 @@ export function createChildStudyPlanUpdateTool(deps: PlanToolsDeps) {
         kb.prepare("UPDATE study_plans SET start_at = ?, due_at = ?, updated_at = ? WHERE id = ?").run(
           `${date} 00:00:00`,
           `${date} 23:59:59`,
-          new Date().toISOString(),
+          nowLocalIso(),
           row.id
         );
         return { content: [{ type: "text" as const, text: `已将「${row.course_name}」改到 ${date}。` }], details: {} };
@@ -825,7 +826,7 @@ export function createChildExamPlanUpdateTool(deps: PlanToolsDeps) {
         kb.prepare("UPDATE exam_plans SET start_at = ?, due_at = ?, updated_at = ? WHERE id = ?").run(
           `${date} 00:00:00`,
           `${date} 23:59:59`,
-          new Date().toISOString(),
+          nowLocalIso(),
           row.id
         );
         return { content: [{ type: "text" as const, text: `已将「${row.title}」改到 ${date}。` }], details: {} };

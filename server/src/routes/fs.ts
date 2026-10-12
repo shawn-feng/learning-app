@@ -19,6 +19,7 @@
  * uploads 区（P1 收敛面）：uuid 落盘名 + files 表登记，只开 list/download/upload/delete——
  * 改名/移动会扯断 `files/<id>` 引用语义（R-2），P2 归并到 workspaces/<pid>/uploads/ 后再放开。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
@@ -391,7 +392,7 @@ function listPhysicalDir(absDir: string, virtualPrefix: string): FsEntry[] {
       path: virtualPrefix ? `${virtualPrefix}/${name}` : name,
       type: st.isDirectory() ? "dir" : "file",
       size: st.isFile() ? st.size : 0,
-      mtime: st.mtime.toISOString(),
+      mtime: toLocalIso(st.mtime),
     });
   }
   return out;
@@ -400,12 +401,11 @@ function listPhysicalDir(absDir: string, virtualPrefix: string): FsEntry[] {
 /** 目录列表（家长虚拟根 / 物理目录通用）。uploads 区用 files 表补全展示名。 */
 export function fsList(ctx: FsCtx, rel: string): { path: string; entries: FsEntry[] } {  const norm = normalizeRelPath(rel);
   if (!ctx.childId && norm === "") {
-    // 家长虚拟根：materials/ + uploads/ + workspaces/<pid>/ 的直接子项
-    const entries: FsEntry[] = [
-      { name: "materials", path: "materials", type: "dir", size: 0, mtime: "", label: "课程资料库" },
-      { name: "uploads", path: "uploads", type: "dir", size: 0, mtime: "", label: "上传原始件" },
-    ];
-    // 孩子目录/家长运行区配人类可读标签（uuid 不标名家长没法管）
+    // 家长虚拟根：workspaces/<pid>/ 的直接子项 + materials/uploads 区标签。
+    // ISSUE-177 F1：P2 物理归并后 materials/uploads 就在 workspaces/<pid>/ 内，此前「手工前置
+    // 虚拟条目 + 物理列表再列一遍」必然同名同 path 各出现两次（家长误判成两份拷贝）。改为在
+    // 物理列表上按 name 合并补 label（物理缺失才前置兜底）——根列表每条 path 唯一
+    //（fs.ts 头部「P2 后虚拟映射单点塌缩」注释在本分支兑现）。
     const childNames = new Map<string, string>();
     try {
       for (const r of ctx.db.prepare("SELECT id, name FROM children WHERE parent_id = ?").all(ctx.parentId) as Array<{ id: string; name: string }>) {
@@ -414,10 +414,21 @@ export function fsList(ctx: FsCtx, rel: string): { path: string; entries: FsEntr
     } catch {
       /* 查不到就退化为原名 */
     }
+    const entries: FsEntry[] = [];
+    const byName = new Map<string, FsEntry>();
     for (const e of listPhysicalDir(zoneRoot(ctx, "workspace"), "")) {
       if (childNames.has(e.name)) e.label = `${childNames.get(e.name)} 的工作区`;
       else if (e.name === "parent") e.label = "家长工作区";
       entries.push(e);
+      byName.set(e.name, e);
+    }
+    for (const [name, label] of [
+      ["materials", "课程资料库"],
+      ["uploads", "上传原始件"],
+    ] as const) {
+      const hit = byName.get(name);
+      if (hit) hit.label = label;
+      else entries.unshift({ name, path: name, type: "dir", size: 0, mtime: "", label });
     }
     return { path: "", entries };
   }
@@ -560,7 +571,7 @@ export function fsSearch(
           path: childVp,
           type: st.isDirectory() ? "dir" : "file",
           size: st.isFile() ? st.size : 0,
-          mtime: st.mtime.toISOString(),
+          mtime: toLocalIso(st.mtime),
         });
       }
       if (st.isDirectory()) {
@@ -795,7 +806,7 @@ export function fsSaveUpload(
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.renameSync(tmpPath, abs);
     const size = fs.statSync(abs).size;
-    const createdAt = new Date().toISOString();
+    const createdAt = nowLocalIso();
     try {
       ctx.db
         .prepare(
@@ -821,7 +832,7 @@ export function fsSaveUpload(
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.renameSync(tmpPath, abs);
     const stat = fs.statSync(abs);
-    return { entry: { name: n, path: joinZone("materials", dir.zoneRel, n), type: "file", size: stat.size, mtime: stat.mtime.toISOString() } };
+    return { entry: { name: n, path: joinZone("materials", dir.zoneRel, n), type: "file", size: stat.size, mtime: toLocalIso(stat.mtime) } };
   }
 
   const abs = resolveWithin(dir.abs, n);
@@ -829,14 +840,14 @@ export function fsSaveUpload(
   if (fs.existsSync(abs) && !opts.overwrite) {
     const st = fs.statSync(abs);
     return {
-      entry: { name: n, path: `${parentNorm}/${n}`, type: "file", size: st.size, mtime: st.mtime.toISOString() },
+      entry: { name: n, path: `${parentNorm}/${n}`, type: "file", size: st.size, mtime: toLocalIso(st.mtime) },
       conflict: true,
     };
   }
   fs.renameSync(tmpPath, abs);
   const st = fs.statSync(abs);
   return {
-    entry: { name: n, path: `${parentNorm}/${n}`, type: "file", size: st.size, mtime: st.mtime.toISOString() },
+    entry: { name: n, path: `${parentNorm}/${n}`, type: "file", size: st.size, mtime: toLocalIso(st.mtime) },
   };
 }
 

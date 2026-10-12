@@ -17,6 +17,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { getWorkerRuntime, pickWorkerModel } from "@pi/agent-core";
 import { readParentSettings } from "../worker/scheduler.js";
+import { getSystemDefaultModels } from "../auth/tokenhub.js";
 
 export interface ModelSyncDeps {
   db: DatabaseSync;
@@ -48,7 +49,7 @@ export async function syncSessionModel(
   try {
     const settings = readParentSettings(deps.db, deps.dataDir, parentId);
     const runtime = await getWorkerRuntime(deps.dataDir, parentId, settings.auth);
-    const model = pickWorkerModel(runtime, settings.appSettings) as
+    const model = pickWorkerModel(runtime, settings.appSettings, settings.auth, getSystemDefaultModels().text) as
       | { provider: string; id: string }
       | undefined;
     const cur = session.model;

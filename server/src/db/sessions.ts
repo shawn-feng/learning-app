@@ -4,6 +4,7 @@
  * - indexAgentSessionsIntoDb 把新增 jsonl 增量写入 server.sqlite 的 session_messages（供家长回顾查询，游标去重）。
  * - session_files 表仅记录 agent-sessions 的索引游标（child_id + file + line_count），幂等重跑安全。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -201,7 +202,7 @@ export function indexAgentSessionsIntoDb(
       for (let i = 0; i < newLines.length; i++) {
         indexMessageLine(insert, childId, fileKey, lineCount + i, newLines[i]);
       }
-      setCursor.run(childId, fileKey, fs.statSync(f).size, rawLines.length, new Date().toISOString());
+      setCursor.run(childId, fileKey, fs.statSync(f).size, rawLines.length, nowLocalIso());
     }
   }
 }

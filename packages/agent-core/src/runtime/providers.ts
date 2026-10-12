@@ -294,6 +294,58 @@ const MIMO_TOKENPLAN_PROVIDER: ProviderConfig = {
   models: MIMO_MODELS,
 };
 
+// ==================== 腾讯云 TokenHub（大模型服务平台，ISSUE-174 统一模型接入） ====================
+// OpenAI 兼容数据面 https://tokenhub.tencentmaas.com/v1；每家长一把 Key 由云端 benefit-auth
+// 发放（凭用户 JWT 换取，服务端不存任何服务级密钥）。选型实测（2026-10-09 P0 侦查，ISSUE-174）：
+// - deepseek/deepseek-flash 工具调用循环 ✅（编程 agent 可用；reasoning 模型，max_tokens 过小会
+//   finish_reason=length 且 content 空——reasoning 先耗尽）
+// - deepseek/deepseek-v4-flash-vision-exp 视觉 ✅（标准 OpenAI image_url；备用 hy-vision-2.0-instruct）
+// - 数据面无音频端点（/v1/audio/* 全 404）→ ASR 走服务端 env 兜底通道
+// - embeddings kinfra-text-embedding-0.6b（1024 维）✅
+// ⚠ 模型 ID 必须与数据面一致：deepseek 系带 "deepseek/" 前缀；裸 "deepseek-v4-flash" 会 400004。
+
+const TOKENHUB_COMPAT = {
+  thinkingFormat: "deepseek",
+  supportsDeveloperRole: false,
+  requiresReasoningContentOnAssistantMessages: true,
+} as const;
+
+const TOKENHUB_MODELS: ProviderModelConfig[] = [
+  {
+    id: "deepseek/deepseek-flash",
+    name: "DeepSeek Flash (TokenHub)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 16384,
+    compat: { ...TOKENHUB_COMPAT },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+  {
+    id: "deepseek/deepseek-v4-flash-vision-exp",
+    name: "DeepSeek V4 Flash Vision (TokenHub)",
+    api: "openai-completions",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 16384,
+    compat: { ...TOKENHUB_COMPAT },
+    thinkingLevelMap: { minimal: null, low: null, medium: null, high: "high", max: "max" },
+  },
+];
+
+const TOKENHUB_PROVIDER: AugProviderConfig = {
+  name: "腾讯云 TokenHub",
+  baseUrl: "https://tokenhub.tencentmaas.com/v1",
+  api: "openai-completions",
+  models: TOKENHUB_MODELS,
+  // 内置向量化（ISSUE-111/120 语义检索）：端点 = baseUrl + /embeddings，实测 1024 维
+  embedding: { model: "kinfra-text-embedding-0.6b", dimensions: 1024 },
+};
+
 /** 服务端 provider 注册表（国内 provider；与客户端白名单一致，无国外 provider）。 */
 /** provider 内置向量化能力声明（ISSUE-111）：声明的厂商由数据通道自动用于「精确匹配落空 → 向量检索兜底」，
  *  用户零配置（复用该 provider 已配置的 API key）；未声明的厂商 = 不支持，设置页据此提示。 */
@@ -314,7 +366,11 @@ export const PROVIDER_REGISTRATIONS: Array<[string, AugProviderConfig]> = [
   ["minimax", MINIMAX_PROVIDER],
   ["mimo", MIMO_PROVIDER],
   ["mimo-tokenplan", MIMO_TOKENPLAN_PROVIDER],
+  ["tokenhub", TOKENHUB_PROVIDER],
 ];
+
+/** TokenHub 统一模型接入的 provider id（ISSUE-174：模型选择只认本 provider，其余视为遗留配置）。 */
+export const TOKENHUB_PROVIDER_ID = "tokenhub";
 
 export function registerProviders(runtime: ModelRuntime): void {
   for (const [id, cfg] of PROVIDER_REGISTRATIONS) {
@@ -346,9 +402,9 @@ export function getProviderEmbedding(providerId: string): ProviderEmbeddingCapab
   return PROVIDER_REGISTRATIONS.find(([pid]) => pid === providerId)?.[1]?.embedding;
 }
 
-/** 支持 embedding 的 provider id（按解析优先级排序）。 */
-export const EMBEDDING_PROVIDER_PRIORITY = ["qwen"];
+/** 支持 embedding 的 provider id（按解析优先级排序；TokenHub 实测 1024 维 ISSUE-174）。 */
+export const EMBEDDING_PROVIDER_PRIORITY = ["qwen", "tokenhub"];
 
-/** 兜底默认模型（与客户端一致：token-plan 套餐内的 deepseek flash 定点快照）。 */
-export const WORKER_DEFAULT_PROVIDER = "qwen-tokenplan";
-export const WORKER_DEFAULT_MODEL = "deepseek-v4-flash-0731";
+/** 兜底默认模型（ISSUE-174 起 = TokenHub 统一模型，配额由云端 benefit-auth 按家长发放）。 */
+export const WORKER_DEFAULT_PROVIDER = "tokenhub";
+export const WORKER_DEFAULT_MODEL = "deepseek/deepseek-flash";

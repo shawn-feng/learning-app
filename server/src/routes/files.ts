@@ -3,6 +3,7 @@
  * data/files/<parentId>/<id><ext>（uuid 文件名防冲突/穿越），files 表记录元数据。
  * 复用 M4 教训：multipart 迭代中立即 pipe 消费 file 流，否则 busboy 死锁。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
@@ -155,7 +156,7 @@ export function registerFilesRoutes(app: FastifyInstance, deps: FilesDeps): void
     }
     fs.renameSync(tmpPath, abs);
     const size = fs.statSync(abs).size;
-    const createdAt = new Date().toISOString();
+    const createdAt = nowLocalIso();
     deps.db
       .prepare(
         "INSERT INTO files (id, parent_id, child_id, original_name, stored_path, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"

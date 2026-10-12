@@ -13,6 +13,7 @@ import type { ServerConfig } from "../config.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { resolveStoredFileAbs } from "./files.js";
+import { ASSESS_AUDIO_MAX_BYTES, bytesLabel } from "../util/limits.js";
 import { assessAudio, toSpeechAssessment, loadAssessmentConfig, getMaskedAssessmentConfig, applyAssessmentConfigPatch } from "../assessment/index.js";
 
 interface AssessmentDeps {
@@ -56,7 +57,12 @@ function readAudioBytes(db: DatabaseSync, dataDir: string, parentId: string, fil
   if (!row) throw new ApiError(404, "音频文件不存在");
   const abs = resolveStoredFileAbs(dataDir, parentId, row.child_id, row.stored_path);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) throw new ApiError(404, "音频文件不存在");
-  return fs.readFileSync(abs);
+  const buf = fs.readFileSync(abs);
+  // ISSUE-151：评测音频要外发阿里云 → 外发环节设限（存储本身不限）
+  if (buf.length > ASSESS_AUDIO_MAX_BYTES) {
+    throw new ApiError(413, `音频超出外发限制（${bytesLabel(ASSESS_AUDIO_MAX_BYTES)}）：请缩短录音时长后重新提交`);
+  }
+  return buf;
 }
 
 export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentDeps): void {

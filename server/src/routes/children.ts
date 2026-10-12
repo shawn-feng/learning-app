@@ -4,6 +4,7 @@
  * 与密码哈希存 children.profile_json**，登录密码由服务端校验（2026-08-30 起多设备共享）。
  * 删除孩子仅删 children 行，其 kb 文件保留（本期不做物理删除，避免误删学习数据）。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { DatabaseSync } from "node:sqlite";
@@ -104,7 +105,7 @@ export function registerChildrenRoutes(app: FastifyInstance, deps: ChildrenDeps)
       if (cnt >= maxChildren) return reply.code(403).send({ error: `孩子数量已达上限（${maxChildren} 个）` });
     }
     const id = reqId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reqId) ? reqId : crypto.randomUUID();
-    const now = new Date().toISOString();
+    const now = nowLocalIso();
     const profileJson = profile ? JSON.stringify({ ...profile, createdAt: profile.createdAt ?? now }) : null;
     deps.db
       .prepare("INSERT INTO children (id, parent_id, name, profile_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -154,7 +155,7 @@ export function registerChildrenRoutes(app: FastifyInstance, deps: ChildrenDeps)
       .get(id, parentId);
     if (!row) return reply.code(403).send({ error: "无权访问该孩子" });
     if (name?.trim()) {
-      deps.db.prepare("UPDATE children SET name = ?, updated_at = ? WHERE id = ?").run(name.trim(), new Date().toISOString(), id);
+      deps.db.prepare("UPDATE children SET name = ?, updated_at = ? WHERE id = ?").run(name.trim(), nowLocalIso(), id);
     }
     if (profile !== undefined) {
       const cur = deps.db.prepare("SELECT profile_json FROM children WHERE id = ?").get(id) as { profile_json: string | null };
@@ -179,7 +180,7 @@ export function registerChildrenRoutes(app: FastifyInstance, deps: ChildrenDeps)
         }
       }
       Object.assign(merged, incoming);
-      deps.db.prepare("UPDATE children SET profile_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(merged), new Date().toISOString(), id);
+      deps.db.prepare("UPDATE children SET profile_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(merged), nowLocalIso(), id);
     }
     return { ok: true };
   });

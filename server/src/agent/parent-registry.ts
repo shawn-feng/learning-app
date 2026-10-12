@@ -27,6 +27,7 @@ import {
   type CoreSessionDeps,
 } from "@pi/agent-core";
 import { readParentSettings } from "../worker/scheduler.js";
+import { getAgentPrompt } from "../db/agents.js";
 import { createServerFsTools, SERVER_FS_TOOL_NAMES } from "./fs-tools.js";
 import { friendlyModelError, syncSessionModel } from "./model-sync.js";
 import { PARENT_AGENT_TOOL_NAMES, createParentAgentTools } from "./parent-tools.js";
@@ -57,6 +58,7 @@ import { IRON_RULES_BLOCK } from "./skills/parent/shared.js";
 import { createLoadSkillTool, createParentSkillState, LOAD_SKILL_TOOL_NAME, seedLoadedFromMessages } from "./parent-skills.js";
 // ISSUE-144：工具说明下沉（一句 + 指路 + Schema 只留结构 + 场景守卫）——只在注册点过一道
 import { compactParentTools } from "./parent-tool-compact.js";
+import { getSystemDefaultModels } from "../auth/tokenhub.js";
 
 const DEPS: CoreSessionDeps = {
   createAgentSession,
@@ -130,7 +132,13 @@ function createGetDateTool() {
  * 通用数据 API 已整组退场，那段连同元数据块一并删掉——**场景要什么，就由场景专用工具给什么**；
  * 缺工具时按工作原则如实说明并指路界面，不再有"自己查表"这条退路。
  */
-export function buildServerParentPrompt(input: { parentId: string; workspace: string; today: string }): string {
+export function buildServerParentPrompt(input: {
+  parentId: string;
+  workspace: string;
+  today: string;
+  /** ISSUE-175：家长自定义层（agents.sqlite scope=parent，设置页编辑）——空=未自定义，prompt 逐字节不变 */
+  customNote?: string;
+}): string {
   return `你是「学习伙伴」家长工作台的助手，帮家长管理孩子的学习计划、考核、课程与学习资料。
 
 ## 当前上下文
@@ -150,7 +158,11 @@ ${IRON_RULES_BLOCK}
 - **手里没有对应工具时，如实说"这件事我现在做不到"并指路界面，不要绕道、不要臆造工具名、更不要假装做完了。**
 - 面向家长用简洁中文，说清「做了什么、影响哪些文件」。
 - 上面「场景技能」里写了各场景更细的做法与汇报口径：**先在索引里找准场景、load_skill 加载后再动手**；一件事跨两个场景时可以连着加载两份。
-`;
+${input.customNote?.trim() ? `
+## 家长补充说明
+以下是家长为本助手追加的个性化要求，与上面的规则同样遵守（与铁律冲突时以铁律为准）：
+${input.customNote.trim()}
+` : ""}`;
 }
 
 async function ensureEntry(
@@ -165,7 +177,7 @@ async function ensureEntry(
   const paths = createCorePaths(deps.dataDir);
   const settings = readParentSettings(deps.db, deps.dataDir, parentId);
   const runtime = await getWorkerRuntime(deps.dataDir, parentId, settings.auth);
-  const model = pickWorkerModel(runtime, settings.appSettings);
+  const model = pickWorkerModel(runtime, settings.appSettings, settings.auth, getSystemDefaultModels().text);
 
   // ISSUE-131 P2：家长 agent 根 = workspaces/<pid>（materials/uploads/scratch/孩子目录都在其内，
   // fs 工具/网盘同此边界）；会话运行区（cwd、.pi）独立到 scratch，不再落 parent/ 工作区。
@@ -226,10 +238,12 @@ async function ensureEntry(
 
   // ISSUE-144 P6：systemPrompt 不再注入两库表/列/路径元数据块（通用数据 API 已退场，
   // 那张"自己查表"的清单只会诱导模型绕过场景专用工具）。
+  // ISSUE-175：家长自定义层（agents.sqlite scope=parent；设置页「自定义说明」编辑，重开会话生效）
   const systemPrompt = buildServerParentPrompt({
     parentId,
     workspace,
     today: localDate(),
+    customNote: getAgentPrompt(deps.dataDir, "parent", parentId) ?? "",
   });
 
   const handle = await createCoreSession({

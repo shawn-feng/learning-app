@@ -15,6 +15,7 @@ export const materialsSkill: ParentSkill = {
     "parent_move_material",
     "parent_delete_material",
     "parent_put_material",
+    "parent_transfer_upload",
     "parent_read_image",
     "parent_read_upload",
   ],
@@ -40,6 +41,7 @@ export const materialsSkill: ParentSkill = {
 - \`parent_put_material\`：\`path\` + \`content\`（必填，完整文本；单次 ≤2MB）。
 - \`parent_build_material\`：\`title\` · \`requirement\`（越具体越好）· \`path\`（必填，**必须以 \`.html\`/\`.htm\` 结尾**）——造新资料走 \`parent-scene-course\` 第 5 步。
 - \`parent_read_image\`：\`path\`（必填：材料库相对路径，**或**聊天里 \`【附件图片：文件名|引用】\` 的引用值**原样**填入）· \`question\`（可选，想重点问的）。
+- \`parent_transfer_upload\`：\`path\`（必填，uploads 区相对路径）· \`toTopic\`（必填，目标主题目录）· \`toName\`（可选，目标文件名；缺省=上传原名）→ 二进制拷贝到 \`<topic>/media/<toName>\`（不覆盖已存在），返回的资料相对路径可直接给 \`parent_build_material\`。
 - \`parent_read_upload\`：\`ref\`（必填，\`【附件文件：文件名|引用】\` 里的引用值**原样**填入）。
 
 ## 口径
@@ -50,7 +52,7 @@ export const materialsSkill: ParentSkill = {
 
 ## 红线
 ${ironRules("A3", "A6")}
-- **资料真源与上传区是两个隔离区域**：不要自己拼路径、不要加 \`materials/\` 前缀、不要去试 \`uploads/\`、\`parents/\` 这类文件系统路径——试了只会白跑一圈（现场就是这么失败的）。
+- **引用上传文件到新资料**（ISSUE-178 改写，P1 旧隔离规则已随 P2 归并失效）：uploads/ 上传区就在你的 fs 工具范围内，**文本文件可直接读写；二进制（图片/音视频）用 \`parent_transfer_upload\` 转存**进 \`<topic>/media/\`。给 \`parent_build_material\` 的需求里**只给资料真源相对路径**（如 \`schoolwork/media/xxx.png\`）——编程 agent 只能读资料真源，传 uploads 路径它够不着、只会白跑一圈。
 
 ## 结束
 复述"做了什么、影响哪些文件、现在清单长什么样"；删除类还要报告"已删 / 仍在"。`,

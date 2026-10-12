@@ -6,6 +6,7 @@
  * → 复习触达（agent 读工具 + 教学 prompt 注入）→ 掌握关闭（mastered）/ 手动 dismissed。
  * 去重 UNIQUE(content, kind, course_ref)；exam 来源按 (source_ref, question_id) 幂等，不刷次数。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import { randomUUID } from "node:crypto";
 import { openKb } from "./kb.js";
 import { openParentLib } from "./parent-lib.js";
@@ -44,7 +45,7 @@ export interface MistakeRow {
 }
 
 function nowIso(): string {
-  return new Date().toISOString();
+  return nowLocalIso();
 }
 
 /** 新增/合并一条错题。content/kind/course_ref 相同即同一条：count+1、last_seen 刷新、

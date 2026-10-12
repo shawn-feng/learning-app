@@ -12,6 +12,7 @@
  * - 计划 id 确定性 `retake_<原计划id>` → 重复提交天然幂等，一天最多一层重考；
  * - 重考生成失败绝不影响评分落库（本模块所有错误都折叠成结果对象，不抛出）。
  */
+import { nowLocalIso, toLocalIso } from "./util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { openKb } from "./db/kb.js";
 import { openParentLib } from "./db/parent-lib.js";
@@ -206,7 +207,7 @@ export function setRetakeCountInRate(db: DatabaseSync, parentId: string, value: 
   db.prepare("INSERT OR REPLACE INTO settings (key, value_json, updated) VALUES (?, ?, ?)").run(
     `exam_retake:${parentId}`,
     JSON.stringify({ count_in_rate: value ? 1 : 0 }),
-    new Date().toISOString()
+    nowLocalIso()
   );
 }
 
@@ -326,7 +327,7 @@ export async function maybeCreateRetakePlan(args: RetakeHookArgs): Promise<Retak
         ...(draft.note ? { note: draft.note } : {}),
         retake_of: args.planId,
       });
-      const nowIso = new Date().toISOString();
+      const nowIso = nowLocalIso();
       const kbw = openKb(args.dataDir, args.parentId, args.childId);
       try {
         kbw

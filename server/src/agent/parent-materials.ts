@@ -13,6 +13,7 @@
  *  - 读取按类型分流：文本类返回正文（限 200KB），二进制只返回元数据（避免大文件灌爆上下文）。
  * ISSUE-131 P2 决策 1：materials 索引表已删——列表 = 现场双根 walk，磁盘即真源。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -150,7 +151,7 @@ export function putMaterial(ctx: MaterialCtx, relPosix: string, content: string)
     path: norm,
     type: inferTypeLocal(norm),
     size: stat.size,
-    updated_at: stat.mtime.toISOString(),
+    updated_at: toLocalIso(stat.mtime),
   };
 }
 
@@ -204,7 +205,74 @@ export function appendParentActivityLog(ctx: MaterialCtx, entry: string): string
   const dir = path.join(ctx.dataDir, "parents", ctx.parentId);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "activity-log.md");
-  const line = `- ${new Date().toISOString()} ${entry}\n`;
+  const line = `- ${nowLocalIso()} ${entry}\n`;
   fs.appendFileSync(file, line, "utf-8");
   return file;
+}
+
+/**
+ * ISSUE-178 F3：把 uploads 区的上传原始件二进制转存进资料真源 `<toTopic>/media/`。
+ * 「上传的图片/音视频 → 编程 agent 可引用的资料」唯一正规通道（编程 agent 只能读 materials）。
+ * - 源：新根 workspaces/<pid>/uploads 优先，旧根 files/<pid> 兜底（resolveUploadsPhysical 同式）；
+ * - 原名：files 表按 stored_path（相对 uploads 根）补 original_name；无行用落盘名；
+ * - 目标：materialsRoot/<toTopic>/media/<toName>（toName 缺省=原名；已存在拒绝覆盖）；
+ * - 纯复制（uploads 原始件保留），二进制安全，无索引表负担（materials 磁盘即真源）。
+ */
+export function transferUploadMaterial(
+  ctx: MaterialCtx,
+  opts: { uploadPath: string; toTopic: string; toName?: string }
+): { from: string; to: string; originalName: string; size: number } {
+  const raw = String(opts.uploadPath ?? "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!raw) throw new Error("uploadPath 不能为空");
+  // 接受带 uploads/ 前缀的虚拟路径（fs 列表形态）或裸相对路径
+  const zoneRel = normalizeMaterialPath(raw.startsWith("uploads/") ? raw.slice("uploads/".length) : raw);
+  if (!zoneRel) throw new Error("uploadPath 不能指向 uploads 根本身");
+
+  const roots = [
+    path.join(ctx.dataDir, "workspaces", ctx.parentId, "uploads"),
+    path.join(ctx.dataDir, "files", ctx.parentId),
+  ];
+  let fromAbs: string | null = null;
+  for (const root of roots) {
+    let cand: string;
+    try {
+      cand = resolveWithin(root, zoneRel);
+    } catch {
+      continue;
+    }
+    if (fs.existsSync(cand) && fs.statSync(cand).isFile()) {
+      fromAbs = cand;
+      break;
+    }
+  }
+  if (!fromAbs) throw new Error(`uploads 里没有找到「${raw}」（可用网盘/上传区列表核对准确路径）`);
+
+  // 原名：files 表 stored_path 相对 uploads 根
+  let originalName = path.basename(zoneRel);
+  try {
+    const row = ctx.db
+      .prepare("SELECT original_name FROM files WHERE parent_id = ? AND stored_path = ?")
+      .get(ctx.parentId, zoneRel) as { original_name?: string } | undefined;
+    if (row?.original_name) originalName = row.original_name;
+  } catch {
+    /* 表读失败用落盘名 */
+  }
+  const toName = String(opts.toName ?? "").trim() || originalName;
+  if (/[\/]/.test(toName) || toName === "." || toName === "..") {
+    throw Error(`toName 只能是文件名（不允许路径段）：${toName}`);
+  }
+
+  const toTopic = splitTopic(`${opts.toTopic}/x`).topic; // 校验 topic 合法
+  const toAbs = materialAbsPath(ctx, `${toTopic}/media/${toName}`);
+  if (fs.existsSync(toAbs)) {
+    throw new Error(`目标已存在（不覆盖）：${toTopic}/media/${toName}；可换 toName 或先删旧文件`);
+  }
+  fs.mkdirSync(path.dirname(toAbs), { recursive: true });
+  fs.copyFileSync(fromAbs, toAbs);
+  return {
+    from: `uploads/${zoneRel}`,
+    to: `${toTopic}/media/${toName}`,
+    originalName,
+    size: fs.statSync(toAbs).size,
+  };
 }

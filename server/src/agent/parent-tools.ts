@@ -35,6 +35,7 @@ import {
   moveMaterial,
   putMaterial,
   readMaterial,
+  transferUploadMaterial,
   type MaterialCtx,
 } from "./parent-materials.js";
 import { describeImageViaVision, imageMimeFromExt } from "./vision.js";
@@ -298,6 +299,35 @@ export function createParentAgentTools(deps: ParentToolDeps) {
       const meta = putMaterial(ctx, params.path, params.content);
       appendParentActivityLog(ctx, `写入资料「${meta.path}」（${meta.size} 字节）`);
       return ok(`已写入：${meta.path}（${meta.size} 字节，已记入 activity-log）`);
+    },
+  });
+
+  // ISSUE-178 F3：uploads 原始件 → 资料真源 <topic>/media/ 的二进制转存——
+  // 编程 agent 只能读 materials，这是「上传的图片/音视频 → 新资料可引用」的唯一正规通道。
+  const transferTool = defineTool({
+    name: "parent_transfer_upload",
+    label: "转存上传原始件到资料库",
+    description:
+      "把 uploads 区的上传原始件（图片/音视频/文档）**二进制拷贝**进课程资料真源 `<toTopic>/media/`，uploads 原件保留。\n\n" +
+      "**何时调用**：要在 `parent_build_material` 生成的资料里引用上传的图片/音频时（编程 agent 只能读资料真源，够不到 uploads）。\n" +
+      "返回的资料相对路径可直接写进需求（如 `schoolwork/media/xxx.png`）。目标已存在会被拒绝（不覆盖）。",
+    parameters: Type.Object({
+      path: Type.String({ description: "uploads 区相对路径（如 uploads/8f55….jpg，来自网盘/上传区列表的 path）" }),
+      toTopic: Type.String({ description: "目标主题目录（第一级目录，仅字母/数字/_/-，如 schoolwork）" }),
+      toName: Type.Optional(Type.String({ description: "目标文件名（缺省=上传原名；只允许文件名，不允许路径段）" })),
+    }),
+    execute: async (_id: string, params: { path: string; toTopic: string; toName?: string }) => {
+      const r = transferUploadMaterial(ctx, {
+        uploadPath: params.path,
+        toTopic: params.toTopic,
+        toName: params.toName,
+      });
+      appendParentActivityLog(ctx, `转存上传原始件「${r.from}」→「${r.to}」（${r.size} 字节）`);
+      return ok(
+        `已转存：${r.from} → ${r.to}（${r.size} 字节，原名「${r.originalName}」已保留）。
+` +
+          `给编程 agent 的需求里用这个路径：${r.to}`
+      );
     },
   });
 
@@ -1468,6 +1498,7 @@ export function createParentAgentTools(deps: ParentToolDeps) {
     deleteTool,
     moveTool,
     putTool,
+    transferTool,
     topicsTool,
     coursesTool,
     upsertTopicTool,
@@ -1511,6 +1542,7 @@ export const PARENT_AGENT_TOOL_NAMES = [
   "parent_delete_material",
   "parent_move_material",
   "parent_put_material",
+  "parent_transfer_upload",
   "parent_library_topics",
   "parent_library_courses",
   "parent_upsert_topic",

@@ -181,3 +181,57 @@ Electron 登录页「抖音扫码登录」
 1. 本机 aliyun CLI 凭证（profile `learning-deploy`）为独立子账号 AK，请勿外传；如不再需要可到 RAM 控制台删除。
 2. `aliyun-aksk.txt` 中的千问 QIANWEN_APPKEY 与部署无关，勿混淆。
 3. 孩子数据同步接口支持大文件（Nginx `client_max_body_size 100m`）。
+
+## learning-server 0.5.26（2026-10-10 18:02 部署 201）
+- 内容：语音渠道门控（builtin=仅 TokenHub / custom=仅自配通道 / off=停用）+ ASR 改官方 asrproxy 专用端点
+  （`/v1/wand/asrproxy/sync_transcribe`，`{model, data:裸base64}` 直传，hy-asr-3.0-preview，同池计费）
+  + ASR 用量落库（session_file=asr）+ 配额接口四类拆分 + modelChannel 三态。
+- 流程：惯例部署（备份 server.cjs.bak-* + data/backups/deploy-0.5.26-*）→ 重启 → 验证。
+- 验证：version=0.5.26、asrproxy/readVoiceChannel 标记在 bundle、health ok、启动日志默认模型同步正常；
+  **真机端到端**：家长 JWT 调 `/asr/transcribe`（真实语音 wav）→ 200「你好，今天天气怎么样。」；
+  语音开关（asr_config.enabled）已确认为开启。
+
+## learning-server 0.5.27（2026-10-10 21:05 部署 201）
+- 内容：配额面板「今日分类消耗」改用**官方同源数据**（benefit-auth 新端点 /api/tokenhub/usage-models，
+  DescribeUsageRankList Dimension=model **Period=3600 小时粒度**——日粒度聚合视图延迟大、近 24h 只出零头）；
+  本地今日/近7天仅统计内置模型白名单（isTokenHubModel：deepseek-flash / deepseek-v4-flash-vision-exp /
+  hy-asr-3.0-preview，兼容带/不带前缀）；分类卡官方不可得时回落本地并明确标注口径差异。
+- 背景：用户反馈「分类消耗与官方已用对不上」——①本地 dev 连本地库而官方统计整个 Key（环境错位）；
+  ②total_tokens 把缓存命中重复计（570万 vs 官方 280万）；③worker/考核/向量调用不落 token_usage。
+  官方同源分类 + 明确标注是唯一能对上的方案。
+- 验证：201 version=0.5.27；配额接口 officialCategories={text:2782528, vision:41, asr:5927}（与 CycleUsed
+  差值=当前未闭合小时桶+延迟，符合预期）；本地 dev 同样验证通过。
+
+## learning-server 0.5.28（2026-10-10 21:5x 部署 201）
+- 内容：配额面板「今日分类消耗」改为**按官方模型占比把实时 CycleUsed 折算到四类**——
+  总和精确等于「今日已用」（余差整数归占比最大类）。直接用 rank-list 视图永远追不上：
+  该视图（日/小时粒度均）聚合滞后约 1 小时，实测分类卡一小时不动而 CycleUsed 涨 72万。
+  折算说明随接口下发（officialCategoriesNote）显示在卡片角标。
+- 验证：201 version=0.5.28；CycleUsed=3,586,115 vs 分类合计=3,586,115，差=0；
+  本地 dev 同样验证通过。
+
+## learning-server 0.5.29（2026-10-12 20:00 部署 201）
+- 内容：**服务端 TTS 接入 TokenHub**（ISSUE-174 续）——管理端「语音合成模型」= minimax-speech-* 时，
+  开放 API 语音回复走官方 MiniMax 同步合成代理 `POST /v1/wand/minimax-tts/sync_tts`
+  （端点出处：DescribeModelList 的 ModelAPIInfo.Reference → 文档 /document/product/1823/135796；
+  chat 网关不认语音模型，`/wand/tts/{action}` 路由存在但全 action not allowed，服务名是 minimax-tts）。
+  hex 音频解码、base_resp 错误透出、rate/volume→speed/vol 夹取；仅 builtin 渠道注入家长 Key
+  （custom/off → edge-tts 不烧配额）；合成失败回落 edge-tts（音频不缺席）；缓存键含模型名；
+  用量 recordTtsTokenUsage（slot=tts）落库 → 配额面板「语音合成」分类有真实数据；
+  isTokenHubModel 加 minimax-speech- 前缀、classifyModelCategory 加 minimax-speech→tts（原误归 text）。
+  音色固定官方默认系统音色（minimax_55e81114-ce7e-4ca1，不透传设备音色参数）。indextts-2 未接入（回落 edge）。
+- 验证：version=0.5.29、minimax-tts/recordTtsTokenUsage 标记在 bundle、health ok、
+  startup 日志「系统默认模型已同步 … tts=minimax-speech-2.8-turbo」、家长 Key 已物化；
+  本地 tsx 真网全链路（合法 MP3、官方 usage 回执）；9/9 新单测（issue174-tokenhub-tts.test.ts）。
+
+## learning-server 0.5.30（2026-10-12 20:35 部署 201）
+- 内容：**客户端朗读合成上收服务端**——新路由 `POST /api/v1/tts/synthesize`（家长 JWT，
+  {text, rate?, volume?} → 二进制 24kHz MP3）。根因：app 客户端朗读本机 edge-tts 被微软 403
+  拒绝（2026-10-12 实测复现，"播放没有反应"），且管理端 minimax-speech-* 只能在服务端调（Key 不出服务端）。
+  渠道语义与开放 API 一致：builtin → TokenHub 合成（失败回落 edge-tts）；custom/off → edge-tts 不烧配额；
+  用量 recordTtsTokenUsage 落库。配套客户端 0.1.26：electron/lib/voice/tts.ts edge 分支优先调
+  /tts/synthesize（serverFetchBinary + currentSessionToken），失败回落本地 edge；web 端走浏览器
+  speechSynthesis 不受影响。
+- 验证：201 version=0.5.30、tts/synthesize + recordTtsTokenUsage 标记在 bundle、health ok；
+  **201 真机端到端**：家长 JWT 调 /tts/synthesize → 200 audio/mpeg 45KB 合法 MP3（TokenHub minimax
+  合成），同文本二发走服务端缓存；路由 5/5 + 客户端分发 3/3 + 服务端 TTS 9/9 单测全绿。

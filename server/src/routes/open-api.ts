@@ -16,6 +16,8 @@
  * 会话：复用孩子的**主会话**（与 app 互见，同一 busy 红线：一轮未结束 → 409）。
  * 超时：chat 由 runTurn 收口（默认 240s，timed_out 返回部分回复）；onTimeout 仿飞书 abort 解除 busy。
  */
+import { nowLocalIso, toLocalIso } from "../util/time.js";
+import { ASR_AUDIO_MAX_BYTES, bytesLabel } from "../util/limits.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -42,6 +44,8 @@ import { runTurn, type TurnProgress } from "../agent/turn-runner.js";
 import { resolveStoredFileAbs, safeExt, uploadsWriteRoot } from "./files.js";
 import { getServerSecret } from "../crypto.js";
 import { transcribeWithFallback, TranscribeError } from "../asr/transcribe.js";
+import { readVoiceChannel, getTokenHubKey } from "../asr/config.js";
+import { recordTtsTokenUsage } from "../db/token-usage.js";
 import { toWav16k } from "../assessment/audio.js";
 import { synthesizeReply } from "../tts/index.js";
 import { logInfo } from "../log.js";
@@ -122,7 +126,7 @@ function authApiKey(req: { headers: Record<string, string | string[] | undefined
   if (!hit) throw new ApiError(401, "API Key 无效或已吊销");
   // 用量登记（同步 SQLite，单行 UPDATE 成本可忽略）
   db.prepare("UPDATE api_keys SET last_used_at = ?, request_count = request_count + 1 WHERE id = ?").run(
-    new Date().toISOString(),
+    nowLocalIso(),
     hit.id
   );
   return { parentId: hit.parent_id, keyId: hit.id, keyChildId: hit.child_id };
@@ -221,15 +225,16 @@ function saveOpenFileBuffer(
   fs.writeFileSync(path.join(root, storedPath), data);
   db.prepare(
     "INSERT INTO files (id, parent_id, child_id, original_name, stored_path, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(id, parentId, childId || null, originalName, storedPath, mime, data.length, new Date().toISOString());
+  ).run(id, parentId, childId || null, originalName, storedPath, mime, data.length, nowLocalIso());
   return { id, ref: `files/${id}`, size: data.length };
 }
 
 /**
- * 一轮结束后合成回复音频（tts 开启时）：edge-tts（免费零配置），落 files 通道供设备经
- * GET /open/files/:id 下载。失败不吞本轮结果——返回 { audio_error } 由调用方并入 final 行。
- * rate 传入时（设备固定 48k 编解码配置等场景）输出重采样为该采样率的 16bit 单声道 WAV，
- * 否则 edge-tts 原生 24kHz MP3。
+ * 一轮结束后合成回复音频（tts 开启时）：管理端默认模型为 minimax-speech-* 且 builtin 渠道 →
+ * TokenHub 合成（家长托管 Key，与文本同池计费）；custom/off 渠道或失败回落 edge-tts（免费）。
+ * 落 files 通道供设备经 GET /open/files/:id 下载。失败不吞本轮结果——返回 { audio_error }
+ * 由调用方并入 final 行。rate 传入时（设备固定 48k 编解码配置等场景）输出重采样为该采样率的
+ * 16bit 单声道 WAV，否则原生 24kHz MP3。
  */
 async function synthReplyAudio(
   config: ServerConfig,
@@ -241,7 +246,20 @@ async function synthReplyAudio(
   rate?: number
 ): Promise<{ audio?: Record<string, unknown>; audio_error?: string }> {
   try {
-    const r = await synthesizeReply(replyText, { voice, sampleRate: rate }, config.dataDir);
+    // 语音渠道跟随 AI 模型三态（与 ASR 同语义）：仅 builtin 渠道注入家长 Key（用 TokenHub），
+    // custom/off 渠道一律 edge-tts（免费，不烧家长配额）。
+    const tokenhubApiKey =
+      readVoiceChannel(db, parentId) === "builtin"
+        ? getTokenHubKey(db, getServerSecret(config.dataDir), parentId)
+        : "";
+    const r = await synthesizeReply(replyText, { voice, sampleRate: rate, tokenhubApiKey }, config.dataDir);
+    if (r.usage && r.model) {
+      try {
+        recordTtsTokenUsage(db, parentId, r.model, r.usage);
+      } catch {
+        /* 统计落库失败不影响音频返回 */
+      }
+    }
     const ext = r.mime === "audio/wav" ? ".wav" : ".mp3";
     const saved = saveOpenFileBuffer(
       config, db, parentId, childId,
@@ -252,7 +270,7 @@ async function synthReplyAudio(
     try {
       db.prepare(
         "INSERT OR REPLACE INTO open_tts_audio (file_id, parent_id, child_id, turn_at, voice, sample_rate, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(saved.id, parentId, childId, new Date().toISOString(), r.voice, rate ?? null, r.mime, saved.size, new Date().toISOString());
+      ).run(saved.id, parentId, childId, nowLocalIso(), r.voice, rate ?? null, r.mime, saved.size, nowLocalIso());
     } catch (err) {
       console.error("[openapi] tts audio registry insert failed:", (err as Error).message);
     }
@@ -444,7 +462,8 @@ export function registerOpenApiRoutes(app: FastifyInstance, deps: OpenApiDeps): 
   // 与「上传的音频文件附件」的区别：本端点收到的音频是**一句消息本身**，服务端只对它做 ASR
   // 转录并以其文本发起一轮对话（与 app 内语音输入同语义）；要给 agent 传"音频文件"仍走
   // /open/files/upload + attachments（kind=audio，仅存档引用，不做转录）。
-  app.post("/api/v1/open/agent/voice", async (req, reply) => {
+  // bodyLimit 24MB：全局 16MB 之外放宽到应用层 ASR 上限之上——让语义化 413（20MB 外发限制）可达
+  app.post("/api/v1/open/agent/voice", { bodyLimit: 24 * 1024 * 1024 }, async (req, reply) => {
     let auth: OpenAuth;
     try {
       auth = authApiKey(req, deps.db);
@@ -502,6 +521,11 @@ export function registerOpenApiRoutes(app: FastifyInstance, deps: OpenApiDeps): 
     if (!audioBuf || audioBuf.length === 0) {
       logInfo("openapi", "voice rejected", { status: 400, error: "缺少音频数据", ip: req.ip, contentType: ctype || "(none)", query: req.url });
       return reply.code(400).send({ error: "缺少音频数据（multipart file 字段，或裸流 body + ?filename=）" });
+    }
+    // ISSUE-151：语音要外发 ASR 第三方 → 设限，超限入口即拒（413）
+    if (audioBuf.length > ASR_AUDIO_MAX_BYTES) {
+      logInfo("openapi", "voice rejected", { status: 413, error: "audio too large", ip: req.ip, audioBytes: audioBuf.length });
+      return reply.code(413).send({ error: `音频超出外发限制（${bytesLabel(ASR_AUDIO_MAX_BYTES)}）` });
     }
     // 输入格式：fmt=pcm 表示**裸 PCM**（s16le，无文件头——嵌入式直传），必须给 sample_rate；
     // 缺省 auto = 自描述格式（wav/webm/opus/mp3/amr…），ffmpeg 按内容探测。
@@ -931,7 +955,7 @@ export function registerOpenApiRoutes(app: FastifyInstance, deps: OpenApiDeps): 
     const abs = path.join(root, storedPath);
     fs.renameSync(tmpPath, abs);
     const size = fs.statSync(abs).size;
-    const createdAt = new Date().toISOString();
+    const createdAt = nowLocalIso();
     d.db
       .prepare(
         "INSERT INTO files (id, parent_id, child_id, original_name, stored_path, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"

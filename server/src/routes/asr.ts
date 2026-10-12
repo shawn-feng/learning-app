@@ -25,6 +25,7 @@ import {
   type AsrProviderId,
 } from "../asr/config.js";
 import { transcribeWithFallback, TranscribeError } from "../asr/transcribe.js";
+import { ASR_AUDIO_MAX_BYTES, bytesLabel } from "../util/limits.js";
 
 interface Deps {
   config: ServerConfig;
@@ -88,7 +89,8 @@ export function registerAsrRoutes(app: FastifyInstance, deps: Deps): void {
     return { config: maskAsrConfig(cfg), stored: true };
   });
 
-  app.post("/api/v1/asr/transcribe", async (req, reply) => {
+  // bodyLimit 24MB：全局 16MB 之外放宽到应用层 ASR 上限之上——让语义化 413（20MB 外发限制）可达
+  app.post("/api/v1/asr/transcribe", { bodyLimit: 24 * 1024 * 1024 }, async (req, reply) => {
     let parentId: string;
     try {
       parentId = authParent(req, deps.config.jwtSecret);
@@ -103,7 +105,20 @@ export function registerAsrRoutes(app: FastifyInstance, deps: Deps): void {
     for await (const part of req.parts()) {
       if (part.type === "file" && !wav) {
         const chunks: Buffer[] = [];
-        for await (const chunk of part.file) chunks.push(Buffer.from(chunk));
+        let total = 0;
+        let overLimit = false;
+        // ISSUE-151：ASR 音频要外发第三方（DashScope/MiMo）→ 设限。
+        // 超限不提前 break（multipart 流未消费完会 500）——继续 drain 但不再累积，循环后统一 413。
+        for await (const chunk of part.file) {
+          total += chunk.length;
+          if (total > ASR_AUDIO_MAX_BYTES) overLimit = true;
+          else chunks.push(Buffer.from(chunk));
+        }
+        if (overLimit) {
+          return reply.code(413).send({
+            error: `音频超出外发限制（${bytesLabel(ASR_AUDIO_MAX_BYTES)}）。语音输入按住说话通常远小于此；确需长音频请拆分后分次转录。`,
+          });
+        }
         wav = Buffer.concat(chunks);
       } else if (part.type === "field" && part.fieldname === "provider") {
         onlyProvider = String(part.value ?? "").trim();
