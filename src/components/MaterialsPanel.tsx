@@ -699,6 +699,26 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
             await speakMaterialText(text, { queue: true });
             ok = true;
           }
+        } else if (action === "lookup") {
+          // ISSUE-180：PiBridge.request('lookup', {text}) —— 协议宣称的宿主能力补齐实现。
+          // 与选中取词（page:event kind=lookup）走同一查词浮层（ISSUE-017/031 形态）：
+          // 先出悬浮图标、孩子点击才展开弹框 → mistakeReport 照常上报（ISSUE-114 C2）。
+          // request 无坐标载荷，锚点取 iframe 顶部中央偏下；两条路并存不冲突（后到覆盖先到）。
+          const text = String((payload as { text?: unknown } | null)?.text ?? "").trim();
+          const entries = text ? lookupText(text) : [];
+          const rect = iframeRef.current?.getBoundingClientRect();
+          if (!text || !entries.length) {
+            error = "lookup：无中文或字典未命中";
+          } else if (!rect) {
+            error = "lookup：iframe 不可见";
+          } else {
+            lastLookupAtRef.current = Date.now();
+            showLookup({
+              anchor: { x: rect.left + rect.width / 2, y: rect.top + 72, text, entries },
+              open: false,
+            });
+            ok = true;
+          }
         } else {
           error = `PiBridge 未知宿主能力: ${action}`;
         }
@@ -710,7 +730,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         "*"
       );
     },
-    [speakMaterialText]
+    [speakMaterialText, showLookup]
   );
 
   useImperativeHandle(ref, () => ({ exec, appCmd }), [exec, appCmd]);

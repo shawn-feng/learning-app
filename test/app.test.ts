@@ -151,8 +151,12 @@ describe("Electron app modules", () => {
     expect(ok).toBe(true);
     expect(bad).toBe(false);
 
-    const list = await childAuth.listChildren();
-    expect(list.some((c) => c.childId === createdChildId)).toBe(true);
+    // ISSUE-179：未登录（无 token）时不再回退本地扫描——列表恒 degraded 空，本地孩子永不借此出场
+    const res = await childAuth.listChildren();
+    expect(res.degraded).toBe(true);
+    expect(res.children).toHaveLength(0);
+    // 孩子确实已建档（profile 的登录/归属断言用途保留）
+    expect(childAuth.getProfile(createdChildId)?.name).toBe("小红");
   });
 
   it("registers parent with cloud service and caches license", async () => {

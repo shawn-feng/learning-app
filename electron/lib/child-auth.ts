@@ -85,7 +85,7 @@ function childProfilePayload(p: ChildProfile): Record<string, unknown> {
   };
 }
 
-/** 本地 children 目录扫描（离线/未登录回退）。 */
+/** 本地 children 目录扫描（仅作服务端详情缺失时的合并参考；ISSUE-179 后不再作为列表兜底来源）。 */
 function readLocalProfiles(): ChildProfile[] {
   const childrenDir = getChildrenDir();
   if (!fs.existsSync(childrenDir)) return [];
@@ -104,14 +104,24 @@ function readLocalProfiles(): ChildProfile[] {
   return profiles;
 }
 
+/** listChildren 的返回：children + degraded（true = 服务端不可达/未登录，children 恒空）。
+ *  ISSUE-179：服务端模式下本地孩子列表永不渲染——断连时不再回退本地扫描，
+ *  渲染层按 degraded 显示「等待重新链接」阻断态（推翻 ISSUE-167 的离线兜底决策）。 */
+export interface ChildrenListResult {
+  children: ChildProfile[];
+  degraded: boolean;
+}
+
 /**
  * 孩子列表（SPLIT：孩子账户 + profile 详情/密码唯一真源在服务端，多设备共享）。
  * - 已配置服务端且家长已登录：从 GET /api/v1/children 拉取（含 profile 详情）；
  *   本地已有完整 profile 的孩子直接用；服务端有、本地无 → 用服务端详情落盘本地缓存；
  *   **本地有详情而服务端无（旧设备孩子未上云）→ 自动 PATCH 上传**（详情+密码哈希一次上云）。
- * - 未登录 / 服务端不可用：回退本地扫描（离线可用）。
+ * - 服务端不可达 / 未登录：**返回 `{ children: [], degraded: true }`**（ISSUE-179：
+ *   删除「回退本地扫描」的离线兜底——开发期本机残留的孩子在生产客户端闪现过，
+ *   本地 children/<id>/profile.json 只剩登录/归属断言用途，不再作为列表来源）。
  */
-export async function listChildren(): Promise<ChildProfile[]> {
+export async function listChildren(): Promise<ChildrenListResult> {
   const token = currentSessionToken();
   if (getServerUrl() && token) {
     try {
@@ -216,15 +226,16 @@ export async function listChildren(): Promise<ChildProfile[]> {
           }
           out.push(placeholder);
         }
-        // ISSUE-167：记下服务端真源的孩子数量（断连降级横幅展示「服务器 vs 本机」数量差异用）
+        // ISSUE-167：记下服务端真源的孩子数量（连接快照 lastServerChildCount，诊断可见）
         noteServerChildren(out.length);
-        return out;
+        return { children: out, degraded: false };
       }
     } catch {
-      // 服务端不可用/会话失效 → 回退本地扫描（断连已由 serverFetch 记账，主页横幅可见化）
+      // ISSUE-179：服务端不可达/会话失效 → 不再回退本地扫描，返回 degraded 空列表
+      //（断连已由 serverFetch 记账，主页显示「等待重新链接」阻断态，恢复后自动重拉）
     }
   }
-  return readLocalProfiles();
+  return { children: [], degraded: true };
 }
 
 export function getProfile(childId: string): ChildProfile | null {

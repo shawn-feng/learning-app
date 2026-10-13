@@ -11,6 +11,8 @@ import SchedulerTasksPanel from "../components/SchedulerTasksPanel";
 import FilesPanel from "../components/FilesPanel";
 import Settings from "./Settings";
 import ChildDetailPage from "../components/ChildDetailPage";
+import ConnectionBlocking from "../components/ConnectionBlocking";
+import { useServerConnection } from "../hooks/useServerConnection";
 import { useChatPanel } from "../hooks/useChatPanel";
 
 interface Props {
@@ -39,11 +41,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   // ISSUE-108：报表区内容（服务端 SSE display_content 推送 / 挂载时读回最近一次）
   const [report, setReport] = useState<ParentReport | null>(null);
   const [reportUnread, setReportUnread] = useState(false);
-  // ISSUE-167：服务端连接状态（断连降级横幅——失联时列表静默回退本机数据，必须可见化）
-  const [conn, setConn] = useState<any>(null);
-  const connDegraded = conn?.connected === false;
-  const connRef = useRef(false);
-  connRef.current = connDegraded;
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
   // ISSUE-158：侧栏折叠态（折叠后只显示 emoji icon、悬浮 title 显示名称），localStorage 持久化
@@ -85,8 +82,9 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   async function refresh() {
     setChildrenLoading(true);
     try {
-      const list = await window.api.childList();
-      setChildren(list);
+      // ISSUE-179：childList 返回 {children, degraded}——degraded 时 children 恒空，本地孩子永不渲染
+      const res = await window.api.childList();
+      setChildren(res?.children || []);
     } finally {
       setChildrenLoading(false);
     }
@@ -96,45 +94,12 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
     refresh();
   }, []);
 
-  // ISSUE-167：连接状态——挂载读快照 + 订阅断连恢复推送（Electron）+ 降级期间 30s 轮询兜底
-  // （推送监听可能被 piRemoveListeners 清掉；web 端无推送，靠轮询读 shim 状态探活）。
-  // 恢复时自动重拉孩子列表并撤横幅——把「退出家长重登」这个手工恢复动作自动化。
-  useEffect(() => {
-    let mounted = true;
-    window.api.serverConnectionState?.().then((s: any) => {
-      if (mounted && s) setConn(s);
-    }).catch(() => {});
-    window.api.onServerConnectionChanged?.((s: any) => {
-      if (!mounted || !s) return;
-      const recovered = connRef.current && s.connected !== false;
-      setConn(s);
-      if (recovered) void refresh();
-    });
-    const poll = setInterval(async () => {
-      if (!connRef.current) return;
-      try {
-        const s = await window.api.serverConnectionState?.();
-        if (mounted && s) setConn(s);
-      } catch {
-        /* ignore */
-      }
-    }, 30_000);
-    return () => {
-      mounted = false;
-      clearInterval(poll);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function retryConnection() {
-    try {
-      const s = await window.api.serverRetryConnection?.();
-      if (s) setConn(s);
-      if (s?.connected !== false) await refresh();
-    } catch {
-      /* ignore */
-    }
-  }
+  // ISSUE-179：连接状态（阻断式 UX，替代 ISSUE-167 的降级横幅）——
+  // degraded 时全页阻断层替代孩子列表（不渲染任何孩子入口）；恢复翻转自动重拉列表解锁。
+  const { conn, degraded: connDegraded, retryConnection } = useServerConnection(() => {
+    void refresh();
+  });
+  const blockStartedAt = conn?.lastErrorAt ? Date.parse(conn.lastErrorAt) : undefined;
 
   // ISSUE-108：报表区——挂载读回最近一次；家长会话推送新报表（display_content, source=report）时更新并自动切到报表页
   useEffect(() => {
@@ -166,8 +131,13 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
 
   return (
     <div className="dashboard">
-      {/* ISSUE-158：顶部「家长中心」标题条删除——返回主页/退出登录移入左侧栏顶部工具行 */}
+      {/* ISSUE-179：断连「阻断等待重连」全屏层——app 不可用，替代孩子列表与一切本地面板。
+          恢复（探活成功翻转广播/轮询感知）后自动重拉列表退出阻断态，全程无需注销重登。 */}
+      {connDegraded && (
+        <ConnectionBlocking url={conn?.url} startedAt={blockStartedAt} onRetry={retryConnection} />
+      )}
 
+      {!connDegraded && (
       <div className="dashboard-body">
         <div className={`dashboard-sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
           {/* ISSUE-158 续（用户反馈）：顶部工具行取消——折叠开关移标题栏、退出登录移主页（主页已有）；
@@ -309,45 +279,6 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
         </div>
 
         <div className="dashboard-main">
-          {/* ISSUE-167：断连降级常驻横幅——失联时列表会静默回退本机数据，必须让家长看见环境切换 */}
-          {connDegraded && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                flexWrap: "wrap",
-                marginBottom: 12,
-                padding: "10px 14px",
-                border: "1px solid #f0d0a0",
-                background: "#fff8ec",
-                borderRadius: 10,
-              }}
-            >
-              <span style={{ fontSize: 13, color: "#8a5a00", flex: 1, minWidth: 260, lineHeight: 1.6 }}>
-                ⚠ 已断开{conn.url ? `与服务端（${conn.url}）` : "与服务端"}的连接，当前显示的是<strong>本机数据</strong>（仅离线可用）。
-                {typeof conn.lastServerChildCount === "number" && (
-                  <> 服务器上次同步 {conn.lastServerChildCount} 个孩子，本机当前 {children.length} 个——请勿在本地孩子里产生新记录。</>
-                )}{" "}
-                断连期间会自动重连，恢复后列表自动刷新。
-              </span>
-              <button
-                onClick={retryConnection}
-                style={{
-                  padding: "6px 16px",
-                  background: "#fff",
-                  color: "#8a5a00",
-                  border: "1px solid #e0b96a",
-                  borderRadius: 8,
-                  fontSize: 13,
-                  cursor: "pointer",
-                  flexShrink: 0,
-                }}
-              >
-                重试连接
-              </button>
-            </div>
-          )}
           {view === "children" && !detailChild && (
             <div>
               {childrenLoading ? (
@@ -527,6 +458,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           </div>
         )}
       </div>
+      )}
 
       {showAddChild && (
         <AddChildModal

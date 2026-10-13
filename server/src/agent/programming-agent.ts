@@ -133,7 +133,7 @@ export function buildProgrammingPrompt(): string {
 - 上报事件：PiBridge.emit(action, payload)（如测验提交后 emit('submit-answer', {questionId, answer, correct})）；
 - 调用宿主能力：await PiBridge.request(action, payload)（如朗读：await PiBridge.request('tts.speak', {text: 'Hello'}); 返回 {ok}）。已实现能力：tts.speak（{text}）、lookup（{text}）。⚠️ tts.speak 的 {ok} 只表示"已受理"——宿主按队列顺序朗读多句，页面不要自行排队、不要等待播完、更不要自建语音合成；
 - 接收宿主/agent 下行命令：PiBridge.on(action, function(payload){...})；handler 可返回 {data} 或 Promise 作为回执；PiBridge.off(action, handler) 注销；
-- 交互密集或语义型页面在 <head> 声明 <meta name="pi-bridge" content="capture=manual">，让"只有 emit 的操作"才被上报；
+- capture=manual 只给**真正交互密集/语义型**的页面用（测验答题、场景互动等）：<head> 声明 <meta name="pi-bridge" content="capture=manual"> 后，宿主停用自动采集上报，此后页面自主上报一律走 PiBridge.emit；**纯阅读/绘本类页面不许声明 manual**（ISSUE-180：声明不声明，孩子拖选/双击字词的取词浮层都由宿主自动提供，页面无需做任何事，也不要自实现选中监听）；
 - action 用小写连字符命名（submit-answer、scene.say、scene.act、scene.ready 等）；自定义 action 的 payload 里带 semantic 字段自解释；
 - 场景互动类页面：角色/物品由页面绘制；下行用 PiBridge.on 注册 scene.say{character,text,zh} / scene.move{character,x,duration} / scene.act{character,act} / scene.show|hide{character} / scene.highlight{target} / scene.update{task,progress,total} / scene.busy{busy} / scene.mic.status{status}；上行 emit('scene.ready', manifest) 报属性清单、emit('scene.item-click', {target,word,zh}) 报点物品、emit('scene.mic.press' | 'scene.mic.release') 触发宿主录音。以上即完整协议（正文约定为准，无外部文档可读）。
 

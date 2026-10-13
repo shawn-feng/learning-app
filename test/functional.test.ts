@@ -21,6 +21,27 @@ beforeAll(() => {
   }
 });
 
+// ISSUE-179 后 listChildren 未登录（无 token）恒返回 degraded 空列表（本地孩子永不借此出场）。
+// 本文件断言的是**本地数据模型**（profile.json/kb.sqlite/目录布局），改为本 helper 直接扫描
+// children 目录；服务端列表契约的行为级覆盖在 issue167/issue179 测试。
+async function localProfiles(): Promise<any[]> {
+  const config = await import("../electron/lib/config");
+  const dir = config.getChildrenDir();
+  if (!fs.existsSync(dir)) return [];
+  const out: any[] = [];
+  for (const entry of fs.readdirSync(dir)) {
+    const p = path.join(dir, entry, "profile.json");
+    if (fs.existsSync(p)) {
+      try {
+        out.push(JSON.parse(fs.readFileSync(p, "utf-8")));
+      } catch {
+        /* 跳过坏文件 */
+      }
+    }
+  }
+  return out;
+}
+
 describe("需求 §二 认证体系", () => {
   it("孩子密码使用 bcrypt 哈希存储", async () => {
     const { default: bcrypt } = await import("bcryptjs");
@@ -84,8 +105,14 @@ describe("需求 §三 家长管理孩子", () => {
     expect(saved!.aiName).toBe("小智");
   });
 
-  it("孩子列表包含所有已添加孩子的完整字段", async () => {
-    const list = await childAuth.listChildren();
+  it("孩子列表包含所有已添加孩子的完整字段（未登录时列表走 degraded，不回退本地扫描）", async () => {
+    // ISSUE-179 新契约：未登录（无 token）→ { children: [], degraded: true }
+    const res = await childAuth.listChildren();
+    expect(res.degraded).toBe(true);
+    expect(res.children).toHaveLength(0);
+
+    // 字段完整性改在本地数据模型上断言（服务端列表契约见 issue167/issue179 测试）
+    const list = await localProfiles();
     expect(list.length).toBeGreaterThanOrEqual(1);
     for (const c of list) {
       expect(c.childId).toBeTruthy();
@@ -105,8 +132,8 @@ describe("需求 §四 AI 伙伴身份", () => {
   });
 
   it("profile 包含 AI 名称和性格字段", async () => {
-    // 使用刚刚添加的孩子验证
-    const children = await childAuth.listChildren();
+    // 使用刚刚添加的孩子验证（ISSUE-179 后列表走服务端，本地模型用 localProfiles）
+    const children = await localProfiles();
     const child = childAuth.getProfile(children.find(
       (c) => c.name === "功能测试娃"
     )?.childId || "");
@@ -117,7 +144,7 @@ describe("需求 §四 AI 伙伴身份", () => {
   });
 
   it("孩子信息包含年龄、年级、兴趣等基本情况", async () => {
-    const children = await childAuth.listChildren();
+    const children = await localProfiles();
     const child = childAuth.getProfile(children.find(
       (c) => c.aiName === "小智"
     )?.childId || "");
@@ -152,7 +179,7 @@ describe("需求 §十二 数据架构", () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
 
-    const children = await childAuth.listChildren();
+    const children = await localProfiles();
     const child = children.find((c) => c.name === "功能测试娃");
     expect(child).toBeTruthy();
 
@@ -172,7 +199,7 @@ describe("需求 §十二 数据架构", () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
 
-    const children = await childAuth.listChildren();
+    const children = await localProfiles();
     const child = children.find((c) => c.name === "功能测试娃");
     const childDir = config.getChildDir(child!.childId);
     const settingsPath = path.join(childDir, ".pi", "agent", "settings.json");
@@ -205,7 +232,7 @@ describe("需求 §学习框架 — SQLite 真源（ISSUE-032）", () => {
     const config = await import("../electron/lib/config");
     const { openKbDb } = await import("../electron/lib/kb-sqlite");
 
-    const children = await childAuth.listChildren();
+    const children = await localProfiles();
     const first = children[0];
     const childDir = config.getChildDir(first.childId);
     expect(fs.existsSync(path.join(childDir, "kb.sqlite"))).toBe(true);
@@ -225,7 +252,7 @@ describe("需求 §学习框架 — SQLite 真源（ISSUE-032）", () => {
     const config = await import("../electron/lib/config");
     const { openKbDb } = await import("../electron/lib/kb-sqlite");
 
-    const children = await childAuth.listChildren();
+    const children = await localProfiles();
     const first = children[0];
     const childDir = config.getChildDir(first.childId);
     const db = openKbDb(childDir);
@@ -242,7 +269,7 @@ describe("需求 §学习框架 — SQLite 真源（ISSUE-032）", () => {
     const config = await import("../electron/lib/config");
     const { openKbDb } = await import("../electron/lib/kb-sqlite");
 
-    const children = await childAuth.listChildren();
+    const children = await localProfiles();
     const first = children[0];
     // 不再建 tags/taxonomy.md 物理文件
     const taxPath = path.join(config.getChildDir(first.childId), "tags", "taxonomy.md");
@@ -261,7 +288,7 @@ describe("需求 §学习框架 — SQLite 真源（ISSUE-032）", () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
 
-    const children = await childAuth.listChildren();
+    const children = await localProfiles();
     const first = children[0];
     const childDir = config.getChildDir(first.childId);
     // ISSUE-032：SQLite 唯一真源，daily/learning/life/inquiries/tasks/outputs 等目录全部废弃

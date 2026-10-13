@@ -89,8 +89,9 @@ export default function FeishuBindPanel() {
   }, []);
 
   useEffect(() => {
+    // ISSUE-179：childList 现返回 {children, degraded}（旧代码读 r.success/r.data 恒取不到，下拉恒空）
     window.api.childList().then((r: any) => {
-      if (r?.success) setChildrenList(r.data || []);
+      setChildrenList((r?.children || []).map((c: any) => ({ id: c.childId, name: c.name })));
     });
     load();
     loadFeishu();

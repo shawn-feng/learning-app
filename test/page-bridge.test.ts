@@ -285,6 +285,91 @@ describe("BRIDGE_SCRIPT：lookup 查词事件（ISSUE-017）", () => {
   });
 });
 
+describe("BRIDGE_SCRIPT：capture=manual 模式（ISSUE-180：只停自动采集，不停取词）", () => {
+  function setupManualBridge(selectionText: string, collapsed = false) {
+    const sent: any[] = [];
+    const win: any = {
+      __piBridge: undefined,
+      __PI_CAPTURE_MANUAL: 1, // manual 页：injectBridge 注入的采集开关
+      parent: { postMessage: vi.fn((m: any) => sent.push(m)) },
+      addEventListener: vi.fn(),
+      getSelection: vi.fn(() => ({
+        isCollapsed: collapsed,
+        toString: () => selectionText,
+      })),
+    };
+    const doc: any = {
+      readyState: "complete",
+      title: "t",
+      addEventListener: vi.fn(),
+      scrollingElement: null,
+      documentElement: null,
+      querySelectorAll: () => [],
+      body: null,
+    };
+    vi.stubGlobal("window", win);
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("WeakMap", Map);
+    eval(BRIDGE_SCRIPT);
+    const docHandlers: Record<string, any[]> = {};
+    for (const c of doc.addEventListener.mock.calls) (docHandlers[c[0]] ||= []).push(c[1]);
+    const fire = (name: string, targetTag = "P", x = 100, y = 200) => {
+      for (const h of docHandlers[name] || []) h({ target: { nodeType: 1, tagName: targetTag }, clientX: x, clientY: y });
+    };
+    return { sent, win, doc, docHandlers, fire };
+  }
+
+  it("manual 页仍挂取词监听：mouseup 选中中文 → 上抛 lookup（ISSUE-180 核心回归）", () => {
+    const { sent, fire } = setupManualBridge("栅栏");
+    fire("mouseup");
+    const lookup = sent.find((m: any) => m.kind === "lookup");
+    expect(lookup).toBeTruthy();
+    expect(lookup.detail.text).toBe("栅栏");
+  });
+
+  it("manual 页 dblclick 同样触发 lookup", () => {
+    const { sent, fire } = setupManualBridge("客人");
+    fire("dblclick");
+    expect(sent.some((m: any) => m.kind === "lookup" && m.detail.text === "客人")).toBe(true);
+  });
+
+  it("manual 页自动采集仍停用：click/scroll/change/submit 未注册、无事件上抛（F1 只拆取词，不恢复全量采集）", () => {
+    const { sent, docHandlers, win, fire } = setupManualBridge("苹果");
+    for (const name of ["click", "scroll", "change", "submit"]) {
+      expect(docHandlers[name], `监听 ${name} 不应在 manual 模式注册`).toBeUndefined();
+    }
+    // window 层 pagehide 也在自动采集块内
+    const winEvents = win.addEventListener.mock.calls.map((c: any) => c[0]);
+    expect(winEvents).not.toContain("pagehide");
+    fire("click");
+    expect(sent.some((m: any) => m.kind === "click")).toBe(false);
+    // open/ready 握手照常（不在 autoCapture 块内，manual 页宿主仍能感知资料打开）
+    expect(sent.some((m: any) => m.kind === "open")).toBe(true);
+    expect(sent.some((m: any) => m.type === "page:ready")).toBe(true);
+  });
+
+  it("结构断言：注入产物中取词逻辑在 if (autoCapture) 块之外（防回归移回）", () => {
+    // 解析注入产物（manual 页 html → 注入后的完整文档），抽出桥脚本段，
+    // 断言「块内无 lookup、全文有 lookup」——监听器被挪回采集块内时此用例变红。
+    const page =
+      '<!DOCTYPE html><html><head><meta name="pi-bridge" content="capture=manual"></head><body>正文</body></html>';
+    const injected = injectBridge(page);
+    expect(injected).toContain("window.__PI_CAPTURE_MANUAL=1");
+    const start = BRIDGE_SCRIPT.indexOf("if (autoCapture) {");
+    const end = BRIDGE_SCRIPT.indexOf("} // if (autoCapture)");
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const captureBlock = BRIDGE_SCRIPT.slice(start, end);
+    expect(captureBlock).not.toContain('kind: "lookup"');
+    expect(captureBlock).not.toContain("reportLookup");
+    // lookup 监听在块外（全文存在且在结束标记之后）
+    const afterBlock = BRIDGE_SCRIPT.slice(end);
+    expect(afterBlock).toContain('addEventListener("mouseup"');
+    expect(afterBlock).toContain('addEventListener("dblclick"');
+    expect(afterBlock).toContain('kind: "lookup"');
+  });
+});
+
 describe("EventThrottler：滑动窗口节流/去重", () => {
   it("同 key 在窗口内只放行一次", () => {
     const t = new EventThrottler();

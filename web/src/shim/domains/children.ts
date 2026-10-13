@@ -162,10 +162,20 @@ export const childrenDomain = {
     }
   },
 
-  /** childList: () => Promise<ChildProfile[]>（GET /children → 渲染层消费的 children+progress 结构） */
-  childList: async (): Promise<ChildProfile[]> => {
-    const rows = await fetchServerChildren();
-    return rows.map(toChildProfile);
+  /**
+   * childList: () => Promise<{children: ChildProfile[]; degraded: boolean}>
+   * （GET /children → 渲染层消费的 children+progress 结构）。
+   * ISSUE-179 对齐 Electron：服务端不可达不回退任何本地数据，返回 degraded 空列表，
+   * 渲染层（Dashboard/Home 双端共用）显示「等待重新链接」阻断态。
+   */
+  childList: async (): Promise<{ children: ChildProfile[]; degraded: boolean }> => {
+    try {
+      const rows = await fetchServerChildren();
+      return { children: rows.map(toChildProfile), degraded: false };
+    } catch {
+      // http() 已记账断连（超时≠不可达，同 ISSUE-179 F4）；此处吞错返回 degraded
+      return { children: [], degraded: true };
+    }
   },
 
   /** childSelect: (childId) => Promise<{ success: boolean; profile?: ChildProfile; error?: string }>（成功时记录当前孩子，驱动提醒轮询） */

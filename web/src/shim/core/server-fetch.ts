@@ -139,15 +139,14 @@ export interface HttpOptions {
  * 把 fetch 层异常翻译成语义化提示 —— 逐字对齐 electron/lib/server-client.ts 的
  * describeFetchError：超时与「真连不上」必须区分，避免长任务被误报成断连。
  */
-function describeFetchError(err: unknown, timeoutMs: number): string {
+function isTimeoutError(err: unknown): boolean {
   const name = (err as { name?: string })?.name ?? "";
   const msg = ((err as Error)?.message ?? "").toLowerCase();
-  if (
-    name === "TimeoutError" ||
-    name === "AbortError" ||
-    msg.includes("timeout") ||
-    msg.includes("aborted")
-  ) {
+  return name === "TimeoutError" || name === "AbortError" || msg.includes("timeout") || msg.includes("aborted");
+}
+
+function describeFetchError(err: unknown, timeoutMs: number): string {
+  if (isTimeoutError(err)) {
     return `服务端响应超时（等待 ${Math.round(timeoutMs / 1000)} 秒）——长任务通常仍在服务端后台执行，请稍候查看结果，勿重复提交`;
   }
   return "无法连接服务端，请检查服务端地址或网络";
@@ -252,7 +251,8 @@ async function request(path: string, opts: HttpOptions, defaultTimeoutMs: number
       signal: controller.signal,
     });
   } catch (e) {
-    noteServerUnreachableWeb();
+    // ISSUE-179 F4：超时（AbortError）= 服务端慢 ≠ 不可达，不记断连账
+    if (!isTimeoutError(e)) noteServerUnreachableWeb();
     throw new WebServerError(0, describeFetchError(e, timeoutMs));
   } finally {
     clearTimeout(timer);

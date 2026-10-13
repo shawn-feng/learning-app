@@ -8,8 +8,9 @@
  * 消费方：
  *   - connection-monitor.ts：断连时周期探活 /health，恢复即止；
  *   - ipc-handlers「server:connectionState / server:retryConnection」+ 变更推送渲染层；
- *   - child-auth.ts listChildren：成功拉取后记 lastServerChildCount（横幅数量差异用）、
+ *   - child-auth.ts listChildren：成功拉取后记 lastServerChildCount（诊断可见）、
  *     自动上云 PATCH 加 recentlyDegraded 守卫（刚断连恢复过不自动同步本地数据）。
+ *   - ISSUE-179：渲染层按 connected===false 渲染「等待重新链接」阻断层（不再有降级横幅）。
  */
 import { getServerUrl } from "./config";
 

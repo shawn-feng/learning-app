@@ -244,7 +244,10 @@ export const BRIDGE_SCRIPT = `(function () {
   }
 
   // —— 事件采集（全部捕获阶段，绝不 preventDefault / stopPropagation，不干扰课程脚本）——
-  // MATERIAL-BRIDGE-PROTOCOL：页面声明 capture=manual 后停用自动采集（作者改用 PiBridge.emit 显式上报）。
+  // MATERIAL-BRIDGE-PROTOCOL：页面声明 capture=manual 后停用自动**采集上报**
+  // （click/scroll/input/submit/pagehide，作者改用 PiBridge.emit 显式上报）。
+  // ⚠️ ISSUE-180：选中取词（下方 lookup 监听）是阅读辅助、不是采集——已移出本块，
+  // **manual 模式照常挂载**（否则 manual 页整体失去取词，连带 ISSUE-114 错题采集断掉）。
   var autoCapture = window.__PI_CAPTURE_MANUAL !== 1;
   if (autoCapture) {
   document.addEventListener("click", function (e) {
@@ -259,37 +262,6 @@ export const BRIDGE_SCRIPT = `(function () {
     var href = el.getAttribute && el.getAttribute("href");
     if (href && href.indexOf("#") !== 0) d.href = href;
     send({ type: "page:event", kind: "click", detail: d });
-  }, true);
-
-  // —— ISSUE-017：选中/双击中文 → 上抛 lookup（父页面浮层显示拼音）——
-  // 只处理非表单元素中的中文选中；捕获阶段、不 preventDefault/stopPropagation，
-  // 不干扰课程脚本自身选中逻辑；坐标相对 iframe 视口，父页面叠加 iframe 偏移定位浮层。
-  // mouseup（拖选/单击选中）与 dblclick（双击选词）双通道 + throttled 去重防双报。
-  // 句子级可查（上限与 dictionary.ts LOOKUP_MAX_LEN 一致），整段复制不查。
-  var CN_RE = /[\\u4e00-\\u9fa5]/;
-  var LOOKUP_MAX_LEN = 30;
-  function reportLookup(x, y) {
-    var sel = window.getSelection && window.getSelection();
-    if (!sel || sel.isCollapsed) return;
-    var text = (sel.toString() || "").replace(/\\s+/g, " ").trim();
-    if (!text || !CN_RE.test(text)) return; // 无中文（纯英文/数字/符号）不查
-    if (text.replace(/\\s+/g, "").length > LOOKUP_MAX_LEN) return; // 整段复制不查
-    var key = "lk:" + text + ":" + Math.round(x / 24) + ":" + Math.round(y / 24);
-    if (!throttled(key, 2000)) return;
-    send({ type: "page:event", kind: "lookup", detail: { text: text, x: x, y: y } });
-  }
-  function isFormTarget(t) {
-    if (!t || t.nodeType !== 1) return false;
-    var tag = t.tagName ? t.tagName.toLowerCase() : "";
-    return tag === "input" || tag === "textarea" || tag === "select";
-  }
-  document.addEventListener("mouseup", function (e) {
-    if (isFormTarget(e.target)) return; // 表单内选中是编辑操作，不查词
-    reportLookup(e.clientX, e.clientY);
-  }, true);
-  document.addEventListener("dblclick", function (e) {
-    if (isFormTarget(e.target)) return;
-    reportLookup(e.clientX, e.clientY);
   }, true);
 
   document.addEventListener("scroll", function () {
@@ -334,7 +306,42 @@ export const BRIDGE_SCRIPT = `(function () {
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "hidden") reportPageHide();
   });
-  } // if (autoCapture) —— manual 采集模式下不挂自动监听（PiBridge.emit 显式上报）
+  } // if (autoCapture) —— manual 采集模式只停用**自动采集上报**（PiBridge.emit 显式上报）；
+    // 下方选中取词（阅读辅助）不在本块内，manual 模式照常挂载（ISSUE-180）。
+
+  // —— ISSUE-017：选中/双击中文 → 上抛 lookup（父页面浮层显示拼音）——
+  // 只处理非表单元素中的中文选中；捕获阶段、不 preventDefault/stopPropagation，
+  // 不干扰课程脚本自身选中逻辑；坐标相对 iframe 视口，父页面叠加 iframe 偏移定位浮层。
+  // mouseup（拖选/单击选中）与 dblclick（双击选词）双通道 + throttled 去重防双报。
+  // 句子级可查（上限与 dictionary.ts LOOKUP_MAX_LEN 一致），整段复制不查。
+  // ISSUE-180：无条件挂载（不在 autoCapture 块内）——manual 页照样可选中查词，
+  // 查词浮层照常触发 mistakeReport（ISSUE-114 C2 错题采集）；页面作者仍可经
+  // PiBridge.request('lookup') 自主取词，两条路并存不冲突（都走查词浮层，无重复采集）。
+  var CN_RE = /[\\u4e00-\\u9fa5]/;
+  var LOOKUP_MAX_LEN = 30;
+  function reportLookup(x, y) {
+    var sel = window.getSelection && window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    var text = (sel.toString() || "").replace(/\\s+/g, " ").trim();
+    if (!text || !CN_RE.test(text)) return; // 无中文（纯英文/数字/符号）不查
+    if (text.replace(/\\s+/g, "").length > LOOKUP_MAX_LEN) return; // 整段复制不查
+    var key = "lk:" + text + ":" + Math.round(x / 24) + ":" + Math.round(y / 24);
+    if (!throttled(key, 2000)) return;
+    send({ type: "page:event", kind: "lookup", detail: { text: text, x: x, y: y } });
+  }
+  function isFormTarget(t) {
+    if (!t || t.nodeType !== 1) return false;
+    var tag = t.tagName ? t.tagName.toLowerCase() : "";
+    return tag === "input" || tag === "textarea" || tag === "select";
+  }
+  document.addEventListener("mouseup", function (e) {
+    if (isFormTarget(e.target)) return; // 表单内选中是编辑操作，不查词
+    reportLookup(e.clientX, e.clientY);
+  }, true);
+  document.addEventListener("dblclick", function (e) {
+    if (isFormTarget(e.target)) return;
+    reportLookup(e.clientX, e.clientY);
+  }, true);
 
   // —— ISSUE-011：接管 speechSynthesis → 父级 edge-tts（音色与聊天一致）——
   // 课程 html（hanzigong/english）朗读按钮用 window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))，

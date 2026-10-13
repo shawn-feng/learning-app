@@ -16,15 +16,25 @@ export class ServerError extends Error {
 }
 
 /**
+ * 是否为本地超时中止（AbortSignal.timeout 触发的 TimeoutError/AbortError）。
+ * ISSUE-179 F4：超时 = 服务端慢（长工具轮实测 3 分钟+），≠ 服务端不可达——
+ * 超时不得记断连账（阻断式 UX 下误判一次 = 全 app 阻断 30s），只有真网络错误
+ * （fetch failed/ECONNREFUSED/ECONNRESET 等）才翻断连。
+ */
+export function isTimeoutError(err: unknown): boolean {
+  const name = (err as { name?: string })?.name ?? "";
+  const msg = ((err as Error)?.message ?? "").toLowerCase();
+  return name === "TimeoutError" || name === "AbortError" || msg.includes("timeout") || msg.includes("aborted");
+}
+
+/**
  * 把 fetch 层异常翻译成语义化提示（实测踩坑）：AbortSignal.timeout 超时与「真连不上」
  * 都走同一个 catch，过去统一报「无法连接服务端」——agent 长工具轮（summarize 实测 3 分钟+）
  * 超过客户端超时后，明明服务端在正常执行却被误报成断连，家长/孩子都会被误导去重启服务端。
  * 这里区分：超时 → 明确告知是响应超时且任务仍在后台执行；其余 → 才是连接问题。
  */
 function describeFetchError(err: unknown, timeoutMs: number): string {
-  const name = (err as { name?: string })?.name ?? "";
-  const msg = ((err as Error)?.message ?? "").toLowerCase();
-  if (name === "TimeoutError" || name === "AbortError" || msg.includes("timeout") || msg.includes("aborted")) {
+  if (isTimeoutError(err)) {
     return `服务端响应超时（等待 ${Math.round(timeoutMs / 1000)} 秒）——长任务通常仍在服务端后台执行，请稍候查看结果，勿重复提交`;
   }
   return "无法连接服务端，请检查服务端地址或网络";
@@ -69,8 +79,9 @@ export async function serverFetch<T = unknown>(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15000),
     });
   } catch (e) {
-    // ISSUE-167：网络不可达/超时 = 断连记账（拿到任意 HTTP 响应=可达，在下方记账）
-    noteServerUnreachable();
+    // ISSUE-167：真网络不可达 = 断连记账（拿到任意 HTTP 响应=可达，在下方记账）；
+    // ISSUE-179 F4：超时≠不可达，不记账（防长任务轮询误触发全 app 阻断）
+    if (!isTimeoutError(e)) noteServerUnreachable();
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 15000));
   }
   noteServerReachable();
@@ -119,7 +130,7 @@ export async function uploadFileToServer(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
-    noteServerUnreachable();
+    if (!isTimeoutError(e)) noteServerUnreachable(); // ISSUE-179 F4：超时≠不可达
     throw new ServerError(0, describeFetchError(e, timeoutMs));
   }
   noteServerReachable();
@@ -158,7 +169,7 @@ export async function serverFetchBinary(path: string, opts: ServerFetchOptions =
       signal: AbortSignal.timeout(opts.timeoutMs ?? 60000),
     });
   } catch (e) {
-    noteServerUnreachable();
+    if (!isTimeoutError(e)) noteServerUnreachable(); // ISSUE-179 F4：超时≠不可达
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 60000));
   }
   noteServerReachable();
@@ -199,7 +210,7 @@ export async function serverUploadFile(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 120000),
     });
   } catch (e) {
-    noteServerUnreachable();
+    if (!isTimeoutError(e)) noteServerUnreachable(); // ISSUE-179 F4：超时≠不可达
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 120000));
   }
   noteServerReachable();
@@ -248,7 +259,7 @@ export async function serverUploadWithFields(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 120000),
     });
   } catch (e) {
-    noteServerUnreachable();
+    if (!isTimeoutError(e)) noteServerUnreachable(); // ISSUE-179 F4：超时≠不可达
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 120000));
   }
   noteServerReachable();

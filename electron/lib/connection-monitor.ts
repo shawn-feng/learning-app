@@ -2,7 +2,7 @@
  * 服务端连接监视器（ISSUE-167：把「退出家长重登才能恢复」自动化）。
  *
  * - serverFetch 家族断连记账后（connection-state.ts），本监视器按指数退避探活：
- *   30s → 1m → 2m → 5m 封顶；连接正常时**不轮询**（无常驻流量），只有断连状态才探测。
+ *   15s → 30s → 1m → 2m → 5m 封顶；连接正常时**不轮询**（无常驻流量），只有断连状态才探测。
  * - 探活用 GET /health（无鉴权、轻量）；任意 HTTP 响应即视为可达
  *   （serverFetch 内部统一记账 noteServerReachable，断连→恢复翻转时通知监听者）。
  * - 渲染层的恢复联动（重拉孩子列表、撤横幅）由 ipc-handlers 注册的
@@ -11,7 +11,8 @@
 import { serverFetch } from "./server-client";
 import { getConnectionSnapshot, type ConnectionSnapshot } from "./connection-state";
 
-const BASE_MS = 30_000;
+// ISSUE-179：阻断式 UX 下等待感随探活间隔线性放大——基速 30s 收到 15s（封顶 5m 不变）。
+const BASE_MS = 15_000;
 const MAX_MS = 5 * 60_000;
 
 let timer: ReturnType<typeof setTimeout> | null = null;

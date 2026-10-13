@@ -1,12 +1,15 @@
 /**
- * ISSUE-167 回归：失联降级可见化的状态记账与上云守卫。
+ * ISSUE-167 回归：失联可见化的状态记账与上云守卫（ISSUE-179 部分推翻后保留面）。
  *
  * 1. 连接状态记账：任意 HTTP 响应=可达、网络抛错=断连（serverFetch 真身记账，此处直调
  *    connection-state 模拟等价翻转）；未配置服务端地址不记断连（纯本地模式无横幅）。
  * 2. recentlyDegraded：断连窗口内 true，窗口外（>10min）false——「刚恢复不自动上云」守卫。
- * 3. listChildren 降级回退：服务端不可达 → 静默回退本地扫描（设计保留，可见化在横幅层）。
+ * 3. listChildren 降级（**ISSUE-179 反转**）：服务端不可达 → **不回退**本地扫描，
+ *    返回 { children: [], degraded: true }——本地孩子列表永不渲染，渲染层显示阻断态。
  * 4. 自动上云 PATCH 守卫：刚断连恢复（10 分钟内）本地无密码孩子【不】自动 PATCH 上云；
  *    窗口外恢复常规同步；成功拉取后 lastServerChildCount 记账。
+ * 5. 恢复自动解锁（ISSUE-179）：断连 degraded → 探活恢复 → 列表回到服务端真源
+ *    （本地开发残留孩子不混入）。渲染层「阻断态渲染」用例见 issue179-connection-blocking.test.ts。
  */
 import { describe, it, expect, vi, beforeAll, afterEach } from "vitest";
 
@@ -145,11 +148,45 @@ describe("ISSUE-167 连接状态记账", () => {
   });
 });
 
-describe("ISSUE-167 listChildren 降级与上云守卫", () => {
-  it("服务端不可达 → 静默回退本地扫描（离线可用设计保留）", async () => {
+describe("ISSUE-167/179 listChildren 降级与上云守卫", () => {
+  it("服务端不可达 → 不回退本地孩子，返回 degraded 空列表（ISSUE-179 推翻离线兜底）", async () => {
     mocks.impl = () => Promise.reject(new Error("网络不可达"));
-    const list = await childAuth.listChildren();
-    expect(list.some((c) => c.childId === localChildId)).toBe(true);
+    const res = await childAuth.listChildren();
+    expect(res.degraded).toBe(true);
+    // 本地已 seed local-child-1（开发残留形态）——degraded 分支绝不把它放进列表
+    expect(res.children).toHaveLength(0);
+    expect(res.children.some((c) => c.childId === localChildId)).toBe(false);
+  });
+
+  it("断连 degraded → 恢复后自动回到服务端孩子列表（阻断解锁语义，本地孩子不混入）", async () => {
+    // 断连阶段：impl 拒绝（真实链路里 serverFetch 抛错时已记账；mock 下手动等价翻转）
+    mocks.impl = () => Promise.reject(new Error("网络不可达"));
+    connState.noteServerUnreachable();
+    let res = await childAuth.listChildren();
+    expect(res.degraded).toBe(true);
+    expect(res.children).toHaveLength(0);
+
+    // 恢复阶段（连接监视器探活成功后做的同一记账翻转）：列表回到服务端真源
+    connState.noteServerReachable();
+    mocks.impl = (p) => {
+      if (p === "/children") {
+        return Promise.resolve({
+          children: [
+            {
+              id: "srv-child-1",
+              name: "服务端孩子",
+              profile: { avatar: "🐰", age: 7, passwordHash: "srv-hash", aiName: "知识兔" },
+            },
+          ],
+        });
+      }
+      throw new Error("unexpected serverFetch: " + p);
+    };
+    res = await childAuth.listChildren();
+    expect(res.degraded).toBe(false);
+    expect(res.children.map((c) => c.childId)).toEqual(["srv-child-1"]);
+    // 本地残留孩子（seed 的 local-child-1）不在恢复后的列表里
+    expect(res.children.some((c) => c.childId === localChildId)).toBe(false);
   });
 
   it("刚断连恢复（10min 内）不自动上云；窗口外恢复常规同步；孩子数记账", async () => {

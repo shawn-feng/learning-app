@@ -338,7 +338,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
           maxChildren = cloud.max_children;
         }
         const children = await listChildren();
-        if (children.length >= maxChildren) {
+        if (children.children.length >= maxChildren) {
           return { success: false, error: "已达孩子数量上限" };
         }
       }
@@ -945,7 +945,8 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     try {
       const children = await listChildren();
       const configs: Record<string, unknown> = {};
-      for (const child of children) {
+      // ISSUE-179：degraded（服务端不可达）时 children 为空——阻断态下无可配置对象，符合预期
+      for (const child of children.children) {
         configs[child.childId] = getChildSchedulerConfig(child.childId);
       }
       // ISSUE-037 续：家长会话配置（autoNewSession）随 children 一起返回

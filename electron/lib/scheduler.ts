@@ -545,7 +545,8 @@ export function startScheduler(): void {
     // 设备级：本地定时备份（ISSUE-041 层 A）
     await runBackupIfDue(state, now);
 
-    for (const child of children) {
+    // ISSUE-179：degraded（服务端不可达）时 children 为空——阻断态下本地孩子不参与任何定时逻辑
+    for (const child of children.children) {
       const cc = getChildSchedulerConfig(child.childId);
       const cs = getChildState(state, child.childId);
 

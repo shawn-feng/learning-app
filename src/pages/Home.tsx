@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { LogOut, Settings } from "lucide-react";
 import { LoadingBlock } from "../components/Loading";
+import ConnectionBlocking from "../components/ConnectionBlocking";
+import { useServerConnection } from "../hooks/useServerConnection";
 
 interface Props {
   email: string;
@@ -54,16 +56,26 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
     }).catch(() => {});
   }, []);
 
-  useEffect(() => {
+  function loadChildren() {
     setChildrenLoading(true);
     window.api
       .childList()
-      .then((list: any[]) => setChildren(list))
+      .then((r: any) => setChildren(r?.children || [])) // ISSUE-179：{children, degraded}，degraded 恒空
       .finally(() => setChildrenLoading(false));
+  }
+
+  useEffect(() => {
+    loadChildren();
     window.api.serverGetConfig().then((cfg: { url?: string }) => {
       setServerUrl(cfg?.url ?? "");
     });
   }, []);
+
+  // ISSUE-179：主页同样阻断——断连期间孩子选择区不可用（本地孩子永不出现），恢复自动重拉列表
+  const { conn, degraded: connDegraded, retryConnection } = useServerConnection(() => {
+    loadChildren();
+  });
+  const blockStartedAt = conn?.lastErrorAt ? Date.parse(conn.lastErrorAt) : undefined;
 
   async function openParentAuth() {
     setShowParentAuth(true);
@@ -162,6 +174,10 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
 
   return (
     <div className="child-select home-page">
+      {/* ISSUE-179：断连阻断层（双端共用组件）——主页不可选孩子/不可进身份，恢复自动解锁 */}
+      {connDegraded && (
+        <ConnectionBlocking url={conn?.url} startedAt={blockStartedAt} onRetry={retryConnection} />
+      )}
       {/* 主页右上角按钮组：服务端设置 + 退出账号 */}
       <div className="home-top-actions">
         <button

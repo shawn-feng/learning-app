@@ -134,7 +134,7 @@ describe.skipIf(!SERVER_UP)("Phase 9: 同步管理器", () => {
     const config = await import("../electron/lib/config");
 
     // ensure we have at least one child
-    let children = await childAuth.listChildren();
+    let children = (await childAuth.listChildren()).children; // ISSUE-179：{children, degraded}
     if (children.length === 0) {
       await childAuth.addChild({
         name: TEST_CHILD.name,
@@ -147,7 +147,7 @@ describe.skipIf(!SERVER_UP)("Phase 9: 同步管理器", () => {
         aiEmoji: TEST_CHILD.aiEmoji,
         aiPersonality: TEST_CHILD.aiPersonality,
       });
-      children = await childAuth.listChildren();
+      children = (await childAuth.listChildren()).children;
     }
 
     const child = children.find((c) => c.childId === TEST_CHILD_ID);
@@ -170,7 +170,7 @@ describe.skipIf(!SERVER_UP)("Phase 9: 同步管理器", () => {
   it("scanChildFiles 返回的文件信息包含必需字段", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
-    const children = await childAuth.listChildren();
+    const children = (await childAuth.listChildren()).children; // ISSUE-179：{children, degraded}
     const child = children.find((c) => c.childId === TEST_CHILD_ID);
     expect(child).toBeTruthy();
     const childDir = config.getChildDir(child!.childId);
@@ -187,7 +187,7 @@ describe.skipIf(!SERVER_UP)("Phase 9: 同步管理器", () => {
   it("文件内容变更会导致 hash 不同", async () => {
     const childAuth = await import("../electron/lib/child-auth");
     const config = await import("../electron/lib/config");
-    const children = await childAuth.listChildren();
+    const children = (await childAuth.listChildren()).children; // ISSUE-179：{children, degraded}
     const child = children.find((c) => c.childId === TEST_CHILD_ID);
     expect(child).toBeTruthy();
     const childDir = config.getChildDir(child!.childId);

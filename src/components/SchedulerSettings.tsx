@@ -88,8 +88,9 @@ export default function SchedulerSettings() {
 
   useEffect(() => {
     (async () => {
-      const list = await window.api.childList();
-      const childrenList = (list || []) as ChildItem[];
+      // ISSUE-179：childList 返回 {children, degraded}——degraded 时 children 为空（阻断态无可配置对象）
+      const res2 = await window.api.childList();
+      const childrenList = (res2?.children || []) as ChildItem[];
       setChildren(childrenList);
 
       const res = await window.api.schedulerConfigGet();
