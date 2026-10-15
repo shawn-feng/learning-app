@@ -24,6 +24,7 @@ import { getRetakeCountInRate, maybeCreateRetakePlan, setRetakeCountInRate } fro
 import { masterByQuestion, upsertExamMistake } from "../db/mistakes.js";
 import { persistExamResult } from "../exam-results.js";
 import { attachStructuredQuestions, attachPlanQuestions, buildPlanSpecEntries, parsePlanCourses, type PlanCourseSpec } from "../assess-selection.js";
+import { loadAssessmentConfig } from "../assessment/index.js";
 import {
   getOrCreateKnowledgePoint,
   saveQuestion,
@@ -721,6 +722,13 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     //  - 自定义考核计划（scope.courses 指定范围）：直接返回带 rubric 的课程（家长已定范围，不经过选课 LLM）
     //  - 固定考核计划：内置规则 = 计划周期内「必学」课程全部考核（范围在开考时按学习计划窗口实时计算）
     //  - 带 courses=title1,title2 参数：返回选中课程（含 rubric）+ 判分 prompt（第二段兼容路径）
+    // ISSUE-183：随配置一并下发家长级考核规则——考核录音最低平均音量（孩子端 iframe 前置校验）
+    // 与朗读/背诵通过线家长默认值（题目未自带 recitePass 时用）。
+    const assessCfg = loadAssessmentConfig(deps.db, parentId, deps.config.dataDir);
+    const examRules = {
+      minVolumeNorm: assessCfg.minVolumeNorm,
+      recitePassDefault: assessCfg.recitePassDefault,
+    };
     const planId = String((req.query as { schedule?: string }).schedule || "");
     const coursesParam = String((req.query as { courses?: string }).courses || "");
     if (planId) {
@@ -775,6 +783,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           childName,
           courses: structuredCourses(titles),
           scoringPrompt: buildScoringPrompt(),
+          examRules,
         };
       }
       // 自定义考核（2026-09-14 定案）：**出题参数在计划生成时已完整约定**——scope.courses 为
@@ -815,7 +824,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         const pl = openParentLib(deps.config.dataDir, parentId);
         let problems: Array<{ title: string; reason: string }> = [];
         try {
-          problems = attachPlanQuestions(pl, cs, entries, Math.max(0, Number((scope as { recitePass?: unknown }).recitePass) || 90));
+          // recitePass 未在 scope 设置 → 传 0（=未设）：题目不带线，客户端按家长默认值判
+          problems = attachPlanQuestions(pl, cs, entries, Math.max(0, Number((scope as { recitePass?: unknown }).recitePass) || 0));
         } finally {
           pl.close();
         }
@@ -829,6 +839,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           childName,
           courses: cs,
           scoringPrompt: buildScoringPrompt(),
+          examRules,
         };
       }
       // 固定档：仅保留 daily | weekly（monthly/halfyear/yearly 已下线，历史计划不可再考）
@@ -886,7 +897,8 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
         const pl = openParentLib(deps.config.dataDir, parentId);
         let problems: Array<{ title: string; reason: string }> = [];
         try {
-          problems = attachPlanQuestions(pl, cs, entries, 90);
+          // 固定档不在出题侧定通过线（0=未设），客户端按家长默认值判（ISSUE-183）
+          problems = attachPlanQuestions(pl, cs, entries, 0);
         } finally {
           pl.close();
         }
@@ -902,6 +914,7 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
           scoringPrompt: buildScoringPrompt(),
           // 生成计划时被跳过（无考核内容）的课程（供调试/提示）
           unmatched: skipped,
+          examRules,
         };
       }
     }

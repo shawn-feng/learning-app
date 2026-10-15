@@ -15,6 +15,7 @@ import { verifySession } from "../auth/jwt.js";
 import { resolveStoredFileAbs } from "./files.js";
 import { ASSESS_AUDIO_MAX_BYTES, bytesLabel } from "../util/limits.js";
 import { assessAudio, toSpeechAssessment, loadAssessmentConfig, getMaskedAssessmentConfig, applyAssessmentConfigPatch } from "../assessment/index.js";
+import { webmToWav16k, wavAverageVolumeNorm } from "../assessment/audio.js";
 
 interface AssessmentDeps {
   config: ServerConfig;
@@ -94,11 +95,15 @@ export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentD
       enabled?: boolean;
       provider?: string;
       providers?: Record<string, Record<string, string>>;
+      minVolumeNorm?: number;
+      recitePassDefault?: number;
     };
     const cfg = applyAssessmentConfigPatch(db, parentId, config.dataDir, {
       enabled: !!body.enabled,
       provider: body.provider,
       providers: body.providers,
+      minVolumeNorm: body.minVolumeNorm,
+      recitePassDefault: body.recitePassDefault,
     });
     return { config: getMaskedAssessmentConfig(cfg) };
   });
@@ -131,9 +136,32 @@ export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentD
     }
     try {
       const audio = readAudioBytes(db, config.dataDir, parentId, fileId);
+      // ISSUE-183 服务端兜底：评测前对合并音频整体再算一次平均音量（客户端 iframe 已有前置校验，
+      // 这里拦旧版客户端 / 绕过场景）。低于家长阈值 → 该题按未答拦下，返回明确错误码，不送评测引擎。
+      // 仅评测启用时生效；转码失败不在本环节定论（assessAudio 会报原始转换错误）。
+      const assessCfg = loadAssessmentConfig(db, parentId, config.dataDir);
+      let wav16k: Buffer | undefined;
+      if (assessCfg.enabled && assessCfg.minVolumeNorm > 0) {
+        try {
+          wav16k = await webmToWav16k(audio);
+          const norm = wavAverageVolumeNorm(wav16k);
+          if (norm < assessCfg.minVolumeNorm) {
+            req.log.warn({ fileId, childId, volumeNorm: norm, minVolumeNorm: assessCfg.minVolumeNorm }, "录音平均音量低于阈值，按未答拦下");
+            return reply.code(422).send({
+              error: `声音太小啦（音量 ${norm}，需要 ${assessCfg.minVolumeNorm}）。请大声一点重新录音。`,
+              code: "VOLUME_TOO_LOW",
+              volumeNorm: norm,
+              minVolumeNorm: assessCfg.minVolumeNorm,
+            });
+          }
+        } catch {
+          wav16k = undefined;
+        }
+      }
       const result = await assessAudio(db, parentId, config.dataDir, audio, {
         provider: (body.provider as "tencent-soe" | "aliyun-ssecp") || undefined,
         refText: body.refText || "",
+        wav16k,
       });
       const mapped = toSpeechAssessment(result);
       return { audioFileId: fileId, assessmentId: crypto.randomUUID(), result: mapped };

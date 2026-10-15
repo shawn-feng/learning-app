@@ -8,6 +8,7 @@
 import crypto from "crypto";
 import { extractWavPcm } from "../audio.js";
 import type { AssessmentResult } from "../types.js";
+import { dimensionMeanScore } from "../score.js";
 
 const HOST = "soe.cloud.tencent.com/soe/api";
 const WSS_BASE = "wss://soe.cloud.tencent.com/soe/api";
@@ -187,7 +188,9 @@ export function parseSoeResult(r: any): AssessmentResult {
     : [];
   return {
     provider: "tencent-soe",
-    score: Math.round(r.SuggestedScore ?? 0),
+    // ISSUE-183：与 aliyun-ssecp 同口径——最终分 = 各维度平均（PronAccuracy/PronFluency/PronCompletion），
+    // 维度集不动；三维度都缺才回退 SuggestedScore，再缺 0。
+    score: dimensionMeanScore([r.PronAccuracy, r.PronFluency, r.PronCompletion], r.SuggestedScore),
     accuracy: Math.round(r.PronAccuracy ?? 0),
     fluency: Math.round(r.PronFluency ?? 0),
     completeness: Math.round(r.PronCompletion ?? 0),

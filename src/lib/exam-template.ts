@@ -10,6 +10,9 @@
  *  - 录音停止即进入「识别中…」提示（防以为没录上）；识别文本追加到可编辑文本框；多段音频随提交由宿主合并为单个。
  *  - 顺序作答防偷看：当前题未回答不能进入下一题（后题可能是前题提示）；答完离开本题即锁定，回看只读。
  *  - 每题计时独立（只计本题实际作答时长，不累计别题）；总用时在右上角单独显示。
+ * ISSUE-183（2026-10）：口语/背诵题录音音量前置校验——录音中实时音量条（绿/黄/红 + 达标线）；
+ *  每段录完即解码 PCM 算平均音量（RMS→0-100 归一分，公式与 server/src/assessment/volume.ts 一致），
+ *  低于家长阈值该段不入答案（=没答）、提示原地重录，无次数上限；文字题/聊天/ASR 链路不受影响。
  */
 
 export interface ExamTemplateQuestion {
@@ -28,9 +31,12 @@ export function buildExamHtml(
   subject: string,
   title: string,
   /** 流式出题（ISSUE-049）：本场考核总课程数；>0 表示题目会由宿主在后台逐门生成后增量送达 */
-  pendingCourses = 0
+  pendingCourses = 0,
+  /** ISSUE-183：录音音量校验规则。minNorm=考核录音最低平均音量（0-100 归一分，0=不校验）；
+   * 仅口语/背诵题生效——每段录完即校平均音量，不达标该段不入答案、原地重录（无次数上限）。 */
+  volumeRule?: { minNorm?: number }
 ): string {
-  const dataJson = JSON.stringify({ title, subject, questions, pendingCourses })
+  const dataJson = JSON.stringify({ title, subject, questions, pendingCourses, volumeRule: volumeRule || { minNorm: 0 } })
     .replace(/</g, "\\u003c") // 防题面注入 HTML（stem 来自 LLM 出卷，必须转义）
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
@@ -74,6 +80,18 @@ export function buildExamHtml(
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(231,76,60,.5)}70%{box-shadow:0 0 0 14px rgba(231,76,60,0)}100%{box-shadow:0 0 0 0 rgba(231,76,60,0)}}
   .rec-time{font-size:22px; color:var(--rec); font-variant-numeric:tabular-nums; min-width:64px}
   .rec-status{font-size:20px; color:var(--warn); min-height:28px; margin:10px 0 0;}
+  /* ISSUE-183：录音音量可视化（仅口语题显示）：实时音量条 + 达标线 + 录完平均音量提示 */
+  .vol-wrap{margin-top:12px; display:none}
+  .vol-top{display:flex; align-items:center; gap:12px}
+  .vol-label{font-size:18px; color:var(--muted); white-space:nowrap}
+  .vol-bar{position:relative; flex:1; height:18px; background:#e8edf5; border-radius:99px}
+  .vol-fill{height:100%; width:0%; background:var(--ok); border-radius:99px; transition:width .08s linear, background .15s}
+  .vol-line{position:absolute; top:-4px; bottom:-4px; width:4px; background:var(--warn); border-radius:2px; left:42%}
+  .vol-line::after{content:"达标"; position:absolute; top:-24px; left:-14px; font-size:14px; color:var(--warn); white-space:nowrap}
+  .vol-msg{font-size:19px; margin-top:8px; min-height:28px}
+  .vol-msg.ok{color:var(--ok)}
+  .vol-msg.warn{color:var(--warn)}
+  .vol-msg.bad{color:var(--rec)}
   .play{width:100%; margin-top:12px}
   .asr-label{font-size:20px; color:var(--muted); margin:14px 0 6px}
   .asr{width:100%; min-height:96px; font-size:24px; font-family:inherit; color:var(--ink); border:1px solid var(--line); border-radius:12px; padding:12px 14px; resize:vertical; background:#fffdf7;}
@@ -116,6 +134,16 @@ export function buildExamHtml(
             <button class="mic-btn" id="micBtn">🎤 按住说话</button>
             <span class="rec-time" id="recTime"></span>
           </div>
+          <div class="vol-wrap" id="volWrap">
+            <div class="vol-top">
+              <span class="vol-label">🔊 声音大小</span>
+              <div class="vol-bar">
+                <div class="vol-fill" id="volFill"></div>
+                <div class="vol-line" id="volLine"></div>
+              </div>
+            </div>
+            <div class="vol-msg" id="volMsg"></div>
+          </div>
           <div class="rec-status" id="recStatus"></div>
           <audio class="play" id="play" controls style="display:none"></audio>
           <div class="asr-label" id="asrLabel">识别文字（可修改）：</div>
@@ -142,6 +170,100 @@ window.EXAM_DATA = ${dataJson};
   var media = null, chunks = [], recStart = 0;
   var transcribing = false, recTimer = null;
   var recQid = null; // 正在录音的题 id（onstop 用它定位，防录音停止与切题竞态存错题）
+  // ===== ISSUE-183：录音音量校验（仅口语/背诵题）=====
+  // ⚠️ 公式与服务端 server/src/assessment/volume.ts 完全一致（iframe 独立 HTML 无法 import，两边改动必须同步）：
+  //   解码后 PCM 全程 RMS → norm = clamp(round((20·log10(rms)+60)×100/60), 0, 100)（-60 dBFS→0，0 dBFS→100）
+  var VOL = D.volumeRule || {};
+  var volMin = Math.max(0, Math.round(Number(VOL.minNorm) || 0)); // 0 = 家长关闭校验
+  var volCtx = null, volAnalyser = null, volBuf = null, volRaf = 0;
+  function volNormOf(rms){
+    if(!(rms > 0)) return 0;
+    var db = 20 * Math.log10(rms);
+    return Math.max(0, Math.min(100, Math.round((db + 60) * 100 / 60)));
+  }
+  function volPaintBar(n){
+    var f = $("volFill");
+    f.style.width = Math.max(2, n) + "%";
+    f.style.background = n >= volMin ? "#27ae60" : (n >= volMin - 12 ? "#e6a23c" : "#e74c3c");
+  }
+  function volShowMsg(n, ok){
+    var el = $("volMsg");
+    if(ok){
+      el.className = "vol-msg ok";
+      el.textContent = "声音刚刚好 ✓（本次音量 " + n + "）";
+    } else if(volMin - n <= 8){
+      el.className = "vol-msg warn";
+      el.textContent = "还差一点点，再大声一些（本次 " + n + "，需要 " + volMin + "）";
+    } else {
+      el.className = "vol-msg bad";
+      el.textContent = "太小了听不清，大声读（本次 " + n + "，需要 " + volMin + "）";
+    }
+  }
+  // 当前题的音量条可见性：口语题 + 家长开启校验才显示（文字题/关闭时零改动）
+  function volPaintArea(q){
+    var on = volMin > 0 && !!q && !!q.questionType;
+    $("volWrap").style.display = on ? "block" : "none";
+    if(on) $("volLine").style.left = volMin + "%";
+  }
+  // 录音中：AnalyserNode 实时 RMS → 音量条（绿=达标区/黄=偏轻/红=太小，达标线画在条上）
+  function volStartMeter(stream){
+    if(!volMin) return;
+    try{
+      var AC = window.AudioContext || window.webkitAudioContext;
+      volCtx = new AC();
+      var src = volCtx.createMediaStreamSource(stream);
+      volAnalyser = volCtx.createAnalyser();
+      volAnalyser.fftSize = 2048;
+      volBuf = new Float32Array(volAnalyser.fftSize);
+      src.connect(volAnalyser);
+      var tick = function(){
+        if(!volAnalyser) return;
+        volAnalyser.getFloatTimeDomainData(volBuf);
+        var sum = 0;
+        for(var i=0;i<volBuf.length;i++) sum += volBuf[i]*volBuf[i];
+        volPaintBar(volNormOf(Math.sqrt(sum/volBuf.length)));
+        volRaf = requestAnimationFrame(tick);
+      };
+      volRaf = requestAnimationFrame(tick);
+    }catch(e){ /* 音量条失败不阻断录音 */ }
+  }
+  function volStopMeter(){
+    if(volRaf){ cancelAnimationFrame(volRaf); volRaf = 0; }
+    volAnalyser = null;
+    if(volCtx){ try{ volCtx.close(); }catch(e){} volCtx = null; }
+  }
+  // 录完：decodeAudioData 解码整段 PCM 算平均音量（不读容器电平；webm(opus) 与 wav 口径差异在此消解）
+  function volMeasureBlob(blob){
+    return blob.arrayBuffer().then(function(ab){
+      var AC = window.AudioContext || window.webkitAudioContext;
+      var ctx = new AC();
+      return new Promise(function(resolve){
+        var settled = false;
+        var done = function(v){
+          if(settled) return;
+          settled = true;
+          try{ ctx.close(); }catch(e){}
+          resolve(v);
+        };
+        try{
+          var p = ctx.decodeAudioData(ab, function(buf){ done(volRmsNormOfBuffer(buf)); }, function(){ done(0); });
+          if(p && typeof p.then === "function"){
+            p.then(function(buf){ done(volRmsNormOfBuffer(buf)); }, function(){ done(0); });
+          }
+        }catch(e){ done(0); }
+      });
+    }).catch(function(){ return 0; });
+  }
+  function volRmsNormOfBuffer(buf){
+    try{
+      var ch = buf.numberOfChannels, n = buf.length, sum = 0, cnt = 0;
+      for(var c=0;c<ch;c++){
+        var d = buf.getChannelData(c);
+        for(var i=0;i<n;i++){ sum += d[i]*d[i]; cnt++; }
+      }
+      return cnt ? volNormOf(Math.sqrt(sum/cnt)) : 0;
+    }catch(e){ return 0; }
+  }
   var $ = function(id){ return document.getElementById(id); };
   $("examTitle").textContent = D.title || "学习考核";
   $("examSubject").textContent = D.subject || "科目";
@@ -283,15 +405,22 @@ window.EXAM_DATA = ${dataJson};
     }
     // 口语/听说题：隐藏文字识别框、不触发 ASR
     var isSpeech = !!q.questionType;
+    var loudHint = isSpeech && volMin > 0 ? "声音要响亮一点哦——读得太轻不算数，录完看下面的声音大小。"
+      : "";
     $("qHint").textContent = isSpeech
       ? (isReciteBlind
-          ? "🧠 这是一道背诵题：先在脑子里回忆原文，再按住麦克风背诵，松手即停。可分段录好几遍拼成完整一篇；背错了只需再背一遍，不用删前面的录音，提交后自动评分。"
-          : "🎤 按住麦克风朗读/跟读下面的原文，松手即停。可分段录好几遍拼接；读错了只需再读一遍，不用删前面的录音，提交后自动评分。")
+          ? "🧠 这是一道背诵题：先在脑子里回忆原文，再按住麦克风背诵，松手即停。可分段录好几遍拼成完整一篇；背错了只需再背一遍，不用删前面的录音，提交后自动评分。" + loudHint
+          : "🎤 按住麦克风朗读/跟读下面的原文，松手即停。可分段录好几遍拼接；读错了只需再读一遍，不用删前面的录音，提交后自动评分。" + loudHint)
       : (opts.length
           ? "👀 看下面的选项，按住麦克风说出你选哪一个（例如「选 B」），也可以直接把答案内容说出来；松开后自动识别。"
           : "🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。");
     $("asrLabel").style.display = isSpeech ? "none" : "";
     $("asr").style.display = isSpeech ? "none" : "";
+    // ISSUE-183：音量条按题显隐（口语题 + 家长开启校验），切题清空上一题的提示与残影
+    volPaintArea(q);
+    $("volMsg").className = "vol-msg";
+    $("volMsg").textContent = "";
+    volPaintBar(0);
     paintState();
   }
   // 离开当前题：保存文本框；已有内容（录音/文字）→ 打答完时间并锁定（之后只读不可改）
@@ -348,6 +477,7 @@ window.EXAM_DATA = ${dataJson};
       rec.ondataavailable = function(e){ if(e.data.size) chunks.push(e.data); };
       rec.onstop = function(){
         stream.getTracks().forEach(function(t){ t.stop(); });
+        volStopMeter();
         var blob = new Blob(chunks, {type: rec.mimeType || "audio/webm"});
         var qid = recQid; recQid = null;
         var q = D.questions.find(function(x){ return x.id === qid; });
@@ -362,33 +492,24 @@ window.EXAM_DATA = ${dataJson};
         // 录音转 base64 供宿主合并（同聊天：一次输入多段拼接为单个音频）
         var fr = new FileReader();
         fr.onload = function(){
-          var recA = answers[qid] || { segs: [], sec: 0 };
-          if(!recA.segs) recA.segs = [];
-          recA.segs.push(String(fr.result)); // data:...;base64,...
-          if(recA.audioUrl) URL.revokeObjectURL(recA.audioUrl);
-          recA.audioUrl = URL.createObjectURL(blob);
-          answers[qid] = recA;
-          if(qIndex(qid) === idx) updateNav(); // 录上音即可进入下一题
-          if(qIndex(qid) === idx && !recA.locked){
-            if(q.questionType){
-              // 背诵/跟读题：无需 ASR，本次录音段已 push 进 recA.segs（提交时宿主用 voiceMerge 合并多段为单音频再评测）；
-              // 注意：此处**不锁定**——孩子可多次按住补充录音、多段拼接成完整一篇，仅当点「下一题/上一题」切走时由 saveCurrent() 锁定。
-              // （计时器在 !a.locked && !a.answeredAt 时才累加本题用时，故不在此置 answeredAt，保证多段期间总用时持续累计。）
-              paintState();
-            } else {
-              // 识别中提示（防孩子以为没录上）
-              transcribing = true;
-              setBtn("🔄 识别中…", "recognizing");
-              $("recStatus").textContent = "正在识别你的回答…请稍等";
-              if(window.parent && window.parent!==window){ window.parent.postMessage({ type:"exam:asr", qid:qid, blob:blob }, "*"); }
-            }
-          } else {            // 录音后立刻切走的题：已有内容 → 立即锁定（防漏锁导致无法提交）
-            if(recA.segs.length || (recA.asr && String(recA.asr).trim())){
-              if(!recA.answeredAt) recA.answeredAt = Date.now();
-              if(recA.sec) recA.durationMs = recA.sec * 1000;
-              recA.locked = true;
-            }
-            paintState();
+          var dataUrl = String(fr.result);
+          if(q.questionType && volMin > 0){
+            // ISSUE-183：口语/背诵题每段录完即校平均音量（解码 PCM 整段 RMS）。
+            // 不达标 → 该段不入答案（=这题还没答）、立即提示原地重录，无次数上限；
+            // 达标段才拼接进答案，保证送评音频平均音量必然达标（合并 RMS ≥ 各段最小值）。
+            volMeasureBlob(blob).then(function(n){
+              volPaintBar(n);
+              if(n < volMin){
+                volShowMsg(n, false);
+                $("recStatus").textContent = "这条声音太小，不算数——请大声一点再读一遍";
+                paintState(); // 按钮恢复可录，直接重录
+                return;
+              }
+              volShowMsg(n, true);
+              pushSegment(qid, dataUrl, blob);
+            });
+          } else {
+            pushSegment(qid, dataUrl, blob);
           }
         };
         fr.readAsDataURL(blob);
@@ -399,11 +520,48 @@ window.EXAM_DATA = ${dataJson};
       recQid = q.id;
       setBtn("松开结束", "holding");
       $("recTime").textContent = "00:00";
+      if(volMin > 0 && q.questionType){
+        $("volMsg").className = "vol-msg";
+        $("volMsg").textContent = "";
+      }
+      volStartMeter(stream); // 录音中实时音量条（仅口语题 + 开启校验时）
       recTimer = setInterval(function(){
         var s = Math.floor((Date.now()-recStart)/1000);
         $("recTime").textContent = String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
       }, 500);
-    }).catch(function(err){ media = null; $("recStatus").textContent = "无法录音：" + (err && err.message ? err.message : err); });
+    }).catch(function(err){ media = null; volStopMeter(); $("recStatus").textContent = "无法录音：" + (err && err.message ? err.message : err); });
+  }
+  // 段落入库（音量校验通过 / 非口语题）：push 进该题 segs；口语题不锁题可继续补录，文字题走 ASR
+  function pushSegment(qid, dataUrl, blob){
+    var recA = answers[qid] || { segs: [], sec: 0 };
+    if(!recA.segs) recA.segs = [];
+    recA.segs.push(dataUrl); // data:...;base64,...
+    if(recA.audioUrl) URL.revokeObjectURL(recA.audioUrl);
+    recA.audioUrl = URL.createObjectURL(blob);
+    answers[qid] = recA;
+    var q = D.questions.find(function(x){ return x.id === qid; });
+    if(qIndex(qid) === idx) updateNav(); // 录上音即可进入下一题
+    if(qIndex(qid) === idx && !recA.locked){
+      if(q && q.questionType){
+        // 背诵/跟读题：无需 ASR，本次录音段已 push 进 recA.segs（提交时宿主用 voiceMerge 合并多段为单音频再评测）；
+        // 注意：此处**不锁定**——孩子可多次按住补充录音、多段拼接成完整一篇，仅当点「下一题/上一题」切走时由 saveCurrent() 锁定。
+        // （计时器在 !a.locked && !a.answeredAt 时才累加本题用时，故不在此置 answeredAt，保证多段期间总用时持续累计。）
+        paintState();
+      } else {
+        // 识别中提示（防孩子以为没录上）
+        transcribing = true;
+        setBtn("🔄 识别中…", "recognizing");
+        $("recStatus").textContent = "正在识别你的回答…请稍等";
+        if(window.parent && window.parent!==window){ window.parent.postMessage({ type:"exam:asr", qid:qid, blob:blob }, "*"); }
+      }
+    } else {            // 录音后立刻切走的题：已有内容 → 立即锁定（防漏锁导致无法提交）
+      if(recA.segs.length || (recA.asr && String(recA.asr).trim())){
+        if(!recA.answeredAt) recA.answeredAt = Date.now();
+        if(recA.sec) recA.durationMs = recA.sec * 1000;
+        recA.locked = true;
+      }
+      paintState();
+    }
   }
   // 按住说话（push-to-talk）：桌面 pointer + 移动端 touch
   var micBtn = $("micBtn");

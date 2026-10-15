@@ -45,6 +45,9 @@ export default function AssessmentSettings() {
   const [fields, setFields] = useState<Record<string, string>>({});
   const [status, setStatus] = useState("");
   const [testing, setTesting] = useState(false);
+  // ISSUE-183：考核朗读/背诵规则——录音最低平均音量（0-100 归一分，0=不校验）+ 通过线家长默认值
+  const [minVolumeNorm, setMinVolumeNorm] = useState(42);
+  const [recitePassDefault, setRecitePassDefault] = useState(90);
   const { recording, start, stop } = useAudioRecorder();
 
   useEffect(() => {
@@ -54,6 +57,11 @@ export default function AssessmentSettings() {
         setProvider(r.config.provider);
         setDefaultProvider(r.config.provider);
         setFields(r.config.providers[r.config.provider] || {});
+        // 服务端 loadAssessmentConfig 已带默认值兜底；再兜一层防旧服务端不回字段
+        const mv = Number(r.config.minVolumeNorm);
+        const rp = Number(r.config.recitePassDefault);
+        if (Number.isFinite(mv) && mv >= 0) setMinVolumeNorm(Math.min(100, Math.round(mv)));
+        if (Number.isFinite(rp) && rp > 0) setRecitePassDefault(Math.min(100, Math.round(rp)));
       }
     });
   }, []);
@@ -79,6 +87,8 @@ export default function AssessmentSettings() {
       enabled,
       provider: defaultProvider,
       providers,
+      minVolumeNorm,
+      recitePassDefault,
     });
     if (r?.success) {
       setStatus("已保存");
@@ -94,6 +104,8 @@ export default function AssessmentSettings() {
       enabled,
       provider,
       providers: {},
+      minVolumeNorm,
+      recitePassDefault,
     });
     if (r?.success) {
       setDefaultProvider(r.config.provider);
@@ -222,14 +234,61 @@ export default function AssessmentSettings() {
         </div>
       ))}
 
+      {/* ISSUE-183：考核朗读/背诵规则（家长可配；随「保存」一起提交） */}
+      <div style={{ marginTop: 24, borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 16 }}>考核朗读/背诵</h3>
+        <p className="desc" style={{ marginBottom: 14 }}>
+          考核里的朗读/背诵题规则：录音音量不达标算没答、要求重录（让孩子大声朗读，减轻声音小导致的评分误差）；
+          评分改用各维度（准确度/流利度/完整度）平均分。
+        </p>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: "block", fontSize: 13, marginBottom: 4, fontWeight: 500 }}>
+            考核录音最低平均音量：<b>{minVolumeNorm > 0 ? minVolumeNorm : "不校验（关闭）"}</b>
+          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={minVolumeNorm}
+              onChange={(e) => setMinVolumeNorm(Number(e.target.value))}
+              style={{ flex: 1, maxWidth: 320 }}
+            />
+            <span style={{ fontSize: 12, color: "#999" }}>0 = 不校验</span>
+          </div>
+          <p style={{ fontSize: 12, color: "#999", margin: "4px 0 0" }}>
+            录音平均音量低于此值（0-100 归一分）时，孩子端会提示重录、该题不送评分（无次数限制）；
+            服务端也会对提交的录音再校一次。默认 42（约 -35dBFS），可按孩子实际录音情况调低/调高或关闭。
+          </p>
+        </div>
+
+        <div style={{ marginBottom: 8 }}>
+          <label style={{ display: "block", fontSize: 13, marginBottom: 4, fontWeight: 500 }}>
+            朗读/背诵通过线：<b>{recitePassDefault}</b> 分
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={recitePassDefault}
+            onChange={(e) => setRecitePassDefault(Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0))))}
+            style={{ width: 100, padding: "8px 10px", border: "1px solid #ddd", borderRadius: 8 }}
+          />
+          <p style={{ fontSize: 12, color: "#999", margin: "4px 0 0" }}>
+            评分改为各维度平均后分数会变，达不到线的题目判不通过。题目/考核方法自带通过线的以自带为准，未设的用这里的默认值。
+          </p>
+        </div>
+      </div>
+
       <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
         <IconButton
           icon={Save}
           title="保存"
           onClick={handleSave}
           style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
-        />
-        <button
+        />        <button
           onClick={setDefault}
           style={{
             padding: "10px 20px",

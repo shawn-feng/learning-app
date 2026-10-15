@@ -4,11 +4,21 @@ import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
 import { getServerSecret, encryptJson, decryptJson } from "../crypto.js";
 import type { AssessmentProviderId } from "./types.js";
+import {
+  DEFAULT_EXAM_MIN_VOLUME_NORM,
+  DEFAULT_EXAM_RECITE_PASS,
+  parseVolumeThreshold,
+  parsePassLine,
+} from "./volume.js";
 
 export interface AssessmentConfig {
   enabled: boolean;
   provider: AssessmentProviderId;
   providers: Record<AssessmentProviderId, Record<string, string>>;
+  /** 考核录音最低平均音量（0-100 归一分，与客户端 exam-template 同一口径，见 volume.ts）。0 = 不校验。 */
+  minVolumeNorm: number;
+  /** 朗读/背诵通过线家长默认值（0-100）。题目/方法/排期自带 recitePass 时以题目为准，未设才用它。 */
+  recitePassDefault: number;
 }
 
 export const ASSESSMENT_PROVIDER_ORDER: AssessmentProviderId[] = ["tencent-soe", "aliyun-ssecp"];
@@ -20,6 +30,8 @@ const DEFAULT_CONFIG: AssessmentConfig = {
     "tencent-soe": { appId: "", secretId: "", secretKey: "" },
     "aliyun-ssecp": { appKey: "", appSecret: "", userId: "pi-child" },
   },
+  minVolumeNorm: DEFAULT_EXAM_MIN_VOLUME_NORM,
+  recitePassDefault: DEFAULT_EXAM_RECITE_PASS,
 };
 
 /** 读取并解密该家长的测评配置（服务端内部使用，不对外暴露明文密钥）。 */
@@ -46,6 +58,9 @@ export function loadAssessmentConfig(db: DatabaseSync, parentId: string, dataDir
       ...DEFAULT_CONFIG.providers,
       ...(parsed.providers || {}),
     },
+    // ISSUE-183：旧配置无这两个字段 → 回默认值（阈值 42≈-35dBFS / 通过线 90）
+    minVolumeNorm: parseVolumeThreshold(parsed.minVolumeNorm, DEFAULT_EXAM_MIN_VOLUME_NORM),
+    recitePassDefault: parsePassLine(parsed.recitePassDefault, DEFAULT_EXAM_RECITE_PASS),
   };
 }
 
@@ -62,6 +77,8 @@ export function getMaskedAssessmentConfig(cfg: AssessmentConfig): AssessmentConf
     enabled: cfg.enabled,
     provider: cfg.provider,
     providers: {} as AssessmentConfig["providers"],
+    minVolumeNorm: cfg.minVolumeNorm,
+    recitePassDefault: cfg.recitePassDefault,
   };
   for (const [pname, creds] of Object.entries(cfg.providers)) {
     const m: Record<string, string> = {};
@@ -82,11 +99,16 @@ export function applyAssessmentConfigPatch(
     enabled: boolean;
     provider?: string;
     providers?: Record<string, Record<string, string>>;
+    minVolumeNorm?: number;
+    recitePassDefault?: number;
   }
 ): AssessmentConfig {
   const cfg = loadAssessmentConfig(db, parentId, dataDir);
   cfg.enabled = !!patch.enabled;
   if (patch.provider) cfg.provider = patch.provider as AssessmentProviderId;
+  // ISSUE-183：两个字段传了（含 0=不校验）才更新；未传保持原值
+  if (patch.minVolumeNorm != null) cfg.minVolumeNorm = parseVolumeThreshold(patch.minVolumeNorm, cfg.minVolumeNorm);
+  if (patch.recitePassDefault != null) cfg.recitePassDefault = parsePassLine(patch.recitePassDefault, cfg.recitePassDefault);
 
   for (const [pname, creds] of Object.entries(patch.providers || {})) {
     if (!cfg.providers[pname as AssessmentProviderId]) {

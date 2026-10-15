@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { logInfo } from "../log.js";
+import { rmsToVolumeNorm } from "./volume.js";
 
 function ffmpegCandidates(): string[] {
   const list: string[] = [];
@@ -182,4 +183,21 @@ export function extractWavPcm(wav: Buffer): Buffer {
   if (fmt.bitsPerSample !== 16) throw new Error(`WAV 非 16bit(${fmt.bitsPerSample})`);
   if (!data) throw new Error("WAV 缺少 data 块");
   return data;
+}
+
+/**
+ * ISSUE-183：计算 16k/单声道/16bit WAV 的全程平均音量（0-100 归一分，口径见 volume.ts）。
+ * 服务端兜底用：考核口语题评测前对合并 WAV 再算一次，低于家长阈值按未答拦下
+ * （防客户端绕过 / 旧版客户端无前置校验）。
+ */
+export function wavAverageVolumeNorm(wav: Buffer): number {
+  const pcm = extractWavPcm(wav);
+  const samples = pcm.length >> 1; // 16bit = 2 字节/样本
+  if (samples <= 0) return 0;
+  let sumSquares = 0;
+  for (let i = 0; i < samples; i++) {
+    const s = pcm.readInt16LE(i * 2) / 32768;
+    sumSquares += s * s;
+  }
+  return rmsToVolumeNorm(Math.sqrt(sumSquares / samples));
 }

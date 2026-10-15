@@ -93,7 +93,8 @@ export function attachStructuredQuestions(
     let requireMap: Record<string, number> = topicOvr.used ? topicOvr.requireMap : {};
     let requireKeys = Object.keys(requireMap);
     let exclude = topicOvr.used ? topicOvr.exclude : new Set<string>();
-    let recitePass = Math.max(0, Number(childSpec?.rules?.recitePass) || 90);
+    // 主题方法设了 recitePass 才带上（ISSUE-183：未设 = 0，客户端回退家长默认通过线；旧语义硬编码 90 会使家长默认永远不生效）
+    let recitePass = Math.max(0, Number(childSpec?.rules?.recitePass) || 0);
     // 计划级覆盖（自定义考核"本次只考某知识点"等）：优先于主题方法
     const ovr = resolveOverride(db, uuid, override);
     if (ovr.used) {
@@ -373,7 +374,9 @@ export function attachPlanQuestions(
   db: DatabaseSync,
   courses: CourseLike[],
   entries: PlanCourseSpec[],
-  recitePass = 90
+  // ISSUE-183：默认 0（=未设）。调用方在计划/方法未指定通过线时传 0，题目不带线，
+  // 客户端回退家长默认通过线（examRules.recitePassDefault，再兜底 90）。旧默认 90 会焊死家长默认。
+  recitePass = 0
 ): Array<{ title: string; reason: string }> {
   const byTitle = new Map(entries.map((e) => [e.title, e]));
   const counters = { textNo: 0, recNo: 0 };

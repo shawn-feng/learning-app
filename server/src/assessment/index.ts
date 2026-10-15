@@ -12,7 +12,7 @@ export async function assessAudio(
   parentId: string,
   dataDir: string,
   audio: Buffer,
-  opts: { provider?: AssessmentProviderId; refText?: string } = {}
+  opts: { provider?: AssessmentProviderId; refText?: string; /** 已转好的 16k wav（ISSUE-183 音量兜底已转过，复用免二次 ffmpeg） */ wav16k?: Buffer } = {}
 ): Promise<AssessmentResult> {
   const cfg = loadAssessmentConfig(db, parentId, dataDir);
   if (!cfg.enabled) throw new Error("发音评测未启用，请先在「设置 → 发音评测」中开启并配置评测服务");
@@ -22,7 +22,7 @@ export async function assessAudio(
 
   let wav: Buffer;
   try {
-    wav = await webmToWav16k(audio);
+    wav = opts.wav16k && opts.wav16k.length ? opts.wav16k : await webmToWav16k(audio);
   } catch (e) {
     throw new Error(`音频转 16k wav 失败（录音太短或格式异常）：${(e as Error).message}`);
   }

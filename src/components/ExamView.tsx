@@ -118,6 +118,9 @@ export default function ExamView({ childId, onExit }: Props) {
   const streamRunRef = useRef(0);
   // 幂等：同一场考试只启动一次流式出题（iframe 因 srcDoc 变化重载会再次触发 onLoad）
   const streamStartedRef = useRef(false);
+  // ISSUE-183：本场考核的家长级规则（考核录音最低平均音量 / 朗读背诵通过线默认值），
+  // startExam 时随服务端 examConfig 下发（examRules），进 iframe 与判分各用一份。
+  const examRulesRef = useRef<{ minVolumeNorm: number; recitePassDefault: number }>({ minVolumeNorm: 0, recitePassDefault: 90 });
   // 题流元数据（结构化 v2）：与 iframe D.questions 完全同序，记录每题评分标准文本与溯源 id；
   // iframe 会重排 qid 且丢弃未知字段，判分标准/题目溯源只能由宿主按送达顺序在提交时回填。
   const questionMetaRef = useRef<
@@ -170,6 +173,12 @@ export default function ExamView({ childId, onExit }: Props) {
         const cfg: any = await window.api.examConfig(childId, sch.id);
         if (!cfg?.success) throw new Error(cfg?.error || "获取考核内容失败");
         const data = cfg.data;
+        // ISSUE-183：家长级考核规则（录音最低平均音量/通过线默认值），随配置每次开考新鲜读取——家长改设置后下一场即生效
+        const rules = (data.examRules || {}) as { minVolumeNorm?: number; recitePassDefault?: number };
+        examRulesRef.current = {
+          minVolumeNorm: Math.max(0, Math.round(Number(rules.minVolumeNorm) || 0)),
+          recitePassDefault: Math.min(100, Math.max(0, Math.round(Number(rules.recitePassDefault) || 90))),
+        };
         let courses: CourseConfig[] = data.courses || [];
         let scoring = data.scoringPrompt || "";
         if (!courses.length && data.selectionPrompt) {
@@ -202,7 +211,10 @@ export default function ExamView({ childId, onExit }: Props) {
         streamRunRef.current++; // 使上一场（若有）的生成循环失效
         streamStartedRef.current = false; // 新一场重新允许 onLoad 启动
         questionMetaRef.current = []; // 新一场重置题流元数据
-        setExamHtml(buildExamHtml([], topicName, `${topicName} · 学习考核`, courses.length));
+        // ISSUE-183：音量阈值传进考核页（0=不校验；孩子录完每段即校，不达标原地重录）
+        setExamHtml(buildExamHtml([], topicName, `${topicName} · 学习考核`, courses.length, {
+          minNorm: examRulesRef.current.minVolumeNorm,
+        }));
         setStage("exam");
       } catch (e: any) {
         setError(`开始考核失败：${String(e?.message || e)}`);
@@ -462,9 +474,9 @@ export default function ExamView({ childId, onExit }: Props) {
             );
             if (!a?.success) throw new Error(a?.error || "发音评测失败");
             const sp: SpeechAssessment = a.data.result;
-            // 背诵通过线：取本题方法里的 recitePass（主题方法/排期覆盖，默认 90）；
+            // 背诵通过线：题目/方法/排期自带 recitePass 优先；未带（0）→ 家长默认通过线（ISSUE-183）→ 再兜底 90。
             // 背诵考记忆与准确，达标才算通过。
-            const pass = Number((q as any).recitePass) || 90;
+            const pass = Number((q as any).recitePass) || examRulesRef.current.recitePassDefault || 90;
             const total = sp.overall ?? sp.pron ?? 0;
             const pointGot = Math.round((total / 100) * (Number(q.pointMax) || 10));
             return {

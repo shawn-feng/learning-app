@@ -6,6 +6,7 @@
 // 不需要阿里云 AccessKey。
 import { createHash, randomUUID } from "crypto";
 import type { AssessmentResult, WordScore } from "../types.js";
+import { dimensionMeanScore } from "../score.js";
 
 const AUTH_URL = "http://api.cloud.ssapi.cn:8080/auth/authorize";
 const API_BASE = "https://api.cloud.ssapi.cn";
@@ -139,7 +140,8 @@ export async function assess(
   return parseSsecpResult(parsed, coreType);
 }
 
-function parseSsecpResult(parsed: any, coreType: string): AssessmentResult {
+/** 声希结果 → AssessmentResult（导出供回归测试对账「维度平均」口径）。 */
+export function parseSsecpResult(parsed: any, coreType: string): AssessmentResult {
   const r = parsed.result || {};
   const words: WordScore[] = [];
 
@@ -170,9 +172,10 @@ function parseSsecpResult(parsed: any, coreType: string): AssessmentResult {
 
   const fluencyVal = r.fluency && typeof r.fluency === "object" ? r.fluency.overall : r.fluency;
 
+  // ISSUE-183：最终分 = 各维度平均（见 ../score.ts）；三维度都缺才回退 overall，再缺 0。
   return {
     provider: "aliyun-ssecp",
-    score: Math.round(r.overall ?? r.pron ?? 0),
+    score: dimensionMeanScore([r.accuracy, fluencyVal, r.integrity], r.overall ?? r.pron),
     accuracy: r.accuracy != null ? Math.round(r.accuracy) : undefined,
     fluency: fluencyVal != null ? Math.round(fluencyVal) : undefined,
     completeness: r.integrity != null ? Math.round(r.integrity) : undefined,
