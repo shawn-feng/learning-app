@@ -915,6 +915,9 @@ export default function Learn({ child, onExit }: Props) {
     }
     const images = opts?.images || [];
     const textFiles = opts?.textFiles || [];
+    // ISSUE-181：通用/音频附件通道（ISSUE-036 的 files 此前在发送侧被丢弃）——
+    // 上传的音频按普通附件发送，标记【附件音频】，其余【附件文件】
+    const genFiles = opts?.files || [];
     // 语音输入：先把录音落盘（历史恢复时据此播放），失败不影响发送。
     // 多段（ISSUE-021）由主进程 voice:merge 拼接成单个 WAV；单段沿用原 saveUpload。
     let audioPath: string | undefined;
@@ -1019,6 +1022,9 @@ export default function Learn({ child, onExit }: Props) {
       }
       for (const f of textFiles) {
         parts.push(`【附件文件：${f.name}|${f.ref || toRel(f.path)}】`);
+      }
+      for (const f of genFiles) {
+        parts.push(`【附件${f.mime?.startsWith("audio/") ? "音频" : "文件"}：${f.name}|${f.ref || toRel(f.path)}】`);
       }
       const promptText = parts.join("\n");
       // dataURL → SDK ImageContent（剥离前缀，内联 base64 发送，不落盘）

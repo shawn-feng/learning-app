@@ -43,6 +43,7 @@ DEFAULT_MODELS = {
     "vision": "deepseek/deepseek-v4-flash-vision-exp",        # 已实测 ✅
     "asr": "qwen-audio-3.0-asr-flash",                        # DashScope（当前可用）
     "tts": "edge-tts",                                        # 免费（当前可用）
+    "voice": "minimax_55e81114-ce7e-4ca1",                    # 合成音色（TTS=minimax-speech-* 时生效，管理页可选）
 }
 # 建 Key 绑定时始终包含的模型：向量检索（ISSUE-111/120）走同 Key 的 /embeddings，
 # 若只绑 text/vision 会把向量调用一并拦掉，故恒定加入。

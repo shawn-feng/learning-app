@@ -17,6 +17,18 @@ import AccountSettings from "../components/AccountSettings";
 // ISSUE-174：大模型配额面板（TokenHub 统一模型接入）
 import TokenHubQuotaPanel from "../components/TokenHubQuotaPanel";
 
+// 语音合成音色（ISSUE-174 续：内置渠道 TTS=minimax-speech-* 时生效；家长端显式选择优先于管理端云端配置。
+// 清单 = benefit-auth VOICE_OPTIONS 同款，均经 MiniMax sync_tts 真调实测）
+const TTS_VOICE_OPTIONS = [
+  { v: "", n: "跟随管理端配置（默认音色）" },
+  { v: "minimax_55e81114-ce7e-4ca1", n: "默认音色（通用女声）" },
+  { v: "female-shaonv", n: "少女音（亲切朗读）" },
+  { v: "female-yujie", n: "御姐音（沉稳讲述）" },
+  { v: "male-qn-qingse", n: "青涩青年男声" },
+  { v: "clever_boy", n: "童声·小男孩（儿童内容）" },
+  { v: "audiobook_female_1", n: "有声书女声（故事长文）" },
+];
+
 // ISSUE-174（2026-10-10 调整版）：模型渠道三态开关（app_settings.modelChannel，用户拍板）——
 // ① 「AI模型」= 内置渠道（TokenHub 托管 Key）：开关控制启停，配额直显，**不展示模型来源与列表**；
 // ② 「自定义模型」= 自定义 provider 渠道：独立开关，启用即自动停用内置（两开关镜像同一状态，
@@ -72,12 +84,31 @@ export default function Settings() {
   const [programmingModelDraft, setProgrammingModelDraft] = useState("");
   // 模型渠道三态：builtin=内置 AI 模型 / custom=自定义模型 / off=停用（两 tab 开关镜像此状态）
   const [modelChannel, setModelChannel] = useState<ModelChannel>("builtin");
+  // 语音合成音色（app_settings.ttsVoice，家长级；空 = 跟随管理端云端配置）
+  const [ttsVoice, setTtsVoice] = useState("");
 
   useEffect(() => {
     window.api.piGetModelChannel?.().then((r: any) => {
       if (r?.success && (r.channel === "custom" || r.channel === "off")) setModelChannel(r.channel);
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    window.api.piGetSettings?.().then((r: any) => {
+      if (r?.success && typeof r.appSettings?.ttsVoice === "string") setTtsVoice(r.appSettings.ttsVoice);
+    }).catch(() => {});
+  }, []);
+
+  /** 音色选择：服务端 app_settings.ttsVoice（家长级，全设备生效），空 = 跟随管理端。 */
+  async function changeTtsVoice(v: string) {
+    const prev = ttsVoice;
+    setTtsVoice(v);
+    const r = await window.api.piSetTtsVoice?.(v);
+    if (!r?.success) {
+      setTtsVoice(prev);
+      setKeyStatus(`音色保存失败: ${r?.error || ""}`);
+    }
+  }
 
   /** 渠道切换：服务端单值存储，开一个自动关另一个；off = 内置/自定义全停。 */
   async function switchChannel(next: ModelChannel) {
@@ -245,6 +276,23 @@ export default function Settings() {
               </div>
             </div>
             <ChannelToggle checked={modelChannel === "builtin"} onToggle={(v) => switchChannel(v ? "builtin" : "off")} />
+          </div>
+
+          {/* 语音合成音色：服务端 TTS（朗读/设备语音回复）用 MiniMax 合成时的音色；家长端显式选择优先于管理端云端配置 */}
+          <div style={{ padding: "12px 16px", border: "1px solid #e2e8f0", borderRadius: 10, marginBottom: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>语音合成音色</div>
+            <div style={{ fontSize: 12, color: "#667", marginBottom: 8 }}>
+              内置语音合成（朗读、设备语音回复）的音色，家长级设置、所有设备生效；选「跟随管理端」则以管理页配置为准。
+            </div>
+            <select
+              value={ttsVoice}
+              onChange={(e) => changeTtsVoice(e.target.value)}
+              style={{ width: "100%", maxWidth: 380, padding: "8px 10px", fontSize: 13 }}
+            >
+              {TTS_VOICE_OPTIONS.map((o) => (
+                <option key={o.v} value={o.v}>{o.n}</option>
+              ))}
+            </select>
           </div>
 
           {/* ISSUE-174 调整：配额直接展示在本页，不再单独一个标签 */}

@@ -155,8 +155,10 @@ export interface SystemDefaultModels {
   vision: string;
   /** ASR 模型名（通道内模型，如 qwen-audio-3.0-asr-flash；无 provider 前缀） */
   asr: string;
-  /** TTS 模型名（当前仅 edge-tts 可用，其余为预留） */
+  /** TTS 模型名（edge-tts 或 minimax-speech-*） */
   tts: string;
+  /** 合成音色（TTS=minimax-speech-* 时生效的 MiniMax voice_id，管理端「合成音色」下拉） */
+  voice: string;
 }
 
 const BUILTIN_MODEL_DEFAULTS: SystemDefaultModels = {
@@ -164,6 +166,7 @@ const BUILTIN_MODEL_DEFAULTS: SystemDefaultModels = {
   vision: `tokenhub/deepseek/deepseek-v4-flash-vision-exp`,
   asr: "qwen-audio-3.0-asr-flash",
   tts: "edge-tts",
+  voice: "minimax_55e81114-ce7e-4ca1",
 };
 
 const META_MODEL_CONFIG_KEY = "tokenhub_model_config";
@@ -191,6 +194,7 @@ async function refreshSystemDefaultModels(upstreamBase: string, db: DatabaseSync
     vision: `tokenhub/${m.vision}`,
     asr: m.asr || BUILTIN_MODEL_DEFAULTS.asr,
     tts: m.tts || BUILTIN_MODEL_DEFAULTS.tts,
+    voice: m.voice || BUILTIN_MODEL_DEFAULTS.voice,
   };
   sysModelsCache = next;
   db.prepare(
@@ -208,7 +212,10 @@ function loadSystemDefaultModelsFromMeta(db: DatabaseSync): void {
       | undefined;
     if (row?.value) {
       const parsed = JSON.parse(row.value) as SystemDefaultModels;
-      if (parsed?.text && parsed?.vision) sysModelsCache = parsed;
+      if (parsed?.text && parsed?.vision) {
+        // 旧 meta 无 voice 字段（voice 下发先于该字段上线）：补默认，避免合成取到 undefined
+        sysModelsCache = { ...parsed, voice: parsed.voice || BUILTIN_MODEL_DEFAULTS.voice };
+      }
     }
   } catch {
     /* 损坏则用内置常量 */
@@ -232,7 +239,7 @@ export function startTokenHubKeySync(config: ServerConfig, db: DatabaseSync): vo
       // 系统默认模型（云端四下拉）：每轮先刷新（公开端点，无需家长凭证）
       if (await refreshSystemDefaultModels(config.upstreamBase, db)) {
         const m = getSystemDefaultModels();
-        console.log(`[tokenhub] ${trigger}: 系统默认模型已同步 text=${m.text} vision=${m.vision} asr=${m.asr} tts=${m.tts}`);
+        console.log(`[tokenhub] ${trigger}: 系统默认模型已同步 text=${m.text} vision=${m.vision} asr=${m.asr} tts=${m.tts} voice=${m.voice}`);
       }
     } catch (e) {
       console.warn(`[tokenhub] ${trigger}: 默认模型拉取失败: ${(e as Error).message}`);

@@ -187,6 +187,20 @@ export function readVoiceChannel(db: DatabaseSync, parentId: string): VoiceChann
   }
 }
 
+/** 读家长在 app 设置页选的「语音合成音色」（app_settings.ttsVoice；空串/未设 = 跟随管理端云端配置）。 */
+export function readTtsVoice(db: DatabaseSync, parentId: string): string {
+  const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(`${parentId}:app_settings`) as
+    | { value_json?: string }
+    | undefined;
+  if (!row?.value_json) return "";
+  try {
+    const v = JSON.parse(row.value_json)?.ttsVoice;
+    return typeof v === "string" ? v.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 /** 生成识别候选（渠道感知，用户 2026-10-10 拍板）：
  *  - builtin：仅 TokenHub（托管 Key，额度同池；语音后付费未开通时 402 上抛为可读错误）+ env 兜底；
  *  - custom：仅家长自配通道（自身 Key 或 auth 封套同厂商兜底），默认服务在前；

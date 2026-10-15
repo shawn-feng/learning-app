@@ -287,3 +287,13 @@
   test/issue174-tts-client.test.ts 3/3（server 优先/回落/自定义 provider 不走 server）。
   注意 light-my-request 二进制响应在 `body` 不在 `rawBody`；fastify 需从 server/node_modules 解析
   （createRequire(path.resolve("server/src/index.ts"))）。
+
+## 🎚️ 资料页语速（client 0.1.28，2026-10-14）
+
+- 用户：取词发音没语速；HTML 资料里的音频播放要能控速。实现（纯客户端，server 不用动——/tts/synthesize 本就收 rate）：
+  - MaterialsPanel 详情页头部加「朗读语速」选择（慢0.5x/标准0.7x/正常1.0x/快1.3x，localStorage pi.materialRate 持久化）；
+  - speakMaterialText（useCallback([])+matRateRef 读最新值）把 rate 透传 voiceTts/voiceSpeak → 服务端 MiniMax speed 合成——**取词发音、资料朗读、点读全部跟随**；
+  - 资料页原生 <audio>/<video>：桥脚本新增 page:tts-rate 消息（对齐 page:mat-font 范式）设 playbackRate，
+    play 事件捕获兜底后挂载媒体；iframe 重建由 page:ready 握手重发；matRateMult 钳制 0.25~4。
+- 踩坑：模块级常量插到了 forwardRef(...) 参数列表里（esbuild "Expected identifier but found const"）——
+  锚点别选函数签名的首参行。

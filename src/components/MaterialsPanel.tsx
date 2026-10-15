@@ -293,6 +293,15 @@ function sceneReadyText(manifest: unknown): string {
   return `${title}已就绪。可点物品（点击会发单词音并上报）：${p.join("、")}。场景角色：${c.join("、")}。`;
 }
 
+// 朗读语速档位（用户 2026-10-14）：取词发音 / 资料朗读（TTS 合成语速）+ 资料页原生音视频播放倍速共用；
+// localStorage 持久化（pi.materialRate），默认常速。与孩子端聊天页 RATE_OPTIONS 同值体系。
+const MAT_RATE_OPTIONS = [
+  { label: "慢", value: "-50%", display: "0.5x" },
+  { label: "标准", value: "-30%", display: "0.7x" },
+  { label: "正常", value: "+0%", display: "1.0x" },
+  { label: "快", value: "+30%", display: "1.3x" },
+];
+
 const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function MaterialsPanel(
   { materials, selectedId, onOpen, onBack, onPageEvent, onCollapse, matFontSize = 16, childId, bare = false },
   ref
@@ -300,6 +309,14 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
   const selected = materials.find((m) => m.id === selectedId);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const readyRef = useRef(false);
+  // 朗读语速：TTS 合成语速（voiceTts rate 透传服务端）+ 资料页原生音视频 playbackRate；
+  // ref 供 speakMaterialText（useCallback([])）读取最新值，避免回调重建/消息监听捕获旧值
+  const [matRate, setMatRate] = useState(() => localStorage.getItem("pi.materialRate") || "+0%");
+  const matRateRef = useRef(matRate);
+  matRateRef.current = matRate;
+  const matRateMult = Math.min(4, Math.max(0.25, 1 + (Number(matRate.replace("%", "")) || 0) / 100));
+  const matRateMultRef = useRef(matRateMult);
+  matRateMultRef.current = matRateMult;
   // MATERIAL 保鲜/display_content 同 path 重发等场景下，React/Chromium 更新 srcDoc 属性不保证
   // 触发 iframe 重载；用 epoch 在内容（selected.content）实质变化时 +1，配合 HtmlFrame key 强重建。
   const [htmlEpoch, setHtmlEpoch] = useState(0);
@@ -350,7 +367,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
       // （播完或被取代）后按 seq 有效性回执 page:tts:done（对齐 edge-tts blob 播完回执时机）。
       if (window.api?.__web && window.api?.voiceSpeak) {
         try {
-          await window.api.voiceSpeak(playText, {});
+          await window.api.voiceSpeak(playText, { rate: matRateRef.current });
         } catch {
           /* 播报失败按播完收尾（回执复位页面朗读按钮，不卡队列） */
         }
@@ -362,7 +379,7 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         return;
       }
       try {
-        const r = await window.api.voiceTts(playText, {});
+        const r = await window.api.voiceTts(playText, { rate: matRateRef.current });
         if (seq !== ttsSeqRef.current || !r.success || !r.audio) return; // 已被打断（seq 失效）
         console.log("[pi-tts] ▶ 开始播放 seq=" + seq + " text=" + playText.slice(0, 40));
         const blob = new Blob([r.audio], { type: "audio/mpeg" });
@@ -578,6 +595,12 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
         onPageEventRef.current?.(evt);
       } else if (data.type === "page:ready") {
         readyRef.current = true;
+        // iframe 就绪即套用当前朗读语速（资料页原生音视频 playbackRate）
+        try {
+          iframeRef.current?.contentWindow?.postMessage(
+            { type: "page:tts-rate", mult: matRateMultRef.current }, "*"
+          );
+        } catch { /* iframe 未挂载静默 */ }
       } else if (data.type === "page:exec:result" || data.type === "page:app-cmd:result") {
         const rid = (data as { requestId?: string }).requestId;
         const p = pendingRef.current.get(rid as string);
@@ -744,6 +767,15 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
     }
   }, [matFontSize]);
 
+  // 朗读语速变化 → 运行期下发 iframe：资料页原生 <audio>/<video> 播放倍速即时生效
+  //（TTS 朗读语速在合成侧按 matRateRef 生效，不经消息）；iframe 重建后由 page:ready 握手重发。
+  useEffect(() => {
+    const win = iframeRef.current?.contentWindow;
+    if (win && readyRef.current) {
+      win.postMessage({ type: "page:tts-rate", mult: matRateMult }, "*");
+    }
+  }, [matRate, matRateMult]);
+
   // 详情视图
   if (selected) {
     const kind: MaterialKind = selected.kind ?? kindFromPath(selected.filePath);
@@ -794,6 +826,20 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
                 {selected.title}
               </h2>
             )}
+            {/* 朗读语速：取词发音 / 资料朗读（TTS 合成语速）+ 资料页内音视频播放倍速；全资料页共用 */}
+            <select
+              title="朗读语速"
+              value={matRate}
+              onChange={(e) => {
+                setMatRate(e.target.value);
+                localStorage.setItem("pi.materialRate", e.target.value);
+              }}
+              style={{ padding: "4px 6px", fontSize: 12, borderRadius: 6, border: "1px solid #d8dee8", background: "#fff", flexShrink: 0 }}
+            >
+              {MAT_RATE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.display}</option>
+              ))}
+            </select>
           </div>
         )}
         {kind === "html" ? (

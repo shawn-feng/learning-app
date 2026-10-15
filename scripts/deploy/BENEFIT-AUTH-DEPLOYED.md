@@ -231,3 +231,13 @@ TOKENHUB_REGION=ap-guangzhou
   optgroup「—— 平台全部同类型模型 ——」分隔。拉取失败回落精选静态清单。
 - **同 fix18 顺带修正**：POST /tokenhub/models 取消「换默认模型→批量轮换」（Key 已 BindType=all，
   轮换无模型效果纯属churn）；默认模型经 /model-config 实时下发，保存即生效。页面说明文案同步更新。
+
+## fix19（2026-10-14 09:30 部署）：管理页「合成音色」下拉
+- 内容：`DEFAULT_MODELS` 增加 `voice` 键（默认 `minimax_55e81114-ce7e-4ca1`，存量库无此键自动回落默认）；
+  `VOICE_OPTIONS` 实测清单 6 项（默认/少女/御姐/青涩男声/童声 clever_boy/有声书女声，2026-10-12 经
+  sync_tts 端点逐个真调验证）；`DefaultModelsBody`+voice；GET models 附 voices 清单；管理页音色下拉
+  （静态清单 + 自定义值兼容；空值提交不清空）。
+- 生效链：管理页保存 → `GET /api/tokenhub/model-config` 下发 voice → server 0.5.31 每 5 分钟同步 →
+  TTS 合成 `voice_setting.voice_id` 取用（TTS 选 MiniMax Speech 系时生效；Edge TTS 不适用）。
+- 部署：OSS put + 预签名 URL + 云助手 RunCommand（备份 app-before-fix19-*）→ py_compile ok →
+  重启 active。校验：model-config 已下发 `voice:minimax_55e81114-ce7e-4ca1`。

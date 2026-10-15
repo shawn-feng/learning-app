@@ -235,3 +235,23 @@ Electron 登录页「抖音扫码登录」
 - 验证：201 version=0.5.30、tts/synthesize + recordTtsTokenUsage 标记在 bundle、health ok；
   **201 真机端到端**：家长 JWT 调 /tts/synthesize → 200 audio/mpeg 45KB 合法 MP3（TokenHub minimax
   合成），同文本二发走服务端缓存；路由 5/5 + 客户端分发 3/3 + 服务端 TTS 9/9 单测全绿。
+
+## learning-server 0.5.31（2026-10-14 09:34 部署 201）
+- 内容：管理端「合成音色」同步与消费——`SystemDefaultModels` 增加 `voice`（随 model-config 下发，
+  meta 恢复缺字段补默认）；`synthesizeTokenhubTts` 接收 voice 参数透传 MiniMax `voice_setting.voice_id`
+  （空回落内置默认），synthesizeReply 音色进缓存键。修复：初版音色只进缓存键未透传 API 调用（测试抓住）。
+- 验证：201 version=0.5.31、voice sync 标记在 bundle、health ok、startup 日志
+  「…tts=minimax-speech-2.8-turbo voice=minimax_55e81114-ce7e-4ca1」；18/18 相关单测
+  （含管理端音色→voice_id 透传断言）；云端 model-config 已带 voice（fix19）。
+
+## learning-server 0.5.32（2026-10-14 10:05 部署 201）
+- 内容：**音色选择移到家长端（server 端）**——用户拍板：TTS 由 app 的 server 端请求，音色应在 server 端选。
+  家长端设置「AI模型」页新增「语音合成音色」下拉（存 app_settings.ttsVoice，家长级全设备生效；
+  空 = 跟随管理端云端配置）。优先级：家长端显式选择 > 管理端云端 voice > 内置默认。
+  server：readTtsVoice（asr/config.ts，与 readVoiceChannel 同范式）+ TtsOptions.tokenhubVoice，
+  /tts/synthesize 与开放 API 语音回复两处消费。客户端 0.1.27：piSetTtsVoice IPC + web shim 同步。
+  公网管理页音色下拉保留（作为云端统一默认）。
+- 验证：201 version=0.5.32、readTtsVoice/tokenhubVoice 标记在 bundle、health ok；
+  20/20 相关单测（家长端覆盖云端音色断言）；
+  **201 真机端到端**：同文本两次合成——默认音色 46,836B / 家长端 clever_boy 94,068B，哈希不同（音色真实生效），
+  测试后 app_settings 已还原。

@@ -44,7 +44,7 @@ import { runTurn, type TurnProgress } from "../agent/turn-runner.js";
 import { resolveStoredFileAbs, safeExt, uploadsWriteRoot } from "./files.js";
 import { getServerSecret } from "../crypto.js";
 import { transcribeWithFallback, TranscribeError } from "../asr/transcribe.js";
-import { readVoiceChannel, getTokenHubKey } from "../asr/config.js";
+import { readVoiceChannel, readTtsVoice, getTokenHubKey } from "../asr/config.js";
 import { recordTtsTokenUsage } from "../db/token-usage.js";
 import { toWav16k } from "../assessment/audio.js";
 import { synthesizeReply } from "../tts/index.js";
@@ -252,7 +252,8 @@ async function synthReplyAudio(
       readVoiceChannel(db, parentId) === "builtin"
         ? getTokenHubKey(db, getServerSecret(config.dataDir), parentId)
         : "";
-    const r = await synthesizeReply(replyText, { voice, sampleRate: rate, tokenhubApiKey }, config.dataDir);
+    const tokenhubVoice = readTtsVoice(db, parentId) || undefined;
+    const r = await synthesizeReply(replyText, { voice, sampleRate: rate, tokenhubApiKey, tokenhubVoice }, config.dataDir);
     if (r.usage && r.model) {
       try {
         recordTtsTokenUsage(db, parentId, r.model, r.usage);

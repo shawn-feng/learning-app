@@ -138,6 +138,33 @@ export const BRIDGE_SCRIPT = `(function () {
   // 初始字号（injectBridge 在桥脚本前注入 window.__PI_MAT_FONT）
   applyMatFont(window.__PI_MAT_FONT);
 
+  // —— 朗读语速（用户 2026-10-14）：资料页原生 <audio>/<video> 播放倍速（TTS 朗读的语速在
+  // 父页面合成侧生效，不经这里）。父页面 postMessage(page:tts-rate) 运行期下发；
+  // play 事件捕获兜底：后挂载/后播放的媒体元素也套用当前倍速。 ——
+  function applyTtsRate(mult) {
+    var m = Number(mult);
+    if (!isFinite(m) || m <= 0) return;
+    window.__PI_TTS_RATE = m;
+    try {
+      var meds = document.querySelectorAll("audio,video");
+      for (var i = 0; i < meds.length; i++) {
+        try { meds[i].playbackRate = m; } catch (e2) { /* 个别元素不支持静默 */ }
+      }
+    } catch (e) { /* querySelector 异常静默 */ }
+  }
+  applyTtsRate(window.__PI_TTS_RATE);
+  document.addEventListener("play", function (e) {
+    var t = e.target;
+    if (t && (t.tagName === "AUDIO" || t.tagName === "VIDEO") && window.__PI_TTS_RATE) {
+      try { t.playbackRate = window.__PI_TTS_RATE; } catch (e2) { /* 静默 */ }
+    }
+  }, true);
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!d || d.type !== "page:tts-rate") return;
+    applyTtsRate(d.mult);
+  });
+
   // —— 诊断：资料页内运行错误上抛（宿主打印，用于定位"页面 JS 未执行/报错"类问题）——
   window.addEventListener("error", function (e) {
     try {

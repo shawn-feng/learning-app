@@ -46,6 +46,8 @@ export interface TtsOptions {
   sampleRate?: number;
   /** 家长 TokenHub 托管 Key（builtin 渠道时由调用方注入；空 = 不考虑 TokenHub 渠道） */
   tokenhubApiKey?: string;
+  /** 合成音色覆盖（家长端「合成音色」显式选择，app_settings.ttsVoice）；空 = 跟随管理端云端配置 */
+  tokenhubVoice?: string;
 }
 
 // 语音选型（对齐客户端偏好：中文晓晓，英文英音，正常语速 1.0）
@@ -166,7 +168,7 @@ async function synthesizeEdgeTts(
 // 不支持流式；音色/语速/音量走 MiniMax 语义（speed 0.5~2 / vol (0,10]）。
 
 const TOKENHUB_TTS_ENDPOINT = "https://tokenhub.tencentmaas.com/v1/wand/minimax-tts/sync_tts";
-/** 默认系统音色（官方文档示例值；MiniMax 音色体系与 edge 不同，设备侧 voice 参数不透传） */
+/** 兜底默认音色（管理端「合成音色」未下发时使用；管理页实测清单见 benefit-auth VOICE_OPTIONS） */
 const TOKENHUB_TTS_VOICE = "minimax_55e81114-ce7e-4ca1";
 
 /** 管理端选的合成模型是否走 TokenHub 渠道：仅 minimax-speech-* 已接入且必须有家长 Key。 */
@@ -188,10 +190,11 @@ function volumeToVol(volume: string): number {
   return Math.min(10, vol);
 }
 
-/** TokenHub 同步合成：返回 24kHz MP3 + 官方计费 tokens（与文本/ASR 同池扣家长配额）。 */
+/** TokenHub 同步合成：返回 24kHz MP3 + 官方计费 tokens（与文本/ASR 同池扣家长配额）。
+ *  o.voice = 管理端「合成音色」下发值；空则用兜底默认音色。 */
 export async function synthesizeTokenhubTts(
   text: string,
-  o: { model: string; apiKey: string; rate?: string; volume?: string }
+  o: { model: string; apiKey: string; rate?: string; volume?: string; voice?: string }
 ): Promise<{ buffer: Buffer; usage: { total: number } }> {
   const apiKey = (o.apiKey || "").trim();
   if (!apiKey) throw new Error("TokenHub 语音合成缺少 API Key（家长 Key 未发放）");
@@ -205,7 +208,12 @@ export async function synthesizeTokenhubTts(
       body: JSON.stringify({
         model,
         text,
-        voice_setting: { voice_id: TOKENHUB_TTS_VOICE, speed: rateToSpeed(o.rate ?? ""), vol: volumeToVol(o.volume ?? ""), pitch: 0 },
+        voice_setting: {
+          voice_id: (o.voice || "").trim() || TOKENHUB_TTS_VOICE,
+          speed: rateToSpeed(o.rate ?? ""),
+          vol: volumeToVol(o.volume ?? ""),
+          pitch: 0,
+        },
         audio_setting: { sample_rate: 24000, bitrate: 128000, format: "mp3", channel: 1 },
         subtitle_enable: false,
         output_format: "hex",
@@ -286,12 +294,14 @@ export async function synthesizeReply(
   let plan = pickTtsPlan(wantTts, opts.tokenhubApiKey);
 
   if (plan === "tokenhub") {
-    const voice = TOKENHUB_TTS_VOICE;
+    // 音色优先级：家长端「合成音色」（app_settings.ttsVoice）> 管理端云端配置 > 内置默认
+    // （MiniMax 音色体系与 edge 不同，设备侧 voice 参数不透传）
+    const voice = opts.tokenhubVoice?.trim() || getSystemDefaultModels().voice || TOKENHUB_TTS_VOICE;
     const key = cacheKey(wantTts, clean, voice, rate, volume);
     const hit = cacheGet(dataDir, key);
     if (hit) return postProcess(hit, opts.sampleRate, voice, wantTts);
     try {
-      const r = await synthesizeTokenhubTts(clean, { model: wantTts, apiKey: opts.tokenhubApiKey!, rate, volume });
+      const r = await synthesizeTokenhubTts(clean, { model: wantTts, apiKey: opts.tokenhubApiKey!, rate, volume, voice });
       cachePut(dataDir, key, r.buffer);
       return postProcess(r.buffer, opts.sampleRate, voice, wantTts, r.usage);
     } catch (e) {

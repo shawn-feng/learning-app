@@ -65,6 +65,8 @@ export interface TextFileAttachment {
 
 // ISSUE-036：通用文件附件（任意类型，仅落盘 + 路径引用，不读内容）
 export interface FileAttachment {
+  /** 客户端内部标识（ISSUE-181：附件条「转写」按钮按它找回原 File）；不随消息发往 agent */
+  uid?: string;
   name: string;
   path?: string;
   mime: string;
@@ -303,6 +305,13 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([]);
   const [pendingTextFiles, setPendingTextFiles] = useState<TextFileAttachment[]>([]);
   const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]); // ISSUE-036
+  // ISSUE-181：上传的音频附件按普通附件发送（不自动 ASR）；附件条「转写」按钮点击时
+  // 要重读原文件字节——File 句柄按 uid 存这里（发送/移除时释放），不进 SendOptions。
+  const audioFileBlobsRef = useRef<Map<string, File>>(new Map());
+  // 每条音频附件的手动转写状态（busy/error，显示在附件条上）
+  const [audioTranscribeState, setAudioTranscribeState] = useState<
+    Record<string, { busy?: boolean; error?: string }>
+  >({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = useState("");
 
@@ -416,6 +425,8 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     setPendingImages([]);
     setPendingTextFiles([]);
     setPendingFiles([]); // ISSUE-036
+    audioFileBlobsRef.current.clear(); // ISSUE-181：释放保留的音频 File 句柄
+    setAudioTranscribeState({});
   }
 
   // ---- 文件上传（ISSUE-008）----
@@ -481,7 +492,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     fileInputRef.current?.click();
   }
 
-  // 统一处理多个文件（上传按钮多选 / 拖拽 drop 共用）：图片→预览、音频→转写、txt/md→读取
+  // 统一处理多个文件（上传按钮多选 / 拖拽 drop 共用）：图片→预览、音频→附件（手动转写）、txt/md→读取
   async function processFiles(files: File[]) {
     setFileError("");
     for (const f of files) {
@@ -495,7 +506,17 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
           setFileError(`读取图片失败：${f.name}${err?.name ? `（${err.name}）` : ""}`);
         }
       } else if (f.type.startsWith("audio/")) {
-        await transcribeAudioFile(f);
+        // ISSUE-181：上传的音频文件按**普通附件**处理（落盘 + 上送服务端拿 ref → pendingFiles），
+        // 不再自动调 ASR——「上传一个音频文件给服务端/agent 处理」≠「说话给 AI 听」。
+        // 麦克风录音的自动转写是另一条路径（pendingAudios，保持不变）；
+        // 想转写已上传的音频，用附件条上的「转写」按钮手动触发。
+        const saved = await persistUploadForPending(f);
+        const uid = genAttachmentUid();
+        audioFileBlobsRef.current.set(uid, f);
+        setPendingFiles((p) => [
+          ...p,
+          { uid, name: f.name, path: saved.path, ref: saved.ref, mime: f.type || "audio/mpeg" },
+        ]);
       } else if (f.type === "text/plain" || /\.(txt|md)$/i.test(f.name)) {
         try {
           const content = await readFileAsText(f);
@@ -513,29 +534,56 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         } catch {
           // 二进制文件读不了文本，仅落盘 + 引用
           const saved = await persistUploadForPending(f);
+          const uid = genAttachmentUid();
+          audioFileBlobsRef.current.set(uid, f); // 万一是音频但 mime 缺失，转写按钮仍可用
           setPendingFiles((p) => [
             ...p,
-            { name: f.name, path: saved.path, ref: saved.ref, mime: f.type || "application/octet-stream" },
+            { uid, name: f.name, path: saved.path, ref: saved.ref, mime: f.type || "application/octet-stream" },
           ]);
         }
       }
     }
   }
 
-  async function transcribeAudioFile(file: File) {
-    setFileError("");
+  /** ISSUE-181：附件内部 uid（附件条「转写」/移除定位原 File 用；不随消息发往 agent） */
+  function genAttachmentUid(): string {
+    return "att-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  /** ISSUE-181：移除一条通用/音频附件（顺带释放保留的 File 句柄与转写状态） */
+  function removePendingFile(uid?: string) {
+    if (uid) {
+      audioFileBlobsRef.current.delete(uid);
+      setAudioTranscribeState((s) => {
+        if (!(uid in s)) return s;
+        const next = { ...s };
+        delete next[uid];
+        return next;
+      });
+    }
+    setPendingFiles((p) => p.filter((f) => f.uid !== uid));
+  }
+
+  /** ISSUE-181：附件条手动「转写」——用户点了才调 ASR，文本插入输入框；失败原因显示在附件条上 */
+  async function transcribeAudioAttachment(uid?: string) {
+    if (!uid || audioTranscribeState[uid]?.busy) return;
+    const file = audioFileBlobsRef.current.get(uid);
+    if (!file) {
+      setAudioTranscribeState((s) => ({ ...s, [uid]: { error: "原文件已不可读，请移除后重新上传" } }));
+      return;
+    }
+    setAudioTranscribeState((s) => ({ ...s, [uid]: { busy: true } }));
     try {
       const buf = await file.arrayBuffer();
-      // 顺带落盘原始录音（失败不阻断转写）
-      void persistUpload(file);
       const r: any = await window.api.voiceTranscribe(buf);
       if (r.success) {
         setInput((prev) => (prev ? prev + r.text : r.text));
+        setAudioTranscribeState((s) => ({ ...s, [uid]: {} }));
       } else {
-        setFileError(r.error || "音频识别失败");
+        setAudioTranscribeState((s) => ({ ...s, [uid]: { error: r.error || "音频识别失败" } }));
       }
-    } catch (e: any) {
-      setFileError("音频识别失败");
+    } catch {
+      setAudioTranscribeState((s) => ({ ...s, [uid]: { error: "音频识别失败" } }));
     }
   }
 
@@ -1029,21 +1077,52 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         </div>
       )}
 
-      {/* ISSUE-036：通用文件附件（任意类型） */}
-      {pendingFiles.length > 0 && (
+      {/* ISSUE-181：音频附件（🎵 + 手动「转写」按钮——上传不再自动 ASR，点了才调） */}
+      {pendingFiles.some((f) => f.mime?.startsWith("audio/")) && (
         <div className="attachment-preview">
-          {pendingFiles.map((f, i) => (
-            <div key={i} className="attachment-file">
-              <span title={`${f.name} (${f.mime})`}>📎 {f.name}</span>
-              <button
-                className="attachment-remove"
-                onClick={() => setPendingFiles((p) => p.filter((_, j) => j !== i))}
-                title="移除"
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
+          {pendingFiles
+            .filter((f) => f.mime?.startsWith("audio/"))
+            .map((f) => {
+              const st = f.uid ? audioTranscribeState[f.uid] : undefined;
+              return (
+                <div key={f.uid || f.name} className="attachment-file">
+                  <span title={`${f.name} (${f.mime})`}>🎵 {f.name}</span>
+                  <button
+                    className="attachment-remove"
+                    style={{ width: "auto", padding: "0 8px", fontSize: 11 }}
+                    onClick={() => transcribeAudioAttachment(f.uid)}
+                    disabled={st?.busy || disabled}
+                    title="调用语音识别把音频转成文字，插入输入框（麦克风录音不受影响）"
+                  >
+                    {st?.busy ? "转写中…" : "转写"}
+                  </button>
+                  {st?.error && (
+                    <span style={{ color: "#e74c3c", fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={st.error}>
+                      {st.error}
+                    </span>
+                  )}
+                  <button className="attachment-remove" onClick={() => removePendingFile(f.uid)} title="移除">
+                    <X size={12} />
+                  </button>
+                </div>
+              );
+            })}
+        </div>
+      )}
+
+      {/* ISSUE-036：通用文件附件（任意类型；音频已在上方单独成组） */}
+      {pendingFiles.some((f) => !f.mime?.startsWith("audio/")) && (
+        <div className="attachment-preview">
+          {pendingFiles
+            .filter((f) => !f.mime?.startsWith("audio/"))
+            .map((f) => (
+              <div key={f.uid || f.name} className="attachment-file">
+                <span title={`${f.name} (${f.mime})`}>📎 {f.name}</span>
+                <button className="attachment-remove" onClick={() => removePendingFile(f.uid)} title="移除">
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
         </div>
       )}
 
@@ -1052,7 +1131,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
           className="upload-button"
           onClick={handleFileButton}
           disabled={disabled}
-          title="上传文件（可多选 / 拖拽到窗口：任意类型，图片→识别 / 音频→转写 / 文本→读取）"
+          title="上传文件（可多选 / 拖拽到窗口：任意类型，图片→识别 / 音频→附件（可在附件条手动转写）/ 文本→读取）"
         >
           <Paperclip size={18} />
         </button>

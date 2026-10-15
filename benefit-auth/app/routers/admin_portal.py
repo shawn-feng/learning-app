@@ -508,17 +508,28 @@ MODEL_OPTIONS = {
     ],
 }
 
+# 合成音色（TTS 选 MiniMax Speech 系时生效；全部经真实调用实测 2026-10-12）
+VOICE_OPTIONS = [
+    {"v": "minimax_55e81114-ce7e-4ca1", "n": "默认音色（官方示例·通用女声）"},
+    {"v": "female-shaonv", "n": "少女音（亲切朗读）"},
+    {"v": "female-yujie", "n": "御姐音（沉稳讲述）"},
+    {"v": "male-qn-qingse", "n": "青涩青年男声"},
+    {"v": "clever_boy", "n": "童声·小男孩（儿童内容）"},
+    {"v": "audiobook_female_1", "n": "有声书女声（故事长文）"},
+]
+
 
 class DefaultModelsBody(BaseModel):
     text: str = ""
     vision: str = ""
     asr: str = ""
     tts: str = ""
+    voice: str = ""   # 合成音色（TTS=minimax-speech-* 时生效）
 
 
 @router.get("/api/admin-portal/tokenhub/models")
 async def admin_get_default_models(db=Depends(get_db), admin: str = Depends(require_admin_cookie)):
-    return {"models": await tokenhub.get_default_models(db), "options": MODEL_OPTIONS}
+    return {"models": await tokenhub.get_default_models(db), "options": MODEL_OPTIONS, "voices": VOICE_OPTIONS}
 
 
 @router.get("/api/admin-portal/tokenhub/platform-models")
@@ -872,12 +883,14 @@ code{background:#f1f5f9;padding:1px 6px;border-radius:4px;font-size:12px}
         四类默认模型，下拉含<b>平台全部同类型模型</b>（精选实测项在前，其余按 id 排列）。
         保存后<b>实时下发</b>到各 app（文本 / 视觉 / 编程 agent 的系统默认 + 语音识别通道模型），
         无需轮换。语音转录走 TokenHub asrproxy 专用端点（与文本同池计费，需在控制台开通后付费）；
-        语音合成为 Edge TTS（免费）或 TokenHub Speech 类模型（chat+audio 模态）。
+        语音合成为 Edge TTS（免费）或 TokenHub Speech 类模型（MiniMax 同步合成代理），
+        音色可按下方「合成音色」指定（实测可用清单，选非 MiniMax TTS 时不生效）。
       </div>
       <label>文本模型（助手对话 / 编程 agent）</label><select id="dm-text"></select>
       <label>视觉模型（读图 / 教材截图）</label><select id="dm-vision"></select>
       <label>语音转录模型（ASR）</label><select id="dm-asr"></select>
       <label>语音合成模型（TTS）</label><select id="dm-tts"></select>
+      <label>合成音色（TTS 选 MiniMax Speech 系时生效；Edge TTS 按文本语言自动选音）</label><select id="dm-voice"></select>
       <div class="row">
         <button class="q" onclick="saveModels()">保存默认模型</button>
         <span class="tip" id="dm-tip"></span>
@@ -1146,10 +1159,28 @@ async function loadModels() {
     }
     sel.value = cur || (opts[0] && opts[0].v) || "";
   }
+  // 合成音色（静态实测清单，不随平台模型动态合并）
+  const vsel = $("dm-voice");
+  if (vsel) {
+    vsel.innerHTML = "";
+    for (const o of (j.voices || [])) {
+      const op = document.createElement("option");
+      op.value = o.v;
+      op.textContent = o.n + "  ·  " + o.v;
+      vsel.appendChild(op);
+    }
+    const cur = (j.models || {}).voice;
+    if (cur && ![...vsel.querySelectorAll("option")].some(o => o.value === cur)) {
+      const op = document.createElement("option");
+      op.value = cur; op.textContent = "（自定义）" + cur;
+      vsel.appendChild(op);
+    }
+    vsel.value = cur || ((j.voices || [])[0] || {}).v || "";
+  }
   dmLoaded = { text: $("dm-text").value, vision: $("dm-vision").value };
 }
 async function saveModels() {
-  const next = { text: $("dm-text").value, vision: $("dm-vision").value, asr: $("dm-asr").value, tts: $("dm-tts").value };
+  const next = { text: $("dm-text").value, vision: $("dm-vision").value, asr: $("dm-asr").value, tts: $("dm-tts").value, voice: ($("dm-voice") || {}).value || "" };
   const res = await fetch("/api/admin-portal/tokenhub/models", { method: "POST", headers: H, body: JSON.stringify(next) });
   const j = await res.json();
   if (!j.ok) { tip("dm-tip", "保存失败", "err"); return; }

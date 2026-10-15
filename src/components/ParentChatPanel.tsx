@@ -311,7 +311,9 @@ export default function ParentChatPanel({
       parts.push(attachmentMarker("文件", f.name, f));
     }
     for (const f of files) {
-      parts.push(attachmentMarker("文件", f.name, f));
+      // ISSUE-181：上传的音频文件按普通附件发送，标记用【附件音频】（agent 可辨识类型；
+      // 引用语义同文件——ref 优先 files/<id>，path 兜底）
+      parts.push(attachmentMarker(f.mime?.startsWith("audio/") ? "音频" : "文件", f.name, f));
     }
     const promptText = parts.join("\n");
     // dataURL → SDK ImageContent（剥离前缀，内联 base64 发送）

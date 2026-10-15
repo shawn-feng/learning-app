@@ -18,7 +18,7 @@ import type { ServerConfig } from "../config.js";
 import { getServerSecret } from "../crypto.js";
 import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
-import { readVoiceChannel, getTokenHubKey } from "../asr/config.js";
+import { readVoiceChannel, readTtsVoice, getTokenHubKey } from "../asr/config.js";
 import { recordTtsTokenUsage } from "../db/token-usage.js";
 import { synthesizeReply } from "../tts/index.js";
 
@@ -76,8 +76,10 @@ export function registerTtsRoutes(app: FastifyInstance, deps: Deps): void {
       readVoiceChannel(deps.db, parentId) === "builtin"
         ? getTokenHubKey(deps.db, getServerSecret(deps.config.dataDir), parentId)
         : "";
+    // 音色：家长端显式选择（app_settings.ttsVoice）优先，空 = 跟随管理端云端配置
+    const tokenhubVoice = readTtsVoice(deps.db, parentId) || undefined;
     try {
-      const r = await synthesizeReply(text, { rate, volume, tokenhubApiKey }, deps.config.dataDir);
+      const r = await synthesizeReply(text, { rate, volume, tokenhubApiKey, tokenhubVoice }, deps.config.dataDir);
       if (r.usage && r.model) {
         try {
           recordTtsTokenUsage(deps.db, parentId, r.model, r.usage);

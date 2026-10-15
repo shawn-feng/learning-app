@@ -253,6 +253,17 @@ export const modelsDomain = {
     }
   },
 
+  /** piSetTtsVoice: (voice) => 设置语音合成音色（app_settings.ttsVoice，家长级；空 = 跟随管理端配置） */
+  piSetTtsVoice: async (voice: string): Promise<{ success: boolean; voice: string; error?: string }> => {
+    try {
+      const v = typeof voice === "string" ? voice.trim() : "";
+      await setAppSettingsField("ttsVoice", v);
+      return { success: true, voice: v };
+    } catch (err) {
+      return { success: false, voice: "", error: (err as Error).message };
+    }
+  },
+
   /** piGetTtsConfig: () => Promise<{ success: boolean; config: TtsConfig; voices: Array<{provider,voiceId,name}> }>（打码配置 + 音色清单） */
   piGetTtsConfig: async (): Promise<{
     success: boolean;

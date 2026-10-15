@@ -16,3 +16,15 @@
 - **安全底线**：主库豁免**仅此一张表、仅读**；`parents`/`settings`/`session_messages` 等敏感表维持不可见；若未来加第二张主库表须逐表过类似评审（矩阵式登记 + 强制租户列）。
 - **优先级**：中（家长高频问答场景，能力缺口明显；无数据风险，只读）
 - **记录时间**：2026-09-17
+
+---
+
+## ✅ 关闭记录（2026-10-13）：需求已被 ISSUE-144 P4 覆盖，形态更优
+
+用户复核后确认家长侧**已有工具**，本 issue 关闭：
+
+- `parent_child_exam_report`（`server/src/agent/parent-child-report-tools.ts:149`）：某孩子最近几场考核得分与范围 / **某一场的逐题明细**（题干/原文/孩子答的/得分/对错/老师评语/有无录音）+ 每课概要 + 知识点档位；
+- `parent_child_mastery_report`（`:349`）：主题进度/课程与知识点掌握档位/**错题本薄弱项概览**（按 kind 聚合）；
+- `parent_child_points_report`（`:613`）：积分与兑换。
+
+均已注册进家长 agent（`parent-registry.ts` createParentChildReportTools，ISSUE-144 P4「孩子的数据洞察」）。原方案（`parent_db_read` + 主库受控直连白名单）**不再需要**——专用工具形态更好（取数范围写死、只读、按孩子姓名定位），主库直连豁免连同其安全面一并免除。
