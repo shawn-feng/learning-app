@@ -101,12 +101,15 @@ const CORE_SESSION_DEPS: CoreSessionDeps = {
  * noContextFiles + noSkills + inMemory + systemPromptOverride，cwd 用家长 kb 目录，
  * agentDir 用 .worker/agent 隔离目录。会话创建细节统一在 packages/agent-core/sessions.ts。
  * 导出供 ISSUE-116 自定义任务执行复用。
+ * ISSUE-182：custom 任务 v2 可传 `opts.cwd` 覆盖工作目录（孩子任务=孩子工作区、家长任务=scratch），
+ * 缺省仍为家长 kb 目录——recording 等既有调用零变化。
  */
 export async function createWorkerEphemeralSession(
   ctx: WorkerTaskCtx,
   systemPrompt: string,
   toolNames: string[],
-  customTools: any[]
+  customTools: any[],
+  opts?: { cwd?: string }
 ) {
   const runtime = await getWorkerRuntime(ctx.dataDir, ctx.parentId, ctx.auth);
   const model = pickWorkerModel(runtime, ctx.appSettings, ctx.auth, getSystemDefaultModels().text);
@@ -114,7 +117,7 @@ export async function createWorkerEphemeralSession(
     deps: CORE_SESSION_DEPS,
     runtime,
     model,
-    cwd: path.join(ctx.dataDir, "kb", ctx.parentId),
+    cwd: opts?.cwd ?? path.join(ctx.dataDir, "kb", ctx.parentId),
     agentDir: path.join(ctx.dataDir, ".worker", "agent", ctx.parentId, ctx.childId),
     systemPrompt,
     toolNames,

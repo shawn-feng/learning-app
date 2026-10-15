@@ -1,10 +1,12 @@
 /**
  * 定时任务管理（新模型）路由：
  * - GET  /api/v1/scheduler/tasks                 任务列表（含分配 + 最近执行结果）
- * - POST /api/v1/scheduler/tasks                 创建任务（先创建）
+ * - POST /api/v1/scheduler/tasks                 创建任务（先创建；支持 template：mastery_analysis 幂等 / 普通模板预填）
  * - PATCH/DELETE /api/v1/scheduler/tasks/:id     更新/删除任务
- * - POST /api/v1/scheduler/tasks/:id/assign      分配给孩子（再分配；enabled=false 取消分配）
+ * - POST /api/v1/scheduler/tasks/:id/assign      分配（再分配；enabled=false 取消分配）。
+ *        body {childId} = 孩子（原语义）；body {target:"parent"} = 家长本人（仅 custom 任务，ISSUE-182 F2）
  * - GET  /api/v1/scheduler/runs                  执行结果查询
+ * - GET  /api/v1/scheduler/alerts                自定义任务连续失败提醒列表（ISSUE-182 F4）
  * - GET  /api/v1/scheduler/effective-config      任务+分配 → 每孩子有效配置（客户端合并推 scheduler_config）
  * 鉴权：家长 JWT；assign 的 childId 必须归属该家长。
  */
@@ -29,6 +31,10 @@ import {
 } from "../db/task-runs.js";
 // ISSUE-135 P4：默认「学习情况分析」自定义任务（掌握闭环归纳）
 import { MASTERY_TASK_TEMPLATE, createMasteryTask, findMasteryTaskId } from "../worker/mastery-tools.js";
+// ISSUE-182 F5：普通指令模板（天气/错题，纯预填不携特殊语义）
+import { PLAIN_CUSTOM_TASK_TEMPLATES, findPlainCustomTaskTemplate } from "../worker/custom-task-templates.js";
+// ISSUE-182 F4：自定义任务连续失败提醒（读回给家长）
+import { listSchedulerAlerts } from "../worker/task-alerts.js";
 
 interface SchedulerDeps {
   config: ServerConfig;
@@ -93,6 +99,8 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
           // 已创建过 → 带 taskId，UI 显示「已添加 · 点击可修改」而不是「使用此模板创建」
           taskId: findMasteryTaskId(deps.db, parentId),
         },
+        // ISSUE-182 F5：普通指令模板（纯预填；每次创建一条新任务）
+        ...PLAIN_CUSTOM_TASK_TEMPLATES,
       ],
     };
   });
@@ -116,23 +124,43 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
     // 2026-09-26：模板对话框允许家长改名称/时刻/提示词后保存（overrides）；任务已存在时同样把
     // 家长确认过的值更新上去（存在 = 不再重复建行，但设置以本次保存为准）。
     if (template) {
-      if (template !== MASTERY_TASK_TEMPLATE.key) {
-        return reply.code(400).send({ error: `未知模板: ${template}（可用: ${MASTERY_TASK_TEMPLATE.key}）` });
-      }
       if (time !== undefined && !validTime(time)) return reply.code(400).send({ error: "time 格式应为 HH:mm" });
       const instr = String(instruction ?? "").trim();
       if (instruction !== undefined && !instr) {
         return reply.code(400).send({ error: "custom 类型需要 instruction（自然语言任务指令）" });
       }
-      const r = createMasteryTask(deps.db, parentId, {
-        ...(name !== undefined ? { name } : {}),
-        ...(time !== undefined ? { time } : {}),
-        ...(instruction !== undefined ? { instruction: instr } : {}),
-      });
+      // ISSUE-135：掌握分析模板——固定 id 幂等创建（重复点不会建出多条同义任务）
+      if (template === MASTERY_TASK_TEMPLATE.key) {
+        const r = createMasteryTask(deps.db, parentId, {
+          ...(name !== undefined ? { name } : {}),
+          ...(time !== undefined ? { time } : {}),
+          ...(instruction !== undefined ? { instruction: instr } : {}),
+        });
+        return {
+          ok: true,
+          created: r.created,
+          task: listTasksWithAssignments(deps.db, parentId).find((t) => t.id === r.taskId),
+        };
+      }
+      // ISSUE-182 F5：普通指令模板——纯预填，按普通 custom 任务创建（家长可改名称/时刻/指令后保存）
+      const plain = findPlainCustomTaskTemplate(template);
+      if (!plain) {
+        return reply.code(400).send({ error: `未知模板: ${template}` });
+      }
+      const nextName = String(name ?? "").trim() || plain.name;
+      const nextTime = time !== undefined ? time : plain.time;
+      const nextInstr = instr || plain.instruction;
+      const id = crypto.randomUUID();
+      const now = nowLocalIso();
+      deps.db
+        .prepare(
+          "INSERT INTO scheduler_tasks (id, parent_id, name, type, time, extra_json, enabled, instruction, created_at, updated_at) VALUES (?, ?, ?, 'custom', ?, '{}', 1, ?, ?, ?)"
+        )
+        .run(id, parentId, nextName, nextTime, nextInstr, now, now);
       return {
         ok: true,
-        created: r.created,
-        task: listTasksWithAssignments(deps.db, parentId).find((t) => t.id === r.taskId),
+        created: true,
+        task: listTasksWithAssignments(deps.db, parentId).find((t) => t.id === id),
       };
     }
     if (!name?.trim()) return reply.code(400).send({ error: "任务名称必填" });
@@ -224,7 +252,8 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
     return { ok: true };
   });
 
-  // 分配给孩子（upsert；enabled=false = 取消分配）
+  // 分配（upsert；enabled=false = 取消分配）。ISSUE-182 F2：支持家长目标——
+  // body {childId} = 孩子分配（原语义不变）；body {target:"parent"} = 家长本人（child_id 列存家长 id）。
   app.post("/api/v1/scheduler/tasks/:id/assign", async (req, reply) => {
     let parentId: string;
     try {
@@ -234,12 +263,25 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
       throw err;
     }
     const { id } = req.params as { id: string };
-    const row = deps.db
-      .prepare("SELECT 1 FROM scheduler_tasks WHERE id = ? AND parent_id = ?")
-      .get(id, parentId);
-    if (!row) return reply.code(403).send({ error: "无权访问该任务" });
-    const { childId, enabled } = (req.body ?? {}) as { childId?: string; enabled?: boolean };
-    if (!childId) return reply.code(400).send({ error: "childId 必填" });
+    const taskRow = deps.db
+      .prepare("SELECT type FROM scheduler_tasks WHERE id = ? AND parent_id = ?")
+      .get(id, parentId) as { type: string } | undefined;
+    if (!taskRow) return reply.code(403).send({ error: "无权访问该任务" });
+    const { childId, enabled, target } = (req.body ?? {}) as { childId?: string; enabled?: boolean; target?: string };
+    if (target === "parent") {
+      // 家长分配只对 custom 任务开放（提醒/录音等确定流程任务语义上都绑孩子）
+      if (taskRow.type !== "custom") {
+        return reply.code(400).send({ error: "仅自定义任务可分配给家长" });
+      }
+      deps.db
+        .prepare(
+          "INSERT INTO scheduler_task_assignments (task_id, child_id, target_type, enabled, created_at) VALUES (?, ?, 'parent', ?, ?) " +
+            "ON CONFLICT(task_id, child_id) DO UPDATE SET enabled = excluded.enabled, target_type = 'parent'"
+        )
+        .run(id, parentId, enabled === false ? 0 : 1, nowLocalIso());
+      return { ok: true };
+    }
+    if (!childId) return reply.code(400).send({ error: "childId 必填（或 target:\"parent\" 分配给家长本人）" });
     try {
       assertChildOwned(deps.db, parentId, childId);
     } catch (err) {
@@ -248,8 +290,8 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
     }
     deps.db
       .prepare(
-        "INSERT INTO scheduler_task_assignments (task_id, child_id, enabled, created_at) VALUES (?, ?, ?, ?) " +
-          "ON CONFLICT(task_id, child_id) DO UPDATE SET enabled = excluded.enabled"
+        "INSERT INTO scheduler_task_assignments (task_id, child_id, target_type, enabled, created_at) VALUES (?, ?, 'child', ?, ?) " +
+          "ON CONFLICT(task_id, child_id) DO UPDATE SET enabled = excluded.enabled, target_type = 'child'"
       )
       .run(id, childId, enabled === false ? 0 : 1, nowLocalIso());
     return { ok: true };
@@ -279,6 +321,19 @@ export function registerSchedulerRoutes(app: FastifyInstance, deps: SchedulerDep
         limit: Number(limit) || undefined,
       }),
     };
+  });
+
+  // ISSUE-182 F4：自定义任务连续失败提醒（家长读回；新的在前，缺省最近 20 条）
+  app.get("/api/v1/scheduler/alerts", async (req, reply) => {
+    let parentId: string;
+    try {
+      parentId = authParent(req, deps.config.jwtSecret);
+    } catch (err) {
+      if (handleAuthError(err, reply)) return;
+      throw err;
+    }
+    const { limit } = req.query as { limit?: string };
+    return { alerts: listSchedulerAlerts(deps.db, parentId, Number(limit) || 20) };
   });
 
   // 有效配置：任务+分配 → 每孩子 recording/todo/autoNewSession（客户端合并推 scheduler_config）

@@ -38,6 +38,26 @@ export function openDb(dataDir: string): DatabaseSync {
       }
     }
   }
+  // ISSUE-182（2026-10-15）：自定义任务 v2——分配目标加「家长」维度。存量库幂等补 target_type 列
+  // （新建库由 CREATE TABLE 直接带上；'child' 缺省=全部旧行天然是孩子分配，家长行由新代码显式写入）
+  {
+    const hasAssignments = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduler_task_assignments'")
+      .get();
+    if (hasAssignments) {
+      const cols = db.prepare("PRAGMA table_info(scheduler_task_assignments)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === "target_type")) {
+        db.exec("ALTER TABLE scheduler_task_assignments ADD COLUMN target_type TEXT NOT NULL DEFAULT 'child'");
+      }
+    }
+    const hasRuns = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_runs'").get();
+    if (hasRuns) {
+      const cols = db.prepare("PRAGMA table_info(task_runs)").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === "target_type")) {
+        db.exec("ALTER TABLE task_runs ADD COLUMN target_type TEXT NOT NULL DEFAULT 'child'");
+      }
+    }
+  }
   // benefit-auth 接入（2026-09-21）：parents 幂等补抖音身份两列（新建库由 CREATE TABLE 直接带上）
   {
     const hasParents = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='parents'").get();
@@ -218,6 +238,8 @@ export function openDb(dataDir: string): DatabaseSync {
     CREATE TABLE IF NOT EXISTS scheduler_task_assignments (
       task_id TEXT NOT NULL,
       child_id TEXT NOT NULL,
+      -- ISSUE-182 F2：分配目标维度——'child'（孩子行，child_id=孩子 id）| 'parent'（家长行，child_id=家长 id 哨兵）
+      target_type TEXT NOT NULL DEFAULT 'child',
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       PRIMARY KEY (task_id, child_id)
@@ -226,6 +248,8 @@ export function openDb(dataDir: string): DatabaseSync {
       id TEXT PRIMARY KEY,
       parent_id TEXT NOT NULL,
       child_id TEXT NOT NULL,
+      -- ISSUE-182 F2：'child' | 'parent'（家长任务执行的 run：child_id 列填 parent_id）
+      target_type TEXT NOT NULL DEFAULT 'child',
       task_id TEXT,
       task_name TEXT NOT NULL DEFAULT '',
       task_type TEXT NOT NULL DEFAULT '',
@@ -237,6 +261,16 @@ export function openDb(dataDir: string): DatabaseSync {
       finished_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_task_runs_parent ON task_runs(parent_id, date);
+    -- ISSUE-182 F4：自定义任务连续失败提醒（推家长）；同一失败串只落一条（去重见 worker/task-alerts.ts）
+    CREATE TABLE IF NOT EXISTS scheduler_alerts (
+      id TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      task_name TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduler_alerts_parent ON scheduler_alerts(parent_id, created_at);
     -- ISSUE-135 §8（2026-09-23）：主库 exam_attempts 已废弃 —— 它不是「考核真源」，只是历史包袱：
     --   · 逐题**得分**早已由 applyExamAttempts 回填进孩子库 exam_plan_courses（09-10 计划域重构执行了一半）；
     --   · 场次表与题级富信息（评语/ASR/录音引用/评测）却一直留在主库且仍是写入真源 → 归属错位（孩子数据落主库）。

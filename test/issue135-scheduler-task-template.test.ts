@@ -72,15 +72,19 @@ describe("ISSUE-135 P4 修订：掌握分析任务不再自动播种", () => {
     expect(await customCount()).toBe(0);
   });
 
-  it("② GET /scheduler/task-templates —— 返回掌握分析模板（只读，不建行）", async () => {
+  it("② GET /scheduler/task-templates —— 返回模板清单（只读，不建行；ISSUE-182 起含普通指令模板）", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/scheduler/task-templates", headers: auth() });
     expect(res.statusCode, res.body).toBe(200);
     const list = (res.json() as { templates: Array<Record<string, unknown>> }).templates;
-    expect(list).toHaveLength(1);
-    expect(list[0]!.key).toBe("mastery_analysis");
-    expect(list[0]!.name).toBe("学习情况分析");
-    expect(list[0]!.time).toBe("21:30");
-    expect(String(list[0]!.instruction)).toContain("mastery_todo_list");
+    // ISSUE-182 F5：掌握分析 + 天气穿衣 + 错题复习 三张卡（均为只读预填，不自动建行）
+    const keys = list.map((t) => t.key);
+    expect(keys).toContain("mastery_analysis");
+    expect(keys).toContain("weather_outfit_reminder");
+    expect(keys).toContain("mistake_review_reminder");
+    const mastery = list.find((t) => t.key === "mastery_analysis")!;
+    expect(mastery.name).toBe("学习情况分析");
+    expect(mastery.time).toBe("21:30");
+    expect(String(mastery.instruction)).toContain("mastery_todo_list");
     // 读模板不该建出任务
     expect(await customCount()).toBe(0);
   });

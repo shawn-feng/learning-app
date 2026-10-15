@@ -165,6 +165,99 @@ ${input.customNote.trim()}
 ` : ""}`;
 }
 
+/**
+ * 家长 agent 的工具装配真源（ISSUE-182 抽取）：交互会话（ensureEntry）与家长自定义定时任务的
+ * 无头会话（worker/custom-tasks.ts）共用同一份工具面与白名单，避免两处清单漂移。
+ * 场景守卫（未 load_skill 拒绝执行）由 compactParentTools 的统一包装随装配走；
+ * 无头侧同样先给基底提示词（buildServerParentPrompt 工作原则已含「先 load_skill 再动手」）。
+ */
+export function buildParentAgentToolset(
+  deps: ParentSessionDeps & { auth: Record<string, unknown>; appSettings?: Record<string, unknown> },
+  parentId: string,
+  opts: { streamKey: string; getMessages?: () => unknown[] }
+): {
+  toolNames: string[];
+  customTools: any[];
+  skillState: ReturnType<typeof createParentSkillState>;
+  workspace: string;
+  scratch: string;
+  agentDir: string;
+} {
+  const paths = createCorePaths(deps.dataDir);
+  // ISSUE-131 P2：家长 agent 根 = workspaces/<pid>（materials/uploads/scratch/孩子目录都在其内，
+  // fs 工具/网盘同此边界）；会话运行区（cwd、.pi）独立到 scratch，不再落 parent/ 工作区。
+  const workspace = paths.agentRoot(parentId);
+  const scratch = paths.agentScratchDir(parentId);
+  const agentDir = `${scratch}/.pi`;
+
+  const fsTools = createServerFsTools(workspace);
+  // ISSUE-144：会话级技能状态——`load_skill` 与场景守卫共用（同一会话内加载过的场景，其工具才肯执行）
+  const skillState = createParentSkillState();
+  const parentTools = createParentAgentTools({
+    db: deps.db,
+    dataDir: deps.dataDir,
+    parentId,
+    workspaceDir: workspace,
+    agentDir,
+    auth: deps.auth,
+    appSettings: deps.appSettings,
+    skillState,
+  });
+  // ISSUE-144（A 路线全量铺开）：工具**说明下沉**——description 压成"一句 + 指路"、参数 Schema 只留结构、
+  // 并外包一层**场景守卫**（未加载所属场景 → 拒绝执行）。说明的正文在各场景技能里（`load_skill` 按需加载）。
+  // 通用设施（load_skill / log_activity / fs 工具）不在下沉范围，原样保留。
+  const customTools = compactParentTools(    [
+      ...fsTools,
+      ...parentTools,
+      ...createPlanDomainTools({ db: deps.db, dataDir: deps.dataDir, parentId, skillState }),
+      // ISSUE-144 P4：孩子的数据洞察（考核逐题 / 掌握与薄弱 / 积分与兑换）——按姓名定位孩子、
+      // 取数范围写死、只读；家长问「考得怎么样/哪里薄弱/这分怎么算的」时不再需要通用通道
+      ...createParentChildReportTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
+      // KB P1：知识库三把（说明与口径走 parent-scene-kb 技能 + 场景守卫）
+      // P3④：图片入库要走视觉模型，所以把家长凭证/设置/运行目录一并交进去
+      ...createParentKbTools({
+        dataDir: deps.dataDir,
+        parentId,
+        db: deps.db,
+        auth: deps.auth,
+        appSettings: deps.appSettings,
+        agentDir,
+      }),
+      // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
+      createParentReportTool({ db: deps.db, parentId, streamKey: opts.streamKey }),
+      // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite，按本家长隔离）
+      createLoadSkillTool({
+        dataDir: deps.dataDir,
+        parentId,
+        state: skillState,
+        getMessages: opts.getMessages ?? (() => []),
+      }),
+      createGetDateTool(),
+    ],
+    skillState
+  );
+
+  return {
+    toolNames: [
+      ...SERVER_FS_TOOL_NAMES,
+      ...PARENT_AGENT_TOOL_NAMES,
+      ...PLAN_DOMAIN_TOOL_NAMES,
+      // ISSUE-144 P4：场景专用只读报告工具（常驻在工具面；说明与口径走场景技能 + 场景守卫）
+      ...PARENT_CHILD_REPORT_TOOL_NAMES,
+      // KB P1：知识库三把（说明与口径走 parent-scene-kb 技能 + 场景守卫）
+      ...PARENT_KB_TOOL_NAMES,
+      "get_date",
+      "parent_display_report",
+      LOAD_SKILL_TOOL_NAME,
+    ].filter((n, i, arr) => arr.indexOf(n) === i),
+    customTools,
+    skillState,
+    workspace,
+    scratch,
+    agentDir,
+  };
+}
+
 async function ensureEntry(
   deps: ParentSessionDeps,
   parentId: string,
@@ -179,61 +272,14 @@ async function ensureEntry(
   const runtime = await getWorkerRuntime(deps.dataDir, parentId, settings.auth);
   const model = pickWorkerModel(runtime, settings.appSettings, settings.auth, getSystemDefaultModels().text);
 
-  // ISSUE-131 P2：家长 agent 根 = workspaces/<pid>（materials/uploads/scratch/孩子目录都在其内，
-  // fs 工具/网盘同此边界）；会话运行区（cwd、.pi）独立到 scratch，不再落 parent/ 工作区。
-  const workspace = paths.agentRoot(parentId);
-  const scratch = paths.agentScratchDir(parentId);
-  const agentDir = `${scratch}/.pi`;
-
-  const fsTools = createServerFsTools(workspace);
-  // ISSUE-144：会话级技能状态——`load_skill` 与场景守卫共用（同一会话内加载过的场景，其工具才肯执行）
-  const skillState = createParentSkillState();
   // ISSUE-144（2026-09-25 修"同一场景重复整段加载"）：`loaded` 只在内存里，而会话实例会因部署/
   // 重启被重建（jsonl 续接、对话还在）。把"当前会话消息"喂给 load_skill，并在建会话后立刻从历史
   // 恢复已加载场景——否则模型会把同一份 2~5k 字正文一遍遍重读。
   const sessionRef: { session?: { messages?: unknown[] } } = {};
-  const parentTools = createParentAgentTools({
-    db: deps.db,
-    dataDir: deps.dataDir,
+  const { toolNames, customTools, skillState, workspace, scratch, agentDir } = buildParentAgentToolset(
+    { db: deps.db, dataDir: deps.dataDir, auth: settings.auth, appSettings: settings.appSettings },
     parentId,
-    workspaceDir: workspace,
-    agentDir,
-    auth: settings.auth,
-    appSettings: settings.appSettings,
-    skillState,
-  });
-  // ISSUE-144（A 路线全量铺开）：工具**说明下沉**——description 压成"一句 + 指路"、参数 Schema 只留结构、
-  // 并外包一层**场景守卫**（未加载所属场景 → 拒绝执行）。说明的正文在各场景技能里（`load_skill` 按需加载）。
-  // 通用设施（load_skill / log_activity / fs 工具）不在下沉范围，原样保留。
-  const customTools = compactParentTools(    [
-      ...fsTools,
-      ...parentTools,
-      ...createPlanDomainTools({ db: deps.db, dataDir: deps.dataDir, parentId, skillState }),
-      // ISSUE-144 P4：孩子的数据洞察（考核逐题 / 掌握与薄弱 / 积分与兑换）——按姓名定位孩子、
-      // 取数范围写死、只读；家长问「考得怎么样/哪里薄弱/这分怎么算的」时不再需要通用通道
-      ...createParentChildReportTools({ db: deps.db, dataDir: deps.dataDir, parentId }),
-      // KB P1：知识库条目（KB 走专用工具；家长侧刻意**没有** kb_lookup——要看条目用 parent_kb_list）
-      // P3④：图片入库要走视觉模型，所以把家长凭证/设置/运行目录一并交进去
-      ...createParentKbTools({
-        dataDir: deps.dataDir,
-        parentId,
-        db: deps.db,
-        auth: settings.auth,
-        appSettings: settings.appSettings,
-        agentDir,
-      }),
-      // ISSUE-108：家长报表（markdown → 家长端「报表」区），仅运营类家长助手（parent/parent-content）可推
-      createParentReportTool({ db: deps.db, parentId, streamKey: key }),
-      // ISSUE-144：场景技能按需加载（会话内幂等；家长覆盖层存 agents.sqlite，按本家长隔离）
-      createLoadSkillTool({
-        dataDir: deps.dataDir,
-        parentId,
-        state: skillState,
-        getMessages: () => sessionRef.session?.messages ?? [],
-      }),
-      createGetDateTool(),
-    ],
-    skillState
+    { streamKey: key, getMessages: () => sessionRef.session?.messages ?? [] }
   );
 
   // ISSUE-144 P6：systemPrompt 不再注入两库表/列/路径元数据块（通用数据 API 已退场，
@@ -253,18 +299,7 @@ async function ensureEntry(
     cwd: scratch,
     agentDir,
     systemPrompt,
-    toolNames: [
-      ...SERVER_FS_TOOL_NAMES,
-      ...PARENT_AGENT_TOOL_NAMES,
-      ...PLAN_DOMAIN_TOOL_NAMES,
-      // ISSUE-144 P4：场景专用只读报告工具（常驻在工具面；说明与口径走场景技能 + 场景守卫）
-      ...PARENT_CHILD_REPORT_TOOL_NAMES,
-      // KB P1：知识库三把（说明与口径走 parent-scene-kb 技能 + 场景守卫）
-      ...PARENT_KB_TOOL_NAMES,
-      "get_date",
-      "parent_display_report",
-      LOAD_SKILL_TOOL_NAME,
-    ].filter((n, i, arr) => arr.indexOf(n) === i),
+    toolNames,
     customTools,
     sessionsDir: paths.agentSessionsDir(parentId, kind),
     // 重置后首次重建：newSession() 起干净会话（旧 jsonl 保留为历史，不再被 continueRecent 选中）

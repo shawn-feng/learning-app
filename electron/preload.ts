@@ -175,6 +175,7 @@ const api = {
   // 模型渠道三态开关（ISSUE-174 调整）：builtin=内置 AI 模型 / custom=自定义模型 / off=停用
   piGetModelChannel: () => ipcRenderer.invoke("pi:get_model_channel"),
   piSetModelChannel: (channel: string) => ipcRenderer.invoke("pi:set_model_channel", channel),
+  piSetTtsVoice: (voice: string) => ipcRenderer.invoke("pi:set_tts_voice", voice),
   piGetProgrammingModel: () => ipcRenderer.invoke("pi:get_programming_model"),
   piSetProgrammingModel: (key: string) => ipcRenderer.invoke("pi:set_programming_model", key),
   piGetVisionModel: () => ipcRenderer.invoke("pi:get_vision_model"),
@@ -336,13 +337,16 @@ const api = {
   schedulerTaskTemplatesList: () => ipcRenderer.invoke("scheduler:task:templates:list"),
   schedulerTaskCreate: (payload: { name: string; type: string; time: string; extra?: Record<string, unknown>; instruction?: string; template?: string }) =>
     ipcRenderer.invoke("scheduler:task:create", payload),
-  schedulerTaskUpdate: (id: string, patch: { name?: string; time?: string; enabled?: boolean; extra?: Record<string, unknown> }) =>
+  schedulerTaskUpdate: (id: string, patch: { name?: string; time?: string; enabled?: boolean; extra?: Record<string, unknown>; instruction?: string }) =>
     ipcRenderer.invoke("scheduler:task:update", id, patch),
   schedulerTaskDelete: (id: string) => ipcRenderer.invoke("scheduler:task:delete", id),
-  schedulerTaskAssign: (id: string, childId: string, enabled: boolean) =>
-    ipcRenderer.invoke("scheduler:task:assign", id, childId, enabled),
+  // ISSUE-182 F2：分配支持家长目标——opts.target="parent" 时分配给家长本人（childId 不传）
+  schedulerTaskAssign: (id: string, enabled: boolean, opts?: { childId?: string; target?: "parent" }) =>
+    ipcRenderer.invoke("scheduler:task:assign", id, enabled, opts),
   schedulerRunsList: (opts?: { childId?: string; limit?: number }) =>
     ipcRenderer.invoke("scheduler:runs:list", opts),
+  // ISSUE-182 F4：自定义任务连续失败提醒列表（新的在前）
+  schedulerAlertsList: (opts?: { limit?: number }) => ipcRenderer.invoke("scheduler:alerts:list", opts),
   schedulerEffectiveConfigGet: () => ipcRenderer.invoke("scheduler:effective_config:get"),
 
   // ISSUE-047：孩子端「我的提醒」列表/取消（非 Todolist；独立提醒管理）

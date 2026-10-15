@@ -21,13 +21,16 @@ interface SchedulerTask {
   instruction?: string | null;
   createdAt: string;
   updatedAt: string;
-  assignments: Array<{ childId: string; enabled: boolean }>;
+  /** ISSUE-182 F2：targetType="parent" 的行 childId 存的是家长 id（分配对象=家长本人） */
+  assignments: Array<{ childId: string; enabled: boolean; targetType?: "child" | "parent" }>;
   lastRun: { date: string; point: string; status: string; message: string; finishedAt: string } | null;
 }
 
 interface TaskRun {
   id: string;
   childId: string;
+  /** ISSUE-182 F2：'parent' = 家长任务执行的 run（childId 列=家长 id） */
+  targetType?: "child" | "parent";
   taskId: string | null;
   taskName: string;
   taskType: string;
@@ -37,6 +40,15 @@ interface TaskRun {
   message: string;
   startedAt: string;
   finishedAt: string;
+}
+
+/** ISSUE-182 F4：自定义任务连续失败提醒（服务端 scheduler_alerts） */
+interface SchedulerAlert {
+  id: string;
+  taskId: string;
+  taskName: string;
+  message: string;
+  createdAt: string;
 }
 
 /** 推荐任务模板（服务端 GET /scheduler/task-templates；只读，不自动建行） */
@@ -106,6 +118,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
   const [tasks, setTasks] = useState<SchedulerTask[]>([]);
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+  const [alerts, setAlerts] = useState<SchedulerAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -153,15 +166,17 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
     setLoading(true);
     setError("");
     try {
-      const [t, r, tpl] = await Promise.all([
+      const [t, r, tpl, al] = await Promise.all([
         window.api.schedulerTasksList(),
         window.api.schedulerRunsList({ limit: 30 }),
         window.api.schedulerTaskTemplatesList?.() ?? Promise.resolve({ success: false }),
+        window.api.schedulerAlertsList?.({ limit: 10 }) ?? Promise.resolve({ success: false }),
       ]);
       if (t?.success) setTasks(t.tasks ?? []);
       else setError(t?.error || "加载任务失败");
       if (r?.success) setRuns(r.runs ?? []);
       if (tpl?.success) setTemplates(tpl.templates ?? []);
+      if (al?.success) setAlerts(al.alerts ?? []);
     } catch (e: any) {
       setError(e?.message || "加载失败");
     } finally {
@@ -259,9 +274,9 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
     }
   }
 
-  async function toggleAssign(childId: string, enabled: boolean) {
+  async function toggleAssign(enabled: boolean, opts: { childId?: string; target?: "parent" }) {
     if (!assignFor) return;
-    const res = await window.api.schedulerTaskAssign(assignFor.id, childId, enabled);
+    const res = await window.api.schedulerTaskAssign(assignFor.id, enabled, opts);
     if (res?.success) {
       await load();
       await pushEffectiveConfig();
@@ -274,7 +289,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
         <div>
           <h3 style={{ margin: 0 }}>⏰ 定时任务</h3>
           <p style={{ margin: "4px 0 0", fontSize: 12, color: "#888", lineHeight: 1.6 }}>
-            先创建任务，再把任务分配给孩子；到点由服务端自动执行（设备关机/休眠也不漏跑），下方可查询执行结果。
+            先创建任务，再分配给指定孩子（自定义任务也可分配给家长本人）；到点由服务端自动执行（设备关机/休眠也不漏跑），下方可查询执行结果。
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -297,6 +312,22 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
       </div>
 
       {error && <div style={{ color: "#e53e3e", fontSize: 12 }}>{error}</div>}
+
+      {/* ISSUE-182 F4：连续失败提醒（服务端推送 + 持久化，新的在前） */}
+      {alerts.length > 0 && (
+        <div style={{ border: "1px solid #fed7d7", background: "#fff5f5", borderRadius: 10, padding: "10px 14px" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#c53030", marginBottom: 6 }}>
+            ⚠️ 任务失败提醒（连续失败 2 次以上时推送；恢复成功后自动停止）
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {alerts.map((a) => (
+              <div key={a.id} style={{ fontSize: 12, color: "#822727", lineHeight: 1.5 }}>
+                [{fmt(a.createdAt)}]「{a.taskName}」：{a.message}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 推荐任务模板（服务端下发；点开预填表单，家长可改提示词后保存——不会自动创建任务） */}
       {templates.length > 0 && !showCreate && (
@@ -494,8 +525,16 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                     <span style={{ color: "#aaa" }}>（未分配）</span>
                   ) : (
                     assigned.map((a) => (
-                      <span key={a.childId} style={{ background: "#f0f4ff", color: "#4a6da7", borderRadius: 10, padding: "1px 8px" }}>
-                        {childName(a.childId)}
+                      <span
+                        key={`${a.targetType ?? "child"}:${a.childId}`}
+                        style={{
+                          background: a.targetType === "parent" ? "#fef3e2" : "#f0f4ff",
+                          color: a.targetType === "parent" ? "#b7791f" : "#4a6da7",
+                          borderRadius: 10,
+                          padding: "1px 8px",
+                        }}
+                      >
+                        {a.targetType === "parent" ? "👨 家长（本人）" : childName(a.childId)}
                       </span>
                     ))
                   )}
@@ -518,7 +557,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                     onClick={() => setAssignFor(task)}
                     style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", background: "#eef0ff", color: "#5a67d8", border: "none", borderRadius: 6, fontSize: 12, cursor: "pointer" }}
                   >
-                    <Users size={13} /> 分配孩子
+                    <Users size={13} /> 分配对象
                   </button>
                   <button
                     onClick={() => deleteTask(task)}
@@ -545,28 +584,41 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
           >
             <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>分配任务「{assignFor.name}」</div>
             <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-              勾选 = 该孩子执行此任务；取消勾选 = 不再执行（不影响其他孩子）。
+              勾选 = 分配给该对象执行此任务；取消勾选 = 不再执行（不影响其他对象）。
             </div>
-            {children.length === 0 ? (
-              <div style={{ color: "#999", fontSize: 13 }}>还没有孩子账号。</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {children.map((c) => {
-                  const a = assignFor.assignments.find((x) => x.childId === c.childId);
-                  const checked = a?.enabled ?? false;
-                  return (
-                    <label key={c.childId} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 14 }}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => toggleAssign(c.childId, e.target.checked)}
-                      />
-                      <span>{c.avatar ?? "👧"}</span> {c.name}
-                    </label>
-                  );
-                })}
-              </div>
-            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {assignFor.type === "custom" && (
+                // ISSUE-182 F2：自定义任务可分配给家长本人（整任务一轮，家长 agent 上下文）
+                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 14 }}>
+                  <input
+                    type="checkbox"
+                    checked={assignFor.assignments.some((x) => x.targetType === "parent" && x.enabled)}
+                    onChange={(e) => toggleAssign(e.target.checked, { target: "parent" })}
+                  />
+                  <span>👨</span> 家长（本人）
+                </label>
+              )}
+              {children.map((c) => {
+                const a = assignFor.assignments.find((x) => (x.targetType ?? "child") !== "parent" && x.childId === c.childId);
+                const checked = a?.enabled ?? false;
+                return (
+                  <label key={c.childId} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 14 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => toggleAssign(e.target.checked, { childId: c.childId })}
+                    />
+                    <span>{c.avatar ?? "👧"}</span> {c.name}
+                  </label>
+                );
+              })}
+              {children.length === 0 && assignFor.type !== "custom" && (
+                <div style={{ color: "#999", fontSize: 13 }}>还没有孩子账号。</div>
+              )}
+              {children.length === 0 && assignFor.type === "custom" && (
+                <div style={{ color: "#999", fontSize: 13 }}>还没有孩子账号，可先只分配给家长。</div>
+              )}
+            </div>
             <div style={{ marginTop: 16, textAlign: "right" }}>
               <button
                 onClick={() => setAssignFor(null)}
@@ -601,7 +653,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                 <tr style={{ background: "#fafbff", color: "#666", textAlign: "left" }}>
                   <th style={{ padding: "8px 10px" }}>日期</th>
                   <th style={{ padding: "8px 10px" }}>时间点</th>
-                  <th style={{ padding: "8px 10px" }}>孩子</th>
+                  <th style={{ padding: "8px 10px" }}>执行对象</th>
                   <th style={{ padding: "8px 10px" }}>任务</th>
                   <th style={{ padding: "8px 10px" }}>状态</th>
                   <th style={{ padding: "8px 10px" }}>信息</th>
@@ -615,7 +667,9 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                     <tr key={r.id} style={{ borderTop: "1px solid #f0f0f0" }}>
                       <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>{r.date}</td>
                       <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>{r.point}</td>
-                      <td style={{ padding: "7px 10px" }}>{childName(r.childId)}</td>
+                      <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>
+                        {r.targetType === "parent" ? "👨 家长（本人）" : childName(r.childId)}
+                      </td>
                       <td style={{ padding: "7px 10px" }}>{r.taskName}</td>
                       <td style={{ padding: "7px 10px", color: st.color, fontWeight: 600, whiteSpace: "nowrap" }}>{st.label}</td>
                       <td style={{ padding: "7px 10px", color: "#888", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.message}>

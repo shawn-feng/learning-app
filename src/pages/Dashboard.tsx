@@ -41,6 +41,8 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
   // ISSUE-108：报表区内容（服务端 SSE display_content 推送 / 挂载时读回最近一次）
   const [report, setReport] = useState<ParentReport | null>(null);
   const [reportUnread, setReportUnread] = useState(false);
+  // ISSUE-182 F4：定时任务连续失败提醒（SSE 推送 → 定时任务入口红点；进页面清除，列表由面板拉取）
+  const [schedulerAlertUnread, setSchedulerAlertUnread] = useState(false);
   // ISSUE-007：点击孩子卡片进入详情页（tabs 组织 进度/主题/提示词/账号，替代弹窗）
   const [detailChild, setDetailChild] = useState<any>(null);
   // ISSUE-158：侧栏折叠态（折叠后只显示 emoji icon、悬浮 title 显示名称），localStorage 持久化
@@ -115,7 +117,13 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
         /* 无报表/未登录：报表区保持空态 */
       });
     const onDisplay = window.api.onPiDisplayContent((data) => {
-      if (data.childId !== "parent" || data.source !== "report" || !data.content) return;
+      if (data.childId !== "parent" || !data.content) return;
+      // ISSUE-182 F4：定时任务连续失败提醒 → 定时任务入口红点
+      if (data.source === "scheduler_alert") {
+        setSchedulerAlertUnread(true);
+        return;
+      }
+      if (data.source !== "report") return;
       setReport({ title: data.title || "学习报表", content: data.content, ts: Date.now() });
       setReportUnread(true);
     });
@@ -124,9 +132,10 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
     };
   }, []);
 
-  // 手动打开/切到报表页 = 清未读角标
+  // 手动打开/切到报表页 = 清未读角标；进定时任务页 = 清失败提醒红点
   useEffect(() => {
     if (view === "report") setReportUnread(false);
+    if (view === "scheduler") setSchedulerAlertUnread(false);
   }, [view]);
 
   return (
@@ -200,7 +209,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           {/* ISSUE-130：学习计划/学习考核/积分 已并入 孩子管理→孩子详情 */}
           <div
             className="child-card"
-            style={{ border: "none" }}
+            style={{ border: "none", position: "relative" }}
             title="定时任务"
             onClick={() => {
               setView("scheduler");
@@ -211,6 +220,20 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             <div className="child-info">
               <div className="name">定时任务</div>
             </div>
+            {schedulerAlertUnread && (
+              <span
+                style={{
+                  position: "absolute",
+                  top: 8,
+                  right: 10,
+                  width: 10,
+                  height: 10,
+                  borderRadius: "50%",
+                  background: "#e74c3c",
+                }}
+                title="有任务连续失败提醒"
+              />
+            )}
           </div>
           <div
             className="child-card"

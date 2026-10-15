@@ -210,7 +210,7 @@ describe("ISSUE-116 createRemindersTool 防重与播报兼容", () => {
 describe("ISSUE-116 执行链路（注入执行轮）", () => {
   it("executeCustomTask：成功 → task_runs ok + agent 摘要；失败 → task_runs error（不抛错）", async () => {
     const okTask = seedCustomTask();
-    await executeCustomTask({ dataDir, db: mainDb }, parentId, childId, okTask, new Date(2026, 8, 19, 6, 0), {
+    await executeCustomTask({ dataDir, db: mainDb }, parentId, { kind: "child", childId }, okTask, new Date(2026, 8, 19, 6, 0), {
       round: async (prompt) => {
         expect(prompt).toContain("查今天的天气");
         expect(prompt).toContain("珊珊");
@@ -224,7 +224,7 @@ describe("ISSUE-116 执行链路（注入执行轮）", () => {
     expect(okRun.message).toContain("7 天的天气播报");
 
     const badTask = seedCustomTask({ name: "会失败的任务" });
-    await executeCustomTask({ dataDir, db: mainDb }, parentId, childId, badTask, new Date(2026, 8, 19, 7, 0), {
+    await executeCustomTask({ dataDir, db: mainDb }, parentId, { kind: "child", childId }, badTask, new Date(2026, 8, 19, 7, 0), {
       round: async () => {
         throw new Error("天气服务不可用");
       },

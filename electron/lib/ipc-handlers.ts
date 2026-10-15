@@ -1106,16 +1106,37 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     }
   });
 
-  ipcMain.handle("scheduler:task:assign", async (_e, id: string, childId: string, enabled: boolean) => {
+  // ISSUE-182 F2：分配支持家长目标——target 传 "parent" 时 childId 由服务端取本人，前端不传
+  ipcMain.handle(
+    "scheduler:task:assign",
+    async (_e, id: string, enabled: boolean, opts?: { childId?: string; target?: "parent" }) => {
+      try {
+        const token = currentSessionToken();
+        if (!token) return { success: false, error: "未登录" };
+        const body: Record<string, unknown> = { enabled };
+        if (opts?.target === "parent") body.target = "parent";
+        else body.childId = opts?.childId;
+        const data = await serverFetch<{ ok: boolean }>(`/scheduler/tasks/${encodeURIComponent(id)}/assign`, {
+          method: "POST",
+          token,
+          body,
+        });
+        return { success: !!data?.ok };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+  );
+
+  // ISSUE-182 F4：自定义任务连续失败提醒列表（新的在前）
+  ipcMain.handle("scheduler:alerts:list", async (_e, opts?: { limit?: number }) => {
     try {
       const token = currentSessionToken();
       if (!token) return { success: false, error: "未登录" };
-      const data = await serverFetch<{ ok: boolean }>(`/scheduler/tasks/${encodeURIComponent(id)}/assign`, {
-        method: "POST",
-        token,
-        body: { childId, enabled },
-      });
-      return { success: !!data?.ok };
+      const q = new URLSearchParams();
+      if (opts?.limit) q.set("limit", String(opts.limit));
+      const data = await serverFetch<{ alerts?: unknown[] }>(`/scheduler/alerts${q.toString() ? `?${q}` : ""}`, { token });
+      return { success: true, alerts: data?.alerts ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -1212,6 +1233,18 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
       // 通知所有渲染窗口：默认模型变了（孩子模式侧边栏自动预选新默认）
       getMainWindow()?.webContents.send("pi:default_model_changed", key || "");
       return { success: true, key: key || "" };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 语音合成音色（ISSUE-174 续：家长端显式选择，存 app_settings.ttsVoice，家长级全设备生效；
+  // 空 = 跟随管理端云端配置。TTS 选 MiniMax Speech 系时生效。）
+  ipcMain.handle("pi:set_tts_voice", async (_e: IpcMainInvokeEvent, voice: string) => {
+    try {
+      const v = typeof voice === "string" ? voice.trim() : "";
+      await setAppSettings({ ttsVoice: v });
+      return { success: true, voice: v };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

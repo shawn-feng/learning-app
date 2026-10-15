@@ -65,6 +65,8 @@ export function recordTaskRun(
   row: {
     parentId: string;
     childId: string;
+    /** ISSUE-182 F2：执行目标维度（家长任务的 run childId=parentId + targetType='parent'；缺省 child） */
+    targetType?: "child" | "parent";
     taskId: string | null;
     taskName: string;
     taskType: string;
@@ -77,12 +79,13 @@ export function recordTaskRun(
   }
 ): void {
   db.prepare(
-    `INSERT INTO task_runs (id, parent_id, child_id, task_id, task_name, task_type, date, point, status, message, started_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO task_runs (id, parent_id, child_id, target_type, task_id, task_name, task_type, date, point, status, message, started_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     crypto.randomUUID(),
     row.parentId,
     row.childId,
+    row.targetType ?? "child",
     row.taskId,
     row.taskName,
     row.taskType,
@@ -108,7 +111,7 @@ export function findTaskForRun(
       `SELECT t.id, t.name FROM scheduler_tasks t
        JOIN scheduler_task_assignments a ON a.task_id = t.id
        WHERE t.parent_id = ? AND t.type = ? AND t.time = ? AND t.enabled = 1
-         AND a.child_id = ? AND a.enabled = 1
+         AND a.child_id = ? AND a.enabled = 1 AND a.target_type = 'child'
        ORDER BY t.created_at LIMIT 1`
     )
     .get(parentId, type, point, childId) as { id: string; name: string } | undefined;
@@ -127,7 +130,7 @@ export interface TaskWithAssignments {
   instruction: string | null;
   createdAt: string;
   updatedAt: string;
-  assignments: Array<{ childId: string; enabled: boolean }>;
+  assignments: Array<{ childId: string; enabled: boolean; /** ISSUE-182 F2：'child' | 'parent' */ targetType: "child" | "parent" }>;
   /** 最近一次执行结果（task_runs 按任务最近一条，无则 null） */
   lastRun: { date: string; point: string; status: string; message: string; finishedAt: string } | null;
 }
@@ -140,8 +143,8 @@ export function listTasksWithAssignments(db: DatabaseSync, parentId: string): Ta
   const out: TaskWithAssignments[] = [];
   for (const t of tasks) {
     const assigns = db
-      .prepare("SELECT child_id, enabled FROM scheduler_task_assignments WHERE task_id = ?")
-      .all(t.id) as Array<{ child_id: string; enabled: number }>;
+      .prepare("SELECT child_id, target_type, enabled FROM scheduler_task_assignments WHERE task_id = ?")
+      .all(t.id) as Array<{ child_id: string; target_type?: string; enabled: number }>;
     const lastRun = db
       .prepare(
         "SELECT date, point, status, message, finished_at FROM task_runs WHERE task_id = ? ORDER BY finished_at DESC LIMIT 1"
@@ -164,7 +167,11 @@ export function listTasksWithAssignments(db: DatabaseSync, parentId: string): Ta
       instruction: (t as unknown as { instruction?: string | null }).instruction ?? null,
       createdAt: t.created_at,
       updatedAt: t.updated_at,
-      assignments: assigns.map((a) => ({ childId: a.child_id, enabled: a.enabled === 1 })),
+      assignments: assigns.map((a) => ({
+        childId: a.child_id,
+        enabled: a.enabled === 1,
+        targetType: a.target_type === "parent" ? "parent" : "child",
+      })),
       lastRun: lastRun
         ? {
             date: lastRun.date,
@@ -193,13 +200,13 @@ export function buildEffectiveChildConfig(
   const tasks = db
     .prepare("SELECT * FROM scheduler_tasks WHERE parent_id = ? AND enabled = 1 ORDER BY created_at")
     .all(parentId) as unknown as SchedulerTaskRow[];
-  const assigns = db
-    .prepare(
-      `SELECT a.task_id, a.child_id FROM scheduler_task_assignments a
-       JOIN scheduler_tasks t ON t.id = a.task_id
-       WHERE t.parent_id = ? AND a.enabled = 1`
-    )
-    .all(parentId) as Array<{ task_id: string; child_id: string }>;
+    const assigns = db
+      .prepare(
+        `SELECT a.task_id, a.child_id FROM scheduler_task_assignments a
+         JOIN scheduler_tasks t ON t.id = a.task_id
+         WHERE t.parent_id = ? AND a.enabled = 1 AND a.target_type = 'child'`
+      )
+      .all(parentId) as Array<{ task_id: string; child_id: string }>;
 
   const byChild = new Map<string, SchedulerTaskRow[]>();
   for (const a of assigns) {
@@ -267,6 +274,8 @@ export function listTaskRuns(
 ): Array<{
   id: string;
   childId: string;
+  /** ISSUE-182 F2：'child' | 'parent'（家长任务执行的 run，childId 列=家长 id） */
+  targetType: "child" | "parent";
   taskId: string | null;
   taskName: string;
   taskType: string;
@@ -291,6 +300,7 @@ export function listTaskRuns(
   return (rows as Array<Record<string, unknown>>).map((r) => ({
     id: String(r.id),
     childId: String(r.child_id),
+    targetType: r.target_type === "parent" ? "parent" : "child",
     taskId: r.task_id ? String(r.task_id) : null,
     taskName: String(r.task_name),
     taskType: String(r.task_type),
@@ -384,7 +394,7 @@ export function listChildReminders(db: DatabaseSync, parentId: string, childId: 
     .prepare(
       `SELECT t.* FROM scheduler_tasks t
        JOIN scheduler_task_assignments a ON a.task_id = t.id
-       WHERE t.parent_id = ? AND t.type = 'reminder' AND a.child_id = ?
+       WHERE t.parent_id = ? AND t.type = 'reminder' AND a.child_id = ? AND a.target_type = 'child'
        ORDER BY t.created_at DESC`
     )
     .all(parentId, childId) as unknown as Array<Record<string, unknown>>;
@@ -476,7 +486,7 @@ export function takeDueReminders(db: DatabaseSync, parentId: string, childId: st
     .prepare(
       `SELECT t.* FROM scheduler_tasks t
        JOIN scheduler_task_assignments a ON a.task_id = t.id
-       WHERE t.parent_id = ? AND t.type = 'reminder' AND t.enabled = 1 AND a.child_id = ? AND a.enabled = 1`
+       WHERE t.parent_id = ? AND t.type = 'reminder' AND t.enabled = 1 AND a.child_id = ? AND a.enabled = 1 AND a.target_type = 'child'`
     )
     .all(parentId, childId) as unknown as Array<Record<string, unknown>>;
   const due: DueReminder[] = [];

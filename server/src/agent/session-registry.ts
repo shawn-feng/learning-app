@@ -256,20 +256,19 @@ export function computeChildToolNames(caps: { materialPanel: boolean }): string[
   ];
 }
 
-async function ensureEntry(
+/**
+ * 孩子 agent 的工具装配真源（ISSUE-182 抽取）：交互会话（ensureEntry）与自定义定时任务的无头
+ * 会话（worker/custom-tasks.ts）共用同一份工具面与白名单，避免两处清单漂移。
+ * includePageTools=false（任务侧）：page_* 依赖在线设备的资料面板，无头会话注册了也调不通，
+ * 直接不装配；交互侧按 caps.materialPanel 决定。
+ */
+export function buildChildAgentToolset(
   deps: AgentSessionDeps,
   parentId: string,
-  childId: string
-): Promise<Entry> {
-  const key = keyOf(parentId, childId);
-  const existing = entries.get(key);
-  if (existing) return existing;
-
+  childId: string,
+  opts: { includePageTools: boolean }
+): { toolNames: string[]; customTools: any[]; workspace: string } {
   const paths = createCorePaths(deps.dataDir);
-  const settings = readParentSettings(deps.db, deps.dataDir, parentId);
-  const runtime = await getWorkerRuntime(deps.dataDir, parentId, settings.auth);
-  const model = pickWorkerModel(runtime, settings.appSettings, settings.auth, getSystemDefaultModels().text);
-
   const kbTools = createWorkerKbTools({
     dataDir: deps.dataDir,
     mainDb: deps.db,
@@ -284,8 +283,7 @@ async function ensureEntry(
   // 设备能力协商（P3）：资料面板类工具只在「对端确实有资料面板」时注册。
   // 若一律注册，模型会调用做不到的工具（如手机端无面板 / 无 Electron 面板），调用后只能报错，
   // 不如让它从工具表就知道这台设备做不到，从而改用对话引导。
-  const caps = getCaps(streamKeyOf(parentId, childId));
-  const pageTools = caps.materialPanel
+  const pageTools = opts.includePageTools
     ? createPageTools({ db: deps.db, dataDir: deps.dataDir, parentId, childId, streamKey: streamKeyOf(parentId, childId) })
     : null;
 
@@ -314,7 +312,28 @@ async function ensureEntry(
     createSummarizeConversationTool({ db: deps.db, dataDir: deps.dataDir, parentId, childId }),
   ];
 
-  const toolNames = computeChildToolNames(caps);
+  const toolNames = computeChildToolNames({ materialPanel: opts.includePageTools });
+  return { toolNames, customTools, workspace };
+}
+
+async function ensureEntry(
+  deps: AgentSessionDeps,
+  parentId: string,
+  childId: string
+): Promise<Entry> {
+  const key = keyOf(parentId, childId);
+  const existing = entries.get(key);
+  if (existing) return existing;
+
+  const paths = createCorePaths(deps.dataDir);
+  const settings = readParentSettings(deps.db, deps.dataDir, parentId);
+  const runtime = await getWorkerRuntime(deps.dataDir, parentId, settings.auth);
+  const model = pickWorkerModel(runtime, settings.appSettings, settings.auth, getSystemDefaultModels().text);
+
+  const caps = getCaps(streamKeyOf(parentId, childId));
+  const { toolNames, customTools, workspace } = buildChildAgentToolset(deps, parentId, childId, {
+    includePageTools: caps.materialPanel,
+  });
 
   // AGENTS 用户版本：服务端就是唯一真源（scope=child, ref=childId），直接读库注入，
   // 不再有旧架构「客户端先远程预取到本地缓存、同步回调再读缓存」的时序问题。

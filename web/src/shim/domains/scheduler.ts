@@ -446,19 +446,35 @@ export const schedulerDomain = {
     }
   },
 
-  /** schedulerTaskAssign: (id, childId, enabled) => Promise<{ success: boolean; error?: string }>（POST /scheduler/tasks/:id/assign） */
+  /** schedulerTaskAssign: (id, enabled, opts?) => Promise<{ success: boolean; error?: string }>（POST /scheduler/tasks/:id/assign；ISSUE-182 F2 支持 target:"parent"） */
   schedulerTaskAssign: async (
     id: string,
-    childId: string,
-    enabled: boolean
+    enabled: boolean,
+    opts?: { childId?: string; target?: "parent" }
   ): Promise<{ success: boolean; error?: string }> => {
     try {
       if (!getStoredToken()) return { success: false, error: "未登录" };
+      const body: Record<string, unknown> = { enabled };
+      if (opts?.target === "parent") body.target = "parent";
+      else body.childId = opts?.childId;
       const data = await http<{ ok: boolean }>(`/scheduler/tasks/${encodeURIComponent(id)}/assign`, {
         method: "POST",
-        body: { childId, enabled },
+        body,
       });
       return { success: !!data?.ok };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  },
+
+  /** schedulerAlertsList: (opts?) => Promise<{ success: boolean; alerts?: unknown[]; error?: string }>（GET /scheduler/alerts，ISSUE-182 F4） */
+  schedulerAlertsList: async (opts?: { limit?: number }): Promise<{ success: boolean; alerts?: unknown[]; error?: string }> => {
+    try {
+      if (!getStoredToken()) return { success: false, error: "未登录" };
+      const q = new URLSearchParams();
+      if (opts?.limit) q.set("limit", String(opts.limit));
+      const data = await http<{ alerts?: unknown[] }>(`/scheduler/alerts${q.toString() ? `?${q}` : ""}`);
+      return { success: true, alerts: data?.alerts ?? [] };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
