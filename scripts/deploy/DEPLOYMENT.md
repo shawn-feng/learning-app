@@ -272,3 +272,23 @@ Electron 登录页「抖音扫码登录」
   journal 无 error；**线上冒烟**（自签 JWT）：task-templates 三卡（mastery+天气+错题）、/scheduler/alerts 空列表、
   /scheduler/tasks 正常。单测：issue182 12 例 + 改动面 64/64 绿。
 - 回滚：bundle bak-20261015-151156（0.5.32）、数据 deploy-0.5.33-20261015-151156。
+
+## learning-server 0.5.34（2026-10-15 19:11 部署 201）
+- 内容：ISSUE-183 考核朗读/背诵录音音量前置校验 + 评测最终分改各维度平均——
+  ① assessment_config 新增 minVolumeNorm（考核录音最低平均音量，0-100 归一分，默认 42≈-35dBFS，0=关闭）
+  + recitePassDefault（朗读/背诵通过线默认，默认 90）；无 DB 迁移（加密 JSON 内新键，旧配置读出即得默认值）；
+  ② `POST /assessment/assess` 评测启用且阈值>0 时评测前对合并音频整体算平均音量（复用 16k wav 免二次
+  ffmpeg），低于阈值 422 `{code:VOLUME_TOO_LOW, volumeNorm, minVolumeNorm}` 按未答拦下（拦旧客户端/绕过；
+  journal 留 warn）；③ `GET /exam/config` 下发 examRules{minVolumeNorm,recitePassDefault}（孩子端 iframe
+  前置校验+判分用，客户端 0.1.30 起消费）；④ aliyun-ssecp/tencent-soe 最终分=各维度平均（全缺回退综合分）；
+  ⑤ recitePass 未设语义改 0（旧客户端 `Number(0)||90` 行为不变）。纯服务端改动，客户端待打包发布。
+- 流程：deploy_0534_issue183.py（上传→备份 bundle+数据 85M→替换→重启→验证）。
+- 验证：201 version=0.5.34、VOLUME_TOO_LOW/minVolumeNorm/examRules/dimensionMeanScore 标记在 bundle、
+  health ok、journal 无 error；**线上冒烟（smoke_0534_issue183_v3.py，自签家长 JWT）**：
+  配置回读默认值 42/90 → 阈值改 50 → curl 上传真实"安静"WAV（-49dBFS）→ /assessment/assess 返回
+  **HTTP 422 VOLUME_TOO_LOW volumeNorm=18**（journal 同步落 warn「录音平均音量低于阈值，按未答拦下」）→
+  恢复 42/90 回读一致 → 真实考核计划 `exam/config?schedule=` 返回 examRules{42,90}。
+  部署前状态（enabled=true/aliyun-ssecp）已原样恢复；冒烟临时文件/测试 files 行已清理。
+- 回滚：bundle bak-20261015-191124（0.5.33）、数据 deploy-0.5.34-20261015-191124（85M；磁盘 88%）。
+- ⚠️ 冒烟脚本教训（记录给下次）：`(BOOT + TAIL).replace()` 的方法调用只作用于尾段字面量——模板公共段
+  里的占位符不会被替换（v2 曾因此打到假家长；v1 失败退出未还原配置，v3 先恢复再测）。
