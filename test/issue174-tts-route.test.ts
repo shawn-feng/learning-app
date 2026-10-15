@@ -23,6 +23,7 @@ vi.mock("../server/src/auth/tokenhub", () => ({
     vision: "tokenhub/deepseek/deepseek-v4-flash-vision-exp",
     asr: "hy-asr-3.0-preview",
     tts: "minimax-speech-2.8-turbo",
+    voice: "audiobook_female_1",
   }),
 }));
 // edge-tts 不出真实网络
@@ -138,6 +139,7 @@ describe("POST /api/v1/tts/synthesize", () => {
     expect(Buffer.from(r1.body as Buffer).toString("latin1")).toBe(Buffer.from(HEX_AUDIO, "hex").toString("latin1"));
     const body = JSON.parse(String((vi.mocked(globalThis.fetch).mock.calls[0] as any)[1].body));
     expect(body.model).toBe("minimax-speech-2.8-turbo");
+    expect(body.voice_setting.voice_id).toBe("audiobook_female_1");
     expect(body.voice_setting.speed).toBeCloseTo(1.2);
     // 二发：服务端 tts-cache 命中 → fetch 仍只有一次
     await app.inject({
@@ -161,6 +163,23 @@ describe("POST /api/v1/tts/synthesize", () => {
     expect(r.statusCode).toBe(200);
     expect(Buffer.from(r.body as Buffer).toString()).toBe("edge-fake-mp3");
     expect(vi.mocked(globalThis.fetch).mock.calls.length).toBe(0); // 没碰 TokenHub
+  });
+
+  it("家长端 app_settings.ttsVoice 显式选择 → 优先于管理端云端音色", async () => {
+    const h = buildHarness();
+    // mock 的云端音色是 audiobook_female_1；家长端选 clever_boy 应胜出
+    await h.db.prepare("INSERT INTO settings (key, value_json, updated) VALUES (?,?,?)").run(
+      `${PARENT}:app_settings`, JSON.stringify({ ttsVoice: "clever_boy" }), new Date().toISOString()
+    );
+    const r = await h.app.inject({
+      method: "POST",
+      url: "/api/v1/tts/synthesize",
+      headers: { Authorization: `Bearer ${h.token}` },
+      payload: { text: "你好" },
+    });
+    expect(r.statusCode).toBe(200);
+    const body = JSON.parse(String((vi.mocked(globalThis.fetch).mock.calls[0] as any)[1].body));
+    expect(body.voice_setting.voice_id).toBe("clever_boy");
   });
 
   it("TokenHub 失败 → 回落 edge（200，不 502）", async () => {

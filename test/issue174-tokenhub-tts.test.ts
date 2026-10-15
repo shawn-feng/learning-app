@@ -23,6 +23,7 @@ vi.mock("../server/src/auth/tokenhub", () => ({
     vision: "tokenhub/deepseek/deepseek-v4-flash-vision-exp",
     asr: "hy-asr-3.0-preview",
     tts: "minimax-speech-2.8-turbo",
+    voice: "female-shaonv",
   }),
 }));
 // edge-tts 不出真实网络：固定返回可识别的假 MP3
@@ -89,10 +90,17 @@ describe("synthesizeTokenhubTts 请求/响应", () => {
     const body = JSON.parse(String(init.body));
     expect(body.model).toBe("minimax-speech-2.8-turbo");
     expect(body.output_format).toBe("hex");
-    expect(body.voice_setting.voice_id).toMatch(/^minimax_/);
+    expect(body.voice_setting.voice_id).toBe("minimax_55e81114-ce7e-4ca1"); // 直调不带 voice → 兜底默认音色
     expect(body.voice_setting.speed).toBeCloseTo(1.2); // +20% → 1.2
     expect(body.voice_setting.vol).toBe(1);
     expect(body.audio_setting).toMatchObject({ sample_rate: 24000, format: "mp3", channel: 1 });
+  });
+
+  it("直调带 voice（管理端「合成音色」）→ 透传 voice_id", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(tokenhubOk());
+    await synthesizeTokenhubTts("测试", { model: "minimax-speech-2.8-turbo", apiKey: "sk", voice: "clever_boy" });
+    const body = JSON.parse(String((spy.mock.calls[0] as any)[1].body));
+    expect(body.voice_setting.voice_id).toBe("clever_boy");
   });
 
   it("语速/音量夹取：-80% → 0.5 下限；1000% 音量 → 上限 10", async () => {
@@ -139,6 +147,13 @@ describe("synthesizeReply 渠道端到端（stub fetch）", () => {
     const r2 = await synthesizeReply("你好世界", { tokenhubApiKey: "sk-test" }, dir);
     expect(r2.usage).toBeUndefined(); // 缓存命中：无新增官方计费
     expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it("synthesizeReply 带 tokenhubVoice（家长端显式选择）→ 优先于云端配置音色", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(tokenhubOk());
+    await synthesizeReply("音色覆盖测试", { tokenhubApiKey: "sk-test", tokenhubVoice: "male-qn-qingse" }, tmpDir());
+    const body = JSON.parse(String((spy.mock.calls[0] as any)[1].body));
+    expect(body.voice_setting.voice_id).toBe("male-qn-qingse");
   });
 
   it("tokenhub 失败 → 回落 edge-tts（不抛错、有音频、无 usage）", async () => {
