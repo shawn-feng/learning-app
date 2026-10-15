@@ -255,3 +255,20 @@ Electron 登录页「抖音扫码登录」
   20/20 相关单测（家长端覆盖云端音色断言）；
   **201 真机端到端**：同文本两次合成——默认音色 46,836B / 家长端 clever_boy 94,068B，哈希不同（音色真实生效），
   测试后 app_settings 已还原。
+
+## learning-server 0.5.33（2026-10-15 15:2x 部署 201）
+- 内容：ISSUE-182 自定义定时任务 v2——①执行上下文按分配 agent 走默认上下文+全量工具（孩子任务=每孩子一轮，
+  孩子基底提示词+孩子全量工具（page_* 不装配）+任务特供三件 weather/reminders/mastery，cwd=孩子工作区；
+  家长任务=整任务一轮+家长全量工具含 load_skill，cwd=scratch；装配真源 buildChildAgentToolset/
+  buildParentAgentToolset 从 session/parent-registry 抽出共用）；②分配目标加「家长」（assignments/task_runs
+  幂等补 target_type 列 + 新表 scheduler_alerts；assign 路由 target=parent 仅 custom）；③看门狗分支
+  （孩子 5min/家长 11min）；④连续失败≥2 推家长（scheduler_alerts + SSE source=scheduler_alert +
+  GET /scheduler/alerts）；⑤指令模板（天气穿衣/错题复习，POST /tasks 模板分支泛化）。
+  **边界：仅 type='custom' 走 v2，recording 等确定流程任务原样。**
+- 流程：deploy_0533_custom_tasks_v2.py（上传→备份 bundle+数据 84M→替换→重启）+ version_fix 补部署
+  （首替后 version 仍回 0.5.32——**SERVER_VERSION 是 version.ts 硬编码常量，不读 package.json，每版必拍**）。
+- 验证：201 version=0.5.33、notifyCustomTaskFailure/scheduler_alerts 标记在 bundle、health ok、
+  **迁移自检**：scheduler_task_assignments/task_runs 的 target_type 两列 + scheduler_alerts 表均在启动时建成；
+  journal 无 error；**线上冒烟**（自签 JWT）：task-templates 三卡（mastery+天气+错题）、/scheduler/alerts 空列表、
+  /scheduler/tasks 正常。单测：issue182 12 例 + 改动面 64/64 绿。
+- 回滚：bundle bak-20261015-151156（0.5.32）、数据 deploy-0.5.33-20261015-151156。
