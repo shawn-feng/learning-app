@@ -109,6 +109,11 @@ export function buildExamHtml(
   .stream-banner{flex:0 0 auto; background:#fff8ec; border-bottom:1px solid #f0e2c0; padding:10px 22px; font-size:20px; color:var(--warn); display:none;}
   .stream-banner b{font-weight:700}
   .stream-empty{padding:30px 22px; text-align:center; color:var(--muted); font-size:24px; display:none;}
+  /* ISSUE-183 后补：页内提示条（替代 alert——JS 对话框在 Electron/Windows 关闭后可能不归还窗口焦点，
+     症状=退出考核回主页后所有输入框无光标；与宿主 ExamView confirmDialog 口径一致，考核流程零 JS 对话框） */
+  .page-toast{position:fixed; left:50%; bottom:96px; transform:translateX(-50%); max-width:80%;
+    background:#fff8ec; border:1.5px solid #f0e2c0; color:var(--warn); border-radius:12px;
+    padding:12px 22px; font-size:22px; font-weight:600; z-index:10000; box-shadow:0 6px 20px rgba(60,40,0,.15);}
 </style>
 </head>
 <body>
@@ -265,6 +270,19 @@ window.EXAM_DATA = ${dataJson};
     }catch(e){ return 0; }
   }
   var $ = function(id){ return document.getElementById(id); };
+  // 页内提示条（2.6s 自动消失）。考核页禁用 alert/confirm：JS 对话框关闭后 Windows 上可能不归还
+  // 窗口键盘焦点（Electron 已知问题，宿主 ISSUE-016 同款），届时孩子任何输入框都打不了字。
+  var toastTimer = 0;
+  function showToast(msg){
+    var old = document.querySelector(".page-toast");
+    if(old) old.remove();
+    if(toastTimer){ clearTimeout(toastTimer); toastTimer = 0; }
+    var d = document.createElement("div");
+    d.className = "page-toast";
+    d.textContent = msg;
+    document.body.appendChild(d);
+    toastTimer = setTimeout(function(){ d.remove(); toastTimer = 0; }, 2600);
+  }
   $("examTitle").textContent = D.title || "学习考核";
   $("examSubject").textContent = D.subject || "科目";
   // 全局秒表：右上角总用时 + 当前题「本题用时」（只计本题前台作答时长）
@@ -468,7 +486,7 @@ window.EXAM_DATA = ${dataJson};
     var a = answers[q.id] || {};
     if(a.locked || transcribing) return;
     if(media && media.state === "recording") return;
-    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ alert("当前环境不支持录音"); return; }
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ showToast("当前环境不支持录音"); return; }
     $("recStatus").textContent = "正在录音…松开结束";
     navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
       var rec = new MediaRecorder(stream);
@@ -612,7 +630,7 @@ window.EXAM_DATA = ${dataJson};
     var first = -1;
     for(var i=0;i<D.questions.length;i++){ var aa = answers[D.questions[i].id]; if(!aa || !aa.locked){ first = i; break; } }
     if(first >= 0){
-      alert("还有第 " + (first+1) + " 题没有回答（答完才能提交）");
+      showToast("还有第 " + (first+1) + " 题没有回答，先答完它才能提交");
       idx = first; renderQuestion();
       return;
     }

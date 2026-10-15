@@ -300,9 +300,19 @@ export default function ExamView({ childId, onExit }: Props) {
     }
   }
 
-  // 考核进行中退出：本次作答全部作废（不上报服务端、排期不标记完成），重考需从头作答
-  const exitExam = useCallback(() => {
-    if (!window.confirm("确定要退出这次考核吗？\n退出后本次作答不会保存，下次考核要重新从头作答。")) return;
+  // 考核进行中退出：本次作答全部作废（不上报服务端、排期不标记完成），重考需从头作答。
+  // 退窗确认走原生 confirmDialog（IPC dialog:showMessageBox）——ISSUE-016：渲染进程 window.confirm
+  // 在 Windows 上关闭后可能不归还窗口键盘焦点（症状=回主页后所有输入框无光标无法输入，家长验证
+  // 密码框首当其冲）；此处是该遗留的最后一处 window.confirm，2026-10-15 家长实测复现后补齐口径。
+  const exitExam = useCallback(async () => {
+    const r = await window.api.confirmDialog({
+      title: "退出考核",
+      message: "确定要退出这次考核吗？",
+      detail: "退出后本次作答不会保存，下次考核要重新从头作答。",
+      confirmLabel: "退出考核",
+      cancelLabel: "继续作答",
+    });
+    if (!r?.confirmed) return;
     streamRunRef.current++; // 使仍在进行的流式出题循环失效
     streamPlanRef.current = null;
     streamStartedRef.current = false;
