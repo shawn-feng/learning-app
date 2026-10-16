@@ -1227,92 +1227,139 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     },
   });
 
-  // ISSUE-116：自定义定时任务——家长自然语言指令，到点由服务端无头 agent 执行（owner 恒 parent）
-  // ISSUE-182 v2：执行会话=分配对象 agent 的默认上下文+全量工具；分配对象可为孩子（childName）或家长本人（target="parent"）
+  // 定时任务创建（owner 恒 parent）；ISSUE-182 v2：分配对象可为孩子（childName）或家长本人（target="parent"）
+  // 2026-10-16 定稿：type 与家长端「定时任务」页一致——recording / auto_new_session / mistake_sorting / custom（四类）
+  const SCHEDULER_CREATABLE_TYPES = ["custom", "recording", "auto_new_session", "mistake_sorting"] as const;
+  const SCHEDULER_TYPE_LABEL: Record<string, string> = {
+    custom: "自定义任务",
+    recording: "每日学习记录总结",
+    auto_new_session: "自动新建会话",
+    mistake_sorting: "错题整理",
+  };
   const customTaskCreateTool = defineTool({
     name: "parent_scheduler_task_create",
-    label: "创建自定义定时任务",
+    label: "创建定时任务",
     description:
-      "创建**自定义定时任务**：家长用自然语言描述要 agent 周期性完成的事，到点由服务端自动执行（例：每天 6 点查天气并给孩子建 7 天天气播报提醒；每天早上给当天学习计划的课程建考核计划）。\n" +
-      "**分配对象（childName 与 target 二选一）**：`childName`＝分配给孩子（每个孩子各自执行）；\n" +
-      "`target: \"parent\"`＝分配给家长本人（跨孩子的、以家长名义做的事，如建考核/排计划、汇总报表——以家长名义建的考核是「必考」，孩子自建的是「加分项」）。\n" +
-      "**参数**：`name` 任务名；`instruction` 必填（自然语言指令：做什么、产出什么、执行对象是谁；到点是自动执行，别留待确认的问句）；\n" +
-      "`time` HH:mm（daily/weekly 触发时刻）；`frequency` daily（默认）| weekly | once | interval；weekly 需 `weekday`（0=周日..6=周六）；interval 需 `intervalMinutes`；once 需 `fireAt`（ISO）。\n" +
-      "指令里涉及「未来 N 天提醒」要写明**一次性批量创建**。\n" +
+      "创建**定时任务**（与家长端「定时任务」页一致的四类）：`type`＝`recording`（每日学习记录总结：到点总结当天对话写入 daily）｜ `auto_new_session`（自动新建会话）｜ `mistake_sorting`（错题整理：把查词字词与错题整理成知识点并出巩固题）｜ `custom`（缺省；自然语言指令，到点由 AI 自动执行——例：每天 6 点查天气并给孩子建 7 天天气播报提醒；每天早上给当天学习计划的课程建考核计划）。\n" +
+      "**分配对象（childName 与 target 二选一）**：`childName`＝分配给孩子；`target: \"parent\"`＝分配给家长本人（**仅 custom 可用**；跨孩子的、以家长名义做的事，如建考核/排计划、汇总报表——以家长名义建的考核是「必考」，孩子自建的是「加分项」）。前三类只能分配给孩子。\n" +
+      "**参数**：`name` 任务名；`time` HH:mm 触发时刻；`instruction`（custom 必填：做什么、产出什么、执行对象是谁；到点是自动执行，别留待确认的问句）；\n" +
+      "`frequency`（仅 custom：daily（默认）| weekly | once | interval；weekly 需 `weekday`、interval 需 `intervalMinutes`、once 需 `fireAt`）；`onNewSession`（仅 recording：每次新建会话前先自动总结之前的会话）。\n" +
       "同一天执行失败不重试（次日正常）；执行结果可在任务面板查看。",
     parameters: Type.Object({
-      childName: Type.Optional(Type.String({ description: "孩子姓名（分配给孩子时必填；与 target 二选一）" })),
+      type: Type.Optional(
+        Type.String({ description: "任务类型：custom（缺省）| recording | auto_new_session | mistake_sorting" })
+      ),
+      childName: Type.Optional(Type.String({ description: "孩子姓名（分配给孩子；与 target 二选一）" })),
       target: Type.Optional(
         Type.String({
-          description: '分配对象："parent"=家长本人（家长级动作，如以家长名义建考核计划）；缺省=分配给孩子（此时填 childName）',
+          description: '分配对象："parent"=家长本人（仅 custom；家长级动作，如以家长名义建考核计划）；缺省=分配给孩子（此时填 childName）',
         })
       ),
       name: Type.String({ description: "任务名称（如「每日天气播报」）" }),
-      instruction: Type.String({ description: "自然语言指令（写清楚做什么、产出什么、指名执行对象）" }),
-      time: Type.String({ description: "触发时刻 HH:mm（daily/weekly 用）" }),
-      frequency: Type.Optional(Type.String({ description: "daily（默认）| weekly | once | interval" })),
-      weekday: Type.Optional(Type.Number({ description: "weekly：0=周日..6=周六" })),
-      intervalMinutes: Type.Optional(Type.Number({ description: "interval：每隔 N 分钟" })),
-      fireAt: Type.Optional(Type.String({ description: "once：目标时间 ISO" })),
+      time: Type.String({ description: "触发时刻 HH:mm" }),
+      instruction: Type.Optional(
+        Type.String({ description: "自然语言指令（仅 custom 必填：做什么、产出什么、执行对象是谁）" })
+      ),
+      frequency: Type.Optional(Type.String({ description: "仅 custom：daily（默认）| weekly | once | interval" })),
+      weekday: Type.Optional(Type.Number({ description: "仅 custom·weekly：0=周日..6=周六" })),
+      intervalMinutes: Type.Optional(Type.Number({ description: "仅 custom·interval：每隔 N 分钟" })),
+      fireAt: Type.Optional(Type.String({ description: "仅 custom·once：目标时间 ISO" })),
+      onNewSession: Type.Optional(
+        Type.Boolean({ description: "仅 recording：每次新建会话前先自动总结之前的会话" })
+      ),
     }),
     execute: async (
       _id: string,
       params: {
+        type?: string;
         childName?: string;
         target?: string;
         name: string;
-        instruction: string;
         time: string;
+        instruction?: string;
         frequency?: string;
         weekday?: number;
         intervalMinutes?: number;
         fireAt?: string;
+        onNewSession?: boolean;
       }
     ) => {
+      const type = String(params.type ?? "").trim() || "custom";
+      if (!(SCHEDULER_CREATABLE_TYPES as readonly string[]).includes(type)) {
+        if (type === "reminder") {
+          throw new Error("提醒类任务不能在这里创建：孩子在对话里自建，或写进 custom 指令里由执行会话创建");
+        }
+        throw new Error(`type 仅支持：${SCHEDULER_CREATABLE_TYPES.join(" / ")}`);
+      }
+      const isCustom = type === "custom";
+      const typeZh = SCHEDULER_TYPE_LABEL[type] ?? type;
       const target = String(params.target ?? "").trim();
       if (target && target !== "parent") {
         throw new Error(`target 仅支持 "parent"（分配给孩子请用 childName）：${target}`);
       }
       const childName = String(params.childName ?? "").trim();
       if (target === "parent" && childName) throw new Error('childName 与 target="parent" 二选一，不能同时提供');
+      if (target === "parent" && !isCustom) {
+        throw new Error(`${typeZh}（${type}）只能分配给孩子：请用 childName，去掉 target`);
+      }
       if (target !== "parent" && !childName) {
-        throw new Error('请提供分配对象：childName（分配给孩子）或 target="parent"（分配给家长本人）');
+        throw new Error('请提供分配对象：childName（分配给孩子）或 target="parent"（仅自定义任务，分配给家长本人）');
       }
       const name = String(params.name ?? "").trim();
-      const instruction = String(params.instruction ?? "").trim();
       const time = String(params.time ?? "").trim();
       if (!name) throw new Error("parent_scheduler_task_create 需要 name（任务名称）");
-      if (!instruction) throw new Error("parent_scheduler_task_create 需要 instruction（自然语言指令）");
       if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error(`time 格式应为 HH:mm：${time}`);
-      const frequency = (["daily", "weekly", "once", "interval"] as const).includes(params.frequency as never)
-        ? (params.frequency as "daily" | "weekly" | "once" | "interval")
-        : "daily";
-      if (frequency === "weekly" && !(Number(params.weekday) >= 0 && Number(params.weekday) <= 6)) {
+      const instruction = String(params.instruction ?? "").trim();
+      if (isCustom && !instruction) throw new Error("自定义任务需要 instruction（自然语言指令）");
+      if (!isCustom && instruction) {
+        throw new Error(`${typeZh}是固定流程任务，不接受 instruction（instruction 只用于自定义任务）`);
+      }
+      if (params.onNewSession !== undefined && type !== "recording") {
+        throw new Error("onNewSession 仅 recording（每日学习记录总结）可用");
+      }
+      const freqRaw = String(params.frequency ?? "").trim();
+      if (
+        !isCustom &&
+        (params.weekday !== undefined ||
+          params.intervalMinutes !== undefined ||
+          params.fireAt !== undefined ||
+          (freqRaw && freqRaw !== "daily"))
+      ) {
+        throw new Error(`${typeZh}固定每天执行，不要传 frequency/weekday/intervalMinutes/fireAt`);
+      }
+      const frequency =
+        isCustom && (["daily", "weekly", "once", "interval"] as const).includes(freqRaw as never)
+          ? (freqRaw as "daily" | "weekly" | "once" | "interval")
+          : "daily";
+      if (isCustom && frequency === "weekly" && !(Number(params.weekday) >= 0 && Number(params.weekday) <= 6)) {
         throw new Error("weekly 需提供 weekday（0=周日..6=周六）");
       }
-      if (frequency === "interval" && !(Number(params.intervalMinutes) > 0)) {
+      if (isCustom && frequency === "interval" && !(Number(params.intervalMinutes) > 0)) {
         throw new Error("interval 需提供 intervalMinutes（>0）");
       }
-      if (frequency === "once" && !params.fireAt) throw new Error("once 需提供 fireAt（ISO 目标时间）");
+      if (isCustom && frequency === "once" && !params.fireAt) throw new Error("once 需提供 fireAt（ISO 目标时间）");
       const child = target === "parent" ? null : resolvePlanChild(db, parentId, childName);
       const id = crypto.randomUUID();
       const now = nowLocalIso();
+      const extra = type === "recording" ? JSON.stringify({ onNewSession: params.onNewSession === true }) : "{}";
       db
         .prepare(
           `INSERT INTO scheduler_tasks (id, parent_id, name, type, time, extra_json, enabled, owner, frequency,
              weekday, interval_minutes, fire_at, instruction, created_at, updated_at)
-           VALUES (?, ?, ?, 'custom', ?, '{}', 1, 'parent', ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, 1, 'parent', ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           id,
           parentId,
           name,
+          type,
           time,
-          frequency,
-          frequency === "weekly" ? Number(params.weekday) : null,
-          frequency === "interval" ? Number(params.intervalMinutes) : null,
-          frequency === "once" ? String(params.fireAt) : null,
-          instruction,
+          extra,
+          isCustom ? frequency : "daily",
+          isCustom && frequency === "weekly" ? Number(params.weekday) : null,
+          isCustom && frequency === "interval" ? Number(params.intervalMinutes) : null,
+          isCustom && frequency === "once" ? String(params.fireAt) : null,
+          isCustom ? instruction : null,
           now,
           now
         );
@@ -1330,8 +1377,13 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           )
           .run(id, parentId, now);
       }
+      const freqNote =
+        isCustom && frequency !== "daily"
+          ? `·${frequency}${frequency === "weekly" ? ` 周${"日一二三四五六"[Number(params.weekday)] ?? ""}` : ""}`
+          : "";
+      const onNewNote = type === "recording" && params.onNewSession === true ? "（每次新建会话前先自动总结之前的会话）" : "";
       return ok(
-        `已创建自定义定时任务「${name}」（${frequency}${frequency === "weekly" ? ` 周${"日一二三四五六"[Number(params.weekday)] ?? ""}` : ""} ${time}，执行对象：${child ? child.name : "家长本人"}）。到点由服务端无头执行，执行结果可在任务面板查看。`
+        `已创建定时任务「${name}」（${typeZh}${freqNote} ${time}，执行对象：${child ? child.name : "家长本人"}）${onNewNote}。到点由服务端自动执行，执行结果可在任务面板查看。`
       );
     },
   });

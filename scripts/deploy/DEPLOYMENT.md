@@ -322,3 +322,17 @@ Electron 登录页「抖音扫码登录」
   「不能碰积分/全量工具」MISSING；超集校验 ISSUE-183（VOLUME_TOO_LOW…）与 ISSUE-182 F4（notifyCustomTaskFailure）KEPT。
   单测 issue144-parent-skills 等 3 文件 77/77（含新增反向守卫：执行侧词条不得回流技能正文）。
 - 回滚：bundle bak-20261016-0845xx（0.5.35）、数据 deploy-0.5.36-20261016-084533（主库+配置）。
+
+## learning-server 0.5.37（2026-10-16 08:57 部署 201）
+- 背景（用户拍板方案 A + 模板处理选 (ii)）：「定时任务与提醒」口径的类型清单**以家长端「定时任务」页为准**——
+  可创建四类：`recording` 每日学习记录总结 / `auto_new_session` 自动新建会话 / `mistake_sorting` 错题整理 / `custom` 自定义任务
+  （三张推荐模板卡＝ custom 的预填形态，保持面板专属）；「提醒」不在可创建之列（孩子对话自建 / 写进 custom 指令）。
+- 改动：①automation 技能「目前能创建的几种任务」表按上述四类重写（类型键/何时用/关键参数/分配对象），
+  分配对象规则=前三类只能给孩子、custom 二选一（孩子 / target="parent"）；②`parent_scheduler_task_create` 加 `type` 参数支持四类
+  （缺省 custom 兼容旧行为）：前三类禁止 target="parent"、不接受 instruction、不接受 frequency/weekday/interval/fireAt，
+  `onNewSession` 仅 recording；落库字段与「定时任务」页创建路径一致（extra_json / instruction=NULL / frequency=daily）；
+  ③客户端面板 custom 提示语去 v1 残留（"可查天气/建提醒/写学习记录"→"可分配给孩子或家长本人"，随下次客户端打包）。
+- 验证：201 version=0.5.37、health ok、journal error=0；转义感知标记（四类标签 + 提醒说明 FOUND / 全量工具·不能碰积分 MISSING）+ ASCII 类型键 FOUND；
+  超集校验 ISSUE-183 与 ISSUE-182 F4 KEPT。单测 5 文件 101/101（新增：四类创建落库断言 + buildEffectiveChildConfig 接线断言
+  [recording/autoNewSession/mistakeSorting 进有效配置] + 五条约束不落行断言）；双端构建过。
+- 回滚：bundle bak-20261016-0857xx（0.5.36）、数据 deploy-0.5.37-20261016-085711（主库+配置）。

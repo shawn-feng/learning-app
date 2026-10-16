@@ -464,4 +464,59 @@ describe("ISSUE-182 家长 agent 建任务工具（target 分配与 v2 口径）
     };
     expect(cnt.c).toBe(0);
   });
+
+  it("四类任务与「定时任务」页对齐：recording/auto_new_session/mistake_sorting 可建并接入有效配置；约束不落行", async () => {
+    const { createPlanDomainTools } = await import("../server/src/agent/parent-plans");
+    const tool: any = createPlanDomainTools({ db: mainDb, dataDir, parentId }).find(
+      (t: any) => t.name === "parent_scheduler_task_create"
+    );
+    // recording（带 onNewSession：extra_json 与指令位都要对）
+    await tool.execute("x", { type: "recording", childName: "珊珊", name: "每日对话总结", time: "21:00", onNewSession: true });
+    const rec = mainDb
+      .prepare("SELECT id, type, extra_json, instruction FROM scheduler_tasks WHERE parent_id = ? AND name = ?")
+      .get(parentId, "每日对话总结") as { id: string; type: string; extra_json: string; instruction: string | null };
+    expect(rec.type).toBe("recording");
+    expect(JSON.parse(rec.extra_json)).toEqual({ onNewSession: true });
+    expect(rec.instruction).toBeNull();
+    expect(
+      mainDb.prepare("SELECT child_id, target_type FROM scheduler_task_assignments WHERE task_id = ?").all(rec.id)
+    ).toEqual([{ child_id: childA, target_type: "child" }]);
+    // auto_new_session / mistake_sorting
+    await tool.execute("x", { type: "auto_new_session", childName: "珊珊", name: "每日新会话", time: "05:00" });
+    await tool.execute("x", { type: "mistake_sorting", childName: "珊珊", name: "每日错题整理", time: "20:30" });
+    for (const [n, t] of [
+      ["每日新会话", "auto_new_session"],
+      ["每日错题整理", "mistake_sorting"],
+    ] as const) {
+      const row = mainDb
+        .prepare("SELECT type FROM scheduler_tasks WHERE parent_id = ? AND name = ?")
+        .get(parentId, n) as { type: string } | undefined;
+      expect(row?.type).toBe(t);
+    }
+    // 端到端接线：agent 建的三类任务进「有效配置」（客户端合并推送 + worker 按点执行的数据源）
+    const cfg = buildEffectiveChildConfig(mainDb, parentId);
+    expect(cfg[childA]?.recording.enabled).toBe(true);
+    expect(cfg[childA]?.recording.times).toContain("21:00");
+    expect(cfg[childA]?.recording.onNewSession).toBe(true);
+    expect(cfg[childA]?.autoNewSession.times).toContain("05:00");
+    expect(cfg[childA]?.mistakeSorting.times).toContain("20:30");
+    // 约束：reminder 拒绝；前三类不能分配家长；固定流程任务不接受 instruction / frequency；onNewSession 仅 recording
+    await expect(tool.execute("x", { type: "reminder", childName: "珊珊", name: "n1", time: "07:00" })).rejects.toThrow(/提醒/);
+    await expect(tool.execute("x", { type: "recording", target: "parent", name: "n2", time: "07:00" })).rejects.toThrow(
+      /只能分配给孩子/
+    );
+    await expect(
+      tool.execute("x", { type: "recording", childName: "珊珊", name: "n3", time: "07:00", instruction: "总结对话" })
+    ).rejects.toThrow(/instruction/);
+    await expect(
+      tool.execute("x", { type: "recording", childName: "珊珊", name: "n4", time: "07:00", frequency: "weekly" })
+    ).rejects.toThrow(/frequency/);
+    await expect(
+      tool.execute("x", { type: "custom", childName: "珊珊", name: "n5", time: "07:00", instruction: "i", onNewSession: true })
+    ).rejects.toThrow(/onNewSession/);
+    const cnt = mainDb.prepare("SELECT COUNT(*) AS c FROM scheduler_tasks WHERE parent_id = ? AND name LIKE 'n%'").get(parentId) as {
+      c: number;
+    };
+    expect(cnt.c).toBe(0);
+  });
 });
