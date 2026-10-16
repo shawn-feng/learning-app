@@ -308,3 +308,27 @@
 - 现场该家长**没有 `mistake_sorting` 任务行** → 字词要自动出题，需先在「定时任务」页创建该任务（opt-in，属产品既有口径）。
 - 未做（按用户"简单一点"）：字词与真实课程考点的关联/去重（`reading/春风·数狮子::吟诵` 与 `错题整理/字词::吟诵` 这类重名会继续并存）；准入闸门收紧（`资料`/`面板` 这类仍可能进字词课）。
 - **未部署 201、未提交**（按长期约定：部署前先问）。
+
+---
+
+## 九、部署与线上验证（2026-10-16 21:18，server 0.5.38）
+
+- 提交 `0b922af`（三 issue 同批；27 文件 +1767/−110）→ push github + gitee → 部署 201：备份 bundle `server.cjs.bak-20261016-211843` + 数据 `deploy-0.5.38-20261016-211843`（22M）→ 换包重启。
+- **部署校验**：version `0.5.38`、health `{ok:true,db:"ok"}`、journal error **0**；标记校验全 FOUND——
+  `题库挂载反查达到分页硬上限`（184）/`是**前缀**且匹配到`+`行 id 已给全值`+`完整行 id`（185）/
+  `字词出题未命中`+`还没有挂题，出不了题`+`口述题`+`造句`+`按错题/字词排考核`+`还没题可考`（186）+
+  ASCII `BANK_CTX_SCAN_MAX/BANK_CTX_PAGE/ignoreGlobalCap/resolveRowById/parent_child_mistake_list/selectPendingQuestions/QFAIL_LIMIT/normalizeWordName/qfail:`；
+  **超集 KEPT**：ISSUE-183（VOLUME_TOO_LOW/minVolumeNorm/dimensionMeanScore）、ISSUE-182（notifyCustomTaskFailure + 四类创建口径）。
+
+### 9.1 线上实测结果
+| 项 | 结果 |
+|---|---|
+| ISSUE-184 | `GET /assess/questions/list` → **10000 题，带挂载 9997 / 未挂载 3**（478ms）；剩 3 条是真实游离题 |
+| ISSUE-185 | 两孩子最近 6 场考核 id 前 8 位**全为 `ep_17921`**（撞车 6/6）——现场问题复现；工具现在给全值 + 前缀歧义拒绝（bundle 标记已验） |
+| ISSUE-186 F1 数据面 | 闻闻 open 生字 **61** 条（已挂知识点 55，本周新增 42）；珊珊 **148** 条（已挂 45，本周新增 12）——新工具逐条读的就是这张表 |
+| ISSUE-186 F0 现状 | `错题整理/字词` 课 **100 个知识点 / 46 有题 / 54 没题**；`qfail` 计数 0；家长**已有** `mistake_sorting` 任务（「错题整理 21:00」，enabled） |
+
+### 9.2 ⚠️ 关键时序：新出题代码**要到明天 21:00 才会跑**
+- `worker_state` 显示两个孩子 `mistake_sorting` 今日 21:00 的桶**已经用旧包跑过**（`last_run=2026-10-16T21:00:00`；`task_runs.message` 还是旧格式「整理 30 条（字词 30、错题 0）」，没有"本轮出题 N"）。部署时间是 21:18，**晚于**该触发点。
+- ⇒ 54 个没题的字词，要等**明天 21:00** 那次运行才会按新口径补（每轮最多 24 个、老的优先、失败 3 轮跳过）；两轮左右补完。
+- 想**立刻**补：把今日桶的 `worker_state` 重置（删该 `task` + 孩子的两行）让 catch-up 现在重跑一次（任务幂等：kp 按唯一键、题目按"该 kp 没题才出"、`perChild` 重算）。**属生产写操作，需用户点头**（见对话）。

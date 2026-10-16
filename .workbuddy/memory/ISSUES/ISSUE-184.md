@@ -100,3 +100,9 @@ const { sql, params } = buildPathQuery(registeredPath("bank_question_contexts"),
 ## 六、遗留（不阻塞）
 - 题库列表本身有 `BANK_LIST_LIMIT=10000` 上限（ISSUE-074 口径）；挂载反查成本随后者走，两者需要一起看。
 - 反查目前是"拉全部挂载再按题 id 建 map"，若某家长库挂载量级上十万，建议改为**按列表里的题 id 分批 `IN` 查询**（注册表路径需支持多值过滤）。
+
+## 七、部署与线上验证（2026-10-16 21:18，server 0.5.38）
+- 提交 `0b922af`（含 ISSUE-185/186 同批）→ 已 push github + gitee；部署 201（备份 `server.cjs.bak-20261016-211843` + 数据 `deploy-0.5.38-20261016-211843` 22M）→ version `0.5.38`、health ok、journal error 0。
+- **线上实测（自签家长 JWT 直连 127.0.0.1:8788）**：`GET /api/v1/assess/questions/list` → 返回 **10000 题，带挂载 9997、未挂载 3**（耗时 478ms）。
+  - 对照：修复前该家长库（挂载 12913 行 / max rowid 13280）只读得到最早 5000 条挂载 ⇒ 列表首屏（最新题）整片"未挂载"；ISSUE-148 当时的线上数字是 `MOUNTED=3495 / UNMOUNTED=403`（那是 3498 条挂载、未触及 5000 上限时）。
+  - 剩 3 条未挂载＝真实游离题（无 `courseId`），与 ISSUE-148 §四 同类。
