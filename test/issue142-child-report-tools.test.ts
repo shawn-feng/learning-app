@@ -255,6 +255,13 @@ describe("ISSUE-142 child_mistake_log(list) 返回补关联字段", () => {
     expect(text).toContain("知识点：句意白话");
     expect(text).toContain("有原题可重做");
   });
+
+  it("ISSUE-186 F1：list 还带首记/最近日期，并支持 days 只看最近几天", async () => {
+    const text = toolText(await mistakeTool.execute("x", { action: "list" }));
+    expect(text).toMatch(/首记 \d{4}-\d{2}-\d{2} \/ 最近 \d{4}-\d{2}-\d{2}/);
+    const recent = toolText(await mistakeTool.execute("x", { action: "list", days: 7 }));
+    expect(recent).toContain("最近 7 天");
+  });
 });
 
 describe("ISSUE-142 装配层：通用读写撤掉、报告工具就位", () => {

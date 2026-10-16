@@ -114,9 +114,11 @@ describe("ISSUE-144 P0/P1：常驻层预算（渐进披露确实省下上下文�
     expect(prompt).not.toContain("通用数据查询");
   });
 
-  it("每个技能正文规模可控（≤ 6000 字符）", () => {
+  it("每个技能正文规模可控（≤ 7200 字符）", () => {
+    // ISSUE-186：`parent-scene-plan` 新增"按错题/字词排考核"的三步口径（家长高频诉求）后 6706 字符，
+    // 原 6000 上限（余量仅 ~170）已到顶 → 放宽到 7200 并在正文里做了压缩（详细清单口径在 progress 技能）。
     for (const s of PARENT_SKILLS) {
-      expect(s.body.length, `${s.name} 正文过长`).toBeLessThanOrEqual(6000);
+      expect(s.body.length, `${s.name} 正文过长`).toBeLessThanOrEqual(7200);
       expect(s.body.trim().length, `${s.name} 正文为空`).toBeGreaterThan(300);
     }
   });
@@ -600,7 +602,9 @@ describe("ISSUE-144 A 路线：说明下沉到技能，工具块只留结构与�
     // **增量全是结构，不是文风**：参数 Schema 是校验与类型转换的依据，压不掉。
     // 上限随工具面增减同步调，防"加工具悄悄突破预算"。**下次再加工具前先看这条余量**（现剩 269）。
     // ISSUE-178：+parent_transfer_upload（转存上传原始件到资料库）→ 预算放宽 17000 → 17500
-    expect(afterTotal).toBeLessThan(17500);
+    // ISSUE-186 F1：+parent_child_mistake_list（错题/生字逐条清单，声明进 progress + plan 两个技能
+    //   所以走下沉）→ 49 把 / 17802；预算 17500 → 18000（余量 ~200，下次加工具前先看这里）
+    expect(afterTotal).toBeLessThan(18000);
     expect(beforeTotal).toBeGreaterThan(20500);
   });
 

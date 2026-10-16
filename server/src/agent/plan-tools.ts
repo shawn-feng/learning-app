@@ -22,6 +22,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { openKb } from "../db/kb.js";
 import { openParentLib } from "../db/parent-lib.js";
 import { buildPlanSpecEntries, inferReciteOnlyFromNote, type PlanCourseSpec } from "../assess-selection.js";
+import { resolveRowById } from "../util/row-id.js";
 
 export interface PlanToolsDeps {
   dataDir: string;
@@ -71,9 +72,9 @@ export function createChildStudyPlanListTool(deps: PlanToolsDeps) {
         if (!rows.length) return { content: [{ type: "text" as const, text: `（${day} 没有学习计划。）` }], details: {} };
         const lines = rows.slice(0, 120).map(
           (r) =>
-            `- ${r.id.slice(0, 8)}｜${(r.startAt || "").slice(0, 10)}｜${r.title}｜${r.mode === "review" ? "复习" : "新学"}｜${r.status === "done" ? "✅ 已学" : "⬜ 待学"}${r.creator === "child" ? "（自己）" : ""}`
+            `- ${r.id}｜${(r.startAt || "").slice(0, 10)}｜${r.title}｜${r.mode === "review" ? "复习" : "新学"}｜${r.status === "done" ? "✅ 已学" : "⬜ 待学"}${r.creator === "child" ? "（自己）" : ""}`
         );
-        return { content: [{ type: "text" as const, text: `你的学习计划（共 ${rows.length} 行，行 id 取前 8 位）：\n${lines.join("\n")}` }], details: {} };
+        return { content: [{ type: "text" as const, text: `你的学习计划（共 ${rows.length} 行，行 id **用完整值**）：\n${lines.join("\n")}` }], details: {} };
       } finally {
         kb.close();
       }
@@ -113,9 +114,9 @@ export function createChildExamPlanListTool(deps: PlanToolsDeps) {
         if (!rows.length) return { content: [{ type: "text" as const, text: `（${day} 没有考核计划。）` }], details: {} };
         const lines = rows.slice(0, 120).map((r) => {
           const st = r.status === "done" ? `✅ 已完成${r.score != null ? `（${r.score}分）` : ""}` : r.status === "missed" ? "❌ 未完成" : "⬜ 待考";
-          return `- ${r.id.slice(0, 8)}｜${(r.startAt || "").slice(0, 10)}｜${r.title}｜${st}`;
+          return `- ${r.id}｜${(r.startAt || "").slice(0, 10)}｜${r.title}｜${st}`;
         });
-        return { content: [{ type: "text" as const, text: `你的考核计划（共 ${rows.length} 行）：\n${lines.join("\n")}` }], details: {} };
+        return { content: [{ type: "text" as const, text: `你的考核计划（共 ${rows.length} 行，行 id **用完整值**——同日多场的前缀相同）：\n${lines.join("\n")}` }], details: {} };
       } finally {
         kb.close();
       }
@@ -405,10 +406,10 @@ export function createChildLifePlanListTool(deps: PlanToolsDeps) {
         .slice(0, 120)
         .map(
           (r) =>
-            `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${r.title}｜${r.creator === "parent" ? "必须完成项(家长)" : "加分项(自己)"}｜${r.status === "done" ? "✅ 已完成" : r.status === "missed" ? "❌ 未完成" : "⬜ 待完成"}${r.origin === "carry" ? "｜📋 顺延" : ""}`
+            `- ${r.id}｜${(r.start_at || "").slice(0, 10)}｜${r.title}｜${r.creator === "parent" ? "必须完成项(家长)" : "加分项(自己)"}｜${r.status === "done" ? "✅ 已完成" : r.status === "missed" ? "❌ 未完成" : "⬜ 待完成"}${r.origin === "carry" ? "｜📋 顺延" : ""}`
         );
       return {
-        content: [{ type: "text" as const, text: `你的生活计划（共 ${rows.length} 行，行 id 取前 8 位）：\n${lines.join("\n")}` }],
+        content: [{ type: "text" as const, text: `你的生活计划（共 ${rows.length} 行，行 id **用完整值**）：\n${lines.join("\n")}` }],
         details: {},
       };
     },
@@ -428,7 +429,7 @@ export function createChildLifePlanUpdateTool(deps: PlanToolsDeps) {
       "**权限边界**：只能改你自己的加分项；家长制定的「必须完成项」你无权改动（需家长操作）。想放弃家长的必须完成项，可以请家长帮你取消。",
     parameters: Type.Object({
       act: Type.String({ description: "动作：delete | reschedule | rename" }),
-      id: Type.String({ description: "行 id（child_life_plan_list 返回；可传前 8 位）" }),
+      id: Type.String({ description: "行 id（用 child_life_plan_list 返回的**完整 id**）" }),
       date: Type.Optional(Type.String({ description: "reschedule 时必填：改到哪天 YYYY-MM-DD" })),
       title: Type.Optional(Type.String({ description: "rename 时必填：新名称" })),
     }),
@@ -443,8 +444,7 @@ export function createChildLifePlanUpdateTool(deps: PlanToolsDeps) {
         const rows = kb
           .prepare("SELECT * FROM life_plans WHERE active = 1 AND creator = 'child' AND id LIKE ?")
           .all(`${wantId}%`) as unknown as LifeRow[];
-        const row = rows.find((r) => r.id === wantId || r.id.startsWith(wantId));
-        if (!row) throw new Error("找不到你自己创建的生活计划行（行 id 来自 child_life_plan_list；只能改自己创建的加分项）。");
+        const row = resolveRowById(rows, wantId, "你自己创建的生活计划行");
         if (act === "delete") {
           kb.prepare("DELETE FROM life_plans WHERE id = ?").run(row.id);
           return { content: [{ type: "text" as const, text: `已删除你的生活计划「${row.title}」。` }], details: {} };
@@ -741,7 +741,7 @@ export function createChildStudyPlanUpdateTool(deps: PlanToolsDeps) {
       "**权限边界**：只能改你自己创建的加分项；家长排的学习计划你无权改动（需要时请家长调整）。",
     parameters: Type.Object({
       act: Type.String({ description: "动作：delete | reschedule" }),
-      id: Type.String({ description: "行 id（child_study_plan_list 返回；可传前 8 位）" }),
+      id: Type.String({ description: "行 id（用 child_study_plan_list 返回的**完整 id**）" }),
       date: Type.Optional(Type.String({ description: "reschedule 时必填：改到哪天 YYYY-MM-DD" })),
     }),
     execute: async (_tc, params) => {
@@ -755,10 +755,7 @@ export function createChildStudyPlanUpdateTool(deps: PlanToolsDeps) {
         const rows = kb
           .prepare("SELECT * FROM study_plans WHERE active = 1 AND creator = 'child' AND id LIKE ?")
           .all(`${wantId}%`) as unknown as Array<{ id: string; course_name: string; status: string; start_at: string }>;
-        const row = rows.find((r) => r.id === wantId || r.id.startsWith(wantId));
-        if (!row) {
-          throw new Error("找不到你自己创建的学习计划行（行 id 来自 child_study_plan_list；只能改自己创建的加分项）。");
-        }
+        const row = resolveRowById(rows, wantId, "你自己创建的学习计划行");
         if (row.status === "done") {
           throw new Error(`「${row.course_name}」已完成，不能${act === "delete" ? "删除" : "改期"}（记录需保留）。`);
         }
@@ -796,7 +793,7 @@ export function createChildExamPlanUpdateTool(deps: PlanToolsDeps) {
       "**权限边界**：只能改你自己创建的自请考核；家长安排的考核排期与场次你无权改动。",
     parameters: Type.Object({
       act: Type.String({ description: "动作：delete | reschedule" }),
-      id: Type.String({ description: "行 id（child_exam_plan_list 返回；可传前 8 位）" }),
+      id: Type.String({ description: "行 id（用 child_exam_plan_list 返回的**完整 id**）" }),
       date: Type.Optional(Type.String({ description: "reschedule 时必填：改到哪天 YYYY-MM-DD" })),
     }),
     execute: async (_tc, params) => {
@@ -810,10 +807,7 @@ export function createChildExamPlanUpdateTool(deps: PlanToolsDeps) {
         const rows = kb
           .prepare("SELECT * FROM exam_plans WHERE active = 1 AND creator = 'child' AND id LIKE ?")
           .all(`${wantId}%`) as unknown as Array<{ id: string; title: string; status: string; start_at: string }>;
-        const row = rows.find((r) => r.id === wantId || r.id.startsWith(wantId));
-        if (!row) {
-          throw new Error("找不到你自己创建的考核计划行（行 id 来自 child_exam_plan_list；只能改自己创建的加分项）。");
-        }
+        const row = resolveRowById(rows, wantId, "你自己创建的考核计划行");
         if (row.status === "done") {
           throw new Error(`「${row.title}」已考完，不能${act === "delete" ? "删除" : "改期"}（成绩需保留）。`);
         }

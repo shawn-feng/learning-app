@@ -15,6 +15,8 @@ export const planSkill: ParentSkill = {
     "parent_list_children",
     "parent_study_plan_sources",
     "parent_child_mastery_report",
+    // ISSUE-186：按"本周错题/薄弱字词"排考核与复习时要先拿逐条清单
+    "parent_child_mistake_list",
     "parent_study_plan_create",
     "parent_study_plan_list",
     "parent_study_plan_get",
@@ -56,23 +58,26 @@ export const planSkill: ParentSkill = {
    - **同一天多场考核靠 \`name\` 区分**（如"论语学而篇背诵考核"），同日同名未考计划不会重复创建；建议都取名字。
    - **参数语义**：\`childName\` 孩子姓名 · \`scheduledAt\` 考核日期 \`YYYY-MM-DD\`（按日期**全天可考**，口语先换算）· \`courses\` **精确课程名数组**（必填）· \`name\` 考核名称（缺省「自定义考核」）· \`note\` 给孩子的提示（可空，**不参与出题计算**）· \`retake\` 当天重考标准（自然语言，如"错两题以上当天原题重考"；不传＝不重考）· \`methodSpec.require\`＝\`{知识点名或 uuid: 抽题数}\`（缺省每个 1 题）· \`methodSpec.exclude\`＝本次排除的知识点名或 uuid · \`methodSpec.recitePass\`＝背诵/朗读题本次通过线 0-100（缺省 90）。
    - **出题在创建时即定死**：每门课展开成"考哪些知识点、各几题"（默认＝按主题考核方法过滤后每个知识点各 1 题）；**课程必须先有知识点与题库题**，否则创建失败并提示先补考核内容（走 \`parent_upsert_course_content\`）。
+     - ⚠️ \`methodSpec.require\` 点名的知识点**没挂题 → 整场拒绝创建**（ISSUE-186 F4，会明确说"要求的知识点「X」还没有挂题"）：**如实告诉家长"这个字现在还没有题、考不了"**，别换说法重试、也别偷偷把它从清单里去掉；出路＝等「错题整理」定时任务自动出题（到点跑），或家长确认后走 \`parent-scene-course\` 手工补题。
+   - **按错题/字词排考核**（家长高频诉求）：① 先 \`parent_child_mistake_list\` 拿清单（本周用 \`days=7\`；"掌握不好"用 \`status=open&order=count\`）；② 按每条**自带的** 课程 \`course_ref\` + 知识点 \`knowledge_point_name\` 分组——**照用，别自己去别的主题猜课程**；**字词的考点只在「错题整理」下的「字词」课**（自带课程为空或属错题整理就用它）；③ 每组一次 \`parent_exam_plan_create\`（\`courses=[该课程]\`、\`methodSpec.require={该知识点:1}\`、\`name\` 取可区分的名字），配套排 \`复习：<课程名>\`。带 ⚠（没题可考）的先跳过并如实说明。该「字词」课已按孩子收窄考核范围——不传 \`require\` 也只会考他自己的字词。
 7. 改排期、建考核、取消**之前先复述方案**（哪天、哪门课、改成什么），家长确认后再执行；**对象不明先列清单**（学习计划用 \`_list\` / \`_get\`、考核用 \`_list\`）把候选念给家长挑，再动手。
 
 ## 参数速查（本场景工具）
 - \`parent_list_children\`：无参数；只回**孩子姓名**（本场景所有工具都按**姓名**定位）。
 - \`parent_study_plan_sources\`：\`childName\`（必填）· \`topic\`（可选，\`topic_key\` 或中文名；缺省=全部主题概览 + 未学清单）。
 - \`parent_child_mastery_report\`：\`child\`（孩子姓名，名下只有一个孩子时可省略）· \`course\`（可选，课程名）→ 课程掌握档位 / 累计叙述 / **教学建议** / 待巩固知识点（「学习情况分析」任务产出；**没数据 = 还没评估过**，不是学得差）。
+- \`parent_child_mistake_list\`：\`child\`（可省略）· \`kind\` · \`status\`（缺省 \`open\`＝还没掌握）· 时间窗 \`days\`/\`since\`/\`until\`/\`newOnly\` · \`minCount\` · \`order\`（\`last_seen\`/\`count\`/\`first_seen\`）· \`unlinked\` · \`limit\` → **逐条**错题/生字（每条带出现次数与首记/最近日期；⚠＝还没题可考）。**排"本周错字考核 / 按薄弱点复习"先用它拿清单。**
 - \`parent_study_plan_create\`：\`childName\` + \`days\`（必填数组，每项 \`date\` + \`content\`＝当天课程名数组、一项一课 + \`endDate\`（可选，跨日期结束日含当日；填了 content 只能一项、生成一条跨日期行，只在结束日判定与顺延））。**「复习：」前缀＝复习**；空天＝不要求学；同日同课已存在自动跳过。
 - \`parent_study_plan_list\`：\`childName\`（必填）· \`from\` / \`to\`（可选，含边界）→ 一课一行，带**行 id**。
 - \`parent_study_plan_get\`：\`childName\`（必填）· \`date\`（可选，缺省今天）→ 当天学习 + 生活安排（含 📋 顺延）。
-- \`parent_study_plan_update\`：\`childName\` + \`act\` + \`id\`（必填；\`id\` 可只传**前 8 位**）——\`delete\` / \`reschedule\`（带 \`date\`）/ \`setmode\`（带 \`mode\`＝\`new\`|\`review\`）。**已完成 / 已错过**的行只能取消、不能真删（工具会自动改成取消）。
+- \`parent_study_plan_update\`：\`childName\` + \`act\` + \`id\`（必填；\`id\` **原样用列表回的完整值**——旧口径的「只传前 8 位」已作废：同日多行的前 8 位可能相同，前缀撞多行会被工具拒回候选）——\`delete\` / \`reschedule\`（带 \`date\`）/ \`setmode\`（带 \`mode\`＝\`new\`|\`review\`）。**已完成 / 已错过**的行只能取消、不能真删（工具会自动改成取消）。
 - \`parent_life_plan_create\`：\`childName\` + \`days\`（必填数组，每项 \`date\` + \`title\` + \`time\`（可选，\`HH:mm\` 截止时刻）+ \`endDate\`（可选，跨日期结束日含当日；一件事几天内完成时用，只在结束日判定与顺延））。同天同标题自动跳过。
 - \`parent_life_plan_list\`：\`childName\`（必填）· \`from\` / \`to\`（可选）→ 带**行 id**（列表里既有家长制定的必须完成项，也有孩子自己建的加分项）。
-- \`parent_life_plan_update\`：\`childName\` + \`act\` + \`id\`（必填；\`id\` 可传前 8 位）——\`complete\`（孩子确实做了但系统没判出来时的兜底，pending/missed 都能标）/ \`delete\` / \`reschedule\`（带 \`date\`，保留原截止时刻）/ \`rename\`（带 \`title\`）。家长可操作任意制定人的行。
+- \`parent_life_plan_update\`：\`childName\` + \`act\` + \`id\`（必填；**完整 id**，同上前 8 位口径作废）——\`complete\`（孩子确实做了但系统没判出来时的兜底，pending/missed 都能标）/ \`delete\` / \`reschedule\`（带 \`date\`，保留原截止时刻）/ \`rename\`（带 \`title\`）。家长可操作任意制定人的行。
 - \`parent_recurrence_create\`：\`childName\` + \`planType\`（\`life\`|\`study\`）+ \`rule\`（\`daily\`|\`weekly\`，\`weekly\` 必带 \`weekday\` 0=周日…6=周六）· \`startDate\`（缺省今天）/ \`endDate\`（含；缺省长期有效）· \`planType=life\` 给 \`title\`、\`planType=study\` 给 \`courses\`（精确课程名数组，**每门课生成一条规则**）。
 - \`parent_recurrence_list\`：\`childName\`（必填）→ 规则 id。
 - \`parent_recurrence_update\`：\`childName\` + \`act\`（\`disable\`|\`enable\`|\`delete\`）+ \`id\`（必填）。**停用 ≠ 删除**。
-- \`parent_exam_plan_create\` / \`parent_exam_plan_list\` / \`parent_exam_plan_cancel\`：参数语义见上面第 6 步；\`_list\` 用 \`childName\` + \`from\` / \`to\`（可选），\`_cancel\` 用 \`childName\` + \`id\`（可传前 8 位）。
+- \`parent_exam_plan_create\` / \`parent_exam_plan_list\` / \`parent_exam_plan_cancel\`：参数语义见上面第 6 步；\`_list\` 用 \`childName\` + \`from\` / \`to\`（可选），\`_cancel\` 用 \`childName\` + \`id\`（**完整行 id**：\`_list\` 已给全值，直接整串复制；只传前 8 位在多场同日考核时会撞车被拒）。
 
 ## 重复规则（本场景与自动化场景同源）
 ${REPEAT_RULES_BLOCK}

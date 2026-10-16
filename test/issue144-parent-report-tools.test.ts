@@ -719,6 +719,8 @@ describe("ISSUE-144 P4 · 装配与场景归属", () => {
     // plan 技能步骤 2 直接用它）——多场景工具，守卫任一放行；此处断言随设计更新
     expect(scenesOfTool("parent_child_mastery_report")).toEqual(["parent-scene-progress", "parent-scene-plan"]);
     expect(scenesOfTool("parent_child_points_report")).toEqual(["parent-scene-points"]);
+    // ISSUE-186 F1：错题/生字逐条清单——progress（查学习情况）与 plan（按错题排考核）都要用
+    expect(scenesOfTool("parent_child_mistake_list")).toEqual(["parent-scene-progress", "parent-scene-plan"]);
   });
 
   it("工具描述只有一句自述（口径在技能里，进上下文前还会被压一遍）", () => {

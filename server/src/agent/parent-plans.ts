@@ -38,6 +38,7 @@ import {
 } from "../assess-selection.js";
 import { runKbQuery } from "../routes/db.js";
 import { type ParentSkillState } from "./parent-skills.js";
+import { resolveRowById } from "../util/row-id.js";
 
 export interface PlanToolDeps {
   db: DatabaseSync;
@@ -459,9 +460,9 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         .slice(0, 120)
         .map(
           (r) =>
-            `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${r.course_name}｜${r.mode === "review" ? "复习" : "新学"}｜${r.status === "done" ? "✅ 已学" : "⬜ 待学"}${r.origin === "carry" ? "｜📋 顺延" : ""}`
+            `- ${r.id}｜${(r.start_at || "").slice(0, 10)}｜${r.course_name}｜${r.mode === "review" ? "复习" : "新学"}｜${r.status === "done" ? "✅ 已学" : "⬜ 待学"}${r.origin === "carry" ? "｜📋 顺延" : ""}`
         );
-      return ok(`「${child.name}」的学习计划（共 ${rows.length} 行，行 id 取前 8 位）：\n${lines.join("\n")}`);
+      return ok(`「${child.name}」的学习计划（共 ${rows.length} 行，行 id **用完整值**——同日多行的前缀可能相同）：\n${lines.join("\n")}`);
     },
   });
 
@@ -527,7 +528,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       act: Type.String({ description: "动作：delete | reschedule | setmode" }),
-      id: Type.String({ description: "排期行 id（parent_study_plan_list 返回；可传前 8 位）" }),
+      id: Type.String({ description: "排期行 id（用 parent_study_plan_list 返回的**完整 id**）" }),
       date: Type.Optional(Type.String({ description: "reschedule 时必填：改到哪天 YYYY-MM-DD" })),
       mode: Type.Optional(Type.String({ description: "setmode 时必填：new=新学 / review=复习" })),
     }),
@@ -539,10 +540,8 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       }
       const wantId = String(params.id ?? "").trim();
       // 全部孩子的行里定位（行 id 可能截短；本工具按该孩子查找即可，家长只能动自己孩子的）
-      let row: SpRow | undefined;
       const all = readStudyPlans(dataDir, parentId, child.id);
-      row = all.find((r) => r.id === wantId || r.id.startsWith(wantId));
-      if (!row) throw new Error("找不到排期行（先 parent_study_plan_list 核对行 id）");
+      const row = resolveRowById(all, wantId, "排期行");
       const kb = openKb(dataDir, parentId, child.id);
       try {
         if (act === "delete") {
@@ -672,9 +671,9 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         .slice(0, 120)
         .map(
           (r) =>
-            `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${r.title}｜${r.creator === "parent" ? "必须完成项" : "加分项"}｜${r.status === "done" ? "✅ 已完成" : r.status === "missed" ? "❌ 未完成" : "⬜ 待完成"}${r.origin === "carry" ? "｜📋 顺延" : ""}`
+            `- ${r.id}｜${(r.start_at || "").slice(0, 10)}｜${r.title}｜${r.creator === "parent" ? "必须完成项" : "加分项"}｜${r.status === "done" ? "✅ 已完成" : r.status === "missed" ? "❌ 未完成" : "⬜ 待完成"}${r.origin === "carry" ? "｜📋 顺延" : ""}`
         );
-      return ok(`「${child.name}」的生活计划（共 ${rows.length} 行，行 id 取前 8 位）：\n${lines.join("\n")}`);
+      return ok(`「${child.name}」的生活计划（共 ${rows.length} 行，行 id **用完整值**——同日多行的前缀可能相同）：\n${lines.join("\n")}`);
     },
   });
 
@@ -691,7 +690,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       act: Type.String({ description: "动作：complete | delete | reschedule | rename" }),
-      id: Type.String({ description: "生活计划行 id（parent_life_plan_list 返回；可传前 8 位）" }),
+      id: Type.String({ description: "生活计划行 id（用 parent_life_plan_list 返回的**完整 id**）" }),
       date: Type.Optional(Type.String({ description: "reschedule 时必填：改到哪天 YYYY-MM-DD" })),
       title: Type.Optional(Type.String({ description: "rename 时必填：新名称" })),
     }),
@@ -703,8 +702,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
       }
       const wantId = String(params.id ?? "").trim();
       const all = readLifePlans(dataDir, parentId, child.id);
-      const row = all.find((r) => r.id === wantId || r.id.startsWith(wantId));
-      if (!row) throw new Error("找不到生活计划行（先 parent_life_plan_list 核对行 id）");
+      const row = resolveRowById(all, wantId, "生活计划行");
       const kb = openKb(dataDir, parentId, child.id);
       try {
         if (act === "complete") {
@@ -881,7 +879,8 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     name: "parent_exam_plan_list",
     label: "查看孩子考核计划",
     description:
-      "查看某孩子的**考核计划**（日期 / 类型 / 制定人 / 状态 / 行 id；**取消某一场之前先用它列出候选、复述是哪一场**）。\n" +
+      "查看某孩子的**考核计划**（日期 / 类型 / 制定人 / 状态 / **完整行 id**；**取消某一场之前先用它列出候选、复述是哪一场**）。\n" +
+      "行 id 是**完整值**（形如 `ep_1792…_ab12cd`，与 parent_child_exam_report 的 `id=` 同源），取消时原样复制整串——同日多场考核的 id 前缀相同，只用前几位会匹配到多行而被拒绝。\n" +
       "计划出现在「今日计划」；含固定档配置生成的、家长自定义的、孩子自请的三类。\n" +
       "每条还带**考核内容细节**：考哪些课程、每门课考哪些知识点各抽几题（`课程（知识点×题数）`）、计划级考核方法（只考/不考哪些知识点、背诵通过线）、说明。\n" +
       "固定档（kind=fixed）的课程由「本周期学习计划的必学课程」在开考时确定，**不固化在计划里**，因此不列具体课程——这是正常的，不是数据缺失。\n" +
@@ -972,7 +971,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
             ? `\n    考核内容：按本周期学习计划的**必学课程**自动确定（固定档不固化在计划里）`
             : `\n    考核内容：（未约定具体课程）`;
         return (
-          `- ${r.id.slice(0, 8)}｜${(r.start_at || "").slice(0, 10)}｜${type}${who}｜${r.title || "考核"}｜${st}` +
+          `- ${r.id}｜${(r.start_at || "").slice(0, 10)}｜${type}${who}｜${r.title || "考核"}｜${st}` +
           courseLine +
           (topics.length ? `\n    主题：${topics.join("、")}` : "") +
           (msText ? `\n    考核方法：${msText}` : "") +
@@ -980,7 +979,8 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         );
       });
       return ok(
-        `「${child.name}」的考核计划（共 ${rows.length} 行，行 id 取前 8 位；取消某条用 parent_exam_plan_cancel）：\n${lines.join("\n")}`
+        `「${child.name}」的考核计划（共 ${rows.length} 行；**行 id 已给全值**，取消某条时把它整串传给 parent_exam_plan_cancel——` +
+          `同一天多场考核的 id 前缀相同，只传前几位会定位不到或撤错行）：\n${lines.join("\n")}`
       );
     },
   });
@@ -989,12 +989,14 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     name: "parent_exam_plan_cancel",
     label: "取消/删除考核计划",
     description:
-      "取消某孩子**的一条考核计划**（按**计划行 id**；**没点名是哪一场时先 `parent_exam_plan_list` 列候选并复述，确认后再取消**）。\n" +
+      "取消某孩子**的一条考核计划**（按**计划行 id**——用 `parent_exam_plan_list` 返回的**完整 id 原样传入**；**没点名是哪一场时先 `parent_exam_plan_list` 列候选并复述，确认后再取消**）。\n" +
       "考核计划一旦生成默认只增不删；本工具按 id 做**软删除**：置 active=0、status='cancelled'，历史行保留供审计，但不再计入完成率/掌握度。\n" +
       "孩子真正提交的考试及其逐题记录存在孩子库结果表，**不受本工具影响**。已考完（status='done'）的考核计划不允许取消（保留成绩）。",
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
-      id: Type.String({ description: "考核计划行 id（可传前 8 位）" }),
+      id: Type.String({
+        description: "考核计划行 id——**用 parent_exam_plan_list 返回的完整 id 原样传入**（同日多场 id 前缀相同，前缀匹配会报歧义）",
+      }),
     }),
     execute: async (_id: string, params: { childName: string; id: string }) => {
       const child = resolvePlanChild(db, parentId, params.childName);
@@ -1005,8 +1007,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         const rows = kb
           .prepare("SELECT id, title, status FROM exam_plans WHERE child_id = ? AND active = 1")
           .all(child.id) as unknown as Array<{ id: string; title: string; status: string }>;
-        const row = rows.find((r) => r.id === wantId || r.id.startsWith(wantId));
-        if (!row) throw new Error("找不到考核计划（active 行里匹配不到该 id）");
+        const row = resolveRowById(rows, wantId, "考核计划");
         if (row.status === "done") {
           throw new Error(`考核计划「${row.title}」已考完，不能取消（成绩需保留，可在考核记录里查看）。`);
         }
@@ -1173,9 +1174,9 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           const wd = r.weekday == null ? "" : `周${["日", "一", "二", "三", "四", "五", "六"][Number(r.weekday)]}`;
           const ruleTxt = r.rule === "daily" ? "每天" : `每周(${wd})`;
           const period = `${String(r.start_date || "-")}~${String(r.end_date || "长期")}`;
-          return `- ${String(r.id).slice(0, 8)}｜${r.plan_type === "study" ? "学习" : "生活"}｜${ruleTxt}｜${label}｜${period}｜${Number(r.enabled) === 1 ? "启用" : "停用"}`;
+          return `- ${String(r.id)}｜${r.plan_type === "study" ? "学习" : "生活"}｜${ruleTxt}｜${label}｜${period}｜${Number(r.enabled) === 1 ? "启用" : "停用"}`;
         });
-        return ok(`「${child.name}」的重复计划（共 ${rows.length} 条，id 取前 8 位）：\n${lines.join("\n")}`);
+        return ok(`「${child.name}」的重复计划（共 ${rows.length} 条，id **用完整值**）：\n${lines.join("\n")}`);
       } finally {
         kb.close();
       }
@@ -1193,7 +1194,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     parameters: Type.Object({
       childName: Type.String({ description: "孩子姓名" }),
       act: Type.String({ description: "动作：disable | enable | delete" }),
-      id: Type.String({ description: "规则 id（parent_recurrence_list 返回；可传前 8 位）" }),
+      id: Type.String({ description: "规则 id（用 parent_recurrence_list 返回的**完整 id**）" }),
     }),
     execute: async (_id: string, params: { childName: string; act: string; id: string }) => {
       const child = resolvePlanChild(db, parentId, params.childName);
@@ -1206,8 +1207,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         const rows = kb
           .prepare("SELECT id, plan_type, payload_json FROM plan_recurrences")
           .all() as unknown as Array<{ id: string; plan_type: string; payload_json: string }>;
-        const row = rows.find((r) => r.id === wantId || r.id.startsWith(wantId));
-        if (!row) throw new Error("找不到重复计划规则（先 parent_recurrence_list 核对 id）");
+        const row = resolveRowById(rows, wantId, "重复计划规则");
         let label = "（未命名）";
         try {
           const p = JSON.parse(String(row.payload_json || "{}")) as Record<string, unknown>;

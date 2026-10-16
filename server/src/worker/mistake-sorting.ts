@@ -1,8 +1,9 @@
 /**
- * 错题整理后台任务（ISSUE-114 方案 B/C 合并定案，2026-09-29）：
+ * 错题整理后台任务（ISSUE-114 方案 B/C 合并定案，2026-09-29；字词链路见 ISSUE-186 F0）：
  * 把无法归类到既有知识点的错题/查词字词，经 LLM 分层分析后沉淀到**专属「错题整理」主题**
  * （隔离在家长库自己的主题下，不污染既有课程的知识点表）：
- *   - 查词字词 → 「字词」课程的知识点（name=字词本身），并自动出一道考核题；
+ *   - **查词字词 → 只在「错题整理/字词」课程里按名字查/建知识点，并自动出一道口述题**
+ *     （ISSUE-186 用户口径：**不去别的学习主题里找考点**，字词一律归这门课）；
  *   - 其余错题 → LLM 三层筛选（主题→课程→知识点）尝试挂到既有知识点；
  *     挂不上 → 错题整理主题下的归类课程（LLM 建议类别，如「应用题」）建知识点承接。
  * 同时：把主题课程分配进孩子库（家长才能对这些课排考核）、维护 method_spec.perChild
@@ -15,6 +16,14 @@
  * 家长库侧全部按唯一键 ensure（topics.name / courses(topic,title) / kp UNIQUE(course_uuid,name) /
  * ckq 复合主键 / 题目按 bridge 是否已挂判断），任务重跑安全。
  * LLM 失败 → 抛错 → 调度器不记 worker_state，下一桶自愈重试。
+ *
+ * ## 字词出题的三个已知坑（ISSUE-186 F0 修复）
+ * ① **题面口径**：必须是"说清意思 + 用它造句"的**口述题**（behavior=generic），不是"读音/释义简答"；
+ * ② **队头阻塞**：旧实现 `ORDER BY rowid DESC LIMIT 8` 永远取最新 8 个没题知识点——这批里只要有
+ *    对不上名的，更老的词**永远轮不到**（现场 89 个知识点只有 29 个有题）。现在改为**老的优先** +
+ *    `QUESTION_CAP=24` + **连续失败 QFAIL_LIMIT 轮就跳过**（失败计数落家长库 meta，成功即清零）；
+ * ③ **静默丢弃**：旧实现只认 `k.name === q.word` 精确相等，模型回带拼音/括号就白跑一轮。现在
+ *    把 kp `id` 交给模型并要求原样回填，另加名字归一的兜底匹配。
  */
 import { nowLocalIso, toLocalIso } from "../util/time.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -29,7 +38,10 @@ export const SORTING_TOPIC = "错题整理"; // name = topic_key（同值：getM
 export const WORD_COURSE = "字词";
 export const FALLBACK_COURSE = "未归类错题";
 const BATCH_LIMIT = 40; // 单轮最多处理的错题条数
-const QUESTION_CAP = 8; // 单轮最多新生成的字词题目数
+/** 单轮最多新生成的字词题目数（ISSUE-186：原 8 太小，60 个没题的词要跑 8 轮以上） */
+export const QUESTION_CAP = 24;
+/** 同一个知识点连续 N 轮出题失败 → 本轮起跳过（防队头阻塞），并在任务消息里点名待人工处理 */
+export const QFAIL_LIMIT = 3;
 
 interface MistakeRowLite {
   id: string;
@@ -66,18 +78,25 @@ export function ensureSortingCourse(parent: DatabaseSync, title: string): string
   return uuid;
 }
 
-/** 确保 (课程, name) 知识点存在（detail 非空时补缺省），返回 kp id。 */
+/** 确保 (课程, name) 知识点存在（detail 只在空值时补，绝不覆盖已有释义），返回 kp id。 */
 export function ensureKnowledgePoint(parent: DatabaseSync, courseUuid: string, name: string, detail: string): string {
   const clean = String(name ?? "").trim().slice(0, 100);
   if (!clean) throw new Error("知识点名不能为空");
+  const d = String(detail ?? "").slice(0, 2000);
   const existing = parent
-    .prepare("SELECT id FROM knowledge_points WHERE course_uuid = ? AND name = ?")
-    .get(courseUuid, clean) as { id?: string } | undefined;
-  if (existing?.id) return existing.id;
+    .prepare("SELECT id, detail FROM knowledge_points WHERE course_uuid = ? AND name = ?")
+    .get(courseUuid, clean) as { id?: string; detail?: string } | undefined;
+  if (existing?.id) {
+    // 释义缺省补空：出题要拿释义当素材，早先入库时 detail 为空会导致题面质量差
+    if (d && !String(existing.detail ?? "").trim()) {
+      parent.prepare("UPDATE knowledge_points SET detail = ? WHERE id = ?").run(d, existing.id);
+    }
+    return existing.id;
+  }
   const id = randomUUID().replace(/-/g, "");
   parent
     .prepare("INSERT INTO knowledge_points (id, course_uuid, name, detail, seq) VALUES (?, ?, ?, ?, 999)")
-    .run(id, courseUuid, clean, String(detail ?? "").slice(0, 2000));
+    .run(id, courseUuid, clean, d);
   return id;
 }
 
@@ -114,6 +133,80 @@ export function linkMistakeToKp(
 ): void {
   kb.prepare("UPDATE mistake_book SET knowledge_point_id = ?, knowledge_point_name = ?, updated_at = ? WHERE id = ?")
     .run(kpId, kpName.slice(0, 200), nowLocalIso(), mistakeId);
+}
+
+// ==================== 字词出题：失败计数 + 待出题选择（ISSUE-186 F0） ====================
+
+/** 名字归一（模型返回名的兜底匹配）：去括号及其内容（常是拼音/注音）、去空白与引号书名号。 */
+export function normalizeWordName(raw: unknown): string {
+  return String(raw ?? "")
+    .replace(/[（(【\[][^）)】\]]*[）)】\]]/g, "")
+    .replace(/[\s·・'"“”‘’「」『』《》]/g, "")
+    .trim();
+}
+
+function qFailKey(courseUuid: string, kpId: string): string {
+  return `qfail:${courseUuid}:${kpId}`;
+}
+
+/** 读该课全部出题失败计数（存家长库 meta：`qfail:<courseUuid>:<kpId>` = 连续失败轮数）。 */
+export function readQuestionFails(parent: DatabaseSync, courseUuid: string): Map<string, number> {
+  const prefix = `qfail:${courseUuid}:`;
+  const rows = parent
+    .prepare("SELECT key, value FROM meta WHERE key LIKE ?")
+    .all(`${prefix}%`) as Array<{ key: string; value: string }>;
+  const out = new Map<string, number>();
+  for (const r of rows) out.set(r.key.slice(prefix.length), Number(r.value) || 0);
+  return out;
+}
+
+/** 失败 +1（本轮没拿到题的待出题知识点）。 */
+export function bumpQuestionFail(parent: DatabaseSync, courseUuid: string, kpId: string): number {
+  const key = qFailKey(courseUuid, kpId);
+  parent
+    .prepare(
+      `INSERT INTO meta (key, value) VALUES (?, '1')
+       ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(meta.value AS INTEGER) + 1 AS TEXT)`
+    )
+    .run(key);
+  return Number((parent.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string }).value) || 0;
+}
+
+/** 出题成功 → 清零（下次若又被清掉题也会从 0 重新计）。 */
+export function clearQuestionFail(parent: DatabaseSync, courseUuid: string, kpId: string): void {
+  parent.prepare("DELETE FROM meta WHERE key = ?").run(qFailKey(courseUuid, kpId));
+}
+
+/**
+ * 待出题的知识点（**只在本课里找**：错题整理/字词课）：
+ * - 没挂任何题的知识点；**老的优先**（`rowid ASC`）——保证每个词都会被轮到；
+ * - 连续失败 ≥ QFAIL_LIMIT 轮的跳过（进 `stuck` 供任务消息点名），否则这批会永远占着名额。
+ */
+export function selectPendingQuestions(
+  parent: DatabaseSync,
+  courseUuid: string,
+  cap: number = QUESTION_CAP
+): { pending: Array<{ id: string; name: string; detail: string }>; stuck: Array<{ id: string; name: string; fails: number }> } {
+  const fails = readQuestionFails(parent, courseUuid);
+  const rows = parent
+    .prepare(
+      `SELECT k.id, k.name, k.detail FROM knowledge_points k
+        WHERE k.course_uuid = ? AND NOT EXISTS
+          (SELECT 1 FROM course_knowledge_questions q WHERE q.knowledge_point_id = k.id)
+        ORDER BY k.rowid ASC LIMIT ?`
+    )
+    .all(courseUuid, cap + fails.size) as Array<{ id: string; name: string; detail: string }>;
+  const pending: Array<{ id: string; name: string; detail: string }> = [];
+  const stuck: Array<{ id: string; name: string; fails: number }> = [];
+  for (const r of rows) {
+    const f = fails.get(r.id) ?? 0;
+    if (f >= QFAIL_LIMIT) {
+      stuck.push({ id: r.id, name: r.name, fails: f });
+      continue;
+    }
+    if (pending.length < cap) pending.push(r);
+  }
+  return { pending, stuck };
 }
 
 /** 主题分配进孩子库：topics + 该主题全部课程（带 uuid 锚点），INSERT OR IGNORE 幂等。 */
@@ -201,13 +294,13 @@ ${items.map((m, i) => `${i + 1}. [id=${m.id}] ${m.content.slice(0, 80)}（建议
 {"matches":[{"id":"...","course":"课程名或无","kp":"知识点名或无"}]}`;
 }
 
-/** 轮3：为字词批量出题。 */
-export function buildQuestionPrompt(words: Array<{ content: string; detail: string }>): string {
-  return `为下面每个字词出**一道**小学水平的巩固题（读音或释义，简答题）。stem 不要出现答案。
-${words.map((w, i) => `${i + 1}. ${w.content}（释义：${(w.detail || "无").slice(0, 80)}）`).join("\n")}
+/** 轮3：为字词批量出**口述题**（说清意思 + 造句；ISSUE-186 用户口径）。 */
+export function buildQuestionPrompt(words: Array<{ id?: string; content: string; detail: string }>): string {
+  return `为下面每个字词出一道**口述题**（孩子口头回答：不用写、没有选项）。要求：先让孩子说清这个字词的意思，再让孩子**造句**（用它说一个完整的句子）。题干里不要出现答案。
+${words.map((w, i) => `${i + 1}. [id=${w.id ?? ""}] ${w.content}（释义：${(w.detail || "无").slice(0, 80)}）`).join("\n")}
 
-只输出 JSON 对象（不要数组、不要其它文字）：
-{"questions":[{"word":"研","stem":"「研」在「研磨」中读什么？它是什么意思？","answer":"yán；把东西磨成粉或磨细"}]}`;
+只输出 JSON 对象（不要数组、不要其它文字）；"id" 必须原样回填上面给的 id：
+{"questions":[{"id":"原样回填","word":"研","stem":"「研」是什么意思？请用「研」说一句话。","answer":"意思：把东西磨成粉或磨细。例句：他正在研墨准备写字。"}]}`;
 }
 
 // ==================== 任务本体 ====================
@@ -249,15 +342,15 @@ export const mistakeSortingTask: WorkerTask = {
       ensureSortingTopic(parent);
       const wordCourseUuid0 = ensureSortingCourse(parent, WORD_COURSE);
       // 待出题的知识点（上一轮出题失败/超上限遗留的，本轮补齐）——skip 判定要算上它
-      const pendingQ0 = parent
-        .prepare(
-          `SELECT k.id, k.name, k.detail FROM knowledge_points k
-           WHERE k.course_uuid = ? AND NOT EXISTS
-             (SELECT 1 FROM course_knowledge_questions q WHERE q.knowledge_point_id = k.id)
-           ORDER BY k.rowid DESC LIMIT ${QUESTION_CAP}`
-        )
-        .all(wordCourseUuid0) as Array<{ id: string; name: string; detail: string }>;
-      if (!rows.length && !pendingQ0.length) return { status: "skip", message: "无待整理错题" };
+      const pendingQ0 = selectPendingQuestions(parent, wordCourseUuid0);
+      if (!rows.length && !pendingQ0.pending.length) {
+        return {
+          status: "skip",
+          message: pendingQ0.stuck.length
+            ? `无待整理错题；${pendingQ0.stuck.length} 个字词知识点连续 ${QFAIL_LIMIT} 轮出题失败已跳过（需人工补题）：${pendingQ0.stuck.slice(0, 5).map((s) => s.name).join("、")}`
+            : "无待整理错题",
+        };
+      }
 
       const words = rows.filter((r) => r.kind === "unknown_word");
       const others = rows.filter((r) => r.kind !== "unknown_word");
@@ -266,7 +359,7 @@ export const mistakeSortingTask: WorkerTask = {
       const session = await createExamSession(deps, "你是学习内容整理助手，只输出 JSON。");
       let acceptIds = new Set<string>();
       let topicPick = new Map<string, { topic: string; suggested: string }>();
-      if (words.length || others.length || pendingQ0.length) {
+      if (words.length || others.length || pendingQ0.pending.length) {
         const topicRows = parent.prepare("SELECT name FROM topics ORDER BY topic_key").all() as Array<{ name: string }>;
         const r1 = await chat(deps, session, buildStage1Prompt(words, others, topicRows.map((t) => t.name)));
         for (const id of (r1?.accept_words ?? []) as string[]) acceptIds.add(String(id));
@@ -334,24 +427,38 @@ export const mistakeSortingTask: WorkerTask = {
           linkMistakeToKp(kbChild, m.id, kpId, kpName);
         }
 
-        // —— 字词出题（每 kp 一题；本轮上限 QUESTION_CAP）——
-        const pendingQ = parent
-          .prepare(
-            `SELECT k.id, k.name, k.detail FROM knowledge_points k
-             WHERE k.course_uuid = ? AND NOT EXISTS
-               (SELECT 1 FROM course_knowledge_questions q WHERE q.knowledge_point_id = k.id)
-             ORDER BY k.rowid DESC LIMIT ${QUESTION_CAP}`
-          )
-          .all(wordCourseUuid) as Array<{ id: string; name: string; detail: string }>;
+        // —— 字词出题（每 kp 一题，口述题=说清意思+造句；本轮上限 QUESTION_CAP）——
+        // ISSUE-186 F0：老的优先 + 失败计数跳过（防队头阻塞）；按 id 匹配（名字兜底），不再因模型
+        // 回带拼音/括号而静默丢弃。
+        const { pending: pendingQ, stuck } = selectPendingQuestions(parent, wordCourseUuid);
+        let generated = 0;
+        const failed: string[] = [];
         if (pendingQ.length) {
-          const rq = await chat(deps, session, buildQuestionPrompt(pendingQ.map((k) => ({ content: k.name, detail: k.detail }))));
+          const rq = await chat(deps, session, buildQuestionPrompt(pendingQ.map((k) => ({ id: k.id, content: k.name, detail: k.detail }))));
           const list = Array.isArray(rq) ? rq : (rq?.questions ?? []);
-          for (const q of list as Array<{ word?: string; stem?: string; answer?: string }>) {
-            if (!q?.word || !q?.stem || !q?.answer) continue;
-            const kp = pendingQ.find((k) => k.name === q.word);
+          const byId = new Map(pendingQ.map((k) => [k.id, k]));
+          const byName = new Map(pendingQ.map((k) => [normalizeWordName(k.name), k]));
+          const done = new Set<string>();
+          for (const q of list as Array<{ id?: string; word?: string; stem?: string; answer?: string }>) {
+            if (!q?.stem || !q?.answer) continue;
+            const kp = (q.id ? byId.get(String(q.id).trim()) : undefined) ?? (q.word ? byName.get(normalizeWordName(q.word)) : undefined);
             if (!kp) continue;
-            attachGeneratedQuestion(parent, wordCourseUuid, kp.id, { stem: q.stem, answer: q.answer, overview: q.stem });
+            if (attachGeneratedQuestion(parent, wordCourseUuid, kp.id, { stem: q.stem, answer: q.answer, overview: q.stem })) {
+              generated += 1;
+            }
+            done.add(kp.id);
+            clearQuestionFail(parent, wordCourseUuid, kp.id);
           }
+          for (const k of pendingQ) {
+            if (done.has(k.id)) continue;
+            const fails = bumpQuestionFail(parent, wordCourseUuid, k.id);
+            failed.push(`${k.name}（第 ${fails} 次）`);
+          }
+        }
+        // 本轮仍未出题的总数（含失败与超上限遗留），供任务消息/日志观测
+        const leftQ = selectPendingQuestions(parent, wordCourseUuid, 1000).pending.length;
+        if (failed.length) {
+          console.warn(`[worker:mistake-sorting] 字词出题未命中 ${failed.length} 个：${failed.slice(0, 8).join("、")}`);
         }
 
         // —— 主题/课程分配进孩子库 + perChild 考核范围 ——
@@ -365,10 +472,19 @@ export const mistakeSortingTask: WorkerTask = {
           )
           .all() as Array<{ knowledge_point_name: string }>).map((r) => r.knowledge_point_name);
         updateSortingMethodSpec(parent, ctx.childId, openKpNames);
+
+        const stuckNote = stuck.length
+          ? `；${stuck.length} 个知识点连续 ${QFAIL_LIMIT} 轮出题失败已跳过（需人工补题）：${stuck.slice(0, 5).map((s) => s.name).join("、")}`
+          : "";
+        return {
+          status: "ok",
+          message:
+            `整理 ${rows.length} 条（字词 ${words.length}、错题 ${others.length}）；` +
+            `本轮出题 ${generated} 道，仍待出题 ${leftQ} 道${failed.length ? `（本轮未命中 ${failed.length} 个）` : ""}${stuckNote}`,
+        };
       } finally {
         kbChild.close();
       }
-      return { status: "ok", message: `整理 ${rows.length} 条（字词 ${words.length}、错题 ${others.length}）` };
     } finally {
       parent.close();
     }

@@ -279,7 +279,8 @@ export function formatPlanCourses(courses: PlanCourseSpec[]): string {
 /**
  * 生成考核计划时调用：把「课程列表 + 计划级 methodSpec（可选）」展开成**完整出题约定**。
  * - 默认 = 主题级 method_spec（按孩子过滤，如排除字词/典故）过一遍，每个知识点 1 题；
- * - 传了 methodSpec 则覆盖主题方法（require 的键支持知识点名或 uuid，解析不到 → 记缺失，创建即失败）；
+ * - 传了 methodSpec 则覆盖主题方法（require 的键支持知识点名或 uuid，解析不到 → 记缺失，创建即失败；
+ *   **require 命中的知识点存在但没挂题同样记缺失**——见 ISSUE-186 F4，不许"静默少考"）；
  * - **课程必须有知识点且挂了题库题**，否则进 missing（调用方必须拒绝创建考核计划）。
  */
 export function buildPlanSpecEntries(
@@ -303,6 +304,8 @@ export function buildPlanSpecEntries(
       missing.push({ title, reason: "还没有考核内容（未挂知识点或知识点未挂题库题），请先在考核内容建设中补充" });
       continue;
     }
+    /** 有题可出的知识点 id（ISSUE-186 F4：`require` 点名的知识点若没挂题，必须报缺失而不是静默少考） */
+    const withQIds = new Set(withQ.map((it) => it.knowledgePointId));
     // 计划级 methodSpec：require/exclude（键=知识点名或 uuid，严格解析）
     let planRequire: Record<string, number> | null = null;
     const planExclude = new Set<string>();
@@ -317,6 +320,16 @@ export function buildPlanSpecEntries(
           const kp = byId.get(k) ?? byName.get(String(k).trim());
           if (!kp) {
             missing.push({ title, reason: `要求的知识点「${k}」在该课不存在（现有：${kps.map((x) => x.name).join("、")}）` });
+            bad = true;
+            break;
+          }
+          // ISSUE-186 F4：点名的知识点**存在但没挂题** → 直接拒绝创建（旧实现静默跳过，
+          // 只要同课还有别的必需知识点有题就"创建成功"，家长要考的内容根本没考）。
+          if (!withQIds.has(kp.id)) {
+            missing.push({
+              title,
+              reason: `要求的知识点「${kp.name}」还没有挂题，出不了题（先给它补题——错题整理任务会自动为字词出题，或走 parent_upsert_course_content 手工补——或把它从本次范围去掉）`,
+            });
             bad = true;
             break;
           }

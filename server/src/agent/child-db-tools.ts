@@ -18,6 +18,7 @@
 import { defineTool } from "./tool-kit.js";
 import { Type } from "typebox";
 import { listMistakes, setMistakeStatus, upsertMistake, attachQuestionStems, type MistakeStatus } from "../db/mistakes.js";
+import { daysAgo } from "./report-utils.js";
 
 export interface ChildDbToolDeps {
   dataDir: string;
@@ -46,7 +47,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       "**不要调用**：提问学习内容本身 ≠ 不会（「什么是比喻句」是求知）；考核错题系统自动同步、不要手动记；口误玩笑；本轮已经记过。\n" +
       "**时序**：先共情 + 讲解，讲解完成后的同轮收尾时静默记录，可轻带一句「已帮你记到错题本」并顺势提供类似练习。\n\n" +
       "action=log：content（题干摘要或字词，同内容自动合并计数）+ detail（正解/释义/讲解要点）+ kind + course（可选，**课程名**——用孩子库里的课程名，拿不准就先 `kb_query` 查一下，别猜也别写主题名）；\n" +
-      "action=list：查看错题本（可按 kind/status 过滤，缺省 open；返回含关联课程/知识点、以及有没有可重做的原题）；\n" +
+      "action=list：查看错题本（可按 kind/status/天数过滤，缺省 open；返回**首记/最近日期**、出现次数、关联课程/知识点、以及有没有可重做的原题）；\n" +
       "action=master：孩子确认掌握（先小题验证再标）→ status=mastered；action=dismiss：记错/重复 → status=dismissed（id 从 list 取）。",
     parameters: Type.Object({
       action: Type.Union(
@@ -64,6 +65,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
       course: Type.Optional(Type.String({ description: "log 可选：关联的**课程名**（如 学而第一）" })),
       id: Type.Optional(Type.String({ description: "master/dismiss 必填：条目 id（list 里取）" })),
       status: Type.Optional(Type.String({ description: "list 可选：open（缺省）/ mastered / dismissed" })),
+      days: Type.Optional(Type.Number({ description: "list 可选：只看最近 N 天（按最近出现；不传＝全部）" })),
     }),
     execute: async (
       _id: string,
@@ -75,6 +77,7 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
         course?: string;
         id?: string;
         status?: string;
+        days?: number;
       }
     ) => {
       if (params.action === "log") {
@@ -97,7 +100,13 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
         const rows = attachQuestionStems(
           deps.dataDir,
           deps.parentId,
-          listMistakes(deps.dataDir, deps.parentId, deps.childId, { status: status as MistakeStatus, limit: 30 })
+          listMistakes(deps.dataDir, deps.parentId, deps.childId, {
+            status: status as MistakeStatus,
+            limit: 30,
+            // ISSUE-186 F1：孩子也能问"我这周错了哪些字"——按最近出现过滤
+            since: params.days == null ? undefined : daysAgo(Math.max(1, Math.min(Math.round(Number(params.days) || 7), 90)) - 1),
+            order: "last_seen",
+          })
         );
         if (!rows.length) return ok(`错题本（${status}）暂时是空的。`);
         const KIND_ZH: Record<string, string> = { wrong_question: "错题", unknown_word: "生字词", weak_point: "薄弱点" };
@@ -110,10 +119,11 @@ export function createChildDbTools(deps: ChildDbToolDeps) {
           const title = String(r.question_stem ?? "").trim() || r.content;
           return (
             `- [${r.id}] ${KIND_ZH[r.kind] ?? r.kind}：${title}${r.count > 1 ? `（${r.count} 次）` : ""}` +
+            `｜首记 ${String(r.first_seen ?? "").slice(0, 10)} / 最近 ${String(r.last_seen ?? "").slice(0, 10)}` +
             `${r.detail ? `｜${cut(r.detail, 80)}` : ""}${rel.length ? `｜${rel.join(" ｜ ")}` : ""}`
           );
         });
-        return ok(`错题本（${status}，${rows.length} 条）：\n${lines.join("\n")}`);
+        return ok(`错题本（${status}${params.days ? ` · 最近 ${params.days} 天` : ""}，${rows.length} 条）：\n${lines.join("\n")}`);
       }
       if (!params.id) throw new Error(`${params.action} 需要 id（先 action=list 获取）`);
       const done = setMistakeStatus(

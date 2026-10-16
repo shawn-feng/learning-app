@@ -241,6 +241,11 @@ export function getOrCreateKnowledgePoint(
 /** 题库列表上限（ISSUE-074：家长需要看到全量；生产 3575+ 条，2000 会静默截断。曾修过一次，F10-b 重构时回归，勿再降回小值） */
 export const BANK_LIST_LIMIT = 10000;
 
+/** 题库挂载反查**单页**行数（= `bank_question_contexts` 路径 rowLimit）；超过就翻页拉全量（ISSUE-184）。 */
+export const BANK_CTX_PAGE = 5000;
+/** 挂载反查分页总行数硬上限：防病态大库把内存/耗时打满；正常家长库挂载行数量级远低于它。 */
+export const BANK_CTX_SCAN_MAX = 200000;
+
 /** 新增或整题更新（id 存在则覆盖题干/答案/评分/分值/行为/备注/知识点概要）。返回题目 id。 */
 export function saveQuestion(
   db: DatabaseSync,
@@ -419,21 +424,36 @@ export function listAllBankQuestions(db: DatabaseSync): Array<{
   const ctx = (() => {
     // F10-b：挂载反查走注册表路径 bank_question_contexts（kp/courses 均 LEFT JOIN，与原语义一致；
     // ISSUE-132 起带 courseUuid/knowledgePointId，供客户端挂载管理直接引用）
-    const { sql, params } = buildPathQuery(registeredPath("bank_question_contexts"), {
-      orderBy: "course_knowledge_questions.rowid",
-      limit: 5000,
-      // 内部全量反查：放开全局 200 行安全上限（READ_MAX_LIMIT），否则大库仅前 200 行有上下文
-      ignoreGlobalCap: true,
-    });
-    const rows = db.prepare(sql).all(...params) as Array<{
+    // ISSUE-184：路径 rowLimit（5000）是**单次查询**上限、不是全量——挂载行数超过它时，只取首页会把
+    // 后插入的挂载整批漏掉（大库实测 13280 行 → 只读到最早 5000 行），UI 表现为「题目全都未挂载」
+    // （与 ISSUE-148 的 READ_MAX_LIMIT 是两回事：那次是全局护栏压顶，这次是路径自身单页上限）。
+    // 这里按 rowid 稳定翻页拉全量；内部分页读取放开全局 READ_MAX_LIMIT。
+    const path = registeredPath("bank_question_contexts");
+    const page = Math.max(1, Math.min(BANK_CTX_PAGE, path.rowLimit));
+    const raw: Array<{
       question_id: string;
       knowledge_point_id: string | null;
       topic: string | null;
       title: string | null;
       uuid: string | null;
       name: string | null;
-    }>;
-    return rows.map((c) => ({
+    }> = [];
+    for (let offset = 0; offset < BANK_CTX_SCAN_MAX; offset += page) {
+      const { sql, params } = buildPathQuery(path, {
+        orderBy: "course_knowledge_questions.rowid",
+        limit: page,
+        offset,
+        ignoreGlobalCap: true,
+      });
+      const got = db.prepare(sql).all(...params) as typeof raw;
+      raw.push(...got);
+      if (got.length < page) break;
+      if (raw.length >= BANK_CTX_SCAN_MAX) {
+        console.warn(`[assess-content] 题库挂载反查达到分页硬上限 ${BANK_CTX_SCAN_MAX} 行，可能有挂载未加载（ISSUE-184）`);
+        break;
+      }
+    }
+    return raw.map((c) => ({
       qid: c.question_id,
       topic: c.topic ?? "",
       course: c.title ?? "",

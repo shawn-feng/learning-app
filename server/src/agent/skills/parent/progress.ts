@@ -23,6 +23,8 @@ export const progressSkill: ParentSkill = {
     // ISSUE-144 P4：孩子的数据洞察——考核逐题 / 掌握与薄弱（专用只读报告工具，自带口径）
     "parent_child_exam_report",
     "parent_child_mastery_report",
+    // ISSUE-186 F1：错题/生字**逐条**清单（要"哪些字、哪天错的、错了几次、有没有题可考"时用它）
+    "parent_child_mistake_list",
   ],
   body: `# 了解孩子最近学得怎么样
 
@@ -43,6 +45,7 @@ export const progressSkill: ParentSkill = {
 |---|---|---|
 | 这次考了多少、哪几题错了 | \`parent_child_exam_report\` | 不传 \`plan_id\`＝最近几场（含整体得分率与趋势）；传 \`plan_id\`＝那一场的**逐题明细 + 每课概要 + 知识点档位** |
 | 哪里薄弱、某个知识点到底会不会 | \`parent_child_mastery_report\` | 不传参＝各主题概览 + **薄弱项（错题本）**；\`topic\`＝该主题逐课 + 要盯的知识点；\`course\`＝单课掌握叙述 + 教学建议 + 知识点档位 + 学习结果 + 本课错题 |
+| **"这周错了哪些字词 / 还有哪些字掌握得不好 / 哪个字错得最多"** | \`parent_child_mistake_list\` | **要清单就它**：\`days=7\` 看本周新增（配 \`newOnly=true\`）；"掌握得不好"＝\`status=open\`（缺省）+ \`order=count\`；"错得最多"＝\`order=count&minCount=3\`。**逐条带次数与首记/最近日期**，并标出"还没题可考"；要补题走到 \`parent-scene-course\` |
 | 学到哪了、最近什么时候学的 | \`parent_library_topics\` | 实时聚合：已学/总数 + 权威 \`topic_key\`（**按孩子分列**；家长点名主题时也可直接用 \`parent_child_mastery_report\`，\`topic\` 收中文名或拼音目录名，不必先查 key） |
 | **"《静夜思》到底会不会"这类要点名一门课的问题** | \`parent_library_courses\` | **先定位这门课在哪**（\`topic\`=主题目录名 → 该主题下的课程名册）；拿到**准确课程名**再去 \`parent_child_mastery_report\`（\`course\`=课程名）或 \`parent_library_course_content\` 看该课内容。**不要凭记忆猜课程名** |
 | 她昨天到底问了什么 | \`parent_read_child_conversation\` | 默认今天，最多 7 天 |
@@ -57,6 +60,7 @@ export const progressSkill: ParentSkill = {
 - \`parent_list_children\`：无参数 → 只回**孩子姓名**（不读档案）。
 - \`parent_child_exam_report\`：\`child\`（孩子姓名；**名下只有一个孩子时可省略**）· \`plan_id\`（缺省＝列最近几场已完成的考核，带整体得分率与趋势）· \`course\`（只看某门课，可选）· \`limit\`（缺省 5，最多 10）→ 列表里每场都带 \`id=\`，**追问某一场就把那个 id 传给 \`plan_id\`**。没考完的场次只给范围、不给题。
 - \`parent_child_mastery_report\`：\`child\`（同上，可省略）· \`topic\`（主题名或拼音目录名）· \`course\`（课程名）——三个层级：概览（含薄弱项）/ 主题 / 单课。
+- \`parent_child_mistake_list\`：\`child\`（可省略）· \`kind\`（\`wrong_question\`/\`unknown_word\`/\`weak_point\`）· \`status\`（缺省 \`open\`＝还没掌握；\`mastered\`/\`dismissed\`/\`all\`）· 时间窗 \`days\`（如 7＝最近一周，**不传＝不限时间**）或 \`since\`/\`until\` · \`newOnly\`（只看窗口内**新记**的）· \`minCount\`（次数下限）· \`order\`（\`last_seen\`（缺省）/ \`count\` / \`first_seen\`）· \`unlinked=true\`（只看**还没题可考**的＝补题清单）· \`limit\`（缺省 60，上限 200）。**要"哪些字、哪天错的、错几次"就用它逐条列**；只要"哪里薄弱"的概览仍用 \`parent_child_mastery_report\`。
 - \`parent_library_topics\`：\`topic\`（可选，主题目录名或中文名）· \`child\`（可选，孩子姓名）→ 每个主题的进度（已学/总数，**按孩子分列**——多孩子家庭不合计，合计数会与单孩子的掌握报告对不上）与**权威 \`topic_key\`**。
 - \`parent_library_courses\`：\`topic\`（必填，主题目录名如 \`lunyu\`）→ 该主题下的**课程名册**（准确标题）。**"这门课在不在 / 准确叫什么"只能靠它**，别猜。
 - \`parent_library_course_content\`：\`topic\` + \`title\`（必填）→ 该课知识点与题（含**标准答案 \`answer\`**，见下"红线"）。
@@ -69,7 +73,9 @@ export const progressSkill: ParentSkill = {
 - **区分"没学过"与"学过但错"**：没学过＝该课/知识点还没开始（**不能当成掌握差**）；学过但错＝真问题，要指出卡在哪一步（审题、步骤、记忆、表达）。
 - **两层档位别混**：**考核知识点**是过程结果三档——\`solid\`=扎实 / \`partial\`=部分掌握 / \`weak\`=薄弱；**课程与知识点的累计掌握**是四档——\`not_started\`=还没开始 / \`learning\`=学习中 / \`needs_review\`=需要复习 / \`mastered\`=已经掌握。**空着/没分析过 ≠ 学得差**——如实说"这块还没有数据"。
 - **进度 ≠ 掌握**：进度取"最近学习时间"，掌握取"最近一次考核得分率"；**按主题聚合，不整表罗列**。
-- **错题本口径**：只把 \`status=open\` 当作"当前没掌握"；\`count\` 越大＝反复出现＝越没掌握；本周新增看 \`first_seen\`；\`kind\`：wrong_question=错题 / unknown_word=生字 / weak_point=稳定薄弱点；**按 kind 聚合概览**（别逐条念）；已关闭项一般不进概览。
+- **错题本口径**：只把 \`status=open\` 当作"当前没掌握"；\`count\` 越大＝反复出现＝越没掌握；本周新增看 \`first_seen\`；\`kind\`：wrong_question=错题 / unknown_word=生字 / weak_point=稳定薄弱点；**概览按 kind 聚合**（别逐条念）；已关闭项一般不进概览。
+- **要清单就逐条、要概览就聚合**：家长问"这周错了哪些字词 / 还有哪些字掌握得不好 / 哪个字错得最多"这类**要名单**的问题 → \`parent_child_mistake_list\` 逐条给（每条带次数与首记/最近日期，别自己算）；家长只问"哪里薄弱" → 仍用 \`parent_child_mastery_report\` 的聚合概览，**不要**把逐条清单倒给家长。
+- **"还没题可考"要如实说、别绕**：清单里带 ⚠ 的条目＝该字词还没有题，考不了。此时**不要**硬建考核（服务端会拒绝），而是：① 说明"错题整理任务会自动给它出题（家长可在「定时任务」页建/查该任务）；出题后就能考"；② 家长要立刻补 → 走到 \`parent-scene-course\`（\`parent_upsert_course_content\` 整课替换，先复述确认）。**字词的考点只在「错题整理/字词」课里**（不在别的学习主题的课里找）。
 - **报表**：只用**刚查到的真实数据**，不编造；markdown 结构；标题写清孩子名与时间范围。
 
 ## 红线

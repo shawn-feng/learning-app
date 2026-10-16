@@ -212,8 +212,12 @@ describe("错题整理：prompt 构造器", () => {
     expect(p2).toContain("逐字来自上面名单");
     expect(p2).toContain("时习");
 
-    const p3 = buildQuestionPrompt([{ content: "研", detail: "yán" }]);
-    expect(p3).toContain("stem 不要出现答案");
+    const p3 = buildQuestionPrompt([{ id: "kp-9", content: "研", detail: "yán" }]);
+    // ISSUE-186 F0：口径由"读音或释义简答"改为"说清意思 + 造句"的**口述题**，并要求原样回填 kp id
+    expect(p3).toContain("口述题");
+    expect(p3).toContain("造句");
+    expect(p3).toContain("不要出现答案");
+    expect(p3).toContain("原样回填");
     expect(p3).toContain('"stem"');
   });
 });

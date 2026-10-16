@@ -89,12 +89,31 @@ export function upsertMistake(
   }
 }
 
-/** 列表（status/kind 可选过滤；last_seen 倒序，limit 缺省 50）。 */
+/**
+ * 列表（last_seen 倒序，limit 缺省 50、上限 200）。
+ *
+ * ISSUE-186 F1 起支持"错题本查询"口径（家长 agent 的 `parent_child_mistake_list` 用）：
+ * - `since`/`until`：按 `last_seen` 的日期区间（YYYY-MM-DD，含边界）；
+ * - `firstSince`：按 `first_seen`（"本周新增"）；
+ * - `minCount`：出现次数下限（反复出错的）；
+ * - `order`：`last_seen`（缺省）/ `count`（错得最多的排前）/ `first_seen`。
+ * 日期只取前 10 位比较：存量行是 UTC ISO（带 Z），2026-09-27 后是本地 ISO——口径与
+ * 家长端界面的"本周新增"一致，不做时区回算。
+ */
 export function listMistakes(
   dataDir: string,
   parentId: string,
   childId: string,
-  opts?: { status?: MistakeStatus; kind?: MistakeKind; limit?: number }
+  opts?: {
+    status?: MistakeStatus;
+    kind?: MistakeKind;
+    limit?: number;
+    since?: string;
+    until?: string;
+    firstSince?: string;
+    minCount?: number;
+    order?: "last_seen" | "count" | "first_seen";
+  }
 ): MistakeRow[] {
   const db = openKb(dataDir, parentId, childId);
   try {
@@ -108,10 +127,32 @@ export function listMistakes(
       conds.push("kind = ?");
       vals.push(opts.kind);
     }
+    if (opts?.since) {
+      conds.push("substr(last_seen,1,10) >= ?");
+      vals.push(String(opts.since).slice(0, 10));
+    }
+    if (opts?.until) {
+      conds.push("substr(last_seen,1,10) <= ?");
+      vals.push(String(opts.until).slice(0, 10));
+    }
+    if (opts?.firstSince) {
+      conds.push("substr(first_seen,1,10) >= ?");
+      vals.push(String(opts.firstSince).slice(0, 10));
+    }
+    if (opts?.minCount != null && Number(opts.minCount) > 1) {
+      conds.push("count >= ?");
+      vals.push(Math.floor(Number(opts.minCount)));
+    }
     const where = conds.length ? ` WHERE ${conds.join(" AND ")}` : "";
     const limit = Math.max(1, Math.min(Number(opts?.limit) || 50, 200));
+    const orderSql =
+      opts?.order === "count"
+        ? "count DESC, last_seen DESC"
+        : opts?.order === "first_seen"
+          ? "first_seen DESC, count DESC"
+          : "last_seen DESC, count DESC";
     return db
-      .prepare(`SELECT * FROM mistake_book${where} ORDER BY last_seen DESC, count DESC LIMIT ${limit}`)
+      .prepare(`SELECT * FROM mistake_book${where} ORDER BY ${orderSql} LIMIT ${limit}`)
       .all(...(vals as Array<null | number | bigint | string>)) as unknown as MistakeRow[];
   } finally {
     db.close();

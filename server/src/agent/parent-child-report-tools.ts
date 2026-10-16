@@ -38,6 +38,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { Type } from "typebox";
 import { defineTool } from "./tool-kit.js";
 import { openKb } from "../db/kb.js";
+import { openParentLib } from "../db/parent-lib.js";
+import { attachQuestionStems, listMistakes } from "../db/mistakes.js";
 import { parsePlanCourses, formatPlanCourses } from "../assess-selection.js";
 // 姓名 → 孩子 id（含归属校验与"可选名字"报错）——与其它家长工具同一份真源
 import { resolveConvoChild } from "./parent-tools.js";
@@ -71,6 +73,8 @@ export const PARENT_CHILD_REPORT_TOOL_NAMES = [
   "parent_child_exam_report",
   "parent_child_mastery_report",
   "parent_child_points_report",
+  // ISSUE-186 F1：错题/生字**逐条**清单（时间窗 / 次数 / 掌握状态可筛可排；标出没题可考的）
+  "parent_child_mistake_list",
 ] as const;
 
 /**
@@ -608,6 +612,146 @@ export function createParentChildReportTools(deps: ParentChildReportDeps) {
     },
   });
 
+  // ==================== D3′：错题/生字清单（ISSUE-186 F1） ====================
+  const mistakeListTool = defineTool({
+    name: "parent_child_mistake_list",
+    label: "孩子的错题/生字清单",
+    description:
+      "按条件列出某个孩子的错题与生字（时间窗、出现次数、掌握状态可筛可排序，并标出哪些还没有题可考）。",
+    parameters: Type.Object({
+      child: Type.Optional(Type.String({ description: "孩子姓名（缺省＝名下唯一的孩子）" })),
+      kind: Type.Optional(Type.String({ description: "wrong_question=错题 / unknown_word=生字 / weak_point=薄弱点；缺省=全部" })),
+      status: Type.Optional(Type.String({ description: "open（缺省＝还没掌握）/ mastered / dismissed / all" })),
+      days: Type.Optional(Type.Number({ description: "只看最近 N 天（按最近出现；上限 90）。不传＝不限时间" })),
+      since: Type.Optional(Type.String({ description: "起始日 YYYY-MM-DD（含）" })),
+      until: Type.Optional(Type.String({ description: "结束日 YYYY-MM-DD（含）" })),
+      newOnly: Type.Optional(Type.Boolean({ description: "true＝只看窗口内**新记**的条目（按首次记录）" })),
+      minCount: Type.Optional(Type.Number({ description: "出现次数下限（如 3＝只看反复出错的）" })),
+      order: Type.Optional(Type.String({ description: "last_seen（缺省，最近错的排前）/ count（错得最多的排前）/ first_seen" })),
+      unlinked: Type.Optional(Type.Boolean({ description: "true＝只看**还没有题可考**的条目（补题清单）" })),
+      limit: Type.Optional(Type.Number({ description: "条数（缺省 60，上限 200）" })),
+    }),
+    execute: async (
+      _id: string,
+      params: {
+        child?: string;
+        kind?: string;
+        status?: string;
+        days?: number;
+        since?: string;
+        until?: string;
+        newOnly?: boolean;
+        minCount?: number;
+        order?: string;
+        unlinked?: boolean;
+        limit?: number;
+      }
+    ) => {
+      const kid = resolveChild(deps, params.child);
+      const KINDS = ["wrong_question", "unknown_word", "weak_point"] as const;
+      const kindRaw = String(params.kind ?? "").trim();
+      if (kindRaw && !KINDS.includes(kindRaw as (typeof KINDS)[number])) {
+        throw new Error(`kind 只能是 ${KINDS.join(" / ")}（收到：${kindRaw}）`);
+      }
+      const statusRaw = String(params.status ?? "").trim() || "open";
+      if (!["open", "mastered", "dismissed", "all"].includes(statusRaw)) {
+        throw new Error(`status 只能是 open / mastered / dismissed / all（收到：${statusRaw}）`);
+      }
+      const orderRaw = String(params.order ?? "").trim() || "last_seen";
+      if (!["last_seen", "count", "first_seen"].includes(orderRaw)) {
+        throw new Error(`order 只能是 last_seen / count / first_seen（收到：${orderRaw}）`);
+      }
+      const validDay = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+      const sinceIn = String(params.since ?? "").trim();
+      const untilIn = String(params.until ?? "").trim();
+      if (sinceIn && !validDay(sinceIn)) throw new Error(`since 应为 YYYY-MM-DD：${sinceIn}`);
+      if (untilIn && !validDay(untilIn)) throw new Error(`until 应为 YYYY-MM-DD：${untilIn}`);
+      // 时间窗：显式 since/until 优先；给了 days 就按天数；只要求"新增"时默认最近 7 天（本周）
+      const days = params.days == null ? null : Math.max(1, Math.min(Math.round(Number(params.days) || 7), 90));
+      const since = sinceIn || (days ? daysAgo(days - 1) : params.newOnly ? daysAgo(6) : "");
+      const firstSince = params.newOnly ? since || daysAgo(6) : "";
+      const limit = Math.max(1, Math.min(Math.round(Number(params.limit) || 60), 200));
+
+      const rows = listMistakes(deps.dataDir, deps.parentId, kid.id, {
+        kind: (kindRaw || undefined) as "wrong_question" | "unknown_word" | "weak_point" | undefined,
+        status: statusRaw === "all" ? undefined : (statusRaw as "open" | "mastered" | "dismissed"),
+        since: since || undefined,
+        until: untilIn || undefined,
+        firstSince: firstSince || undefined,
+        minCount: params.minCount == null ? undefined : Number(params.minCount),
+        order: orderRaw as "last_seen" | "count" | "first_seen",
+        // 取到数据层上限（200），展示再按 limit 截断——否则"另有 N 条未列出"的 N 永远是 0
+        limit: 200,
+      });
+      // 有原题的条目附题库真题干（跨文件读家长库）
+      const withStems = attachQuestionStems(deps.dataDir, deps.parentId, rows);
+      // 「有没有题可考」：条目关联的知识点在家长库是否挂了题（ISSUE-186 F4 的补题清单口径）
+      const withQuestion = new Set<string>();
+      const kpIds = [...new Set(withStems.map((r) => String((r as { knowledge_point_id?: string }).knowledge_point_id ?? "")).filter(Boolean))];
+      if (kpIds.length) {
+        const pl = openParentLib(deps.dataDir, deps.parentId);
+        try {
+          for (const chunk of Array.from({ length: Math.ceil(kpIds.length / 200) }, (_, i) => kpIds.slice(i * 200, (i + 1) * 200))) {
+            const marks = chunk.map(() => "?").join(",");
+            const found = pl
+              .prepare(`SELECT DISTINCT knowledge_point_id AS id FROM course_knowledge_questions WHERE knowledge_point_id IN (${marks})`)
+              .all(...chunk) as Array<{ id: string }>;
+            for (const f of found) withQuestion.add(f.id);
+          }
+        } catch {
+          /* 家长库不可达：按"没有题"处理会误导，这里降级为未知（不标记） */
+        } finally {
+          pl.close();
+        }
+      }
+      const hasQ = (r: { knowledge_point_id?: string; question_id?: string }): boolean => {
+        const kp = String(r.knowledge_point_id ?? "");
+        if (kp && withQuestion.has(kp)) return true;
+        return !!String(r.question_id ?? "").trim(); // 有原题也能重做
+      };
+      const scoped = params.unlinked ? withStems.filter((r) => !hasQ(r)) : withStems;
+      if (!scoped.length) {
+        return ok(
+          `「${kid.name}」的错题本：没有符合条件的记录` +
+            `（筛选：${kindRaw ? MISTAKE_KIND_ZH[kindRaw] ?? kindRaw : "全部类型"} · ${statusRaw === "all" ? "全部状态" : statusRaw}${since ? ` · ${since} 起` : ""}${untilIn ? ` · 至 ${untilIn}` : ""}${params.minCount ? ` · 出现 ≥${params.minCount} 次` : ""}${params.unlinked ? " · 只看没题可考" : ""}）。`
+        );
+      }
+      const shown = scoped.slice(0, limit);
+      const lines = shown.map((m) => {
+        const rel: string[] = [];
+        if (String(m.course_ref ?? "").trim()) rel.push(`课程：${cut(m.course_ref, 40)}`);
+        if (String(m.knowledge_point_name ?? "").trim()) rel.push(`知识点：${cut(m.knowledge_point_name, 40)}`);
+        const flag = hasQ(m) ? "" : "｜⚠ 还没题可考";
+        const stem = String(m.question_stem ?? "").trim();
+        return (
+          `- ${MISTAKE_KIND_ZH[String(m.kind)] ?? String(m.kind)}「${cut(m.content, 60)}」×${Number(m.count ?? 1)}` +
+          `｜首记 ${String(m.first_seen ?? "").slice(0, 10)} / 最近 ${String(m.last_seen ?? "").slice(0, 10)}` +
+          `${rel.length ? `｜${rel.join(" ｜ ")}` : ""}${flag}${stem ? `｜原题：${cut(stem, 50)}` : ""}`
+        );
+      });
+      const byKind = (["wrong_question", "unknown_word", "weak_point"] as const)
+        .map((k) => {
+          const n = scoped.filter((r) => String(r.kind) === k).length;
+          return n ? `${MISTAKE_KIND_ZH[k]} ${n}` : "";
+        })
+        .filter(Boolean)
+        .join(" / ");
+      const heavy = scoped.filter((r) => Number(r.count ?? 1) >= 3).length;
+      const noQ = scoped.filter((r) => !hasQ(r)).length;
+      const filterText =
+        `${kindRaw ? MISTAKE_KIND_ZH[kindRaw] ?? kindRaw : "全部类型"} · ${statusRaw === "all" ? "全部状态" : statusRaw}` +
+        `${since ? ` · ${since}${untilIn ? `~${untilIn}` : " 起"}` : ""}` +
+        `${params.minCount ? ` · 出现 ≥${params.minCount} 次` : ""}` +
+        `${params.unlinked ? " · 只看没题可考" : ""}` +
+        ` · 按${orderRaw === "count" ? "出现次数" : orderRaw === "first_seen" ? "首次记录时间" : "最近出现"}排`;
+      const more = scoped.length > shown.length ? `；另有 ${scoped.length - shown.length} 条未列出（收窄条件或调大 limit）` : "";
+      return ok(
+        `「${kid.name}」的错题本（${filterText}）：共 ${scoped.length} 条\n${lines.join("\n")}\n` +
+          `小结：${byKind}${heavy ? `；反复出现（≥3 次）${heavy} 条` : ""}${noQ ? `；**还没有题可考** ${noQ} 条（补题后才能考）` : ""}${more}`
+      );
+    },
+  });
+
   // ==================== F3 + F2：积分与兑换 ====================
   const pointsTool = defineTool({
     name: "parent_child_points_report",
@@ -762,5 +906,5 @@ export function createParentChildReportTools(deps: ParentChildReportDeps) {
     },
   });
 
-  return [examTool, masteryTool, pointsTool];
+  return [examTool, masteryTool, mistakeListTool, pointsTool];
 }
