@@ -680,15 +680,18 @@ describe("ISSUE-144 A 路线：说明下沉到技能，工具块只留结构与�
       "intervalMinutes",
       "fireAt",
       "weekly",
-      // ISSUE-182 v2：执行能力口径必须写在技能里（工具描述会被下沉剥掉）——
-      // v1 的「不能碰积分/考核/学习计划」白名单已作废；考核类自动化默认分配给家长（必考 vs 加分项）
+      // ISSUE-182 v2 修复 + 2026-10-16 口径定稿：技能只讲「怎么创建」（几种已有形态 + 参数 + 复述确认），
+      // 不讲执行会话内部怎么跑——"执行能力/全量工具"这类内容会让模型拿它当创建门槛、误判"做不到"而拒答
       'target="parent"',
-      "全量工具",
       "必考",
       "加分项",
       "二选一",
     ]) {
       expect(automation, `automation 技能缺 ${kw}`).toContain(kw);
+    }
+    // 反向守卫：执行侧描述不得回流进创建口径
+    for (const banned of ["全量工具", "不能碰", "load_skill"]) {
+      expect(automation, `automation 技能不应再写执行细节：${banned}`).not.toContain(banned);
     }
     // KB P2：挂课这条路的**口径**必须写在技能里（工具描述会被下沉剥掉，红线不能只留在代码注释里）
     const kb = findParentSkill("parent-scene-kb")!.body;

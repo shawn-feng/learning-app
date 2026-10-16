@@ -1233,13 +1233,12 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     name: "parent_scheduler_task_create",
     label: "创建自定义定时任务",
     description:
-      "创建**自定义定时任务**：家长用自然语言描述要 agent 周期性完成的事，到点由服务端无头执行（例：每天 6 点查天气并给孩子建 7 天天气播报提醒；每天早上给当天学习计划的课程建考核计划）。\n" +
-      "**分配对象（childName 与 target 二选一）**：`childName`＝分配给孩子（每孩子独立一轮，用孩子 agent 全套工具）；\n" +
-      "`target: \"parent\"`＝分配给家长本人（整任务一轮，用家长 agent 全套工具——适合以家长名义建考核/排计划/汇总报表等家长级动作）。\n" +
-      "**参数**：`name` 任务名；`instruction` 必填（自然语言指令，写清楚做什么、产出什么、指名执行对象）；\n" +
+      "创建**自定义定时任务**：家长用自然语言描述要 agent 周期性完成的事，到点由服务端自动执行（例：每天 6 点查天气并给孩子建 7 天天气播报提醒；每天早上给当天学习计划的课程建考核计划）。\n" +
+      "**分配对象（childName 与 target 二选一）**：`childName`＝分配给孩子（每个孩子各自执行）；\n" +
+      "`target: \"parent\"`＝分配给家长本人（跨孩子的、以家长名义做的事，如建考核/排计划、汇总报表——以家长名义建的考核是「必考」，孩子自建的是「加分项」）。\n" +
+      "**参数**：`name` 任务名；`instruction` 必填（自然语言指令：做什么、产出什么、执行对象是谁；到点是自动执行，别留待确认的问句）；\n" +
       "`time` HH:mm（daily/weekly 触发时刻）；`frequency` daily（默认）| weekly | once | interval；weekly 需 `weekday`（0=周日..6=周六）；interval 需 `intervalMinutes`；once 需 `fireAt`（ISO）。\n" +
-      "**执行能力（ISSUE-182 v2）**：执行会话用**分配对象 agent 的默认上下文 + 全量工具**（孩子任务的产物归属孩子；家长任务可建必考考核、查掌握、推报表）。\n" +
-      "仍做不到的：加/扣积分、改完成态；执行时无人在线，指令必须自包含。指令里涉及「未来 N 天提醒」要写明**一次性批量创建**。\n" +
+      "指令里涉及「未来 N 天提醒」要写明**一次性批量创建**。\n" +
       "同一天执行失败不重试（次日正常）；执行结果可在任务面板查看。",
     parameters: Type.Object({
       childName: Type.Optional(Type.String({ description: "孩子姓名（分配给孩子时必填；与 target 二选一）" })),
