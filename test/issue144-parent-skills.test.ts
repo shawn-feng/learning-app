@@ -675,7 +675,19 @@ describe("ISSUE-144 A 路线：说明下沉到技能，工具块只留结构与�
       expect(points, `points 技能缺 ${kw}`).toContain(kw);
     }
     const automation = findParentSkill("parent-scene-automation")!.body;
-    for (const kw of ["frequency", "intervalMinutes", "fireAt", "weekly"]) {
+    for (const kw of [
+      "frequency",
+      "intervalMinutes",
+      "fireAt",
+      "weekly",
+      // ISSUE-182 v2：执行能力口径必须写在技能里（工具描述会被下沉剥掉）——
+      // v1 的「不能碰积分/考核/学习计划」白名单已作废；考核类自动化默认分配给家长（必考 vs 加分项）
+      'target="parent"',
+      "全量工具",
+      "必考",
+      "加分项",
+      "二选一",
+    ]) {
       expect(automation, `automation 技能缺 ${kw}`).toContain(kw);
     }
     // KB P2：挂课这条路的**口径**必须写在技能里（工具描述会被下沉剥掉，红线不能只留在代码注释里）

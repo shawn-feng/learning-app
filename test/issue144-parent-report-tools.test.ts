@@ -715,7 +715,9 @@ describe("ISSUE-144 P4 · 装配与场景归属", () => {
 
   it("场景归属：exam / mastery → parent-scene-progress，points → parent-scene-points", () => {
     expect(scenesOfTool("parent_child_exam_report")).toEqual(["parent-scene-progress"]);
-    expect(scenesOfTool("parent_child_mastery_report")).toEqual(["parent-scene-progress"]);
+    // ISSUE-135 P5（5ed0481）起 mastery_report 同时归 parent-scene-plan（排复习前先看掌握，
+    // plan 技能步骤 2 直接用它）——多场景工具，守卫任一放行；此处断言随设计更新
+    expect(scenesOfTool("parent_child_mastery_report")).toEqual(["parent-scene-progress", "parent-scene-plan"]);
     expect(scenesOfTool("parent_child_points_report")).toEqual(["parent-scene-points"]);
   });
 

@@ -410,3 +410,58 @@ describe("ISSUE-182 路由", () => {
     expect(anon.statusCode).toBe(401);
   });
 });
+
+// ---------------------------------------------------------------- 家长 agent 建任务工具（target 分配）
+
+describe("ISSUE-182 家长 agent 建任务工具（target 分配与 v2 口径）", () => {
+  it("target=parent：落库任务 + 家长分配行（target_type=parent）；childName 路径照旧", async () => {
+    const { createPlanDomainTools } = await import("../server/src/agent/parent-plans");
+    const tool: any = createPlanDomainTools({ db: mainDb, dataDir, parentId }).find(
+      (t: any) => t.name === "parent_scheduler_task_create"
+    );
+    // 本 issue 的用户场景：每天早上给当天学习计划的课程建考核计划 → 分配给家长（家长名义=必考）
+    const r = await tool.execute("x", {
+      target: "parent",
+      name: "每日考核计划",
+      instruction: "查看当天学习计划：对每门新学的课创建考核计划（考全部知识点）；复习的课只考掌握不好的知识点。",
+      time: "07:00",
+    });
+    expect(((r as any).content as Array<{ text: string }>).map((c) => c.text).join("")).toContain("家长本人");
+    const row = mainDb
+      .prepare("SELECT id, frequency FROM scheduler_tasks WHERE parent_id = ? AND name = ? ORDER BY created_at DESC LIMIT 1")
+      .get(parentId, "每日考核计划") as { id: string; frequency: string };
+    expect(row.frequency).toBe("daily");
+    const assigns = mainDb
+      .prepare("SELECT child_id, target_type, enabled FROM scheduler_task_assignments WHERE task_id = ?")
+      .all(row.id) as Array<{ child_id: string; target_type: string; enabled: number }>;
+    expect(assigns).toEqual([{ child_id: parentId, target_type: "parent", enabled: 1 }]);
+
+    // 孩子路径照旧（childName → target_type='child'）
+    await tool.execute("y", { childName: "珊珊", name: "孩子天气任务", instruction: "每天播报天气", time: "06:00" });
+    const row2 = mainDb
+      .prepare("SELECT id FROM scheduler_tasks WHERE parent_id = ? AND name = ?")
+      .get(parentId, "孩子天气任务") as { id: string };
+    const a2 = mainDb
+      .prepare("SELECT child_id, target_type FROM scheduler_task_assignments WHERE task_id = ?")
+      .all(row2.id) as Array<{ child_id: string; target_type: string }>;
+    expect(a2).toEqual([{ child_id: childA, target_type: "child" }]);
+  });
+
+  it("校验：分配对象二选一必填、target 非法值 / 与 childName 并用被拒（都不落行）", async () => {
+    const { createPlanDomainTools } = await import("../server/src/agent/parent-plans");
+    const tool: any = createPlanDomainTools({ db: mainDb, dataDir, parentId }).find(
+      (t: any) => t.name === "parent_scheduler_task_create"
+    );
+    await expect(tool.execute("x", { name: "n", instruction: "i", time: "07:00" })).rejects.toThrow(/childName|target/);
+    await expect(
+      tool.execute("x", { target: "child", childName: "珊珊", name: "n", instruction: "i", time: "07:00" })
+    ).rejects.toThrow(/target/);
+    await expect(
+      tool.execute("x", { target: "parent", childName: "珊珊", name: "n", instruction: "i", time: "07:00" })
+    ).rejects.toThrow(/二选一/);
+    const cnt = mainDb.prepare("SELECT COUNT(*) AS c FROM scheduler_tasks WHERE parent_id = ? AND name = 'n'").get(parentId) as {
+      c: number;
+    };
+    expect(cnt.c).toBe(0);
+  });
+});

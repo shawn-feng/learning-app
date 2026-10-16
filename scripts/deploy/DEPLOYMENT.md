@@ -292,3 +292,23 @@ Electron 登录页「抖音扫码登录」
 - 回滚：bundle bak-20261015-191124（0.5.33）、数据 deploy-0.5.34-20261015-191124（85M；磁盘 88%）。
 - ⚠️ 冒烟脚本教训（记录给下次）：`(BOOT + TAIL).replace()` 的方法调用只作用于尾段字面量——模板公共段
   里的占位符不会被替换（v2 曾因此打到假家长；v1 失败退出未还原配置，v3 先恢复再测）。
+
+## learning-server 0.5.35（2026-10-16 08:29 部署 201；首布曾误用 0.5.34 号，见末条）
+- 触发：用户实测「家长 agent：创建一个定时任务，每天早上7点，对当天学习计划里的课程创建考核计划（新学考全部知识点、复习考薄弱点）」→ agent 回复**创建不了**。
+- 根因：**parent-scene-automation 技能正文仍是 v1 白名单口径**——「执行会话能做的：查天气、建提醒、读写 daily；**不能碰：积分、考核、学习计划**」（ISSUE-116 v1 收窄执行器的历史产物）。
+  0.5.33 已把执行会话换成全量工具，但技能/工具描述没同步；模型读完技能即按"做不到"拒答（工具描述那处经 compactParentTools 下沉后模型根本看不到，真正的口径真源=技能正文）。
+- 修复：①automation 技能正文「能力白名单」整段重写为 v2「执行能力」——分配孩子=孩子 agent 全量工具（每孩子独立一轮）、
+  分配家长（target="parent"）=家长 agent 全量工具（整任务一轮，按需 load_skill）、**考核/计划类自动化默认分配给家长**
+  （家长建=必考、孩子建=加分项）；仍做不到的收敛为「加/扣积分、改完成态」（本无工具）+「指令必须自包含（执行时无人在线）」；
+  ②`parent_scheduler_task_create` 支持 `target="parent"`（与 childName 二选一；家长分配行 child_id=家长 id + target_type='parent'，直通 0.5.33 已部署的 F2 执行分支）。
+- 验证：201 version=0.5.35、health ok、service active、journal error=0；bundle md5 与本地 dist 一致（f4d6c329…），
+  标记（转义感知校验）：新口径「全量工具/二选一/以家长名义建考核计划（必考）」FOUND、旧「不能碰积分」MISSING；
+  **超集校验**：ISSUE-183（VOLUME_TOO_LOW/minVolumeNorm/dimensionMeanScore）与 ISSUE-182 F4（notifyCustomTaskFailure）均 KEPT——0.5.35 构建自含 ISSUE-183 已提交源码，无回退。
+  单测：issue182 14/14（+2 工具用例）、issue144-parent-skills 45/45（+5 口径关键词断言）、issue144-parent-report-tools 18/18（顺带修过期断言：
+  mastery_report 自 5ed0481/ISSUE-135 P5 起为 progress+plan 多场景）、issue121/123/134/149 共 41/41。
+- ⚠️ **运维教训（marker grep）**：esbuild 产物把**所有非 ASCII 转义为 `\uXXXX`（大写十六进制）**——
+  部署脚本里 `grep -F '中文标记'` 必然 0 命中（既非原文也非小写转义）。中文标记要么换 ASCII 词做 marker，
+  要么用 node 按大写转义形式校验（`deploy_0535_automation_scope.py` 的 esc_chk 已改为后者）。
+- ⚠️ **版本号撞车**：首次构建按 0.5.34 号发布（08:27），但 0.5.34 已被 ISSUE-183（10-15 19:11 部署，不含本修复）占用——
+  两个不同 bundle 同号。08:29 改号 0.5.35 重新构建发布，此后 201 上的 0.5.34 字样仅存在于回滚备份。**教训：bump 前先 `git log --oneline -5` 看最新部署记录，避免与并行会话撞号**。
+- 回滚：bundle bak-20261016-082700（0.5.33）+ bak-20261016-0829xx（0.5.34=ISSUE-183 无本修复）、数据 deploy-0.5.35-20261016-082936（主库+配置）。

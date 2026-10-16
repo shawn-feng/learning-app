@@ -1228,20 +1228,28 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
   });
 
   // ISSUE-116：自定义定时任务——家长自然语言指令，到点由服务端无头 agent 执行（owner 恒 parent）
+  // ISSUE-182 v2：执行会话=分配对象 agent 的默认上下文+全量工具；分配对象可为孩子（childName）或家长本人（target="parent"）
   const customTaskCreateTool = defineTool({
     name: "parent_scheduler_task_create",
     label: "创建自定义定时任务",
     description:
-      "创建**自定义定时任务**：家长用自然语言描述要 agent 周期性完成的事，到点由服务端无头执行（例：每天 6 点查天气并给孩子建 7 天天气播报提醒）。\n" +
-      "**参数**：`childName` 必填（执行对象/产物归属孩子）；`name` 任务名；`instruction` 必填（自然语言指令，写清楚做什么、产出什么）；\n" +
+      "创建**自定义定时任务**：家长用自然语言描述要 agent 周期性完成的事，到点由服务端无头执行（例：每天 6 点查天气并给孩子建 7 天天气播报提醒；每天早上给当天学习计划的课程建考核计划）。\n" +
+      "**分配对象（childName 与 target 二选一）**：`childName`＝分配给孩子（每孩子独立一轮，用孩子 agent 全套工具）；\n" +
+      "`target: \"parent\"`＝分配给家长本人（整任务一轮，用家长 agent 全套工具——适合以家长名义建考核/排计划/汇总报表等家长级动作）。\n" +
+      "**参数**：`name` 任务名；`instruction` 必填（自然语言指令，写清楚做什么、产出什么、指名执行对象）；\n" +
       "`time` HH:mm（daily/weekly 触发时刻）；`frequency` daily（默认）| weekly | once | interval；weekly 需 `weekday`（0=周日..6=周六）；interval 需 `intervalMinutes`；once 需 `fireAt`（ISO）。\n" +
-      "**能力边界（执行会话工具白名单）**：可查天气（weather_query）、给孩子创建定时提醒（create_reminders，到点语音播报）、读写孩子 daily 记录；\n" +
-      "**不能**操作积分/考核/学习计划。指令里涉及「未来 N 天提醒」要写明**一次性批量创建**。\n" +
+      "**执行能力（ISSUE-182 v2）**：执行会话用**分配对象 agent 的默认上下文 + 全量工具**（孩子任务的产物归属孩子；家长任务可建必考考核、查掌握、推报表）。\n" +
+      "仍做不到的：加/扣积分、改完成态；执行时无人在线，指令必须自包含。指令里涉及「未来 N 天提醒」要写明**一次性批量创建**。\n" +
       "同一天执行失败不重试（次日正常）；执行结果可在任务面板查看。",
     parameters: Type.Object({
-      childName: Type.String({ description: "孩子姓名（执行对象）" }),
+      childName: Type.Optional(Type.String({ description: "孩子姓名（分配给孩子时必填；与 target 二选一）" })),
+      target: Type.Optional(
+        Type.String({
+          description: '分配对象："parent"=家长本人（家长级动作，如以家长名义建考核计划）；缺省=分配给孩子（此时填 childName）',
+        })
+      ),
       name: Type.String({ description: "任务名称（如「每日天气播报」）" }),
-      instruction: Type.String({ description: "自然语言指令（写清楚做什么、产出什么，如「查今天天气，创建未来7天每天07:00的天气播报提醒」）" }),
+      instruction: Type.String({ description: "自然语言指令（写清楚做什么、产出什么、指名执行对象）" }),
       time: Type.String({ description: "触发时刻 HH:mm（daily/weekly 用）" }),
       frequency: Type.Optional(Type.String({ description: "daily（默认）| weekly | once | interval" })),
       weekday: Type.Optional(Type.Number({ description: "weekly：0=周日..6=周六" })),
@@ -1251,7 +1259,8 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
     execute: async (
       _id: string,
       params: {
-        childName: string;
+        childName?: string;
+        target?: string;
         name: string;
         instruction: string;
         time: string;
@@ -1261,7 +1270,15 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         fireAt?: string;
       }
     ) => {
-      const child = resolvePlanChild(db, parentId, params.childName);
+      const target = String(params.target ?? "").trim();
+      if (target && target !== "parent") {
+        throw new Error(`target 仅支持 "parent"（分配给孩子请用 childName）：${target}`);
+      }
+      const childName = String(params.childName ?? "").trim();
+      if (target === "parent" && childName) throw new Error('childName 与 target="parent" 二选一，不能同时提供');
+      if (target !== "parent" && !childName) {
+        throw new Error('请提供分配对象：childName（分配给孩子）或 target="parent"（分配给家长本人）');
+      }
       const name = String(params.name ?? "").trim();
       const instruction = String(params.instruction ?? "").trim();
       const time = String(params.time ?? "").trim();
@@ -1278,6 +1295,7 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
         throw new Error("interval 需提供 intervalMinutes（>0）");
       }
       if (frequency === "once" && !params.fireAt) throw new Error("once 需提供 fireAt（ISO 目标时间）");
+      const child = target === "parent" ? null : resolvePlanChild(db, parentId, childName);
       const id = crypto.randomUUID();
       const now = nowLocalIso();
       db
@@ -1299,13 +1317,22 @@ export function createPlanDomainTools(deps: PlanToolDeps) {
           now,
           now
         );
-      db
-        .prepare(
-          "INSERT INTO scheduler_task_assignments (task_id, child_id, enabled, created_at) VALUES (?, ?, 1, ?)"
-        )
-        .run(id, child.id, now);
+      if (child) {
+        db
+          .prepare(
+            "INSERT INTO scheduler_task_assignments (task_id, child_id, enabled, created_at) VALUES (?, ?, 1, ?)"
+          )
+          .run(id, child.id, now);
+      } else {
+        // ISSUE-182 F2：家长分配行（child_id 存家长 id + target_type='parent'）
+        db
+          .prepare(
+            "INSERT INTO scheduler_task_assignments (task_id, child_id, target_type, enabled, created_at) VALUES (?, ?, 'parent', 1, ?)"
+          )
+          .run(id, parentId, now);
+      }
       return ok(
-        `已创建自定义定时任务「${name}」（${frequency}${frequency === "weekly" ? ` 周${"日一二三四五六"[Number(params.weekday)] ?? ""}` : ""} ${time}，执行对象：${child.name}）。到点由服务端无头执行，执行结果可在任务面板查看。`
+        `已创建自定义定时任务「${name}」（${frequency}${frequency === "weekly" ? ` 周${"日一二三四五六"[Number(params.weekday)] ?? ""}` : ""} ${time}，执行对象：${child ? child.name : "家长本人"}）。到点由服务端无头执行，执行结果可在任务面板查看。`
       );
     },
   });
