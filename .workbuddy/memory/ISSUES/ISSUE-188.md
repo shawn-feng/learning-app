@@ -2,7 +2,7 @@
 
 - **类型**：体验修复 / 认证生命周期（客户端 + learning-server + benefit-auth 三端）
 - **优先级**：高（ISSUE-187 的直接成因；`app 用 7 天就要重扫` / `VIP 到期被踢回登录页` 都是它）
-- **状态**：✅ 已实现（本地代码 + 回归；**未部署 201 / 未打包客户端 / 未重启 ECS benefit-auth**）
+- **状态**：✅ 已实现 + **learning-server 0.5.39 已部署 201（2026-10-18 17:39，滑动续签线上冒烟通过）** + **客户端 0.1.32 已本地打包（未发布）**；ECS benefit-auth 未部署（设备级 365 天 cloud token 待另走 ECS）
 - **记录时间**：2026-10-18
 - **关联**：ISSUE-187（SSE 死句柄重建，需本 issue 一起上线才完整）、ISSUE-160（授权过期不踢人）、ISSUE-164（任务门禁保留凭证）
 
@@ -91,14 +91,14 @@
 - 相关回归：`server-agent-client` 27 + `issue187` 4 + `app` 4 + `functional` 16 + `issue167` 5 + `issue179` 5 + `issue145` 5 + `issue146` 26 + ISSUE-188 三文件 22 + issue160 4 = **111/111 全绿**。
 - 构建：`npm run build` 主进程/预加载通过、产物含 `x-session-token`/`adoptSessionToken`；**渲染层与 web 构建在本机仍卡 esbuild 删临时文件 EPERM（环境问题，未动这两处逻辑）**，需在 macOS/CI 构建验证；`server` tsc 仅既有 3 文件类型债；`benefit-auth` 三文件 `py_compile` 通过；所有改动文件 UTF-8 无 BOM/无乱码（PS 重写踩坑后复核）。
 
-## 七、部署清单（**待用户批准**）
+## 七、部署清单（**2026-10-18 已执行：201 已部署 0.5.39 + 客户端 0.1.32 已本地打包；benefit-auth/Web 未部署**）
 
-| 目标 | 内容 | 影响 |
+| 目标 | 内容 | 状态 |
 |---|---|---|
-| benefit-auth（ECS） | `security.py`/`account.py`/`legacy.py`/`main.py` + 重启 `benefit-auth.service` | 新登录/换 token 的家长获得 365 天 cloud token；**存量家长仍持 72h token**，下次扫码/重登后自动换长效 |
-| learning-server（201） | `server.cjs` **0.5.39**（含 session-renew 钩子 + `/auth/license` me_url） | 所有已登录客户端的下一次已鉴权请求即开始滑动续签 |
-| 客户端 | **0.1.31**（含 ISSUE-187 死句柄重建 + 本 issue 客户端半边） | 不装新客户端：服务端照样回签（老客户端不采纳头，效果等同没做）；VIP 门禁文案/路由也在新客户端 |
-| Web（201 `web/dist`） | 重新构建换装（shim 采纳 + `authCheck` me_url） | 可选，与客户端同批 |
+| benefit-auth（ECS） | `security.py`/`account.py`/`legacy.py`/`main.py` + 重启 `benefit-auth.service` | ⏳ **未部署**（设备级 365 天 cloud token 待 ECS；不部署时滑动续签已生效，存量 72h token 仍会 401 一次） |
+| learning-server（201） | `server.cjs` **0.5.39**（含 session-renew 钩子 + `/auth/license` me_url） | ✅ **已部署（2026-10-18 17:39）**：version/health/标记/超集全过，线上冒烟已回 `x-session-token`；备份 `server.cjs.bak-20261018-173934` + `data/backups/deploy-0.5.39-20261018-173934` |
+| 客户端 | **0.1.32**（含 ISSUE-187 死句柄重建 + 本 issue 客户端半边 + ISSUE-189 音量门） | ✅ **已本地打包（仅 Windows NSIS，未发布）**：`dist/学习伙伴 Setup 0.1.32.exe`（sha256 `32222D42…FAF6`）；Linux deb/AppImage 走 CI（本机 fpm/符号链接环境不支持） |
+| Web（201 `web/dist`） | 重新构建换装（shim 采纳 + `authCheck` me_url） | ⏳ 未部署（`web:build` 已通过，可选同批） |
 
 **存量 cloud token 的过渡**：未重扫的家长在 72h 后仍会 401（这是旧 token 的既成事实）。服务端可选降级：对「上游 401 但有本地缓存」返回缓存 + `degraded`（现状是直接 401）——本 issue **未改**，避免掩盖真实失效；如需「老 token 也免扫码」，需另做 refresh token 或在过渡期放宽。
 
@@ -106,6 +106,6 @@
 
 - **滑动续签不涉及权益**：VIP 到期照样走门禁/任务；续签只解决「登录会话」过期。
 - **长时间不打开 app**：超过 365 天（设备 token）或 JWT 连续 7 天无任何请求（如合盖休眠）后仍需重新扫码——这是没有 refresh token 时的固有边界；如需彻底免扫码，二期做 refresh token（哈希存 `parents`，客户端仅存服务端）。
-- **老客户端**：0.1.30 不读 `X-Session-Token`，服务端回签对它无效（不报错）；必须升级 0.1.31 才享受滑动续签与门禁体验。
+- **老客户端**：0.1.30 不读 `X-Session-Token`，服务端回签对它无效（不报错）；必须升级 0.1.32 才享受滑动续签与门禁体验。
 - **SSE 响应头**：SSE 路由用 `reply.raw.writeHead` 自行写头，续签头对 SSE 不生效（无需生效——SSE 重连读的是 license.json 里被 HTTP 请求续签后的 token）。
 - **未做**：web 端 `authCheck` 的 `reason` 字段（App 只用 license.is_expired，够用）；门禁页「立即再检测」按钮（5s 轮询已足够）。

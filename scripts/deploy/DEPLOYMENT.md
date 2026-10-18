@@ -336,3 +336,12 @@ Electron 登录页「抖音扫码登录」
   超集校验 ISSUE-183 与 ISSUE-182 F4 KEPT。单测 5 文件 101/101（新增：四类创建落库断言 + buildEffectiveChildConfig 接线断言
   [recording/autoNewSession/mistakeSorting 进有效配置] + 五条约束不落行断言）；双端构建过。
 - 回滚：bundle bak-20261016-0857xx（0.5.36）、数据 deploy-0.5.37-20261016-085711（主库+配置）。
+
+## learning-server 0.5.39（2026-10-18 17:39 部署 201）
+- 触发：ISSUE-187/188 收口——会话 JWT 滑动续签 + `/auth/license` me_url（客户端 0.1.32 配套；benefit-auth 设备级 cloud token 本轮**未部署**，见下）。
+- 改动（仅服务端，无 DB 迁移）：①新增 `auth/session-renew.ts` 全局 onRequest——`/api/v1/*` 已鉴权请求（Bearer 或 `?token=`）剩余寿命 ≤ TTL/2 时回签，经 `X-Session-Token` 下发（`laxk_` 开放 Key / 无效 token / 无 token 跳过；SSE 的 `?token=` 也识别）；②`auth/jwt.ts` 回填 `exp`；③`/auth/license` 新增 `me_url`（`auth/me-url.ts`，`parents.benefit_user_token` 拼 `/me?token=`，无 token 退化为裸 `/me`）；④`SERVER_VERSION 0.5.39`。
+- 流程：`tmp/deploy/deploy_0539_issue188.py`（上传 → 备份 bundle `server.cjs.bak-20261018-173934` + 数据 `data/backups/deploy-0.5.39-20261018-173934`（22M）→ 替换 → 重启 → 验证）。
+- 验证：201 `version=0.5.39`、`health ok`、`session-renew`/`me_url`/`0.5.39` 标记 FOUND、超集 ISSUE-183/186/182 KEPT、journal 近 2min 无 error；**滑动续签线上冒烟**：手工签一枚剩余 1 天（< TTL/2=3.5 天）的合法 JWT 请求 `/api/v1/version` → 响应带回 `x-session-token`（新 token `iat=now`、`exp=now+7d`）。
+- 回滚：bundle `server.cjs.bak-20261018-173934`（0.5.38）、数据 `deploy-0.5.39-20261018-173934`（主库+配置；本次无 DB 迁移，数据回滚可不动）。
+- ⚠️ 未部署：ECS benefit-auth（设备级 365 天 cloud token 在 `benefit-auth`，需另走 ECS 部署；不部署时滑动续签已可用，但「app 连用 3 天后上游 401」仍存在）。
+- 客户端：0.1.32 已本地打包（Windows NSIS `dist/学习伙伴 Setup 0.1.32.exe`，171,562,148 B，sha256 `32222D4286E9E894AB4486F14406C9DA97EFB9DC2D6A0CE1A01A242E4934FAF6`，**未发布**）；Linux deb/AppImage 本机不可构建（fpm 缺失 / Windows 无符号链接权限），走 `.github/workflows/build-linux.yml` CI。
