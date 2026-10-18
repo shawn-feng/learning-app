@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..database import get_db, new_id
-from ..security import create_user_token, hash_password, verify_password
+from ..security import create_device_token, hash_password, verify_password
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 
@@ -56,7 +56,8 @@ async def register(req: RegisterRequest, db=Depends(get_db)):
     # 认证切换：parent_id 走旧 cloud 身份映射（保 201/本地数据空间连续），见 legacy.py
     from .legacy import _legacy_parent_id
     parent_id = await _legacy_parent_id(db, {"id": user_id, "email": email})
-    return {"token": create_user_token(user_id), "user_id": user_id,
+    # ISSUE-188：发给 learning-server 的 cloud token 用设备级长效 token（默认 365 天），免频繁扫码
+    return {"token": create_device_token(user_id), "user_id": user_id,
             "parent_id": parent_id, "nickname": nickname}
 
 
@@ -74,5 +75,6 @@ async def login(req: LoginRequest, db=Depends(get_db)):
     user_id = rows[0]["id"]
     from .legacy import _legacy_parent_id
     parent_id = await _legacy_parent_id(db, {"id": user_id, "email": email})
-    return {"token": create_user_token(user_id), "user_id": user_id,
+    # ISSUE-188：同上——cloud token 走设备级长效（网页会话 Cookie 仍是 72h 用户 token）
+    return {"token": create_device_token(user_id), "user_id": user_id,
             "parent_id": parent_id, "nickname": rows[0]["nickname"]}

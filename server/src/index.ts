@@ -40,6 +40,7 @@ import { registerAsrRoutes } from "./routes/asr.js";
 import { registerTtsRoutes } from "./routes/tts.js";
 import { startWorkerScheduler } from "./worker/scheduler.js";
 import { startTokenHubKeySync } from "./auth/tokenhub.js";
+import { registerSessionRenewHook } from "./auth/session-renew.js";
 import { initServerLog, logInfo, logError, installServerConsoleRedirect } from "./log.js";
 
 const config = loadConfig();
@@ -74,6 +75,10 @@ app.addHook("onResponse", async (req, reply) => {
 // 局域网/本机传输；2026-09-26 起取消 200MB。**外发类**（server 收到后转发第三方的：ASR/评测/视觉）
 // 在各自入口设限，见 util/limits.ts）；主题包导入在 topic-package.ts 内自行做白名单/sha256 校验。
 void app.register(multipart, { limits: { fileSize: Infinity } });
+
+// ISSUE-188：会话 JWT 滑动续签——已鉴权请求在剩余寿命 ≤ TTL/2 时回签，经 X-Session-Token 带回。
+// 必须在路由注册前挂（onRequest 对所有后续路由生效）。桌面端 config-sync 每 2 分钟一次请求即天然保活。
+registerSessionRenewHook(app, { secret: config.jwtSecret, ttlDays: config.tokenTtlDays });
 
 registerVersionRoutes(app);
 registerLogsRoutes(app, { jwtSecret: config.jwtSecret }); // ISSUE-162：日志导出（家长 JWT）

@@ -144,26 +144,35 @@ export const authDomain = {
    *   401（session token 失效 / 云端判定授权失效）→ 清凭证回登录页；
    *   网络错误/服务端不可达 → 离线降级放行（不把已登录用户踢出）。
    */
-  authCheck: async (): Promise<{ authenticated: boolean; license: WebLicense | null }> => {
+  authCheck: async (): Promise<{
+    authenticated: boolean;
+    license: WebLicense | null;
+    /** ISSUE-188：VIP 到期时「去完成任务」的个人中心地址（服务端拼好，免扫码） */
+    me_url?: string;
+  }> => {
     const license = getStoredLicense();
     if (!license) return { authenticated: false, license: null };
 
     try {
-      const data = await http<{ license: LicenseData }>("/auth/license", { token: license.token });
+      const data = await http<{ license: LicenseData; me_url?: string }>("/auth/license", {
+        token: license.token,
+      });
       const fresh: WebLicense = {
         ...data.license,
         email: license.email,
-        token: license.token,
+        // ISSUE-188：server-fetch 可能已采纳滑动续签的新 token，优先用本地最新值
+        token: getStoredLicense()?.token ?? license.token,
         cached_at: new Date().toISOString(),
       };
       if (fresh.is_expired) {
         // 待解锁（任务门禁 TaskGate 轮询）是预期状态：保留本地凭证，权益到手后
         // 下一轮轮询即可自动放行。不能清凭证——清了门禁页没有 token 可查，
         // 会永远卡在「等待检测中」（2026-10-08 实测 bug，与 electron auth-manager 同步修复）。
-        return { authenticated: false, license: fresh };
+        saveLicense(fresh);
+        return { authenticated: false, license: fresh, me_url: data.me_url };
       }
       saveLicense(fresh);
-      return { authenticated: true, license: fresh };
+      return { authenticated: true, license: fresh, me_url: data.me_url };
     } catch (err) {
       if (err instanceof WebServerError && err.status === 401) {
         // session token 失效，或服务端能连上公网且公网判定授权失效 → 重新登录

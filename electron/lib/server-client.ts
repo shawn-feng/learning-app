@@ -5,6 +5,23 @@
 import fs from "fs";
 import { getServerUrl } from "./config";
 import { noteServerReachable, noteServerUnreachable } from "./connection-state";
+import { adoptSessionToken } from "./session-token-store";
+
+/**
+ * ISSUE-188：服务端会话 JWT 滑动续签——已鉴权请求在剩余寿命 ≤ TTL/2 时回签，
+ * 经响应头 `X-Session-Token` 下发；这里统一采纳并写回 license.json（之后 HTTP/SSE 自动用新 token）。
+ * 无该头（未到续签时机/未登录）时零副作用。
+ */
+const SESSION_TOKEN_HEADER = "x-session-token";
+
+function noteRenewedSession(res: Response): void {
+  try {
+    const fresh = res.headers.get(SESSION_TOKEN_HEADER);
+    if (fresh) adoptSessionToken(fresh);
+  } catch {
+    /* 头读取失败不影响请求结果 */
+  }
+}
 
 export class ServerError extends Error {
   constructor(
@@ -85,6 +102,7 @@ export async function serverFetch<T = unknown>(
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 15000));
   }
   noteServerReachable();
+  noteRenewedSession(res);
 
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;
@@ -134,6 +152,7 @@ export async function uploadFileToServer(
     throw new ServerError(0, describeFetchError(e, timeoutMs));
   }
   noteServerReachable();
+  noteRenewedSession(res);
   if (!res.ok) {
     let detail = `附件上传失败 (HTTP ${res.status})`;
     try {
@@ -173,6 +192,7 @@ export async function serverFetchBinary(path: string, opts: ServerFetchOptions =
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 60000));
   }
   noteServerReachable();
+  noteRenewedSession(res);
 
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;
@@ -214,6 +234,7 @@ export async function serverUploadFile(
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 120000));
   }
   noteServerReachable();
+  noteRenewedSession(res);
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;
     try {
@@ -263,6 +284,7 @@ export async function serverUploadWithFields(
     throw new ServerError(0, describeFetchError(e, opts.timeoutMs ?? 120000));
   }
   noteServerReachable();
+  noteRenewedSession(res);
   if (!res.ok) {
     let detail = `服务端错误 (HTTP ${res.status})`;
     try {

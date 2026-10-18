@@ -11,6 +11,11 @@ JWT_SECRET = os.environ.get("BENEFIT_JWT_SECRET", "benefit-auth-dev-secret-chang
 JWT_ALGORITHM = "HS256"
 APP_TOKEN_TTL_HOURS = 24
 USER_TOKEN_TTL_HOURS = 72
+# ISSUE-188（2026-10-18）：learning-server 的 cloud_token 是**设备级、只存服务端**的凭证，
+# 用它向 /api/account/license 校验家长权益。原来沿用 72h 用户 token → app 连续用 3 天就必须
+# 重新扫码；而「VIP 到期后完成任务即恢复、无需重扫」也依赖它能长期可用。
+# 因此单独发长效 token（默认 365 天，env 可调）；网页会话 Cookie / me 页仍用 72h 用户 token。
+DEVICE_TOKEN_TTL_DAYS = int(os.environ.get("DEVICE_TOKEN_TTL_DAYS", "365"))
 
 
 def hash_secret(raw: str) -> str:
@@ -64,13 +69,19 @@ def create_app_token(app_id: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-def create_user_token(user_id: str) -> str:
+def create_user_token(user_id: str, ttl_hours: int | None = None) -> str:
     payload = {
         "sub": user_id,
         "typ": "user",
-        "exp": datetime.now(timezone.utc) + timedelta(hours=USER_TOKEN_TTL_HOURS),
+        "exp": datetime.now(timezone.utc)
+        + timedelta(hours=ttl_hours if ttl_hours is not None else USER_TOKEN_TTL_HOURS),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def create_device_token(user_id: str) -> str:
+    """设备级长效 token（learning-server 专用，只存服务端；免频繁扫码）。"""
+    return create_user_token(user_id, ttl_hours=DEVICE_TOKEN_TTL_DAYS * 24)
 
 
 ADMIN_TOKEN_TTL_HOURS = 8

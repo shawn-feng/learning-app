@@ -259,6 +259,20 @@ async function request(path: string, opts: HttpOptions, defaultTimeoutMs: number
   }
 
   noteServerReachableWeb();
+  // ISSUE-188：会话 JWT 滑动续签——服务端在剩余寿命 ≤ TTL/2 时通过该头回签；
+  // 写回本地 license（之后 HTTP/SSE 重连自动带新 token），与 Electron server-client 同语义。
+  try {
+    const renewed = res.headers.get("x-session-token");
+    if (renewed) {
+      const lic = getStoredLicense();
+      if (lic && lic.token !== renewed) {
+        lic.token = renewed;
+        saveLicense(lic);
+      }
+    }
+  } catch {
+    /* 头读取失败不影响请求 */
+  }
   if (!res.ok) await raiseHttpError(res);
   return res;
 }

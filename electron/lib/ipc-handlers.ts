@@ -113,12 +113,43 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   // ---- 服务端 agent 流桥（P4 薄客户端）----
   // 孩子/家长对话改走服务端 agent：pi:start_* 建立 SSE 流（事件桥回渲染层 pi:* 通道），
   // pi:prompt* 走 POST（await 到本轮结束），渲染层契约（pi:reply/pi:reply_end/pi:streaming/...）不变。
-  const agentStreams = new Map<string, { close: () => void }>();
+  const agentStreams = new Map<string, { close: () => void; closed: boolean }>();
   const sendToRenderer = (channel: string, payload: any) => {
     getMainWindow()?.webContents.send(channel, payload);
   };
+  /**
+   * ISSUE-187（2026-10-17 生产实证）：**死句柄必须能重建**。
+   *
+   * 旧实现只看 `agentStreams.has(key)` —— 而 openSse 在 401/403（session token 过期）时会把自身置为
+   * 终态 `closed=true`（此后永不重连、不报错）。死句柄继续占位 ⇒ 重新登录后也不会重建流：
+   *   服务端正常跑完一轮并落盘（POST /prompt 200），客户端一条事件都收不到 → 永远「等待模型返回…」；
+   *   退出重进时 /open 用新 token 拿历史 → 消息「又出现了」。
+   * 现象现场（201 日志）：13:07 一次 401（JWT 12:39 到期），此后 4 小时再没有一条 /stream 请求，
+   * 而 17:32~17:44 的 /prompt 全部 200（珊珊），家长流是 17:38 重新登录后新建的所以正常。
+   */
+  const dropClosedStream = (key: string): void => {
+    const existing = agentStreams.get(key);
+    if (!existing) return;
+    if (!existing.closed) return;
+    agentStreams.delete(key);
+    console.log(`[sse] ${key} 事件流已终止（登录态失效/已关闭），下次进入或发送时重建`);
+  };
+  /** 关闭并清空全部流（登录/登出/换账号）：避免旧 token 的流占位、也避免旧账号的事件串到新账号。 */
+  const resetAgentStreams = (reason: string): void => {
+    if (agentStreams.size === 0) return;
+    for (const h of agentStreams.values()) {
+      try {
+        h.close();
+      } catch {
+        /* 关闭失败忽略（句柄已死） */
+      }
+    }
+    agentStreams.clear();
+    console.log(`[sse] 已关闭全部事件流（${reason}），下次进入会话时按当前登录态重建`);
+  };
   const ensureChildStream = (childId: string) => {
     const key = `child:${childId}`;
+    dropClosedStream(key);
     if (agentStreams.has(key)) return;
     agentStreams.set(
       key,
@@ -136,6 +167,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   };
   const ensureParentStream = (kind: "parent" | "parent-content") => {
     const key = `parent:${kind}`;
+    dropClosedStream(key);
     if (agentStreams.has(key)) return;
     agentStreams.set(
       key,
@@ -235,6 +267,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("auth:register", async (_e, email: string, password: string) => {
     try {
       const license = await registerAndCache(email, password);
+      resetAgentStreams("注册并登录新账号");
       return { success: true, license };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -244,6 +277,9 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   ipcMain.handle("auth:login", async (_e, email: string, password: string) => {
     try {
       const license = await loginAndCache(email, password);
+      // ISSUE-187：登录拿到新 token → 丢弃旧 token 建立的事件流（含 401 后终态的死句柄），
+      // 下次进入会话/发送时按新 token 重建，否则重新登录后孩子端仍收不到任何事件。
+      resetAgentStreams("登录刷新 session token");
       // SPLIT M8-B/C：登录后预热 AGENTS 缓存 + 启动配置 2min 轮询
       void prefetchAgents().catch(() => {});
       startConfigSync();
@@ -265,10 +301,16 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle("auth:verify", async (_e, email: string, password: string) => {
-    return verifyParentPassword(email, password);
+    const r = await verifyParentPassword(email, password);
+    // 家长密码验证走的是同一套 loginAndCache（换发新 token）——同样要丢弃旧流句柄（ISSUE-187）
+    if (r.success) resetAgentStreams("家长密码验证并换发 token");
+    return r;
   });
 
   ipcMain.handle("auth:logout", async () => {
+    // ISSUE-187：登出即关闭全部 agent 事件流——旧 token 的流继续存活会在换账号登录后被
+    // ensure*Stream 复用（家长流的 key 恒为 parent:parent），把上一个账号的事件送到新账号。
+    resetAgentStreams("退出登录");
     clearCachedLicense();
     stopConfigSync();
     return { success: true };
@@ -280,6 +322,7 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null) {
     try {
       const result = await douyinLoginFlow();
       if (result.success) {
+        resetAgentStreams("抖音扫码登录");
         void prefetchAgents().catch(() => {});
         startConfigSync();
       }

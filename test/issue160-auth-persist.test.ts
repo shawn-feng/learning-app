@@ -94,13 +94,18 @@ describe("ISSUE-160 checkAuth 登录态持久化", () => {
     expect(getCachedLicense()).not.toBeNull();
   });
 
-  it("服务端 200 但 is_expired=true → 清凭证登出", async () => {
+  it("服务端 200 但 is_expired=true → 不判定为登录失效：保留凭证 + 返回 license/me_url（ISSUE-188 起走任务门禁）", async () => {
     seedLicense();
     fetchMock.mockResolvedValue({
       license: { parent_id: "p1", plan: "basic", max_children: 4, features: "[]", starts_at: "2026-08-25T00:00:00Z", expires_at: "2026-09-24T00:00:00Z", status: "expired", is_expired: true },
+      me_url: "https://auth.test/me?token=t",
     });
     const r = await checkAuth();
     expect(r.authenticated).toBe(false);
-    expect(getCachedLicense()).toBeNull();
+    expect(r.reason).toBe("license-expired");
+    expect(r.license?.is_expired).toBe(true);
+    expect(r.me_url).toBe("https://auth.test/me?token=t");
+    // ISSUE-188：凭证必须保留（门禁页要用 token 轮询；清了会永远卡在「等待检测中」）
+    expect(getCachedLicense()).not.toBeNull();
   });
 });

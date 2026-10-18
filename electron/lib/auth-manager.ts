@@ -40,13 +40,23 @@ export async function login(
   return { token: data.session_token, parent_id: data.license.parent_id };
 }
 
+/**
+ * 服务端 `/auth/license` 响应（ISSUE-188 起还带 benefit-auth 个人中心地址）。
+ * me_url 用于「VIP 到期 → 去完成任务」——带 benefit 用户 token，页面免登录，**不需要重新扫码**。
+ */
+export interface LicenseResponse {
+  license: Omit<License, "token" | "cached_at">;
+  me_url?: string;
+}
+
 export async function fetchLicense(
   sessionToken: string
-): Promise<Omit<License, "token" | "cached_at">> {
-  const data = await serverFetch<{ license: Omit<License, "token" | "cached_at"> }>("/auth/license", {
-    token: sessionToken,
-  });
-  return data.license;
+): Promise<LicenseResponse> {
+  const data = await serverFetch<{ license: Omit<License, "token" | "cached_at">; me_url?: string }>(
+    "/auth/license",
+    { token: sessionToken }
+  );
+  return { license: data.license, me_url: data.me_url };
 }
 
 // 向服务端校验 session / 授权有效期（服务端内部向公网刷新），返回权威结果。
@@ -55,10 +65,10 @@ export async function verifyLicenseWithCloud(
   token: string
 ): Promise<{ valid: boolean; max_children: number } | null> {
   try {
-    const data = await serverFetch<{ license: License }>("/auth/license", { token });
+    const { license } = await fetchLicense(token);
     return {
-      valid: data.license.is_expired !== true,
-      max_children: typeof data.license.max_children === "number" ? data.license.max_children : 0,
+      valid: license.is_expired !== true,
+      max_children: typeof license.max_children === "number" ? license.max_children : 0,
     };
   } catch (err) {
     if (err instanceof ServerError && err.status === 401) {
@@ -131,7 +141,7 @@ export async function loginAndCache(
   password: string
 ): Promise<License> {
   const { token, parent_id } = await login(email, password);
-  const licenseData = await fetchLicense(token);
+  const { license: licenseData } = await fetchLicense(token);
   const license: License = {
     ...licenseData,
     email,
@@ -148,7 +158,7 @@ export async function registerAndCache(
   password: string
 ): Promise<License> {
   const { token, parent_id } = await register(email, password);
-  const licenseData = await fetchLicense(token);
+  const { license: licenseData } = await fetchLicense(token);
   const license: License = {
     ...licenseData,
     email,
@@ -193,15 +203,25 @@ export async function verifyParentPassword(
   }
 }
 
-export async function checkAuth(): Promise<{ authenticated: boolean; license: License | null }> {
+/** `checkAuth` 的结果（ISSUE-188 扩展：区分"没登录"与"权益到期"，后者走任务门禁而非登录页）。 */
+export interface AuthCheckResult {
+  authenticated: boolean;
+  license: License | null;
+  /** benefit-auth 个人中心地址（VIP 到期时「去完成任务」用；不需要重新扫码） */
+  me_url?: string;
+  /** 未通过的原因：no-license=无凭证；license-expired=权益到期（保留凭证）；session-invalid=会话失效 */
+  reason?: "no-license" | "license-expired" | "session-invalid" | "no-server" | "offline-ok";
+}
+
+export async function checkAuth(): Promise<AuthCheckResult> {
   const license = getCachedLicense();
-  if (!license) return { authenticated: false, license: null };
+  if (!license) return { authenticated: false, license: null, reason: "no-license" };
 
   // SPLIT：未配置服务端地址 → 一律视为未登录（回到带配置区的登录页）。
   // 否则用户被旧凭证直接带进主页，而主页/家长中心又依赖服务端验证，形成死循环。
   // 本地凭证不删除，配置好服务端地址后重新登录即恢复。
   if (!getServerUrl()) {
-    return { authenticated: false, license: null };
+    return { authenticated: false, license, reason: "no-server" };
   }
 
   // ISSUE-160：不再凭本地缓存的 expires_at 硬登出——本地缓存可能滞后于云端续期
@@ -211,26 +231,35 @@ export async function checkAuth(): Promise<{ authenticated: boolean; license: Li
   // 401（session token 失效 / 云端判定授权失效）→ 清凭证回登录页；网络错误 → 离线降级放行。
   try {
     const data = await fetchLicense(license.token);
+    // ISSUE-188：serverFetch 可能已通过 `X-Session-Token` 采纳了滑动续签的新 token——
+    // 这里必须用**缓存里的最新值**，否则会用旧 token 覆盖新 token（下次请求又变回旧的）。
+    const latestToken = getCachedLicense()?.token ?? license.token;
     const fresh: License = {
-      ...data,
+      ...data.license,
       email: license.email,
-      token: license.token,
+      token: latestToken,
       cached_at: new Date().toISOString(),
     };
     if (fresh.is_expired) {
-      // 待解锁（任务门禁 TaskGate 轮询）是预期状态：保留本地凭证，权益到手后
-      // 下一轮轮询即可自动放行。不能清凭证——清了之后门禁页没有 token 可查，
-      // 会永远卡在「等待检测中」（2026-10-08 实测 bug）。
-      return { authenticated: false, license: fresh };
+      // ISSUE-188：权益到期 ≠ 登录失效。**保留本地凭证并缓存最新 license**（含 expires_at/email），
+      // 渲染层据此进入「任务门禁」而不是登录页；完成任务后轮询自动放行，无需重新扫码。
+      // 不能清凭证——清了之后门禁页没有 token 可查，会永远卡在「等待检测中」（2026-10-08 实测 bug）。
+      cacheLicense(fresh);
+      return {
+        authenticated: false,
+        license: fresh,
+        me_url: data.me_url,
+        reason: "license-expired",
+      };
     }
     cacheLicense(fresh);
-    return { authenticated: true, license: fresh };
+    return { authenticated: true, license: fresh, me_url: data.me_url };
   } catch (err) {
     if (err instanceof ServerError && err.status === 401) {
       clearCachedLicense();
-      return { authenticated: false, license: null };
+      return { authenticated: false, license: null, reason: "session-invalid" };
     }
     // 连不上服务端：离线降级，信任本地、保留登录态（不因网络问题把已登录用户踢出）
-    return { authenticated: true, license };
+    return { authenticated: true, license, reason: "offline-ok" };
   }
 }

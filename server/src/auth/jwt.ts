@@ -5,6 +5,8 @@ export interface SessionPayload {
   parent_id: string;
   email: string;
   plan: string;
+  /** 过期时间（秒级时间戳）——verifySession 回填，供滑动续签判断剩余寿命 */
+  exp?: number;
 }
 
 export function signSession(
@@ -24,5 +26,6 @@ export function verifySession(token: string, secret: string): SessionPayload {
     parent_id: String(decoded.parent_id),
     email: String(decoded.email ?? ""),
     plan: String(decoded.plan ?? ""),
+    ...(typeof decoded.exp === "number" ? { exp: decoded.exp } : {}),
   };
 }

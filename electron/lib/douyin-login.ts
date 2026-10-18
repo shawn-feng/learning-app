@@ -16,7 +16,7 @@ import crypto from "crypto";
 import { BrowserWindow } from "electron";
 import { getCloudApiBase } from "./config";
 import { serverFetch, ServerError } from "./server-client";
-import { activateParentSession, cacheLicense, type License } from "./auth-manager";
+import { activateParentSession, cacheLicense, fetchLicense, type License } from "./auth-manager";
 
 // benefit-auth「学习伙伴」应用 app_id（OAuth client_id，公开标识非机密；env 可覆盖）
 const BENEFIT_CLIENT_ID = process.env.BENEFIT_CLIENT_ID ?? "app_2cd2b7263372a407";
@@ -163,11 +163,9 @@ export async function douyinLoginFlow(): Promise<DouyinLoginResult> {
       email: string;
       benefit_user_token: string;
     }>("/auth/douyin", { method: "POST", body: { code, redirect_uri: redirectUri } });
-    const licenseData = await serverFetch<{
-      license: Omit<License, "token" | "cached_at">;
-    }>("/auth/license", { token: data.session_token });
+    const { license: licenseData, me_url: licenseMeUrl } = await fetchLicense(data.session_token);
     const license: License = {
-      ...licenseData.license,
+      ...licenseData,
       email: data.email,
       token: data.session_token,
       cached_at: new Date().toISOString(),
@@ -181,7 +179,10 @@ export async function douyinLoginFlow(): Promise<DouyinLoginResult> {
       license,
       email: data.email,
       benefit_user_token: data.benefit_user_token,
-      me_url: `${getCloudApiBase()}/me?token=${encodeURIComponent(data.benefit_user_token)}`,
+      // ISSUE-188：服务端已按 benefit token 拼好 me_url；旧服务端没有该字段时本地兜底
+      me_url:
+        licenseMeUrl ||
+        `${getCloudApiBase()}/me?token=${encodeURIComponent(data.benefit_user_token)}`,
     };
   } catch (e) {
     return fail(e instanceof ServerError ? e.message : (e as Error).message);

@@ -14,6 +14,7 @@ import {
   type LicenseData,
 } from "../auth/proxy.js";
 import { signSession, verifySession } from "../auth/jwt.js";
+import { buildMeUrl } from "../auth/me-url.js";
 import { ensureParentTokenHubKey } from "../auth/tokenhub.js";
 
 interface AuthDeps {
@@ -270,11 +271,14 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
     }
 
     const row = deps.db
-      .prepare("SELECT cloud_token, license_json FROM parents WHERE id = ?")
-      .get(payload.parent_id) as { cloud_token: string; license_json: string } | undefined;
+      .prepare("SELECT cloud_token, license_json, benefit_user_token FROM parents WHERE id = ?")
+      .get(payload.parent_id) as
+      | { cloud_token: string; license_json: string; benefit_user_token?: string | null }
+      | undefined;
     if (!row) {
       return reply.code(401).send({ error: "家长不存在，请重新登录" });
     }
+    const meUrl = buildMeUrl(deps.config.upstreamBase, row.benefit_user_token);
 
     // 尝试向公网刷新授权；401 = 公网判定失效 → 强制重登；网络错误 → 用本地缓存降级
     try {
@@ -285,14 +289,15 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
       deps.db
         .prepare("UPDATE parents SET license_json = ?, updated_at = ? WHERE id = ?")
         .run(JSON.stringify(license), nowLocalIso(), payload.parent_id);
-      return { license };
+      // ISSUE-188：附带个人中心地址——VIP 到期时客户端直接展示「去完成任务」，无需重新扫码登录
+      return { license, me_url: meUrl };
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401) {
           return reply.code(401).send({ error: "授权已失效，请重新登录" });
         }
         const cached = row.license_json ? (JSON.parse(row.license_json) as LicenseData) : null;
-        if (cached) return { license: cached, degraded: true };
+        if (cached) return { license: cached, degraded: true, me_url: meUrl };
       }
       return reply.code(502).send({ error: "公网认证服务不可达且无本地缓存" });
     }

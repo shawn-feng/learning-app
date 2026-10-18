@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from ..database import get_db
 from ..deps import get_current_user
-from ..security import create_user_token, decode_token, hash_password, verify_password
+from ..security import create_device_token, decode_token, hash_password, verify_password
 
 router = APIRouter(prefix="/api/account", tags=["legacy-cloud"])
 TZ = ZoneInfo("Asia/Shanghai")
@@ -133,7 +133,7 @@ async def douyin_login(req: DouyinLoginRequest, db=Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return {
-        "token": create_user_token(user["id"]),
+        "token": create_device_token(user["id"]),
         "parent_id": await _legacy_parent_id(db, user),
         "email": user.get("email") or "",
         "is_new": False,
@@ -161,7 +161,7 @@ async def douyin_code_login(req: DouyinCodeLoginRequest, db=Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return {
-        "token": create_user_token(user["id"]),
+        "token": create_device_token(user["id"]),
         "parent_id": await _legacy_parent_id(db, user),
         "email": user.get("email") or "",
         "benefit_user_id": user["id"],

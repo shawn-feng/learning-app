@@ -193,6 +193,15 @@ export function parseSseChunk(buffer: string): { events: AgentEvent[]; rest: str
 export interface StreamHandle {
   /** 停止订阅（关闭连接与读循环）。 */
   close: () => void;
+  /**
+   * 是否已**终态**（手动 close()，或 401/403 登录态失效后 openSse 自行置位）。
+   *
+   * ⚠️ 2026-10-17（ISSUE-187）必须暴露给上层 ensure*Stream：旧实现只返回 close，
+   * 上层只能靠 `agentStreams.has(key)` 判断，于是 401 后的死句柄永久占位、
+   * 重新登录也不会重建 → 孩子端「发消息只进不出，永远等待模型返回，
+   * 退出重进才看到历史」。Web 侧（web/src/shim/core/sse.ts）早有 closed 判据，Electron 漏了。
+   */
+  readonly closed: boolean;
 }
 
 /**
@@ -293,7 +302,11 @@ function openSse(buildUrl: () => string, onEvent: (e: AgentEvent) => void, onErr
         const res = await fetch(url, { signal: ac.signal, headers: { Accept: "text/event-stream" } });
         if (!res.ok || !res.body) {
           if (res.status === 401 || res.status === 403) {
-            // 登录态失效：重连无意义，交由上层提示（渲染层会弹错误气泡）
+            // 登录态失效：重连无意义。置终态并通知上层——上层（ipc-handlers 的 ensure*Stream）
+            // 必须能在下次进入会话/发送时据此重建，否则本进程内该会话的事件流永久静默（ISSUE-187）。
+            console.log(
+              `[sse] 事件流连接被拒（HTTP ${res.status}）：登录态失效，流终止（下次进入/发送时由 ensure*Stream 重建）`
+            );
             onError?.(`流连接失败（HTTP ${res.status}）：登录态可能已失效，请重新登录`);
             clearStall();
             closed = true;
@@ -336,6 +349,10 @@ function openSse(buildUrl: () => string, onEvent: (e: AgentEvent) => void, onErr
       clearStall();
       if (retryTimer) clearTimeout(retryTimer);
       currentAc?.abort();
+    },
+    // 终态判据：401/403 或手动 close 后为 true（见 StreamHandle.closed 注释）
+    get closed() {
+      return closed;
     },
   };
 }
