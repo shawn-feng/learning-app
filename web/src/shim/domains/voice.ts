@@ -20,7 +20,7 @@
  *   - piGetTtsConfig/piSetTtsConfig：**不在此域**——models.ts（Phase 2）已实现且共用
  *     localStorage "web.ttsConfig" 存储；本域若重复实现会因 install 展开顺序覆盖它。
  * Web 专属扩展方法（Electron preload 无此签名面，渲染层一律 window.api.__web 守卫后调用）：
- *   voiceSpeak / voiceSpeakCancel / voiceDictationStart / voiceDictationStop。
+ *   voiceSpeak / voiceSpeakCancel / voiceDictationStart / voiceDictationStop / voiceDictationDiscard。
  */
 import { http } from "../core/server-fetch";
 import { speak, cancelSpeak, isSpeechSynthesisSupported, type SpeakOptions } from "../voice/tts";
@@ -89,6 +89,15 @@ export const voiceDomain = {
 
   /** voiceDictationStop: () => Promise<{text, error}>（Web 专属扩展）：收尾听写会话并落账。 */
   voiceDictationStop: (): Promise<{ text: string; error: string }> => stopDictation(),
+
+  /**
+   * voiceDictationDiscard: () => Promise<void>（Web 专属扩展，ISSUE-189）。
+   * 录音音量不达标被 ASR 前置门拦下时调用：听写结果账本是「一次性消费」，不主动清掉会串到
+   * 下一次 voiceTranscribe（旧文本被当成本次识别结果）。与 voiceTranscribe 同源消费、丢弃即可。
+   */
+  voiceDictationDiscard: async (): Promise<void> => {
+    consumeDictationResult();
+  },
 
   // sceneVoiceSave（场景语音球落盘，voice:scene_save）已随场景会话下线删除（2026-09-25）。
 

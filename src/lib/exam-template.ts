@@ -32,8 +32,9 @@ export function buildExamHtml(
   title: string,
   /** 流式出题（ISSUE-049）：本场考核总课程数；>0 表示题目会由宿主在后台逐门生成后增量送达 */
   pendingCourses = 0,
-  /** ISSUE-183：录音音量校验规则。minNorm=考核录音最低平均音量（0-100 归一分，0=不校验）；
-   * 仅口语/背诵题生效——每段录完即校平均音量，不达标该段不入答案、原地重录（无次数上限）。 */
+  /** ISSUE-183/189：录音音量校验规则。minNorm=录音最低平均音量（0-100 归一分，0=不校验）；
+   * 全题型生效——口语/背诵题每段录完即校（不达标该段不入答案、原地重录，无次数上限），
+   * 文字题同样先校、不达标不送 ASR（ISSUE-189：声音太小不浪费识别、孩子听得清才识别）。 */
   volumeRule?: { minNorm?: number }
 ): string {
   const dataJson = JSON.stringify({ title, subject, questions, pendingCourses, volumeRule: volumeRule || { minNorm: 0 } })
@@ -80,7 +81,7 @@ export function buildExamHtml(
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(231,76,60,.5)}70%{box-shadow:0 0 0 14px rgba(231,76,60,0)}100%{box-shadow:0 0 0 0 rgba(231,76,60,0)}}
   .rec-time{font-size:22px; color:var(--rec); font-variant-numeric:tabular-nums; min-width:64px}
   .rec-status{font-size:20px; color:var(--warn); min-height:28px; margin:10px 0 0;}
-  /* ISSUE-183：录音音量可视化（仅口语题显示）：实时音量条 + 达标线 + 录完平均音量提示 */
+  /* ISSUE-183/189：录音音量可视化（家长开启校验即显示）：实时音量条 + 达标线 + 录完平均音量提示 */
   .vol-wrap{margin-top:12px; display:none}
   .vol-top{display:flex; align-items:center; gap:12px}
   .vol-label{font-size:18px; color:var(--muted); white-space:nowrap}
@@ -175,7 +176,7 @@ window.EXAM_DATA = ${dataJson};
   var media = null, chunks = [], recStart = 0;
   var transcribing = false, recTimer = null;
   var recQid = null; // 正在录音的题 id（onstop 用它定位，防录音停止与切题竞态存错题）
-  // ===== ISSUE-183：录音音量校验（仅口语/背诵题）=====
+  // ===== ISSUE-183（口语题判分门）+ ISSUE-189（文字题 ASR 门）：录音音量校验 =====
   // ⚠️ 公式与服务端 server/src/assessment/volume.ts 完全一致（iframe 独立 HTML 无法 import，两边改动必须同步）：
   //   解码后 PCM 全程 RMS → norm = clamp(round((20·log10(rms)+60)×100/60), 0, 100)（-60 dBFS→0，0 dBFS→100）
   var VOL = D.volumeRule || {};
@@ -204,9 +205,9 @@ window.EXAM_DATA = ${dataJson};
       el.textContent = "太小了听不清，大声读（本次 " + n + "，需要 " + volMin + "）";
     }
   }
-  // 当前题的音量条可见性：口语题 + 家长开启校验才显示（文字题/关闭时零改动）
+  // 当前题的音量条可见性：家长开启校验即显示（ISSUE-183 口语题判分门 + ISSUE-189 文字题 ASR 门）
   function volPaintArea(q){
-    var on = volMin > 0 && !!q && !!q.questionType;
+    var on = volMin > 0 && !!q;
     $("volWrap").style.display = on ? "block" : "none";
     if(on) $("volLine").style.left = volMin + "%";
   }
@@ -425,13 +426,15 @@ window.EXAM_DATA = ${dataJson};
     var isSpeech = !!q.questionType;
     var loudHint = isSpeech && volMin > 0 ? "声音要响亮一点哦——读得太轻不算数，录完看下面的声音大小。"
       : "";
+    // ISSUE-189：文字题也要过音量关（声音太小不送 ASR 识别），题干同样先提醒
+    var asrLoudHint = !isSpeech && volMin > 0 ? "🔊 声音要响亮一点哦——太轻会听不清（这次就不会送去识别），录完看下面的声音大小。" : "";
     $("qHint").textContent = isSpeech
       ? (isReciteBlind
           ? "🧠 这是一道背诵题：先在脑子里回忆原文，再按住麦克风背诵，松手即停。可分段录好几遍拼成完整一篇；背错了只需再背一遍，不用删前面的录音，提交后自动评分。" + loudHint
           : "🎤 按住麦克风朗读/跟读下面的原文，松手即停。可分段录好几遍拼接；读错了只需再读一遍，不用删前面的录音，提交后自动评分。" + loudHint)
       : (opts.length
-          ? "👀 看下面的选项，按住麦克风说出你选哪一个（例如「选 B」），也可以直接把答案内容说出来；松开后自动识别。"
-          : "🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。");
+          ? "👀 看下面的选项，按住麦克风说出你选哪一个（例如「选 B」），也可以直接把答案内容说出来；松开后自动识别。" + asrLoudHint
+          : "🎤 按住麦克风说话来回答这道题，松开后自动识别；可以说好几次，会拼在一起。想改就直接说新的（如“我刚才说错了…”）。" + asrLoudHint);
     $("asrLabel").style.display = isSpeech ? "none" : "";
     $("asr").style.display = isSpeech ? "none" : "";
     // ISSUE-183：音量条按题显隐（口语题 + 家长开启校验），切题清空上一题的提示与残影
@@ -511,15 +514,16 @@ window.EXAM_DATA = ${dataJson};
         var fr = new FileReader();
         fr.onload = function(){
           var dataUrl = String(fr.result);
-          if(q.questionType && volMin > 0){
-            // ISSUE-183：口语/背诵题每段录完即校平均音量（解码 PCM 整段 RMS）。
-            // 不达标 → 该段不入答案（=这题还没答）、立即提示原地重录，无次数上限；
+          if(volMin > 0){
+            // ISSUE-183 + ISSUE-189：每段录完即校平均音量（解码 PCM 整段 RMS）。
+            // ① 口语/背诵题：不达标该段不入答案（=这题还没答）、立即提示原地重录，无次数上限；
+            // ② 文字题：不达标**不发 exam:asr**（不送识别服务），提示重说——声音够大才去识别。
             // 达标段才拼接进答案，保证送评音频平均音量必然达标（合并 RMS ≥ 各段最小值）。
             volMeasureBlob(blob).then(function(n){
               volPaintBar(n);
               if(n < volMin){
                 volShowMsg(n, false);
-                $("recStatus").textContent = "这条声音太小，不算数——请大声一点再读一遍";
+                $("recStatus").textContent = "这条声音太小，不算数——请大声一点再说一遍";
                 paintState(); // 按钮恢复可录，直接重录
                 return;
               }
@@ -538,11 +542,11 @@ window.EXAM_DATA = ${dataJson};
       recQid = q.id;
       setBtn("松开结束", "holding");
       $("recTime").textContent = "00:00";
-      if(volMin > 0 && q.questionType){
+      if(volMin > 0){
         $("volMsg").className = "vol-msg";
         $("volMsg").textContent = "";
       }
-      volStartMeter(stream); // 录音中实时音量条（仅口语题 + 开启校验时）
+      volStartMeter(stream); // 录音中实时音量条（家长开启校验即显示，全题型）
       recTimer = setInterval(function(){
         var s = Math.floor((Date.now()-recStart)/1000);
         $("recTime").textContent = String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");

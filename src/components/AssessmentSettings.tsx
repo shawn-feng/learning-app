@@ -234,17 +234,17 @@ export default function AssessmentSettings() {
         </div>
       ))}
 
-      {/* ISSUE-183：考核朗读/背诵规则（家长可配；随「保存」一起提交） */}
+      {/* ISSUE-183/189：录音音量校验（考核 + 语音输入通用，家长可配；随「保存」一起提交） */}
       <div style={{ marginTop: 24, borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
-        <h3 style={{ margin: "0 0 4px", fontSize: 16 }}>考核朗读/背诵</h3>
+        <h3 style={{ margin: "0 0 4px", fontSize: 16 }}>录音音量与朗读评分</h3>
         <p className="desc" style={{ marginBottom: 14 }}>
-          考核里的朗读/背诵题规则：录音音量不达标算没答、要求重录（让孩子大声朗读，减轻声音小导致的评分误差）；
-          评分改用各维度（准确度/流利度/完整度）平均分。
+          录音音量不达标时：考核里的朗读/背诵题算没答、要求重录；聊天语音输入与音频转写不送识别、提示重说——
+          让孩子大声说，减轻声音小导致的评分/识别误差。评分改用各维度（准确度/流利度/完整度）平均分。
         </p>
 
         <div style={{ marginBottom: 14 }}>
           <label style={{ display: "block", fontSize: 13, marginBottom: 4, fontWeight: 500 }}>
-            考核录音最低平均音量：<b>{minVolumeNorm > 0 ? minVolumeNorm : "不校验（关闭）"}</b>
+            录音最低平均音量：<b>{minVolumeNorm > 0 ? minVolumeNorm : "不校验（关闭）"}</b>
           </label>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <input
@@ -259,8 +259,9 @@ export default function AssessmentSettings() {
             <span style={{ fontSize: 12, color: "#999" }}>0 = 不校验</span>
           </div>
           <p style={{ fontSize: 12, color: "#999", margin: "4px 0 0" }}>
-            录音平均音量低于此值（0-100 归一分）时，孩子端会提示重录、该题不送评分（无次数限制）；
-            服务端也会对提交的录音再校一次。默认 42（约 -35dBFS），可按孩子实际录音情况调低/调高或关闭。
+            录音平均音量低于此值（0-100 归一分）时，孩子端所有录音（考核朗读/背诵、聊天按住说话、音频转写）
+            都会提示重说、不送识别/不算答；服务端对考核提交的录音再校一次。
+            默认 42（约 -35dBFS），可按孩子实际录音情况调低/调高或关闭。
           </p>
         </div>
 

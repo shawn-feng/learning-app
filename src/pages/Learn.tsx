@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { LucideIcon } from "lucide-react";
-import { PanelRightOpen, PanelRightClose, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell, BookMarked, FolderOpen } from "lucide-react";
+import { PanelRightOpen, PanelRightClose, Gauge, Type, CalendarClock, Settings, KeyRound, LogOut, BookOpen, BarChart3, MessageSquare, ClipboardList, ClipboardCheck, Bell, BookMarked, FolderOpen, Mic } from "lucide-react";
 import ChatWindow, { type ChatMessage, type ToolCallState, type SendOptions, type ImageAttachment, type TextFileAttachment, nowTime } from "../components/ChatWindow";
 import MaterialsPanel, { kindFromPath, type Material, type MaterialKind } from "../components/MaterialsPanel";
 import LearningDashboard from "../components/LearningDashboard";
 import TodoModal from "../components/TodoModal";
 import MistakeBookModal from "../components/MistakeBookModal";
 import MyRemindersModal from "../components/MyRemindersModal";
+import VolumeCheckModal from "../components/VolumeCheckModal";
 import FilesPanel from "../components/FilesPanel";
 import ExamView from "../components/ExamView";
 import { useChatPanel } from "../hooks/useChatPanel";
@@ -401,6 +402,8 @@ export default function Learn({ child, onExit }: Props) {
   const [showReminders, setShowReminders] = useState(false);
   // ISSUE-131 P1：孩子端文件管理弹框（根=自己工作区）
   const [showFiles, setShowFiles] = useState(false);
+  // ISSUE-189：孩子端「声音检测」弹框（录一段看音量够不够大；入口=左侧图标栏 🎤）
+  const [showVolumeCheck, setShowVolumeCheck] = useState(false);
   // 学习考核（EXAM-REQUIREMENTS.md）：锁定考试视图开关（true 时全屏覆盖，考试中不可退出）
   const [examOpen, setExamOpen] = useState(false);
   // 待考核科目数（周期到点标红提醒，不强制打断；0 = 无）
@@ -1158,6 +1161,15 @@ export default function Learn({ child, onExit }: Props) {
               <currentView.icon size={18} />
             </button>
 
+            {/* ISSUE-189：声音检测——录一段看音量够不够大（达标线=送 ASR 的最低平均音量） */}
+            <button
+              className="sidebar-icon-btn sidebar-icon-btn-voice"
+              title="声音检测（看看声音够不够大）"
+              onClick={() => setShowVolumeCheck(true)}
+            >
+              <Mic size={20} />
+            </button>
+
             <button
               className="sidebar-icon-btn"
               title={`朗读语速 ${RATE_OPTIONS.find((o) => o.value === rate)?.display || "1.0x"}`}
@@ -1403,6 +1415,8 @@ export default function Learn({ child, onExit }: Props) {
 
       {showMistakes && <MistakeBookModal childId={child.childId} onClose={() => setShowMistakes(false)} />}
       {showFiles && <FilesPanel childId={child.childId} onClose={() => setShowFiles(false)} />}
+      {/* ISSUE-189：声音检测弹框（孩子录一段 → 实时音量条 → 平均音量达标结论） */}
+      {showVolumeCheck && <VolumeCheckModal onClose={() => setShowVolumeCheck(false)} />}
       {showTodo && (
         <TodoModal
           childId={child.childId}

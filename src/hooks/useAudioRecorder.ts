@@ -4,6 +4,8 @@ import { useRef, useState } from "react";
 // Web（window.api.__web，Phase 5）：start/stop 时并行驱动 shim 的 SpeechRecognition 听写会话
 // （voiceDictationStart/Stop），录音 blob 仍由 MediaRecorder 产出——播放/上传/合并链路不变；
 // 识别文本由 voiceTranscribe 消费（web/src/shim/voice/stt.ts）。Electron 路径零改动。
+// ISSUE-189：额外暴露 streamRef——录音中实时音量条（createVolumeMeter）复用同一条麦克风流，
+// 不再二次 getUserMedia（避免部分设备/浏览器同时开两条流的权限与增益差异）。
 export function useAudioRecorder() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -11,6 +13,8 @@ export function useAudioRecorder() {
   const recordingRef = useRef(false);
   // 标记录音被取消（用户松手时 getUserMedia 还没完成）
   const cancelledRef = useRef(false);
+  // 当前录音的麦克风流（供实时音量条使用；停止/失败时置空）
+  const streamRef = useRef<MediaStream | null>(null);
   const [recording, setRecording] = useState(false);
 
   async function start(): Promise<void> {
@@ -23,10 +27,12 @@ export function useAudioRecorder() {
       if (cancelledRef.current) {
         // 用户已松手（录音被取消）：释放流，不创建 recorder，避免「幽灵录音」
         stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
         recordingRef.current = false;
         setRecording(false);
         return;
       }
+      streamRef.current = stream;
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : "audio/webm";
@@ -36,6 +42,7 @@ export function useAudioRecorder() {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
       recorder.onerror = () => {
+        streamRef.current = null;
         recordingRef.current = false;
         setRecording(false);
       };
@@ -47,6 +54,7 @@ export function useAudioRecorder() {
         Promise.resolve((window as any).api.voiceDictationStart?.()).catch(() => {});
       }
     } catch (e) {
+      streamRef.current = null;
       recordingRef.current = false;
       setRecording(false);
       throw e;
@@ -70,6 +78,7 @@ export function useAudioRecorder() {
           type: recorder.mimeType || "audio/webm",
         });
         recorder.stream.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
         mediaRecorderRef.current = null;
         recordingRef.current = false;
         setRecording(false);
@@ -87,5 +96,5 @@ export function useAudioRecorder() {
     });
   }
 
-  return { recording, start, stop };
+  return { recording, start, stop, streamRef };
 }

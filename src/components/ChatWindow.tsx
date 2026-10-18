@@ -2,6 +2,15 @@ import { useState, useRef, useEffect, useCallback, useReducer } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
+import { useVolumeThreshold } from "../hooks/useVolumeThreshold";
+import {
+  createVolumeMeter,
+  isVolumeTooLow,
+  measureBlobVolumeNorm,
+  volumeBarColor,
+  volumeVerdict,
+  type VolumeMeter,
+} from "../lib/audio-volume";
 import { History, Brain, Volume2, Square, Play, X, Paperclip, Mic, Send } from "lucide-react";
 import IconButton from "./IconButton";
 import { useWordLookup, WordLookupOverlay, WordLookupBubble } from "./WordLookupOverlay";
@@ -257,7 +266,25 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   // 展开显示「思考过程 + 工具调用」的消息 id 集合
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const { recording, start, stop } = useAudioRecorder();
+  const { recording, start, stop, streamRef } = useAudioRecorder();
+  // ISSUE-189：达标线=家长端「录音最低平均音量」（assessment_config.minVolumeNorm，0=不校验）；
+  // 录音中实时音量条 + 松开后 ASR 前置拦截都用这条线。
+  const minNorm = useVolumeThreshold();
+  // ISSUE-189：录音中实时音量条（复用录音流，逐帧 RMS 上色）——孩子边录边看声音够不够大；
+  // 松开后再按整段平均音量做 ASR 前置拦截（不达标不发送给识别服务）。
+  const meterRef = useRef<VolumeMeter | null>(null);
+  const meterFillRef = useRef<HTMLDivElement | null>(null);
+  const meterRafRef = useRef(0);
+  // 按下状态同步标记：抬手早于 getUserMedia 完成时不要启动音量表（否则表停不下来）
+  const pressActiveRef = useRef(false);
+  // ISSUE-189：卸载时关掉音量表（AudioContext 不关会一直占着音频节点）
+  useEffect(() => {
+    return () => {
+      if (meterRafRef.current) cancelAnimationFrame(meterRafRef.current);
+      meterRef.current?.close();
+      meterRef.current = null;
+    };
+  }, []);
   // Web 专属：agent SSE 流断连状态（Electron preload 无 onPiSseState → 可选调用即零分支，横条永不显示）
   const [sseDown, setSseDown] = useState(false);
   useEffect(() => {
@@ -575,6 +602,15 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     setAudioTranscribeState((s) => ({ ...s, [uid]: { busy: true } }));
     try {
       const buf = await file.arrayBuffer();
+      // ISSUE-189：手动转写同样先校平均音量（上传/拖入的音频也算录音环节）——太小不送识别服务
+      const volumeNorm = await measureBlobVolumeNorm(new Blob([buf], { type: file.type || "audio/webm" }));
+      if (isVolumeTooLow(volumeNorm, minNorm)) {
+        setAudioTranscribeState((s) => ({
+          ...s,
+          [uid]: { error: `声音太小（本次 ${volumeNorm}，需要 ${minNorm}），没有送去识别` },
+        }));
+        return;
+      }
       const r: any = await window.api.voiceTranscribe(buf);
       if (r.success) {
         setInput((prev) => (prev ? prev + r.text : r.text));
@@ -698,6 +734,40 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     }
   }
 
+  // ISSUE-189：录音实时音量条的启停（AnalyserNode 逐帧 RMS → 0-100 归一分上色）
+  function stopLiveMeter() {
+    if (meterRafRef.current) {
+      cancelAnimationFrame(meterRafRef.current);
+      meterRafRef.current = 0;
+    }
+    meterRef.current?.close();
+    meterRef.current = null;
+    const fill = meterFillRef.current;
+    if (fill) {
+      fill.style.width = "2%";
+      fill.style.background = volumeBarColor(0, minNorm);
+    }
+  }
+
+  function startLiveMeter() {
+    const stream = streamRef.current;
+    if (!stream || meterRef.current) return;
+    const meter = createVolumeMeter(stream);
+    meterRef.current = meter;
+    const tick = () => {
+      const current = meterRef.current;
+      if (!current) return;
+      const fill = meterFillRef.current;
+      if (fill) {
+        const n = current.getNorm();
+        fill.style.width = `${Math.max(2, n)}%`;
+        fill.style.background = volumeBarColor(n, minNorm);
+      }
+      meterRafRef.current = requestAnimationFrame(tick);
+    };
+    meterRafRef.current = requestAnimationFrame(tick);
+  }
+
   async function handlePressStart() {
     if (disabled || transcribing) return;
     // ISSUE-010：未开启语音时点按给引导提示（按钮始终显示，不再静默消失）
@@ -706,14 +776,21 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
       return;
     }
     setVoiceError("");
+    pressActiveRef.current = true;
     try {
       await start();
+      // 抬手早于 getUserMedia 完成：录音已被取消，不要再起音量表
+      if (!pressActiveRef.current) return;
+      startLiveMeter();
     } catch (e: any) {
+      pressActiveRef.current = false;
       setVoiceError("无法访问麦克风");
     }
   }
 
   async function handlePressEnd() {
+    pressActiveRef.current = false;
+    stopLiveMeter();
     const blob = await stop();
     // 无活跃录音（已停止过/从未开始）：静默返回，不提示
     if (!blob) return;
@@ -721,6 +798,21 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
       // 空/极短的 webm 容器（无音频帧，只有 EBML 头，Chromium 极短录音常见），
       // ffmpeg 无法解析（Invalid data）。阈值取 2000：有效录音（≥250ms opus）远超此值。
       setVoiceError("录音太短，请按住说完整的一句话再松手");
+      return;
+    }
+    // ISSUE-189：ASR 前置音量门——整段解码后算平均音量，不达标**不调用识别服务**，
+    // 直接提示重说（测不出音量时放行，不因解码失败卡住孩子；与考核口径同一公式）。
+    const volumeNorm = await measureBlobVolumeNorm(blob);
+    if (isVolumeTooLow(volumeNorm, minNorm)) {
+      // Web：并行听写结果是一次性消费账本，本次不调 voiceTranscribe 就主动丢弃，防串到下一次识别
+      try {
+        await (window as any).api?.voiceDictationDiscard?.();
+      } catch {
+        /* 丢弃失败忽略（Electron 无此方法） */
+      }
+      setVoiceError(
+        `${volumeVerdict(volumeNorm, minNorm).text}——这次没有送去识别，请靠近麦克风大声再说一遍`
+      );
       return;
     }
     setTranscribing(true);
@@ -1123,6 +1215,25 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
                 </button>
               </div>
             ))}
+        </div>
+      )}
+
+      {/* ISSUE-189：录音中实时音量条（达标线=家长配置的录音最低平均音量；0=关闭则不画线） */}
+      {recording && (
+        <div
+          className="voice-live-meter"
+          title={
+            minNorm > 0
+              ? `声音要盖过达标线（${minNorm}）才会送去识别`
+              : "家长已关闭音量校验（录音不再按音量拦截）"
+          }
+        >
+          <span>🎙️</span>
+          <div className="voice-live-track">
+            <div className="voice-live-fill" ref={meterFillRef} />
+            {minNorm > 0 && <div className="voice-live-line" style={{ left: `${minNorm}%` }} />}
+          </div>
+          <span>{minNorm > 0 ? "大声说" : "音量"}</span>
         </div>
       )}
 

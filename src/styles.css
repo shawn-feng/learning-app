@@ -3522,3 +3522,250 @@ iframe.material-pdf {
   flex: 0 0 auto;
   align-self: center;
 }
+
+/* ===== ISSUE-189：录音音量检测（聊天实时音量条 + 孩子端「声音检测」弹框） ===== */
+
+/* 聊天框：录音中实时音量条（达标线=送 ASR 的最低平均音量 42 分） */
+.voice-live-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px 6px;
+  font-size: 11px;
+  color: #888;
+}
+
+.voice-live-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 10px;
+  border-radius: 999px;
+  background: #e8edf5;
+}
+
+.voice-live-fill {
+  height: 100%;
+  width: 2%;
+  border-radius: 999px;
+  background: #e74c3c;
+  transition: width 0.06s linear, background 0.15s;
+}
+
+.voice-live-line {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  border-radius: 2px;
+  background: #b9770a;
+}
+
+/* 声音检测弹框 */
+.modal.volume-check-modal {
+  width: 460px;
+}
+
+.volume-check-intro {
+  margin: 0 0 18px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #555;
+}
+
+.volume-check-intro b {
+  color: #333;
+}
+
+/* 家长关闭音量校验（0）时的说明 */
+.volume-check-note {
+  margin: -8px 0 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b9770a;
+}
+
+.volume-check-meter {
+  margin: 0 0 14px;
+}
+
+.volume-check-track-wrap {
+  position: relative;
+  margin-top: 30px;
+}
+
+.volume-check-track {
+  height: 18px;
+  border-radius: 999px;
+  background: #e8edf5;
+}
+
+.volume-check-fill {
+  height: 100%;
+  width: 2%;
+  border-radius: 999px;
+  background: #e74c3c;
+  transition: width 0.06s linear, background 0.15s;
+}
+
+.volume-check-line {
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  width: 2px;
+  border-radius: 2px;
+  background: #b9770a;
+}
+
+.volume-check-line span {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 11px;
+  color: #b9770a;
+}
+
+.volume-check-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 11px;
+  color: #999;
+}
+
+.volume-check-status {
+  min-height: 20px;
+  margin: 4px 0 10px;
+  font-size: 13px;
+  text-align: center;
+  color: #888;
+}
+
+.volume-check-status.recording {
+  color: #e74c3c;
+  font-weight: 600;
+}
+
+.volume-check-live-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.volume-check-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  background: #667eea;
+  cursor: pointer;
+}
+
+.volume-check-btn:hover:not(:disabled) {
+  background: #5a6fd8;
+}
+
+.volume-check-btn.recording {
+  background: #e74c3c;
+}
+
+.volume-check-btn.recording:hover {
+  background: #d84232;
+}
+
+.volume-check-btn:disabled {
+  background: #aab6cc;
+  cursor: not-allowed;
+}
+
+.volume-check-error {
+  margin-top: 10px;
+  font-size: 13px;
+  text-align: center;
+  color: #e53e3e;
+}
+
+.volume-check-verdict {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.volume-check-verdict.ok {
+  background: #eafaf0;
+  border: 1px solid #b7ebc9;
+  color: #1e7a45;
+}
+
+.volume-check-verdict.close {
+  background: #fff8ec;
+  border: 1px solid #f0e2c0;
+  color: #8a5a00;
+}
+
+.volume-check-verdict.low {
+  background: #fdeeee;
+  border: 1px solid #f3c9c9;
+  color: #b03030;
+}
+
+.volume-check-verdict.neutral {
+  background: #f4f6fc;
+  border: 1px solid #dbe2f0;
+  color: #2a3350;
+}
+
+.volume-check-verdict-headline {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.volume-check-verdict-text {
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.volume-check-verdict-tip {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.volume-check-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.volume-check-actions button {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #dbe2f0;
+  border-radius: 10px;
+  background: #f4f6fc;
+  color: #2a3350;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.volume-check-actions button:hover {
+  background: #e9eefb;
+}
+
+/* 侧栏「声音检测」入口：与其它图标按钮同形，加一点品牌色让低龄孩子好找 */
+.sidebar-icon-btn-voice {
+  color: #667eea;
+}
