@@ -2,7 +2,7 @@
 
 - **类型**：体验修复 / 认证生命周期（客户端 + learning-server + benefit-auth 三端）
 - **优先级**：高（ISSUE-187 的直接成因；`app 用 7 天就要重扫` / `VIP 到期被踢回登录页` 都是它）
-- **状态**：✅ 已实现 + **learning-server 0.5.39 已部署 201（2026-10-18 17:39，滑动续签线上冒烟通过）** + **客户端 0.1.32 已本地打包（未发布）**；ECS benefit-auth 未部署（设备级 365 天 cloud token 待另走 ECS）
+- **状态**：✅ 已实现 + **learning-server 0.5.39 已部署 201（2026-10-18 17:39，滑动续签线上冒烟通过）** + **ECS benefit-auth 0.2.1 已部署（2026-10-18 19:20，设备级 365 天 token）** + **客户端 0.1.32 已全平台打包（未发布）**
 - **记录时间**：2026-10-18
 - **关联**：ISSUE-187（SSE 死句柄重建，需本 issue 一起上线才完整）、ISSUE-160（授权过期不踢人）、ISSUE-164（任务门禁保留凭证）
 
@@ -95,7 +95,7 @@
 
 | 目标 | 内容 | 状态 |
 |---|---|---|
-| benefit-auth（ECS） | `security.py`/`account.py`/`legacy.py`/`main.py` + 重启 `benefit-auth.service` | ⏳ **未部署**（设备级 365 天 cloud token 待 ECS；不部署时滑动续签已生效，存量 72h token 仍会 401 一次） |
+| benefit-auth（ECS） | `security.py`/`account.py`/`legacy.py`/`main.py` + 重启 `benefit-auth.service` | ✅ **已部署 0.2.1（2026-10-18 19:20）**：app/ tar → OSS 签名 URL → 云助手 RunCommand；备份 `/opt/backups/app-before-issue188-20261018-192026.tar.gz`；venv 实测 device token TTL=365 天、内网+公网 health ok；存量旧 72h token 重登后转长效 |
 | learning-server（201） | `server.cjs` **0.5.39**（含 session-renew 钩子 + `/auth/license` me_url） | ✅ **已部署（2026-10-18 17:39）**：version/health/标记/超集全过，线上冒烟已回 `x-session-token`；备份 `server.cjs.bak-20261018-173934` + `data/backups/deploy-0.5.39-20261018-173934` |
 | 客户端 | **0.1.32**（含 ISSUE-187 死句柄重建 + 本 issue 客户端半边 + ISSUE-189 音量门） | ✅ **已全平台打包（未发布）**：Windows NSIS（本机）+ Linux deb/AppImage + macOS x64/arm64 dmg（GitHub Actions，tag `v0.1.32`），产物均归拢到 `dist/`；mac x64 首跑 npm ci 超时已重跑成功 |
 | Web（201 `web/dist`） | 重新构建换装（shim 采纳 + `authCheck` me_url） | ⏳ 未部署（`web:build` 已通过，可选同批） |

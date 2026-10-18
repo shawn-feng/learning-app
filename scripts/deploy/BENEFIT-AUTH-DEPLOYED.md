@@ -241,3 +241,12 @@ TOKENHUB_REGION=ap-guangzhou
   TTS 合成 `voice_setting.voice_id` 取用（TTS 选 MiniMax Speech 系时生效；Edge TTS 不适用）。
 - 部署：OSS put + 预签名 URL + 云助手 RunCommand（备份 app-before-fix19-*）→ py_compile ok →
   重启 active。校验：model-config 已下发 `voice:minimax_55e81114-ce7e-4ca1`。
+
+## ISSUE-188 设备级 cloud token（v0.2.1）已部署（2026-10-18 19:20）
+- **变更**：`security.py` 新增 `DEVICE_TOKEN_TTL_DAYS`（默认 365）+ `create_device_token`；`routers/account.py`（register/login）与 `routers/legacy.py`（douyin-login/code-login）改发设备级长效 token；**网页会话 Cookie / me 页仍 72h 用户 token**；`main.py` version 0.2.1。
+- **方式**：本地打包 `app/`（527,863 B）→ OSS 私有桶签名 URL（`tmp/deploy/_oss_sign.py put/url` 900s）→ 云助手 RunCommand（`scripts/aliyun-run.py`，整体脚本 `tmp/deploy/deploy_benefit_issue188.py`）。
+- **备份**：`/opt/backups/app-before-issue188-20261018-192026.tar.gz`。
+- **自检**（云助手输出）：`compileall` 通过；`SERVICE=active`；`HEALTH={"status":"ok",...}`；`main.py version="0.2.1"`；`security.py` 命中 `create_device_token`；venv 实测 `DEVICE_TOKEN_TTL_DAYS 365`。
+- **公网**：`https://auth.aixuexihao.top/health` → `{"status":"ok","service":"benefit-auth","merged":true}`。
+- **回滚**：`tar xzf /opt/backups/app-before-issue188-20261018-192026.tar.gz -C /opt/benefit-auth && systemctl restart benefit-auth`（无 DB 迁移/无 .env 变更）。
+- **存量影响**：已登录家长要等下一次 `/api/account/login`（账密/扫码）才换到 365 天 token；未重登的旧 72h token 仍会到期 401 一次（配合 learning-server 0.5.39 滑动续签，重登一次即转长效）。
