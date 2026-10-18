@@ -344,4 +344,9 @@ Electron 登录页「抖音扫码登录」
 - 验证：201 `version=0.5.39`、`health ok`、`session-renew`/`me_url`/`0.5.39` 标记 FOUND、超集 ISSUE-183/186/182 KEPT、journal 近 2min 无 error；**滑动续签线上冒烟**：手工签一枚剩余 1 天（< TTL/2=3.5 天）的合法 JWT 请求 `/api/v1/version` → 响应带回 `x-session-token`（新 token `iat=now`、`exp=now+7d`）。
 - 回滚：bundle `server.cjs.bak-20261018-173934`（0.5.38）、数据 `deploy-0.5.39-20261018-173934`（主库+配置；本次无 DB 迁移，数据回滚可不动）。
 - ⚠️ 未部署：ECS benefit-auth（设备级 365 天 cloud token 在 `benefit-auth`，需另走 ECS 部署；不部署时滑动续签已可用，但「app 连用 3 天后上游 401」仍存在）。
-- 客户端：0.1.32 已本地打包（Windows NSIS `dist/学习伙伴 Setup 0.1.32.exe`，171,562,148 B，sha256 `32222D4286E9E894AB4486F14406C9DA97EFB9DC2D6A0CE1A01A242E4934FAF6`，**未发布**）；Linux deb/AppImage 本机不可构建（fpm 缺失 / Windows 无符号链接权限），走 `.github/workflows/build-linux.yml` CI。
+- 客户端 0.1.32 已全平台打包（**未发布**，产物均在 `dist/`）：
+  - Windows NSIS（本机 `npm run dist:win`）：`学习伙伴 Setup 0.1.32.exe`，171,562,148 B，sha256 `32222d4286e9e894ab4486f14406c9da97efb9dc2d6a0ce1a01a242e4934faf6`；
+  - Linux x64 / macOS（GitHub Actions：push tag `v0.1.32` 到 `github`，`build-linux.yml` + `build-mac.yml` 矩阵）：
+    `learning-app_0.1.32_amd64.deb`（139,168,392 B，sha256 `f515bcd6…dec025`）、`学习伙伴-0.1.32.AppImage`（185,190,575 B，sha256 `bb4ce7c3…76fbaa`）、
+    `学习伙伴-0.1.32-x64.dmg`（175,043,431 B，sha256 `92499742…a285b9`）、`学习伙伴-0.1.32-arm64.dmg`（166,876,932 B，sha256 `991f2ae7…e53047`）。
+  - ⚠️ mac x64 首跑 `npm ci` 网络 ETIMEDOUT（runner 侧偶发），`gh run rerun 39118828426 --failed` 重跑后成功（arm64 首跑即成功）。

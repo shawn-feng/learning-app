@@ -97,7 +97,7 @@
 |---|---|---|
 | benefit-auth（ECS） | `security.py`/`account.py`/`legacy.py`/`main.py` + 重启 `benefit-auth.service` | ⏳ **未部署**（设备级 365 天 cloud token 待 ECS；不部署时滑动续签已生效，存量 72h token 仍会 401 一次） |
 | learning-server（201） | `server.cjs` **0.5.39**（含 session-renew 钩子 + `/auth/license` me_url） | ✅ **已部署（2026-10-18 17:39）**：version/health/标记/超集全过，线上冒烟已回 `x-session-token`；备份 `server.cjs.bak-20261018-173934` + `data/backups/deploy-0.5.39-20261018-173934` |
-| 客户端 | **0.1.32**（含 ISSUE-187 死句柄重建 + 本 issue 客户端半边 + ISSUE-189 音量门） | ✅ **已本地打包（仅 Windows NSIS，未发布）**：`dist/学习伙伴 Setup 0.1.32.exe`（sha256 `32222D42…FAF6`）；Linux deb/AppImage 走 CI（本机 fpm/符号链接环境不支持） |
+| 客户端 | **0.1.32**（含 ISSUE-187 死句柄重建 + 本 issue 客户端半边 + ISSUE-189 音量门） | ✅ **已全平台打包（未发布）**：Windows NSIS（本机）+ Linux deb/AppImage + macOS x64/arm64 dmg（GitHub Actions，tag `v0.1.32`），产物均归拢到 `dist/`；mac x64 首跑 npm ci 超时已重跑成功 |
 | Web（201 `web/dist`） | 重新构建换装（shim 采纳 + `authCheck` me_url） | ⏳ 未部署（`web:build` 已通过，可选同批） |
 
 **存量 cloud token 的过渡**：未重扫的家长在 72h 后仍会 401（这是旧 token 的既成事实）。服务端可选降级：对「上游 401 但有本地缓存」返回缓存 + `degraded`（现状是直接 401）——本 issue **未改**，避免掩盖真实失效；如需「老 token 也免扫码」，需另做 refresh token 或在过渡期放宽。

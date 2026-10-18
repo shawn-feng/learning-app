@@ -212,6 +212,7 @@ git tag v<ver> && git push origin v<ver> && git push github v<ver>
 14. **材料视频「有声无画」= HEVC/H.265（9/6 实证）**：Linux Electron 的 Chromium `<video>` 不支持 H.265 解码（AAC 有声、视频黑屏）。判定：201 上 `ffprobe` 看 `codec_name=hevc|hvc1`。修复 = ffmpeg 转 H.264：`-c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p -profile:v main -movflags +faststart -c:a aac -b:a 128k`；先 `cp` 备份原文件到 data/backups，转临时文件 → 验证 codec → 覆盖同路径（html/src 不变）→ node 刷新索引 size。含 moov 的都需 faststart（Range 播放）。模板 `tmp/deploy/transcode_yunlv.py` + `replace_yunlv.py`。
 15. **aliyun-run.py RunCommand 带引号/空格命令通用解法 = base64**：`echo <b64> | base64 -d | bash`（规避转义剥引号问题），模板 `tmp/deploy/copy_win_to_ecs.py`。
 16. **Actions 构件下载需 API token**：`gh auth token`；大文件下载用 run_in_background（首跑可能 SIGTERM）。
+17. **macOS 矩阵偶发 `npm ci` 网络超时（0.1.32 实证）**：x64 job 报 `ETIMEDOUT`（`npm error network read`，runner 侧偶发），arm64 同批成功——用 `gh run rerun <databaseId> --failed` 只重跑失败矩阵项即可，不必重推 tag；重跑后 x64/arm64 两个 dmg 都在同一 run 的 artifacts 下。
 
 ---
 
