@@ -213,6 +213,7 @@ git tag v<ver> && git push origin v<ver> && git push github v<ver>
 15. **aliyun-run.py RunCommand 带引号/空格命令通用解法 = base64**：`echo <b64> | base64 -d | bash`（规避转义剥引号问题），模板 `tmp/deploy/copy_win_to_ecs.py`。
 16. **Actions 构件下载需 API token**：`gh auth token`；大文件下载用 run_in_background（首跑可能 SIGTERM）。
 17. **macOS 矩阵偶发 `npm ci` 网络超时（0.1.32 实证）**：x64 job 报 `ETIMEDOUT`（`npm error network read`，runner 侧偶发），arm64 同批成功——用 `gh run rerun <databaseId> --failed` 只重跑失败矩阵项即可，不必重推 tag；重跑后 x64/arm64 两个 dmg 都在同一 run 的 artifacts 下。
+18. **201 客户端重启时 `pkill -f '/opt/学习伙伴/xuexihub'` 会误杀 SSH 包装 shell 自身（0.1.32 实证）**：命令串本身含该路径，`bash -c "<整条命令>"` 也被匹配 → pkill 把自己的 shell 杀掉（通道超时、无输出）。改用锚定行首的 `pkill -f '^/opt/学习伙伴/xuexihub'`，或把 pkill 与启动拆成两次 `exec_command`；启动命令若追加 `sleep/pgrep`，后台 GUI 会让通道迟迟不 EOF（Paramiko PipeTimeout），启动后单独另开连接验证即可。
 
 ---
 
