@@ -1460,11 +1460,39 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
       }>;
       const qDetail = kb.prepare("SELECT * FROM exam_plan_courses WHERE plan_id = ? ORDER BY seq, rowid");
       const qResult = kb.prepare("SELECT * FROM exam_course_results WHERE plan_id = ?");
+      // 逐题口语评测存档（detail_json 里是整包 SpeechAssessment，含逐字 words/时间戳）；
+      // 旧库可能没有该表，读失败按"无评测"处理，不影响成绩列表。
+      let qSpeech: ReturnType<typeof kb.prepare> | null = null;
+      try {
+        qSpeech = kb.prepare(
+          "SELECT question_id, detail_json FROM speech_assessments WHERE plan_id = ? ORDER BY created_at DESC"
+        );
+      } catch {
+        qSpeech = null;
+      }
       const attempts = plans.map((p) => {
         const details = qDetail.all(p.id) as Array<Record<string, unknown>>;
         const results = qResult.all(p.id) as Array<Record<string, unknown>>;
+        const speechByQ = new Map<string, Record<string, unknown>>();
+        try {
+          for (const row of (qSpeech ? qSpeech.all(p.id) : []) as Array<Record<string, unknown>>) {
+            const qid = String(row.question_id ?? "");
+            if (!qid || speechByQ.has(qid)) continue; // 同一题多次评测取最新一条
+            try {
+              const parsed = JSON.parse(String(row.detail_json ?? "{}"));
+              if (parsed && typeof parsed === "object") speechByQ.set(qid, parsed as Record<string, unknown>);
+            } catch {
+              /* 单条坏数据忽略 */
+            }
+          }
+        } catch {
+          /* 旧库无 speech_assessments 表 */
+        }
         const perQuestion = details.map((d) => {
           const behavior = String(d.behavior ?? "");
+          const qid = String(d.question_id ?? "");
+          // 旧数据 question_id 可能为空：宁可不展示，也不要把别的题的评测挂到这道题上
+          const speech = qid ? speechByQ.get(qid) : undefined;
           return {
             qid: String(d.question_id ?? "") || `q_${String(d.seq ?? "")}`,
             course: String(d.course_name ?? ""),
@@ -1482,6 +1510,20 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
             questionId: String(d.question_id ?? ""),
             knowledgePointId: String(d.knowledge_point_id ?? ""),
             knowledgePointName: String(d.knowledge_point_name ?? ""),
+            // 原始 result 含整包 raw（体积大），历史列表只回展示所需子集
+            speech: speech
+              ? {
+                  provider: speech.provider,
+                  overall: speech.overall,
+                  pron: speech.pron,
+                  accuracy: speech.accuracy,
+                  integrity: speech.integrity,
+                  fluency: speech.fluency,
+                  sentences: speech.sentences,
+                  words: Array.isArray(speech.words) ? speech.words : [],
+                  audioQuality: speech.audioQuality,
+                }
+              : undefined,
           };
         });
         const courseMastery: Record<string, { correct: number; total: number; rate: number }> = {};

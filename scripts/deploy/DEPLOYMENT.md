@@ -350,3 +350,20 @@ Electron 登录页「抖音扫码登录」
     `learning-app_0.1.32_amd64.deb`（139,168,392 B，sha256 `f515bcd6…dec025`）、`学习伙伴-0.1.32.AppImage`（185,190,575 B，sha256 `bb4ce7c3…76fbaa`）、
     `学习伙伴-0.1.32-x64.dmg`（175,043,431 B，sha256 `92499742…a285b9`）、`学习伙伴-0.1.32-arm64.dmg`（166,876,932 B，sha256 `991f2ae7…e53047`）。
   - ⚠️ mac x64 首跑 `npm ci` 网络 ETIMEDOUT（runner 侧偶发），`gh run rerun 39118828426 --failed` 重跑后成功（arm64 首跑即成功）。
+
+## learning-server 0.5.40（2026-10-19 08:59 部署 201）
+- 触发：发音评测「逐字对错」丢失（报告只剩原文一个颜色）。根因不在阿里云：SSECP 一直返回 `details/snt_details` 逐字结果，是服务端只映射了 `chn_char/score/dp_type`、前端又从未渲染 `words`。
+- 改动（仅服务端，无 DB 迁移）：
+  ① `assessment/types.ts`：`WordScore` 增 `tone/toneScore/isPause/sentenceIndex/startMs/endMs`，新增 `sentences[]`、`audioQuality`；
+  ② `aliyun-ssecp.ts`：`details` 嵌套（`snt_details`）/平铺自动判别，逐字带回声调、停顿、时间戳与音素；`info.tipId` 透传；
+  ③ `toSpeechAssessment` 全量透传（客户端据此逐字着色 + 点读回放）；
+  ④ `GET /exam/attempts/:childId` 从 `speech_assessments.detail_json` 回填逐题 `speech`（历史成绩补颜色，不重考）；
+  ⑤ `assessment/config` 新增 `typeThres`（0 默认不传 / 1 严格 / 2 宽松 / 3 非常严格 / 4 非常宽松），aliyun 请求按需带参；家长端「设置 → 发音评测」可调；
+  ⑥ `SERVER_VERSION 0.5.40`。
+- 流程：`tmp/deploy/deploy_0540_speech_words.py`（上传 → 备份 bundle `server.cjs.bak-20261019-085930` + 数据 `data/backups/deploy-0.5.40-20261019-085930`（22M）→ 替换 → 重启）。
+- 验证：201 `version=0.5.40`、`health ok`、`speech-words`/`typeThres`/`exam-history-speech`/`0.5.40` 标记 FOUND、超集 183/188 KEPT、journal 近 2min 无 error；
+  - **配置冒烟**：签名家长 JWT → GET `/assessment/config` 返回 `typeThres:0`（默认）；POST `typeThres=2` → GET 回读 2 → 删除冒烟行（`deleted 1`）；
+  - **真实评测冒烟**（`tmp/deploy/smoke_0540_assess.py`）：取一条真实口语存档音频 + refText 调 `/assessment/assess` → `words` 8 项，含 `tone/toneScore/startMs/endMs/sentenceIndex`，`sentences` 2 段，`audioQuality.tipId=0`（解析形状与线上引擎一致）。
+  - **typeThres 线上冒烟**（`tmp/deploy/smoke_0540_type_thres_live.py`）：真实家长配置临时设 `typeThres=2` → 同一音频评测成功（pron 78→79、词分整体略升，符合"宽松"预期）→ finally 恢复原值 `typeThres=0 / enabled=true`，确认引擎接受该参数且可回退。
+- 回滚：bundle `server.cjs.bak-20261019-085930`（0.5.39）、数据 `deploy-0.5.40-20261019-085930`（主库+配置；无 DB 迁移，数据可不动）。
+- 客户端：渲染层（`SpeechText` + `speech-text`）与设置页 `typeThres` 选择器已本地构建通过，**待随下一版客户端发布**；旧客户端忽略新增字段，服务端先上无兼容问题。

@@ -97,6 +97,7 @@ export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentD
       providers?: Record<string, Record<string, string>>;
       minVolumeNorm?: number;
       recitePassDefault?: number;
+      typeThres?: number;
     };
     const cfg = applyAssessmentConfigPatch(db, parentId, config.dataDir, {
       enabled: !!body.enabled,
@@ -104,6 +105,7 @@ export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentD
       providers: body.providers,
       minVolumeNorm: body.minVolumeNorm,
       recitePassDefault: body.recitePassDefault,
+      typeThres: body.typeThres,
     });
     return { config: getMaskedAssessmentConfig(cfg) };
   });

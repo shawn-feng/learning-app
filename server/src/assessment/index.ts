@@ -28,7 +28,7 @@ export async function assessAudio(
   }
 
   if (id === "tencent-soe") return tencentAssess(wav, creds, { refText: opts.refText || "" });
-  if (id === "aliyun-ssecp") return aliyunAssess(wav, creds, { refText: opts.refText || "" });
+  if (id === "aliyun-ssecp") return aliyunAssess(wav, creds, { refText: opts.refText || "", typeThres: cfg.typeThres });
   throw new Error(`未知评测服务：${id}`);
 }
 

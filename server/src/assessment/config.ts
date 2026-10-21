@@ -19,6 +19,22 @@ export interface AssessmentConfig {
   minVolumeNorm: number;
   /** 朗读/背诵通过线家长默认值（0-100）。题目/方法/排期自带 recitePass 时以题目为准，未设才用它。 */
   recitePassDefault: number;
+  /**
+   * 声希打分松紧 typeThres：0 默认（不启用）/ 1 严格 / 2 宽松 / 3 非常严格 / 4 非常宽松。
+   * 仅 aliyun-ssecp 生效（腾讯智聆无此参数）；0 时不传，保持引擎默认档。
+   */
+  typeThres: number;
+}
+
+/** 声希 typeThres 合法档位。 */
+export const SSECP_TYPE_THRES_OPTIONS = [0, 1, 2, 3, 4] as const;
+
+/** 解析 typeThres：只接受 0-4 的整数，其余（含 null/空串）回退 fallback。 */
+export function parseTypeThres(v: unknown, fallback: number): number {
+  if (v == null || v === "") return fallback;
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < 0 || n > 4) return fallback;
+  return n;
 }
 
 export const ASSESSMENT_PROVIDER_ORDER: AssessmentProviderId[] = ["tencent-soe", "aliyun-ssecp"];
@@ -32,6 +48,7 @@ const DEFAULT_CONFIG: AssessmentConfig = {
   },
   minVolumeNorm: DEFAULT_EXAM_MIN_VOLUME_NORM,
   recitePassDefault: DEFAULT_EXAM_RECITE_PASS,
+  typeThres: 0,
 };
 
 /** 读取并解密该家长的测评配置（服务端内部使用，不对外暴露明文密钥）。 */
@@ -61,6 +78,8 @@ export function loadAssessmentConfig(db: DatabaseSync, parentId: string, dataDir
     // ISSUE-183：旧配置无这两个字段 → 回默认值（阈值 42≈-35dBFS / 通过线 90）
     minVolumeNorm: parseVolumeThreshold(parsed.minVolumeNorm, DEFAULT_EXAM_MIN_VOLUME_NORM),
     recitePassDefault: parsePassLine(parsed.recitePassDefault, DEFAULT_EXAM_RECITE_PASS),
+    // 旧配置无 typeThres → 0（不启用，保持引擎默认松紧）
+    typeThres: parseTypeThres(parsed.typeThres, DEFAULT_CONFIG.typeThres),
   };
 }
 
@@ -79,6 +98,7 @@ export function getMaskedAssessmentConfig(cfg: AssessmentConfig): AssessmentConf
     providers: {} as AssessmentConfig["providers"],
     minVolumeNorm: cfg.minVolumeNorm,
     recitePassDefault: cfg.recitePassDefault,
+    typeThres: cfg.typeThres,
   };
   for (const [pname, creds] of Object.entries(cfg.providers)) {
     const m: Record<string, string> = {};
@@ -101,6 +121,7 @@ export function applyAssessmentConfigPatch(
     providers?: Record<string, Record<string, string>>;
     minVolumeNorm?: number;
     recitePassDefault?: number;
+    typeThres?: number;
   }
 ): AssessmentConfig {
   const cfg = loadAssessmentConfig(db, parentId, dataDir);
@@ -109,6 +130,7 @@ export function applyAssessmentConfigPatch(
   // ISSUE-183：两个字段传了（含 0=不校验）才更新；未传保持原值
   if (patch.minVolumeNorm != null) cfg.minVolumeNorm = parseVolumeThreshold(patch.minVolumeNorm, cfg.minVolumeNorm);
   if (patch.recitePassDefault != null) cfg.recitePassDefault = parsePassLine(patch.recitePassDefault, cfg.recitePassDefault);
+  if (patch.typeThres != null) cfg.typeThres = parseTypeThres(patch.typeThres, cfg.typeThres);
 
   for (const [pname, creds] of Object.entries(patch.providers || {})) {
     if (!cfg.providers[pname as AssessmentProviderId]) {
