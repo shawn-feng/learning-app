@@ -319,9 +319,9 @@ export default function CourseDetail({
               style={{
                 padding: "4px 14px",
                 borderRadius: 8,
-                border: tab === key ? "2px solid #667eea" : "1px solid #ddd",
-                background: tab === key ? "#eef0ff" : "#fff",
-                color: tab === key ? "#5a67d8" : "#555",
+                border: tab === key ? "2px solid #58cc02" : "1px solid #e5e5e5",
+                background: tab === key ? "#f7f7f7" : "#fff",
+                color: tab === key ? "#58a700" : "#4b4b4b",
                 fontSize: 13,
                 fontWeight: tab === key ? 600 : 400,
                 cursor: "pointer",
@@ -338,18 +338,18 @@ export default function CourseDetail({
               onClick={() => courseIndex > 0 && onSelectCourse?.(courseList[courseIndex - 1]!)}
               disabled={courseIndex <= 0}
               title="上一课（↑）"
-              style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "3px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: courseIndex > 0 ? "pointer" : "default", color: courseIndex > 0 ? "#3b4cca" : "#ccc" }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "3px 10px", borderRadius: 6, border: "1px solid #e5e5e5", background: "#fff", fontSize: 12, cursor: courseIndex > 0 ? "pointer" : "default", color: courseIndex > 0 ? "#1cb0f6" : "#d0d0d0" }}
             >
               <ChevronUp size={14} /> 上一课
             </button>
-            <span style={{ fontSize: 12, color: "#888" }}>
+            <span style={{ fontSize: 12, color: "#777777" }}>
               {courseIndex + 1}/{courseList.length}
             </span>
             <button
               onClick={() => courseIndex < courseList.length - 1 && onSelectCourse?.(courseList[courseIndex + 1]!)}
               disabled={courseIndex >= courseList.length - 1}
               title="下一课（↓）"
-              style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "3px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: courseIndex < courseList.length - 1 ? "pointer" : "default", color: courseIndex < courseList.length - 1 ? "#3b4cca" : "#ccc" }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "3px 10px", borderRadius: 6, border: "1px solid #e5e5e5", background: "#fff", fontSize: 12, cursor: courseIndex < courseList.length - 1 ? "pointer" : "default", color: courseIndex < courseList.length - 1 ? "#1cb0f6" : "#d0d0d0" }}
             >
               下一课 <ChevronDown size={14} />
             </button>
@@ -379,15 +379,15 @@ export default function CourseDetail({
 
       {/* ISSUE-135 P5：掌握叙述与教学建议（「学习情况分析」任务产出） */}
       {(masteryDesc || teachingAdvice) && (
-        <div className="lesson-detail-card" style={{ marginTop: 12, borderLeft: "3px solid #667eea" }}>
+        <div className="lesson-detail-card" style={{ marginTop: 12, borderLeft: "3px solid #58cc02" }}>
           <div className="lesson-detail-title" style={{ fontSize: 13 }}>
             🧠 掌握情况与教学建议{masteryUpdatedAt ? `（更新于 ${masteryUpdatedAt}）` : ""}
           </div>
           {masteryDesc && (
-            <div style={{ fontSize: 13, lineHeight: 1.7, color: "#444", whiteSpace: "pre-wrap" }}>{masteryDesc}</div>
+            <div style={{ fontSize: 13, lineHeight: 1.7, color: "#4b4b4b", whiteSpace: "pre-wrap" }}>{masteryDesc}</div>
           )}
           {teachingAdvice && (
-            <div style={{ fontSize: 13, lineHeight: 1.7, color: "#555", marginTop: masteryDesc ? 8 : 0 }}>
+            <div style={{ fontSize: 13, lineHeight: 1.7, color: "#4b4b4b", marginTop: masteryDesc ? 8 : 0 }}>
               <b>下次建议：</b>
               {teachingAdvice}
             </div>
@@ -398,14 +398,14 @@ export default function CourseDetail({
       {/* 两栏：左=记录列表（学习/复习+考核）｜右=选中记录的详情 */}
       <div style={{ display: "flex", gap: 16, marginTop: 12, alignItems: "flex-start", minWidth: 0 }}>
         {/* 左：记录列表 */}
-        <div style={{ width: 280, minWidth: 0, flexShrink: 0, borderRight: "1px solid #eee", paddingRight: 8 }}>
+        <div style={{ width: 280, minWidth: 0, flexShrink: 0, borderRight: "1px solid #e5e5e5", paddingRight: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>每次记录（{recordList.length}）</div>
           {loading || loadingExam ? (
             <div className="placeholder" style={{ fontSize: 12, padding: "8px 0" }}>⏳ 加载中…</div>
           ) : (
             <div style={{ overflowY: "auto", maxHeight: "70vh", paddingRight: 2 }}>
               {recordList.length === 0 && (
-                <p style={{ color: "#888", fontSize: 12, padding: "8px 0" }}>
+                <p style={{ color: "#777777", fontSize: 12, padding: "8px 0" }}>
                   {summaries?.length === 0 && examAttempts?.length === 0
                     ? "（该课暂无学习记录，也暂未参加过考核）"
                     : "（暂无记录）"}
@@ -422,7 +422,7 @@ export default function CourseDetail({
                       borderRadius: 8,
                       marginBottom: 4,
                       cursor: "pointer",
-                      background: act ? "#f0f4ff" : "#fff",
+                      background: act ? "#e9f9dc" : "#fff",
                       border: `1px solid ${act ? "#c3d2f5" : "#f0f0f0"}`,
                     }}
                   >
@@ -433,19 +433,19 @@ export default function CourseDetail({
                           borderRadius: 4,
                           padding: "0 5px",
                           flexShrink: 0,
-                          color: r.kind === "exam" ? "#fff" : "#3b4cca",
-                          background: r.kind === "exam" ? "#7b5b1a" : "#eef2ff",
+                          color: r.kind === "exam" ? "#fff" : "#1cb0f6",
+                          background: r.kind === "exam" ? "#7b5b1a" : "#f7f7f7",
                         }}
                       >
                         {r.kind === "exam" ? "考核" : "学习"}
                       </span>
-                      <span style={{ fontSize: 12, color: "#bbb", flexShrink: 0 }}>{r.date}</span>
+                      <span style={{ fontSize: 12, color: "#afafaf", flexShrink: 0 }}>{r.date}</span>
                     </div>
                     <div style={{ fontSize: 12, fontWeight: 600, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {r.sub ? `${r.label} · ${r.sub}` : r.label}
                     </div>
                     {r.kind === "learn" && r.summary && (
-                      <div style={{ fontSize: 11, color: "#999", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <div style={{ fontSize: 11, color: "#afafaf", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {r.summary.title}
                       </div>
                     )}
@@ -457,7 +457,7 @@ export default function CourseDetail({
         </div>
 
         {/* 右：选中记录详情 */}
-        <div style={{ flex: 1, minWidth: 0, borderLeft: "1px solid #eee", paddingLeft: 12 }}>
+        <div style={{ flex: 1, minWidth: 0, borderLeft: "1px solid #e5e5e5", paddingLeft: 12 }}>
           {loading || loadingExam ? (
             <div className="placeholder">⏳ 正在加载…</div>
           ) : !activeRecord ? (
@@ -476,11 +476,11 @@ export default function CourseDetail({
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
                 <span style={{ fontSize: 14, fontWeight: 700 }}>{activeRecord.attempt.title || "考核"}</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: (activeRecord.attempt.score ?? 0) >= 60 ? "#2f8a52" : "#c0392b" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: (activeRecord.attempt.score ?? 0) >= 60 ? "#58a700" : "#ea2b2b" }}>
                   总分 {activeRecord.attempt.score}
                 </span>
-                {activeRecord.cmText && <span style={{ fontSize: 12, color: "#667eea" }}>{activeRecord.cmText}</span>}
-                <span style={{ fontSize: 11, color: "#999" }}>{activeRecord.date}</span>
+                {activeRecord.cmText && <span style={{ fontSize: 12, color: "#58a700" }}>{activeRecord.cmText}</span>}
+                <span style={{ fontSize: 11, color: "#afafaf" }}>{activeRecord.date}</span>
               </div>
               {!activeRecord.myQuestions || activeRecord.myQuestions.length === 0 ? (
                 <div className="lesson-summary-empty">（该场没有本课的题目记录）</div>
@@ -491,17 +491,17 @@ export default function CourseDetail({
                     <div key={q.qid} style={{ padding: "8px 0", borderTop: "1px solid #f0f0f0", fontSize: 12.5 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span style={{ fontWeight: 600 }}>第 {i + 1} 题</span>
-                        <span style={{ color: ok ? "#2f8a52" : "#c0392b", fontWeight: 700 }}>
+                        <span style={{ color: ok ? "#58a700" : "#ea2b2b", fontWeight: 700 }}>
                           {ok ? "✓" : "✗"} {q.pointGot ?? 0}/{q.pointMax ?? 0}
                         </span>
                       </div>
-                      {q.question && <div style={{ color: "#666", marginTop: 2 }}>问：{q.question}</div>}
+                      {q.question && <div style={{ color: "#777777", marginTop: 2 }}>问：{q.question}</div>}
                       {q.asrText && (
-                        <div style={{ color: "#555", marginTop: 2 }}>
+                        <div style={{ color: "#4b4b4b", marginTop: 2 }}>
                           答：<span style={{ background: "#f4f7ff", padding: "1px 6px", borderRadius: 4 }}>{q.asrText}</span>
                         </div>
                       )}
-                      {q.aiComment && <div style={{ color: "#888", marginTop: 2 }}>评语：{q.aiComment}</div>}
+                      {q.aiComment && <div style={{ color: "#777777", marginTop: 2 }}>评语：{q.aiComment}</div>}
                     </div>
                   );
                 })
@@ -528,7 +528,7 @@ export default function CourseDetail({
           <div className="placeholder" style={{ fontSize: 13 }}>
             📄<br />这门课还没有配置课程资料。
             <br />
-            <span style={{ fontSize: 12, color: "#999" }}>可以对 AI 老师说「展示这一课的学习资料」。</span>
+            <span style={{ fontSize: 12, color: "#afafaf" }}>可以对 AI 老师说「展示这一课的学习资料」。</span>
           </div>
         ) : (
           <MaterialsPanel

@@ -50,7 +50,7 @@ const STATUS_COLOR: Record<string, string> = {
   pending: "#64748b",
   done: "#16a34a",
   missed: "#dc2626",
-  cancelled: "#94a3b8",
+  cancelled: "#afafaf",
 };
 
 /** "0.8" ⇄ 0.8；显示用百分比字符串。 */
@@ -161,41 +161,41 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
   const renderTiers = (which: "todoTiers" | "examTiers", title: string) => (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#444" }}>{title}</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b" }}>{title}</div>
         <button
           onClick={() => addTier(which)}
-          style={{ border: "1px solid #cbd5e1", background: "white", borderRadius: 6, fontSize: 12, padding: "2px 8px", cursor: "pointer" }}
+          style={{ border: "1px solid #d0d0d0", background: "white", borderRadius: 6, fontSize: 12, padding: "2px 8px", cursor: "pointer" }}
         >
           + 加一档
         </button>
       </div>
       {cfg?.[which].map((t, i) => (
         <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, fontSize: 12 }}>
-          <span style={{ color: "#666", width: 24, textAlign: "right" }}>{pct(t.min)}</span>
-          <span style={{ color: "#cbd5e1" }}>~</span>
-          <span style={{ color: "#666", width: 34 }}>{pct(t.max)}</span>
+          <span style={{ color: "#777777", width: 24, textAlign: "right" }}>{pct(t.min)}</span>
+          <span style={{ color: "#d0d0d0" }}>~</span>
+          <span style={{ color: "#777777", width: 34 }}>{pct(t.max)}</span>
           <input
             value={t.label}
             onChange={(e) => patchTier(which, i, { label: e.target.value })}
-            style={{ width: 76, padding: "3px 6px", border: "1px solid #e2e8f0", borderRadius: 6 }}
+            style={{ width: 76, padding: "3px 6px", border: "1px solid #e5e5e5", borderRadius: 6 }}
           />
           <input
             type="number"
             value={t.points}
             onChange={(e) => patchTier(which, i, { points: Math.round(Number(e.target.value) || 0) })}
-            style={{ width: 72, padding: "3px 6px", border: "1px solid #e2e8f0", borderRadius: 6 }}
+            style={{ width: 72, padding: "3px 6px", border: "1px solid #e5e5e5", borderRadius: 6 }}
           />
-          <span style={{ color: "#94a3b8" }}>分</span>
+          <span style={{ color: "#afafaf" }}>分</span>
           <button
             onClick={() => removeTier(which, i)}
             title="删除该档"
-            style={{ border: "none", background: "transparent", color: "#cbd5e1", cursor: "pointer" }}
+            style={{ border: "none", background: "transparent", color: "#d0d0d0", cursor: "pointer" }}
           >
             ✕
           </button>
         </div>
       ))}
-      <div style={{ fontSize: 11, color: "#94a3b8" }}>
+      <div style={{ fontSize: 11, color: "#afafaf" }}>
         区间须从 0 连续覆盖到 100% 且互不重叠；<b>100% 单独一档</b>（写 100%~100%）。负分档只对「必须完成项」生效。
       </div>
     </div>
@@ -214,7 +214,7 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
           <select
             value={childId}
             onChange={(e) => setChildId(e.target.value)}
-            style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+            style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #d0d0d0" }}
           >
             {childList.map((c) => (
               <option key={c.id} value={c.id}>
@@ -227,11 +227,11 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
           type="date"
           value={date}
           onChange={(e) => setDate(e.target.value)}
-          style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+          style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid #d0d0d0" }}
         />
         <button
           onClick={() => void load()}
-          style={{ display: "flex", alignItems: "center", gap: 4, border: "1px solid #cbd5e1", background: "white", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}
+          style={{ display: "flex", alignItems: "center", gap: 4, border: "1px solid #d0d0d0", background: "white", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}
         >
           <RefreshCw size={14} /> 刷新
         </button>
@@ -242,22 +242,22 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
           {err}
         </div>
       )}
-      {loading && <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>}
+      {loading && <p style={{ color: "#777777", fontSize: 13 }}>加载中…</p>}
 
       {/* 概览 */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         {[
-          [`${reward?.balance ?? 0}`, "当前余额", "#667eea"],
+          [`${reward?.balance ?? 0}`, "当前余额", "#58cc02"],
           [`+${reward?.totals?.earned ?? 0}`, "累计获得", "#16a34a"],
           [`-${reward?.totals?.deducted ?? 0}`, "累计扣除", "#dc2626"],
           [`-${reward?.totals?.redeemed ?? 0}`, "已兑换", "#7c3aed"],
         ].map(([v, label, color], i) => (
           <div
             key={i}
-            style={{ flex: "1 1 120px", background: "white", border: "1px solid #e2e8f0", borderRadius: 10, padding: "10px 14px" }}
+            style={{ flex: "1 1 120px", background: "white", border: "1px solid #e5e5e5", borderRadius: 10, padding: "10px 14px" }}
           >
             <div style={{ fontSize: 20, fontWeight: 700, color: color as string }}>{v}</div>
-            <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{label}</div>
+            <div style={{ fontSize: 12, color: "#777777", marginTop: 2 }}>{label}</div>
           </div>
         ))}
       </div>
@@ -280,15 +280,15 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
         {/* 左侧：当日结算 + 流水 */}
         <div style={{ flex: "1 1 380px", minWidth: 320 }}>
-          <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 10, padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 8 }}>当日结算（{date}）</div>
+          <div style={{ background: "white", border: "1px solid #e5e5e5", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", marginBottom: 8 }}>当日结算（{date}）</div>
             {!quadrants.length ? (
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>当天还没有结算记录（无计划或未到结算时点）。</div>
+              <div style={{ fontSize: 12, color: "#afafaf" }}>当天还没有结算记录（无计划或未到结算时点）。</div>
             ) : (
               quadrants.map((s, i) => (
                 <div
                   key={i}
-                  style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#555", padding: "6px 0", borderBottom: "1px solid #f1f5f9" }}
+                  style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#4b4b4b", padding: "6px 0", borderBottom: "1px solid #f1f5f9" }}
                 >
                   <span>
                     {s.source === "exam" ? "考核" : "计划"} · {s.owner === "parent" ? "必须完成项" : "加分项"}
@@ -297,7 +297,7 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
                   </span>
                   <span>
                     {s.done}/{s.total}（{pct(s.rate)}）{" "}
-                    <b style={{ color: s.pointsAwarded > 0 ? "#16a34a" : s.pointsAwarded < 0 ? "#dc2626" : "#94a3b8" }}>
+                    <b style={{ color: s.pointsAwarded > 0 ? "#16a34a" : s.pointsAwarded < 0 ? "#dc2626" : "#afafaf" }}>
                       {s.pointsAwarded > 0 ? `+${s.pointsAwarded}` : s.pointsAwarded || 0}
                     </b>
                   </span>
@@ -306,15 +306,15 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
             )}
           </div>
 
-          <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 10, padding: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ background: "white", border: "1px solid #e5e5e5", borderRadius: 10, padding: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
               <Gift size={15} /> 积分流水（每一分都有原因）
             </div>
             {!reward?.ledger?.length ? (
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>暂无流水。</div>
+              <div style={{ fontSize: 12, color: "#afafaf" }}>暂无流水。</div>
             ) : (
               reward.ledger.map((l: any) => (
-                <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#555", padding: "6px 0", borderBottom: "1px solid #f1f5f9" }}>
+                <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#4b4b4b", padding: "6px 0", borderBottom: "1px solid #f1f5f9" }}>
                   <span style={{ flex: 1, minWidth: 0, paddingRight: 8, wordBreak: "break-word" }}>
                     {l.reason || l.reasonCode}
                     <span style={{ color: "#b0b7c3", marginLeft: 6 }}>{l.bizDate}</span>
@@ -331,14 +331,14 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
 
         {/* 右侧：设置 + 审计 */}
         <div style={{ flex: "1 1 380px", minWidth: 320 }}>
-          <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 10, padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 10 }}>积分奖罚设置</div>
+          <div style={{ background: "white", border: "1px solid #e5e5e5", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", marginBottom: 10 }}>积分奖罚设置</div>
             {cfg ? (
               <>
                 {renderTiers("todoTiers", "计划完成率分档")}
                 {renderTiers("examTiers", "考核得分率分档")}
                 <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
-                  <label style={{ fontSize: 12, color: "#555" }}>
+                  <label style={{ fontSize: 12, color: "#4b4b4b" }}>
                     孩子加分门槛（计划完成率≥）
                     <input
                       type="number"
@@ -347,10 +347,10 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
                       max="1"
                       value={cfg.todoGateMinRate}
                       onChange={(e) => setCfg({ ...cfg, todoGateMinRate: Number(e.target.value) })}
-                      style={{ width: 78, marginLeft: 6, padding: "3px 6px", border: "1px solid #e2e8f0", borderRadius: 6 }}
+                      style={{ width: 78, marginLeft: 6, padding: "3px 6px", border: "1px solid #e5e5e5", borderRadius: 6 }}
                     />
                   </label>
-                  <label style={{ fontSize: 12, color: "#555" }}>
+                  <label style={{ fontSize: 12, color: "#4b4b4b" }}>
                     孩子加分门槛（考核得分率≥）
                     <input
                       type="number"
@@ -359,11 +359,11 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
                       max="1"
                       value={cfg.examGateMinScore}
                       onChange={(e) => setCfg({ ...cfg, examGateMinScore: Number(e.target.value) })}
-                      style={{ width: 78, marginLeft: 6, padding: "3px 6px", border: "1px solid #e2e8f0", borderRadius: 6 }}
+                      style={{ width: 78, marginLeft: 6, padding: "3px 6px", border: "1px solid #e5e5e5", borderRadius: 6 }}
                     />
                   </label>
                 </div>
-                <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.7, marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: "#afafaf", lineHeight: 1.7, marginBottom: 10 }}>
                   门控：只有「必须完成项」达到该比例，「加分项」才能加分（孩子自己的计划达标却因家长计划没完成而不加分时，
                   会在双方提示）。孩子侧只加不扣。
                 </div>
@@ -375,7 +375,7 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
                       display: "flex",
                       alignItems: "center",
                       gap: 5,
-                      background: "#667eea",
+                      background: "#58cc02",
                       color: "white",
                       border: "none",
                       borderRadius: 8,
@@ -390,26 +390,26 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
                 </div>
               </>
             ) : (
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>设置读取中…</div>
+              <div style={{ fontSize: 12, color: "#afafaf" }}>设置读取中…</div>
             )}
           </div>
 
-          <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 10, padding: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ background: "white", border: "1px solid #e5e5e5", borderRadius: 10, padding: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
               <ShieldCheck size={15} /> 计划审计与修正（{date}）
             </div>
-            <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.7, marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: "#afafaf", lineHeight: 1.7, marginBottom: 10 }}>
               孩子端**不能勾选**（防虚报），完成与否由系统判定。这里可核对并纠错：撤销误判、取消不该做的计划。
             </div>
             {!plans.length ? (
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>当天没有计划行。</div>
+              <div style={{ fontSize: 12, color: "#afafaf" }}>当天没有计划行。</div>
             ) : (
               plans.map((p) => (
                 <div
                   key={p.planId}
                   style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "7px 0", borderBottom: "1px solid #f1f5f9" }}
                 >
-                  <span style={{ color: "#94a3b8", width: 34, flexShrink: 0 }}>{KIND_LABEL[p.kind]}</span>
+                  <span style={{ color: "#afafaf", width: 34, flexShrink: 0 }}>{KIND_LABEL[p.kind]}</span>
                   <span style={{ flex: 1, minWidth: 0, wordBreak: "break-word" }}>{p.title}</span>
                   <span style={{ color: STATUS_COLOR[p.status] ?? "#64748b", width: 54, flexShrink: 0 }}>
                     {STATUS_LABEL[p.status] ?? p.status}
@@ -428,7 +428,7 @@ export default function RewardPanel({ children }: { children: Array<{ id?: strin
                       <button
                         onClick={() => void setStatus(p, "reopen")}
                         title="撤销判定（回到待完成）"
-                        style={{ border: "1px solid #e2e8f0", background: "white", color: "#475569", borderRadius: 6, fontSize: 11, padding: "2px 6px", cursor: "pointer" }}
+                        style={{ border: "1px solid #e5e5e5", background: "white", color: "#475569", borderRadius: 6, fontSize: 11, padding: "2px 6px", cursor: "pointer" }}
                       >
                         撤销
                       </button>

@@ -121,11 +121,11 @@ describe("ISSUE-189 ASR 前置音量门", () => {
   });
 
   it("音量条着色：达标绿 / 偏轻黄（差≤12）/ 太小红", () => {
-    expect(volumeBarColor(62, 42)).toBe("#27ae60");
-    expect(volumeBarColor(42, 42)).toBe("#27ae60");
+    expect(volumeBarColor(62, 42)).toBe("#58a700");
+    expect(volumeBarColor(42, 42)).toBe("#58a700");
     expect(volumeBarColor(38, 42)).toBe("#e6a23c");
     expect(volumeBarColor(30, 42)).toBe("#e6a23c");
-    expect(volumeBarColor(18, 42)).toBe("#e74c3c");
+    expect(volumeBarColor(18, 42)).toBe("#ff4b4b");
   });
 
   it("measureBlobVolumeNorm 在无 AudioContext 的环境（node）返回 null 而不抛错", async () => {

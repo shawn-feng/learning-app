@@ -117,7 +117,7 @@ export default function ChildDailyPlans({ childId }: Props) {
               display: "inline-block",
               fontSize: 11,
               color: "#475569",
-              background: "#e2e8f0",
+              background: "#e5e5e5",
               borderRadius: 4,
               padding: "1px 6px",
               marginRight: 6,
@@ -139,15 +139,15 @@ export default function ChildDailyPlans({ childId }: Props) {
             style={{
               fontSize: 13.5,
               lineHeight: 1.5,
-              color: done ? "#aaa" : missed ? "#a32d2d" : "#333",
+              color: done ? "#afafaf" : missed ? "#a32d2d" : "#4b4b4b",
               textDecoration: done ? "line-through" : "none",
               wordBreak: "break-word",
             }}
           >
             {it.title}
           </span>
-          {modeTag && <span style={{ fontSize: 11, color: "#999", marginLeft: 4 }}>（{modeTag}）</span>}
-          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 1 }}>
+          {modeTag && <span style={{ fontSize: 11, color: "#afafaf", marginLeft: 4 }}>（{modeTag}）</span>}
+          <div style={{ fontSize: 11, color: "#afafaf", marginTop: 1 }}>
             {fmtDue(it.dueAt)}
             {missed ? " · 未完成" : ""}
             {done && it.doneAt ? ` · 完成于 ${it.doneAt.slice(5, 16).replace("T", " ")}` : ""}
@@ -175,7 +175,7 @@ export default function ChildDailyPlans({ childId }: Props) {
   return (
     <div>
       <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>🗓 计划 — 每天要完成的事</div>
-      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888", lineHeight: 1.7 }}>
+      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#777777", lineHeight: 1.7 }}>
         与孩子端一致：三张计划表（学习/生活/考核）逐日汇总，分「家长制定（必须完成项）」与「孩子自己制定（加分项）」。
         完成情况由系统自动核对；要改安排或纠错，对右侧家长 AI 说，或在「积分」页审计修正。
         <button
@@ -189,7 +189,7 @@ export default function ChildDailyPlans({ childId }: Props) {
             padding: "3px 10px",
             fontSize: 12,
             borderRadius: 6,
-            border: "1px solid #cbd5e1",
+            border: "1px solid #d0d0d0",
             background: "#fff",
             color: "#475569",
             cursor: loading ? "default" : "pointer",
@@ -200,8 +200,8 @@ export default function ChildDailyPlans({ childId }: Props) {
         </button>
       </p>
 
-      {loading && <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>}
-      {error && <p style={{ color: "#b33", fontSize: 12 }}>{error}</p>}
+      {loading && <p style={{ color: "#777777", fontSize: 13 }}>加载中…</p>}
+      {error && <p style={{ color: "#ea2b2b", fontSize: 12 }}>{error}</p>}
 
       {!loading && !error && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -210,7 +210,7 @@ export default function ChildDailyPlans({ childId }: Props) {
             const withItems = days.filter((d) => d.items.some((i) => i.status !== "cancelled"));
             if (!withItems.length) {
               return (
-                <p style={{ color: "#999", fontSize: 13, border: "1px dashed #ddd", borderRadius: 10, padding: 16 }}>
+                <p style={{ color: "#afafaf", fontSize: 13, border: "1px dashed #e5e5e5", borderRadius: 10, padding: 16 }}>
                   未来 {RANGE_DAYS} 天没有安排。要对家长 AI 说「帮孩子排一下下周的学习计划」。
                 </p>
               );
@@ -234,10 +234,10 @@ export default function ChildDailyPlans({ childId }: Props) {
                   <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: head.today ? "#b45309" : "#475569" }}>
                     {head.today ? "今天" : head.tomorrow ? "明天" : ""}
                     {head.today || head.tomorrow ? `（${head.label}）` : head.label}
-                    <span style={{ fontWeight: 400, color: "#94a3b8", marginLeft: 8, fontSize: 12 }}>
+                    <span style={{ fontWeight: 400, color: "#afafaf", marginLeft: 8, fontSize: 12 }}>
                       {doneCount}/{active.length} 已完成
                     </span>
-                    {d.date < today && <span style={{ fontSize: 11, color: "#cbd5e1", marginLeft: 8 }}>（已过去）</span>}
+                    {d.date < today && <span style={{ fontSize: 11, color: "#d0d0d0", marginLeft: 8 }}>（已过去）</span>}
                   </div>
                   {renderGroup("👨‍👩‍👧 家长制定（必须完成项）", parentItems, "#b45309", "#fff7ed", "#fed7aa", `p-${d.date}`)}
                   {renderGroup("🧒 孩子自己制定（加分项）", childItems, "#4f46e5", "#f5f7ff", "#e2e8ff", `c-${d.date}`)}

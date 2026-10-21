@@ -20,7 +20,7 @@ const MAX_KEYS = 10;
 
 const card: React.CSSProperties = {
   background: "#fff",
-  border: "1px solid #e6eaf0",
+  border: "1px solid #e5e5e5",
   borderRadius: 12,
   padding: "14px 16px",
   marginBottom: 12,
@@ -185,12 +185,12 @@ export default function OpenApiSettings() {
         每个账号可创建多把 Key（上限 {MAX_KEYS} 把）——建议一台设备一把，可独立吊销互不影响。
       </p>
 
-      {err && <p style={{ color: "#c0392b", fontSize: 13 }}>{err}</p>}
-      {notice && <p style={{ color: "#27ae60", fontSize: 13 }}>{notice}</p>}
+      {err && <p style={{ color: "#ea2b2b", fontSize: 13 }}>{err}</p>}
+      {notice && <p style={{ color: "#58a700", fontSize: 13 }}>{notice}</p>}
 
       {/* Key 列表 */}
       {!loaded ? (
-        <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>
+        <p style={{ color: "#777777", fontSize: 13 }}>加载中…</p>
       ) : keys.length === 0 ? (
         <div style={card}>
           <div style={{ fontSize: 14 }}>还没有 API Key，用下方表单生成第一把。</div>
@@ -200,21 +200,21 @@ export default function OpenApiSettings() {
           <div key={k.id} style={card}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 14 }}>{k.label || "API Key"}</strong>
-              <span style={{ fontSize: 12, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 10px" }}>
+              <span style={{ fontSize: 12, background: "#f7f7f7", color: "#1899d6", borderRadius: 999, padding: "1px 10px" }}>
                 {k.prefix}…
               </span>
             </div>
-            <div style={{ fontSize: 13, color: "#444", lineHeight: 1.9 }}>
+            <div style={{ fontSize: 13, color: "#4b4b4b", lineHeight: 1.9 }}>
               <div>默认对话对象：{childName(k.child_id)}</div>
               <div>
                 创建时间：{fmtTime(k.created_at)}　·　最近使用：{fmtTime(k.last_used_at)}（累计 {k.request_count} 次请求）
               </div>
             </div>
-            <p style={{ fontSize: 12, color: "#98a2b0", margin: "8px 0 12px" }}>
+            <p style={{ fontSize: 12, color: "#afafaf", margin: "8px 0 12px" }}>
               完整 Key 仅在生成时展示一次，此处只显示前缀。遗失请吊销这把后重新生成。
             </p>
             <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => handleRevoke(k)} disabled={busy} style={{ ...btn, background: "#fff", color: "#c0392b", border: "1px solid #e6b3ac" }}>
+              <button onClick={() => handleRevoke(k)} disabled={busy} style={{ ...btn, background: "#fff", color: "#ea2b2b", border: "1px solid #e6b3ac" }}>
                 吊销这把
               </button>
             </div>
@@ -233,7 +233,7 @@ export default function OpenApiSettings() {
               <select
                 value={childId}
                 onChange={(e) => setChildId(e.target.value)}
-                style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 180 }}
+                style={{ padding: "8px 12px", border: "1px solid #e5e5e5", borderRadius: 8, minWidth: 180 }}
               >
                 <option value="">（不绑定，请求须带 child_id）</option>
                 {children.map((c) => (
@@ -246,13 +246,13 @@ export default function OpenApiSettings() {
                 placeholder="备注（可选，如：客厅的硬件 / ESP32）"
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                style={{ flex: 1, minWidth: 200, padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8 }}
+                style={{ flex: 1, minWidth: 200, padding: "8px 12px", border: "1px solid #e5e5e5", borderRadius: 8 }}
               />
-              <button onClick={handleCreate} disabled={busy} style={{ ...btn, background: "#667eea", color: "#fff" }}>
+              <button onClick={handleCreate} disabled={busy} style={{ ...btn, background: "#58cc02", color: "#fff" }}>
                 生成 API Key
               </button>
             </div>
-            <p style={{ fontSize: 12, color: "#98a2b0", margin: "8px 0 0" }}>
+            <p style={{ fontSize: 12, color: "#afafaf", margin: "8px 0 0" }}>
               建议绑定默认孩子：硬件端无需关心 childId，直接对话即可。
             </p>
           </>
@@ -261,9 +261,9 @@ export default function OpenApiSettings() {
 
       {/* 完整 Key 一次性展示 */}
       {secret && (
-        <div style={{ ...card, border: "2px solid #667eea" }}>
+        <div style={{ ...card, border: "2px solid #58cc02" }}>
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>API Key 已生成（仅此一次展示）</div>
-          <p style={{ fontSize: 12, color: "#c0392b", margin: "0 0 10px" }}>
+          <p style={{ fontSize: 12, color: "#ea2b2b", margin: "0 0 10px" }}>
             请立即复制并保存到第三方设备。关闭本弹窗后无法再次查看，只能吊销后重新生成。
           </p>
           <code
@@ -271,7 +271,7 @@ export default function OpenApiSettings() {
             style={{
               display: "block",
               background: "#f6f8fa",
-              border: "1px solid #e6eaf0",
+              border: "1px solid #e5e5e5",
               borderRadius: 8,
               padding: "10px 12px",
               fontSize: 13,
@@ -282,14 +282,14 @@ export default function OpenApiSettings() {
             {secret}
           </code>
           {copyFailed && (
-            <p style={{ fontSize: 12, color: "#c0392b", margin: "8px 0 0" }}>
+            <p style={{ fontSize: 12, color: "#ea2b2b", margin: "8px 0 0" }}>
               ⚠️ 自动复制被浏览器拦截（局域网 HTTP 页面的安全限制）。已为你选中上方 Key 全文——请按 Ctrl+C（Mac ⌘C）手动复制。
             </p>
           )}
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button
               onClick={copySecret}
-              style={{ ...btn, background: copied ? "#27ae60" : "#667eea", color: "#fff" }}
+              style={{ ...btn, background: copied ? "#58a700" : "#58cc02", color: "#fff" }}
             >
               {copied ? "已复制 ✓" : copyFailed ? "再试一次复制" : "复制 Key"}
             </button>
@@ -299,7 +299,7 @@ export default function OpenApiSettings() {
                 setCopied(false);
                 setCopyFailed(false);
               }}
-              style={{ ...btn, background: "#fff", border: "1px solid #ddd" }}
+              style={{ ...btn, background: "#fff", border: "1px solid #e5e5e5" }}
             >
               我已保存，关闭
             </button>
@@ -311,7 +311,7 @@ export default function OpenApiSettings() {
       <div style={card}>
         <div
           onClick={() => setShowExample((v) => !v)}
-          style={{ cursor: "pointer", fontSize: 13, color: "#3b4cca", userSelect: "none" }}
+          style={{ cursor: "pointer", fontSize: 13, color: "#1899d6", userSelect: "none" }}
         >
           {showExample ? "▾" : "▸"} 第三方接入示例（curl）
         </div>
@@ -319,7 +319,7 @@ export default function OpenApiSettings() {
           <pre
             style={{
               background: "#f6f8fa",
-              border: "1px solid #e6eaf0",
+              border: "1px solid #e5e5e5",
               borderRadius: 8,
               padding: "10px 12px",
               fontSize: 12,

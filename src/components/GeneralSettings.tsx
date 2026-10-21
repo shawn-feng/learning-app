@@ -143,7 +143,7 @@ export default function GeneralSettings() {
         <label style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>
           服务端地址
         </label>
-        <p style={{ fontSize: 13, color: "#888", margin: "0 0 8px", lineHeight: 1.6 }}>
+        <p style={{ fontSize: 13, color: "#777777", margin: "0 0 8px", lineHeight: 1.6 }}>
           填写学习伙伴服务端的地址（如家庭主机 http://192.168.1.200:8788 或云上 https://…）。登录、数据读写、学习资料同步均经此服务端；未配置时无法登录。
         </p>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
@@ -156,7 +156,7 @@ export default function GeneralSettings() {
               setServerDirty(true);
               setServerMsg("");
             }}
-            style={{ flex: 1, padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
+            style={{ flex: 1, padding: 10, border: "1px solid #e5e5e5", borderRadius: 8 }}
           />
           <IconButton
             icon={Save}
@@ -169,14 +169,14 @@ export default function GeneralSettings() {
               });
             }}
             disabled={!serverDirty}
-            style={{ padding: "10px 20px", background: serverDirty ? "#667eea" : "#ddd", color: serverDirty ? "white" : "#666", border: "none", borderRadius: 8 }}
+            style={{ padding: "10px 20px", background: serverDirty ? "#58cc02" : "#e5e5e5", color: serverDirty ? "white" : "#777777", border: "none", borderRadius: 8 }}
           />
         </div>
         {serverMsg && (
-          <p style={{ fontSize: 13, color: "#48bb78", marginTop: 8 }}>{serverMsg}</p>
+          <p style={{ fontSize: 13, color: "#58a700", marginTop: 8 }}>{serverMsg}</p>
         )}
         {!serverUrl && (
-          <p style={{ fontSize: 13, color: "#cc7b00", marginTop: 8 }}>
+          <p style={{ fontSize: 13, color: "#b9770a", marginTop: 8 }}>
             尚未配置服务端地址，登录前请先填写。
           </p>
         )}
@@ -186,7 +186,7 @@ export default function GeneralSettings() {
         <label style={{ display: "block", marginBottom: 6, fontWeight: 600 }}>
           学习资料保留数量
         </label>
-        <p style={{ fontSize: 13, color: "#888", margin: "0 0 8px", lineHeight: 1.6 }}>
+        <p style={{ fontSize: 13, color: "#777777", margin: "0 0 8px", lineHeight: 1.6 }}>
           孩子模式左侧「学习资料」列表最多保留多少份资料；超出后只保留最近的一份。退出再进入时资料也会保留（除非会话被重置）。默认 20。
         </p>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
@@ -195,26 +195,26 @@ export default function GeneralSettings() {
             min={1}
             value={limit}
             onChange={(e) => setLimit(parseInt(e.target.value, 10) || 1)}
-            style={{ width: 120, padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
+            style={{ width: 120, padding: 10, border: "1px solid #e5e5e5", borderRadius: 8 }}
           />
           <IconButton
             icon={Save}
             title="保存"
             onClick={save}
-            style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8 }}
+            style={{ padding: "10px 20px", background: "#58cc02", color: "white", border: "none", borderRadius: 8 }}
           />
         </div>
         {msg && (
-          <p style={{ fontSize: 13, color: msg === "已保存" ? "#48bb78" : "red", marginTop: 8 }}>
+          <p style={{ fontSize: 13, color: msg === "已保存" ? "#58cc02" : "red", marginTop: 8 }}>
             {msg}
           </p>
         )}
       </div>
 
       {/* ISSUE-040: 软件更新（electron-updater 自动更新，安装包托管阿里云 OSS） */}
-      <div style={{ paddingTop: 16, borderTop: "1px solid #eee" }}>
+      <div style={{ paddingTop: 16, borderTop: "1px solid #e5e5e5" }}>
         <h4 style={{ fontSize: 15, marginBottom: 4 }}>软件更新</h4>
-        <p style={{ fontSize: 13, color: "#888", margin: "0 0 8px", lineHeight: 1.6 }}>
+        <p style={{ fontSize: 13, color: "#777777", margin: "0 0 8px", lineHeight: 1.6 }}>
           当前版本 <b>{appVersion || "…"}</b>。检查并安装最新版本（差量下载，升级不影响本地数据）。
         </p>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -225,8 +225,8 @@ export default function GeneralSettings() {
             disabled={busy}
             style={{
               padding: "10px 20px",
-              background: busy ? "#ddd" : "#667eea",
-              color: busy ? "#666" : "white",
+              background: busy ? "#e5e5e5" : "#58cc02",
+              color: busy ? "#777777" : "white",
               border: "none",
               borderRadius: 8,
               cursor: busy ? "default" : "pointer",
@@ -237,7 +237,7 @@ export default function GeneralSettings() {
               icon={Download}
               title="开始下载"
               onClick={() => window.api.downloadUpdate()}
-              style={{ padding: "10px 20px", background: "#f0f4ff", color: "#667eea", border: "none", borderRadius: 8, cursor: "pointer" }}
+              style={{ padding: "10px 20px", background: "#e9f9dc", color: "#58a700", border: "none", borderRadius: 8, cursor: "pointer" }}
             />
           )}
           {updStatus === "downloaded" && (
@@ -245,40 +245,40 @@ export default function GeneralSettings() {
               icon={Power}
               title="重启并安装"
               onClick={() => window.api.quitAndInstall()}
-              style={{ padding: "10px 20px", background: "#48bb78", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
+              style={{ padding: "10px 20px", background: "#58cc02", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
             />
           )}
         </div>
 
         {updStatus === "not-available" && (
-          <p style={{ fontSize: 13, color: "#48bb78", marginTop: 8 }}>
+          <p style={{ fontSize: 13, color: "#58a700", marginTop: 8 }}>
             已是最新版本（v{appVersion}）。
           </p>
         )}
         {updStatus === "available" && (
-          <p style={{ fontSize: 13, color: "#667eea", marginTop: 8 }}>
+          <p style={{ fontSize: 13, color: "#58a700", marginTop: 8 }}>
             发现新版本 v{updInfo?.version || ""}，正在下载…
           </p>
         )}
         {updStatus === "downloading" && updProgress !== null && (
           <div style={{ marginTop: 8 }}>
-            <div style={{ background: "#eee", borderRadius: 6, height: 8, overflow: "hidden" }}>
+            <div style={{ background: "#e5e5e5", borderRadius: 6, height: 8, overflow: "hidden" }}>
               <div
                 style={{
                   width: `${Math.min(100, Math.max(0, updProgress))}%`,
-                  background: "#667eea",
+                  background: "#58cc02",
                   height: "100%",
                   transition: "width 0.2s",
                 }}
               />
             </div>
-            <p style={{ fontSize: 12, color: "#888", marginTop: 6 }}>
+            <p style={{ fontSize: 12, color: "#777777", marginTop: 6 }}>
               {updProgress.toFixed(1)}%（{formatBytes(updSpeed)}/s）
             </p>
           </div>
         )}
         {updStatus === "downloaded" && (
-          <p style={{ fontSize: 13, color: "#48bb78", marginTop: 8 }}>
+          <p style={{ fontSize: 13, color: "#58a700", marginTop: 8 }}>
             新版本 v{updInfo?.version || ""} 已下载完成，点击「重启并安装」完成升级。
           </p>
         )}
@@ -288,14 +288,14 @@ export default function GeneralSettings() {
           </p>
         )}
         {updStatus === "disabled" && (
-          <p style={{ fontSize: 13, color: "#888", marginTop: 8 }}>当前环境（开发模式）不支持自动更新。</p>
+          <p style={{ fontSize: 13, color: "#777777", marginTop: 8 }}>当前环境（开发模式）不支持自动更新。</p>
         )}
       </div>
 
       {/* ISSUE-044/162: 诊断——导出客户端日志 + 服务端日志，供问题排查上报 */}
-      <div style={{ paddingTop: 16, borderTop: "1px solid #eee" }}>
+      <div style={{ paddingTop: 16, borderTop: "1px solid #e5e5e5" }}>
         <h4 style={{ fontSize: 15, marginBottom: 4 }}>诊断</h4>
-        <p style={{ fontSize: 13, color: "#888", margin: "0 0 8px", lineHeight: 1.6 }}>
+        <p style={{ fontSize: 13, color: "#777777", margin: "0 0 8px", lineHeight: 1.6 }}>
           导出运行日志用于问题排查：客户端日志（client-log.jsonl）记录本机启动/会话/同步/异常；服务端日志（server-log.jsonl）从服务端拉取。均不含对话内容与密钥。
         </p>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -303,22 +303,22 @@ export default function GeneralSettings() {
             icon={FileText}
             title="导出客户端日志"
             onClick={exportClientLog}
-            style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
+            style={{ padding: "10px 20px", background: "#58cc02", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
           />
           <IconButton
             icon={Download}
             title="导出服务端日志"
             disabled={srvLogBusy}
             onClick={exportServerLog}
-            style={{ padding: "10px 20px", background: "#48bb78", color: "white", border: "none", borderRadius: 8, cursor: srvLogBusy ? "wait" : "pointer", opacity: srvLogBusy ? 0.6 : 1 }}
+            style={{ padding: "10px 20px", background: "#58cc02", color: "white", border: "none", borderRadius: 8, cursor: srvLogBusy ? "wait" : "pointer", opacity: srvLogBusy ? 0.6 : 1 }}
           />
           {exportMsg && (
-            <span style={{ fontSize: 13, color: exportMsg.startsWith("已导出") ? "#48bb78" : "#cc7b00" }}>
+            <span style={{ fontSize: 13, color: exportMsg.startsWith("已导出") ? "#58cc02" : "#b9770a" }}>
               {exportMsg}
             </span>
           )}
           {srvLogMsg && (
-            <span style={{ fontSize: 13, color: srvLogMsg.startsWith("已导出") || srvLogMsg === "已取消导出" ? "#48bb78" : "#cc7b00" }}>
+            <span style={{ fontSize: 13, color: srvLogMsg.startsWith("已导出") || srvLogMsg === "已取消导出" ? "#58cc02" : "#b9770a" }}>
               {srvLogMsg}
             </span>
           )}

@@ -98,8 +98,8 @@ export default function CustomPromptEditor({
           onClick={() => handleSave(draft, "已保存（重开会话后生效）")}
           style={{
             padding: "6px 16px",
-            background: busy || !dirty ? "#ddd" : "#667eea",
-            color: busy || !dirty ? "#666" : "white",
+            background: busy || !dirty ? "#e5e5e5" : "#58cc02",
+            color: busy || !dirty ? "#777777" : "white",
             border: "none",
             borderRadius: 6,
             fontSize: 13,
@@ -114,7 +114,7 @@ export default function CustomPromptEditor({
           style={{
             padding: "6px 12px",
             background: "white",
-            border: "1px solid #ddd",
+            border: "1px solid #e5e5e5",
             borderRadius: 6,
             fontSize: 13,
             cursor: busy || !customized ? "default" : "pointer",
@@ -122,7 +122,7 @@ export default function CustomPromptEditor({
         >
           清空自定义
         </button>
-        <span style={{ fontSize: 12, color: customized ? "#b26a00" : "#999" }}>
+        <span style={{ fontSize: 12, color: customized ? "#b26a00" : "#afafaf" }}>
           {customized ? "已自定义" : "未自定义"}
         </span>
         {dirty && <span style={{ fontSize: 12, color: "#b26a00" }}>有未保存的改动</span>}
@@ -134,7 +134,7 @@ export default function CustomPromptEditor({
         </p>
       )}
       {status && (
-        <p style={{ fontSize: 13, margin: "0 0 8px", color: status.kind === "err" ? "#c0392b" : "#2f7a2f" }}>
+        <p style={{ fontSize: 13, margin: "0 0 8px", color: status.kind === "err" ? "#ea2b2b" : "#2f7a2f" }}>
           {status.text}
         </p>
       )}
@@ -150,7 +150,7 @@ export default function CustomPromptEditor({
           fontFamily: "monospace",
           fontSize: 13,
           lineHeight: 1.6,
-          border: "1px solid #ddd",
+          border: "1px solid #e5e5e5",
           borderRadius: 8,
           padding: 12,
           resize: "vertical",
@@ -158,14 +158,14 @@ export default function CustomPromptEditor({
       />
 
       {history.length > 0 && (
-        <div style={{ marginTop: 10, borderTop: "1px solid #eee", paddingTop: 8, maxHeight: 150, overflowY: "auto" }}>
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
+        <div style={{ marginTop: 10, borderTop: "1px solid #e5e5e5", paddingTop: 8, maxHeight: 150, overflowY: "auto" }}>
+          <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>
             历史版本（最多 50 版，点「回退」把那一版变成当前）
           </div>
           {history.map((h) => (
             <div key={h.updated} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, padding: "2px 0" }}>
-              <span style={{ color: "#666", width: 130 }}>{hhmm(h.updated)}</span>
-              <span style={{ color: "#aaa", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <span style={{ color: "#777777", width: 130 }}>{hhmm(h.updated)}</span>
+              <span style={{ color: "#afafaf", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {h.content.replace(/\s+/g, " ").slice(0, 60) || "（空＝清空自定义）"}
               </span>
               <button
@@ -181,7 +181,7 @@ export default function CustomPromptEditor({
                   setStatus({ kind: "ok", text: `已回退到 ${hhmm(h.updated)} 那一版（重开会话后生效）` });
                   await load();
                 }}
-                style={{ padding: "2px 10px", background: "white", border: "1px solid #ddd", borderRadius: 4 }}
+                style={{ padding: "2px 10px", background: "white", border: "1px solid #e5e5e5", borderRadius: 4 }}
               >
                 回退
               </button>

@@ -204,7 +204,7 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
           style={{
             maxWidth: 560, width: "100%", margin: "0 auto 16px", padding: "10px 16px",
             borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 600,
-            background: quotaBanner === "empty" ? "rgba(229,62,62,.92)" : "rgba(246,173,85,.92)",
+            background: quotaBanner === "empty" ? "rgba(255, 75, 75, .92)" : "rgba(255, 200, 0, .92)",
             color: "#fff",
           }}
           title="点击进入家长中心查看配额"
@@ -216,33 +216,30 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
       )}
 
       <h1>学习伙伴</h1>
-      <p style={{ color: "rgba(255,255,255,0.85)", marginTop: -20, marginBottom: 24 }}>
-        选择身份进入
-      </p>
+      <p className="home-subtitle">选择身份进入</p>
 
       {/* 家长入口 */}
       <div className="avatars">
         <div className="avatar-card parent-card" onClick={openParentAuth}>
           <div className="avatar">👨‍👩‍👧</div>
           <div className="name">家长</div>
-          <div style={{ fontSize: 12, color: "#888" }}>家长中心</div>
+          <div style={{ fontSize: 12, color: "#777777" }}>家长中心</div>
         </div>
 
         {/* 孩子列表 */}
         {children.map((child) => (
           <div
             key={child.childId}
-            className="avatar-card"
+            className={`avatar-card ${selectedChild?.childId === child.childId ? "selected" : ""}`}
             onClick={() => {
               setSelectedChild(child);
               setChildPassword("");
               setChildError("");
             }}
-            style={selectedChild?.childId === child.childId ? { border: "3px solid #ffd700" } : {}}
           >
             <div className="avatar">{child.avatar}</div>
             <div className="name">{child.name}</div>
-            <div style={{ fontSize: 12, color: "#888" }}>{child.aiName}</div>
+            <div style={{ fontSize: 12, color: "#777777" }}>{child.aiName}</div>
           </div>
         ))}
 
@@ -253,7 +250,7 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
           </div>
         )}
         {!childrenLoading && children.length === 0 && (
-          <div style={{ width: "100%", textAlign: "center", color: "#888", fontSize: 14, padding: "18px 0" }}>
+          <div style={{ width: "100%", textAlign: "center", color: "#777777", fontSize: 14, padding: "18px 0" }}>
             还没有添加孩子，请联系家长添加。
           </div>
         )}
@@ -262,7 +259,7 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
       {/* 孩子密码输入 */}
       {selectedChild && (
         <>
-          {childError && <div style={{ color: "#ffd700", marginTop: 12 }}>{childError}</div>}
+          {childError && <div style={{ color: "#ff4b4b", marginTop: 12, fontWeight: 700 }}>{childError}</div>}
           <input
             className="password-input"
             type="password"
@@ -271,7 +268,7 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
             onChange={(e) => setChildPassword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleChildEnter()}
             autoFocus
-            style={{ background: "white", color: "#333", outline: "none" }}
+            style={{ background: "white", color: "#4b4b4b", outline: "none" }}
           />
           <button className="enter-btn" onClick={handleChildEnter}>
             进入学习
@@ -291,12 +288,12 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
                   : "家长验证"}
             </h2>
             {parentPwdMode === "setup" && (
-              <p style={{ fontSize: 13, color: "#667eea", marginBottom: 10 }}>
+              <p style={{ fontSize: 13, color: "#58a700", marginBottom: 10 }}>
                 检测到你是抖音扫码登录，首次进入请设置家长密码（用于以后验证）
               </p>
             )}
             {parentPwdMode === "reset" && (
-              <p style={{ fontSize: 13, color: "#667eea", marginBottom: 10 }}>
+              <p style={{ fontSize: 13, color: "#58a700", marginBottom: 10 }}>
                 输入新密码后，将打开浏览器用抖音扫码确认身份，确认后密码即重置
               </p>
             )}
@@ -307,7 +304,7 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
                   <div style={{ fontSize: 12, marginTop: 6 }}>
                     请先
                     <a
-                      style={{ color: "#667eea", cursor: "pointer", textDecoration: "underline" }}
+                      style={{ color: "#58a700", cursor: "pointer", textDecoration: "underline" }}
                       onClick={() => {
                         setShowParentAuth(false);
                         setServerMsg("");
@@ -333,7 +330,7 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
                   placeholder="请输入家长密码"
                 />
                 <div
-                  style={{ fontSize: 12, color: "#667eea", marginTop: 8, cursor: "pointer", textAlign: "right" }}
+                  style={{ fontSize: 12, color: "#58a700", marginTop: 8, cursor: "pointer", textAlign: "right" }}
                   onClick={startParentReset}
                 >
                   忘记密码？抖音扫码重置
@@ -380,7 +377,7 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
         <div className="modal-overlay" onClick={() => setShowServerCfg(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2>服务端设置</h2>
-            <p style={{ fontSize: 13, color: "#888", lineHeight: 1.6, margin: "0 0 12px" }}>
+            <p style={{ fontSize: 13, color: "#777777", lineHeight: 1.6, margin: "0 0 12px" }}>
               填写学习伙伴服务端地址（如 http://192.168.1.200:8788 或云上 https://…）。登录、数据读写、学习资料同步均经此服务端。
             </p>
             <label>服务端地址</label>
@@ -395,10 +392,10 @@ export default function Home({ email, onEnterParent, onEnterChild, onLogout }: P
               }}
             />
             {serverMsg && (
-              <p style={{ fontSize: 13, color: "#48bb78", margin: "8px 0 0" }}>{serverMsg}</p>
+              <p style={{ fontSize: 13, color: "#58a700", margin: "8px 0 0" }}>{serverMsg}</p>
             )}
             {!serverUrl && (
-              <p style={{ fontSize: 13, color: "#cc7b00", margin: "8px 0 0" }}>
+              <p style={{ fontSize: 13, color: "#b9770a", margin: "8px 0 0" }}>
                 尚未配置服务端地址，请填写后保存。
               </p>
             )}

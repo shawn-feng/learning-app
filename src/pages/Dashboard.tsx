@@ -56,7 +56,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
     });
   }
   // 右侧家长聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化）
-  const parentChat = useChatPanel("parent", 360);
+  const parentChat = useChatPanel("parent", 400);
   // ISSUE-158 续（用户反馈）：折叠开关移到标题栏（全屏右侧两枚）——这里监听切换请求并上报
   // 当前态供标题栏切图标（窗口 CustomEvent 解耦，TitleBar 与面板状态互不持有）
   const chatCollapsedRef = useRef(parentChat.collapsed);
@@ -153,7 +153,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
               菜单区内部滚动，「返回主页」钉在侧栏最下面 */}
           <div className="sidebar-menu">
           <div
-            className="child-card"
+            className={`child-card ${view === "children" ? "active" : ""}`}
             style={{ border: "none" }}
             title="孩子管理"
             onClick={() => {
@@ -167,7 +167,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           </div>
           <div
-            className="child-card"
+            className={`child-card ${view === "courses" ? "active" : ""}`}
             style={{ border: "none" }}
             title="课程管理"
             onClick={() => setView("courses")}
@@ -178,7 +178,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           </div>
           <div
-            className="child-card"
+            className={`child-card ${view === "bank" ? "active" : ""}`}
             style={{ border: "none" }}
             title="题库"
             onClick={() => {
@@ -193,7 +193,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           </div>
           {/* ISSUE-131 P1：文件区网盘（资料库/上传原始件/各孩子工作区统一管理） */}
           <div
-            className="child-card"
+            className={`child-card ${view === "files" ? "active" : ""}`}
             style={{ border: "none" }}
             title="文件"
             onClick={() => {
@@ -208,7 +208,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
           </div>
           {/* ISSUE-130：学习计划/学习考核/积分 已并入 孩子管理→孩子详情 */}
           <div
-            className="child-card"
+            className={`child-card ${view === "scheduler" ? "active" : ""}`}
             style={{ border: "none", position: "relative" }}
             title="定时任务"
             onClick={() => {
@@ -229,14 +229,14 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                   width: 10,
                   height: 10,
                   borderRadius: "50%",
-                  background: "#e74c3c",
+                  background: "#ff4b4b",
                 }}
                 title="有任务连续失败提醒"
               />
             )}
           </div>
           <div
-            className="child-card"
+            className={`child-card ${view === "tokens" ? "active" : ""}`}
             style={{ border: "none" }}
             title="Token 消耗"
             onClick={() => setView("tokens")}
@@ -247,7 +247,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           </div>
           <div
-            className="child-card"
+            className={`child-card ${view === "settings" ? "active" : ""}`}
             style={{ border: "none" }}
             title="设置"
             onClick={() => setView("settings")}
@@ -258,7 +258,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
             </div>
           </div>
           <div
-            className="child-card"
+            className={`child-card ${view === "report" ? "active" : ""}`}
             style={{ border: "none", position: "relative" }}
             title="报表"
             onClick={() => {
@@ -279,7 +279,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                   width: 10,
                   height: 10,
                   borderRadius: "50%",
-                  background: "#e74c3c",
+                  background: "#ff4b4b",
                 }}
                 title="有新报表"
               />
@@ -308,21 +308,10 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                 <LoadingBlock text="正在加载孩子列表…" />
               ) : children.length === 0 ? (
                 <>
-                  <p style={{ color: "#888" }}>还没有孩子，点击下方"添加孩子"开始。</p>
+                  <p style={{ color: "#777777" }}>还没有孩子，点击下方"添加孩子"开始。</p>
                   <button
                     onClick={() => setShowAddChild(true)}
-                    style={{
-                      padding: "10px 20px",
-                      background: "#667eea",
-                      color: "white",
-                      border: "none",
-                      borderRadius: 8,
-                      fontSize: 14,
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      cursor: "pointer",
-                    }}
+                    className="btn-duo"
                   >
                     <UserPlus size={18} /> 添加孩子
                   </button>
@@ -333,18 +322,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                     <h3 style={{ margin: 0 }}>孩子列表（点击卡片进入详情）</h3>
                     <button
                       onClick={() => setShowAddChild(true)}
-                      style={{
-                        padding: "8px 16px",
-                        background: "#667eea",
-                        color: "white",
-                        border: "none",
-                        borderRadius: 8,
-                        fontSize: 13,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        cursor: "pointer",
-                      }}
+                      className="btn-duo btn-duo-sm"
                     >
                       <UserPlus size={16} /> 添加孩子
                     </button>
@@ -356,7 +334,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                         key={child.childId}
                         className="child-card"
                         style={{
-                          border: "1px solid #eee",
+                          border: "1px solid #e5e5e5",
                           flexDirection: "column",
                           alignItems: "flex-start",
                           cursor: "pointer",
@@ -377,7 +355,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                             </div>
                           </div>
                         </div>
-                        <div style={{ fontSize: 12, color: "#667eea", marginTop: 12, display: "flex", alignItems: "center", gap: 4 }}>
+                        <div style={{ fontSize: 12, color: "#58a700", marginTop: 12, display: "flex", alignItems: "center", gap: 4 }}>
                           查看详情 ›
                         </div>
                       </div>
@@ -428,7 +406,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                   style={{
                     background: "#fff",
                     borderRadius: 12,
-                    border: "1px solid #e6eaf0",
+                    border: "1px solid #e5e5e5",
                     padding: "18px 24px",
                     maxWidth: 860,
                     lineHeight: 1.7,
@@ -439,7 +417,7 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                 >
                   <div style={{ marginBottom: 10 }}>
                     <span style={{ fontWeight: 800, fontSize: 17 }}>📊 {report.title}</span>
-                    <span style={{ fontSize: 12, color: "#98a1b2", marginLeft: 10 }}>
+                    <span style={{ fontSize: 12, color: "#afafaf", marginLeft: 10 }}>
                       {new Date(report.ts).toLocaleString("zh-CN")}
                     </span>
                   </div>
@@ -450,9 +428,9 @@ export default function Dashboard({ email, onEnterChildMode, onLogout }: Props) 
                   style={{
                     padding: 32,
                     textAlign: "center",
-                    color: "#999",
+                    color: "#afafaf",
                     fontSize: 13,
-                    border: "1px dashed #ddd",
+                    border: "1px dashed #e5e5e5",
                     borderRadius: 10,
                     maxWidth: 860,
                   }}

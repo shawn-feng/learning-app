@@ -104,7 +104,7 @@ export default function SceneSkillSettings() {
 
       <div style={{ display: "flex", flex: 1, minHeight: 0, gap: 16 }}>
         {/* 左侧：场景清单 */}
-        <div style={{ width: 220, borderRight: "1px solid #eee", overflowY: "auto", flexShrink: 0 }}>
+        <div style={{ width: 220, borderRight: "1px solid #e5e5e5", overflowY: "auto", flexShrink: 0 }}>
           {rows.map((r) => (
             <div
               key={r.name}
@@ -112,18 +112,18 @@ export default function SceneSkillSettings() {
               style={{
                 padding: "10px 12px",
                 cursor: "pointer",
-                background: selected === r.name ? "#f0f4ff" : "transparent",
+                background: selected === r.name ? "#e9f9dc" : "transparent",
                 borderRadius: 8,
                 marginBottom: 4,
               }}
             >
               <div style={{ fontSize: 14, fontWeight: selected === r.name ? 600 : 400 }}>{r.title}</div>
-              <div style={{ fontSize: 12, color: "#999", marginTop: 2 }}>
+              <div style={{ fontSize: 12, color: "#afafaf", marginTop: 2 }}>
                 {r.override ? `已自定义（${hhmm(r.updated)}）` : "官方口径"}
               </div>
             </div>
           ))}
-          {rows.length === 0 && <p style={{ color: "#888", fontSize: 12, padding: 12 }}>暂无场景</p>}
+          {rows.length === 0 && <p style={{ color: "#777777", fontSize: 12, padding: 12 }}>暂无场景</p>}
         </div>
 
         {/* 右侧：编辑区 */}
@@ -133,7 +133,7 @@ export default function SceneSkillSettings() {
               <div style={{ marginBottom: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <strong style={{ fontSize: 15 }}>{current.title}</strong>
-                  <span style={{ fontSize: 12, color: "#999" }}>{current.name}</span>
+                  <span style={{ fontSize: 12, color: "#afafaf" }}>{current.name}</span>
                   <span
                     style={{
                       fontSize: 12,
@@ -146,7 +146,7 @@ export default function SceneSkillSettings() {
                     {customized ? "已自定义" : "官方口径"}
                   </span>
                 </div>
-                <p style={{ fontSize: 12, color: "#888", margin: "6px 0 0" }}>
+                <p style={{ fontSize: 12, color: "#777777", margin: "6px 0 0" }}>
                   家长通常这么说：{current.triggers}
                 </p>
               </div>
@@ -157,8 +157,8 @@ export default function SceneSkillSettings() {
                   onClick={() => handleSave(draft, "已保存")}
                   style={{
                     padding: "6px 16px",
-                    background: busy || !dirty ? "#ddd" : "#667eea",
-                    color: busy || !dirty ? "#666" : "white",
+                    background: busy || !dirty ? "#e5e5e5" : "#58cc02",
+                    color: busy || !dirty ? "#777777" : "white",
                     border: "none",
                     borderRadius: 6,
                     fontSize: 13,
@@ -173,7 +173,7 @@ export default function SceneSkillSettings() {
                     setDraft(current.builtin);
                     setStatus({ kind: "info", text: "已载入官方口径，点「保存」才生效（也可以直接用下面的「恢复官方口径」）。" });
                   }}
-                  style={{ padding: "6px 12px", background: "white", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                  style={{ padding: "6px 12px", background: "white", border: "1px solid #e5e5e5", borderRadius: 6, fontSize: 13 }}
                 >
                   载入官方口径到编辑框
                 </button>
@@ -183,7 +183,7 @@ export default function SceneSkillSettings() {
                   style={{
                     padding: "6px 12px",
                     background: "white",
-                    border: "1px solid #ddd",
+                    border: "1px solid #e5e5e5",
                     borderRadius: 6,
                     fontSize: 13,
                     cursor: busy || !customized ? "default" : "pointer",
@@ -199,7 +199,7 @@ export default function SceneSkillSettings() {
                   style={{
                     fontSize: 13,
                     margin: "0 0 8px",
-                    color: status.kind === "err" ? "#c0392b" : status.kind === "ok" ? "#2f7a2f" : "#667eea",
+                    color: status.kind === "err" ? "#ea2b2b" : status.kind === "ok" ? "#2f7a2f" : "#58cc02",
                   }}
                 >
                   {status.text}
@@ -216,26 +216,26 @@ export default function SceneSkillSettings() {
                   fontFamily: "monospace",
                   fontSize: 13,
                   lineHeight: 1.6,
-                  border: "1px solid #ddd",
+                  border: "1px solid #e5e5e5",
                   borderRadius: 8,
                   padding: 12,
                   resize: "vertical",
                 }}
               />
 
-              <p style={{ fontSize: 12, color: "#999", marginTop: 6 }}>
+              <p style={{ fontSize: 12, color: "#afafaf", marginTop: 6 }}>
                 可用的工具（本场景）：{current.tools.length ? current.tools.join("、") : "（无专用工具）"}
               </p>
 
               {history.length > 0 && (
-                <div style={{ marginTop: 10, borderTop: "1px solid #eee", paddingTop: 8, maxHeight: 150, overflowY: "auto" }}>
-                  <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
+                <div style={{ marginTop: 10, borderTop: "1px solid #e5e5e5", paddingTop: 8, maxHeight: 150, overflowY: "auto" }}>
+                  <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>
                     历史版本（最多 50 版，点「回退」把那一版变成当前）
                   </div>
                   {history.map((h) => (
                     <div key={h.updated} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, padding: "2px 0" }}>
-                      <span style={{ color: "#666", width: 130 }}>{hhmm(h.updated)}</span>
-                      <span style={{ color: "#aaa", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <span style={{ color: "#777777", width: 130 }}>{hhmm(h.updated)}</span>
+                      <span style={{ color: "#afafaf", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {h.content.replace(/\s+/g, " ").slice(0, 60)}
                       </span>
                       <button
@@ -251,7 +251,7 @@ export default function SceneSkillSettings() {
                           setStatus({ kind: "ok", text: `已回退到 ${hhmm(h.updated)} 那一版（新会话里生效）` });
                           await load(current.name);
                         }}
-                        style={{ padding: "2px 10px", background: "white", border: "1px solid #ddd", borderRadius: 4 }}
+                        style={{ padding: "2px 10px", background: "white", border: "1px solid #e5e5e5", borderRadius: 4 }}
                       >
                         回退
                       </button>
@@ -261,7 +261,7 @@ export default function SceneSkillSettings() {
               )}
             </>
           ) : (
-            <div style={{ color: "#888", fontSize: 13, textAlign: "center", marginTop: 40 }}>选择左侧场景开始编辑</div>
+            <div style={{ color: "#777777", fontSize: 13, textAlign: "center", marginTop: 40 }}>选择左侧场景开始编辑</div>
           )}
         </div>
       </div>

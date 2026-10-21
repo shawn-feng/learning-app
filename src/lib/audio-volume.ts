@@ -85,9 +85,9 @@ export function volumeVerdict(norm: number, minNorm: number): VolumeVerdict {
 
 /** 音量条着色：达标=绿 / 偏轻=黄 / 太小=红（考核页与聊天实时条同一套色）。 */
 export function volumeBarColor(norm: number, minNorm: number): string {
-  if (minNorm <= 0 || norm >= minNorm) return "#27ae60";
+  if (minNorm <= 0 || norm >= minNorm) return "#58a700";
   if (minNorm - norm <= 12) return "#e6a23c";
-  return "#e74c3c";
+  return "#ff4b4b";
 }
 
 /** AudioBuffer（解码后 PCM）→ 全程平均音量归一分；多声道按样本平均（与考核 iframe、服务端同算）。 */

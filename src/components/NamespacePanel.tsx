@@ -28,7 +28,7 @@ interface NamespaceInfo {
 
 const card: React.CSSProperties = {
   background: "#fff",
-  border: "1px solid #e6eaf0",
+  border: "1px solid #e5e5e5",
   borderRadius: 12,
   padding: "14px 16px",
   marginBottom: 12,
@@ -55,7 +55,7 @@ function FieldTable({ fields }: { fields: NsField[] }) {
   return (
     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
       <thead>
-        <tr style={{ color: "#8a94a6", textAlign: "left" }}>
+        <tr style={{ color: "#777777", textAlign: "left" }}>
           <th style={{ padding: "4px 8px", fontWeight: 500 }}>字段</th>
           <th style={{ padding: "4px 8px", fontWeight: 500 }}>类型</th>
           <th style={{ padding: "4px 8px", fontWeight: 500 }}>说明</th>
@@ -72,9 +72,9 @@ function FieldTable({ fields }: { fields: NsField[] }) {
             </td>
             <td style={{ padding: "4px 8px", color: "#4a5265" }}>
               {f.desc}
-              {f.ref ? <span style={{ color: "#3b4cca" }}>（关联 {f.ref}）</span> : null}
+              {f.ref ? <span style={{ color: "#1899d6" }}>（关联 {f.ref}）</span> : null}
             </td>
-            <td style={{ padding: "4px 8px", color: "#8a94a6" }}>
+            <td style={{ padding: "4px 8px", color: "#777777" }}>
               {[
                 f.required ? "必填" : "",
                 f.filterable ? "可筛选" : "",
@@ -148,7 +148,7 @@ export default function NamespacePanel() {
             borderRadius: 8,
             fontSize: 13,
             background: notice.ok ? "#eefaf0" : "#fdf0f0",
-            color: notice.ok ? "#1d7a3d" : "#b03030",
+            color: notice.ok ? "#58a700" : "#d33f3f",
           }}
         >
           {notice.text}
@@ -162,9 +162,9 @@ export default function NamespacePanel() {
             <div key={n.ns} style={{ ...card, borderColor: "#f0c36d", background: "#fffdf5" }}>
               <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <strong>{n.label || n.ns}</strong>
-                <span style={{ fontFamily: "monospace", fontSize: 12, color: "#8a94a6" }}>ns:{n.ns}</span>
-                <span style={badge(scopeLabel(n.scope), "#eef2ff", "#3b4cca")}>{scopeLabel(n.scope)}</span>
-                <span style={{ fontSize: 12, color: "#8a94a6" }}>历史遗留草案（助手侧已不能再提交）</span>
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: "#777777" }}>ns:{n.ns}</span>
+                <span style={badge(scopeLabel(n.scope), "#f7f7f7", "#1cb0f6")}>{scopeLabel(n.scope)}</span>
+                <span style={{ fontSize: 12, color: "#777777" }}>历史遗留草案（助手侧已不能再提交）</span>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                   <button
                     style={{ ...btn, background: "#2f7d4f", color: "#fff" }}
@@ -189,14 +189,14 @@ export default function NamespacePanel() {
       )}
 
       <h4 style={{ margin: "16px 0 8px" }}>已生效（{active.length}）</h4>
-      {active.length === 0 && <p style={{ fontSize: 13, color: "#8a94a6" }}>还没有生效的自定义场景。</p>}
+      {active.length === 0 && <p style={{ fontSize: 13, color: "#777777" }}>还没有生效的自定义场景。</p>}
       {active.map((n) => (
         <div key={n.ns} style={card}>
           <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
             <strong>{n.label || n.ns}</strong>
-            <span style={{ fontFamily: "monospace", fontSize: 12, color: "#8a94a6" }}>ns:{n.ns}</span>
-            <span style={badge(scopeLabel(n.scope), "#eef2ff", "#3b4cca")}>{scopeLabel(n.scope)}</span>
-            <span style={badge(`v${n.version}`, "#eefaf0", "#1d7a3d")}>v{n.version}</span>
+            <span style={{ fontFamily: "monospace", fontSize: 12, color: "#777777" }}>ns:{n.ns}</span>
+            <span style={badge(scopeLabel(n.scope), "#f7f7f7", "#1cb0f6")}>{scopeLabel(n.scope)}</span>
+            <span style={badge(`v${n.version}`, "#eefaf0", "#58a700")}>v{n.version}</span>
             <div style={{ marginLeft: "auto" }}>
               <button
                 style={{ ...btn, background: "#f0f2f7", color: "#5a6478" }}
@@ -213,16 +213,16 @@ export default function NamespacePanel() {
 
       {disabled.length > 0 && (
         <>
-          <h4 style={{ margin: "16px 0 8px", color: "#8a94a6" }}>已停用（{disabled.length}）</h4>
+          <h4 style={{ margin: "16px 0 8px", color: "#777777" }}>已停用（{disabled.length}）</h4>
           {disabled.map((n) => (
             <div key={n.ns} style={{ ...card, opacity: 0.7 }}>
               <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <strong>{n.label || n.ns}</strong>
-                <span style={{ fontFamily: "monospace", fontSize: 12, color: "#8a94a6" }}>ns:{n.ns}</span>
-                <span style={badge("已停用", "#f0f2f7", "#8a94a6")}>已停用</span>
+                <span style={{ fontFamily: "monospace", fontSize: 12, color: "#777777" }}>ns:{n.ns}</span>
+                <span style={badge("已停用", "#f0f2f7", "#777777")}>已停用</span>
                 <div style={{ marginLeft: "auto" }}>
                   <button
-                    style={{ ...btn, background: "#eefaf0", color: "#1d7a3d" }}
+                    style={{ ...btn, background: "#eefaf0", color: "#58a700" }}
                     disabled={busy === n.ns}
                     onClick={() => act(n.ns, () => window.api.namespaceStatus({ ns: n.ns, action: "enable" }))}
                   >

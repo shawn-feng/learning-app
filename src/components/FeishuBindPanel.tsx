@@ -30,14 +30,14 @@ const channelBadge = (ch?: string): React.CSSProperties => {
     fontSize: 11,
     borderRadius: 999,
     padding: "1px 8px",
-    background: feishu ? "#e8f4fd" : "#eef2ff",
-    color: feishu ? "#1a7ac4" : "#3b4cca",
+    background: feishu ? "#e8f4fd" : "#f7f7f7",
+    color: feishu ? "#1a7ac4" : "#1cb0f6",
   };
 };
 
 const card: React.CSSProperties = {
   background: "#fff",
-  border: "1px solid #e6eaf0",
+  border: "1px solid #e5e5e5",
   borderRadius: 12,
   padding: "14px 16px",
   marginBottom: 12,
@@ -158,7 +158,7 @@ export default function FeishuBindPanel() {
   return (
     <div style={{ maxWidth: 720 }}>
       <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>💬 飞书绑定</div>
-      <p style={{ color: "#6b7686", fontSize: 13, margin: "0 0 14px" }}>
+      <p style={{ color: "#777777", fontSize: 13, margin: "0 0 14px" }}>
         家人在飞书里给「学习伙伴」机器人发消息即可接入学习伙伴：未绑定的飞书账号会出现在下方
         「待确认」里，点确认并选择身份（家长/孩子）后，对方就能在飞书里直接和 agent 对话。
         孩子身份只能使用受控功能（考核与积分只读）。（原微信渠道已取消。）
@@ -173,7 +173,7 @@ export default function FeishuBindPanel() {
       <div style={{ ...card, borderColor: "#bfe0f5", marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
           <span style={{ fontSize: 14, fontWeight: 700 }}>飞书机器人配置</span>
-          <span style={{ fontSize: 12, color: feishuStatus === "运行中" ? "#27754a" : "#98a2b0" }}>{feishuStatus}</span>
+          <span style={{ fontSize: 12, color: feishuStatus === "运行中" ? "#27754a" : "#afafaf" }}>{feishuStatus}</span>
           {feishuEnvFallback && <span style={{ fontSize: 11, color: "#b9770a" }}>（配置来自服务端环境变量，下方为当前生效值）</span>}
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
@@ -181,7 +181,7 @@ export default function FeishuBindPanel() {
             value={feishuAppId}
             onChange={(e) => setFeishuAppId(e.target.value)}
             placeholder="App ID（cli_…）"
-            style={{ border: "1px solid #ddd", borderRadius: 8, padding: "7px 10px", fontSize: 13, width: 220 }}
+            style={{ border: "1px solid #e5e5e5", borderRadius: 8, padding: "7px 10px", fontSize: 13, width: 220 }}
           />
           <input
             value={feishuSecret}
@@ -192,17 +192,17 @@ export default function FeishuBindPanel() {
                 : "App Secret"
             }
             type="password"
-            style={{ border: "1px solid #ddd", borderRadius: 8, padding: "7px 10px", fontSize: 13, width: 240 }}
+            style={{ border: "1px solid #e5e5e5", borderRadius: 8, padding: "7px 10px", fontSize: 13, width: 240 }}
           />
           <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
             <input type="checkbox" checked={feishuEnabled} onChange={(e) => setFeishuEnabled(e.target.checked)} />
             启用
           </label>
-          <button disabled={busy} style={{ ...btn, background: "#3b6ef5", color: "#fff" }} onClick={saveFeishu}>
+          <button disabled={busy} style={{ ...btn, background: "#1cb0f6", color: "#fff" }} onClick={saveFeishu}>
             保存并应用
           </button>
         </div>
-        <div style={{ color: "#98a2b0", fontSize: 12 }}>
+        <div style={{ color: "#afafaf", fontSize: 12 }}>
           保存立即生效，无需重启服务端。飞书开放平台需开启机器人能力、im:message 权限，事件订阅选「长连接」并订阅
           im.message.receive_v1。
         </div>
@@ -210,28 +210,28 @@ export default function FeishuBindPanel() {
 
       <div style={{ fontSize: 14, fontWeight: 700, margin: "6px 0 8px" }}>待确认请求（{requests.length}）</div>
       {requests.length === 0 ? (
-        <div style={{ ...card, color: "#98a2b0", fontSize: 13 }}>暂无。让家人在飞书里给「学习伙伴」机器人发一条消息，请求会自动出现在这里。</div>
+        <div style={{ ...card, color: "#afafaf", fontSize: 13 }}>暂无。让家人在飞书里给「学习伙伴」机器人发一条消息，请求会自动出现在这里。</div>
       ) : (
         requests.map((r) => (
           <div key={r.id} style={{ ...card, borderColor: "#c9d8ff" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
               <span style={{ fontWeight: 700, fontSize: 13, wordBreak: "break-all" }}>{r.wechat_id}</span>
               <span style={channelBadge(r.channel)}>{CHANNEL_LABEL[r.channel || "wechat"] || r.channel}</span>
-              <span style={{ color: "#98a2b0", fontSize: 12 }}>最近活跃 {r.last_seen}</span>
+              <span style={{ color: "#afafaf", fontSize: 12 }}>最近活跃 {r.last_seen}</span>
             </div>
             {r.sample_text && (
-              <div style={{ color: "#555", fontSize: 13, margin: "4px 0 8px" }}>
+              <div style={{ color: "#4b4b4b", fontSize: 13, margin: "4px 0 8px" }}>
                 消息样本：「{r.sample_text}」
               </div>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <button disabled={busy} style={{ ...btn, background: "#3b6ef5", color: "#fff" }} onClick={() => decide(r, "confirm", "parent")}>
+              <button disabled={busy} style={{ ...btn, background: "#1cb0f6", color: "#fff" }} onClick={() => decide(r, "confirm", "parent")}>
                 绑定为家长
               </button>
               <select
                 value={childChoice[r.id] || ""}
                 onChange={(e) => setChildChoice((p) => ({ ...p, [r.id]: e.target.value }))}
-                style={{ border: "1px solid #ddd", borderRadius: 8, padding: "6px 8px", fontSize: 13 }}
+                style={{ border: "1px solid #e5e5e5", borderRadius: 8, padding: "6px 8px", fontSize: 13 }}
               >
                 <option value="">选择孩子…</option>
                 {childrenList.map((c) => (
@@ -240,10 +240,10 @@ export default function FeishuBindPanel() {
                   </option>
                 ))}
               </select>
-              <button disabled={busy} style={{ ...btn, background: "#27ae60", color: "#fff" }} onClick={() => decide(r, "confirm", "child")}>
+              <button disabled={busy} style={{ ...btn, background: "#58a700", color: "#fff" }} onClick={() => decide(r, "confirm", "child")}>
                 绑定为孩子
               </button>
-              <button disabled={busy} style={{ ...btn, background: "#f0f2f5", color: "#666" }} onClick={() => decide(r, "reject")}>
+              <button disabled={busy} style={{ ...btn, background: "#f0f2f5", color: "#777777" }} onClick={() => decide(r, "reject")}>
                 忽略
               </button>
             </div>
@@ -253,7 +253,7 @@ export default function FeishuBindPanel() {
 
       <div style={{ fontSize: 14, fontWeight: 700, margin: "16px 0 8px" }}>已绑定（{bindings.length}）</div>
       {bindings.length === 0 ? (
-        <div style={{ ...card, color: "#98a2b0", fontSize: 13 }}>还没有绑定任何飞书账号。</div>
+        <div style={{ ...card, color: "#afafaf", fontSize: 13 }}>还没有绑定任何飞书账号。</div>
       ) : (
         bindings.map((b) => (
           <div key={b.wechat_id} style={{ ...card, display: "flex", alignItems: "center", gap: 10 }}>
@@ -267,16 +267,16 @@ export default function FeishuBindPanel() {
                     fontSize: 11,
                     borderRadius: 999,
                     padding: "1px 8px",
-                    background: b.role === "parent" ? "#eef2ff" : "#e8f7ee",
-                    color: b.role === "parent" ? "#3b4cca" : "#27754a",
+                    background: b.role === "parent" ? "#f7f7f7" : "#e8f7ee",
+                    color: b.role === "parent" ? "#1cb0f6" : "#27754a",
                   }}
                 >
                   {b.role === "parent" ? "家长" : "孩子"}
                 </span>
               </div>
-              <div style={{ color: "#98a2b0", fontSize: 12, wordBreak: "break-all" }}>{b.wechat_id}</div>
+              <div style={{ color: "#afafaf", fontSize: 12, wordBreak: "break-all" }}>{b.wechat_id}</div>
             </div>
-            <button disabled={busy} style={{ ...btn, background: "#fdecea", color: "#c0392b" }} onClick={() => unbind(b.wechat_id)}>
+            <button disabled={busy} style={{ ...btn, background: "#fdecea", color: "#ea2b2b" }} onClick={() => unbind(b.wechat_id)}>
               解绑
             </button>
           </div>

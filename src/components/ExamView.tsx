@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { buildExamHtml } from "../lib/exam-template";
+import SpeechText from "./SpeechText";
 import type { SpeechAssessment } from "../../electron/lib/exam";
 
 type Stage = "pick" | "exam" | "scoring" | "report" | "error";
@@ -637,9 +638,9 @@ export default function ExamView({ childId, onExit }: Props) {
   };
   const STATUS_BADGE: Record<string, { text: string; color: string; bg: string }> = {
     pending: { text: "待考核", color: "#b9770a", bg: "#fdf3e3" },
-    started: { text: "没考完", color: "#c0392b", bg: "#fdecea" },
-    done: { text: "已完成", color: "#27ae60", bg: "#e8f7ee" },
-    expired: { text: "已过期", color: "#888", bg: "#f0f2f5" },
+    started: { text: "没考完", color: "#ea2b2b", bg: "#fdecea" },
+    done: { text: "已完成", color: "#58a700", bg: "#e8f7ee" },
+    expired: { text: "已过期", color: "#777777", bg: "#f0f2f5" },
   };
   const planList = schedules
     .filter((s) => {
@@ -674,7 +675,7 @@ export default function ExamView({ childId, onExit }: Props) {
       key={sch.id}
       style={{
         background: "#fff",
-        border: o.accent ? "2px solid #f2994a" : "1px solid #e6eaf0",
+        border: o.accent ? "2px solid #f2994a" : "1px solid #e5e5e5",
         borderRadius: 12,
         padding: "13px 16px",
         marginBottom: 9,
@@ -687,19 +688,19 @@ export default function ExamView({ childId, onExit }: Props) {
         <div style={{ fontWeight: 700, fontSize: 14 }}>
           {sch.title}
           {sch.kind === "custom" && (
-            <span style={{ marginLeft: 8, fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
+            <span style={{ marginLeft: 8, fontSize: 11, background: "#f7f7f7", color: "#1899d6", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
           )}
         </div>
-        <div style={{ color: "#6b7686", fontSize: 12, marginTop: 2 }}>
+        <div style={{ color: "#777777", fontSize: 12, marginTop: 2 }}>
           {fmtTime(sch.scheduledAt)}
           {sch.freq ? ` · ${FREQ_LABEL[sch.freq] || sch.freq}考核` : ""}
           {sch.status === "started" && " · 上次没考完" }
         </div>
-        {sch.scope?.note ? <div style={{ color: "#888", fontSize: 12, marginTop: 2 }}>内容：{String(sch.scope.note)}</div> : null}
+        {sch.scope?.note ? <div style={{ color: "#777777", fontSize: 12, marginTop: 2 }}>内容：{String(sch.scope.note)}</div> : null}
       </div>
       {o.onBtn ? (
         <button
-          style={{ ...btn, background: o.accent ? "#f2994a" : "#3b6ef5", color: "#fff", padding: "8px 16px", whiteSpace: "nowrap" }}
+          style={{ ...btn, background: o.accent ? "#f2994a" : "#1cb0f6", color: "#fff", padding: "8px 16px", whiteSpace: "nowrap" }}
           onClick={o.onBtn}
         >
           {o.btnLabel}
@@ -708,6 +709,23 @@ export default function ExamView({ childId, onExit }: Props) {
     </div>
   );
 
+  // 口语题回放音频按需拉取（报告页「听我的背诵」与逐字点读共用；命中缓存直接返回）
+  const ensureSpeechAudio = async (fileId?: string): Promise<string | null> => {
+    if (!fileId) return null;
+    const cached = speechAudio[fileId];
+    if (cached) return cached;
+    try {
+      const r: any = await window.api.examAudio(fileId);
+      if (r?.success && r.data) {
+        setSpeechAudio((prev) => ({ ...prev, [fileId]: r.data }));
+        return r.data as string;
+      }
+    } catch {
+      /* 拉不到音频就只展示颜色，点读静默失败 */
+    }
+    return null;
+  };
+
   // 孩子查看某次已完成考核的成绩（复用 attempt 数据，无编辑/录音，仅展示；嵌在右侧详情面板里）
   const renderAttempt = (at: any) => {
     const qs: Array<any> = at?.perQuestion || [];
@@ -715,24 +733,40 @@ export default function ExamView({ childId, onExit }: Props) {
     return (
       <div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
-          <span style={{ fontSize: 26, fontWeight: 800, color: (at?.score ?? 0) >= 60 ? "#27ae60" : "#e74c3c" }}>{at?.score ?? 0} 分</span>
-          {maxP ? <span style={{ color: "#888", fontSize: 12 }}>满分 {maxP} 分</span> : null}
-          <span style={{ color: "#999", fontSize: 12 }}>{at?.submittedAt ? `交卷：${fmtTime(at.submittedAt).replace("📅 ", "")}` : ""}</span>
+          <span style={{ fontSize: 26, fontWeight: 800, color: (at?.score ?? 0) >= 60 ? "#58a700" : "#ff4b4b" }}>{at?.score ?? 0} 分</span>
+          {maxP ? <span style={{ color: "#777777", fontSize: 12 }}>满分 {maxP} 分</span> : null}
+          <span style={{ color: "#afafaf", fontSize: 12 }}>{at?.submittedAt ? `交卷：${fmtTime(at.submittedAt).replace("📅 ", "")}` : ""}</span>
         </div>
-        {qs.length === 0 && <div style={{ color: "#aaa", fontSize: 13 }}>这次考核没有逐题记录。</div>}
+        {qs.length === 0 && <div style={{ color: "#afafaf", fontSize: 13 }}>这次考核没有逐题记录。</div>}
         {qs.map((q, i) => (
           <div key={String(q?.qid || i)} style={{ borderTop: "1px solid #f0f0f0", padding: "9px 0", fontSize: 13 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={{ fontWeight: 700 }}>第 {i + 1} 题{q?.course ? ` · ${q.course}` : ""}</span>
-              <span style={{ color: q?.correct ? "#2f8a52" : "#c0392b", fontWeight: 700 }}>
+              <span style={{ color: q?.correct ? "#58a700" : "#ea2b2b", fontWeight: 700 }}>
                 {q?.correct ? "✓" : "✗"} {q?.pointGot ?? 0}/{q?.pointMax ?? "—"}
               </span>
-              {q?.questionType && <span style={{ fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>背诵/口语</span>}
+              {q?.questionType && <span style={{ fontSize: 11, background: "#f7f7f7", color: "#1899d6", borderRadius: 999, padding: "1px 8px" }}>背诵/口语</span>}
             </div>
-            {q?.question ? <div style={{ color: "#555", marginTop: 3 }}>题目：{q.question}</div> : null}
-            {q?.refText ? <div style={{ color: "#7b5b1a", marginTop: 3 }}>原文：{q.refText}</div> : null}
-            {q?.asrText ? <div style={{ color: "#444", marginTop: 3 }}>你的回答：{q.asrText}</div> : null}
-            {q?.aiComment ? <div style={{ color: "#888", marginTop: 3 }}>评语：{q.aiComment}</div> : null}
+            {q?.question ? <div style={{ color: "#4b4b4b", marginTop: 3 }}>题目：{q.question}</div> : null}
+            {q?.refText ? (
+              q?.speech?.words?.length ? (
+                <div style={{ marginTop: 6, background: "#fffdf5", border: "1px solid #f1e6c8", borderRadius: 8, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 11, color: "#9a7b2e", marginBottom: 2 }}>原文（逐字评测）</div>
+                  <SpeechText
+                    refText={q.refText}
+                    words={q.speech.words}
+                    provider={q.speech.provider}
+                    audioSrc={q.audioFileId ? speechAudio[q.audioFileId] : undefined}
+                    onNeedAudio={() => ensureSpeechAudio(q.audioFileId)}
+                    audioQuality={q.speech.audioQuality}
+                  />
+                </div>
+              ) : (
+                <div style={{ color: "#7b5b1a", marginTop: 3 }}>原文：{q.refText}</div>
+              )
+            ) : null}
+            {q?.asrText ? <div style={{ color: "#4b4b4b", marginTop: 3 }}>你的回答：{q.asrText}</div> : null}
+            {q?.aiComment ? <div style={{ color: "#777777", marginTop: 3 }}>评语：{q.aiComment}</div> : null}
           </div>
         ))}
       </div>
@@ -754,7 +788,7 @@ export default function ExamView({ childId, onExit }: Props) {
       <div
         style={{
           background: "#fff",
-          borderBottom: "1px solid #e6eaf0",
+          borderBottom: "1px solid #e5e5e5",
           padding: "12px 18px",
           display: "flex",
           alignItems: "center",
@@ -772,7 +806,7 @@ export default function ExamView({ childId, onExit }: Props) {
               padding: "6px 14px",
               fontSize: 13,
               fontWeight: 600,
-              color: "#333",
+              color: "#4b4b4b",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
@@ -787,7 +821,7 @@ export default function ExamView({ childId, onExit }: Props) {
           <span
             style={{
               color: "#fff",
-              background: "#3b6ef5",
+              background: "#1cb0f6",
               borderRadius: 999,
               padding: "2px 12px",
               fontSize: 12,
@@ -809,7 +843,7 @@ export default function ExamView({ childId, onExit }: Props) {
                 padding: "6px 14px",
                 fontSize: 13,
                 fontWeight: 600,
-                color: "#c0392b",
+                color: "#ea2b2b",
                 cursor: "pointer",
               }}
             >
@@ -835,14 +869,14 @@ export default function ExamView({ childId, onExit }: Props) {
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
               <div style={{ fontSize: 18, fontWeight: 700 }}>🎯 考核安排</div>
-              <button style={{ ...btn, background: "#fff", border: "1px solid #ddd", color: "#555", padding: "6px 16px" }} onClick={onExit}>退出</button>
+              <button style={{ ...btn, background: "#fff", border: "1px solid #e5e5e5", color: "#4b4b4b", padding: "6px 16px" }} onClick={onExit}>退出</button>
             </div>
 
             {/* —— 顶部：今天要做的考核 —— */}
-            <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 14, padding: "13px 16px", marginBottom: 14 }}>
+            <div style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: 14, padding: "13px 16px", marginBottom: 14 }}>
               <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📅 今天要做的考核</div>
               {todayOpen.length === 0 ? (
-                <p style={{ color: "#888", fontSize: 13, margin: 0 }}>今天没有待考核的安排。</p>
+                <p style={{ color: "#777777", fontSize: 13, margin: 0 }}>今天没有待考核的安排。</p>
               ) : (
                 todayOpen.map((sch, i) => (
                   <div key={sch.id} style={{ marginBottom: i < todayOpen.length - 1 ? 9 : 0 }}>
@@ -874,7 +908,7 @@ export default function ExamView({ childId, onExit }: Props) {
                         padding: "3px 12px",
                         fontSize: 12,
                         cursor: "pointer",
-                        background: timeFilter === v ? "#3b6ef5" : "#eef1f6",
+                        background: timeFilter === v ? "#1cb0f6" : "#eef1f6",
                         color: timeFilter === v ? "#fff" : "#556",
                         fontWeight: 600,
                       }}
@@ -909,7 +943,7 @@ export default function ExamView({ childId, onExit }: Props) {
                 </div>
                 <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
                   {planList.length === 0 ? (
-                    <p style={{ color: "#888", fontSize: 13, margin: 0 }}>没有符合条件的考核计划。</p>
+                    <p style={{ color: "#777777", fontSize: 13, margin: 0 }}>没有符合条件的考核计划。</p>
                   ) : (
                     planList.map((sch) => {
                       const badge = STATUS_BADGE[sch.status] || STATUS_BADGE.pending!;
@@ -921,7 +955,7 @@ export default function ExamView({ childId, onExit }: Props) {
                           onClick={() => setSelectedPlanId(sch.id)}
                           style={{
                             background: "#fff",
-                            border: active ? "2px solid #3b6ef5" : "1px solid #e6eaf0",
+                            border: active ? "2px solid #1cb0f6" : "1px solid #e5e5e5",
                             borderRadius: 10,
                             padding: "10px 12px",
                             marginBottom: 8,
@@ -936,7 +970,7 @@ export default function ExamView({ childId, onExit }: Props) {
                               {badge.text}
                             </span>
                           </div>
-                          <div style={{ color: "#6b7686", fontSize: 12, marginTop: 2 }}>
+                          <div style={{ color: "#777777", fontSize: 12, marginTop: 2 }}>
                             {isToday ? "今天" : fmtDate(sch.scheduledAt)}
                             {sch.freq ? ` · ${FREQ_LABEL[sch.freq] || sch.freq}` : ""}
                           </div>
@@ -954,13 +988,13 @@ export default function ExamView({ childId, onExit }: Props) {
                   minWidth: 0,
                   overflowY: "auto",
                   background: "#fff",
-                  border: "1px solid #e6eaf0",
+                  border: "1px solid #e5e5e5",
                   borderRadius: 14,
                   padding: 18,
                 }}
               >
                 {!selectedPlan ? (
-                  <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, color: "#98a2b0", fontSize: 13 }}>
+                  <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, color: "#afafaf", fontSize: 13 }}>
                     <div style={{ fontSize: 34 }}>👆</div>
                     <div>点击左侧考核计划查看详情；已完成的可查看考核结果</div>
                   </div>
@@ -969,7 +1003,7 @@ export default function ExamView({ childId, onExit }: Props) {
                     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
                       <span style={{ fontWeight: 800, fontSize: 16 }}>{selectedPlan.title}</span>
                       {selectedPlan.kind === "custom" && (
-                        <span style={{ fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
+                        <span style={{ fontSize: 11, background: "#f7f7f7", color: "#1899d6", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
                       )}
                       {(() => {
                         const badge = STATUS_BADGE[selectedPlan.status] || STATUS_BADGE.pending!;
@@ -980,20 +1014,20 @@ export default function ExamView({ childId, onExit }: Props) {
                         );
                       })()}
                     </div>
-                    <div style={{ color: "#6b7686", fontSize: 13, marginBottom: 2 }}>
+                    <div style={{ color: "#777777", fontSize: 13, marginBottom: 2 }}>
                       考核时间：{fmtDate(selectedPlan.scheduledAt)}
                       {dayKeyOf(selectedPlan.scheduledAt) === todayKey ? "（今天）" : ""}
                       {selectedPlan.freq ? ` · ${FREQ_LABEL[selectedPlan.freq] || selectedPlan.freq}考核` : ""}
                     </div>
                     {selectedPlan.scope?.note ? (
-                      <div style={{ color: "#6b7686", fontSize: 13, marginBottom: 2 }}>考核内容：{String(selectedPlan.scope.note)}</div>
+                      <div style={{ color: "#777777", fontSize: 13, marginBottom: 2 }}>考核内容：{String(selectedPlan.scope.note)}</div>
                     ) : null}
                     {/* 考核课程列表（详细内容） */}
                     {(() => {
                       const cs = coursesOf(selectedPlan);
                       if (!cs.length) {
                         return (
-                          <div style={{ color: "#888", fontSize: 13, marginTop: 8 }}>
+                          <div style={{ color: "#777777", fontSize: 13, marginTop: 8 }}>
                             考核课程将在开始时按学习/复习内容挑选。
                           </div>
                         );
@@ -1010,7 +1044,7 @@ export default function ExamView({ childId, onExit }: Props) {
                               <div key={c} style={{ borderTop: "1px solid #f0f0f0", padding: "7px 0", fontSize: 13 }}>
                                 <div style={{ fontWeight: 600 }}>· {c}</div>
                                 {kps.length ? (
-                                  <div style={{ color: "#6b7686", fontSize: 12, marginTop: 2 }}>
+                                  <div style={{ color: "#777777", fontSize: 12, marginTop: 2 }}>
                                     考核要点：{kps.map((k) => k.name + (k.count ? `（${k.count} 题）` : "")).join("、")}
                                   </div>
                                 ) : null}
@@ -1041,7 +1075,7 @@ export default function ExamView({ childId, onExit }: Props) {
                             {renderAttempt(at)}
                           </div>
                         ) : (
-                          <div style={{ color: "#888", fontSize: 13, marginTop: 12 }}>这次考核已完成，成绩记录暂时没有找到。</div>
+                          <div style={{ color: "#777777", fontSize: 13, marginTop: 12 }}>这次考核已完成，成绩记录暂时没有找到。</div>
                         );
                       })()
                     ) : canStart(selectedPlan) ? (
@@ -1052,7 +1086,7 @@ export default function ExamView({ childId, onExit }: Props) {
                           : "这次考核不在今天，已不能开始作答。"}
                       </div>
                     ) : (
-                      <div style={{ color: "#888", fontSize: 13, marginTop: 12 }}>这次考核已过期。</div>
+                      <div style={{ color: "#777777", fontSize: 13, marginTop: 12 }}>这次考核已过期。</div>
                     )}
                   </div>
                 )}
@@ -1060,7 +1094,7 @@ export default function ExamView({ childId, onExit }: Props) {
             </div>
 
             {schedules.length === 0 && (
-              <p style={{ color: "#888", fontSize: 13, margin: "10px 0 0" }}>
+              <p style={{ color: "#777777", fontSize: 13, margin: "10px 0 0" }}>
                 还没有考核安排。固定考核会在设定日期自动出现；想临时安排可以请爸爸妈妈对家长助手说「周五考论语的乡党篇」。
               </p>
             )}
@@ -1095,20 +1129,20 @@ export default function ExamView({ childId, onExit }: Props) {
           <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
             <div style={{ fontSize: 40 }}>⏳</div>
             <div style={{ fontSize: 16, fontWeight: 600 }}>{prepText || "老师正在批改你的回答…"}</div>
-            <div style={{ color: "#6b7686", fontSize: 13 }}>请稍等，不要关闭窗口</div>
+            <div style={{ color: "#777777", fontSize: 13 }}>请稍等，不要关闭窗口</div>
           </div>
         )}
 
         {stage === "report" && report && (
           <div style={{ padding: 24, maxWidth: 760, margin: "0 auto" }}>
-            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e6eaf0", padding: 20, marginBottom: 14 }}>
+            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e5e5e5", padding: 20, marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
                 <div style={{ fontSize: 20, fontWeight: 800 }}>{reportTitle}</div>
-                <div style={{ fontSize: 26, fontWeight: 800, color: report.score >= 60 ? "#27ae60" : "#e74c3c" }}>
+                <div style={{ fontSize: 26, fontWeight: 800, color: report.score >= 60 ? "#58a700" : "#ff4b4b" }}>
                   {report.score} 分
                 </div>
               </div>
-              {report.overall && <p style={{ color: "#333", fontSize: 14, marginBottom: 0 }}>{report.overall}</p>}
+              {report.overall && <p style={{ color: "#4b4b4b", fontSize: 14, marginBottom: 0 }}>{report.overall}</p>}
             </div>
 
             {retakeHint && (
@@ -1116,7 +1150,7 @@ export default function ExamView({ childId, onExit }: Props) {
                 style={{
                   background: retakeHint.tone === "ok" ? "#e8f7ee" : "#fdecea",
                   border: `1px solid ${retakeHint.tone === "ok" ? "#bfe8cd" : "#f5c6c0"}`,
-                  color: retakeHint.tone === "ok" ? "#1e7e46" : "#c0392b",
+                  color: retakeHint.tone === "ok" ? "#1e7e46" : "#ea2b2b",
                   borderRadius: 10,
                   padding: "10px 14px",
                   fontSize: 13,
@@ -1128,17 +1162,29 @@ export default function ExamView({ childId, onExit }: Props) {
               </div>
             )}
 
-            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e6eaf0", padding: 20, marginBottom: 14 }}>
+            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e5e5e5", padding: 20, marginBottom: 14 }}>
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>📝 逐题评估</div>
               {report.perQuestion.map((q, i) => (
                 <div key={q.qid} style={{ padding: "8px 0", borderBottom: i < report.perQuestion.length - 1 ? "1px solid #f0f0f0" : "none" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>第 {i + 1} 题</span>
-                    <span style={{ fontSize: 12, color: q.correct ? "#27ae60" : "#e74c3c", fontWeight: 700 }}>
+                    <span style={{ fontSize: 12, color: q.correct ? "#58a700" : "#ff4b4b", fontWeight: 700 }}>
                       {q.correct ? `✓ ${q.pointGot} 分` : `✗ ${q.pointGot} 分`}
                     </span>
                   </div>
-                  {q.aiComment && <div style={{ fontSize: 13, color: "#555", marginTop: 2 }}>{q.aiComment}</div>}
+                  {q.aiComment && <div style={{ fontSize: 13, color: "#4b4b4b", marginTop: 2 }}>{q.aiComment}</div>}
+                  {q.assessMethod === "speech" && q.speech?.words?.length ? (
+                    <div style={{ marginTop: 8, background: "#fbfaf6", border: "1px solid #eee6d2", borderRadius: 8, padding: "8px 10px" }}>
+                      <SpeechText
+                        refText={q.refText || ""}
+                        words={q.speech.words}
+                        provider={q.speech.provider}
+                        audioSrc={q.audioFileId ? speechAudio[q.audioFileId] : undefined}
+                        onNeedAudio={() => ensureSpeechAudio(q.audioFileId)}
+                        audioQuality={q.speech.audioQuality}
+                      />
+                    </div>
+                  ) : null}
                   {q.assessMethod === "speech" && q.audioFileId && (
                     <div style={{ marginTop: 6 }}>
                       <button
@@ -1154,7 +1200,7 @@ export default function ExamView({ childId, onExit }: Props) {
                             }
                           }
                         }}
-                        style={{ ...btn, padding: "4px 12px", fontSize: 13, background: "#eef2ff", color: "#3b6ef5" }}
+                        style={{ ...btn, padding: "4px 12px", fontSize: 13, background: "#f7f7f7", color: "#1899d6" }}
                       >
                         🔊 听我的背诵
                       </button>
@@ -1174,7 +1220,7 @@ export default function ExamView({ childId, onExit }: Props) {
             </div>
 
             {Object.keys(report.courseMastery).length > 0 && (
-              <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e6eaf0", padding: 20, marginBottom: 14 }}>
+              <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e5e5e5", padding: 20, marginBottom: 14 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>📊 每课掌握情况</div>
                 {Object.entries(report.courseMastery).map(([course, m]) => (
                   <div key={course} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
@@ -1184,11 +1230,11 @@ export default function ExamView({ childId, onExit }: Props) {
                         style={{
                           height: "100%",
                           width: `${Math.round((m.rate || 0) * 100)}%`,
-                          background: (m.rate || 0) >= 0.6 ? "#27ae60" : "#e74c3c",
+                          background: (m.rate || 0) >= 0.6 ? "#58a700" : "#ff4b4b",
                         }}
                       />
                     </div>
-                    <span style={{ fontSize: 12, color: "#6b7686", width: 40, textAlign: "right" }}>
+                    <span style={{ fontSize: 12, color: "#777777", width: 40, textAlign: "right" }}>
                       {Math.round((m.rate || 0) * 100)}%
                     </span>
                   </div>
@@ -1197,16 +1243,16 @@ export default function ExamView({ childId, onExit }: Props) {
             )}
 
             {Object.keys(report.reinforcePlan).length > 0 && (
-              <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e6eaf0", padding: 20, marginBottom: 14 }}>
+              <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #e5e5e5", padding: 20, marginBottom: 14 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>📌 复习计划</div>
                 {Object.entries(report.reinforcePlan).map(([course, p]) => (
                   <div key={course} style={{ padding: "6px 0", fontSize: 13 }}>
                     <div style={{ fontWeight: 600 }}>
                       {course}
-                      {p.planReviewAt ? <span style={{ color: "#3b6ef5", marginLeft: 8 }}>计划复习：{p.planReviewAt}</span> : null}
+                      {p.planReviewAt ? <span style={{ color: "#1899d6", marginLeft: 8 }}>计划复习：{p.planReviewAt}</span> : null}
                     </div>
                     {p.focus?.length > 0 && (
-                      <div style={{ color: "#6b7686", marginTop: 2 }}>
+                      <div style={{ color: "#777777", marginTop: 2 }}>
                         重点：{p.focus.join("；")}
                         {p.aiSuggestion ? `（${p.aiSuggestion}）` : ""}
                       </div>
@@ -1216,7 +1262,7 @@ export default function ExamView({ childId, onExit }: Props) {
               </div>
             )}
 
-            <button style={{ ...btn, background: "#27ae60", color: "#fff", width: "100%" }} onClick={onExit}>
+            <button style={{ ...btn, background: "#58a700", color: "#fff", width: "100%" }} onClick={onExit}>
               完成，返回
             </button>
           </div>
@@ -1226,8 +1272,8 @@ export default function ExamView({ childId, onExit }: Props) {
           <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12, padding: 24 }}>
             <div style={{ fontSize: 40 }}>😥</div>
             <div style={{ fontSize: 15, fontWeight: 600 }}>考核无法进行</div>
-            <div style={{ color: "#6b7686", fontSize: 13, textAlign: "center", maxWidth: 420 }}>{error}</div>
-            <button style={{ ...btn, background: "#3b6ef5", color: "#fff" }} onClick={() => { setStage("pick"); loadSchedules(); }}>
+            <div style={{ color: "#777777", fontSize: 13, textAlign: "center", maxWidth: 420 }}>{error}</div>
+            <button style={{ ...btn, background: "#1cb0f6", color: "#fff" }} onClick={() => { setStage("pick"); loadSchedules(); }}>
               返回
             </button>
           </div>

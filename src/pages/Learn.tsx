@@ -301,7 +301,7 @@ export default function Learn({ child, onExit }: Props) {
   // display_content 时自动展开（见下方 materials 监听 effect）
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   // 右侧聊天面板：可折叠 + 拖拽调宽（宽度/折叠状态持久化，与家长端互不干扰）
-  const chat = useChatPanel("child", 440);
+  const chat = useChatPanel("child", 480);
   // ISSUE-158 续（用户反馈）：孩子端折叠按钮也上标题栏（全屏右侧两枚，事件协议与家长端共用 ui:*）——
   // 左=整个图标侧栏隐藏/显示（孩子端侧栏本就是 icon 条，再「折」就是收起整条）；右=聊天面板折叠。
   const [railHidden, setRailHidden] = useState(() => localStorage.getItem("child:sidebarHidden") === "1");
@@ -1231,7 +1231,7 @@ export default function Learn({ child, onExit }: Props) {
                     position: "absolute",
                     top: 0,
                     right: 0,
-                    background: "#e74c3c",
+                    background: "#ff4b4b",
                     color: "#fff",
                     borderRadius: 999,
                     fontSize: 10,
@@ -1543,7 +1543,7 @@ export default function Learn({ child, onExit }: Props) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2>AI 伙伴设置</h2>
             {aiSettingsMsg && (
-              <div style={{ marginBottom: 12, color: aiSettingsMsg.includes("失败") ? "red" : "#48bb78" }}>
+              <div style={{ marginBottom: 12, color: aiSettingsMsg.includes("失败") ? "red" : "#58cc02" }}>
                 {aiSettingsMsg}
               </div>
             )}
@@ -1576,7 +1576,7 @@ export default function Learn({ child, onExit }: Props) {
               style={{
                 width: "100%",
                 padding: 10,
-                border: "1px solid #ddd",
+                border: "1px solid #e5e5e5",
                 borderRadius: 8,
                 marginBottom: 12,
                 minHeight: 60,
@@ -1584,20 +1584,20 @@ export default function Learn({ child, onExit }: Props) {
             />
 
             {/* ISSUE-162：诊断——孩子端导出本机客户端日志（排查问题时提交给家长/技术支持） */}
-            <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid #eee" }}>
-              <div style={{ fontSize: 13, color: "#888", marginBottom: 6 }}>
+            <div style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid #e5e5e5" }}>
+              <div style={{ fontSize: 13, color: "#777777", marginBottom: 6 }}>
                 遇到问题需要排查时，可导出本机运行日志（不含对话内容与密码）。
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <button
                   className="cancel"
-                  style={{ background: "#667eea", color: "#fff", border: "none" }}
+                  style={{ background: "#58cc02", color: "#fff", border: "none" }}
                   onClick={handleExportClientLog}
                 >
                   导出运行日志
                 </button>
                 {logExportMsg && (
-                  <span style={{ fontSize: 12, color: logExportMsg.startsWith("已导出") || logExportMsg === "已取消导出" ? "#48bb78" : "#cc7b00" }}>
+                  <span style={{ fontSize: 12, color: logExportMsg.startsWith("已导出") || logExportMsg === "已取消导出" ? "#58cc02" : "#b9770a" }}>
                     {logExportMsg}
                   </span>
                 )}
@@ -1621,7 +1621,7 @@ export default function Learn({ child, onExit }: Props) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2>修改密码</h2>
             {changePwdMsg && (
-              <div style={{ marginBottom: 12, color: changePwdMsg.includes("已修改") ? "#48bb78" : "red" }}>
+              <div style={{ marginBottom: 12, color: changePwdMsg.includes("已修改") ? "#58cc02" : "red" }}>
                 {changePwdMsg}
               </div>
             )}

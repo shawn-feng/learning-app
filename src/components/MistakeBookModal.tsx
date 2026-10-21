@@ -26,7 +26,7 @@ const KIND_META: Record<string, { label: string; icon: string }> = {
 
 const card: React.CSSProperties = {
   background: "#fff",
-  border: "1px solid #e6eaf0",
+  border: "1px solid #e5e5e5",
   borderRadius: 12,
   padding: "12px 14px",
   marginBottom: 10,
@@ -64,8 +64,8 @@ function MistakeCard({
             width: 34,
             height: 34,
             borderRadius: 10,
-            background: "#eef2ff",
-            color: "#3b4cca",
+            background: "#f7f7f7",
+            color: "#1899d6",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -79,12 +79,12 @@ function MistakeCard({
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700 }}>{m.question_stem?.trim() || m.content}</div>
           {m.question_stem?.trim() && m.question_stem.trim() !== m.content && (
-            <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 2 }}>{m.content}</div>
+            <div style={{ fontSize: 11, color: "#777777", marginTop: 2 }}>{m.content}</div>
           )}
           {m.detail && (
             <div style={{ fontSize: 12, color: "#5a6478", marginTop: 3, lineHeight: 1.5 }}>{m.detail}</div>
           )}
-          <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: "#777777", marginTop: 4 }}>
             {meta.label}
             {m.count > 1 ? ` · ${m.count} 次` : ""} · 最近 {fmtDay(m.last_seen)}
             {m.source === "exam" ? " · 来自考核" : m.source === "lookup" ? " · 来自查词" : ""}
@@ -185,7 +185,7 @@ export default function MistakeBookModal({ childId, onClose }: { childId: string
       >
         <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
           <h3 style={{ margin: 0 }}>📕 我的错题本</h3>
-          <span style={{ fontSize: 12, color: "#8a94a6", marginLeft: 10 }}>
+          <span style={{ fontSize: 12, color: "#777777", marginLeft: 10 }}>
             会话里记下的漏洞都在这里；说「会了」并答对小验证就会关闭
           </span>
           <button
@@ -197,14 +197,14 @@ export default function MistakeBookModal({ childId, onClose }: { childId: string
         </div>
 
         {notice && (
-          <div style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: "#eefaf0", color: "#1d7a3d", fontSize: 13 }}>
+          <div style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: "#eefaf0", color: "#58a700", fontSize: 13 }}>
             {notice}
           </div>
         )}
 
         <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
           {!open.length && !done.length && (
-            <p style={{ textAlign: "center", color: "#8a94a6", padding: "30px 0" }}>
+            <p style={{ textAlign: "center", color: "#777777", padding: "30px 0" }}>
               还没有记录。学习中有做错的题、不认识的字，AI 老师会帮你记到这里。
             </p>
           )}
@@ -230,7 +230,7 @@ export default function MistakeBookModal({ childId, onClose }: { childId: string
           {done.length > 0 && (
             <>
               <h4
-                style={{ margin: "14px 0 8px", fontSize: 13, color: "#8a94a6", cursor: "pointer" }}
+                style={{ margin: "14px 0 8px", fontSize: 13, color: "#777777", cursor: "pointer" }}
                 onClick={() => setShowDone((v) => !v)}
               >
                 已关闭（{done.length}）{showDone ? "▲" : "▼"}
@@ -239,11 +239,11 @@ export default function MistakeBookModal({ childId, onClose }: { childId: string
                 done.map((m) => (
                   <div key={m.id} style={{ ...card, opacity: 0.65, display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ fontSize: 14, fontWeight: 600 }}>{m.content}</span>
-                    <span style={{ fontSize: 11, color: "#8a94a6" }}>
+                    <span style={{ fontSize: 11, color: "#777777" }}>
                       {KIND_META[m.kind]?.label ?? m.kind} · {m.status === "mastered" ? "已掌握" : "已忽略"}
                     </span>
                     <button
-                      style={{ ...btn, marginLeft: "auto", background: "#eefaf0", color: "#1d7a3d" }}
+                      style={{ ...btn, marginLeft: "auto", background: "#eefaf0", color: "#58a700" }}
                       disabled={busy === m.id}
                       onClick={() => act(m.id, "reopen")}
                     >

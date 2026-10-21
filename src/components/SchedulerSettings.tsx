@@ -274,16 +274,16 @@ export default function SchedulerSettings() {
       </p>
 
       {!loaded ? (
-        <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>
+        <p style={{ color: "#777777", fontSize: 13 }}>加载中…</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* 家长会话（自动新建会话）配置区——2026-08-24：家长会话持久化，策略与孩子一致 */}
           <div
             style={{
-              border: "1px solid #eee",
+              border: "1px solid #e5e5e5",
               borderRadius: 10,
               padding: 16,
-              background: "#fafbff",
+              background: "#fbfbfb",
             }}
           >
             <div
@@ -301,7 +301,7 @@ export default function SchedulerSettings() {
                 onClick={saveParent}
                 style={{
                   padding: "6px 14px",
-                  background: "#667eea",
+                  background: "#58cc02",
                   color: "white",
                   border: "none",
                   borderRadius: 6,
@@ -310,7 +310,7 @@ export default function SchedulerSettings() {
                 }}
               />
             </div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
+            <div style={{ fontSize: 12, color: "#777777", marginBottom: 8, lineHeight: 1.6 }}>
               家长工作台的 AI 会话（课程管理 / 教学内容）会持久保存对话历史。开启后：跨天自动开新会话；或每天到设定时间自动开新会话（与孩子一致）。旧会话保留为归档。
             </div>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
@@ -328,14 +328,14 @@ export default function SchedulerSettings() {
             </label>
             {parentCfg.autoNewSession.enabled && (
               <div style={{ marginTop: 8, marginLeft: 26, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 13, color: "#666" }}>每天新建时间：</span>
+                <span style={{ fontSize: 13, color: "#777777" }}>每天新建时间：</span>
                 <input
                   type="time"
                   value={`${pad2(parentCfg.autoNewSession.hour)}:${pad2(parentCfg.autoNewSession.minute)}`}
                   onChange={(e) => updateParentTime(e.target.value)}
                   style={{
                     padding: "4px 6px",
-                    border: "1px solid #ddd",
+                    border: "1px solid #e5e5e5",
                     borderRadius: 6,
                     fontSize: 13,
                   }}
@@ -343,7 +343,7 @@ export default function SchedulerSettings() {
               </div>
             )}
             {parentStatus && (
-              <div style={{ fontSize: 12, color: parentStatus.includes("失败") ? "red" : "#48bb78", marginTop: 6 }}>
+              <div style={{ fontSize: 12, color: parentStatus.includes("失败") ? "red" : "#58cc02", marginTop: 6 }}>
                 {parentStatus}
               </div>
             )}
@@ -352,10 +352,10 @@ export default function SchedulerSettings() {
           {/* 云端事件轮询配置区（ISSUE-041 层 C：家长发课→孩子收到的延迟上界，设备级） */}
           <div
             style={{
-              border: "1px solid #eee",
+              border: "1px solid #e5e5e5",
               borderRadius: 10,
               padding: 16,
-              background: "#fafbff",
+              background: "#fbfbfb",
             }}
           >
             <div
@@ -373,7 +373,7 @@ export default function SchedulerSettings() {
                 onClick={saveEventPoll}
                 style={{
                   padding: "6px 14px",
-                  background: "#667eea",
+                  background: "#58cc02",
                   color: "white",
                   border: "none",
                   borderRadius: 6,
@@ -382,7 +382,7 @@ export default function SchedulerSettings() {
                 }}
               />
             </div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 8, lineHeight: 1.6 }}>
+            <div style={{ fontSize: 12, color: "#777777", marginBottom: 8, lineHeight: 1.6 }}>
               应用定期向云端询问「有没有家长发来的课程分配包 / 进度查询请求」，有则立即在本地处理：
               分配包写入本机数据库（学习进度不受影响），进度请求则生成摘要上传。间隔越短，家长在另一台
               电脑分配后孩子收到得越快（默认 2 分钟）。孩子打开学习会话时还会额外立即检查一次，无需等待轮询。
@@ -396,7 +396,7 @@ export default function SchedulerSettings() {
               开启事件轮询
             </label>
             <div style={{ marginTop: 8, marginLeft: 26, display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 13, color: "#666" }}>轮询间隔（分钟）：</span>
+              <span style={{ fontSize: 13, color: "#777777" }}>轮询间隔（分钟）：</span>
               <input
                 type="number"
                 min={1}
@@ -408,21 +408,21 @@ export default function SchedulerSettings() {
                 style={{
                   width: 72,
                   padding: "4px 6px",
-                  border: "1px solid #ddd",
+                  border: "1px solid #e5e5e5",
                   borderRadius: 6,
                   fontSize: 13,
                 }}
               />
             </div>
             {eventPollStatus && (
-              <div style={{ fontSize: 12, color: eventPollStatus.includes("失败") ? "red" : "#48bb78", marginTop: 6 }}>
+              <div style={{ fontSize: 12, color: eventPollStatus.includes("失败") ? "red" : "#58cc02", marginTop: 6 }}>
                 {eventPollStatus}
               </div>
             )}
           </div>
 
           {children.length === 0 ? (
-            <p style={{ color: "#888", fontSize: 13 }}>还没有孩子账号。</p>
+            <p style={{ color: "#777777", fontSize: 13 }}>还没有孩子账号。</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {children.map((child) => {
@@ -431,10 +431,10 @@ export default function SchedulerSettings() {
               <div
                 key={child.childId}
                 style={{
-                  border: "1px solid #eee",
+                  border: "1px solid #e5e5e5",
                   borderRadius: 10,
                   padding: 16,
-                  background: "#fafbff",
+                  background: "#fbfbfb",
                 }}
               >
                 <div
@@ -455,7 +455,7 @@ export default function SchedulerSettings() {
                     onClick={() => save(child.childId)}
                     style={{
                       padding: "6px 14px",
-                      background: "#667eea",
+                      background: "#58cc02",
                       color: "white",
                       border: "none",
                       borderRadius: 6,
@@ -466,7 +466,7 @@ export default function SchedulerSettings() {
                 </div>
 
                                 {/* 每日学习记录总结 / 今日计划 / 自动新建会话：已移至家长中心左侧「定时任务」 */}
-                <div style={{ fontSize: 12, color: "#5a67d8", background: "#eef0ff", borderRadius: 8, padding: "8px 12px", marginBottom: 12, lineHeight: 1.6 }}>
+                <div style={{ fontSize: 12, color: "#58a700", background: "#f7f7f7", borderRadius: 8, padding: "8px 12px", marginBottom: 12, lineHeight: 1.6 }}>
                   📌 每日学习记录总结 / 今日计划（生成/统计）/ 自动新建会话已移出本设置页，请到家长中心左侧「⏰ 定时任务」创建任务并分配给指定孩子（服务端自动执行，可查询执行结果）。
                 </div>
 
@@ -479,7 +479,7 @@ export default function SchedulerSettings() {
                     marginTop: 4,
                   }}
                 >
-                  <span style={{ fontSize: 13, color: "#666" }}>
+                  <span style={{ fontSize: 13, color: "#777777" }}>
                     历史会话归档保留数量
                     <input
                       type="number"
@@ -499,22 +499,22 @@ export default function SchedulerSettings() {
                         width: 56,
                         marginLeft: 6,
                         padding: "4px 6px",
-                        border: "1px solid #ddd",
+                        border: "1px solid #e5e5e5",
                         borderRadius: 6,
                       }}
                     />
-                    <span style={{ marginLeft: 6, color: "#999" }}>
+                    <span style={{ marginLeft: 6, color: "#afafaf" }}>
                       个（每次会话重置后只保留最近 N 个旧会话文件；设为 0 则不保留历史归档）
                     </span>
                   </span>
                 </div>
 
                 {/* ISSUE-059：课程时间表（模板 + 星期映射） */}
-                <details open style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
-                  <summary style={{ fontSize: 13, fontWeight: 600, color: "#444", cursor: "pointer", userSelect: "none" }}>
+                <details open style={{ marginTop: 12, borderTop: "1px solid #e5e5e5", paddingTop: 12 }}>
+                  <summary style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", cursor: "pointer", userSelect: "none" }}>
                     ⏰ 课程时间表（模板）
                   </summary>
-                  <div style={{ fontSize: 12, color: "#888", margin: "8px 0", lineHeight: 1.6 }}>
+                  <div style={{ fontSize: 12, color: "#777777", margin: "8px 0", lineHeight: 1.6 }}>
                     到上课 / 下课时间，孩子界面顶部三分之一区域会弹出醒目提示，并伴随铃声 / 语音播报。
                     可定义多个「时间表模板」（如「上学日」「周末」），再把周一到周日分别映射到某个模板——
                     周末不固定可单独设置或选「不提醒」。改模板内容即时生效，不必改星期映射。
@@ -522,22 +522,22 @@ export default function SchedulerSettings() {
 
                   {/* ① 模板管理区 */}
                   {(cfg.classTemplates || []).map((tpl) => (
-                    <div key={tpl.id} style={{ marginLeft: 4, marginTop: 10, border: "1px solid #eef0ff", borderRadius: 8, padding: 10, background: "#fcfcff" }}>
+                    <div key={tpl.id} style={{ marginLeft: 4, marginTop: 10, border: "1px solid #f7f7f7", borderRadius: 8, padding: 10, background: "#fcfcff" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                         <input
                           type="text"
                           value={tpl.name}
                           onChange={(e) => setTemplateName(child.childId, tpl.id, e.target.value)}
-                          style={{ width: 130, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, fontWeight: 600 }}
+                          style={{ width: 130, padding: "4px 6px", border: "1px solid #e5e5e5", borderRadius: 6, fontSize: 13, fontWeight: 600 }}
                         />
-                        <span style={{ fontSize: 12, color: "#999" }}>时间表模板</span>
+                        <span style={{ fontSize: 12, color: "#afafaf" }}>时间表模板</span>
                         {(cfg.classTemplates || []).length > 1 && (
                           <IconButton
                             icon={Trash2}
                             title="删除该模板"
                             danger
                             onClick={() => removeTemplate(child.childId, tpl.id)}
-                            style={{ marginLeft: "auto", padding: "4px 10px", border: "1px solid #ddd", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
+                            style={{ marginLeft: "auto", padding: "4px 10px", border: "1px solid #e5e5e5", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
                           />
                         )}
                       </div>
@@ -547,40 +547,40 @@ export default function SchedulerSettings() {
                             type="time"
                             value={ct.start}
                             onChange={(e) => updateTimeRow(child.childId, tpl.id, idx, "start", e.target.value)}
-                            style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                            style={{ padding: "4px 6px", border: "1px solid #e5e5e5", borderRadius: 6, fontSize: 13 }}
                           />
-                          <span style={{ fontSize: 13, color: "#888" }}>至</span>
+                          <span style={{ fontSize: 13, color: "#777777" }}>至</span>
                           <input
                             type="time"
                             value={ct.end}
                             onChange={(e) => updateTimeRow(child.childId, tpl.id, idx, "end", e.target.value)}
-                            style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                            style={{ padding: "4px 6px", border: "1px solid #e5e5e5", borderRadius: 6, fontSize: 13 }}
                           />
                           <input
                             type="text"
                             placeholder="课程名（可选）"
                             value={ct.label || ""}
                             onChange={(e) => updateTimeRow(child.childId, tpl.id, idx, "label", e.target.value)}
-                            style={{ width: 110, padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+                            style={{ width: 110, padding: "4px 6px", border: "1px solid #e5e5e5", borderRadius: 6, fontSize: 13 }}
                           />
                           <IconButton
                             icon={Trash2}
                             title="删除该时间段"
                             danger
                             onClick={() => removeTimeRow(child.childId, tpl.id, idx)}
-                            style={{ padding: "4px 10px", border: "1px solid #ddd", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
+                            style={{ padding: "4px 10px", border: "1px solid #e5e5e5", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
                           />
                         </div>
                       ))}
                       {(tpl.times || []).length === 0 && (
-                        <div style={{ marginBottom: 6, fontSize: 12, color: "#aaa" }}>尚未设置时间段，点下方按钮添加</div>
+                        <div style={{ marginBottom: 6, fontSize: 12, color: "#afafaf" }}>尚未设置时间段，点下方按钮添加</div>
                       )}
                       <div>
                         <IconButton
                           icon={Plus}
                           title="添加时间段"
                           onClick={() => addTimeRow(child.childId, tpl.id)}
-                          style={{ padding: "4px 10px", border: "1px solid #ddd", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
+                          style={{ padding: "4px 10px", border: "1px solid #e5e5e5", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
                         />
                       </div>
                     </div>
@@ -590,23 +590,23 @@ export default function SchedulerSettings() {
                       icon={Plus}
                       title="添加模板"
                       onClick={() => addTemplate(child.childId)}
-                      style={{ padding: "4px 10px", border: "1px solid #ddd", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
+                      style={{ padding: "4px 10px", border: "1px solid #e5e5e5", borderRadius: 6, background: "white", fontSize: 13, cursor: "pointer" }}
                     />
-                    <span style={{ marginLeft: 8, fontSize: 12, color: "#999" }}>添加时间表模板</span>
+                    <span style={{ marginLeft: 8, fontSize: 12, color: "#afafaf" }}>添加时间表模板</span>
                   </div>
 
                   {/* ② 星期 → 模板映射 */}
                   <div style={{ marginLeft: 4, marginTop: 14 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>星期 → 模板映射</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", marginBottom: 6 }}>星期 → 模板映射</div>
                     {WEEKDAYS.map((wd) => {
                       const selected = cfg.classWeek?.[wd.day] ?? "";
                       return (
                         <div key={wd.day} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 5 }}>
-                          <span style={{ width: 42, fontSize: 13, color: "#555" }}>{wd.name}</span>
+                          <span style={{ width: 42, fontSize: 13, color: "#4b4b4b" }}>{wd.name}</span>
                           <select
                             value={selected}
                             onChange={(e) => setWeekDay(child.childId, wd.day, e.target.value || null)}
-                            style={{ padding: "4px 6px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, minWidth: 150 }}
+                            style={{ padding: "4px 6px", border: "1px solid #e5e5e5", borderRadius: 6, fontSize: 13, minWidth: 150 }}
                           >
                             <option value="">不提醒</option>
                             {(cfg.classTemplates || []).map((t) => (
@@ -620,7 +620,7 @@ export default function SchedulerSettings() {
 
                   {/* 提醒方式（任一模板有时间段时展示） */}
                   {(cfg.classTemplates || []).some((t) => (t.times || []).length > 0) && (
-                    <div style={{ marginLeft: 4, marginTop: 14, fontSize: 13, color: "#666", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                    <div style={{ marginLeft: 4, marginTop: 14, fontSize: 13, color: "#777777", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
                       <span>提醒方式：</span>
                       {(
                         [
@@ -647,7 +647,7 @@ export default function SchedulerSettings() {
                     style={{
                       fontSize: 12,
                       marginTop: 8,
-                      color: status[child.childId].startsWith("保存失败") ? "red" : "#667eea",
+                      color: status[child.childId].startsWith("保存失败") ? "red" : "#58cc02",
                     }}
                   >
                     {status[child.childId]}

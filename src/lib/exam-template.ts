@@ -48,7 +48,7 @@ export function buildExamHtml(
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 <title>学习考核</title>
 <style>
-  :root{--bg:#f5f7fa; --card:#ffffff; --ink:#1f2733; --muted:#6b7686; --brand:#3b6ef5; --brand-d:#2c54c4; --rec:#e74c3c; --ok:#27ae60; --line:#e6eaf0; --soft:#eef2f8; --warn:#b9770a;}
+  :root{--bg:#f7f7f7; --card:#ffffff; --ink:#3c3c3c; --muted:#777777; --brand:#1cb0f6; --brand-d:#1899d6; --rec:#ff4b4b; --ok:#58a700; --line:#e5e5e5; --soft:#f7f7f7; --warn:#b9770a;}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg); color:var(--ink); font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; font-size:30px; line-height:1.5; -webkit-text-size-adjust:100%; display:flex; flex-direction:column; height:100vh; overflow:hidden;}
@@ -67,18 +67,18 @@ export function buildExamHtml(
   .q-course{display:inline-block; font-size:20px; color:var(--brand-d); background:var(--soft); border-radius:8px; padding:4px 12px; margin-bottom:14px;}
   .q-stem{font-size:32px; font-weight:600; margin-bottom:20px}
   .q-hint{font-size:20px; color:var(--muted); margin:-10px 0 18px}
-  .q-ref{font-size:30px; line-height:1.6; background:#fff8ec; border:1px solid #f0e2c0; border-radius:12px; padding:14px 16px; margin:-6px 0 18px; color:#8a5a00; white-space:pre-wrap; font-family:"KaiTi","STKaiti",serif;}
+  .q-ref{font-size:30px; line-height:1.6; background:#fff8e1; border:1px solid #f0dca0; border-radius:12px; padding:14px 16px; margin:-6px 0 18px; color:#8a5a00; white-space:pre-wrap; font-family:"KaiTi","STKaiti",serif;}
   .q-ref:empty{display:none}
   .q-opts{margin:-4px 0 16px; display:flex; flex-direction:column; gap:8px}
-  .q-opt{background:#f4f6fc; border:1.5px solid #dbe2f0; border-radius:10px; padding:10px 14px; font-size:22px; line-height:1.5; color:#2a3350}
-  .q-opt .k{display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:30px; border-radius:50%; background:#667eea; color:#fff; font-weight:700; font-size:16px; margin-right:10px; vertical-align:2px}
+  .q-opt{background:#f7f7f7; border:1.5px solid #e5e5e5; border-radius:10px; padding:10px 14px; font-size:22px; line-height:1.5; color:#4b4b4b}
+  .q-opt .k{display:inline-flex; align-items:center; justify-content:center; min-width:30px; height:30px; border-radius:50%; background:#58cc02; color:#fff; font-weight:700; font-size:16px; margin-right:10px; vertical-align:2px}
   .answer{border-top:1px dashed var(--line); padding-top:18px; margin-top:6px}
   .mic-row{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
   .mic-btn{border:none; border-radius:14px; padding:16px 26px; font-size:24px; font-weight:600; background:var(--brand); color:#fff; cursor:pointer; display:inline-flex; align-items:center; gap:10px; user-select:none; -webkit-user-select:none; touch-action:none;}
   .mic-btn.holding{background:var(--rec); animation:pulse 1.1s infinite}
   .mic-btn.recognizing{background:var(--warn); animation:none}
-  .mic-btn:disabled{background:#aab6cc;cursor:not-allowed;animation:none}
-  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(231,76,60,.5)}70%{box-shadow:0 0 0 14px rgba(231,76,60,0)}100%{box-shadow:0 0 0 0 rgba(231,76,60,0)}}
+  .mic-btn:disabled{background:#afafaf;cursor:not-allowed;animation:none}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255, 75, 75, .5)}70%{box-shadow:0 0 0 14px rgba(255, 75, 75, 0)}100%{box-shadow:0 0 0 0 rgba(255, 75, 75, 0)}}
   .rec-time{font-size:22px; color:var(--rec); font-variant-numeric:tabular-nums; min-width:64px}
   .rec-status{font-size:20px; color:var(--warn); min-height:28px; margin:10px 0 0;}
   /* ISSUE-183/189：录音音量可视化（家长开启校验即显示）：实时音量条 + 达标线 + 录完平均音量提示 */
@@ -97,7 +97,7 @@ export function buildExamHtml(
   .asr-label{font-size:20px; color:var(--muted); margin:14px 0 6px}
   .asr{width:100%; min-height:96px; font-size:24px; font-family:inherit; color:var(--ink); border:1px solid var(--line); border-radius:12px; padding:12px 14px; resize:vertical; background:#fffdf7;}
   .asr:focus{outline:2px solid var(--brand)}
-  .asr:disabled{background:#eef1f5;color:#555;cursor:not-allowed}
+  .asr:disabled{background:#eef1f5;color:#4b4b4b;cursor:not-allowed}
   .q-timer{font-size:18px; color:var(--muted); margin-top:12px; text-align:right}
   .exam-foot{flex:0 0 auto; background:var(--card); border-top:1px solid var(--line); padding:14px 22px; display:flex; align-items:center; gap:14px;}
   .nav{font-size:24px; border:1px solid var(--line); background:#fff; border-radius:12px; padding:12px 22px; cursor:pointer}
@@ -107,13 +107,13 @@ export function buildExamHtml(
   .submit:disabled{opacity:.45; cursor:not-allowed}
   .done-tag{font-size:20px; color:var(--ok)}
   .lock-tag{font-size:20px;color:var(--warn);margin:8px 0 0;display:none}
-  .stream-banner{flex:0 0 auto; background:#fff8ec; border-bottom:1px solid #f0e2c0; padding:10px 22px; font-size:20px; color:var(--warn); display:none;}
+  .stream-banner{flex:0 0 auto; background:#fff8e1; border-bottom:1px solid #f0dca0; padding:10px 22px; font-size:20px; color:var(--warn); display:none;}
   .stream-banner b{font-weight:700}
   .stream-empty{padding:30px 22px; text-align:center; color:var(--muted); font-size:24px; display:none;}
   /* ISSUE-183 后补：页内提示条（替代 alert——JS 对话框在 Electron/Windows 关闭后可能不归还窗口焦点，
      症状=退出考核回主页后所有输入框无光标；与宿主 ExamView confirmDialog 口径一致，考核流程零 JS 对话框） */
   .page-toast{position:fixed; left:50%; bottom:96px; transform:translateX(-50%); max-width:80%;
-    background:#fff8ec; border:1.5px solid #f0e2c0; color:var(--warn); border-radius:12px;
+    background:#fff8e1; border:1.5px solid #f0dca0; color:var(--warn); border-radius:12px;
     padding:12px 22px; font-size:22px; font-weight:600; z-index:10000; box-shadow:0 6px 20px rgba(60,40,0,.15);}
 </style>
 </head>
@@ -190,7 +190,7 @@ window.EXAM_DATA = ${dataJson};
   function volPaintBar(n){
     var f = $("volFill");
     f.style.width = Math.max(2, n) + "%";
-    f.style.background = n >= volMin ? "#27ae60" : (n >= volMin - 12 ? "#e6a23c" : "#e74c3c");
+    f.style.background = n >= volMin ? "#58a700" : (n >= volMin - 12 ? "#e6a23c" : "#ff4b4b");
   }
   function volShowMsg(n, ok){
     var el = $("volMsg");

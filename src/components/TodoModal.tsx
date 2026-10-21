@@ -180,7 +180,7 @@ export default function TodoModal({
                   display: "inline-block",
                   fontSize: 11,
                   color: "#475569",
-                  background: "#e2e8f0",
+                  background: "#e5e5e5",
                   borderRadius: 4,
                   padding: "1px 6px",
                   marginRight: 6,
@@ -197,7 +197,7 @@ export default function TodoModal({
                 style={{
                   fontSize: 14,
                   lineHeight: 1.5,
-                  color: it.status === "done" ? "#aaa" : it.status === "missed" ? "#a32d2d" : "#333",
+                  color: it.status === "done" ? "#afafaf" : it.status === "missed" ? "#a32d2d" : "#4b4b4b",
                   textDecoration: it.status === "done" ? "line-through" : "none",
                   wordBreak: "break-word",
                 }}
@@ -206,7 +206,7 @@ export default function TodoModal({
               </span>
               {/* 会话收敛（2026-09-25）：「🌍 进入课程」按钮已删除——不再有按课隔离的子会话。
                   英语课直接在同一条主会话里学（跟学习伙伴说「开始学这一课」即可）。 */}
-              <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+              <div style={{ fontSize: 11, color: "#afafaf", marginTop: 2 }}>
                 {it.dueAt ? `截止 ${fmtTime(it.dueAt)}` : ""}
                 {it.status === "missed" ? " · 未完成" : ""}
                 {it.status === "done" && it.doneAt ? ` · 完成于 ${fmtTime(it.doneAt)}` : ""}
@@ -227,13 +227,13 @@ export default function TodoModal({
           <button
             onClick={onClose}
             title="关闭"
-            style={{ border: "none", background: "transparent", cursor: "pointer", color: "#888", padding: 4 }}
+            style={{ border: "none", background: "transparent", cursor: "pointer", color: "#777777", padding: 4 }}
           >
             <X size={20} />
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, borderBottom: "1px solid #eee", paddingBottom: 8 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, borderBottom: "1px solid #e5e5e5", paddingBottom: 8 }}>
           {(
             [
               ["today", <ListTodo size={16} key="a" />, "今日计划"],
@@ -249,8 +249,8 @@ export default function TodoModal({
                 alignItems: "center",
                 gap: 6,
                 border: "none",
-                background: tab === key ? "#667eea" : "transparent",
-                color: tab === key ? "white" : "#666",
+                background: tab === key ? "#58cc02" : "transparent",
+                color: tab === key ? "white" : "#777777",
                 padding: "6px 14px",
                 borderRadius: 8,
                 fontSize: 13,
@@ -263,12 +263,12 @@ export default function TodoModal({
         </div>
 
         {loading ? (
-          <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>
+          <p style={{ color: "#777777", fontSize: 13 }}>加载中…</p>
         ) : tab === "today" ? (
           <div style={{ maxHeight: 430, overflowY: "auto" }}>
-            {today && <div style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>{fmtDate(today)} 要做的事</div>}
+            {today && <div style={{ fontSize: 12, color: "#afafaf", marginBottom: 8 }}>{fmtDate(today)} 要做的事</div>}
             {active.length === 0 ? (
-              <p style={{ color: "#999", fontSize: 13, lineHeight: 1.8 }}>今天还没有安排～ 可以跟 AI 老师聊聊今天想做什么。</p>
+              <p style={{ color: "#afafaf", fontSize: 13, lineHeight: 1.8 }}>今天还没有安排～ 可以跟 AI 老师聊聊今天想做什么。</p>
             ) : (
               <>
                 {parentItems.length > 0 && renderGroup("必须完成项", parentItems, "#b45309", "#fff7ed", "#fed7aa")}
@@ -276,7 +276,7 @@ export default function TodoModal({
               </>
             )}
             {active.length > 0 && (
-              <div style={{ fontSize: 12, color: "#999", marginTop: 12, lineHeight: 1.6 }}>
+              <div style={{ fontSize: 12, color: "#afafaf", marginTop: 12, lineHeight: 1.6 }}>
                 {doneCount}/{active.length} 已完成（{Math.round(rate * 100)}%）
                 {curStreak > 0 && <> · 🔥 已连续达标 {curStreak} 天</>}
                 <br />
@@ -288,7 +288,7 @@ export default function TodoModal({
           <div style={{ maxHeight: 430, overflowY: "auto" }}>
             <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
               {[
-                [`🔥 ${curStreak}`, "连续达标天数", "#667eea", "#f5f7ff", "#e2e8ff"],
+                [`🔥 ${curStreak}`, "连续达标天数", "#58cc02", "#f5f7ff", "#e2e8ff"],
                 [bestStreak > 0 ? String(bestStreak) : "—", "历史最高连续", "#22c55e", "#f0fdf4", "#bbf7d0"],
                 [
                   rows.length ? `${Math.round(rows[0].rate * 100)}%` : "—",
@@ -310,13 +310,13 @@ export default function TodoModal({
                   }}
                 >
                   <div style={{ fontSize: 22, fontWeight: 700, color: color as string }}>{v}</div>
-                  <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{label}</div>
+                  <div style={{ fontSize: 12, color: "#777777", marginTop: 2 }}>{label}</div>
                 </div>
               ))}
             </div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>近 30 天完成率</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", marginBottom: 6 }}>近 30 天完成率</div>
             {rows.length === 0 ? (
-              <p style={{ color: "#999", fontSize: 13 }}>还没有执行力数据。</p>
+              <p style={{ color: "#afafaf", fontSize: 13 }}>还没有执行力数据。</p>
             ) : (
               <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 120 }}>
                 {[...rows].reverse().map((r, i, arr) => {
@@ -332,7 +332,7 @@ export default function TodoModal({
                       style={{
                         flex: 1,
                         minWidth: 4,
-                        background: ok ? "#667eea" : "#cbd5e1",
+                        background: ok ? "#58cc02" : "#d0d0d0",
                         height: `${h}px`,
                         borderRadius: "3px 3px 0 0",
                         opacity: i === arr.length - 1 ? 1 : 0.75,
@@ -347,7 +347,7 @@ export default function TodoModal({
           <div style={{ maxHeight: 430, overflowY: "auto" }}>
             <div
               style={{
-                background: "linear-gradient(135deg,#667eea,#764ba2)",
+                background: "linear-gradient(135deg,#58cc02,#46a302)",
                 color: "white",
                 borderRadius: 12,
                 padding: "14px 16px",
@@ -384,7 +384,7 @@ export default function TodoModal({
             ) : null}
 
             {reward?.stats?.length ? (
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>今日结算</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", marginBottom: 6 }}>今日结算</div>
             ) : null}
             {reward?.stats?.map((s, i) => (
               <div
@@ -393,7 +393,7 @@ export default function TodoModal({
                   display: "flex",
                   justifyContent: "space-between",
                   fontSize: 12,
-                  color: "#555",
+                  color: "#4b4b4b",
                   padding: "6px 2px",
                   borderBottom: "1px solid #f1f5f9",
                 }}
@@ -404,20 +404,20 @@ export default function TodoModal({
                 </span>
                 <span>
                   {s.done}/{s.total}（{Math.round(s.rate * 100)}%）{" "}
-                  <b style={{ color: s.pointsAwarded > 0 ? "#16a34a" : s.pointsAwarded < 0 ? "#dc2626" : "#94a3b8" }}>
+                  <b style={{ color: s.pointsAwarded > 0 ? "#16a34a" : s.pointsAwarded < 0 ? "#dc2626" : "#afafaf" }}>
                     {s.pointsAwarded > 0 ? `+${s.pointsAwarded}` : s.pointsAwarded || 0}
                   </b>
                 </span>
               </div>
             ))}
 
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#444", margin: "14px 0 6px" }}>积分明细</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4b4b4b", margin: "14px 0 6px" }}>积分明细</div>
             {!reward?.ledger?.length ? (
-              <p style={{ color: "#999", fontSize: 13 }}>还没有积分记录。完成计划就能拿分啦～</p>
+              <p style={{ color: "#afafaf", fontSize: 13 }}>还没有积分记录。完成计划就能拿分啦～</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {reward.ledger.map((l) => (
-                  <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#555" }}>
+                  <div key={l.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#4b4b4b" }}>
                     <span style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
                       {l.reason || l.reasonCode}
                       <span style={{ color: "#b0b7c3", marginLeft: 6 }}>{fmtTime(l.ts)}</span>

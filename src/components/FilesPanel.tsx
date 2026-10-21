@@ -74,8 +74,8 @@ const btn: React.CSSProperties = {
   color: "#3c4658",
   cursor: "pointer",
 };
-const btnPrimary: React.CSSProperties = { ...btn, background: "#667eea", borderColor: "#667eea", color: "#fff" };
-const btnDanger: React.CSSProperties = { ...btn, color: "#c0392b", borderColor: "#eec7c2" };
+const btnPrimary: React.CSSProperties = { ...btn, background: "#58cc02", borderColor: "#58cc02", color: "#fff" };
+const btnDanger: React.CSSProperties = { ...btn, color: "#ea2b2b", borderColor: "#eec7c2" };
 const btnMini: React.CSSProperties = { ...btn, padding: "3px 8px", fontSize: 11, borderRadius: 6 };
 const btnIcon: React.CSSProperties = { ...btn, padding: "5px 7px", display: "inline-flex", alignItems: "center" };
 
@@ -422,7 +422,7 @@ export default function FilesPanel({
       {/* 标题行（弹框模式带关闭） */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <h3 style={{ margin: 0, fontSize: 16 }}>🗂️ {title}</h3>
-        <span style={{ fontSize: 12, color: "#8a94a6" }}>
+        <span style={{ fontSize: 12, color: "#777777" }}>
           {childId ? "工作区里的文件；AI 老师生成的成果也在里面" : "资料库 / 上传原始件 / 各孩子工作区统一管理"}
         </span>
         {onClose && (
@@ -437,7 +437,7 @@ export default function FilesPanel({
 
       {/* 面包屑 */}
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 4, fontSize: 13, marginBottom: 8 }}>
-        <span style={{ cursor: "pointer", color: cwd ? "#667eea" : "#3c4658", fontWeight: 600 }} onClick={() => go("")}>
+        <span style={{ cursor: "pointer", color: cwd ? "#58cc02" : "#3c4658", fontWeight: 600 }} onClick={() => go("")}>
           根目录
         </span>
         {crumbs.map((seg, i) => {
@@ -447,7 +447,7 @@ export default function FilesPanel({
             <span key={p} style={{ display: "flex", gap: 4 }}>
               <span style={{ color: "#b3bac6" }}>/</span>
               <span
-                style={{ cursor: last ? "default" : "pointer", color: last ? "#3c4658" : "#667eea", fontWeight: last ? 600 : 400 }}
+                style={{ cursor: last ? "default" : "pointer", color: last ? "#3c4658" : "#58cc02", fontWeight: last ? 600 : 400 }}
                 onClick={() => !last && go(p)}
               >
                 {seg}
@@ -514,7 +514,7 @@ export default function FilesPanel({
               background: "#fff",
             }}
           >
-            <Search size={14} color="#8a94a6" />
+            <Search size={14} color="#777777" />
             <input
               value={searchInput}
               placeholder="搜索当前目录及子目录…"
@@ -531,7 +531,7 @@ export default function FilesPanel({
             {searchInput && (
               <button
                 title="清除"
-                style={{ border: "none", background: "none", cursor: "pointer", color: "#8a94a6", fontSize: 12, padding: 0 }}
+                style={{ border: "none", background: "none", cursor: "pointer", color: "#777777", fontSize: 12, padding: 0 }}
                 onClick={() => {
                   setSearchInput("");
                   setSearch(null);
@@ -573,12 +573,12 @@ export default function FilesPanel({
       )}
 
       {notice && (
-        <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 8, background: "#eefaf0", color: "#1d7a3d", fontSize: 12 }}>
+        <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 8, background: "#eefaf0", color: "#58a700", fontSize: 12 }}>
           {notice}
         </div>
       )}
       {error && (
-        <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 8, background: "#fdeceb", color: "#c0392b", fontSize: 12 }}>
+        <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 8, background: "#fdeceb", color: "#ea2b2b", fontSize: 12 }}>
           {error}
         </div>
       )}
@@ -590,8 +590,8 @@ export default function FilesPanel({
             marginBottom: 8,
             padding: "6px 10px",
             borderRadius: 8,
-            background: "#eef2ff",
-            color: "#3b4cca",
+            background: "#f7f7f7",
+            color: "#1899d6",
             fontSize: 12,
             display: "flex",
             alignItems: "center",
@@ -623,7 +623,7 @@ export default function FilesPanel({
           padding: "6px 14px",
           fontSize: 12,
           color: "#5a6478",
-          borderBottom: "1px solid #e6eaf0",
+          borderBottom: "1px solid #e5e5e5",
         }}
       >
         <span style={{ flexShrink: 0, width: 16 }} />
@@ -640,7 +640,7 @@ export default function FilesPanel({
               width,
               textAlign: align,
               fontWeight: sortKey === key ? 700 : 400,
-              color: sortKey === key ? "#3b4cca" : undefined,
+              color: sortKey === key ? "#1cb0f6" : undefined,
             }}
             title={`按${label}排序`}
           >
@@ -652,13 +652,13 @@ export default function FilesPanel({
       </div>
 
       {/* 列表 */}
-      <div style={{ overflowY: "auto", flex: 1, minHeight: 0, background: "#fff", border: "1px solid #e6eaf0", borderRadius: 12 }}>
+      <div style={{ overflowY: "auto", flex: 1, minHeight: 0, background: "#fff", border: "1px solid #e5e5e5", borderRadius: 12 }}>
         {loading || searching ? (
-          <div style={{ padding: 28, textAlign: "center", color: "#98a1b2", fontSize: 13 }}>
+          <div style={{ padding: 28, textAlign: "center", color: "#afafaf", fontSize: 13 }}>
             {searching ? "检索中…" : "加载中…"}
           </div>
         ) : displayed.length === 0 ? (
-          <div style={{ padding: 28, textAlign: "center", color: "#98a1b2", fontSize: 13 }}>
+          <div style={{ padding: 28, textAlign: "center", color: "#afafaf", fontSize: 13 }}>
             {search ? "没有匹配的文件或文件夹，换个关键词试试。" : "空目录。上传文件或新建文件夹开始整理。"}
           </div>
         ) : (
@@ -716,15 +716,15 @@ export default function FilesPanel({
                       <span style={{ fontSize: 11, color: "#b3bac6", marginLeft: 6 }}>{e.name}</span>
                     )}
                     {search && e.path.includes("/") && (
-                      <span style={{ fontSize: 11, color: "#8a94a6", marginLeft: 6 }}>
+                      <span style={{ fontSize: 11, color: "#777777", marginLeft: 6 }}>
                         {e.path.slice(0, e.path.lastIndexOf("/"))}
                       </span>
                     )}
                   </span>
-                  <span style={{ width: 76, textAlign: "right", color: "#8a94a6", fontSize: 12, flexShrink: 0 }}>
+                  <span style={{ width: 76, textAlign: "right", color: "#777777", fontSize: 12, flexShrink: 0 }}>
                     {e.type === "file" ? formatSize(e.size) : "–"}
                   </span>
-                  <span style={{ width: 130, color: "#8a94a6", fontSize: 12, flexShrink: 0 }}>
+                  <span style={{ width: 130, color: "#777777", fontSize: 12, flexShrink: 0 }}>
                     {formatTime(e.mtime)}
                   </span>
                   <span style={{ display: "flex", gap: 6, flexShrink: 0 }}>

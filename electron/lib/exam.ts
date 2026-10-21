@@ -394,7 +394,24 @@ export interface SpeechAssessment {
   integrity?: number;
   fluency?: { overall: number; pause?: number; speed?: number };
   prosody?: { overall: number; sense?: number; stress?: number; tone?: number };
-  words?: { word: string; score: number; dpType?: number; phones?: { phone: string; score: number }[] }[];
+  words?: {
+    word: string;
+    score: number;
+    dpType?: number;
+    /** 声调 0-4（0 轻声） */
+    tone?: number;
+    /** 声调得分 */
+    toneScore?: number;
+    /** 该字/词处停顿 */
+    isPause?: boolean;
+    /** 所属句子下标（篇章/段落） */
+    sentenceIndex?: number;
+    /** 音频起止（ms），按字回放用 */
+    startMs?: number;
+    endMs?: number;
+    phones?: { phone: string; score: number; startMs?: number; endMs?: number }[];
+  }[];
+  sentences?: { text: string; score: number; pause?: number; speed?: number }[];
   cnSyllables?: { char: string; score: number; stress?: number }[];
   audioQuality?: { tipId?: number; snr?: number; clip?: number; volume?: number };
   raw?: unknown;

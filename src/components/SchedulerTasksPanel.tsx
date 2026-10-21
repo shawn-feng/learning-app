@@ -97,9 +97,9 @@ const TYPE_META: Record<SchedulerTask["type"], { label: string; icon: string; hi
 };
 
 const RUN_STATUS: Record<string, { label: string; color: string }> = {
-  ok: { label: "成功", color: "#38a169" },
+  ok: { label: "成功", color: "#58a700" },
   skip: { label: "跳过", color: "#d69e2e" },
-  error: { label: "失败", color: "#e53e3e" },
+  error: { label: "失败", color: "#ff4b4b" },
 };
 
 function fmt(iso: string): string {
@@ -289,7 +289,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div>
           <h3 style={{ margin: 0 }}>⏰ 定时任务</h3>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#888", lineHeight: 1.6 }}>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#777777", lineHeight: 1.6 }}>
             先创建任务，再分配给指定孩子（自定义任务也可分配给家长本人）；到点由服务端自动执行（设备关机/休眠也不漏跑），下方可查询执行结果。
           </p>
         </div>
@@ -298,13 +298,13 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
             icon={RefreshCw}
             title="刷新"
             onClick={load}
-            style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, background: "#fff", fontSize: 13, cursor: "pointer" }}
+            style={{ padding: "8px 12px", border: "1px solid #e5e5e5", borderRadius: 8, background: "#fff", fontSize: 13, cursor: "pointer" }}
           />
           <button
             onClick={openBlankCreate}
             style={{
               display: "flex", alignItems: "center", gap: 6, padding: "8px 14px",
-              background: "#667eea", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer",
+              background: "#58cc02", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer",
             }}
           >
             <Plus size={16} /> 新建任务
@@ -312,12 +312,12 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
         </div>
       </div>
 
-      {error && <div style={{ color: "#e53e3e", fontSize: 12 }}>{error}</div>}
+      {error && <div style={{ color: "#ff4b4b", fontSize: 12 }}>{error}</div>}
 
       {/* ISSUE-182 F4：连续失败提醒（服务端推送 + 持久化，新的在前） */}
       {alerts.length > 0 && (
         <div style={{ border: "1px solid #fed7d7", background: "#fff5f5", borderRadius: 10, padding: "10px 14px" }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#c53030", marginBottom: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#ea2b2b", marginBottom: 6 }}>
             ⚠️ 任务失败提醒（连续失败 2 次以上时推送；恢复成功后自动停止）
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -333,14 +333,14 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
       {/* 推荐任务模板（服务端下发；点开预填表单，家长可改提示词后保存——不会自动创建任务） */}
       {templates.length > 0 && !showCreate && (
         <div>
-          <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>✨ 推荐任务（点开可预览提示词、修改后创建）</div>
+          <div style={{ fontSize: 12, color: "#777777", marginBottom: 6 }}>✨ 推荐任务（点开可预览提示词、修改后创建）</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
             {templates.map((tpl) => (
               <div
                 key={tpl.key}
                 style={{
                   border: tpl.taskId ? "1px solid #c6f6d5" : "1px dashed #b3bcf5",
-                  borderRadius: 12, padding: 14, background: tpl.taskId ? "#f6fff9" : "#fafbff",
+                  borderRadius: 12, padding: 14, background: tpl.taskId ? "#f6fff9" : "#fbfbfb",
                   display: "flex", flexDirection: "column", gap: 8,
                 }}
               >
@@ -348,17 +348,17 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                   <span style={{ fontSize: 22 }}>🧠</span>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{tpl.name}</div>
-                    <div style={{ fontSize: 11, color: "#999" }}>
+                    <div style={{ fontSize: 11, color: "#afafaf" }}>
                       自定义任务 · 每天 {tpl.time}{tpl.taskId ? " · 已添加" : ""}
                     </div>
                   </div>
                 </div>
-                <div style={{ fontSize: 12, color: "#666", lineHeight: 1.6 }}>{tpl.description}</div>
+                <div style={{ fontSize: 12, color: "#777777", lineHeight: 1.6 }}>{tpl.description}</div>
                 <button
                   onClick={() => useTemplate(tpl)}
                   style={{
                     alignSelf: "flex-start", display: "flex", alignItems: "center", gap: 6, padding: "6px 12px",
-                    background: tpl.taskId ? "#f0fff4" : "#667eea", color: tpl.taskId ? "#276749" : "#fff",
+                    background: tpl.taskId ? "#f0fff4" : "#58cc02", color: tpl.taskId ? "#276749" : "#fff",
                     border: tpl.taskId ? "1px solid #9ae6b4" : "none", borderRadius: 8, fontSize: 12, cursor: "pointer",
                   }}
                 >
@@ -372,20 +372,20 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
 
       {/* 新建任务表单 */}
       {showCreate && (
-        <div style={{ border: "1px solid #667eea", borderRadius: 10, padding: 16, background: "#fafbff" }}>
+        <div style={{ border: "1px solid #58cc02", borderRadius: 10, padding: 16, background: "#fbfbfb" }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>
             {form.templateKey ? "从推荐模板创建（已预填，可修改）" : "新建定时任务"}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 13, color: "#666", width: 70 }}>任务类型：</span>
+              <span style={{ fontSize: 13, color: "#777777", width: 70 }}>任务类型：</span>
               <select
                 value={form.type}
                 onChange={(e) => {
                   const type = e.target.value as SchedulerTask["type"];
                   setForm((f) => ({ ...f, type, name: defaultName(type, f.time) }));
                 }}
-                style={{ padding: "6px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd" }}
+                style={{ padding: "6px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #e5e5e5" }}
               >
                 {(Object.keys(TYPE_META) as SchedulerTask["type"][]).filter((t) => t !== "reminder").map((t) => (
                   <option key={t} value={t}>
@@ -393,20 +393,20 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                   </option>
                 ))}
               </select>
-              <span style={{ fontSize: 13, color: "#666", marginLeft: 8 }}>时间：</span>
+              <span style={{ fontSize: 13, color: "#777777", marginLeft: 8 }}>时间：</span>
               <input
                 type="time"
                 value={form.time}
                 onChange={(e) => setForm((f) => ({ ...f, time: e.target.value, name: defaultName(f.type, e.target.value) }))}
-                style={{ padding: "6px 8px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd" }}
+                style={{ padding: "6px 8px", fontSize: 13, borderRadius: 6, border: "1px solid #e5e5e5" }}
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 13, color: "#666", width: 70 }}>任务名称：</span>
+              <span style={{ fontSize: 13, color: "#777777", width: 70 }}>任务名称：</span>
               <input
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                style={{ flex: 1, minWidth: 200, padding: "6px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd" }}
+                style={{ flex: 1, minWidth: 200, padding: "6px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #e5e5e5" }}
               />
             </div>
             {form.type === "recording" && (
@@ -421,7 +421,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
             )}
             {form.type === "custom" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <span style={{ fontSize: 13, color: "#666" }}>
+                <span style={{ fontSize: 13, color: "#777777" }}>
                   任务指令（自然语言，写清楚做什么、产出什么）：
                   {form.templateKey && (
                     <span style={{ color: "#276749", marginLeft: 6 }}>
@@ -435,24 +435,24 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                   placeholder="例：查一下今天的天气，然后创建提醒任务：未来 7 天每天 07:00 播报当天天气（一次性建 7 条）"
                   rows={form.templateKey ? 12 : 3}
                   style={{
-                    padding: "8px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd",
+                    padding: "8px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #e5e5e5",
                     resize: "vertical", lineHeight: 1.6, fontFamily: "inherit",
                   }}
                 />
               </div>
             )}
-            <div style={{ fontSize: 12, color: "#999", lineHeight: 1.6 }}>{TYPE_META[form.type].hint}</div>
+            <div style={{ fontSize: 12, color: "#afafaf", lineHeight: 1.6 }}>{TYPE_META[form.type].hint}</div>
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={createTask}
                 disabled={busy}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#667eea", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer" }}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#58cc02", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer" }}
               >
                 <Save size={14} /> {busy ? "保存中…" : form.templateKey ? "保存任务" : "创建任务"}
               </button>
               <button
                 onClick={() => setShowCreate(false)}
-                style={{ padding: "8px 14px", background: "#fff", border: "1px solid #ddd", borderRadius: 8, fontSize: 13, cursor: "pointer" }}
+                style={{ padding: "8px 14px", background: "#fff", border: "1px solid #e5e5e5", borderRadius: 8, fontSize: 13, cursor: "pointer" }}
               >
                 取消
               </button>
@@ -463,9 +463,9 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
 
       {/* 任务卡片 */}
       {loading ? (
-        <div style={{ padding: 24, textAlign: "center", color: "#999", fontSize: 13 }}>加载中…</div>
+        <div style={{ padding: 24, textAlign: "center", color: "#afafaf", fontSize: 13 }}>加载中…</div>
       ) : tasks.length === 0 ? (
-        <div style={{ padding: 32, textAlign: "center", color: "#999", fontSize: 13, border: "1px dashed #ddd", borderRadius: 10 }}>
+        <div style={{ padding: 32, textAlign: "center", color: "#afafaf", fontSize: 13, border: "1px dashed #e5e5e5", borderRadius: 10 }}>
           还没有定时任务，点右上角「新建任务」创建，再分配给指定孩子。
         </div>
       ) : (
@@ -479,7 +479,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
               <div
                 key={task.id}
                 style={{
-                  border: "1px solid #eee", borderRadius: 12, padding: 14, background: "#fff",
+                  border: "1px solid #e5e5e5", borderRadius: 12, padding: 14, background: "#fff",
                   opacity: task.enabled ? 1 : 0.62, display: "flex", flexDirection: "column", gap: 8,
                 }}
               >
@@ -488,20 +488,20 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                     <span style={{ fontSize: 22 }}>{meta.icon}</span>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{task.name}</div>
-                      <div style={{ fontSize: 11, color: "#999" }}>
+                      <div style={{ fontSize: 11, color: "#afafaf" }}>
                         {meta.label}
                         {task.owner === "child" && <span style={{ color: "#b7791f", marginLeft: 4 }}>·孩子自建</span>}
                       </div>
                     </div>
                   </div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#666", cursor: "pointer", flexShrink: 0 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#777777", cursor: "pointer", flexShrink: 0 }}>
                     <input type="checkbox" checked={task.enabled} onChange={(e) => toggleTaskEnabled(task, e.target.checked)} />
                     {task.enabled ? "开启" : "关闭"}
                   </label>
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-                  <span style={{ background: "#eef0ff", color: "#5a67d8", borderRadius: 6, padding: "2px 8px", fontWeight: 600 }}>
+                  <span style={{ background: "#f7f7f7", color: "#58a700", borderRadius: 6, padding: "2px 8px", fontWeight: 600 }}>
                     🕐 {task.time}
                   </span>
                   {task.type === "recording" && task.extra.onNewSession === true && (
@@ -513,7 +513,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
 
                 {task.type === "custom" && task.instruction && (
                   <div
-                    style={{ fontSize: 12, color: "#555", background: "#f7f8fc", borderRadius: 8, padding: "6px 10px", lineHeight: 1.5 }}
+                    style={{ fontSize: 12, color: "#4b4b4b", background: "#f7f7f7", borderRadius: 8, padding: "6px 10px", lineHeight: 1.5 }}
                     title={task.instruction}
                   >
                     📋 {task.instruction.length > 60 ? `${task.instruction.slice(0, 60)}…` : task.instruction}
@@ -521,15 +521,15 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                 )}
 
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 12 }}>
-                  <span style={{ color: "#888" }}>已分配：</span>
+                  <span style={{ color: "#777777" }}>已分配：</span>
                   {assigned.length === 0 ? (
-                    <span style={{ color: "#aaa" }}>（未分配）</span>
+                    <span style={{ color: "#afafaf" }}>（未分配）</span>
                   ) : (
                     assigned.map((a) => (
                       <span
                         key={`${a.targetType ?? "child"}:${a.childId}`}
                         style={{
-                          background: a.targetType === "parent" ? "#fef3e2" : "#f0f4ff",
+                          background: a.targetType === "parent" ? "#fef3e2" : "#e9f9dc",
                           color: a.targetType === "parent" ? "#b7791f" : "#4a6da7",
                           borderRadius: 10,
                           padding: "1px 8px",
@@ -542,27 +542,27 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                  <span style={{ color: "#888" }}>最近执行：</span>
+                  <span style={{ color: "#777777" }}>最近执行：</span>
                   {last ? (
-                    <span style={{ color: st?.color ?? "#666", fontWeight: 500 }}>
+                    <span style={{ color: st?.color ?? "#777777", fontWeight: 500 }}>
                       {st?.label ?? last.status} · {last.date} {last.point}
                       {last.message ? `（${last.message.slice(0, 40)}${last.message.length > 40 ? "…" : ""}）` : ""}
                     </span>
                   ) : (
-                    <span style={{ color: "#aaa" }}>暂无记录</span>
+                    <span style={{ color: "#afafaf" }}>暂无记录</span>
                   )}
                 </div>
 
                 <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
                   <button
                     onClick={() => setAssignFor(task)}
-                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", background: "#eef0ff", color: "#5a67d8", border: "none", borderRadius: 6, fontSize: 12, cursor: "pointer" }}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", background: "#f7f7f7", color: "#58a700", border: "none", borderRadius: 6, fontSize: 12, cursor: "pointer" }}
                   >
                     <Users size={13} /> 分配对象
                   </button>
                   <button
                     onClick={() => deleteTask(task)}
-                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", background: "#fdf6f6", color: "#b33", border: "none", borderRadius: 6, fontSize: 12, cursor: "pointer" }}
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", background: "#fdf6f6", color: "#ea2b2b", border: "none", borderRadius: 6, fontSize: 12, cursor: "pointer" }}
                   >
                     <Trash2 size={13} /> 删除
                   </button>
@@ -584,7 +584,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>分配任务「{assignFor.name}」</div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: "#777777", marginBottom: 12 }}>
               勾选 = 分配给该对象执行此任务；取消勾选 = 不再执行（不影响其他对象）。
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -614,16 +614,16 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                 );
               })}
               {children.length === 0 && assignFor.type !== "custom" && (
-                <div style={{ color: "#999", fontSize: 13 }}>还没有孩子账号。</div>
+                <div style={{ color: "#afafaf", fontSize: 13 }}>还没有孩子账号。</div>
               )}
               {children.length === 0 && assignFor.type === "custom" && (
-                <div style={{ color: "#999", fontSize: 13 }}>还没有孩子账号，可先只分配给家长。</div>
+                <div style={{ color: "#afafaf", fontSize: 13 }}>还没有孩子账号，可先只分配给家长。</div>
               )}
             </div>
             <div style={{ marginTop: 16, textAlign: "right" }}>
               <button
                 onClick={() => setAssignFor(null)}
-                style={{ padding: "8px 16px", background: "#667eea", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer" }}
+                style={{ padding: "8px 16px", background: "#58cc02", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer" }}
               >
                 完成
               </button>
@@ -640,18 +640,18 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
             icon={RefreshCw}
             title="刷新结果"
             onClick={() => window.api.schedulerRunsList({ limit: 30 }).then((r: any) => r?.success && setRuns(r.runs ?? []))}
-            style={{ padding: "4px 8px", border: "1px solid #ddd", borderRadius: 6, background: "#fff", fontSize: 12, cursor: "pointer" }}
+            style={{ padding: "4px 8px", border: "1px solid #e5e5e5", borderRadius: 6, background: "#fff", fontSize: 12, cursor: "pointer" }}
           />
         </div>
         {runs.length === 0 ? (
-          <div style={{ padding: 20, textAlign: "center", color: "#999", fontSize: 13, border: "1px dashed #ddd", borderRadius: 10 }}>
+          <div style={{ padding: 20, textAlign: "center", color: "#afafaf", fontSize: 13, border: "1px dashed #e5e5e5", borderRadius: 10 }}>
             还没有执行记录（任务到点执行后这里会显示结果）。
           </div>
         ) : (
-          <div style={{ border: "1px solid #eee", borderRadius: 10, overflowX: "auto" }}>
+          <div style={{ border: "1px solid #e5e5e5", borderRadius: 10, overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
-                <tr style={{ background: "#fafbff", color: "#666", textAlign: "left" }}>
+                <tr style={{ background: "#fbfbfb", color: "#777777", textAlign: "left" }}>
                   <th style={{ padding: "8px 10px" }}>日期</th>
                   <th style={{ padding: "8px 10px" }}>时间点</th>
                   <th style={{ padding: "8px 10px" }}>执行对象</th>
@@ -663,7 +663,7 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
               </thead>
               <tbody>
                 {runs.map((r) => {
-                  const st = RUN_STATUS[r.status] ?? { label: r.status, color: "#666" };
+                  const st = RUN_STATUS[r.status] ?? { label: r.status, color: "#777777" };
                   return (
                     <tr key={r.id} style={{ borderTop: "1px solid #f0f0f0" }}>
                       <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>{r.date}</td>
@@ -673,10 +673,10 @@ export default function SchedulerTasksPanel({ children }: { children: ChildItem[
                       </td>
                       <td style={{ padding: "7px 10px" }}>{r.taskName}</td>
                       <td style={{ padding: "7px 10px", color: st.color, fontWeight: 600, whiteSpace: "nowrap" }}>{st.label}</td>
-                      <td style={{ padding: "7px 10px", color: "#888", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.message}>
+                      <td style={{ padding: "7px 10px", color: "#777777", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.message}>
                         {r.message || "-"}
                       </td>
-                      <td style={{ padding: "7px 10px", whiteSpace: "nowrap", color: "#999" }}>{fmt(r.finishedAt)}</td>
+                      <td style={{ padding: "7px 10px", whiteSpace: "nowrap", color: "#afafaf" }}>{fmt(r.finishedAt)}</td>
                     </tr>
                   );
                 })}

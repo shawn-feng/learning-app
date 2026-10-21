@@ -23,10 +23,10 @@ interface Props {
 
 /** 4 区块的徽章配色（区别于「学习进度/考核」其它 tab，仅用于区块区分）。 */
 const BLOCK_COLORS: Record<string, { bg: string; fg: string }> = {
-  学习: { bg: "#eef2ff", fg: "#3b4cca" },
-  生活: { bg: "#e8f7ee", fg: "#2f8a52" },
+  学习: { bg: "#f7f7f7", fg: "#1cb0f6" },
+  生活: { bg: "#e8f7ee", fg: "#58a700" },
   问答: { bg: "#fdf3e3", fg: "#a26a0a" },
-  任务: { bg: "#fbe9e9", fg: "#c0392b" },
+  任务: { bg: "#fbe9e9", fg: "#ea2b2b" },
 };
 const BLOCK_OPTIONS = ["学习", "生活", "问答", "任务"];
 
@@ -57,9 +57,9 @@ const fmtLongDate = (date: string) => {
 };
 
 const inputStyle: CSSProperties = {
-  padding: "5px 8px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd", background: "#fff",
+  padding: "5px 8px", fontSize: 13, borderRadius: 6, border: "1px solid #e5e5e5", background: "#fff",
 };
-const labelStyle: CSSProperties = { fontSize: 13, color: "#666" };
+const labelStyle: CSSProperties = { fontSize: 13, color: "#777777" };
 
 export default function ChildDailyPanel({ childId }: Props) {
   const [from, setFrom] = useState<string>(() => daysAgo(7));
@@ -177,12 +177,12 @@ export default function ChildDailyPanel({ childId }: Props) {
         style={{
           display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
           marginBottom: 12, padding: "10px 12px",
-          background: "#fff", border: "1px solid #eee", borderRadius: 8,
+          background: "#fff", border: "1px solid #e5e5e5", borderRadius: 8,
         }}
       >
         <span style={labelStyle}>日期：</span>
         <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} style={inputStyle} />
-        <span style={{ color: "#aaa" }}>至</span>
+        <span style={{ color: "#afafaf" }}>至</span>
         <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} style={inputStyle} />
 
         <span style={{ ...labelStyle, marginLeft: 6 }}>分类：</span>
@@ -220,7 +220,7 @@ export default function ChildDailyPanel({ childId }: Props) {
           onClick={applyQuery}
           style={{
             padding: "6px 14px", borderRadius: 6, border: "none",
-            background: "#667eea", color: "#fff", fontSize: 13, cursor: "pointer",
+            background: "#58cc02", color: "#fff", fontSize: 13, cursor: "pointer",
           }}
         >
           查询
@@ -228,20 +228,20 @@ export default function ChildDailyPanel({ childId }: Props) {
         <button
           onClick={resetRecent7}
           style={{
-            padding: "6px 12px", borderRadius: 6, border: "1px solid #ddd",
-            background: "#fff", color: "#555", fontSize: 12, cursor: "pointer",
+            padding: "6px 12px", borderRadius: 6, border: "1px solid #e5e5e5",
+            background: "#fff", color: "#4b4b4b", fontSize: 12, cursor: "pointer",
           }}
         >
           最近 7 天
         </button>
         {hasActiveFilter && (
-          <span style={{ fontSize: 12, color: "#888" }}>
+          <span style={{ fontSize: 12, color: "#777777" }}>
             已筛选：{block ? `分类 ${block}` : ""}{block && tag.trim() ? " · " : ""}{tag.trim() ? `标签 #${tag.trim()}` : ""}{(block || tag.trim()) && title.trim() ? " · " : ""}{title.trim() ? `标题含“${title.trim()}”` : ""}（共 {totalCount} 条）
           </span>
         )}
       </div>
 
-      {error && <div style={{ color: "#b33", fontSize: 12, marginBottom: 10 }}>⚠️ {error}</div>}
+      {error && <div style={{ color: "#ea2b2b", fontSize: 12, marginBottom: 10 }}>⚠️ {error}</div>}
 
       {/* 两栏：左=条目列表 ｜ 右=选中条目内容 */}
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", minWidth: 0 }}>
@@ -249,34 +249,34 @@ export default function ChildDailyPanel({ childId }: Props) {
         <div
           style={{
             width: 300, minWidth: 0, flexShrink: 0,
-            borderRight: "1px solid #eee", paddingRight: 10, maxHeight: "72vh", overflowY: "auto",
+            borderRight: "1px solid #e5e5e5", paddingRight: 10, maxHeight: "72vh", overflowY: "auto",
           }}
         >
           {loading ? (
-            <div className="placeholder" style={{ fontSize: 12, padding: "12px 0", color: "#999" }}>
+            <div className="placeholder" style={{ fontSize: 12, padding: "12px 0", color: "#afafaf" }}>
               ⏳ 加载中…
             </div>
           ) : byDate.length === 0 ? (
-            <p style={{ color: "#888", fontSize: 12, padding: "12px 0" }}>
+            <p style={{ color: "#777777", fontSize: 12, padding: "12px 0" }}>
               {hasActiveFilter ? "（无符合条件的记录，试试放宽筛选）" : "（该范围暂无每日记录）"}
             </p>
           ) : (
             byDate.map((g) => (
               <div key={g.date} style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#5a67d8", marginBottom: 4 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#58a700", marginBottom: 4 }}>
                   {fmtLongDate(g.date)}（{g.items.length}）
                 </div>
                 {g.items.map((e) => {
                   const k = entryKey(e);
                   const act = k === selectedKey;
-                  const c = BLOCK_COLORS[e.block] || { bg: "#f0f0f0", fg: "#666" };
+                  const c = BLOCK_COLORS[e.block] || { bg: "#f0f0f0", fg: "#777777" };
                   return (
                     <div
                       key={k}
                       onClick={() => setSelectedKey(k)}
                       style={{
                         padding: "7px 9px", borderRadius: 8, marginBottom: 3, cursor: "pointer",
-                        background: act ? "#f0f4ff" : "#fff",
+                        background: act ? "#e9f9dc" : "#fff",
                         border: `1px solid ${act ? "#c3d2f5" : "#f0f0f0"}`,
                       }}
                     >
@@ -292,7 +292,7 @@ export default function ChildDailyPanel({ childId }: Props) {
                       </div>
                       <div
                         style={{
-                          fontSize: 12, fontWeight: 600, marginTop: 3, color: "#333",
+                          fontSize: 12, fontWeight: 600, marginTop: 3, color: "#4b4b4b",
                           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                         }}
                       >
@@ -301,7 +301,7 @@ export default function ChildDailyPanel({ childId }: Props) {
                       {e.tags ? (
                         <div
                           style={{
-                            fontSize: 10, color: "#999", marginTop: 2,
+                            fontSize: 10, color: "#afafaf", marginTop: 2,
                             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                           }}
                         >
@@ -317,13 +317,13 @@ export default function ChildDailyPanel({ childId }: Props) {
         </div>
 
         {/* 右栏：选中条目完整原文（markdown 渲染，与聊天气泡一致） */}
-        <div style={{ flex: 1, minWidth: 0, borderLeft: "1px solid #eee", paddingLeft: 14 }}>
+        <div style={{ flex: 1, minWidth: 0, borderLeft: "1px solid #e5e5e5", paddingLeft: 14 }}>
           {loading ? (
-            <div className="placeholder" style={{ padding: "20px 0", color: "#999", fontSize: 13 }}>
+            <div className="placeholder" style={{ padding: "20px 0", color: "#afafaf", fontSize: 13 }}>
               ⏳ 加载中…
             </div>
           ) : !selected ? (
-            <div className="placeholder" style={{ padding: "20px 0", color: "#999", fontSize: 13 }}>
+            <div className="placeholder" style={{ padding: "20px 0", color: "#afafaf", fontSize: 13 }}>
               {byDate.length === 0
                 ? (hasActiveFilter ? "没有符合当前筛选条件的记录" : "该日期范围内没有每日记录")
                 : "（请选择左侧一条记录查看原文）"}
@@ -336,14 +336,14 @@ export default function ChildDailyPanel({ childId }: Props) {
                   <span
                     style={{
                       marginLeft: 8, fontSize: 11, fontWeight: 500, borderRadius: 4, padding: "1px 6px",
-                      color: (BLOCK_COLORS[selected.block] || {}).fg || "#666",
+                      color: (BLOCK_COLORS[selected.block] || {}).fg || "#777777",
                       background: (BLOCK_COLORS[selected.block] || {}).bg || "#f0f0f0",
                     }}
                   >
                     {selected.block}
                   </span>
                 </div>
-                <div style={{ fontSize: 12, color: "#999", marginTop: 3 }}>{fmtLongDate(selected.date)}</div>
+                <div style={{ fontSize: 12, color: "#afafaf", marginTop: 3 }}>{fmtLongDate(selected.date)}</div>
               </div>
               <div className="markdown-body" style={{ maxHeight: "62vh", overflowY: "auto", paddingRight: 4 }}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{selected.raw || ""}</ReactMarkdown>

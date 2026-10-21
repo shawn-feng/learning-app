@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import IconButton from "./IconButton";
+import SpeechText from "./SpeechText";
 import { Save } from "lucide-react";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
 import type { SpeechAssessment } from "../../electron/lib/exam";
@@ -38,6 +39,22 @@ const ASSESSMENT_PROVIDERS: AssessmentProviderDef[] = [
   },
 ];
 
+/** 阿里声希 typeThres 档位（0=不传，保持引擎默认松紧；1/3 更严，2/4 更松） */
+const TYPE_THRES_CHOICES = [
+  { value: 0, label: "默认" },
+  { value: 1, label: "严格" },
+  { value: 2, label: "宽松" },
+  { value: 3, label: "非常严格" },
+  { value: 4, label: "非常宽松" },
+];
+const TYPE_THRES_LABEL: Record<number, string> = {
+  0: "默认（不启用）",
+  1: "严格",
+  2: "宽松",
+  3: "非常严格",
+  4: "非常宽松",
+};
+
 export default function AssessmentSettings() {
   const [enabled, setEnabled] = useState(false);
   const [provider, setProvider] = useState("tencent-soe"); // 当前正在编辑的服务
@@ -45,9 +62,13 @@ export default function AssessmentSettings() {
   const [fields, setFields] = useState<Record<string, string>>({});
   const [status, setStatus] = useState("");
   const [testing, setTesting] = useState(false);
+  // 试评结果（"hello"）：用于直观看逐词着色是否正常（不落库）
+  const [testSpeech, setTestSpeech] = useState<SpeechAssessment | null>(null);
   // ISSUE-183：考核朗读/背诵规则——录音最低平均音量（0-100 归一分，0=不校验）+ 通过线家长默认值
   const [minVolumeNorm, setMinVolumeNorm] = useState(42);
   const [recitePassDefault, setRecitePassDefault] = useState(90);
+  // 声希打分松紧：0 默认（不传）/ 1 严格 / 2 宽松 / 3 非常严格 / 4 非常宽松（腾讯智聆无此参数）
+  const [typeThres, setTypeThres] = useState(0);
   const { recording, start, stop } = useAudioRecorder();
 
   useEffect(() => {
@@ -62,6 +83,8 @@ export default function AssessmentSettings() {
         const rp = Number(r.config.recitePassDefault);
         if (Number.isFinite(mv) && mv >= 0) setMinVolumeNorm(Math.min(100, Math.round(mv)));
         if (Number.isFinite(rp) && rp > 0) setRecitePassDefault(Math.min(100, Math.round(rp)));
+        const tt = Number(r.config.typeThres);
+        if (Number.isInteger(tt) && tt >= 0 && tt <= 4) setTypeThres(tt);
       }
     });
   }, []);
@@ -89,6 +112,7 @@ export default function AssessmentSettings() {
       providers,
       minVolumeNorm,
       recitePassDefault,
+      typeThres,
     });
     if (r?.success) {
       setStatus("已保存");
@@ -106,6 +130,7 @@ export default function AssessmentSettings() {
       providers: {},
       minVolumeNorm,
       recitePassDefault,
+      typeThres,
     });
     if (r?.success) {
       setDefaultProvider(r.config.provider);
@@ -137,6 +162,7 @@ export default function AssessmentSettings() {
           const fluency = res.fluency?.overall; // 流利度：取对象中的数字
           const integrity = res.integrity; // 完整度
           const wordCount = res.words?.length ?? 0;
+          setTestSpeech(res);
           setStatus(
             `评测成功：总分 ${score ?? "未返回"} 分` +
               (res.accuracy !== undefined ? `，准确度 ${res.accuracy}` : "") +
@@ -179,15 +205,15 @@ export default function AssessmentSettings() {
             borderRadius: 16,
             border: "none",
             cursor: "pointer",
-            background: enabled ? "#667eea" : "#ddd",
-            color: enabled ? "white" : "#666",
+            background: enabled ? "#58cc02" : "#e5e5e5",
+            color: enabled ? "white" : "#777777",
           }}
         >
           {enabled ? "已开启" : "已关闭"}
         </button>
       </div>
 
-      <div style={{ marginBottom: 8, fontSize: 13, color: "#888" }}>
+      <div style={{ marginBottom: 8, fontSize: 13, color: "#777777" }}>
         选择服务编辑凭证；点「设为默认」把它设为评测时的首选服务：
       </div>
       <div className="provider-list">
@@ -219,7 +245,7 @@ export default function AssessmentSettings() {
           </div>
         ))}
       </div>
-      <p style={{ fontSize: 12, color: "#999", margin: "8px 0 12px" }}>{currentProvider.desc}</p>
+      <p style={{ fontSize: 12, color: "#afafaf", margin: "8px 0 12px" }}>{currentProvider.desc}</p>
 
       {currentProvider.fields.map((f) => (
         <div key={f.key} style={{ marginBottom: 12 }}>
@@ -229,13 +255,13 @@ export default function AssessmentSettings() {
             value={fields[f.key] || ""}
             onChange={(e) => setField(f.key, e.target.value)}
             placeholder={f.placeholder}
-            style={{ width: "100%", padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
+            style={{ width: "100%", padding: 10, border: "1px solid #e5e5e5", borderRadius: 8 }}
           />
         </div>
       ))}
 
       {/* ISSUE-183/189：录音音量校验（考核 + 语音输入通用，家长可配；随「保存」一起提交） */}
-      <div style={{ marginTop: 24, borderTop: "1px solid #e2e8f0", paddingTop: 16 }}>
+      <div style={{ marginTop: 24, borderTop: "1px solid #e5e5e5", paddingTop: 16 }}>
         <h3 style={{ margin: "0 0 4px", fontSize: 16 }}>录音音量与朗读评分</h3>
         <p className="desc" style={{ marginBottom: 14 }}>
           录音音量不达标时：考核里的朗读/背诵题算没答、要求重录；聊天语音输入与音频转写不送识别、提示重说——
@@ -256,9 +282,9 @@ export default function AssessmentSettings() {
               onChange={(e) => setMinVolumeNorm(Number(e.target.value))}
               style={{ flex: 1, maxWidth: 320 }}
             />
-            <span style={{ fontSize: 12, color: "#999" }}>0 = 不校验</span>
+            <span style={{ fontSize: 12, color: "#afafaf" }}>0 = 不校验</span>
           </div>
-          <p style={{ fontSize: 12, color: "#999", margin: "4px 0 0" }}>
+          <p style={{ fontSize: 12, color: "#afafaf", margin: "4px 0 0" }}>
             录音平均音量低于此值（0-100 归一分）时，孩子端所有录音（考核朗读/背诵、聊天按住说话、音频转写）
             都会提示重说、不送识别/不算答；服务端对考核提交的录音再校一次。
             默认 42（约 -35dBFS），可按孩子实际录音情况调低/调高或关闭。
@@ -275,10 +301,39 @@ export default function AssessmentSettings() {
             max={100}
             value={recitePassDefault}
             onChange={(e) => setRecitePassDefault(Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0))))}
-            style={{ width: 100, padding: "8px 10px", border: "1px solid #ddd", borderRadius: 8 }}
+            style={{ width: 100, padding: "8px 10px", border: "1px solid #e5e5e5", borderRadius: 8 }}
           />
-          <p style={{ fontSize: 12, color: "#999", margin: "4px 0 0" }}>
+          <p style={{ fontSize: 12, color: "#afafaf", margin: "4px 0 0" }}>
             评分改为各维度平均后分数会变，达不到线的题目判不通过。题目/考核方法自带通过线的以自带为准，未设的用这里的默认值。
+          </p>
+        </div>
+
+        <div style={{ marginTop: 14, marginBottom: 8 }}>
+          <label style={{ display: "block", fontSize: 13, marginBottom: 6, fontWeight: 500 }}>
+            打分松紧（阿里声希）：<b>{TYPE_THRES_LABEL[typeThres] || "默认"}</b>
+          </label>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {TYPE_THRES_CHOICES.map((c) => (
+              <button
+                key={c.value}
+                onClick={() => setTypeThres(c.value)}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 16,
+                  border: typeThres === c.value ? "1px solid #58cc02" : "1px solid #dde3ea",
+                  background: typeThres === c.value ? "#f7f7f7" : "#fff",
+                  color: typeThres === c.value ? "#1cb0f6" : "#4b4b4b",
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <p style={{ fontSize: 12, color: "#afafaf", margin: "6px 0 0" }}>
+            只对「阿里 SSECP / 声希」生效，腾讯智聆没有这个参数。默认档不传参、沿用引擎自带松紧；
+            孩子发音还不稳、评测显得偏严时可选「宽松」，想更严格可选「严格」。
           </p>
         </div>
       </div>
@@ -288,13 +343,13 @@ export default function AssessmentSettings() {
           icon={Save}
           title="保存"
           onClick={handleSave}
-          style={{ padding: "10px 20px", background: "#667eea", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
+          style={{ padding: "10px 20px", background: "#58cc02", color: "white", border: "none", borderRadius: 8, cursor: "pointer" }}
         />        <button
           onClick={setDefault}
           style={{
             padding: "10px 20px",
-            background: defaultProvider === provider ? "#edf2f7" : "#f0f4ff",
-            color: defaultProvider === provider ? "#718096" : "#667eea",
+            background: defaultProvider === provider ? "#edf2f7" : "#e9f9dc",
+            color: defaultProvider === provider ? "#718096" : "#58cc02",
             border: "none",
             borderRadius: 8,
             cursor: "pointer",
@@ -307,8 +362,8 @@ export default function AssessmentSettings() {
           disabled={testing}
           style={{
             padding: "10px 20px",
-            background: recording ? "#e53e3e" : "#f0f4ff",
-            color: recording ? "white" : "#667eea",
+            background: recording ? "#ff4b4b" : "#e9f9dc",
+            color: recording ? "white" : "#58cc02",
             border: "none",
             borderRadius: 8,
             cursor: "pointer",
@@ -322,7 +377,7 @@ export default function AssessmentSettings() {
         <p
           style={{
             fontSize: 13,
-            color: /失败|无法|错误/.test(status) ? "#e53e3e" : "#667eea",
+            color: /失败|无法|错误/.test(status) ? "#ff4b4b" : "#58cc02",
             marginTop: 16,
             whiteSpace: "pre-wrap",
           }}
@@ -330,6 +385,13 @@ export default function AssessmentSettings() {
           {status}
         </p>
       )}
+
+      {testSpeech?.words?.length ? (
+        <div style={{ marginTop: 12, background: "#fbfaf6", border: "1px solid #eee6d2", borderRadius: 10, padding: "10px 12px" }}>
+          <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>试评「hello」逐词得分</div>
+          <SpeechText refText="hello" words={testSpeech.words} provider={testSpeech.provider} showSummary fontSize={16} />
+        </div>
+      ) : null}
     </div>
   );
 }

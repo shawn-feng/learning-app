@@ -81,14 +81,14 @@ export default function TokenHubQuotaPanel() {
         <button
           onClick={load}
           disabled={loading}
-          style={{ padding: "6px 14px", background: "#f0f4ff", color: "#667eea", border: "none", borderRadius: 8, cursor: "pointer" }}
+          style={{ padding: "6px 14px", background: "#e9f9dc", color: "#58a700", border: "none", borderRadius: 8, cursor: "pointer" }}
         >
           {loading ? "刷新中…" : "刷新"}
         </button>
       </div>
 
-      {error && <p style={{ fontSize: 13, color: "#e53e3e" }}>{error}</p>}
-      {loading && !data && <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>}
+      {error && <p style={{ fontSize: 13, color: "#ff4b4b" }}>{error}</p>}
+      {loading && !data && <p style={{ color: "#777777", fontSize: 13 }}>加载中…</p>}
 
       {exhausted && (
         <div style={{
@@ -115,10 +115,10 @@ export default function TokenHubQuotaPanel() {
             {quota ? `官方统计 · 剩余 ${fmtWan(displayRemaining ?? remaining)} tokens` : "官方统计暂不可用"}
           </span>
         </div>
-        <div style={{ background: "#e2e8f0", borderRadius: 8, height: 14, overflow: "hidden" }}>
+        <div style={{ background: "#e5e5e5", borderRadius: 8, height: 14, overflow: "hidden" }}>
           <div style={{
             width: `${pct}%`, height: "100%", borderRadius: 8,
-            background: exhausted ? "#e53e3e" : low ? "#f59e0b" : "#667eea",
+            background: exhausted ? "#ff4b4b" : low ? "#f59e0b" : "#58cc02",
             transition: "width .3s",
           }} />
         </div>
@@ -152,7 +152,7 @@ export default function TokenHubQuotaPanel() {
               ] as Array<[string, number, string]>
             ).map(([label, tokens, note]) => (
               <div key={label} style={{
-                flex: "1 1 150px", background: "white", border: "1px solid #e2e8f0",
+                flex: "1 1 150px", background: "white", border: "1px solid #e5e5e5",
                 borderRadius: 10, padding: "8px 12px",
               }}>
                 <div style={{ fontSize: 12, color: "#667" }}>{label}</div>
@@ -178,7 +178,7 @@ export default function TokenHubQuotaPanel() {
               ] as Array<[string, number, string]>
             ).map(([label, tokens, note]) => (
               <div key={label} style={{
-                flex: "1 1 150px", background: "white", border: "1px solid #e2e8f0",
+                flex: "1 1 150px", background: "white", border: "1px solid #e5e5e5",
                 borderRadius: 10, padding: "8px 12px",
               }}>
                 <div style={{ fontSize: 12, color: "#667" }}>{label}</div>
@@ -232,7 +232,7 @@ export default function TokenHubQuotaPanel() {
           </tbody>
         </table>
       ) : (
-        <p style={{ color: "#888", fontSize: 13 }}>暂无用量记录</p>
+        <p style={{ color: "#777777", fontSize: 13 }}>暂无用量记录</p>
       )}
 
       <p style={{ fontSize: 12, color: "#a0aec0", marginTop: 16 }}>额度不足时请联系管理员充值（即时生效）。</p>

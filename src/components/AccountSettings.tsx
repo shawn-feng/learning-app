@@ -56,7 +56,7 @@ export default function AccountSettings() {
         placeholder="新密码（至少 8 位）"
         value={newPassword}
         onChange={(e) => setNewPassword(e.target.value)}
-        style={{ width: "100%", padding: "10px 12px", border: "1px solid #ddd", borderRadius: 8, marginBottom: 10 }}
+        style={{ width: "100%", padding: "10px 12px", border: "1px solid #e5e5e5", borderRadius: 8, marginBottom: 10 }}
       />
       <input
         type="password"
@@ -64,12 +64,12 @@ export default function AccountSettings() {
         value={confirm}
         onChange={(e) => setConfirm(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && handleChange()}
-        style={{ width: "100%", padding: "10px 12px", border: "1px solid #ddd", borderRadius: 8, marginBottom: 14 }}
+        style={{ width: "100%", padding: "10px 12px", border: "1px solid #e5e5e5", borderRadius: 8, marginBottom: 14 }}
       />
       <button
         onClick={handleChange}
         disabled={loading}
-        style={{ padding: "9px 22px", borderRadius: 8, border: "none", background: "#667eea", color: "#fff", cursor: "pointer" }}
+        style={{ padding: "9px 22px", borderRadius: 8, border: "none", background: "#58cc02", color: "#fff", cursor: "pointer" }}
       >
         {loading ? "保存中..." : "更新密码"}
       </button>

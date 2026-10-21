@@ -124,27 +124,27 @@ export default function MyRemindersModal({
           <button
             onClick={onClose}
             title="关闭"
-            style={{ border: "none", background: "transparent", cursor: "pointer", color: "#888", padding: 4 }}
+            style={{ border: "none", background: "transparent", cursor: "pointer", color: "#777777", padding: 4 }}
           >
             <X size={20} />
           </button>
         </div>
-        <div style={{ fontSize: 12, color: "#999", marginBottom: 12, lineHeight: 1.6 }}>
+        <div style={{ fontSize: 12, color: "#afafaf", marginBottom: 12, lineHeight: 1.6 }}>
           你让 AI 伙伴帮你设的定时提醒。到点会<strong>语音播报</strong>并弹横幅（点横幅关闭）。
           <br />
           想新增提醒，直接对 AI 伙伴说，例如"每天 9 点提醒我读英语"。
         </div>
 
         {err && (
-          <div style={{ fontSize: 12, color: "#c0392b", background: "#fdf0ef", padding: "8px 10px", borderRadius: 6, marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: "#ea2b2b", background: "#fdf0ef", padding: "8px 10px", borderRadius: 6, marginBottom: 8 }}>
             {err}
           </div>
         )}
 
         {loading ? (
-          <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>
+          <p style={{ color: "#777777", fontSize: 13 }}>加载中…</p>
         ) : sorted.length === 0 ? (
-          <div style={{ textAlign: "center", color: "#999", fontSize: 13, padding: "28px 0", lineHeight: 1.8 }}>
+          <div style={{ textAlign: "center", color: "#afafaf", fontSize: 13, padding: "28px 0", lineHeight: 1.8 }}>
             还没有提醒。
             <br />
             可以对 AI 伙伴说："半小时后提醒我喝水""每天 9 点提醒我读英语"
@@ -160,7 +160,7 @@ export default function MyRemindersModal({
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
-                    border: "1px solid #eee",
+                    border: "1px solid #e5e5e5",
                     borderRadius: 10,
                     padding: "10px 12px",
                     background: "#fff",
@@ -174,15 +174,15 @@ export default function MyRemindersModal({
                         {r.name || "提醒"}
                       </span>
                       {off && (
-                        <span style={{ fontSize: 10, background: "#eee", color: "#888", borderRadius: 6, padding: "0 5px", flexShrink: 0 }}>
+                        <span style={{ fontSize: 10, background: "#e5e5e5", color: "#777777", borderRadius: 6, padding: "0 5px", flexShrink: 0 }}>
                           {r.expired ? "已过期" : "已停用"}
                         </span>
                       )}
                     </div>
-                    <div style={{ fontSize: 12, color: "#666", lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 12, color: "#777777", lineHeight: 1.5 }}>
                       {r.text}
                     </div>
-                    <div style={{ fontSize: 11, color: "#999", marginTop: 2 }}>
+                    <div style={{ fontSize: 11, color: "#afafaf", marginTop: 2 }}>
                       {fmtWhen(r)}
                       {r.voice ? "" : " · 仅响铃"}
                     </div>
@@ -194,7 +194,7 @@ export default function MyRemindersModal({
                     style={{
                       border: "1px solid #f0caca",
                       background: "#fdf3f3",
-                      color: "#c0392b",
+                      color: "#ea2b2b",
                       borderRadius: 8,
                       padding: "6px 10px",
                       fontSize: 12,

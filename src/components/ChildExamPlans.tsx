@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import SpeechText from "./SpeechText";
 import { formatCourseSpec, normalizePlanCourses } from "../lib/plan-scope";
 
 interface ScheduleItem {
@@ -34,9 +35,9 @@ interface Props {
 const FREQ_LABEL: Record<string, string> = { daily: "每天", weekly: "每周", monthly: "每月", halfyear: "每半年", yearly: "每年" };
 const STATUS_BADGE: Record<string, { text: string; color: string; bg: string }> = {
   pending: { text: "待考核", color: "#b9770a", bg: "#fdf3e3" },
-  started: { text: "没考完", color: "#c0392b", bg: "#fdecea" },
-  done: { text: "已完成", color: "#27ae60", bg: "#e8f7ee" },
-  expired: { text: "已过期", color: "#888", bg: "#f0f2f5" },
+  started: { text: "没考完", color: "#ea2b2b", bg: "#fdecea" },
+  done: { text: "已完成", color: "#58a700", bg: "#e8f7ee" },
+  expired: { text: "已过期", color: "#777777", bg: "#f0f2f5" },
 };
 
 function dayKeyOf(iso: string): string {
@@ -115,6 +116,22 @@ export default function ChildExamPlans({ childId }: Props) {
     }
   }
 
+  // 逐字点读用：按题取整段录音（命中缓存直接返回）
+  async function ensureAudio(fileId: string, qid: string): Promise<string | null> {
+    const cached = audioSrc[qid];
+    if (cached) return cached;
+    try {
+      const r: any = await window.api.examAudio(fileId);
+      if (r?.success && r.data) {
+        setAudioSrc((prev) => ({ ...prev, [qid]: r.data }));
+        return r.data as string;
+      }
+    } catch {
+      /* 静默 */
+    }
+    return null;
+  }
+
   const todayKey = dayKeyOf(new Date().toISOString());
   const todayOpen = schedules.filter((s) => dayKeyOf(s.scheduledAt) === todayKey && canStart(s));
   const attemptOfSchedule = (sch: ScheduleItem) =>
@@ -147,42 +164,58 @@ export default function ChildExamPlans({ childId }: Props) {
     return (
       <div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 6 }}>
-          <span style={{ fontSize: 26, fontWeight: 800, color: (at?.score ?? 0) >= 60 ? "#27ae60" : "#e74c3c" }}>
+          <span style={{ fontSize: 26, fontWeight: 800, color: (at?.score ?? 0) >= 60 ? "#58a700" : "#ff4b4b" }}>
             {at?.score ?? 0} 分
           </span>
-          {maxP ? <span style={{ color: "#888", fontSize: 12 }}>满分 {maxP} 分</span> : null}
-          <span style={{ color: "#999", fontSize: 12 }}>
+          {maxP ? <span style={{ color: "#777777", fontSize: 12 }}>满分 {maxP} 分</span> : null}
+          <span style={{ color: "#afafaf", fontSize: 12 }}>
             {at?.submittedAt ? `交卷：${fmtDateTime(at.submittedAt)}` : ""}
           </span>
         </div>
-        {qs.length === 0 && <div style={{ color: "#aaa", fontSize: 13 }}>这次考核没有逐题记录。</div>}
+        {qs.length === 0 && <div style={{ color: "#afafaf", fontSize: 13 }}>这次考核没有逐题记录。</div>}
         {qs.map((q: any, i: number) => (
           <div key={String(q?.qid || i)} style={{ borderTop: "1px solid #f0f0f0", padding: "9px 0", fontSize: 13 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={{ fontWeight: 700 }}>
                 第 {i + 1} 题{q?.course ? ` · ${q.course}` : ""}
               </span>
-              <span style={{ color: q?.correct ? "#2f8a52" : "#c0392b", fontWeight: 700 }}>
+              <span style={{ color: q?.correct ? "#58a700" : "#ea2b2b", fontWeight: 700 }}>
                 {q?.correct ? "✓" : "✗"} {q?.pointGot ?? 0}/{q?.pointMax ?? "—"}
               </span>
               {q?.questionType && (
-                <span style={{ fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>
+                <span style={{ fontSize: 11, background: "#f7f7f7", color: "#1899d6", borderRadius: 999, padding: "1px 8px" }}>
                   背诵/口语
                 </span>
               )}
               {q?.audioFileId && (
                 <button
                   onClick={() => playAudio(q.audioFileId, q.qid)}
-                  style={{ border: "1px solid #ddd", background: playing === q.qid ? "#eef0ff" : "#fff", borderRadius: 6, padding: "2px 10px", fontSize: 12, cursor: "pointer", color: "#5a67d8" }}
+                  style={{ border: "1px solid #e5e5e5", background: playing === q.qid ? "#f7f7f7" : "#fff", borderRadius: 6, padding: "2px 10px", fontSize: 12, cursor: "pointer", color: "#58a700" }}
                 >
                   {playing === q.qid ? "⏹ 停止" : "▶ 听原音"}
                 </button>
               )}
             </div>
-            {q?.question ? <div style={{ color: "#555", marginTop: 3 }}>题目：{q.question}</div> : null}
-            {q?.refText ? <div style={{ color: "#7b5b1a", marginTop: 3 }}>原文：{q.refText}</div> : null}
-            {q?.asrText ? <div style={{ color: "#444", marginTop: 3 }}>回答：{q.asrText}</div> : null}
-            {q?.aiComment ? <div style={{ color: "#888", marginTop: 3 }}>评语：{q.aiComment}</div> : null}
+            {q?.question ? <div style={{ color: "#4b4b4b", marginTop: 3 }}>题目：{q.question}</div> : null}
+            {q?.refText ? (
+              q?.speech?.words?.length ? (
+                <div style={{ marginTop: 6, background: "#fffdf5", border: "1px solid #f1e6c8", borderRadius: 8, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 11, color: "#9a7b2e", marginBottom: 2 }}>原文（逐字评测）</div>
+                  <SpeechText
+                    refText={q.refText}
+                    words={q.speech.words}
+                    provider={q.speech.provider}
+                    audioSrc={q.qid ? audioSrc[q.qid] : undefined}
+                    onNeedAudio={() => (q.audioFileId ? ensureAudio(q.audioFileId, q.qid) : Promise.resolve(null))}
+                    audioQuality={q.speech.audioQuality}
+                  />
+                </div>
+              ) : (
+                <div style={{ color: "#7b5b1a", marginTop: 3 }}>原文：{q.refText}</div>
+              )
+            ) : null}
+            {q?.asrText ? <div style={{ color: "#4b4b4b", marginTop: 3 }}>回答：{q.asrText}</div> : null}
+            {q?.aiComment ? <div style={{ color: "#777777", marginTop: 3 }}>评语：{q.aiComment}</div> : null}
             {audioSrc[q?.qid] && playing === q.qid && (
               <audio controls autoPlay src={audioSrc[q.qid]} style={{ width: "100%", maxWidth: 340, marginTop: 6, height: 32 }} />
             )}
@@ -224,7 +257,7 @@ export default function ChildExamPlans({ childId }: Props) {
             padding: "4px 12px",
             fontSize: 12,
             borderRadius: 6,
-            border: "1px solid #cbd5e1",
+            border: "1px solid #d0d0d0",
             background: "#fff",
             color: "#475569",
             cursor: loading ? "default" : "pointer",
@@ -233,19 +266,19 @@ export default function ChildExamPlans({ childId }: Props) {
           <RefreshCw size={12} /> 刷新
         </button>
       </div>
-      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888", lineHeight: 1.7 }}>
+      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#777777", lineHeight: 1.7 }}>
         与孩子端考核页同布局：未来的排期与历史成绩都在这里。考核由孩子在孩子端参加；要新增/调整考核，对右侧家长 AI 说（如「周五考论语的乡党篇」）。
       </p>
-      {loading && <p style={{ color: "#888", fontSize: 13 }}>加载中…</p>}
-      {error && <p style={{ color: "#b33", fontSize: 12 }}>{error}</p>}
+      {loading && <p style={{ color: "#777777", fontSize: 13 }}>加载中…</p>}
+      {error && <p style={{ color: "#ea2b2b", fontSize: 12 }}>{error}</p>}
 
       {!loading && !error && (
         <>
           {/* —— 顶部：今天要做的考核（家长只读） —— */}
-          <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 12, padding: "13px 16px", marginBottom: 14 }}>
+          <div style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: 12, padding: "13px 16px", marginBottom: 14 }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📅 今天要做的考核</div>
             {todayOpen.length === 0 ? (
-              <p style={{ color: "#888", fontSize: 13, margin: 0 }}>今天没有待考核的安排。</p>
+              <p style={{ color: "#777777", fontSize: 13, margin: 0 }}>今天没有待考核的安排。</p>
             ) : (
               todayOpen.map((sch) => {
                 const badge = STATUS_BADGE[sch.status] || STATUS_BADGE.pending!;
@@ -255,10 +288,10 @@ export default function ChildExamPlans({ childId }: Props) {
                       <div style={{ fontWeight: 700, fontSize: 14 }}>
                         {sch.title}
                         {sch.kind === "custom" && (
-                          <span style={{ marginLeft: 8, fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
+                          <span style={{ marginLeft: 8, fontSize: 11, background: "#f7f7f7", color: "#1899d6", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
                         )}
                       </div>
-                      <div style={{ color: "#6b7686", fontSize: 12, marginTop: 2 }}>
+                      <div style={{ color: "#777777", fontSize: 12, marginTop: 2 }}>
                         {sch.freq ? `${FREQ_LABEL[sch.freq] || sch.freq}考核` : ""}
                         {sch.status === "started" ? " · 上次没考完，孩子可重新作答" : " · 孩子端今天可参加"}
                       </div>
@@ -283,7 +316,7 @@ export default function ChildExamPlans({ childId }: Props) {
                   ["week", "最近7天"],
                   ["month", "最近30天"],
                   ["earlier", "更早"],
-                ] as const).map(([v, label]) => filterChip(timeFilter === v, "#3b6ef5", label, () => setTimeFilter(v)))}
+                ] as const).map(([v, label]) => filterChip(timeFilter === v, "#1cb0f6", label, () => setTimeFilter(v)))}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
                 {([
@@ -294,7 +327,7 @@ export default function ChildExamPlans({ childId }: Props) {
               </div>
               <div style={{ maxHeight: 420, overflowY: "auto", paddingRight: 2 }}>
                 {planList.length === 0 ? (
-                  <p style={{ color: "#888", fontSize: 13, margin: 0 }}>没有符合条件的考核计划。</p>
+                  <p style={{ color: "#777777", fontSize: 13, margin: 0 }}>没有符合条件的考核计划。</p>
                 ) : (
                   planList.map((sch) => {
                     const badge = STATUS_BADGE[sch.status] || STATUS_BADGE.pending!;
@@ -306,7 +339,7 @@ export default function ChildExamPlans({ childId }: Props) {
                         onClick={() => setSelectedPlanId(sch.id)}
                         style={{
                           background: "#fff",
-                          border: active ? "2px solid #3b6ef5" : "1px solid #e6eaf0",
+                          border: active ? "2px solid #1cb0f6" : "1px solid #e5e5e5",
                           borderRadius: 10,
                           padding: "10px 12px",
                           marginBottom: 8,
@@ -331,7 +364,7 @@ export default function ChildExamPlans({ childId }: Props) {
                             {badge.text}
                           </span>
                         </div>
-                        <div style={{ color: "#6b7686", fontSize: 12, marginTop: 2 }}>
+                        <div style={{ color: "#777777", fontSize: 12, marginTop: 2 }}>
                           {isToday ? "今天" : fmtDate(sch.scheduledAt)}
                           {sch.freq ? ` · ${FREQ_LABEL[sch.freq] || sch.freq}` : ""}
                         </div>
@@ -343,9 +376,9 @@ export default function ChildExamPlans({ childId }: Props) {
             </div>
 
             {/* 右：详情 */}
-            <div style={{ flex: 1, minWidth: 0, background: "#fff", border: "1px solid #e6eaf0", borderRadius: 12, padding: 18 }}>
+            <div style={{ flex: 1, minWidth: 0, background: "#fff", border: "1px solid #e5e5e5", borderRadius: 12, padding: 18 }}>
               {!selectedPlan ? (
-                <div style={{ height: "100%", minHeight: 200, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, color: "#98a2b0", fontSize: 13 }}>
+                <div style={{ height: "100%", minHeight: 200, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, color: "#afafaf", fontSize: 13 }}>
                   <div style={{ fontSize: 34 }}>👆</div>
                   <div>点击左侧考核计划查看详情；已完成的可查看考核成绩</div>
                 </div>
@@ -354,7 +387,7 @@ export default function ChildExamPlans({ childId }: Props) {
                   <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
                     <span style={{ fontWeight: 800, fontSize: 16 }}>{selectedPlan.title}</span>
                     {selectedPlan.kind === "custom" && (
-                      <span style={{ fontSize: 11, background: "#eef2ff", color: "#3b4cca", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
+                      <span style={{ fontSize: 11, background: "#f7f7f7", color: "#1899d6", borderRadius: 999, padding: "1px 8px" }}>自定义</span>
                     )}
                     {(() => {
                       const badge = STATUS_BADGE[selectedPlan.status] || STATUS_BADGE.pending!;
@@ -365,13 +398,13 @@ export default function ChildExamPlans({ childId }: Props) {
                       );
                     })()}
                   </div>
-                  <div style={{ color: "#6b7686", fontSize: 13, marginBottom: 2 }}>
+                  <div style={{ color: "#777777", fontSize: 13, marginBottom: 2 }}>
                     考核时间：{fmtDate(selectedPlan.scheduledAt)}
                     {dayKeyOf(selectedPlan.scheduledAt) === todayKey ? "（今天）" : ""}
                     {selectedPlan.freq ? ` · ${FREQ_LABEL[selectedPlan.freq] || selectedPlan.freq}考核` : ""}
                   </div>
                   {selectedPlan.scope?.note ? (
-                    <div style={{ color: "#6b7686", fontSize: 13, marginBottom: 2 }}>考核内容：{String(selectedPlan.scope.note)}</div>
+                    <div style={{ color: "#777777", fontSize: 13, marginBottom: 2 }}>考核内容：{String(selectedPlan.scope.note)}</div>
                   ) : null}
 
                   {/* 考核课程列表（normalizePlanCourses 双格式兼容，禁止直接渲染对象） */}
@@ -379,7 +412,7 @@ export default function ChildExamPlans({ childId }: Props) {
                     const cs = normalizePlanCourses(selectedPlan.scope?.courses);
                     if (!cs.length) {
                       return (
-                        <div style={{ color: "#888", fontSize: 13, marginTop: 8 }}>
+                        <div style={{ color: "#777777", fontSize: 13, marginTop: 8 }}>
                           考核课程将在开始时按学习/复习内容挑选。
                         </div>
                       );
@@ -405,7 +438,7 @@ export default function ChildExamPlans({ childId }: Props) {
                           {renderAttempt(at)}
                         </div>
                       ) : (
-                        <div style={{ color: "#888", fontSize: 13, marginTop: 12 }}>这次考核已完成，成绩记录暂时没有找到。</div>
+                        <div style={{ color: "#777777", fontSize: 13, marginTop: 12 }}>这次考核已完成，成绩记录暂时没有找到。</div>
                       );
                     })()
                   ) : canStart(selectedPlan) ? (
@@ -415,7 +448,7 @@ export default function ChildExamPlans({ childId }: Props) {
                         : "今天的考核，等孩子在孩子端进入「学习考核」参加。"}
                     </div>
                   ) : (
-                    <div style={{ color: "#888", fontSize: 13, marginTop: 12 }}>这次考核已过期，孩子未参加。</div>
+                    <div style={{ color: "#777777", fontSize: 13, marginTop: 12 }}>这次考核已过期，孩子未参加。</div>
                   )}
                 </div>
               )}
@@ -423,7 +456,7 @@ export default function ChildExamPlans({ childId }: Props) {
           </div>
 
           {schedules.length === 0 && (
-            <p style={{ color: "#888", fontSize: 13, margin: "10px 0 0" }}>
+            <p style={{ color: "#777777", fontSize: 13, margin: "10px 0 0" }}>
               还没有考核安排。固定考核会在设定日期自动出现；想临时安排可以对右侧家长 AI 说「周五考论语的乡党篇」。
             </p>
           )}

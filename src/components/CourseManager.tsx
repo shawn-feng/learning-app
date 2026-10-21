@@ -96,14 +96,14 @@ export default function CourseManager() {
         />
         <button
           onClick={createTopic}
-          style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+          style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#58cc02", color: "#fff", fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
         >
           <Plus size={16} /> 新建主题
         </button>
         {/* 导入是独立的页面级动作：与新建表单拉开距离 + 醒目样式（此前贴在新建按钮旁，被当成表单的一部分而找不到） */}
         <button
           onClick={() => setImportOpen(true)}
-          style={{ marginLeft: "auto", padding: "7px 16px", borderRadius: 6, border: "1px solid #667eea", background: "#f4f6ff", color: "#4a58b8", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}
+          style={{ marginLeft: "auto", padding: "7px 16px", borderRadius: 6, border: "1px solid #58cc02", background: "#f4f6ff", color: "#4a58b8", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}
         >
           <Upload size={15} /> 导入主题
         </button>
@@ -117,7 +117,7 @@ export default function CourseManager() {
             borderRadius: 6,
             marginBottom: 8,
             background: msg.ok ? "#e8f7ee" : "#fdecec",
-            color: msg.ok ? "#2f8a52" : "#b33",
+            color: msg.ok ? "#58a700" : "#ea2b2b",
           }}
         >
           {msg.text}
@@ -125,7 +125,7 @@ export default function CourseManager() {
       )}
 
       {topics.length === 0 ? (
-        <p style={{ color: "#888", fontSize: 13 }}>
+        <p style={{ color: "#777777", fontSize: 13 }}>
           家长库暂无主题。可先新建主题、点右上角「导入主题」从主题包文件导入，或在「孩子管理 → 学习主题」里迁移存量资料。
         </p>
       ) : (
@@ -134,7 +134,7 @@ export default function CourseManager() {
             <div
               key={t.topicKey}
               style={{
-                border: "1px solid #eee",
+                border: "1px solid #e5e5e5",
                 borderRadius: 12,
                 padding: "14px 16px",
                 background: "#fff",
@@ -143,9 +143,9 @@ export default function CourseManager() {
             >
               <div style={{ fontSize: 15, fontWeight: 700 }}>
                 {t.name}
-                <span style={{ color: "#aaa", fontWeight: 400, fontSize: 12 }}>（{t.topicKey}）</span>
+                <span style={{ color: "#afafaf", fontWeight: 400, fontSize: 12 }}>（{t.topicKey}）</span>
               </div>
-              <div style={{ fontSize: 12, color: "#888", margin: "6px 0 12px" }}>
+              <div style={{ fontSize: 12, color: "#777777", margin: "6px 0 12px" }}>
                 {t.total} 门课程 · html 资料 {t.htmlCount} 份 · 方法{t.method ? "已填写" : "未填写"}
                 · 考核{t.assessMethod ? "已填写" : "未填写"}
               </div>

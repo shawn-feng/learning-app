@@ -57,7 +57,7 @@ function ChannelToggle(props: { checked: boolean; onToggle: (next: boolean) => v
       aria-checked={checked}
       style={{
         width: 52, height: 28, borderRadius: 14, border: "none", cursor: "pointer",
-        background: checked ? "#667eea" : "#cbd5e1", position: "relative", flexShrink: 0, padding: 0,
+        background: checked ? "#58cc02" : "#d0d0d0", position: "relative", flexShrink: 0, padding: 0,
         transition: "background .2s",
       }}
     >
@@ -244,8 +244,8 @@ export default function Settings() {
             style={{
               padding: "8px 16px",
               borderRadius: 8,
-              border: tab === id ? "2px solid #667eea" : "1px solid #ddd",
-              background: tab === id ? "#f0f4ff" : "white",
+              border: tab === id ? "2px solid #58cc02" : "1px solid #e5e5e5",
+              background: tab === id ? "#e9f9dc" : "white",
               cursor: "pointer",
             }}
           >
@@ -260,8 +260,8 @@ export default function Settings() {
           <h3>AI模型</h3>
           <div style={{
             display: "flex", alignItems: "center", gap: 12, padding: "14px 16px",
-            background: modelChannel === "builtin" ? "#f0f4ff" : "#f8fafc",
-            border: modelChannel === "builtin" ? "1px solid #dfe4ff" : "1px solid #e2e8f0",
+            background: modelChannel === "builtin" ? "#e9f9dc" : "#f8fafc",
+            border: modelChannel === "builtin" ? "1px solid #d7ffb8" : "1px solid #e5e5e5",
             borderRadius: 10, marginBottom: 16,
           }}>
             <span style={{ fontSize: 22 }}>{modelChannel === "builtin" ? "✅" : "⏸️"}</span>
@@ -279,7 +279,7 @@ export default function Settings() {
           </div>
 
           {/* 语音合成音色：服务端 TTS（朗读/设备语音回复）用 MiniMax 合成时的音色；家长端显式选择优先于管理端云端配置 */}
-          <div style={{ padding: "12px 16px", border: "1px solid #e2e8f0", borderRadius: 10, marginBottom: 16 }}>
+          <div style={{ padding: "12px 16px", border: "1px solid #e5e5e5", borderRadius: 10, marginBottom: 16 }}>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>语音合成音色</div>
             <div style={{ fontSize: 12, color: "#667", marginBottom: 8 }}>
               内置语音合成（朗读、设备语音回复）的音色，家长级设置、所有设备生效；选「跟随管理端」则以管理页配置为准。
@@ -298,7 +298,7 @@ export default function Settings() {
           {/* ISSUE-174 调整：配额直接展示在本页，不再单独一个标签 */}
           <TokenHubQuotaPanel />
 
-          {keyStatus && <p style={{ fontSize: 13, color: keyStatus.startsWith("渠道切换失败") || keyStatus.startsWith("保存失败") ? "red" : "#667eea", marginTop: 12 }}>{keyStatus}</p>}
+          {keyStatus && <p style={{ fontSize: 13, color: keyStatus.startsWith("渠道切换失败") || keyStatus.startsWith("保存失败") ? "red" : "#58cc02", marginTop: 12 }}>{keyStatus}</p>}
         </div>
       )}
 
@@ -308,8 +308,8 @@ export default function Settings() {
           <h3>自定义模型</h3>
           <div style={{
             display: "flex", alignItems: "center", gap: 12, padding: "14px 16px",
-            background: modelChannel === "custom" ? "#f0f4ff" : "#f8fafc",
-            border: modelChannel === "custom" ? "1px solid #dfe4ff" : "1px solid #e2e8f0",
+            background: modelChannel === "custom" ? "#e9f9dc" : "#f8fafc",
+            border: modelChannel === "custom" ? "1px solid #d7ffb8" : "1px solid #e5e5e5",
             borderRadius: 10, marginBottom: 12,
           }}>
             <span style={{ fontSize: 22 }}>{modelChannel === "custom" ? "✅" : "⏸️"}</span>
@@ -342,7 +342,7 @@ export default function Settings() {
               >
                 {p.name}
                 {keyMasked[p.id] && (
-                  <span style={{ marginLeft: 4, color: selectedProvider === p.id ? "#fff" : "#27ae60", fontSize: 12 }}>✓</span>
+                  <span style={{ marginLeft: 4, color: selectedProvider === p.id ? "#fff" : "#58a700", fontSize: 12 }}>✓</span>
                 )}
               </div>
             ))}
@@ -354,13 +354,13 @@ export default function Settings() {
               placeholder={`API key (${PROVIDERS.find((p) => p.id === selectedProvider)?.keyHint})`}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              style={{ flex: 1, padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
+              style={{ flex: 1, padding: 10, border: "1px solid #e5e5e5", borderRadius: 8 }}
             />
             <button
               onClick={handleSaveKey}
               style={{
                 padding: "10px 20px",
-                background: "#667eea",
+                background: "#58cc02",
                 color: "white",
                 border: "none",
                 borderRadius: 8,
@@ -370,13 +370,13 @@ export default function Settings() {
             </button>
           </div>
 
-          <p style={{ fontSize: 12, color: keyMasked[selectedProvider] ? "#27ae60" : "#98a2b0", margin: "0 0 12px" }}>
+          <p style={{ fontSize: 12, color: keyMasked[selectedProvider] ? "#58a700" : "#afafaf", margin: "0 0 12px" }}>
             {keyMasked[selectedProvider]
               ? `当前已保存：${keyMasked[selectedProvider]}（重新输入并保存可更换）`
               : "该 provider 尚未配置 API key"}
           </p>
 
-          {keyStatus && <p style={{ fontSize: 13, color: keyStatus.startsWith("保存失败") ? "red" : "#667eea", marginBottom: 16 }}>{keyStatus}</p>}
+          {keyStatus && <p style={{ fontSize: 13, color: keyStatus.startsWith("保存失败") ? "red" : "#58cc02", marginBottom: 16 }}>{keyStatus}</p>}
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <h4 style={{ fontSize: 15 }}>当前可用模型（{PROVIDERS.find((p) => p.id === selectedProvider)?.name || selectedProvider}）</h4>
@@ -386,7 +386,7 @@ export default function Settings() {
           {(() => {
             const filtered = availableModels.filter((m: any) => m.provider === selectedProvider);
             if (filtered.length === 0) {
-              return <p style={{ color: "#888", fontSize: 13 }}>该 provider 暂无可用模型，请确认已保存其 API key 后点「刷新」。</p>;
+              return <p style={{ color: "#777777", fontSize: 13 }}>该 provider 暂无可用模型，请确认已保存其 API key 后点「刷新」。</p>;
             }
             return filtered.map((m: any) => {
               const modelKey = `${m.provider}/${m.id}`;
@@ -395,13 +395,13 @@ export default function Settings() {
                 <div key={modelKey} className="model-item">
                   <div>
                     <div className="model-name">{m.name}</div>
-                    <div style={{ fontSize: 12, color: "#999" }}>
+                    <div style={{ fontSize: 12, color: "#afafaf" }}>
                       {m.provider}/{m.id}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     {isDefault && (
-                      <span style={{ fontSize: 12, color: "#667eea", background: "#f0f4ff", padding: "4px 8px", borderRadius: 4 }}>
+                      <span style={{ fontSize: 12, color: "#58a700", background: "#e9f9dc", padding: "4px 8px", borderRadius: 4 }}>
                         默认
                       </span>
                     )}
@@ -418,9 +418,9 @@ export default function Settings() {
             });
           })()}
 
-          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #eee" }}>
+          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #e5e5e5" }}>
             <h4 style={{ fontSize: 15, marginBottom: 4 }}>编程 agent 模型</h4>
-            <p style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>
+            <p style={{ fontSize: 12, color: "#afafaf", marginBottom: 8 }}>
               用于自动生成 / 修改孩子学习的 HTML 资料。未选择（或所选 provider 未配 Key）时使用系统默认 TokenHub 模型；
               列表含 TokenHub 模型（无需 Key）与已配置的自定义模型。
             </p>
@@ -429,7 +429,7 @@ export default function Settings() {
                 value={programmingModelDraft}
                 onChange={(e) => setProgrammingModelDraft(e.target.value)}
                 disabled={availableModels.length === 0}
-                style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 260 }}
+                style={{ padding: "8px 12px", border: "1px solid #e5e5e5", borderRadius: 8, minWidth: 260 }}
               >
                 <option value="">系统默认（TokenHub）</option>
                 {availableModels.map((m: any) => (
@@ -447,8 +447,8 @@ export default function Settings() {
                 disabled={programmingModelDraft === programmingModel || availableModels.length === 0}
                 style={{
                   padding: "8px 16px",
-                  background: programmingModelDraft === programmingModel ? "#ddd" : "#667eea",
-                  color: programmingModelDraft === programmingModel ? "#666" : "white",
+                  background: programmingModelDraft === programmingModel ? "#e5e5e5" : "#58cc02",
+                  color: programmingModelDraft === programmingModel ? "#777777" : "white",
                   border: "none",
                   borderRadius: 8,
                   fontSize: 13,
@@ -459,12 +459,12 @@ export default function Settings() {
               </button>
             </div>
             {programmingModel && (
-              <p style={{ fontSize: 12, color: "#667eea", marginTop: 6 }}>当前已保存的编程 agent 模型：{programmingModel}</p>
+              <p style={{ fontSize: 12, color: "#58a700", marginTop: 6 }}>当前已保存的编程 agent 模型：{programmingModel}</p>
             )}
           </div>
 
           {/* ISSUE-174 调整：视觉 / 语音模型并入自定义模型渠道（原独立标签取消） */}
-          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #eee" }}>
+          <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #e5e5e5" }}>
             <VisionSettings />
           </div>
           <div style={{ marginTop: 16 }}>
@@ -484,7 +484,7 @@ export default function Settings() {
 
       {/* ISSUE-175：家长 agent 全局自定义层——追加在家长助手 system prompt 末尾，重开会话生效 */}
       {tab === "prompt" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column" }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column" }}>
           <CustomPromptEditor
             scope="parent"
             refId=""

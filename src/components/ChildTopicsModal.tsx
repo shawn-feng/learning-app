@@ -149,7 +149,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
   return (
     <>
       <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>学习主题 — {child.name}</div>
-      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
+      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#777777" }}>
         从家长主题库给孩子添加学习主题（添加后孩子即可学习该主题；再次添加不会覆盖孩子进度）。
         每天学什么由「学习计划」安排（在家长对话里说，如「9 月每天 1 课论语」）；此处只设置主题的考核类型（必学/选学/复习）。
       </p>
@@ -162,7 +162,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
               borderRadius: 6,
               marginBottom: 8,
               background: msg.ok ? "#e8f7ee" : "#fdecec",
-              color: msg.ok ? "#2f8a52" : "#b33",
+              color: msg.ok ? "#58a700" : "#ea2b2b",
             }}
           >
             {msg.text}
@@ -170,7 +170,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
         )}
 
         {topics.length === 0 ? (
-          <p style={{ color: "#888", fontSize: 13 }}>家长库暂无主题，请在家长端课程管理中添加主题后再给孩子分配。</p>
+          <p style={{ color: "#777777", fontSize: 13 }}>家长库暂无主题，请在家长端课程管理中添加主题后再给孩子分配。</p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" }}>
             {topics.map((t) => {
@@ -191,9 +191,9 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 600 }}>
                         {t.name}
-                        <span style={{ color: "#aaa", fontWeight: 400 }}>（{t.topicKey}）</span>
+                        <span style={{ color: "#afafaf", fontWeight: 400 }}>（{t.topicKey}）</span>
                       </div>
-                      <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>
+                      <div style={{ fontSize: 11, color: "#777777", marginTop: 2 }}>
                         {t.total} 课 · html 资料 {t.htmlCount} 份 · method {t.method ? "已入库" : "未导入"}
                       </div>
                     </div>
@@ -204,14 +204,14 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                           borderRadius: 6,
                           fontSize: 12,
                           background: "#eef5ee",
-                          color: "#38a169",
+                          color: "#58a700",
                           whiteSpace: "nowrap",
                         }}
                       >
                         ✓ 已添加
                       </span>
                     ) : isAdding ? (
-                      <span style={{ fontSize: 12, color: "#38a169", whiteSpace: "nowrap" }}>设置中…</span>
+                      <span style={{ fontSize: 12, color: "#58a700", whiteSpace: "nowrap" }}>设置中…</span>
                     ) : (
                       <IconButton
                         icon={Plus}
@@ -227,7 +227,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                           padding: "6px 14px",
                           borderRadius: 6,
                           border: "none",
-                          background: "#667eea",
+                          background: "#58cc02",
                           color: "#fff",
                           fontSize: 12,
                           cursor: "pointer",
@@ -246,14 +246,14 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                         gap: 8,
                         marginTop: 10,
                         paddingTop: 10,
-                        borderTop: "1px dashed #eee",
+                        borderTop: "1px dashed #e5e5e5",
                       }}
                     >
-                      <label style={{ fontSize: 12, color: "#666" }}>主题类型</label>
+                      <label style={{ fontSize: 12, color: "#777777" }}>主题类型</label>
                       <select
                         value={addPanel?.type || "必学"}
                         onChange={(e) => setAddPanel({ ...addPanel!, type: e.target.value })}
-                        style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #ddd" }}
+                        style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #e5e5e5" }}
                       >
                         {TOPIC_TYPES.map((tp) => (
                           <option key={tp} value={tp}>
@@ -261,17 +261,17 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                           </option>
                         ))}
                       </select>
-                      <span style={{ fontSize: 11, color: "#999" }}>（考核选题标注；每天学什么由学习计划安排）</span>
+                      <span style={{ fontSize: 11, color: "#afafaf" }}>（考核选题标注；每天学什么由学习计划安排）</span>
                       <button
                         onClick={() => addTopic(addPanel!.topicKey, addPanel!.type)}
                         disabled={busy !== null}
-                        style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "#38a169", color: "#fff", fontSize: 12, cursor: "pointer" }}
+                        style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "#58a700", color: "#fff", fontSize: 12, cursor: "pointer" }}
                       >
                         {busy === `add-${addPanel!.topicKey}` ? "添加中…" : "确认添加"}
                       </button>
                       <button
                         onClick={() => setAddPanel(null)}
-                        style={{ padding: "5px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer" }}
+                        style={{ padding: "5px 12px", borderRadius: 6, border: "1px solid #e5e5e5", background: "#fff", fontSize: 12, cursor: "pointer" }}
                       >
                         取消
                       </button>
@@ -287,10 +287,10 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                         gap: 8,
                         marginTop: 10,
                         paddingTop: 10,
-                        borderTop: "1px dashed #eee",
+                        borderTop: "1px dashed #e5e5e5",
                       }}
                     >
-                      <label style={{ fontSize: 12, color: "#666" }}>主题类型</label>
+                      <label style={{ fontSize: 12, color: "#777777" }}>主题类型</label>
                       <select
                         value={info.type}
                         onChange={(e) =>
@@ -298,7 +298,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                             new Map(allocated).set(t.topicKey, { ...info, type: e.target.value })
                           )
                         }
-                        style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #ddd" }}
+                        style={{ padding: "4px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #e5e5e5" }}
                       >
                         {TOPIC_TYPES.map((tp) => (
                           <option key={tp} value={tp}>
@@ -309,7 +309,7 @@ export function ChildTopicsContent({ child }: { child: ChildInfo }) {
                       <button
                         onClick={() => saveType(info)}
                         disabled={busy !== null}
-                        style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer" }}
+                        style={{ padding: "5px 12px", borderRadius: 6, border: "none", background: "#58cc02", color: "#fff", fontSize: 12, cursor: "pointer" }}
                       >
                         {busy === `type-${t.topicKey}` ? "保存中…" : "保存"}
                       </button>

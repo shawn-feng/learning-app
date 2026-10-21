@@ -35,7 +35,7 @@ export default function ConnectionBlocking({ url, startedAt, onRetry }: Props) {
           textAlign: "center",
           padding: "36px 52px",
           background: "#fff",
-          border: "1px solid #e6eaf0",
+          border: "1px solid #e5e5e5",
           borderRadius: 16,
           boxShadow: "0 8px 30px rgba(30,40,70,.08)",
           maxWidth: 540,
@@ -46,7 +46,7 @@ export default function ConnectionBlocking({ url, startedAt, onRetry }: Props) {
         <p style={{ margin: "0 0 14px", color: "#5a6478", fontSize: 14, lineHeight: 1.8 }}>
           正在等待重新链接…（已等待 {elapsed} 秒）
           <br />
-          <span style={{ fontSize: 12, color: "#98a1b2" }}>
+          <span style={{ fontSize: 12, color: "#afafaf" }}>
             {url ? `服务端地址：${url}。` : ""}恢复连接后会自动回到最新数据，无需注销重登。
           </span>
         </p>
@@ -56,7 +56,7 @@ export default function ConnectionBlocking({ url, startedAt, onRetry }: Props) {
             onClick={onRetry}
             style={{
               padding: "8px 22px",
-              background: "#667eea",
+              background: "#58cc02",
               color: "white",
               border: "none",
               borderRadius: 8,

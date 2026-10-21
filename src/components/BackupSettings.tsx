@@ -95,7 +95,7 @@ export default function BackupSettings() {
 
   const btn: React.CSSProperties = {
     padding: "10px 20px",
-    background: "#667eea",
+    background: "#58cc02",
     color: "white",
     border: "none",
     borderRadius: 8,
@@ -103,8 +103,8 @@ export default function BackupSettings() {
   };
   const ghost: React.CSSProperties = {
     padding: "10px 20px",
-    background: "#f0f4ff",
-    color: "#667eea",
+    background: "#e9f9dc",
+    color: "#58a700",
     border: "none",
     borderRadius: 8,
     cursor: "pointer",
@@ -142,7 +142,7 @@ export default function BackupSettings() {
           max={23}
           value={hour}
           onChange={(e) => setHour(e.target.value)}
-          style={{ width: 64, padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
+          style={{ width: 64, padding: 8, border: "1px solid #e5e5e5", borderRadius: 8 }}
         />
         <span style={{ fontSize: 14 }}>:</span>
         <input
@@ -151,12 +151,12 @@ export default function BackupSettings() {
           max={59}
           value={minute}
           onChange={(e) => setMinute(e.target.value)}
-          style={{ width: 64, padding: 8, border: "1px solid #ddd", borderRadius: 8 }}
+          style={{ width: 64, padding: 8, border: "1px solid #e5e5e5", borderRadius: 8 }}
         />
         <IconButton icon={FolderOpen} title="选择目录" style={ghost} onClick={handlePickDir} />
         <IconButton icon={Save} title="保存" style={btn} onClick={handleSaveConfig} />
       </div>
-      <p style={{ fontSize: 13, color: "#888", marginTop: 8 }}>
+      <p style={{ fontSize: 13, color: "#777777", marginTop: 8 }}>
         {destDir ? `备份目录：${destDir}` : "尚未选择备份目录（定时备份需要先选择目录）"}
       </p>
     </div>

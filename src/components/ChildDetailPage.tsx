@@ -84,14 +84,14 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
         </div>
         <div>
           <div style={{ fontSize: 17, fontWeight: 700 }}>{child.name}</div>
-          <div className="meta" style={{ fontSize: 12, color: "#888" }}>
+          <div className="meta" style={{ fontSize: 12, color: "#777777" }}>
             {child.age}岁 · {child.grade} · AI伙伴：{child.aiEmoji || "🤖"} {child.aiName}
           </div>
         </div>
       </div>
 
       {/* 标签页导航 */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", borderBottom: "1px solid #eee", paddingBottom: 10 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", borderBottom: "1px solid #e5e5e5", paddingBottom: 10 }}>
         {TABS.map((t) => (
           <button
             key={t.key}
@@ -99,9 +99,9 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
             style={{
               padding: "8px 16px",
               borderRadius: 8,
-              border: tab === t.key ? "2px solid #667eea" : "1px solid #ddd",
-              background: tab === t.key ? "#eef0ff" : "#fff",
-              color: tab === t.key ? "#5a67d8" : "#555",
+              border: tab === t.key ? "2px solid #58cc02" : "1px solid #e5e5e5",
+              background: tab === t.key ? "#f7f7f7" : "#fff",
+              color: tab === t.key ? "#58a700" : "#4b4b4b",
               fontSize: 13,
               fontWeight: tab === t.key ? 600 : 400,
               cursor: "pointer",
@@ -121,35 +121,35 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
 
       {/* ISSUE-130：计划（每天要完成的事，家长制定/孩子自定分组，对齐孩子端） */}
       {tab === "plan" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
           <ChildDailyPlans childId={child.childId} />
         </div>
       )}
 
       {/* ISSUE-049：每日记录（左列条目 / 右显内容，默认最近 7 天 + 日期范围选择器） */}
       {tab === "daily" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
           <ChildDailyPanel childId={child.childId} />
         </div>
       )}
 
       {/* ISSUE-114：错题本（家长只读为主，可 dismiss/reopen；掌握由孩子自己验证） */}
       {tab === "mistakes" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
           <ChildMistakeBook childId={child.childId} />
         </div>
       )}
 
       {tab === "topics" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
           <ChildTopicsContent child={child} />
         </div>
       )}
 
       {tab === "review" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
           <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>孩子与 AI 的对话回顾</div>
-          <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
+          <p style={{ margin: "0 0 12px", fontSize: 12, color: "#777777" }}>
             读取同步到服务端的完整对话记录（客户端每轮自动同步；需客户端在线并已登录）。
           </p>
           <SessionReview childId={child.childId} />
@@ -158,45 +158,45 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
 
       {/* ISSUE-130：考核计划（孩子端 pick 布局：未来排期 + 历史成绩，家长只读） */}
       {tab === "exam" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
           <ChildExamPlans childId={child.childId} />
         </div>
       )}
 
       {/* ISSUE-130：积分并入孩子详情（复用家长端 RewardPanel，单孩子隐藏切换器） */}
       {tab === "reward" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
           <RewardPanel children={[child]} />
         </div>
       )}
 
       {/* ISSUE-136 #7：家长自定义层（追加进孩子 agent system prompt，建会话时读一次） */}
       {tab === "rules" && (
-        <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column" }}>
+        <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column" }}>
           <ChildCustomRules childId={child.childId} />
         </div>
       )}
 
       {tab === "account" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 24, maxWidth: 480 }}>
-          <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 16 }}>
+          <div style={{ background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: 16 }}>
             <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>重置登录密码</div>
-            <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
+            <p style={{ margin: "0 0 12px", fontSize: 12, color: "#777777" }}>
               重置后孩子使用新密码登录（服务端密码校验）。
             </p>
-            {error && <div style={{ color: error.startsWith("✅") ? "#38a169" : "#b33", fontSize: 12, marginBottom: 8 }}>{error}</div>}
+            {error && <div style={{ color: error.startsWith("✅") ? "#58a700" : "#ea2b2b", fontSize: 12, marginBottom: 8 }}>{error}</div>}
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input
                 type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder="输入新密码"
-                style={{ flex: 1, padding: "8px 12px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd" }}
+                style={{ flex: 1, padding: "8px 12px", fontSize: 13, borderRadius: 6, border: "1px solid #e5e5e5" }}
               />
               <button
                 onClick={handleResetPassword}
                 disabled={busy}
-                style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 13, cursor: "pointer" }}
+                style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "#58cc02", color: "#fff", fontSize: 13, cursor: "pointer" }}
               >
                 {busy ? "重置中…" : "重置密码"}
               </button>
@@ -204,8 +204,8 @@ export default function ChildDetailPage({ child, onBack, onDeleted }: Props) {
           </div>
 
           <div style={{ background: "#fdf6f6", border: "1px solid #f0d0d0", borderRadius: 10, padding: 16 }}>
-            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, color: "#b33" }}>危险操作</div>
-            <p style={{ margin: "0 0 12px", fontSize: 12, color: "#999" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, color: "#ea2b2b" }}>危险操作</div>
+            <p style={{ margin: "0 0 12px", fontSize: 12, color: "#afafaf" }}>
               删除孩子将移除其所有学习数据（服务端），不可撤销。
             </p>
             <IconButton

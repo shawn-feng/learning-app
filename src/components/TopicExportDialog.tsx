@@ -119,7 +119,7 @@ export default function TopicExportDialog({ topic, onClose, onDone }: Props) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>打包导出 — {topic.name}</div>
-        <p style={{ margin: "0 0 10px", fontSize: 12, color: "#888" }}>
+        <p style={{ margin: "0 0 10px", fontSize: 12, color: "#777777" }}>
           导出成 .ltpkg 主题包（zip），发给另一套学习伙伴后「导入主题」一键使用。
           {preview && (
             <>
@@ -130,7 +130,7 @@ export default function TopicExportDialog({ topic, onClose, onDone }: Props) {
         </p>
 
         {error && (
-          <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, marginBottom: 8, background: "#fdecec", color: "#b33" }}>
+          <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, marginBottom: 8, background: "#fdecec", color: "#ea2b2b" }}>
             {error}
           </div>
         )}
@@ -140,16 +140,16 @@ export default function TopicExportDialog({ topic, onClose, onDone }: Props) {
           打包多媒体资料（视频、音频、图片、网页等）
         </label>
         {!includeFiles && (
-          <p style={{ margin: "4px 0 8px", fontSize: 11, color: "#aaa" }}>
+          <p style={{ margin: "4px 0 8px", fontSize: 11, color: "#afafaf" }}>
             默认只打包课程与题目内容；未随包的资料，导入端可让 AI 重新生成，或后续补发一个带资料的包。
           </p>
         )}
 
         {includeFiles && (
-          <div style={{ border: "1px solid #eee", borderRadius: 8, padding: "8px 10px", maxHeight: "40vh", overflowY: "auto" }}>
-            {!preview && <div style={{ fontSize: 12, color: "#888" }}>资料清单加载中…</div>}
+          <div style={{ border: "1px solid #e5e5e5", borderRadius: 8, padding: "8px 10px", maxHeight: "40vh", overflowY: "auto" }}>
+            {!preview && <div style={{ fontSize: 12, color: "#777777" }}>资料清单加载中…</div>}
             {preview && preview.files.length === 0 && (
-              <div style={{ fontSize: 12, color: "#888" }}>该主题暂无资料文件。</div>
+              <div style={{ fontSize: 12, color: "#777777" }}>该主题暂无资料文件。</div>
             )}
             {groups.map((g) => {
               const paths = g.items.map((f) => f.path);
@@ -172,8 +172,8 @@ export default function TopicExportDialog({ topic, onClose, onDone }: Props) {
                         <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {f.path.slice(topic.topicKey.length + 1) || f.path}
                         </span>
-                        {f.refCount > 0 && <span style={{ color: "#667eea", fontSize: 11, whiteSpace: "nowrap" }}>被{f.refCount}课引用</span>}
-                        <span style={{ color: "#999", fontSize: 11, whiteSpace: "nowrap" }}>{fmtSize(f.size)}</span>
+                        {f.refCount > 0 && <span style={{ color: "#58a700", fontSize: 11, whiteSpace: "nowrap" }}>被{f.refCount}课引用</span>}
+                        <span style={{ color: "#afafaf", fontSize: 11, whiteSpace: "nowrap" }}>{fmtSize(f.size)}</span>
                       </label>
                     ))}
                   </div>
@@ -185,7 +185,7 @@ export default function TopicExportDialog({ topic, onClose, onDone }: Props) {
 
         <div className="modal-actions" style={{ marginTop: 12, alignItems: "center" }}>
           {includeFiles && (
-            <span style={{ fontSize: 12, color: "#888", marginRight: "auto" }}>
+            <span style={{ fontSize: 12, color: "#777777", marginRight: "auto" }}>
               已选资料 {selected.size} 个 · {fmtSize(selectedBytes)}
             </span>
           )}
@@ -199,7 +199,7 @@ export default function TopicExportDialog({ topic, onClose, onDone }: Props) {
               padding: "6px 16px",
               borderRadius: 6,
               border: "none",
-              background: exporting ? "#aab" : "#667eea",
+              background: exporting ? "#aab" : "#58cc02",
               color: "#fff",
               fontSize: 12,
               cursor: exporting ? "default" : "pointer",

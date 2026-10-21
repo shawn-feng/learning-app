@@ -802,9 +802,8 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
             </div>
           )}
           <div className="placeholder">
-            📄
-            <br />
-            {needsInline ? "资料内容为空，可让 AI 老师重新展示" : "这份资料读不到，可让 AI 老师重新展示"}
+            <span className="placeholder-emoji">📄</span>
+            <span>{needsInline ? "资料内容为空，可让 AI 老师重新展示" : "这份资料读不到，可让 AI 老师重新展示"}</span>
           </div>
         </div>
       );
@@ -915,9 +914,8 @@ const MaterialsPanel = forwardRef<MaterialsPanelHandle, Props>(function Material
       </div>
       {materials.length === 0 ? (
         <div className="placeholder">
-          📖
-          <br />
-          AI 老师会把学习资料展示在这里
+          <span className="placeholder-emoji">📖</span>
+          <span>AI 老师会把学习资料展示在这里</span>
         </div>
       ) : (
         <div className="material-list">

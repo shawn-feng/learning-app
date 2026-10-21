@@ -134,8 +134,8 @@ export default function VoiceSettings() {
       <h4 style={{ fontSize: 15, marginTop: 8, marginBottom: 4 }}>语音输入（识别）</h4>
       <div style={{
         display: "flex", alignItems: "center", gap: 12, padding: "14px 16px",
-        background: customOn ? "#f0f4ff" : "#f8fafc",
-        border: customOn ? "1px solid #dfe4ff" : "1px solid #e2e8f0",
+        background: customOn ? "#e9f9dc" : "#f8fafc",
+        border: customOn ? "1px solid #d7ffb8" : "1px solid #e5e5e5",
         borderRadius: 10, marginBottom: 10,
       }}>
         <span style={{ fontSize: 20 }}>🎙️</span>
@@ -155,7 +155,7 @@ export default function VoiceSettings() {
           disabled={saving}
           style={{
             padding: "6px 16px", borderRadius: 16, border: "none", cursor: "pointer",
-            background: enabled ? "#667eea" : "#ddd", color: enabled ? "white" : "#666",
+            background: enabled ? "#58cc02" : "#e5e5e5", color: enabled ? "white" : "#777777",
           }}
         >
           {enabled ? "已开启" : "已关闭"}
@@ -178,7 +178,7 @@ export default function VoiceSettings() {
             value={keys[ch.id] || ""}
             onChange={(e) => setKeys({ ...keys, [ch.id]: e.target.value })}
             placeholder={keyMasked[ch.id] ? `已保存：${keyMasked[ch.id]}（留空不修改）` : "未单独配置（自动复用自定义模型同名 Key）"}
-            style={{ width: "100%", maxWidth: 420, padding: "9px 12px", border: "1px solid #ddd", borderRadius: 8 }}
+            style={{ width: "100%", maxWidth: 420, padding: "9px 12px", border: "1px solid #e5e5e5", borderRadius: 8 }}
           />
         </div>
       ))}
@@ -186,7 +186,7 @@ export default function VoiceSettings() {
         onClick={saveKeys}
         disabled={saving}
         style={{
-          padding: "8px 18px", background: "#667eea", color: "white",
+          padding: "8px 18px", background: "#58cc02", color: "white",
           border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer",
         }}
       >
@@ -194,9 +194,9 @@ export default function VoiceSettings() {
       </button>
 
       {/* ===== 语音合成（朗读） ===== */}
-      <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #eee" }}>
+      <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid #e5e5e5" }}>
         <h4 style={{ fontSize: 15, marginBottom: 4 }}>语音合成（朗读）</h4>
-        <p style={{ fontSize: 12, color: "#999", marginBottom: 8 }}>
+        <p style={{ fontSize: 12, color: "#afafaf", marginBottom: 8 }}>
           选择合成引擎即可（使用各引擎默认音色）；千问 / MiMo 的 Key 自动复用「自定义模型」里同厂商的 Key。
           {customOn ? "" : "启用「自定义模型」后可选其他引擎，当前仅提供 Edge TTS（免费）。"}
         </p>
@@ -206,7 +206,7 @@ export default function VoiceSettings() {
           disabled={!customOn}
           onChange={(e) => saveTtsEngine(e.target.value)}
           style={{
-            width: "100%", maxWidth: 420, padding: 10, border: "1px solid #ddd", borderRadius: 8,
+            width: "100%", maxWidth: 420, padding: 10, border: "1px solid #e5e5e5", borderRadius: 8,
             background: customOn ? "white" : "#f1f5f9",
             color: customOn ? "inherit" : "#889",
           }}
@@ -226,7 +226,7 @@ export default function VoiceSettings() {
       {status && (
         <p style={{
           fontSize: 13,
-          color: /失败|无法|错误/.test(status) ? "#e53e3e" : "#667eea",
+          color: /失败|无法|错误/.test(status) ? "#ff4b4b" : "#58cc02",
           marginTop: 16,
           whiteSpace: "pre-wrap",
         }}>

@@ -89,6 +89,7 @@ export default function ParentLogin({ onDouyin }: Props) {
         </div>
 
         <button
+          className="douyin-btn"
           onClick={handleDouyin}
           disabled={loading}
           style={{ background: "#161823", color: "#fff" }}

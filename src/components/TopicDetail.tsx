@@ -375,7 +375,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
         />
         <div style={{ fontSize: 16, fontWeight: 700 }}>
           {topic.name}
-          <span style={{ color: "#aaa", fontWeight: 400, fontSize: 13 }}>（{topicDir} · {courses.length} 课）</span>
+          <span style={{ color: "#afafaf", fontWeight: 400, fontSize: 13 }}>（{topicDir} · {courses.length} 课）</span>
         </div>
         <div style={{ display: "flex", gap: 6, marginLeft: "auto", flexWrap: "wrap" }}>
           {(
@@ -399,7 +399,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   fontSize: 13,
                   cursor: "pointer",
                   background: "#f0f0f0",
-                  color: "#555",
+                  color: "#4b4b4b",
                   display: "inline-flex",
                   alignItems: "center",
                   gap: 4,
@@ -417,8 +417,8 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   border: "none",
                   fontSize: 13,
                   cursor: "pointer",
-                  background: tab === k ? "#667eea" : "#f0f0f0",
-                  color: tab === k ? "#fff" : "#555",
+                  background: tab === k ? "#58cc02" : "#f0f0f0",
+                  color: tab === k ? "#fff" : "#4b4b4b",
                 }}
               >
                 {label}
@@ -436,7 +436,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
             borderRadius: 6,
             marginBottom: 8,
             background: msg.ok ? "#e8f7ee" : "#fdecec",
-            color: msg.ok ? "#2f8a52" : "#b33",
+            color: msg.ok ? "#58a700" : "#ea2b2b",
           }}
         >
           {msg.text}
@@ -446,24 +446,24 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
       {/* 两列：课程列表 | 标签内容（ISSUE-050 移除原中列 AI 对话，家长对话在右侧常驻面板） */}
       <div style={{ display: "flex", flex: 1, minHeight: 0, gap: 16 }}>
         {/* 左：课程列表 */}
-        <div style={{ width: 280, display: "flex", flexDirection: "column", minWidth: 0, borderRight: "1px solid #eee", paddingRight: 8 }}>
+        <div style={{ width: 280, display: "flex", flexDirection: "column", minWidth: 0, borderRight: "1px solid #e5e5e5", paddingRight: 8 }}>
           <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
             <input
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addCourse()}
               placeholder="新课程名称"
-              style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #ddd", fontSize: 13, minWidth: 0 }}
+              style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #e5e5e5", fontSize: 13, minWidth: 0 }}
             />
             <button
               onClick={addCourse}
-              style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}
+              style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#58cc02", color: "#fff", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}
             >
               <Plus size={16} /> 添加
             </button>
           </div>
           <div style={{ overflowY: "auto", flex: 1 }}>
-            {courses.length === 0 && <p style={{ color: "#888", fontSize: 12, padding: 12 }}>暂无课程，输入名称添加，或让 AI 协助创建。</p>}
+            {courses.length === 0 && <p style={{ color: "#777777", fontSize: 12, padding: 12 }}>暂无课程，输入名称添加，或让 AI 协助创建。</p>}
             {courses.map((c, i) => (
               <div
                 key={c.title}
@@ -473,12 +473,12 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   borderRadius: 8,
                   marginBottom: 4,
                   cursor: "pointer",
-                  background: selected?.title === c.title ? "#f0f4ff" : "#fff",
+                  background: selected?.title === c.title ? "#e9f9dc" : "#fff",
                   border: "1px solid #f0f0f0",
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 11, color: "#bbb", width: 16 }}>{i + 1}</span>
+                  <span style={{ fontSize: 11, color: "#afafaf", width: 16 }}>{i + 1}</span>
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.title}</span>
                 </div>
                 <div style={{ display: "flex", gap: 4, marginTop: 4, justifyContent: "flex-end" }}>
@@ -492,7 +492,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
         </div>
 
         {/* 右：标签内容（占满剩余宽度） */}
-        <div style={{ flex: 1, minWidth: 0, overflowY: "auto", borderLeft: "1px solid #eee", paddingLeft: 12 }}>
+        <div style={{ flex: 1, minWidth: 0, overflowY: "auto", borderLeft: "1px solid #e5e5e5", paddingLeft: 12 }}>
           {tab === "method" && (
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -502,7 +502,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                 ) : (
                   <div style={{ display: "flex", gap: 6 }}>
                     <button onClick={() => { setMethodText(savedMethod); setEditingMethod(false); }} style={smallBtn}>取消</button>
-                    <button onClick={saveMethod} disabled={savingMethod} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>
+                    <button onClick={saveMethod} disabled={savingMethod} style={{ ...smallBtn, background: "#58cc02", color: "#fff" }}>
                       {savingMethod ? "保存中…" : "保存"}
                     </button>
                   </div>
@@ -512,11 +512,11 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                 <textarea
                   value={methodText}
                   onChange={(e) => setMethodText(e.target.value)}
-                  style={{ width: "100%", minHeight: "55vh", padding: 10, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }}
+                  style={{ width: "100%", minHeight: "55vh", padding: 10, borderRadius: 8, border: "1px solid #e5e5e5", fontSize: 13, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }}
                 />
               ) : (
                 <div className="markdown-body" style={{ border: "1px solid #f0f0f0", borderRadius: 8, padding: "10px 14px", minHeight: 200 }}>
-                  {savedMethod ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{savedMethod}</ReactMarkdown> : <span style={{ color: "#aaa" }}>（暂无教学方法，点「编辑」填写）</span>}
+                  {savedMethod ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{savedMethod}</ReactMarkdown> : <span style={{ color: "#afafaf" }}>（暂无教学方法，点「编辑」填写）</span>}
                 </div>
               )}
             </div>
@@ -532,7 +532,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                 ) : (
                   <div style={{ display: "flex", gap: 6 }}>
                     <button onClick={() => { setAssessMethodText(savedAssessMethod); setEditingAssessMethod(false); }} style={smallBtn}>取消</button>
-                    <button onClick={saveAssessMethod} disabled={savingAssessMethod} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>
+                    <button onClick={saveAssessMethod} disabled={savingAssessMethod} style={{ ...smallBtn, background: "#58cc02", color: "#fff" }}>
                       {savingAssessMethod ? "保存中…" : "保存"}
                     </button>
                   </div>
@@ -542,14 +542,14 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                 <textarea
                   value={assessMethodText}
                   onChange={(e) => setAssessMethodText(e.target.value)}
-                  style={{ width: "100%", minHeight: "26vh", padding: 10, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }}
+                  style={{ width: "100%", minHeight: "26vh", padding: 10, borderRadius: 8, border: "1px solid #e5e5e5", fontSize: 13, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }}
                 />
               ) : (
                 <div className="markdown-body" style={{ border: "1px solid #f0f0f0", borderRadius: 8, padding: "10px 14px", minHeight: 110, marginBottom: 18 }}>
                   {savedAssessMethod ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{savedAssessMethod}</ReactMarkdown>
                   ) : (
-                    <span style={{ color: "#aaa" }}>
+                    <span style={{ color: "#afafaf" }}>
                       （暂无考核方法说明——建议写：考核周期（每天/每周/每月）、考核对象规则（取该周期内学/复习过的知识点）、题量/抽题方式、评分口径。点「编辑」填写，也可让 AI 协助起草。）
                     </span>
                   )}
@@ -562,7 +562,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
             <div>
               {/* 每课考核要点 = 该课知识点：结构化浏览（知识点→题目+该题记录）；内容由家长 AI 通过 assess_* 工具维护 */}
               {!selected ? (
-                <p style={{ color: "#888", fontSize: 13 }}>请先在左侧选择一门课程，查看它的考核要点（知识点与题目）。</p>
+                <p style={{ color: "#777777", fontSize: 13 }}>请先在左侧选择一门课程，查看它的考核要点（知识点与题目）。</p>
               ) : (
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -570,7 +570,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   </div>
 
                   {structLoading ? (
-                    <span style={{ color: "#888", fontSize: 13 }}>正在读取结构化考核内容…</span>
+                    <span style={{ color: "#777777", fontSize: 13 }}>正在读取结构化考核内容…</span>
                   ) : struct && struct.items.length > 0 ? (
                     <div>
                       {(() => {
@@ -581,7 +581,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                         return (
                           <>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
-                              <span style={{ fontSize: 12, color: "#6b7686" }}>
+                              <span style={{ fontSize: 12, color: "#777777" }}>
                                 结构化考核内容：{struct.items.length} 个知识点 / 共 {total} 题（每知识点随机抽题）
                               </span>
                             </div>
@@ -594,9 +594,9 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                                   style={{
                                     padding: "5px 12px",
                                     borderRadius: 999,
-                                    border: catIdx === i ? "2px solid #667eea" : "1px solid #ddd",
-                                    background: catIdx === i ? "#eef2ff" : "#fff",
-                                    color: catIdx === i ? "#3b4cca" : "#555",
+                                    border: catIdx === i ? "2px solid #58cc02" : "1px solid #e5e5e5",
+                                    background: catIdx === i ? "#f7f7f7" : "#fff",
+                                    color: catIdx === i ? "#1cb0f6" : "#4b4b4b",
                                     fontSize: 13,
                                     cursor: "pointer",
                                   }}
@@ -614,9 +614,9 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                             ) : null}
                             {/* 下左：题目列表；下右：题目详情 + 考核记录 */}
                             <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
-                              <div style={{ width: "38%", minWidth: 260, border: "1px solid #eee", borderRadius: 8, padding: 6, maxHeight: 380, overflow: "auto", boxSizing: "border-box" }}>
+                              <div style={{ width: "38%", minWidth: 260, border: "1px solid #e5e5e5", borderRadius: 8, padding: 6, maxHeight: 380, overflow: "auto", boxSizing: "border-box" }}>
                                 {qs.length === 0 ? (
-                                  <p style={{ color: "#aaa", fontSize: 12, padding: 8 }}>该知识点暂无题目（考核时会被跳过）</p>
+                                  <p style={{ color: "#afafaf", fontSize: 12, padding: 8 }}>该知识点暂无题目（考核时会被跳过）</p>
                                 ) : (
                                   qs.map((q: any, qi: number) => (
                                     <div
@@ -626,19 +626,19 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                                         padding: "8px 10px",
                                         borderRadius: 6,
                                         cursor: "pointer",
-                                        border: qId === q.id ? "1px solid #667eea" : "1px solid transparent",
-                                        background: qId === q.id ? "#f0f4ff" : "transparent",
+                                        border: qId === q.id ? "1px solid #58cc02" : "1px solid transparent",
+                                        background: qId === q.id ? "#e9f9dc" : "transparent",
                                         fontSize: 12.5,
                                         lineHeight: 1.45,
                                       }}
                                     >
-                                      <div style={{ color: "#333" }}>
+                                      <div style={{ color: "#4b4b4b" }}>
                                         <b>{qi + 1}.</b> {String(q.stem || "").slice(0, 60)}
                                         {String(q.stem || "").length > 60 ? "…" : ""}
                                       </div>
                                       <div style={{ display: "flex", gap: 8, marginTop: 4, fontSize: 11, color: "#9aa3b2" }}>
                                         <span>{q.pointMax || 10} 分</span>
-                                        {q.answer ? <span style={{ color: "#2f8a52" }}>有参考答案</span> : <span style={{ color: "#c68a00" }}>无参考答案</span>}
+                                        {q.answer ? <span style={{ color: "#58a700" }}>有参考答案</span> : <span style={{ color: "#c68a00" }}>无参考答案</span>}
                                       </div>
                                     </div>
                                   ))
@@ -646,45 +646,45 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                               </div>
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 {!selQ ? (
-                                  <p style={{ color: "#999", fontSize: 12, paddingTop: 8 }}>← 选择左侧题目查看详情与该题考核记录</p>
+                                  <p style={{ color: "#afafaf", fontSize: 12, paddingTop: 8 }}>← 选择左侧题目查看详情与该题考核记录</p>
                                 ) : (
                                   <div>
                                     <div style={{ fontSize: 14, lineHeight: 1.5, color: "#222", fontWeight: 600, marginBottom: 6 }}>{selQ.stem}</div>
                                     {activeKp && (
-                                      <div style={{ fontSize: 11, color: "#667eea", marginBottom: 8 }}>
+                                      <div style={{ fontSize: 11, color: "#58a700", marginBottom: 8 }}>
                                         {activeKp.knowledgePointName} · {BEHAVIOR_LABEL[selQ.behavior] || selQ.behavior || "generic"} · {selQ.pointMax || 10} 分
                                       </div>
                                     )}
                                     {(selQ as any).options?.length ? (
                                       <div style={{ marginBottom: 6 }}>
-                                        <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>选项（选择题：孩子看选项口头作答）：</div>
+                                        <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>选项（选择题：孩子看选项口头作答）：</div>
                                         {((selQ as any).options as Array<{ key: string; text: string }>).map((o, oi) => (
-                                          <div key={oi} style={{ fontSize: 13, background: "#f4f6fc", border: "1px solid #e3e8f3", borderRadius: 6, padding: "4px 8px", marginBottom: 3 }}>
-                                            <b style={{ color: "#667eea" }}>{o.key}.</b> {o.text}
+                                          <div key={oi} style={{ fontSize: 13, background: "#f7f7f7", border: "1px solid #e3e8f3", borderRadius: 6, padding: "4px 8px", marginBottom: 3 }}>
+                                            <b style={{ color: "#58a700" }}>{o.key}.</b> {o.text}
                                           </div>
                                         ))}
                                       </div>
                                     ) : null}
                                     {selQ.answer ? (
                                       <div style={{ marginBottom: 6 }}>
-                                        <div style={{ fontSize: 12, color: "#6b7686" }}>参考答案：</div>
-                                        <div style={{ fontSize: 13, color: "#2f8a52", background: "#f4faf6", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap" }}>{selQ.answer}</div>
+                                        <div style={{ fontSize: 12, color: "#777777" }}>参考答案：</div>
+                                        <div style={{ fontSize: 13, color: "#58a700", background: "#f4faf6", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap" }}>{selQ.answer}</div>
                                       </div>
                                     ) : null}
                                     {fmtScoreLines(selQ.scoring).length > 0 && (
                                       <div style={{ marginBottom: 6 }}>
-                                        <div style={{ fontSize: 12, color: "#6b7686" }}>评分标准：</div>
+                                        <div style={{ fontSize: 12, color: "#777777" }}>评分标准：</div>
                                         <div style={{ fontSize: 12, background: "#faf8f4", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap", lineHeight: 1.7 }}>
                                           {fmtScoreLines(selQ.scoring).join("\n")}
                                         </div>
                                       </div>
                                     )}
                                     <div style={{ marginTop: 10 }}>
-                                      <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>该题考核记录（全部孩子，按时间倒序）</div>
+                                      <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>该题考核记录（全部孩子，按时间倒序）</div>
                                       {recLoading ? (
-                                        <span style={{ color: "#999", fontSize: 12 }}>加载中…</span>
+                                        <span style={{ color: "#afafaf", fontSize: 12 }}>加载中…</span>
                                       ) : records === null ? null : records.length === 0 ? (
-                                        <span style={{ color: "#aaa", fontSize: 12 }}>暂无记录（这道题还没被考过）</span>
+                                        <span style={{ color: "#afafaf", fontSize: 12 }}>暂无记录（这道题还没被考过）</span>
                                       ) : (
                                         <div style={{ maxHeight: 240, overflow: "auto", borderTop: "1px solid #f0f0f0" }}>
                                           {records.map((r: any, ri: number) => (
@@ -692,7 +692,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                                               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                                                 <b>{r.childName || "孩子"}</b>
                                                 <span style={{ color: "#9aa3b2", fontSize: 11 }}>{fmtDT(r.submittedAt)}</span>
-                                                <span style={{ fontWeight: 700, color: r.correct ? "#2f8a52" : "#b33" }}>
+                                                <span style={{ fontWeight: 700, color: r.correct ? "#58a700" : "#ea2b2b" }}>
                                                   {r.pointGot != null ? `${r.pointGot}/${r.pointMax ?? "?"}` : "—"} {r.correct ? "✓ 对" : "✗ 错"}
                                                 </span>
                                               </div>
@@ -711,7 +711,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                       })()}
                     </div>
                   ) : (
-                    <span style={{ color: "#aaa" }}>（暂无结构化考核内容；可让 AI 按「知识点 → 题目」协助建题，知识点详情会作为该课的考核要点）</span>
+                    <span style={{ color: "#afafaf" }}>（暂无结构化考核内容；可让 AI 按「知识点 → 题目」协助建题，知识点详情会作为该课的考核要点）</span>
                   )}
                 </div>
               )}
@@ -721,7 +721,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
           {tab === "course" && (
             <div>
               {!selected ? (
-                <p style={{ color: "#888", fontSize: 13 }}>请先在左侧选择或添加一门课程。</p>
+                <p style={{ color: "#777777", fontSize: 13 }}>请先在左侧选择或添加一门课程。</p>
               ) : (
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -731,17 +731,17 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                   <Section label="标签">
                     <div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-                        {currentTagList().length === 0 && <span style={{ color: "#aaa" }}>（无）</span>}
+                        {currentTagList().length === 0 && <span style={{ color: "#afafaf" }}>（无）</span>}
                         {currentTagList().map((t) => (
                           <span
                             key={t}
-                            style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#eef2ff", color: "#3b4cca", borderRadius: 12, padding: "2px 8px", fontSize: 12 }}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#f7f7f7", color: "#1899d6", borderRadius: 12, padding: "2px 8px", fontSize: 12 }}
                           >
                             {t}
                             <button
                               onClick={() => removeTag(t)}
                               title="移除"
-                              style={{ border: "none", background: "transparent", color: "#3b4cca", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0, display: "inline-flex" }}
+                              style={{ border: "none", background: "transparent", color: "#1899d6", cursor: "pointer", fontSize: 13, lineHeight: 1, padding: 0, display: "inline-flex" }}
                             >
                               <X size={14} />
                             </button>
@@ -752,7 +752,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                         <select
                           value={addValue}
                           onChange={(e) => setAddValue(e.target.value)}
-                          style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #ddd", fontSize: 12, maxWidth: 160 }}
+                          style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e5e5", fontSize: 12, maxWidth: 160 }}
                         >
                           <option value="">+ 从词库添加…</option>
                           {tagOptions
@@ -772,7 +772,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                           value={tagDraft}
                           onChange={(e) => setTagDraft(e.target.value)}
                           placeholder="自定义新标签"
-                          style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #ddd", fontSize: 12, width: 110 }}
+                          style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e5e5", fontSize: 12, width: 110 }}
                         />
                         <IconButton icon={Tag} title="新增标签" onClick={addNewTag} disabled={!tagDraft.trim()} />
                       </div>
@@ -783,7 +783,7 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                       {editingCopy ? (
                         <div style={{ display: "flex", gap: 6 }}>
                           <button onClick={() => { setCopyText(selected.teachingCopy || ""); setEditingCopy(false); }} style={smallBtn}>取消</button>
-                          <button onClick={saveCopy} style={{ ...smallBtn, background: "#667eea", color: "#fff" }}>保存</button>
+                          <button onClick={saveCopy} style={{ ...smallBtn, background: "#58cc02", color: "#fff" }}>保存</button>
                         </div>
                       ) : (
                         <IconButton icon={Pencil} title="编辑" onClick={() => { setCopyText(selected.teachingCopy || ""); setEditingCopy(true); }} />
@@ -795,14 +795,14 @@ export default function TopicDetail({ topic, initialTab = "course", onBack }: Pr
                         onChange={(e) => setCopyText(e.target.value)}
                         rows={8}
                         placeholder="教学文案（Markdown 支持）…"
-                        style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13, boxSizing: "border-box", resize: "vertical" }}
+                        style={{ width: "100%", padding: 8, borderRadius: 8, border: "1px solid #e5e5e5", fontSize: 13, boxSizing: "border-box", resize: "vertical" }}
                       />
                     ) : selected.teachingCopy ? (
                       <div className="markdown-body">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{selected.teachingCopy}</ReactMarkdown>
                       </div>
                     ) : (
-                      <span style={{ color: "#aaa" }}>（数据库暂无教学文案；AI 可用 parent_course_save 写入，或点「编辑」填写）</span>
+                      <span style={{ color: "#afafaf" }}>（数据库暂无教学文案；AI 可用 parent_course_save 写入，或点「编辑」填写）</span>
                     )}
                   </Section>
                   {selected.material && (
@@ -870,10 +870,10 @@ function StudentMaterial({ course }: { course: CourseRow }) {
   if (fileHtml?.found && fileHtml.format === "html") {
     // 直接渲染主进程已改写好的 html：内部相对资源已被改写为 asset:// 绝对地址
     // （见 electron/lib/parent-library.ts rewriteHtmlAssetRefs），srcDoc 在 dev/prod 均能跨源加载。
-    return <iframe sandbox="allow-scripts allow-same-origin" srcDoc={fileHtml.content} style={{ width: "100%", minHeight: 360, border: "1px solid #eee", borderRadius: 8, background: "#fff" }} title="学习材料" />;
+    return <iframe sandbox="allow-scripts allow-same-origin" srcDoc={fileHtml.content} style={{ width: "100%", minHeight: 360, border: "1px solid #e5e5e5", borderRadius: 8, background: "#fff" }} title="学习材料" />;
   }
   if (looksHtml) {
-    return <iframe sandbox="allow-scripts allow-same-origin" srcDoc={send} style={{ width: "100%", minHeight: 360, border: "1px solid #eee", borderRadius: 8, background: "#fff" }} title="学习材料" />;
+    return <iframe sandbox="allow-scripts allow-same-origin" srcDoc={send} style={{ width: "100%", minHeight: 360, border: "1px solid #e5e5e5", borderRadius: 8, background: "#fff" }} title="学习材料" />;
   }
   if (send) {
     return (
@@ -882,13 +882,13 @@ function StudentMaterial({ course }: { course: CourseRow }) {
       </div>
     );
   }
-  return <span style={{ color: "#aaa" }}>（未填；可上传 html 资料自动关联）</span>;
+  return <span style={{ color: "#afafaf" }}>（未填；可上传 html 资料自动关联）</span>;
 }
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: "#667eea", marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#58a700", marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 13, lineHeight: 1.6 }}>{children}</div>
     </div>
   );
@@ -897,7 +897,7 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 function InfoRow({ k, v }: { k: string; v: string }) {
   return (
     <div style={{ display: "flex", padding: "6px 0", borderBottom: "1px solid #f3f3f3", fontSize: 13 }}>
-      <span style={{ width: 90, color: "#888" }}>{k}</span>
+      <span style={{ width: 90, color: "#777777" }}>{k}</span>
       <span style={{ flex: 1, wordBreak: "break-all" }}>{v}</span>
     </div>
   );
@@ -912,7 +912,7 @@ function MiniBtn({ icon, title, onClick, disabled, danger }: { icon: LucideIcon;
 const smallBtn: React.CSSProperties = {
   padding: "5px 12px",
   borderRadius: 6,
-  border: "1px solid #ddd",
+  border: "1px solid #e5e5e5",
   background: "#fff",
   fontSize: 12,
   cursor: "pointer",

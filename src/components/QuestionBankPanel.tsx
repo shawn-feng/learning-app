@@ -76,7 +76,7 @@ interface MountSel {
 }
 const EMPTY_MOUNT: MountSel = { topic: "", courseUuid: "", kpId: "", isNewKp: false, newKpName: "", newKpDetail: "" };
 
-const inputStyle = { padding: "6px 8px", borderRadius: 6, border: "1px solid #ddd", fontSize: 12.5, boxSizing: "border-box" as const };
+const inputStyle = { padding: "6px 8px", borderRadius: 6, border: "1px solid #e5e5e5", fontSize: 12.5, boxSizing: "border-box" as const };
 
 function hasMount(m: MountSel): boolean {
   return !!m.courseUuid && (m.isNewKp ? !!m.newKpName.trim() : !!m.kpId);
@@ -228,11 +228,11 @@ function QuestionEditor({
   }
 
   return (
-    <div style={{ border: "1px solid #d9def0", background: "#f8f9ff", borderRadius: 10, padding: 12, marginBottom: 10 }}>
+    <div style={{ border: "1px solid #d9def0", background: "#f7f7f7", borderRadius: 10, padding: 12, marginBottom: 10 }}>
       <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>{editing ? "✏️ 编辑题目" : "➕ 新建题目"}</div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center", flexWrap: "wrap" }}>
-        <label style={{ fontSize: 12, color: "#6b7686" }}>题型：</label>
+        <label style={{ fontSize: 12, color: "#777777" }}>题型：</label>
         <select value={behavior} onChange={(e) => setBehavior(e.target.value)} style={{ ...inputStyle, minWidth: 140 }}>
           {Object.entries(BEHAVIOR_LABEL).map(([k, v]) => (
             <option key={k} value={k}>
@@ -240,9 +240,9 @@ function QuestionEditor({
             </option>
           ))}
         </select>
-        <label style={{ fontSize: 12, color: "#6b7686" }}>分值：</label>
+        <label style={{ fontSize: 12, color: "#777777" }}>分值：</label>
         <input value={pointMax} onChange={(e) => setPointMax(e.target.value)} style={{ ...inputStyle, width: 56 }} />
-        <label style={{ fontSize: 12, color: "#6b7686", display: "flex", gap: 4, alignItems: "center" }}>
+        <label style={{ fontSize: 12, color: "#777777", display: "flex", gap: 4, alignItems: "center" }}>
           <input type="checkbox" checked={isChoice} onChange={(e) => setIsChoice(e.target.checked)} disabled={isSpeech} />
           选择题（提供选项，口头作答）
         </label>
@@ -264,7 +264,7 @@ function QuestionEditor({
       />
       {isChoice && (
         <div style={{ marginBottom: 6 }}>
-          <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>选项（至少两项；孩子看选项口头报答案）：</div>
+          <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>选项（至少两项；孩子看选项口头报答案）：</div>
           {opts.map((o, i) => (
             <div key={i} style={{ display: "flex", gap: 6, marginBottom: 4, alignItems: "center" }}>
               <input
@@ -309,7 +309,7 @@ function QuestionEditor({
 
       {!editing && (
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>
+          <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>
             关联到课程/知识点（可选——不选则建为「未挂载」题，之后可在详情页补挂）：
           </div>
           <MountPicker facets={facets} sel={mount} onChange={setMount} />
@@ -320,11 +320,11 @@ function QuestionEditor({
         <button
           onClick={save}
           disabled={saving}
-          style={{ padding: "7px 16px", borderRadius: 8, border: "none", background: "#667eea", color: "#fff", fontSize: 13, cursor: "pointer" }}
+          style={{ padding: "7px 16px", borderRadius: 8, border: "none", background: "#58cc02", color: "#fff", fontSize: 13, cursor: "pointer" }}
         >
           {saving ? "保存中…" : "保存"}
         </button>
-        <button onClick={onCancel} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #ccc", background: "#fff", fontSize: 13, cursor: "pointer" }}>
+        <button onClick={onCancel} style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #d0d0d0", background: "#fff", fontSize: 13, cursor: "pointer" }}>
           取消
         </button>
       </div>
@@ -453,7 +453,7 @@ export default function QuestionBankPanel() {
   return (
     <div>
       <h3 style={{ marginBottom: 4 }}>📖 题库</h3>
-      <p style={{ color: "#6b7686", fontSize: 13, marginTop: 0 }}>
+      <p style={{ color: "#777777", fontSize: 13, marginTop: 0 }}>
         共 {rows.length} 道题，当前筛选显示 {shown.length} 道 · 点题目看详情与各孩子最近一次考核记录；可新建/编辑/删除
       </p>
 
@@ -520,7 +520,7 @@ export default function QuestionBankPanel() {
         )}
         <button
           onClick={() => setEditor({ mode: "create" })}
-          style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#667eea", color: "#fff", fontSize: 12.5, cursor: "pointer" }}
+          style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "#58cc02", color: "#fff", fontSize: 12.5, cursor: "pointer" }}
         >
           ＋ 新建题目
         </button>
@@ -540,12 +540,12 @@ export default function QuestionBankPanel() {
       )}
 
       {loading ? (
-        <p style={{ color: "#888", fontSize: 13 }}>加载题库…</p>
+        <p style={{ color: "#777777", fontSize: 13 }}>加载题库…</p>
       ) : shown.length === 0 ? (
-        <p style={{ color: "#aaa", fontSize: 13 }}>{rows.length === 0 ? "题库还是空的，点右上「＋ 新建题目」创建第一道题" : "没有匹配的题目"}</p>
+        <p style={{ color: "#afafaf", fontSize: 13 }}>{rows.length === 0 ? "题库还是空的，点右上「＋ 新建题目」创建第一道题" : "没有匹配的题目"}</p>
       ) : (
         <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
-          <div style={{ width: "42%", minWidth: 280, border: "1px solid #eee", borderRadius: 8, padding: 6, maxHeight: 560, overflow: "auto", boxSizing: "border-box" }}>
+          <div style={{ width: "42%", minWidth: 280, border: "1px solid #e5e5e5", borderRadius: 8, padding: 6, maxHeight: 560, overflow: "auto", boxSizing: "border-box" }}>
             {shown.map((q, i) => (
               <div
                 key={q.id}
@@ -554,18 +554,18 @@ export default function QuestionBankPanel() {
                   padding: "8px 10px",
                   borderRadius: 6,
                   cursor: "pointer",
-                  border: qId === q.id ? "1px solid #667eea" : "1px solid transparent",
-                  background: qId === q.id ? "#f0f4ff" : "transparent",
+                  border: qId === q.id ? "1px solid #58cc02" : "1px solid transparent",
+                  background: qId === q.id ? "#e9f9dc" : "transparent",
                   fontSize: 12.5,
                   lineHeight: 1.45,
                 }}
               >
-                <div style={{ color: "#333" }}>
+                <div style={{ color: "#4b4b4b" }}>
                   <b>{i + 1}.</b> {String(q.stem).slice(0, 66)}
                   {String(q.stem).length > 66 ? "…" : ""}
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 4, fontSize: 11, color: "#9aa3b2", flexWrap: "wrap" }}>
-                  <span style={{ color: q.behavior === "generic" ? "#556" : "#3b4cca" }}>{BEHAVIOR_LABEL[q.behavior] || q.behavior}</span>
+                  <span style={{ color: q.behavior === "generic" ? "#556" : "#1cb0f6" }}>{BEHAVIOR_LABEL[q.behavior] || q.behavior}</span>
                   <span>{q.pointMax || 10} 分</span>
                   {q.contexts[0] ? (
                     <span>
@@ -582,7 +582,7 @@ export default function QuestionBankPanel() {
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             {!sel ? (
-              <p style={{ color: "#999", fontSize: 12, paddingTop: 8 }}>← 选择左侧题目查看详情；也可新建题目（可挂到某课某知识点下，或不关联）</p>
+              <p style={{ color: "#afafaf", fontSize: 12, paddingTop: 8 }}>← 选择左侧题目查看详情；也可新建题目（可挂到某课某知识点下，或不关联）</p>
             ) : (
               <div>
                 <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
@@ -590,7 +590,7 @@ export default function QuestionBankPanel() {
                   <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                     <button
                       onClick={() => setEditor({ mode: "edit", q: sel })}
-                      style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #667eea", background: "#fff", color: "#667eea", fontSize: 12, cursor: "pointer" }}
+                      style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #58cc02", background: "#fff", color: "#58a700", fontSize: 12, cursor: "pointer" }}
                     >
                       编辑
                     </button>
@@ -602,7 +602,7 @@ export default function QuestionBankPanel() {
                     </button>
                   </div>
                 </div>
-                <div style={{ fontSize: 11, color: "#667eea", marginBottom: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <div style={{ fontSize: 11, color: "#58a700", marginBottom: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                   <span>
                     {BEHAVIOR_LABEL[sel.behavior] || sel.behavior} · {sel.pointMax || 10} 分
                   </span>
@@ -610,7 +610,7 @@ export default function QuestionBankPanel() {
                   {sel.contexts.map((c, ci) => (
                     <span
                       key={ci}
-                      style={{ background: "#f0f4ff", borderRadius: 6, padding: "2px 6px", display: "inline-flex", gap: 4, alignItems: "center" }}
+                      style={{ background: "#e9f9dc", borderRadius: 6, padding: "2px 6px", display: "inline-flex", gap: 4, alignItems: "center" }}
                     >
                       {c.topic ? `${c.topic} / ` : ""}
                       {c.course}
@@ -633,7 +633,7 @@ export default function QuestionBankPanel() {
 
                 {/* 添加挂载 */}
                 <div style={{ marginBottom: 8, border: "1px dashed #d5daea", borderRadius: 8, padding: 8 }}>
-                  <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>挂载到课程/知识点：</div>
+                  <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>挂载到课程/知识点：</div>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                     <MountPicker facets={facets} sel={addMount} onChange={setAddMount} />
                     <button
@@ -648,23 +648,23 @@ export default function QuestionBankPanel() {
 
                 {fmtOpts(sel).length ? (
                   <div style={{ marginBottom: 6 }}>
-                    <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>选项（选择题：孩子看选项口头作答）：</div>
+                    <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>选项（选择题：孩子看选项口头作答）：</div>
                     {fmtOpts(sel).map((o, oi) => (
-                      <div key={oi} style={{ fontSize: 13, background: "#f4f6fc", border: "1px solid #e3e8f3", borderRadius: 6, padding: "4px 8px", marginBottom: 3 }}>
-                        <b style={{ color: "#667eea" }}>{o.key}.</b> {o.text}
+                      <div key={oi} style={{ fontSize: 13, background: "#f7f7f7", border: "1px solid #e3e8f3", borderRadius: 6, padding: "4px 8px", marginBottom: 3 }}>
+                        <b style={{ color: "#58a700" }}>{o.key}.</b> {o.text}
                       </div>
                     ))}
                   </div>
                 ) : null}
                 {sel.answer ? (
                   <div style={{ marginBottom: 6 }}>
-                    <div style={{ fontSize: 12, color: "#6b7686" }}>参考答案{sel.behavior !== "generic" ? "（评测原文）" : ""}：</div>
-                    <div style={{ fontSize: 13, color: "#2f8a52", background: "#f4faf6", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap" }}>{sel.answer}</div>
+                    <div style={{ fontSize: 12, color: "#777777" }}>参考答案{sel.behavior !== "generic" ? "（评测原文）" : ""}：</div>
+                    <div style={{ fontSize: 13, color: "#58a700", background: "#f4faf6", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap" }}>{sel.answer}</div>
                   </div>
                 ) : null}
                 {fmtScoreLines(sel.scoring).length > 0 && (
                   <div style={{ marginBottom: 6 }}>
-                    <div style={{ fontSize: 12, color: "#6b7686" }}>评分标准：</div>
+                    <div style={{ fontSize: 12, color: "#777777" }}>评分标准：</div>
                     <div style={{ fontSize: 12, background: "#faf8f4", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap", lineHeight: 1.7 }}>
                       {fmtScoreLines(sel.scoring).join("\n")}
                     </div>
@@ -672,36 +672,36 @@ export default function QuestionBankPanel() {
                 )}
                 {sel.note ? (
                   <div style={{ fontSize: 12, marginBottom: 4 }}>
-                    <b style={{ color: "#6b7686" }}>备注：</b>
+                    <b style={{ color: "#777777" }}>备注：</b>
                     <span style={{ color: "#556" }}>{sel.note}</span>
                   </div>
                 ) : null}
                 {sel.knowledgeSummary ? (
                   <div style={{ fontSize: 12, marginBottom: 4 }}>
-                    <b style={{ color: "#6b7686" }}>知识点概要：</b>
+                    <b style={{ color: "#777777" }}>知识点概要：</b>
                     <span style={{ color: "#556" }}>{sel.knowledgeSummary}</span>
                   </div>
                 ) : null}
 
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ fontSize: 12, color: "#6b7686", marginBottom: 4 }}>各孩子考核记录（最近一次）</div>
+                  <div style={{ fontSize: 12, color: "#777777", marginBottom: 4 }}>各孩子考核记录（最近一次）</div>
                   {recLoading ? (
-                    <span style={{ color: "#999", fontSize: 12 }}>加载中…</span>
+                    <span style={{ color: "#afafaf", fontSize: 12 }}>加载中…</span>
                   ) : records === null ? null : (
                     <div style={{ borderTop: "1px solid #f0f0f0" }}>
                       {records.length === 0 ? (
-                        <span style={{ color: "#aaa", fontSize: 12 }}>暂无记录（这道题还没被考过）</span>
+                        <span style={{ color: "#afafaf", fontSize: 12 }}>暂无记录（这道题还没被考过）</span>
                       ) : (
                         records.map((r: RecRow) => (
                           <div key={r.childId} style={{ padding: "8px 2px", borderBottom: "1px solid #f3f3f3", fontSize: 12, lineHeight: 1.55 }}>
                             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                               <b>{r.childName || "孩子"}</b>
                               {r.neverAssessed ? (
-                                <span style={{ color: "#aaa", fontSize: 11 }}>还没考过</span>
+                                <span style={{ color: "#afafaf", fontSize: 11 }}>还没考过</span>
                               ) : (
                                 <>
                                   <span style={{ color: "#9aa3b2", fontSize: 11 }}>{fmtDT(r.submittedAt)}</span>
-                                  <span style={{ fontWeight: 700, color: r.correct ? "#2f8a52" : "#b33" }}>
+                                  <span style={{ fontWeight: 700, color: r.correct ? "#58a700" : "#ea2b2b" }}>
                                     {r.pointGot != null ? `${r.pointGot}/${r.pointMax ?? "?"}` : "—"} {r.correct ? "✓ 对" : "✗ 错"}
                                   </span>
                                 </>

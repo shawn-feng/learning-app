@@ -898,7 +898,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     ? "识别中…"
     : recording
     ? "录音中… 松开结束"
-    : "输入你的想法...（以 / 开头可触发命令，如 /help）";
+    : "输入你的想法…";
 
   return (
     <div
@@ -985,8 +985,9 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
           </div>
         )}
         {messages.length === 0 && (
-          <div style={{ textAlign: "center", color: "#aaa", marginTop: 60 }}>
-            你好！我是你的学习伙伴，想学什么都可以告诉我 😊
+          <div className="chat-empty">
+            <span className="chat-empty-emoji">🦉</span>
+            <span>你好！我是你的学习伙伴，想学什么都可以告诉我 😊</span>
           </div>
         )}
         {messages.map((m) => {
@@ -1111,8 +1112,8 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         })}
       </div>
 
-      {voiceError && <div style={{ padding: "0 12px 4px", color: "#e53e3e", fontSize: 12 }}>{voiceError}</div>}
-      {fileError && <div style={{ padding: "0 12px 4px", color: "#e53e3e", fontSize: 12 }}>{fileError}</div>}
+      {voiceError && <div style={{ padding: "0 12px 4px", color: "#ff4b4b", fontSize: 12 }}>{voiceError}</div>}
+      {fileError && <div style={{ padding: "0 12px 4px", color: "#ff4b4b", fontSize: 12 }}>{fileError}</div>}
       {notice && <div className="chat-notice">{notice}</div>}
 
       {pendingAudios.length > 0 && (
@@ -1189,7 +1190,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
                     {st?.busy ? "转写中…" : "转写"}
                   </button>
                   {st?.error && (
-                    <span style={{ color: "#e74c3c", fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={st.error}>
+                    <span style={{ color: "#ff4b4b", fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={st.error}>
                       {st.error}
                     </span>
                   )}
@@ -1270,6 +1271,7 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
             }
           }}
           placeholder={inputPlaceholder}
+          title="以 / 开头可触发命令，如 /help"
           rows={1}
           style={{ minHeight: 44 }}
         />

@@ -91,16 +91,16 @@ export default function SessionReview({ childId }: Props) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, color: "#666" }}>选择日期：</span>
+        <span style={{ fontSize: 13, color: "#777777" }}>选择日期：</span>
         {loadingDates ? (
-          <span style={{ fontSize: 12, color: "#999" }}>加载中…</span>
+          <span style={{ fontSize: 12, color: "#afafaf" }}>加载中…</span>
         ) : dates.length === 0 ? (
-          <span style={{ fontSize: 12, color: "#999" }}>（还没有同步上云的对话记录）</span>
+          <span style={{ fontSize: 12, color: "#afafaf" }}>（还没有同步上云的对话记录）</span>
         ) : (
           <select
             value={selected}
             onChange={(e) => setSelected(e.target.value)}
-            style={{ padding: "6px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #ddd" }}
+            style={{ padding: "6px 10px", fontSize: 13, borderRadius: 6, border: "1px solid #e5e5e5" }}
           >
             {dates.map((d) => (
               <option key={d.date} value={d.date}>
@@ -114,21 +114,21 @@ export default function SessionReview({ childId }: Props) {
           title="刷新"
           style={{
             display: "inline-flex", alignItems: "center", gap: 4, padding: "6px 10px",
-            borderRadius: 6, border: "1px solid #ddd", background: "#fff", fontSize: 12, cursor: "pointer",
+            borderRadius: 6, border: "1px solid #e5e5e5", background: "#fff", fontSize: 12, cursor: "pointer",
           }}
         >
           <RefreshCw size={13} /> 刷新
         </button>
       </div>
 
-      {error && <div style={{ color: "#b33", fontSize: 12, marginBottom: 10 }}>{error}</div>}
+      {error && <div style={{ color: "#ea2b2b", fontSize: 12, marginBottom: 10 }}>{error}</div>}
 
       {loadingMsgs ? (
-        <div className="placeholder" style={{ padding: 24, textAlign: "center", color: "#999", fontSize: 13 }}>
+        <div className="placeholder" style={{ padding: 24, textAlign: "center", color: "#afafaf", fontSize: 13 }}>
           ⏳ 加载对话…
         </div>
       ) : messages.length === 0 ? (
-        <div className="placeholder" style={{ padding: 24, textAlign: "center", color: "#999", fontSize: 13 }}>
+        <div className="placeholder" style={{ padding: 24, textAlign: "center", color: "#afafaf", fontSize: 13 }}>
           该日期暂无对话内容
         </div>
       ) : (
@@ -142,8 +142,8 @@ export default function SessionReview({ childId }: Props) {
                 style={{
                   alignSelf: isUser ? "flex-end" : "flex-start",
                   maxWidth: "82%",
-                  background: isUser ? "#667eea" : "#f4f4f8",
-                  color: isUser ? "#fff" : "#333",
+                  background: isUser ? "#58cc02" : "#f4f4f8",
+                  color: isUser ? "#fff" : "#4b4b4b",
                   borderRadius: 12,
                   padding: "8px 12px",
                   fontSize: 13,
@@ -160,7 +160,7 @@ export default function SessionReview({ childId }: Props) {
                     <button
                       onClick={() => toggleTool(key)}
                       style={{
-                        fontSize: 11, color: isUser ? "#e8e8ff" : "#5a67d8",
+                        fontSize: 11, color: isUser ? "#e8e8ff" : "#58a700",
                         background: "transparent", border: "none", cursor: "pointer", padding: 0,
                       }}
                     >
@@ -178,7 +178,7 @@ export default function SessionReview({ childId }: Props) {
                               border: "1px solid #e0e0e8",
                               borderRadius: 6,
                               padding: "4px 8px",
-                              color: isUser ? "#eee" : "#555",
+                              color: isUser ? "#e5e5e5" : "#4b4b4b",
                               wordBreak: "break-all",
                               whiteSpace: "pre-wrap",
                             }}

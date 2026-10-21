@@ -138,7 +138,7 @@ export default function AddChildModal({ avatars, onClose, onAdded }: Props) {
           value={aiPersonality}
           onChange={(e) => setAiPersonality(e.target.value)}
           placeholder="如：温和耐心，喜欢用故事引导"
-          style={{ width: "100%", padding: 10, border: "1px solid #ddd", borderRadius: 8, marginBottom: 12, minHeight: 60 }}
+          style={{ width: "100%", padding: 10, border: "1px solid #e5e5e5", borderRadius: 8, marginBottom: 12, minHeight: 60 }}
         />
 
         <div className="modal-actions">

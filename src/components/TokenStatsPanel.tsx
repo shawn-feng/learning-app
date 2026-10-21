@@ -179,7 +179,7 @@ export default function TokenStatsPanel({ childrenList }: Props) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 8, flexWrap: "wrap" }}>
         <div>
           <h3 style={{ margin: 0 }}>Token 用量</h3>
-          <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
+          <div style={{ fontSize: 12, color: "#777777", marginTop: 4 }}>
             数值为模型返回字段原样汇总；输入/缓存/输出为每轮实际发送的真实计费口径（含系统提示词与工具定义）。
           </div>
         </div>
@@ -187,7 +187,7 @@ export default function TokenStatsPanel({ childrenList }: Props) {
           <select
             value={scopeFilter}
             onChange={(e) => setScopeFilter(e.target.value)}
-            style={{ padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13 }}
+            style={{ padding: "6px 10px", border: "1px solid #e5e5e5", borderRadius: 6, fontSize: 13 }}
           >
             <option value="">全部渠道</option>
             <option value="parent">家长助手</option>
@@ -200,7 +200,7 @@ export default function TokenStatsPanel({ childrenList }: Props) {
             disabled={loading}
             style={{
               padding: "8px 16px",
-              background: "#667eea",
+              background: "#58cc02",
               color: "white",
               border: "none",
               borderRadius: 8,
@@ -215,7 +215,7 @@ export default function TokenStatsPanel({ childrenList }: Props) {
 
       {err && <div style={{ color: "red", marginBottom: 12 }}>{err}</div>}
       {!loading && days.length === 0 && !err && (
-        <div style={{ color: "#999", padding: 24, textAlign: "center" }}>
+        <div style={{ color: "#afafaf", padding: 24, textAlign: "center" }}>
           暂无数据——聊天产生消耗后这里会出现按日期的统计
         </div>
       )}
@@ -228,15 +228,15 @@ export default function TokenStatsPanel({ childrenList }: Props) {
             {/* 日期头（点击展开该天会话明细） */}
             <div
               onClick={() => openSessions(date)}
-              style={{ background: "#f8f9ff", padding: "10px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}
+              style={{ background: "#f7f7f7", padding: "10px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}
             >
               <div style={{ fontWeight: 700, fontSize: 14 }}>
                 {expanded ? "▾" : "▸"} {date}
-                <span style={{ fontSize: 12, color: "#888", marginLeft: 8, fontWeight: 400 }}>
+                <span style={{ fontSize: 12, color: "#777777", marginLeft: 8, fontWeight: 400 }}>
                   共 {t.rounds} 轮 · 点击{expanded ? "收起" : "看会话明细"}
                 </span>
               </div>
-              <div style={{ fontSize: 13, color: "#555", fontVariantNumeric: "tabular-nums" }}>
+              <div style={{ fontSize: 13, color: "#4b4b4b", fontVariantNumeric: "tabular-nums" }}>
                 输入 {formatNum(t.input)} · 缓存读 {formatNum(t.cache_read)} · 输出 {formatNum(t.output)} · 合计{" "}
                 <b>{formatNum(t.total_tokens)}</b> tok · {formatCost(t.cost)}
               </div>
@@ -244,7 +244,7 @@ export default function TokenStatsPanel({ childrenList }: Props) {
             {/* 渠道行 */}
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
-                <tr style={{ color: "#888", background: "#fcfcfe" }}>
+                <tr style={{ color: "#777777", background: "#fcfcfe" }}>
                   <th style={{ ...thL, paddingLeft: 14 }}>渠道</th>
                   <th style={th}>轮次</th>
                   <th style={th}>输入</th>
@@ -264,7 +264,7 @@ export default function TokenStatsPanel({ childrenList }: Props) {
                     <td style={td}>
                       {formatNum(r.output)}
                       {r.reasoning > 0 && (
-                        <span style={{ fontSize: 11, color: "#999" }}>（含思考 {formatNum(r.reasoning)}）</span>
+                        <span style={{ fontSize: 11, color: "#afafaf" }}>（含思考 {formatNum(r.reasoning)}）</span>
                       )}
                     </td>
                     <td style={{ ...td, fontWeight: 600 }}>{formatNum(r.total_tokens)}</td>
@@ -277,13 +277,13 @@ export default function TokenStatsPanel({ childrenList }: Props) {
             {expanded && (
               <div style={{ borderTop: "1px solid #e8eaf6", background: "#fffdf5", padding: "8px 10px" }}>
                 {sessionsLoading ? (
-                  <div style={{ color: "#888", padding: 8, fontSize: 13 }}>加载会话明细...</div>
+                  <div style={{ color: "#777777", padding: 8, fontSize: 13 }}>加载会话明细...</div>
                 ) : sessions.length === 0 ? (
-                  <div style={{ color: "#999", padding: 8, fontSize: 13 }}>该天无会话明细</div>
+                  <div style={{ color: "#afafaf", padding: 8, fontSize: 13 }}>该天无会话明细</div>
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                     <thead>
-                      <tr style={{ color: "#888" }}>
+                      <tr style={{ color: "#777777" }}>
                         <th style={{ ...thL }}>会话</th>
                         <th style={thL}>模型</th>
                         <th style={thL}>时段</th>
@@ -303,7 +303,7 @@ export default function TokenStatsPanel({ childrenList }: Props) {
                             <span title={s.session_file} style={{ fontFamily: "monospace" }}>
                               {sessionShortId(s.session_file)}
                             </span>
-                            <span style={{ fontSize: 11, color: "#888", marginLeft: 6 }}>{scopeLabel(s)}</span>
+                            <span style={{ fontSize: 11, color: "#777777", marginLeft: 6 }}>{scopeLabel(s)}</span>
                           </td>
                           <td style={{ ...tdL, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.models}>
                             {s.models || "-"}

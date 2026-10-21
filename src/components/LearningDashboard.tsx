@@ -32,7 +32,7 @@ const MASTERY_LEVEL_COLOR: Record<string, string> = {
   not_started: "#a0aec0",
   learning: "#3182ce",
   needs_review: "#d69e2e",
-  mastered: "#38a169",
+  mastered: "#58a700",
 };
 
 /** 课程列表排序按钮样式。 */
@@ -40,9 +40,9 @@ function sortBtn(active: boolean): CSSProperties {
   return {
     padding: "3px 10px",
     borderRadius: 6,
-    border: active ? "1.5px solid #667eea" : "1px solid #ddd",
-    background: active ? "#f0f4ff" : "#fff",
-    color: active ? "#3b4cca" : "#6b7686",
+    border: active ? "1.5px solid #58cc02" : "1px solid #e5e5e5",
+    background: active ? "#e9f9dc" : "#fff",
+    color: active ? "#1cb0f6" : "#777777",
     fontSize: 12,
     cursor: "pointer",
   };
@@ -293,7 +293,7 @@ export default function LearningDashboard({ childId, matFontSize }: Props) {
         </div>
 
         {/* 排序：按考核正确率 */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontSize: 12, color: "#6b7686", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontSize: 12, color: "#777777", flexWrap: "wrap" }}>
           <span>排序：</span>
           <button
             onClick={() => setSortBy(sortBy === "rateAsc" ? null : "rateAsc")}
@@ -314,7 +314,7 @@ export default function LearningDashboard({ childId, matFontSize }: Props) {
               恢复原序
             </button>
           )}
-          <span style={{ color: "#bbb" }}>（无考核数据的课程排在最后）</span>
+          <span style={{ color: "#afafaf" }}>（无考核数据的课程排在最后）</span>
         </div>
 
         <div className="lesson-list">
@@ -332,7 +332,7 @@ export default function LearningDashboard({ childId, matFontSize }: Props) {
                         <span
                           className="lesson-mastery"
                           title={courseStatusMap[c.title]?.masteryDesc || ""}
-                          style={{ color: MASTERY_LEVEL_COLOR[ml] ?? "#666", fontWeight: 600 }}
+                          style={{ color: MASTERY_LEVEL_COLOR[ml] ?? "#777777", fontWeight: 600 }}
                         >
                           {MASTERY_LEVEL_CN[ml] ?? ml}
                         </span>

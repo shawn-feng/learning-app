@@ -86,7 +86,7 @@ export default function TaskGate({ email, meUrl, expired = false, onUnlocked, on
             : "当前账号还没有可用权益，完成抖音互动任务后即可解锁学习伙伴"}
         </p>
 
-        <button onClick={openTaskCenter} style={{ background: "#161823", color: "#fff" }}>
+        <button className="douyin-btn" onClick={openTaskCenter} style={{ background: "#161823", color: "#fff" }}>
           {opened ? "再次打开任务中心" : "去完成任务"}
         </button>
 

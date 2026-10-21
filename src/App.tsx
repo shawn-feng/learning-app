@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import "./styles.css";
+import "./duolingo.css";
 import TitleBar from "./components/TitleBar";
 import ParentLogin from "./pages/ParentLogin";
 import TaskGate from "./pages/TaskGate";

@@ -92,14 +92,14 @@ export default function MaterialManagerModal({ topicDir, topicName, onClose }: {
             <div style={{ ...rowStyle, ...pad, display: "flex", alignItems: "center", background: sel ? "#eef3ff" : "transparent", borderRadius: 6 }}>
               <button
                 onClick={() => toggle(n.relPath)}
-                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 11, color: "#888", padding: "2px 4px", flexShrink: 0, display: "flex", alignItems: "center" }}
+                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 11, color: "#777777", padding: "2px 4px", flexShrink: 0, display: "flex", alignItems: "center" }}
                 title={open ? "折叠" : "展开"}
               >
                 {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               </button>
               <button
                 onClick={() => setTargetDir(sel ? null : n.relPath)}
-                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, color: sel ? "#667eea" : "#555", padding: "4px 2px", textAlign: "left", flex: 1, display: "flex", alignItems: "center" }}
+                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, color: sel ? "#58cc02" : "#4b4b4b", padding: "4px 2px", textAlign: "left", flex: 1, display: "flex", alignItems: "center" }}
                 title={`上传到 ${n.relPath}/`}
               >
                 <Folder size={14} style={{ marginRight: 4, flexShrink: 0 }} />
@@ -117,12 +117,12 @@ export default function MaterialManagerModal({ topicDir, topicName, onClose }: {
             <span style={{ marginRight: 4 }}>{extIcon(n.ext)}</span>
             {n.name}
             {n.ext && (
-              <span style={{ marginLeft: 6, fontSize: 11, color: "#fff", background: "#667eea", borderRadius: 4, padding: "1px 6px" }}>
+              <span style={{ marginLeft: 6, fontSize: 11, color: "#fff", background: "#58cc02", borderRadius: 4, padding: "1px 6px" }}>
                 {n.ext.slice(1).toUpperCase()}
               </span>
             )}
           </span>
-          <IconButton icon={Trash2} title="删除" danger onClick={() => onDelete(n)} style={{ ...smallBtn, background: "#fff0f0", color: "#e53e3e", borderColor: "#f3c0c0", flexShrink: 0 }} />
+          <IconButton icon={Trash2} title="删除" danger onClick={() => onDelete(n)} style={{ ...smallBtn, background: "#fff0f0", color: "#ff4b4b", borderColor: "#f3c0c0", flexShrink: 0 }} />
         </div>
       );
     });
@@ -134,24 +134,24 @@ export default function MaterialManagerModal({ topicDir, topicName, onClose }: {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
         <h2 style={{ fontSize: 16, marginBottom: 6 }}>🗂 学习资料管理 · {topicName}</h2>
-        <p style={{ fontSize: 12, color: "#888", marginTop: 0, marginBottom: 8 }}>
+        <p style={{ fontSize: 12, color: "#777777", marginTop: 0, marginBottom: 8 }}>
           主题目录：data/parents/default/materials/{topicDir}/（含全部子目录，共 {totalFiles} 个文件）
         </p>
         <p style={{ fontSize: 12, marginTop: 0, marginBottom: 12, lineHeight: 1.6 }}>
           上传到：{targetDir ? (
             <>
-              <b style={{ color: "#667eea" }}>materials/{topicDir}/{targetDir}/</b>
+              <b style={{ color: "#58a700" }}>materials/{topicDir}/{targetDir}/</b>
               <IconButton icon={ArrowLeft} title="返回根目录" onClick={() => setTargetDir(null)} style={{ ...smallBtn, marginLeft: 8, padding: "2px 8px", fontSize: 11 }} />
             </>
           ) : (
-            <b style={{ color: "#667eea" }}>主题根目录 materials/{topicDir}/</b>
+            <b style={{ color: "#58a700" }}>主题根目录 materials/{topicDir}/</b>
           )}
-          <span style={{ color: "#aaa", marginLeft: 6 }}>（点击目录名切换目标；未选中时媒体自动进 media/）</span>
+          <span style={{ color: "#afafaf", marginLeft: 6 }}>（点击目录名切换目标；未选中时媒体自动进 media/）</span>
         </p>
-        {err && <p style={{ color: "#e53e3e", fontSize: 12, marginBottom: 8 }}>{err}</p>}
+        {err && <p style={{ color: "#ff4b4b", fontSize: 12, marginBottom: 8 }}>{err}</p>}
         <div style={{ maxHeight: 340, overflowY: "auto", marginBottom: 8, border: "1px solid #f0f0f0", borderRadius: 8, padding: "4px 8px" }}>
           {tree.length === 0 ? (
-            <p style={{ color: "#888", fontSize: 13, padding: 8 }}>该主题暂无资料，点击下方「上传资料」添加。</p>
+            <p style={{ color: "#777777", fontSize: 13, padding: 8 }}>该主题暂无资料，点击下方「上传资料」添加。</p>
           ) : (
             renderNodes(tree, 0)
           )}
@@ -190,7 +190,7 @@ function extIcon(ext?: string): string {
 const smallBtn: React.CSSProperties = {
   padding: "5px 12px",
   borderRadius: 6,
-  border: "1px solid #ddd",
+  border: "1px solid #e5e5e5",
   background: "#fff",
   fontSize: 12,
   cursor: "pointer",

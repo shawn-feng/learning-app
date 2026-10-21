@@ -15,7 +15,7 @@ export default function PlanCourseList({ courses, emptyHint }: { courses: unknow
     return <p style={{ color: "#b9770a", fontSize: 12, margin: 0 }}>{emptyHint}</p>;
   }
   return (
-    <div style={{ background: "#fff", border: "1px solid #e6eaf0", borderRadius: 8, padding: "6px 10px" }}>
+    <div style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: 8, padding: "6px 10px" }}>
       {list.map((c, i) => (
         <div
           key={`${i}-${c.title}`}

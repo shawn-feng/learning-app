@@ -29,7 +29,7 @@ const KIND_META: Record<string, { label: string; icon: string }> = {
 
 const card: React.CSSProperties = {
   background: "#fff",
-  border: "1px solid #e6eaf0",
+  border: "1px solid #e5e5e5",
   borderRadius: 10,
   padding: "10px 14px",
   marginBottom: 8,
@@ -105,7 +105,7 @@ export default function ChildMistakeBook({ childId }: { childId: string }) {
   const stat: React.CSSProperties = {
     flex: 1,
     background: "#fff",
-    border: "1px solid #e6eaf0",
+    border: "1px solid #e5e5e5",
     borderRadius: 10,
     padding: "8px 12px",
     textAlign: "center",
@@ -114,41 +114,41 @@ export default function ChildMistakeBook({ childId }: { childId: string }) {
   return (
     <div>
       <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>错题本</div>
-      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#888" }}>
+      <p style={{ margin: "0 0 12px", fontSize: 12, color: "#777777" }}>
         孩子学习中的漏洞档案：对话里说的错题、查过的生字词、考核错题会自动记到这里，AI 老师会在教学中带他复习。
         「已掌握」由孩子自己验证关闭，家长只能把记错/重复的条目标记忽略。
       </p>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <div style={stat}>
-          <div style={{ fontSize: 20, fontWeight: 700, color: "#b33" }}>{open.length}</div>
-          <div style={{ fontSize: 11, color: "#8a94a6" }}>待掌握</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#ea2b2b" }}>{open.length}</div>
+          <div style={{ fontSize: 11, color: "#777777" }}>待掌握</div>
         </div>
         <div style={stat}>
           <div style={{ fontSize: 20, fontWeight: 700, color: "#c07f00" }}>{newThisWeek}</div>
-          <div style={{ fontSize: 11, color: "#8a94a6" }}>本周新增</div>
+          <div style={{ fontSize: 11, color: "#777777" }}>本周新增</div>
         </div>
         <div style={stat}>
-          <div style={{ fontSize: 20, fontWeight: 700, color: "#1d7a3d" }}>{mastered}</div>
-          <div style={{ fontSize: 11, color: "#8a94a6" }}>已掌握</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#58a700" }}>{mastered}</div>
+          <div style={{ fontSize: 11, color: "#777777" }}>已掌握</div>
         </div>
       </div>
 
       {notice && (
-        <div style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: "#eefaf0", color: "#1d7a3d", fontSize: 13 }}>
+        <div style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: "#eefaf0", color: "#58a700", fontSize: 13 }}>
           {notice}
         </div>
       )}
       {error && (
-        <div style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: "#fdf0f0", color: "#b33", fontSize: 13 }}>
+        <div style={{ marginBottom: 10, padding: "6px 10px", borderRadius: 8, background: "#fdf0f0", color: "#ea2b2b", fontSize: 13 }}>
           {error}
         </div>
       )}
 
       {loading ? (
-        <p style={{ textAlign: "center", color: "#8a94a6", padding: "20px 0" }}>读取中…</p>
+        <p style={{ textAlign: "center", color: "#777777", padding: "20px 0" }}>读取中…</p>
       ) : !items.length ? (
-        <p style={{ textAlign: "center", color: "#8a94a6", padding: "24px 0" }}>
+        <p style={{ textAlign: "center", color: "#777777", padding: "24px 0" }}>
           还没有记录。孩子学习中有做错的题、不认识的字时，AI 老师会帮他记到这里。
         </p>
       ) : (
@@ -168,8 +168,8 @@ export default function ChildMistakeBook({ childId }: { childId: string }) {
                           width: 32,
                           height: 32,
                           borderRadius: 10,
-                          background: "#eef2ff",
-                          color: "#3b4cca",
+                          background: "#f7f7f7",
+                          color: "#1899d6",
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "center",
@@ -183,12 +183,12 @@ export default function ChildMistakeBook({ childId }: { childId: string }) {
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 14, fontWeight: 700 }}>{m.question_stem?.trim() || m.content}</div>
                         {m.question_stem?.trim() && m.question_stem.trim() !== m.content && (
-                          <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 2 }}>{m.content}</div>
+                          <div style={{ fontSize: 11, color: "#777777", marginTop: 2 }}>{m.content}</div>
                         )}
                         {m.detail && (
                           <div style={{ fontSize: 12, color: "#5a6478", marginTop: 3, lineHeight: 1.5 }}>{m.detail}</div>
                         )}
-                        <div style={{ fontSize: 11, color: "#8a94a6", marginTop: 4, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                        <div style={{ fontSize: 11, color: "#777777", marginTop: 4, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                           <span>
                             {KIND_META[m.kind]?.label ?? m.kind}
                             {m.count > 1 ? ` · 出现 ${m.count} 次` : ""} · 首记 {fmtDay(m.first_seen)} · 最近 {fmtDay(m.last_seen)}
@@ -214,14 +214,14 @@ export default function ChildMistakeBook({ childId }: { childId: string }) {
             ) : null
           )}
           {!open.length && (
-            <p style={{ textAlign: "center", color: "#1d7a3d", padding: "12px 0", fontSize: 13 }}>
+            <p style={{ textAlign: "center", color: "#58a700", padding: "12px 0", fontSize: 13 }}>
               🎉 当前没有待掌握的条目
             </p>
           )}
           {closed.length > 0 && (
             <>
               <h4
-                style={{ margin: "14px 0 8px", fontSize: 13, color: "#8a94a6", cursor: "pointer" }}
+                style={{ margin: "14px 0 8px", fontSize: 13, color: "#777777", cursor: "pointer" }}
                 onClick={() => setShowClosed((v) => !v)}
               >
                 已关闭（{closed.length}）{showClosed ? "▲" : "▼"}
@@ -230,11 +230,11 @@ export default function ChildMistakeBook({ childId }: { childId: string }) {
                 closed.map((m) => (
                   <div key={m.id} style={{ ...card, opacity: 0.7, display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>{m.content}</span>
-                    <span style={{ fontSize: 11, color: "#8a94a6" }}>
+                    <span style={{ fontSize: 11, color: "#777777" }}>
                       {KIND_META[m.kind]?.label ?? m.kind} · {m.status === "mastered" ? "已掌握" : "已忽略"} · 最近 {fmtDay(m.last_seen)}
                     </span>
                     <button
-                      style={{ ...btn, marginLeft: "auto", flexShrink: 0, background: "#eefaf0", color: "#1d7a3d" }}
+                      style={{ ...btn, marginLeft: "auto", flexShrink: 0, background: "#eefaf0", color: "#58a700" }}
                       disabled={busy === m.id}
                       onClick={() => act(m.id, "reopen")}
                     >

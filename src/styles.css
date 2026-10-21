@@ -6,8 +6,8 @@
 
 body {
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-  background: #f0f4ff;
-  color: #333;
+  background: #e9f9dc;
+  color: #4b4b4b;
   height: 100vh;
   overflow: hidden;
 }
@@ -44,7 +44,7 @@ input, textarea {
   min-height: 36px;
   display: flex;
   align-items: stretch;
-  background: #f5f6fa;
+  background: #f7f7f7;
   border-bottom: 1px solid #e2e4ec;
   user-select: none;
   -webkit-app-region: drag;
@@ -66,7 +66,7 @@ input, textarea {
   padding: 0 12px;
   border: none;
   background: transparent;
-  color: #444;
+  color: #4b4b4b;
   font-size: 13px;
   cursor: pointer;
   -webkit-app-region: no-drag;
@@ -74,7 +74,7 @@ input, textarea {
 
 .tb-menu-btn:hover,
 .tb-menu-btn.open {
-  background: #e8eaf2;
+  background: #ededed;
 }
 
 .tb-menu-dropdown {
@@ -97,7 +97,7 @@ input, textarea {
   padding: 8px 12px;
   border: none;
   background: transparent;
-  color: #333;
+  color: #4b4b4b;
   font-size: 13px;
   text-align: left;
   border-radius: 4px;
@@ -105,14 +105,14 @@ input, textarea {
 }
 
 .tb-menu-item:hover {
-  background: #eef1ff;
-  color: #667eea;
+  background: #f7f7f7;
+  color: #58cc02;
 }
 
 .tb-menu-sep {
   height: 1px;
   margin: 4px 8px;
-  background: #eee;
+  background: #e5e5e5;
 }
 
 .title-bar-title {
@@ -121,7 +121,7 @@ input, textarea {
   align-items: center;
   justify-content: center;
   font-size: 13px;
-  color: #555;
+  color: #4b4b4b;
   -webkit-app-region: drag;
 }
 
@@ -135,7 +135,7 @@ input, textarea {
   width: 46px;
   border: none;
   background: transparent;
-  color: #555;
+  color: #4b4b4b;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -144,7 +144,7 @@ input, textarea {
 }
 
 .tb-ctrl:hover {
-  background: #e8eaf2;
+  background: #ededed;
 }
 
 .tb-ctrl.tb-close:hover {
@@ -159,7 +159,7 @@ input, textarea {
   align-items: center;
   justify-content: center;
   height: 100%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #58cc02 0%, #46a302 100%);
 }
 
 .login-card {
@@ -172,14 +172,14 @@ input, textarea {
 
 .login-card h1 {
   text-align: center;
-  color: #667eea;
+  color: #58cc02;
   margin-bottom: 8px;
   font-size: 24px;
 }
 
 .login-card .subtitle {
   text-align: center;
-  color: #888;
+  color: #777777;
   margin-bottom: 24px;
   font-size: 14px;
 }
@@ -188,7 +188,7 @@ input, textarea {
   width: 100%;
   padding: 12px;
   margin-bottom: 12px;
-  border: 1px solid #ddd;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   font-size: 14px;
 }
@@ -196,7 +196,7 @@ input, textarea {
 .login-card button {
   width: 100%;
   padding: 12px;
-  background: #667eea;
+  background: #58cc02;
   color: white;
   border: none;
   border-radius: 8px;
@@ -205,19 +205,19 @@ input, textarea {
 }
 
 .login-card button:hover {
-  background: #5a67d8;
+  background: #58a700;
 }
 
 .login-card .switch {
   text-align: center;
   margin-top: 12px;
-  color: #667eea;
+  color: #58cc02;
   cursor: pointer;
   font-size: 13px;
 }
 
 .login-card .error {
-  color: #e53e3e;
+  color: #ff4b4b;
   font-size: 13px;
   margin-bottom: 12px;
   text-align: center;
@@ -236,12 +236,12 @@ input, textarea {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e5e5e5;
 }
 
 .dashboard-header h1 {
   font-size: 20px;
-  color: #667eea;
+  color: #58cc02;
 }
 
 .dashboard-header .actions {
@@ -251,7 +251,7 @@ input, textarea {
 
 .dashboard-header button {
   padding: 8px 16px;
-  background: #667eea;
+  background: #58cc02;
   color: white;
   border: none;
   border-radius: 8px;
@@ -267,7 +267,7 @@ input, textarea {
 .dashboard-sidebar {
   width: 260px;
   background: white;
-  border-right: 1px solid #eee;
+  border-right: 1px solid #e5e5e5;
   padding: 16px;
   /* ISSUE-158 续：flex 列布局——菜单区内部滚动，「返回主页」钉在最下面 */
   display: flex;
@@ -327,7 +327,7 @@ input, textarea {
 
 .dashboard-sidebar .section-title {
   font-size: 12px;
-  color: #999;
+  color: #afafaf;
   margin-bottom: 12px;
   text-transform: uppercase;
 }
@@ -346,8 +346,8 @@ input, textarea {
 .dashboard-chat {
   position: relative;
   width: 360px;
-  background: #fafbfe;
-  border-left: 1px solid #eee;
+  background: #f7f7f7;
+  border-left: 1px solid #e5e5e5;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -376,12 +376,12 @@ input, textarea {
 }
 
 .child-card:hover {
-  background: #f0f4ff;
+  background: #e9f9dc;
 }
 
 .child-card.selected {
-  background: #e8edff;
-  border-color: #667eea;
+  background: #e9f9dc;
+  border-color: #58cc02;
 }
 
 .child-avatar {
@@ -391,7 +391,7 @@ input, textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f0f4ff;
+  background: #e9f9dc;
   border-radius: 50%;
 }
 
@@ -401,7 +401,7 @@ input, textarea {
 
 .child-info .meta {
   font-size: 12px;
-  color: #888;
+  color: #777777;
 }
 
 /* ===== Add child modal ===== */
@@ -426,14 +426,14 @@ input, textarea {
 
 .modal h2 {
   margin-bottom: 20px;
-  color: #333;
+  color: #4b4b4b;
 }
 
 .modal input {
   width: 100%;
   padding: 10px;
   margin-bottom: 12px;
-  border: 1px solid #ddd;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   font-size: 14px;
 }
@@ -450,7 +450,7 @@ input, textarea {
 .modal label {
   display: block;
   font-size: 12px;
-  color: #666;
+  color: #777777;
   margin-bottom: 4px;
 }
 
@@ -470,8 +470,8 @@ input, textarea {
 }
 
 .modal .avatar-option.selected {
-  border-color: #667eea;
-  background: #f0f4ff;
+  border-color: #58cc02;
+  background: #e9f9dc;
 }
 
 .modal .modal-actions {
@@ -489,19 +489,19 @@ input, textarea {
 }
 
 .modal .modal-actions .cancel {
-  background: #eee;
-  color: #333;
+  background: #e5e5e5;
+  color: #4b4b4b;
 }
 
 .modal .modal-actions .confirm {
-  background: #667eea;
+  background: #58cc02;
   color: white;
 }
 
 /* ===== Child select ===== */
 .child-select {
   height: 100%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #58cc02 0%, #46a302 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -557,7 +557,7 @@ input, textarea {
 
 .child-select .avatar-card .name {
   font-weight: 600;
-  color: #333;
+  color: #4b4b4b;
 }
 
 .child-select .password-input {
@@ -574,7 +574,7 @@ input, textarea {
   margin-top: 16px;
   padding: 12px 40px;
   background: white;
-  color: #667eea;
+  color: #58cc02;
   border: none;
   border-radius: 8px;
   font-size: 16px;
@@ -611,7 +611,7 @@ input, textarea {
   background: rgba(255, 255, 255, 0.28);
 }
 .child-select .home-logout-btn:hover {
-  background: rgba(229, 62, 62, 0.55);
+  background: rgba(255, 75, 75, 0.55);
   border-color: rgba(255, 255, 255, 0.55);
 }
 .child-select.home-page {
@@ -620,8 +620,8 @@ input, textarea {
 
 /* ===== 登录页服务端地址配置区（ParentLogin） ===== */
 .login-card .server-config {
-  background: #f8f9ff;
-  border: 1px solid #e3e6ff;
+  background: #f7f7f7;
+  border: 1px solid #d7ffb8;
   border-radius: 10px;
   padding: 12px;
   margin-bottom: 16px;
@@ -630,7 +630,7 @@ input, textarea {
   display: block;
   font-size: 13px;
   font-weight: 600;
-  color: #4a5568;
+  color: #4b4b4b;
   margin-bottom: 8px;
 }
 .login-card .server-row {
@@ -652,19 +652,19 @@ input, textarea {
   font-weight: 600;
   border: none;
   border-radius: 8px;
-  background: #667eea;
+  background: #58cc02;
   color: white;
   cursor: pointer;
 }
 .login-card .server-row button:disabled {
-  background: #ddd;
-  color: #999;
+  background: #e5e5e5;
+  color: #afafaf;
   cursor: default;
 }
 .login-card .server-config .hint {
   margin-top: 8px;
   font-size: 12px;
-  color: #cc7b00;
+  color: #b9770a;
 }
 
 /* ===== Learn page ===== */
@@ -680,7 +680,7 @@ input, textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e5e5e5;
 }
 
 .learn-header .ai-identity {
@@ -699,7 +699,7 @@ input, textarea {
 
 .learn-header .child-name {
   font-size: 12px;
-  color: #888;
+  color: #777777;
 }
 
 .learn-title {
@@ -708,7 +708,7 @@ input, textarea {
   gap: 10px;
   font-size: 16px;
   font-weight: 600;
-  color: #333;
+  color: #4b4b4b;
 }
 
 .learn-title-emoji {
@@ -724,8 +724,8 @@ input, textarea {
 .learn-sidebar {
   width: 220px;
   min-width: 220px;
-  background: #f7f8fc;
-  border-right: 1px solid #eee;
+  background: #f7f7f7;
+  border-right: 1px solid #e5e5e5;
   display: flex;
   flex-direction: column;
   padding: 12px 16px 16px;
@@ -747,7 +747,7 @@ input, textarea {
   gap: 6px;
   width: 100%;
   padding: 4px 0 12px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e5e5e5;
   margin-bottom: 12px;
 }
 
@@ -766,15 +766,15 @@ input, textarea {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: #888;
+  color: #777777;
   font-size: 16px;
   cursor: pointer;
   margin-bottom: 8px;
 }
 
 .sidebar-toggle:hover {
-  background: #e8eaf2;
-  color: #667eea;
+  background: #ededed;
+  color: #58cc02;
 }
 
 .learn-sidebar.collapsed .sidebar-toggle {
@@ -787,7 +787,7 @@ input, textarea {
   align-items: center;
   gap: 6px;
   padding-bottom: 20px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e5e5e5;
   margin-bottom: 16px;
 }
 
@@ -799,19 +799,19 @@ input, textarea {
 .sidebar-name {
   font-size: 18px;
   font-weight: 700;
-  color: #333;
+  color: #4b4b4b;
   margin-top: 4px;
 }
 
 .sidebar-ai {
   font-size: 14px;
-  color: #667eea;
+  color: #58cc02;
   font-weight: 600;
 }
 
 .sidebar-sub {
   font-size: 12px;
-  color: #aaa;
+  color: #afafaf;
 }
 
 .sidebar-menu {
@@ -830,7 +830,7 @@ input, textarea {
   border: none;
   border-radius: 10px;
   background: transparent;
-  color: #444;
+  color: #4b4b4b;
   font-size: 14px;
   cursor: pointer;
   text-align: left;
@@ -838,49 +838,49 @@ input, textarea {
 }
 
 .sidebar-btn:hover {
-  background: #eef1ff;
-  color: #667eea;
+  background: #f7f7f7;
+  color: #58cc02;
 }
 
 .sidebar-btn.danger {
-  color: #e53e3e;
+  color: #ff4b4b;
 }
 
 .sidebar-btn.danger:hover {
   background: #fff0f0;
-  color: #e53e3e;
+  color: #ff4b4b;
 }
 
 .sidebar-footer {
-  border-top: 1px solid #eee;
+  border-top: 1px solid #e5e5e5;
   padding-top: 12px;
 }
 
 .sidebar-model,
 .sidebar-rate {
   padding: 12px 0;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e5e5e5;
   margin-bottom: 12px;
 }
 
 /* ISSUE-023：聊天字号设置区块（与朗读语速同款外观） */
 .sidebar-font {
   padding: 12px 0;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e5e5e5;
   margin-bottom: 12px;
 }
 
 /* ISSUE-019：今日课程区块（实时时钟 + 当天课程时间段） */
 .sidebar-class-times {
   padding: 12px 0;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e5e5e5;
   margin-bottom: 12px;
 }
 
 .sidebar-clock {
   font-size: 22px;
   font-weight: 700;
-  color: #333;
+  color: #4b4b4b;
   margin-bottom: 6px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 1px;
@@ -896,18 +896,18 @@ input, textarea {
 }
 
 .sidebar-class-time {
-  color: #666;
+  color: #777777;
   font-variant-numeric: tabular-nums;
 }
 
 .sidebar-class-label {
-  color: #667eea;
+  color: #58cc02;
   font-weight: 600;
 }
 
 .sidebar-class-empty {
   font-size: 12px;
-  color: #aaa;
+  color: #afafaf;
 }
 
 .rate-grid {
@@ -920,7 +920,7 @@ input, textarea {
 .modal-section-label {
   font-size: 13px;
   font-weight: 600;
-  color: #667eea;
+  color: #58cc02;
   margin: 14px 0 6px;
 }
 
@@ -930,7 +930,7 @@ input, textarea {
 
 .sidebar-section-label {
   font-size: 11px;
-  color: #aaa;
+  color: #afafaf;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 8px;
@@ -954,7 +954,7 @@ input, textarea {
 }
 
 .sidebar-icon-btn:hover {
-  background: #eef1ff;
+  background: #f7f7f7;
 }
 
 .sidebar-btn-icon {
@@ -1006,7 +1006,7 @@ input, textarea {
 .view-switcher-btn .view-switcher-caret {
   margin-left: auto;
   font-size: 10px;
-  color: #aaa;
+  color: #afafaf;
 }
 
 .view-switcher-popover {
@@ -1017,7 +1017,7 @@ input, textarea {
   top: 0;
   width: 216px;
   background: white;
-  border: 1px solid #eee;
+  border: 1px solid #e5e5e5;
   border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   padding: 6px;
@@ -1038,7 +1038,7 @@ input, textarea {
 
 .view-switcher-title {
   font-size: 11px;
-  color: #aaa;
+  color: #afafaf;
   padding: 6px 10px;
   letter-spacing: 0.5px;
 }
@@ -1057,11 +1057,11 @@ input, textarea {
 }
 
 .view-option:hover {
-  background: #f0f2ff;
+  background: #f7f7f7;
 }
 
 .view-option.active {
-  background: #eef1ff;
+  background: #f7f7f7;
 }
 
 .view-option-icon {
@@ -1078,12 +1078,12 @@ input, textarea {
 .view-option-label {
   font-size: 13px;
   font-weight: 600;
-  color: #333;
+  color: #4b4b4b;
 }
 
 .view-option-desc {
   font-size: 11px;
-  color: #999;
+  color: #afafaf;
   line-height: 1.4;
 }
 
@@ -1097,7 +1097,7 @@ input, textarea {
   flex: 1;
   min-width: 0;
   background: white;
-  border-right: 1px solid #eee;
+  border-right: 1px solid #e5e5e5;
   overflow-y: auto;
   padding: 20px;
   display: flex;
@@ -1108,7 +1108,7 @@ input, textarea {
   flex: 1;
   width: 100%;
   min-height: 320px;
-  border: 1px solid #eee;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   background: white;
 }
@@ -1125,12 +1125,12 @@ input, textarea {
   justify-content: center;
   gap: 10px;
   background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #eee;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   z-index: 5;
   pointer-events: none;
   font-size: 13px;
-  color: #7a7a7a;
+  color: #777777;
 }
 .html-frame-error {
   background: rgba(255, 247, 242, 0.95);
@@ -1140,14 +1140,14 @@ input, textarea {
   width: 180px;
   height: 6px;
   border-radius: 999px;
-  background: #ececf3;
+  background: #e5e5e5;
   overflow: hidden;
 }
 .hf-progress-bar {
   height: 100%;
   width: 40%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #6a62c9, #4a41a8);
+  background: linear-gradient(90deg, #58a700, #3f8f00);
   animation: hf-indeterminate 1.1s ease-in-out infinite;
 }
 @keyframes hf-indeterminate {
@@ -1159,7 +1159,7 @@ input, textarea {
 }
 
 .content-panel .placeholder {
-  color: #aaa;
+  color: #afafaf;
   text-align: center;
   margin-top: 60px;
   font-size: 14px;
@@ -1171,19 +1171,19 @@ input, textarea {
   align-items: baseline;
   justify-content: space-between;
   padding-bottom: 12px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e5e5e5;
   margin-bottom: 12px;
 }
 
 .material-list-title {
   font-size: var(--material-font, 16px);
   font-weight: 600;
-  color: #667eea;
+  color: #58cc02;
 }
 
 .material-list-count {
   font-size: var(--material-font, 12px);
-  color: #999;
+  color: #afafaf;
 }
 
 .material-list {
@@ -1199,16 +1199,16 @@ input, textarea {
   width: 100%;
   text-align: left;
   padding: 12px 14px;
-  background: #fafbff;
-  border: 1px solid #eef0f8;
+  background: #fbfbfb;
+  border: 1px solid #e5e5e5;
   border-radius: 10px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
 }
 
 .material-row:hover {
-  background: #eef2ff;
-  border-color: #d5dcff;
+  background: #f7f7f7;
+  border-color: #b8e986;
 }
 
 .material-row:active {
@@ -1230,7 +1230,7 @@ input, textarea {
 
 .material-row-title {
   font-size: var(--material-font, 14px);
-  color: #333;
+  color: #4b4b4b;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1239,12 +1239,12 @@ input, textarea {
 
 .material-row-time {
   font-size: var(--material-font, 12px);
-  color: #aaa;
+  color: #afafaf;
 }
 
 .material-row-arrow {
   font-size: 20px;
-  color: #c0c6e0;
+  color: #c8c8c8;
   flex-shrink: 0;
 }
 
@@ -1256,20 +1256,20 @@ input, textarea {
   padding: 6px 12px;
   margin-bottom: 12px;
   font-size: 13px;
-  color: #667eea;
-  background: #eef2ff;
-  border: 1px solid #d5dcff;
+  color: #58cc02;
+  background: #f7f7f7;
+  border: 1px solid #b8e986;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .material-back:hover {
-  background: #e0e7ff;
+  background: #d7ffb8;
 }
 
 .material-title {
-  color: #667eea;
+  color: #58cc02;
   margin: 0 0 12px;
   font-size: var(--material-font, 18px);
 }
@@ -1279,7 +1279,7 @@ input, textarea {
   flex: 1;
   min-width: 0;
   background: white;
-  border-right: 1px solid #eee;
+  border-right: 1px solid #e5e5e5;
   overflow-y: auto;
   padding: 20px;
   display: flex;
@@ -1295,7 +1295,7 @@ input, textarea {
 
 .dashboard-header h2 {
   font-size: 18px;
-  color: #667eea;
+  color: #58cc02;
   margin: 0;
 }
 
@@ -1309,11 +1309,11 @@ input, textarea {
 }
 
 .dashboard-refresh:hover {
-  background: #f0f2ff;
+  background: #f7f7f7;
 }
 
 .dashboard-overview {
-  background: linear-gradient(135deg, #667eea, #764ba2);
+  background: linear-gradient(135deg, #58cc02, #46a302);
   color: white;
   border-radius: 14px;
   padding: 18px;
@@ -1385,7 +1385,7 @@ input, textarea {
 }
 
 .topic-card {
-  border: 1px solid #eee;
+  border: 1px solid #e5e5e5;
   border-radius: 12px;
   padding: 12px 14px;
   transition: box-shadow 0.2s;
@@ -1396,8 +1396,8 @@ input, textarea {
 }
 
 .topic-card.done {
-  border-color: #d8ecdc;
-  background: #f7fcf8;
+  border-color: #b8e986;
+  background: #f7fdf2;
 }
 
 .topic-card-head {
@@ -1410,7 +1410,7 @@ input, textarea {
 .topic-name {
   font-size: 14px;
   font-weight: 700;
-  color: #333;
+  color: #4b4b4b;
 }
 
 .topic-badges {
@@ -1427,18 +1427,18 @@ input, textarea {
 }
 
 .badge.must {
-  background: #eef1ff;
-  color: #667eea;
+  background: #f7f7f7;
+  color: #58cc02;
 }
 
 .badge.optional {
   background: #f0f0f0;
-  color: #888;
+  color: #777777;
 }
 
 .badge.daily {
-  background: #fff3e0;
-  color: #e8890c;
+  background: #fff4d6;
+  color: #e5a100;
 }
 
 .topic-progress-row {
@@ -1458,34 +1458,34 @@ input, textarea {
 
 .topic-progress-row .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #667eea, #764ba2);
+  background: linear-gradient(90deg, #58cc02, #46a302);
   border-radius: 4px;
   transition: width 0.4s ease;
 }
 
 .topic-progress-num {
   font-size: 12px;
-  color: #666;
+  color: #777777;
   white-space: nowrap;
 }
 
 .topic-meta {
   font-size: 12px;
-  color: #999;
+  color: #afafaf;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
 .topic-next {
-  color: #666;
+  color: #777777;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .topic-updated {
-  color: #bbb;
+  color: #afafaf;
 }
 
 /* ===== 进度看板钻取（主题 → 每课 → 当课汇总） ===== */
@@ -1494,14 +1494,14 @@ input, textarea {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #888;
+  color: #777777;
   flex-wrap: wrap;
 }
 
 .dash-back {
   border: 1px solid #e0e0e0;
-  background: #f7f8fc;
-  color: #667eea;
+  background: #f7f7f7;
+  color: #58cc02;
   border-radius: 8px;
   padding: 4px 10px;
   font-size: 13px;
@@ -1509,16 +1509,16 @@ input, textarea {
 }
 
 .dash-back:hover {
-  background: #eef1ff;
+  background: #f7f7f7;
 }
 
 .dash-crumb-current {
-  color: #333;
+  color: #4b4b4b;
   font-weight: 700;
 }
 
 .dash-crumb-sep {
-  color: #ccc;
+  color: #d0d0d0;
 }
 
 /* 每课列表 */
@@ -1533,7 +1533,7 @@ input, textarea {
   align-items: center;
   gap: 10px;
   text-align: left;
-  border: 1px solid #eee;
+  border: 1px solid #e5e5e5;
   border-radius: 12px;
   padding: 10px 12px;
   background: white;
@@ -1564,7 +1564,7 @@ input, textarea {
 .lesson-title {
   font-size: 14px;
   font-weight: 600;
-  color: #333;
+  color: #4b4b4b;
 }
 
 .lesson-sub {
@@ -1572,44 +1572,44 @@ input, textarea {
   flex-wrap: wrap;
   gap: 6px 10px;
   font-size: 12px;
-  color: #888;
+  color: #777777;
 }
 
 .lesson-mastery {
-  color: #667eea;
+  color: #58cc02;
   font-weight: 600;
 }
 
 .lesson-exam {
-  color: #2f8a52;
+  color: #58a700;
   font-weight: 600;
-  background: #ecf7f0;
+  background: #e9f9dc;
   border-radius: 4px;
   padding: 1px 6px;
 }
 
 .lesson-exam.weak {
-  color: #c0392b;
+  color: #ea2b2b;
   background: #fdeeec;
 }
 
 .lesson-tags {
-  color: #38a169;
+  color: #58a700;
 }
 
 .lesson-meta {
-  color: #aaa;
+  color: #afafaf;
 }
 
 .lesson-arrow {
-  color: #ccc;
+  color: #d0d0d0;
   font-size: 20px;
   flex-shrink: 0;
 }
 
 /* 单课详情 */
 .lesson-detail-card {
-  border: 1px solid #eee;
+  border: 1px solid #e5e5e5;
   border-radius: 14px;
   padding: 16px;
   background: white;
@@ -1621,7 +1621,7 @@ input, textarea {
   gap: 8px;
   font-size: 16px;
   font-weight: 700;
-  color: #333;
+  color: #4b4b4b;
   margin-bottom: 12px;
 }
 
@@ -1647,11 +1647,11 @@ input, textarea {
 .lesson-detail-key {
   width: 88px;
   flex-shrink: 0;
-  color: #888;
+  color: #777777;
 }
 
 .lesson-detail-val {
-  color: #333;
+  color: #4b4b4b;
   flex: 1;
   word-break: break-word;
 }
@@ -1666,50 +1666,50 @@ input, textarea {
 .lesson-search {
   flex: 1;
   padding: 9px 14px;
-  border: 1px solid #e2e2ea;
+  border: 1px solid #e5e5e5;
   border-radius: 10px;
   font-size: 14px;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .lesson-search:focus {
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+  border-color: #58cc02;
+  box-shadow: 0 0 0 3px rgba(88, 204, 2, 0.15);
 }
 .lesson-search-count {
   font-size: 12px;
-  color: #999;
+  color: #afafaf;
   white-space: nowrap;
 }
 .lesson-search-empty {
   padding: 24px;
   text-align: center;
-  color: #aaa;
+  color: #afafaf;
   font-size: 14px;
 }
 
 /* 课程学习资料（总结内容） */
 .lesson-summary {
   margin-top: 18px;
-  border-top: 1px dashed #eee;
+  border-top: 1px dashed #e5e5e5;
   padding-top: 16px;
 }
 .lesson-summary-head {
   font-size: 15px;
   font-weight: 600;
-  color: #4a2c2a;
+  color: #4b4b4b;
   margin-bottom: 12px;
 }
 .lesson-summary-empty {
   padding: 20px;
   text-align: center;
-  color: #aaa;
+  color: #afafaf;
   font-size: 14px;
 }
 .lesson-summary-card {
   background: #fff;
   border: 1px solid #f0e6e2;
-  border-left: 4px solid #8a6fb0;
+  border-left: 4px solid #58cc02;
   border-radius: 12px;
   padding: 12px 16px;
   margin-bottom: 12px;
@@ -1724,7 +1724,7 @@ input, textarea {
   font-size: 12px;
   font-weight: 700;
   color: #fff;
-  background: #8a6fb0;
+  background: #58cc02;
   border-radius: 999px;
   padding: 2px 10px;
   white-space: nowrap;
@@ -1732,12 +1732,12 @@ input, textarea {
 .lesson-summary-title {
   font-size: 14px;
   font-weight: 600;
-  color: #4a2c2a;
+  color: #4b4b4b;
 }
 .lesson-summary-body {
   font-size: 14px;
   line-height: 1.8;
-  color: #333;
+  color: #4b4b4b;
 }
 .lesson-summary-body h1,
 .lesson-summary-body h2,
@@ -1762,7 +1762,7 @@ input, textarea {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #fafbfe;
+  background: #f7f7f7;
   position: relative; /* 拖拽提示层（chat-drag-overlay absolute）的定位基准 */
   position: relative; /* 拖拽提示层（chat-drag-overlay absolute）的定位基准 */
   /* ISSUE-037 续：flex item 默认 min-height:auto 会被内容撑高（消息多时把父容器拉长、
@@ -1777,8 +1777,8 @@ input, textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-left: 1px solid #eee;
-  background: #fafbfe;
+  border-left: 1px solid #e5e5e5;
+  background: #f7f7f7;
   overflow: hidden;
 }
 
@@ -1789,14 +1789,14 @@ input, textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-left: 1px solid #eee;
-  background: #fafbfe;
+  border-left: 1px solid #e5e5e5;
+  background: #f7f7f7;
   cursor: pointer;
-  color: #667eea;
+  color: #58cc02;
 }
 
 .chat-collapsed-bar:hover {
-  background: #f0f4ff;
+  background: #e9f9dc;
 }
 
 /* 拖拽调宽手柄（面板左边缘，加宽便于按住拖动） */
@@ -1814,7 +1814,7 @@ input, textarea {
 }
 
 .chat-resize-handle:hover {
-  background: rgba(102, 126, 234, 0.35);
+  background: rgba(88, 204, 2, 0.35);
 }
 
 /* 折叠按钮（吸附在面板左缘、拖拽手柄内侧，竖排胶囊，不遮挡右上角其它按钮） */
@@ -1832,7 +1832,7 @@ input, textarea {
   border: 1px solid #e0e0e0;
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.94);
-  color: #667eea;
+  color: #58cc02;
   font-size: 14px;
   cursor: pointer;
   line-height: 1;
@@ -1841,28 +1841,28 @@ input, textarea {
 }
 
 .chat-collapse-btn:hover {
-  background: #eef2ff;
+  background: #f7f7f7;
 }
 
 .rate-btn {
   padding: 4px 10px;
   border: 1px solid #e0e0e0;
   border-radius: 8px;
-  background: #f7f8fc;
-  color: #666;
+  background: #f7f7f7;
+  color: #777777;
   font-size: 12px;
   cursor: pointer;
   transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
 
 .rate-btn:hover {
-  border-color: #667eea;
-  color: #667eea;
+  border-color: #58cc02;
+  color: #58cc02;
 }
 
 .rate-btn.active {
-  background: #667eea;
-  border-color: #667eea;
+  background: #58cc02;
+  border-color: #58cc02;
   color: white;
   font-weight: 600;
 }
@@ -1893,7 +1893,7 @@ input, textarea {
 }
 
 .message.user .bubble {
-  background: #667eea;
+  background: #58cc02;
   color: white;
   border-bottom-right-radius: 4px;
 }
@@ -1905,8 +1905,8 @@ input, textarea {
 
 .message.ai .bubble {
   background: white;
-  color: #333;
-  border: 1px solid #eee;
+  color: #4b4b4b;
+  border: 1px solid #e5e5e5;
   border-bottom-left-radius: 4px;
 }
 
@@ -1919,7 +1919,7 @@ input, textarea {
   user-select: none;
 }
 .message.ai .msg-time {
-  color: #999;
+  color: #afafaf;
 }
 .message.user .msg-time {
   color: rgba(255, 255, 255, 0.75);
@@ -1959,7 +1959,7 @@ input, textarea {
   margin: 8px 0 4px;
   line-height: 1.35;
   font-weight: 700;
-  color: #2b2f4a;
+  color: #3c3c3c;
 }
 
 .bubble-md h1 { font-size: 20px; }
@@ -1986,7 +1986,7 @@ input, textarea {
 
 .bubble-md strong {
   font-weight: 700;
-  color: #2b2f4a;
+  color: #3c3c3c;
 }
 
 .bubble-md em {
@@ -1994,14 +1994,14 @@ input, textarea {
 }
 
 .bubble-md a {
-  color: #667eea;
+  color: #58cc02;
   text-decoration: underline;
 }
 
 .bubble-md code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 0.9em;
-  background: #f0f1f7;
+  background: #f0f0f0;
   color: #d6336c;
   padding: 2px 6px;
   border-radius: 4px;
@@ -2010,8 +2010,8 @@ input, textarea {
 .bubble-md pre {
   margin: 8px 0;
   padding: 12px;
-  background: #f6f7fb;
-  border: 1px solid #eceef6;
+  background: #f7f7f7;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -2020,7 +2020,7 @@ input, textarea {
 
 .bubble-md pre code {
   background: none;
-  color: #333;
+  color: #4b4b4b;
   padding: 0;
   font-size: 13px;
 }
@@ -2028,9 +2028,9 @@ input, textarea {
 .bubble-md blockquote {
   margin: 8px 0;
   padding: 6px 12px;
-  border-left: 3px solid #c7cff5;
-  background: #f7f8fd;
-  color: #5a5f7a;
+  border-left: 3px solid #b8e986;
+  background: #f7f7f7;
+  color: #777777;
   border-radius: 0 6px 6px 0;
 }
 
@@ -2047,25 +2047,25 @@ input, textarea {
 
 .bubble-md th,
 .bubble-md td {
-  border: 1px solid #e4e7f0;
+  border: 1px solid #e5e5e5;
   padding: 6px 10px;
   text-align: left;
 }
 
 .bubble-md th {
-  background: #f2f4fb;
+  background: #f7f7f7;
   font-weight: 700;
-  color: #2b2f4a;
+  color: #3c3c3c;
 }
 
 .bubble-md tr:nth-child(even) td {
-  background: #fafbfe;
+  background: #f7f7f7;
 }
 
 /* 分隔线（---）默认 UA margin 为 0.5em，孩子端 30px 大字下会撑出 ~30px 空白；这里收成紧凑分隔线（ISSUE-034 二次修复） */
 .bubble-md hr {
   border: none;
-  border-top: 1px solid #eceef6;
+  border-top: 1px solid #e5e5e5;
   margin: 8px 0;
 }
 
@@ -2075,13 +2075,13 @@ input, textarea {
 }
 
 .bubble-md del {
-  color: #999;
+  color: #afafaf;
 }
 
 /* ===== 工作态气泡（思考过程 + 工具调用）===== */
 .working-bubble {
-  background: #fbfcff;
-  border: 1px solid #e6e9f5;
+  background: #fbfbfb;
+  border: 1px solid #e5e5e5;
   min-width: 220px;
   max-width: 80%;
   display: flex;
@@ -2094,7 +2094,7 @@ input, textarea {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #667eea;
+  color: #58cc02;
   font-size: 13px;
   font-weight: 600;
 }
@@ -2105,7 +2105,7 @@ input, textarea {
   background: rgba(255, 193, 7, 0.14);
   border: 1px solid rgba(255, 193, 7, 0.45);
   border-radius: 8px;
-  color: #8a6100;
+  color: #9a6a00;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -2113,8 +2113,8 @@ input, textarea {
 .working-spinner {
   width: 14px;
   height: 14px;
-  border: 2px solid #d6dcff;
-  border-top-color: #667eea;
+  border: 2px solid #b8e986;
+  border-top-color: #58cc02;
   border-radius: 50%;
   animation: working-spin 0.8s linear infinite;
   flex-shrink: 0;
@@ -2129,7 +2129,7 @@ input, textarea {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #667eea;
+  color: #58cc02;
   font-size: 14px;
   font-weight: 600;
   padding: 8px 12px;
@@ -2153,7 +2153,7 @@ input, textarea {
 }
 
 .page-loading-text {
-  color: #667eea;
+  color: #58cc02;
   font-size: 16px;
   font-weight: 600;
 }
@@ -2180,8 +2180,8 @@ input, textarea {
   line-height: 1.5;
   padding: 6px 8px;
   border-radius: 8px;
-  background: #f4f6fc;
-  border-left: 3px solid #c7cff5;
+  background: #f7f7f7;
+  border-left: 3px solid #b8e986;
 }
 
 .think-item .think-icon {
@@ -2198,11 +2198,11 @@ input, textarea {
 
 .think-item .think-verb {
   font-weight: 600;
-  color: #4a4f6a;
+  color: #4b4b4b;
 }
 
 .think-item .think-text {
-  color: #8a8fb0;
+  color: #777777;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 200px;
@@ -2223,7 +2223,7 @@ input, textarea {
   line-height: 1.5;
   padding: 6px 8px;
   border-radius: 8px;
-  background: #f7f8fd;
+  background: #f7f7f7;
 }
 
 .tool-item .tool-icon {
@@ -2240,18 +2240,18 @@ input, textarea {
 
 .tool-item .tool-verb {
   font-weight: 600;
-  color: #4a4f6a;
+  color: #4b4b4b;
 }
 
 .tool-item .tool-arg {
-  color: #667eea;
+  color: #58cc02;
   font-family: monospace;
   font-size: 12px;
   word-break: break-all;
 }
 
 .tool-item .tool-result {
-  color: #999;
+  color: #afafaf;
   font-size: 12px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -2265,11 +2265,11 @@ input, textarea {
 }
 
 .tool-item.done {
-  background: #f0f9f1;
+  background: #f3fbe9;
 }
 
 .tool-item.error {
-  background: #fdf1f1;
+  background: #fff0f0;
 }
 
 /* 语音识别后、发送前的录音预览条 */
@@ -2278,24 +2278,24 @@ input, textarea {
   align-items: center;
   gap: 8px;
   padding: 8px 20px;
-  background: #f7f9ff;
-  border-top: 1px solid #eee;
+  background: #f7f7f7;
+  border-top: 1px solid #e5e5e5;
   font-size: 13px;
-  color: #667eea;
+  color: #58cc02;
 }
 
 .voice-preview-play {
   padding: 4px 12px;
-  border: 1px solid #667eea;
+  border: 1px solid #58cc02;
   border-radius: 12px;
   background: white;
-  color: #667eea;
+  color: #58cc02;
   font-size: 12px;
   cursor: pointer;
 }
 
 .voice-preview-play:hover {
-  background: #667eea;
+  background: #58cc02;
   color: white;
 }
 
@@ -2305,22 +2305,22 @@ input, textarea {
   height: 22px;
   border: none;
   border-radius: 50%;
-  background: #eee;
-  color: #999;
+  background: #e5e5e5;
+  color: #afafaf;
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
 }
 
 .voice-preview-clear:hover {
-  background: #fde8e8;
-  color: #e53e3e;
+  background: #ffe9e9;
+  color: #ff4b4b;
 }
 
 .chat-input {
   padding: 16px 20px;
   background: white;
-  border-top: 1px solid #eee;
+  border-top: 1px solid #e5e5e5;
   display: flex;
   gap: 12px;
   /* ISSUE-012: textarea 变高时按钮贴底对齐，避免悬空居中 */
@@ -2330,7 +2330,7 @@ input, textarea {
 .chat-input textarea {
   flex: 1;
   padding: 12px;
-  border: 1px solid #ddd;
+  border: 1px solid #e5e5e5;
   border-radius: 12px;
   resize: none;
   font-size: 14px;
@@ -2343,7 +2343,7 @@ input, textarea {
 
 .chat-input button {
   padding: 12px 24px;
-  background: #667eea;
+  background: #58cc02;
   color: white;
   border: none;
   border-radius: 12px;
@@ -2357,8 +2357,8 @@ input, textarea {
   min-width: 44px;
   padding: 0;
   border-radius: 50%;
-  background: #f0f4ff;
-  color: #667eea;
+  background: #e9f9dc;
+  color: #58cc02;
   font-size: 20px;
   font-weight: 400;
   cursor: pointer;
@@ -2369,14 +2369,14 @@ input, textarea {
 }
 
 .chat-input .mic-button.recording {
-  background: #e53e3e;
+  background: #ff4b4b;
   color: white;
   animation: mic-pulse 1s infinite;
 }
 
 .chat-input .mic-button:disabled {
-  background: #eee;
-  color: #bbb;
+  background: #e5e5e5;
+  color: #afafaf;
   cursor: not-allowed;
 }
 
@@ -2387,8 +2387,8 @@ input, textarea {
   min-width: 44px;
   padding: 0;
   border-radius: 12px;
-  background: #f7f9ff;
-  color: #667eea;
+  background: #f7f7f7;
+  color: #58cc02;
   font-size: 18px;
   font-weight: 400;
   cursor: pointer;
@@ -2399,13 +2399,13 @@ input, textarea {
 }
 
 .chat-input .upload-button:hover {
-  background: #667eea;
+  background: #58cc02;
   color: white;
 }
 
 .chat-input .upload-button:disabled {
-  background: #eee;
-  color: #bbb;
+  background: #e5e5e5;
+  color: #afafaf;
   cursor: not-allowed;
 }
 
@@ -2416,7 +2416,7 @@ input, textarea {
   min-width: 44px;
   padding: 0;
   border-radius: 50%;
-  background: #667eea;
+  background: #58cc02;
   color: #fff;
   font-size: 20px;
   border: none;
@@ -2428,21 +2428,21 @@ input, textarea {
 }
 
 .chat-input .send-btn:hover {
-  background: #5a67d8;
+  background: #58a700;
 }
 
 .chat-input .send-btn:disabled {
-  background: #ccc;
+  background: #d0d0d0;
   color: #fff;
   cursor: not-allowed;
 }
 
 /* agent 运行中：发送按钮变为红色停止按钮 */
 .chat-input .send-btn-stop {
-  background: #e53e3e;
+  background: #ff4b4b;
 }
 .chat-input .send-btn-stop:hover {
-  background: #c53030;
+  background: #ea2b2b;
 }
 
 /* 发送前附件预览条（图片缩略 / 文本文件） */
@@ -2451,8 +2451,8 @@ input, textarea {
   flex-wrap: wrap;
   gap: 8px;
   padding: 8px 20px;
-  background: #f7f9ff;
-  border-top: 1px solid #eee;
+  background: #f7f7f7;
+  border-top: 1px solid #e5e5e5;
 }
 
 .attachment-thumb {
@@ -2461,7 +2461,7 @@ input, textarea {
   height: 56px;
   border-radius: 10px;
   overflow: hidden;
-  border: 1px solid #ddd;
+  border: 1px solid #e5e5e5;
   background: white;
 }
 
@@ -2477,11 +2477,11 @@ input, textarea {
   gap: 6px;
   max-width: 220px;
   padding: 6px 10px;
-  border: 1px solid #ddd;
+  border: 1px solid #e5e5e5;
   border-radius: 10px;
   background: white;
   font-size: 12px;
-  color: #555;
+  color: #4b4b4b;
 }
 
 .attachment-file span {
@@ -2498,8 +2498,8 @@ input, textarea {
   height: 18px;
   border: none;
   border-radius: 50%;
-  background: #eee;
-  color: #999;
+  background: #e5e5e5;
+  color: #afafaf;
   font-size: 10px;
   line-height: 1;
   cursor: pointer;
@@ -2514,8 +2514,8 @@ input, textarea {
 }
 
 .attachment-remove:hover {
-  background: #fde8e8;
-  color: #e53e3e;
+  background: #ffe9e9;
+  color: #ff4b4b;
 }
 
 /* 消息气泡内的图片附件 */
@@ -2608,10 +2608,10 @@ input, textarea {
 /* 输入区上方的一次性提示（视觉模型切换等） */
 .chat-notice {
   padding: 6px 20px;
-  background: #f0f4ff;
-  color: #667eea;
+  background: #e9f9dc;
+  color: #58cc02;
   font-size: 12px;
-  border-top: 1px solid #eee;
+  border-top: 1px solid #e5e5e5;
 }
 
 @keyframes mic-pulse {
@@ -2625,8 +2625,8 @@ input, textarea {
   min-width: 28px;
   padding: 0;
   border-radius: 50%;
-  background: #f0f4ff;
-  color: #667eea;
+  background: #e9f9dc;
+  color: #58cc02;
   font-size: 14px;
   border: none;
   cursor: pointer;
@@ -2639,7 +2639,7 @@ input, textarea {
 }
 
 .trace-btn.active {
-  background: #667eea;
+  background: #58cc02;
   color: white;
 }
 
@@ -2659,8 +2659,8 @@ input, textarea {
   min-width: 28px;
   padding: 0;
   border-radius: 50%;
-  background: #f0f4ff;
-  color: #667eea;
+  background: #e9f9dc;
+  color: #58cc02;
   font-size: 14px;
   border: none;
   cursor: pointer;
@@ -2673,7 +2673,7 @@ input, textarea {
 }
 
 .speak-btn.speaking {
-  background: #667eea;
+  background: #58cc02;
   color: white;
 }
 
@@ -2684,7 +2684,7 @@ input, textarea {
 
 .model-selector select {
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   background: white;
   font-size: 13px;
@@ -2724,7 +2724,7 @@ audio.material-media {
 iframe.material-pdf {
   width: 100%;
   height: 70vh;
-  border: 1px solid #e2e6ee;
+  border: 1px solid #e5e5e5;
   background: #fff;
 }
 
@@ -2751,13 +2751,13 @@ iframe.material-pdf {
 .markdown-body h1 {
   font-size: 22px;
   margin: 16px 0 8px;
-  color: #667eea;
+  color: #58cc02;
 }
 
 .markdown-body h2 {
   font-size: 18px;
   margin: 16px 0 8px;
-  color: #555;
+  color: #4b4b4b;
 }
 
 .markdown-body h3 {
@@ -2781,19 +2781,19 @@ iframe.material-pdf {
 }
 
 .markdown-body th, .markdown-body td {
-  border: 1px solid #ddd;
+  border: 1px solid #e5e5e5;
   padding: 8px;
   text-align: left;
 }
 
 .markdown-body th {
-  background: #f0f4ff;
+  background: #e9f9dc;
 }
 
 .markdown-body blockquote {
-  border-left: 4px solid #667eea;
+  border-left: 4px solid #58cc02;
   padding-left: 12px;
-  color: #666;
+  color: #777777;
   margin: 12px 0;
 }
 
@@ -2806,7 +2806,7 @@ iframe.material-pdf {
 
 .markdown-body pre {
   background: #2d3748;
-  color: #e2e8f0;
+  color: #e5e5e5;
   padding: 16px;
   border-radius: 8px;
   overflow-x: auto;
@@ -2829,12 +2829,12 @@ iframe.material-pdf {
 
 .settings-section h3 {
   margin-bottom: 16px;
-  color: #333;
+  color: #4b4b4b;
 }
 
 .settings-section .desc {
   font-size: 13px;
-  color: #888;
+  color: #777777;
   margin-bottom: 16px;
 }
 
@@ -2847,7 +2847,7 @@ iframe.material-pdf {
 
 .provider-chip {
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   font-size: 13px;
   cursor: pointer;
@@ -2855,9 +2855,9 @@ iframe.material-pdf {
 }
 
 .provider-chip.active {
-  background: #667eea;
+  background: #58cc02;
   color: white;
-  border-color: #667eea;
+  border-color: #58cc02;
 }
 
 .model-item {
@@ -2865,7 +2865,7 @@ iframe.material-pdf {
   align-items: center;
   justify-content: space-between;
   padding: 12px;
-  border: 1px solid #eee;
+  border: 1px solid #e5e5e5;
   border-radius: 8px;
   margin-bottom: 8px;
 }
@@ -2876,8 +2876,8 @@ iframe.material-pdf {
 
 .model-item .model-default {
   font-size: 12px;
-  color: #667eea;
-  background: #f0f4ff;
+  color: #58cc02;
+  background: #e9f9dc;
   padding: 4px 8px;
   border-radius: 4px;
 }
@@ -2896,7 +2896,7 @@ iframe.material-pdf {
 
 .progress-bar {
   height: 8px;
-  background: #eee;
+  background: #e5e5e5;
   border-radius: 4px;
   overflow: hidden;
   margin-bottom: 8px;
@@ -2904,23 +2904,23 @@ iframe.material-pdf {
 
 .progress-bar .fill {
   height: 100%;
-  background: linear-gradient(90deg, #667eea, #764ba2);
+  background: linear-gradient(90deg, #58cc02, #46a302);
   border-radius: 4px;
 }
 
 /* ===== Skill import ===== */
 .import-drop {
-  border: 2px dashed #ccc;
+  border: 2px dashed #d0d0d0;
   border-radius: 12px;
   padding: 32px;
   text-align: center;
-  color: #888;
+  color: #777777;
   cursor: pointer;
   transition: border-color 0.2s;
 }
 
 .import-drop:hover {
-  border-color: #667eea;
+  border-color: #58cc02;
 }
 
 /* ===== 历史会话归档浏览（只读） ===== */
@@ -2934,23 +2934,23 @@ iframe.material-pdf {
   padding: 4px 12px;
   border: 1px solid #e0e0e0;
   border-radius: 8px;
-  background: #f7f8fc;
-  color: #555;
+  background: #f7f7f7;
+  color: #4b4b4b;
   font-size: 12px;
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s, color 0.2s;
 }
 
 .history-toggle-btn:hover {
-  border-color: #667eea;
-  color: #667eea;
+  border-color: #58cc02;
+  color: #58cc02;
 }
 
 .history-panel {
   display: flex;
   height: 240px;
   margin: 6px 12px 0;
-  border: 1px solid #eee;
+  border: 1px solid #e5e5e5;
   border-radius: 12px;
   overflow: hidden;
   background: #fff;
@@ -2959,15 +2959,15 @@ iframe.material-pdf {
 .history-list {
   width: 210px;
   flex-shrink: 0;
-  border-right: 1px solid #eee;
+  border-right: 1px solid #e5e5e5;
   overflow-y: auto;
   padding: 8px;
-  background: #fafbfe;
+  background: #f7f7f7;
 }
 
 .history-list-title {
   font-size: 12px;
-  color: #999;
+  color: #afafaf;
   padding: 4px 6px 8px;
 }
 
@@ -2987,22 +2987,22 @@ iframe.material-pdf {
 }
 
 .history-item:hover {
-  background: #f0f2ff;
+  background: #f7f7f7;
 }
 
 .history-item.active {
-  border-color: #667eea;
-  background: #eef0ff;
+  border-color: #58cc02;
+  background: #f7f7f7;
 }
 
 .history-item-date {
   font-size: 13px;
-  color: #333;
+  color: #4b4b4b;
 }
 
 .history-item-count {
   font-size: 11px;
-  color: #999;
+  color: #afafaf;
 }
 
 .history-view {
@@ -3013,21 +3013,21 @@ iframe.material-pdf {
 
 .history-view-title {
   font-size: 12px;
-  color: #999;
+  color: #afafaf;
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px dashed #eee;
+  border-bottom: 1px dashed #e5e5e5;
 }
 
 .history-empty {
-  color: #aaa;
+  color: #afafaf;
   font-size: 13px;
   text-align: center;
   padding: 24px 0;
 }
 
 .history-error {
-  color: #e53e3e;
+  color: #ff4b4b;
   font-size: 13px;
   padding: 8px 0;
 }
@@ -3042,7 +3042,7 @@ iframe.material-pdf {
   gap: 8px;
   border: none;
   background: transparent;
-  color: #555;
+  color: #4b4b4b;
   border-radius: 10px;
   padding: 9px;
   cursor: pointer;
@@ -3051,12 +3051,12 @@ iframe.material-pdf {
 }
 
 .icon-btn:hover {
-  background: #eef1ff;
-  color: #667eea;
+  background: #f7f7f7;
+  color: #58cc02;
 }
 
 .icon-btn:focus-visible {
-  outline: 2px solid #667eea;
+  outline: 2px solid #58cc02;
   outline-offset: 2px;
 }
 
@@ -3070,32 +3070,32 @@ iframe.material-pdf {
 }
 
 .icon-btn.active {
-  background: #667eea;
+  background: #58cc02;
   color: #fff;
 }
 
 .icon-btn.active:hover {
-  background: #5a67d8;
+  background: #58a700;
 }
 
 /* 破坏性操作：hover 红色提示，配合确认弹窗防误触 */
 .icon-btn.danger:hover {
   background: #fff0f0;
-  color: #e53e3e;
+  color: #ff4b4b;
 }
 
 .icon-btn.danger:focus-visible {
-  outline-color: #e53e3e;
+  outline-color: #ff4b4b;
 }
 
 /* 卡片主操作按钮（如「课程详情」）保持紫色填充，区别于普通透明图标按钮 */
 .icon-btn.card-primary {
-  background: #667eea;
+  background: #58cc02;
   color: #fff;
 }
 
 .icon-btn.card-primary:hover {
-  background: #5a67d8;
+  background: #58a700;
   color: #fff;
 }
 
@@ -3120,11 +3120,11 @@ iframe.material-pdf {
   width: 46px;
   height: 100%;
   border-radius: 0;
-  color: #555;
+  color: #4b4b4b;
 }
 
 .icon-btn.window-ctrl:hover {
-  background: #e8eaf2;
+  background: #ededed;
 }
 
 .icon-btn.window-ctrl.tb-close:hover {
@@ -3196,23 +3196,23 @@ iframe.material-pdf {
 .material-collapsed-bar {
   width: 40px;
   min-width: 40px;
-  background: #f7f8fc;
-  border-right: 1px solid #eee;
+  background: #f7f7f7;
+  border-right: 1px solid #e5e5e5;
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 14px;
   cursor: pointer;
-  color: #667eea;
+  color: #58cc02;
   transition: background 0.15s;
 }
 
 .material-collapsed-bar:hover {
-  background: #eef0ff;
+  background: #f7f7f7;
 }
 
 .material-collapse-btn {
-  color: #667eea;
+  color: #58cc02;
 }
 
 /* ============================================================
@@ -3237,8 +3237,8 @@ iframe.material-pdf {
   height: 30px;
   border: none;
   border-radius: 8px;
-  background: #f7f8fc;
-  color: #667eea;
+  background: #f7f7f7;
+  color: #58cc02;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -3248,7 +3248,7 @@ iframe.material-pdf {
 }
 
 .panel-collapse-fab:hover {
-  background: #eef0ff;
+  background: #f7f7f7;
 }
 
 /* ============================================================
@@ -3263,13 +3263,13 @@ iframe.material-pdf {
   height: 33vh;
   min-height: 180px;
   z-index: 1000;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #58cc02 0%, #46a302 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   animation: class-reminder-pop 0.35s ease-out;
-  box-shadow: 0 6px 24px rgba(102, 126, 234, 0.35);
+  box-shadow: 0 6px 24px rgba(88, 204, 2, 0.35);
 }
 
 @keyframes class-reminder-pop {
@@ -3337,7 +3337,7 @@ iframe.material-pdf {
    拖拽上传：拖文件进聊天窗口高亮提示，松开批量上传
    ============================================================ */
 .chat-window.drag-active {
-  outline: 2px dashed #667eea;
+  outline: 2px dashed #58cc02;
   outline-offset: -2px;
 }
 
@@ -3345,7 +3345,7 @@ iframe.material-pdf {
   position: absolute;
   inset: 0;
   z-index: 100;
-  background: rgba(102, 126, 234, 0.08);
+  background: rgba(88, 204, 2, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3353,13 +3353,13 @@ iframe.material-pdf {
 }
 
 .chat-drag-hint {
-  background: #667eea;
+  background: #58cc02;
   color: #fff;
   padding: 18px 28px;
   border-radius: 12px;
   font-size: 16px;
   font-weight: 600;
-  box-shadow: 0 6px 24px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 6px 24px rgba(88, 204, 2, 0.4);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3381,7 +3381,7 @@ iframe.material-pdf {
   height: 36px;
   border: none;
   border-radius: 50%;
-  background: #667eea;
+  background: #58cc02;
   color: #ffffff;
   display: flex;
   align-items: center;
@@ -3391,12 +3391,12 @@ iframe.material-pdf {
   /* 半透明：尽量不挡住底下的字，悬停时恢复不透明便于点击 */
   opacity: 0.55;
   transition: opacity 0.15s ease;
-  box-shadow: 0 4px 14px rgba(80, 90, 180, 0.35);
+  box-shadow: 0 4px 14px rgba(88, 169, 0, 0.35);
   animation: word-lookup-bubble-in 0.16s ease-out;
 }
 
 .word-lookup-bubble:hover {
-  background: #5a6fe0;
+  background: #58a700;
   opacity: 0.92;
 }
 
@@ -3422,9 +3422,9 @@ iframe.material-pdf {
   max-height: min(320px, 45vh);
   overflow-y: auto;
   background: #ffffff;
-  border: 1px solid #e5e7f5;
+  border: 1px solid #e5e5e5;
   border-radius: 12px;
-  box-shadow: 0 8px 28px rgba(80, 90, 180, 0.18);
+  box-shadow: 0 8px 28px rgba(88, 169, 0, 0.18);
   padding: 8px 12px 10px;
   font-size: 14px;
   line-height: 1.5;
@@ -3443,7 +3443,7 @@ iframe.material-pdf {
 .word-lookup-selected {
   font-size: 15px;
   font-weight: 600;
-  color: #333;
+  color: #4b4b4b;
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3458,7 +3458,7 @@ iframe.material-pdf {
 }
 
 .word-lookup-play-all {
-  color: #667eea;
+  color: #58cc02;
 }
 
 .word-lookup-head .icon-btn {
@@ -3482,7 +3482,7 @@ iframe.material-pdf {
 .word-lookup-item-word {
   font-size: var(--material-font, 22px);
   font-weight: 700;
-  color: #667eea;
+  color: #58cc02;
   min-width: 26px;
   text-align: center;
   line-height: 1.2;
@@ -3511,7 +3511,7 @@ iframe.material-pdf {
 
 /* 无拼音（冷僻字）兜底提示 */
 .word-lookup-py-none {
-  color: #b9b9cc;
+  color: #afafaf;
   font-size: 13px;
   font-weight: 400;
 }
@@ -3532,7 +3532,7 @@ iframe.material-pdf {
   gap: 8px;
   padding: 0 20px 6px;
   font-size: 11px;
-  color: #888;
+  color: #777777;
 }
 
 .voice-live-track {
@@ -3547,7 +3547,7 @@ iframe.material-pdf {
   height: 100%;
   width: 2%;
   border-radius: 999px;
-  background: #e74c3c;
+  background: #ff4b4b;
   transition: width 0.06s linear, background 0.15s;
 }
 
@@ -3569,11 +3569,11 @@ iframe.material-pdf {
   margin: 0 0 18px;
   font-size: 14px;
   line-height: 1.65;
-  color: #555;
+  color: #4b4b4b;
 }
 
 .volume-check-intro b {
-  color: #333;
+  color: #4b4b4b;
 }
 
 /* 家长关闭音量校验（0）时的说明 */
@@ -3603,7 +3603,7 @@ iframe.material-pdf {
   height: 100%;
   width: 2%;
   border-radius: 999px;
-  background: #e74c3c;
+  background: #ff4b4b;
   transition: width 0.06s linear, background 0.15s;
 }
 
@@ -3631,7 +3631,7 @@ iframe.material-pdf {
   justify-content: space-between;
   margin-top: 10px;
   font-size: 11px;
-  color: #999;
+  color: #afafaf;
 }
 
 .volume-check-status {
@@ -3639,11 +3639,11 @@ iframe.material-pdf {
   margin: 4px 0 10px;
   font-size: 13px;
   text-align: center;
-  color: #888;
+  color: #777777;
 }
 
 .volume-check-status.recording {
-  color: #e74c3c;
+  color: #ff4b4b;
   font-weight: 600;
 }
 
@@ -3664,24 +3664,24 @@ iframe.material-pdf {
   font-size: 16px;
   font-weight: 700;
   color: #fff;
-  background: #667eea;
+  background: #58cc02;
   cursor: pointer;
 }
 
 .volume-check-btn:hover:not(:disabled) {
-  background: #5a6fd8;
+  background: #58a700;
 }
 
 .volume-check-btn.recording {
-  background: #e74c3c;
+  background: #ff4b4b;
 }
 
 .volume-check-btn.recording:hover {
-  background: #d84232;
+  background: #ea2b2b;
 }
 
 .volume-check-btn:disabled {
-  background: #aab6cc;
+  background: #afafaf;
   cursor: not-allowed;
 }
 
@@ -3689,7 +3689,7 @@ iframe.material-pdf {
   margin-top: 10px;
   font-size: 13px;
   text-align: center;
-  color: #e53e3e;
+  color: #ff4b4b;
 }
 
 .volume-check-verdict {
@@ -3701,27 +3701,27 @@ iframe.material-pdf {
 }
 
 .volume-check-verdict.ok {
-  background: #eafaf0;
-  border: 1px solid #b7ebc9;
-  color: #1e7a45;
+  background: #e9f9dc;
+  border: 1px solid #b8e986;
+  color: #58a700;
 }
 
 .volume-check-verdict.close {
-  background: #fff8ec;
-  border: 1px solid #f0e2c0;
+  background: #fff8e1;
+  border: 1px solid #f0dca0;
   color: #8a5a00;
 }
 
 .volume-check-verdict.low {
-  background: #fdeeee;
-  border: 1px solid #f3c9c9;
-  color: #b03030;
+  background: #ffe9e9;
+  border: 1px solid #ffc9c9;
+  color: #d33f3f;
 }
 
 .volume-check-verdict.neutral {
-  background: #f4f6fc;
-  border: 1px solid #dbe2f0;
-  color: #2a3350;
+  background: #f7f7f7;
+  border: 1px solid #e5e5e5;
+  color: #4b4b4b;
 }
 
 .volume-check-verdict-headline {
@@ -3753,19 +3753,19 @@ iframe.material-pdf {
   justify-content: center;
   gap: 6px;
   padding: 10px;
-  border: 1px solid #dbe2f0;
+  border: 1px solid #e5e5e5;
   border-radius: 10px;
-  background: #f4f6fc;
-  color: #2a3350;
+  background: #f7f7f7;
+  color: #4b4b4b;
   font-size: 13px;
   cursor: pointer;
 }
 
 .volume-check-actions button:hover {
-  background: #e9eefb;
+  background: #e9f9dc;
 }
 
 /* 侧栏「声音检测」入口：与其它图标按钮同形，加一点品牌色让低龄孩子好找 */
 .sidebar-icon-btn-voice {
-  color: #667eea;
+  color: #58cc02;
 }

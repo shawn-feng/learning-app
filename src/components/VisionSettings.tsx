@@ -46,12 +46,12 @@ export default function VisionSettings() {
         视觉模型）。
       </p>
 
-      <div style={{ marginBottom: 12, fontSize: 13, color: "#888" }}>默认视觉模型：</div>
+      <div style={{ marginBottom: 12, fontSize: 13, color: "#777777" }}>默认视觉模型：</div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
         <select
           value={visionModelDraft}
           onChange={(e) => setVisionModelDraft(e.target.value)}
-          style={{ padding: "8px 12px", border: "1px solid #ddd", borderRadius: 8, minWidth: 300 }}
+          style={{ padding: "8px 12px", border: "1px solid #e5e5e5", borderRadius: 8, minWidth: 300 }}
         >
           <option value="">系统默认</option>
           {visionModels.map((m: any) => (
@@ -65,8 +65,8 @@ export default function VisionSettings() {
           disabled={visionModelDraft === visionModel}
           style={{
             padding: "8px 16px",
-            background: visionModelDraft === visionModel ? "#ddd" : "#667eea",
-            color: visionModelDraft === visionModel ? "#666" : "white",
+            background: visionModelDraft === visionModel ? "#e5e5e5" : "#58cc02",
+            color: visionModelDraft === visionModel ? "#777777" : "white",
             border: "none",
             borderRadius: 8,
             fontSize: 13,
@@ -86,8 +86,8 @@ export default function VisionSettings() {
           })}
           style={{
             padding: "6px 12px",
-            background: "#f0f4ff",
-            color: "#667eea",
+            background: "#e9f9dc",
+            color: "#58a700",
             border: "none",
             borderRadius: 8,
             fontSize: 12,
@@ -99,7 +99,7 @@ export default function VisionSettings() {
       </div>
 
       {visionModels.length === 0 ? (
-        <p style={{ color: "#c0392b", fontSize: 13 }}>
+        <p style={{ color: "#ea2b2b", fontSize: 13 }}>
           暂无可用视觉模型：请先在「模型配置」保存千问或小米 MiMo 的 API Key，再回来刷新。
         </p>
       ) : (
@@ -110,11 +110,11 @@ export default function VisionSettings() {
             <div key={modelKey} className="model-item">
               <div>
                 <div className="model-name">{m.name}</div>
-                <div style={{ fontSize: 12, color: "#999" }}>{modelKey}</div>
+                <div style={{ fontSize: 12, color: "#afafaf" }}>{modelKey}</div>
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 {isDefault && (
-                  <span style={{ fontSize: 12, color: "#667eea", background: "#f0f4ff", padding: "4px 8px", borderRadius: 4 }}>
+                  <span style={{ fontSize: 12, color: "#58a700", background: "#e9f9dc", padding: "4px 8px", borderRadius: 4 }}>
                     默认
                   </span>
                 )}
@@ -126,8 +126,8 @@ export default function VisionSettings() {
                   disabled={isDefault}
                   style={{
                     padding: "6px 12px",
-                    background: isDefault ? "#edf2f7" : "#f0f4ff",
-                    color: isDefault ? "#718096" : "#667eea",
+                    background: isDefault ? "#edf2f7" : "#e9f9dc",
+                    color: isDefault ? "#718096" : "#58cc02",
                     border: "none",
                     borderRadius: 8,
                     fontSize: 12,
@@ -143,7 +143,7 @@ export default function VisionSettings() {
       )}
 
       {status && (
-        <p style={{ fontSize: 13, color: /失败/.test(status) ? "#e53e3e" : "#667eea", marginTop: 16 }}>{status}</p>
+        <p style={{ fontSize: 13, color: /失败/.test(status) ? "#ff4b4b" : "#58cc02", marginTop: 16 }}>{status}</p>
       )}
     </div>
   );

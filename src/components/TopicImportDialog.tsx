@@ -105,14 +105,14 @@ export default function TopicImportDialog({ onClose, onDone }: { onClose: () => 
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>导入学习主题包</div>
         {!report && (
-          <p style={{ margin: "0 0 10px", fontSize: 12, color: "#888" }}>
+          <p style={{ margin: "0 0 10px", fontSize: 12, color: "#777777" }}>
             选择 .ltpkg 主题包文件导入（可从另一套学习伙伴「打包导出」获得）。
             {fileRef && <>已选择：{fileRef}</>}
           </p>
         )}
 
         {error && (
-          <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, marginBottom: 8, background: "#fdecec", color: "#b33" }}>
+          <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, marginBottom: 8, background: "#fdecec", color: "#ea2b2b" }}>
             {error}
           </div>
         )}
@@ -125,10 +125,10 @@ export default function TopicImportDialog({ onClose, onDone }: { onClose: () => 
                 <span style={{ color: "#b8860b", fontWeight: 400, fontSize: 12 }}> · 已按新名字/目录导入</span>
               )}
               {report.refreshed && (
-                <span style={{ color: "#2f8a52", fontWeight: 400, fontSize: 12 }}> · 已刷新已有主题（进度不受影响）</span>
+                <span style={{ color: "#58a700", fontWeight: 400, fontSize: 12 }}> · 已刷新已有主题（进度不受影响）</span>
               )}
             </div>
-            <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, color: "#777777", marginBottom: 8 }}>
               {report.courses} 门课程 · {report.knowledge_points} 个知识点 · {report.questions} 道题 · {report.files} 个资料文件
             </div>
             {report.missing_files.length > 0 && (
@@ -140,7 +140,7 @@ export default function TopicImportDialog({ onClose, onDone }: { onClose: () => 
               </div>
             )}
             {report.warnings.length > 0 && (
-              <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, marginBottom: 8, background: "#fdecec", color: "#b33" }}>
+              <div style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, marginBottom: 8, background: "#fdecec", color: "#ea2b2b" }}>
                 {report.warnings.map((w) => (
                   <div key={w}>{w}</div>
                 ))}
@@ -162,29 +162,29 @@ export default function TopicImportDialog({ onClose, onDone }: { onClose: () => 
                 </>
               )}
             </div>
-            <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, color: "#777777", marginBottom: 8 }}>
               包内含 {info.counts.courses} 门课程 · {info.counts.knowledgePoints} 个知识点 · {info.counts.questions} 道题 · {info.counts.files} 个资料文件
             </div>
-            <label style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 4 }}>主题名</label>
+            <label style={{ display: "block", fontSize: 12, color: "#777777", marginBottom: 4 }}>主题名</label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              style={{ width: "100%", padding: "7px 10px", borderRadius: 6, border: "1px solid #ddd", fontSize: 13, boxSizing: "border-box" }}
+              style={{ width: "100%", padding: "7px 10px", borderRadius: 6, border: "1px solid #e5e5e5", fontSize: 13, boxSizing: "border-box" }}
             />
-            <label style={{ display: "block", fontSize: 12, color: "#666", margin: "8px 0 4px" }}>
+            <label style={{ display: "block", fontSize: 12, color: "#777777", margin: "8px 0 4px" }}>
               目录名（资料存放目录；改名后新主题的资料会放到新目录）
             </label>
             <input
               value={key}
               onChange={(e) => setKey(e.target.value)}
-              style={{ width: "100%", padding: "7px 10px", borderRadius: 6, border: "1px solid #ddd", fontSize: 13, boxSizing: "border-box" }}
+              style={{ width: "100%", padding: "7px 10px", borderRadius: 6, border: "1px solid #e5e5e5", fontSize: 13, boxSizing: "border-box" }}
             />
-            <p style={{ margin: "8px 0 0", fontSize: 11, color: "#999" }}>
+            <p style={{ margin: "8px 0 0", fontSize: 11, color: "#afafaf" }}>
               保持名字与目录名不变 = 刷新已有主题；改掉名字并换一个目录名 = 作为新主题导入（孩子的学习进度都不受影响）。
             </p>
           </div>
         ) : (
-          <p style={{ margin: 0, fontSize: 12, color: "#888" }}>
+          <p style={{ margin: 0, fontSize: 12, color: "#777777" }}>
             同名主题会在导入前提示，可以选择刷新已有主题或改名导入为新主题。
           </p>
         )}
@@ -197,7 +197,7 @@ export default function TopicImportDialog({ onClose, onDone }: { onClose: () => 
                 padding: "6px 16px",
                 borderRadius: 6,
                 border: "none",
-                background: "#667eea",
+                background: "#58cc02",
                 color: "#fff",
                 fontSize: 12,
                 cursor: "pointer",
@@ -217,7 +217,7 @@ export default function TopicImportDialog({ onClose, onDone }: { onClose: () => 
                   padding: "6px 16px",
                   borderRadius: 6,
                   border: "none",
-                  background: importing ? "#aab" : "#667eea",
+                  background: importing ? "#aab" : "#58cc02",
                   color: "#fff",
                   fontSize: 12,
                   cursor: importing ? "default" : "pointer",
@@ -238,7 +238,7 @@ export default function TopicImportDialog({ onClose, onDone }: { onClose: () => 
                   padding: "6px 16px",
                   borderRadius: 6,
                   border: "none",
-                  background: phase === "inspecting" ? "#aab" : "#667eea",
+                  background: phase === "inspecting" ? "#aab" : "#58cc02",
                   color: "#fff",
                   fontSize: 12,
                   cursor: phase === "inspecting" ? "default" : "pointer",
