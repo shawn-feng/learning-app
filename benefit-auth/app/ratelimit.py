@@ -7,9 +7,13 @@
 - 账号 / app_id 锁定 → SQLite `login_lockouts`（重启不掉锁）
 - 阈值全部可经 env 覆盖
 
+⚠️ `ip_exceeded()` **只查不计数**——只有当同一个 key 另有一处调用 `hit()`（或 `hit()` 本身）
+在计数时窗口才会满。凡是「每个请求/每次尝试都要计入」的闸门，请直接用 `hit()`
+（`login:` / `verify:` / `chpw:` 即此用法；历史上只查不计导致这两个窗口形同虚设）。
+
 使用方式（登录端点标准三段）：
     ip = ratelimit.client_ip(request)
-    if ratelimit.ip_exceeded(f"login:{ip}", ratelimit.IP_WINDOW_S, ratelimit.IP_LOGIN_MAX):
+    if ratelimit.hit(f"login:{ip}", ratelimit.IP_WINDOW_S, ratelimit.IP_LOGIN_MAX):
         raise HTTPException(429, "请求过于频繁，请稍后再试")
     if ratelimit.fuse_tripped():
         raise HTTPException(429, "系统繁忙，请稍后再试")
@@ -31,6 +35,10 @@ CHALLENGE_DAILY_MAX = int(os.environ.get("RL_CHALLENGE_DAILY_MAX", "20"))  # 每
 CHALLENGE_DAY_S = 86400
 ACCT_FAILS = int(os.environ.get("RL_ACCT_FAILS", "5"))               # 连续失败 N 次
 ACCT_LOCK_S = int(os.environ.get("RL_ACCT_LOCK_S", "900"))           # 锁 15 分钟
+# 改密（旧密码校验）失败限流：与登录同构但独立计数，免得改密手抖把登录一起锁死
+CHPW_HOURLY_MAX = int(os.environ.get("RL_CHPW_HOURLY_MAX", "20"))    # 每 IP 每小时改密尝试
+CHPW_FAILS = int(os.environ.get("RL_CHPW_FAILS", "5"))               # 连续旧密码错误 N 次
+CHPW_LOCK_S = int(os.environ.get("RL_CHPW_LOCK_S", "900"))           # 锁 15 分钟
 FUSE_FAILS = int(os.environ.get("RL_FUSE_FAILS", "30"))              # 全局失败熔断阈值
 FUSE_WINDOW_S = int(os.environ.get("RL_FUSE_WINDOW_S", "60"))
 FUSE_LOCK_S = int(os.environ.get("RL_FUSE_LOCK_S", "600"))           # 熔断 10 分钟
@@ -59,12 +67,15 @@ def _prune(key: str, window_s: int) -> list[float]:
 
 
 def ip_exceeded(key: str, window_s: int, max_n: int) -> bool:
-    """检查（不计数）：滑动窗内是否已达上限。"""
+    """检查（不计数）：滑动窗内是否已达上限。
+
+    注意：本函数**不落计数**，窗口永远不会自己变满。需要「计数 + 判断」时用 `hit()`。
+    """
     return len(_prune(key, window_s)) >= max_n
 
 
 def hit(key: str, window_s: int, max_n: int) -> bool:
-    """计数 + 返回是否超限。"""
+    """计数 + 返回是否超限（一次调用即代表「发生了一次尝试」）。"""
     ts = _prune(key, window_s)
     ts.append(_now())
     return len(ts) > max_n

@@ -16,7 +16,7 @@ from .routers import admin_portal, deprecated, tokenhub_routes
 from .pages import login_page, me_page
 from . import tokenhub
 
-app = FastAPI(title="Benefit Auth Center", version="0.2.1")
+app = FastAPI(title="Benefit Auth Center", version="0.2.2")
 
 # 静态资源（如官方账号抖音二维码 app/static/douyin-account-qr.jpg）
 _STATIC_DIR = Path(__file__).resolve().parent / "static"

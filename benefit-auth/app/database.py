@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS admin_login_challenges (
     id TEXT PRIMARY KEY,                    -- 登录页轮询用（不出现在邮件里）
     approve_token TEXT NOT NULL UNIQUE,     -- 邮件确认链接用（不回传登录页）
     approved INTEGER NOT NULL DEFAULT 0,
+    fails INTEGER NOT NULL DEFAULT 0,       -- 验证码错误次数（落库：重启/多 worker 不丢，错满即删行）
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     expires_at DATETIME NOT NULL
 );
@@ -315,6 +316,11 @@ async def _migrate(db):
     ):
         if col not in cols6:
             await db.execute(ddl)
+
+    # 管理员两步登录：验证码错误次数落库（2026-10-18，原来只在进程内存 dict 里）
+    cols7 = {r["name"] for r in (await db.execute_fetchall("PRAGMA table_info(admin_login_challenges)"))}
+    if cols7 and "fails" not in cols7:
+        await db.execute("ALTER TABLE admin_login_challenges ADD COLUMN fails INTEGER NOT NULL DEFAULT 0")
 
 
 async def get_setting(db, key: str, default: str = "") -> str:

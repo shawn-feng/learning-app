@@ -11,7 +11,8 @@ admin.py 面向脚本/流水线（静态 token）。
 
 二次验证规则（2026-10-09 定版）：**一旦 SMTP 配置好，登录即默认启用邮箱验证码**——
 账密通过后向管理员邮箱发 6 位验证码（5 分钟有效），登录页输入验证码通过才签发会话；
-SMTP 未配置时降级单因素（账密直进 + 后台横幅提醒）。验证码错 5 次作废重来。
+SMTP 未配置时降级单因素（账密直进 + 后台横幅提醒）。验证码错 5 次作废重来
+（失败次数 2026-10-18 起**落库**在 admin_login_challenges.fails，重启/多 worker 都不丢）。
 """
 import io
 import json
@@ -38,7 +39,6 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() != "false"
 CHALLENGE_TTL_S = 300
 CODE_MAX_FAILS = 5
 
-_verify_fails: dict[str, int] = {}
 _alert_mail_last = [0.0]
 
 
@@ -113,9 +113,9 @@ class LoginBody(BaseModel):
 
 @router.post("/api/admin-portal/login")
 async def portal_login(body: LoginBody, request: Request, db=Depends(get_db)):
-    # ---- 防撞库限流（哈希之前，全部命中即拒） ----
+    # ---- 防撞库限流（哈希之前，全部命中即拒；hit = 计数 + 判定） ----
     ip = ratelimit.client_ip(request)
-    if ratelimit.ip_exceeded(f"login:{ip}", ratelimit.IP_WINDOW_S, ratelimit.IP_LOGIN_MAX):
+    if ratelimit.hit(f"login:{ip}", ratelimit.IP_WINDOW_S, ratelimit.IP_LOGIN_MAX):
         raise HTTPException(status_code=429, detail="尝试过于频繁，请 15 分钟后再试")
     if ratelimit.fuse_tripped():
         raise HTTPException(status_code=429, detail="系统繁忙，请稍后再试")
@@ -149,12 +149,11 @@ async def portal_login(body: LoginBody, request: Request, db=Depends(get_db)):
     challenge = secrets.token_urlsafe(24)
     code = "".join(secrets.choice("0123456789") for _ in range(6))
     await db.execute(
-        """INSERT INTO admin_login_challenges (id, approve_token, approved, expires_at)
-           VALUES (?,?,0,datetime('now', '+' || ? || ' seconds'))""",
+        """INSERT INTO admin_login_challenges (id, approve_token, approved, fails, expires_at)
+           VALUES (?,?,0,0,datetime('now', '+' || ? || ' seconds'))""",
         (challenge, code, CHALLENGE_TTL_S),
     )
     await db.commit()
-    _verify_fails.pop(challenge, None)
 
     to_email = await get_setting(db, "admin_email", "79734745@qq.com")
     html = _code_mail_html(code)
@@ -178,9 +177,15 @@ class VerifyBody(BaseModel):
 
 @router.post("/api/admin-portal/verify")
 async def verify_code(body: VerifyBody, request: Request, db=Depends(get_db)):
-    """登录页提交邮箱验证码：通过即签发管理 Cookie（同浏览器，无需跳转）。错 5 次作废挑战。"""
+    """登录页提交邮箱验证码：通过即签发管理 Cookie（同浏览器，无需跳转）。
+
+    失败计数**落库**（`admin_login_challenges.fails`）——重启、多 worker 都不清零；
+    错满 `CODE_MAX_FAILS` 次直接作废该挑战（删行），必须重新走账密登录。
+    另有按 IP 的两道闸门：每小时 `VERIFY_HOURLY_MAX` 次验证尝试（hit 计数）、
+    每日 `CHALLENGE_DAILY_MAX` 次挑战下发（在 login 里计数）。
+    """
     vip = ratelimit.client_ip(request)
-    if ratelimit.ip_exceeded(f"verify:{vip}", 3600, ratelimit.VERIFY_HOURLY_MAX):
+    if ratelimit.hit(f"verify:{vip}", 3600, ratelimit.VERIFY_HOURLY_MAX):
         raise HTTPException(status_code=429, detail="验证尝试过于频繁，请 1 小时后再试")
     rows = await db.execute_fetchall(
         "SELECT * FROM admin_login_challenges WHERE id=? AND approved=0 AND expires_at > datetime('now')",
@@ -189,20 +194,21 @@ async def verify_code(body: VerifyBody, request: Request, db=Depends(get_db)):
     if not rows:
         raise HTTPException(status_code=404, detail="验证会话不存在或已过期，请重新登录")
     challenge = rows[0]["id"]
-    fails = _verify_fails.get(challenge, 0)
-    if not (secrets.compare_digest(body.code.strip(), rows[0]["approve_token"])):
-        fails += 1
+    if not secrets.compare_digest(body.code.strip(), rows[0]["approve_token"]):
+        # 先原子 +1（并发两次错误也不丢计数），再读回判阈值
+        await db.execute("UPDATE admin_login_challenges SET fails = fails + 1 WHERE id=?", (challenge,))
+        await db.commit()
+        fails = int((await db.execute_fetchall(
+            "SELECT fails FROM admin_login_challenges WHERE id=?", (challenge,)))[0]["fails"] or 0)
         if fails >= CODE_MAX_FAILS:
             await db.execute("DELETE FROM admin_login_challenges WHERE id=?", (challenge,))
             await db.commit()
-            _verify_fails.pop(challenge, None)
             raise HTTPException(status_code=400, detail="验证码错误次数过多，请重新登录")
-        _verify_fails[challenge] = fails
+        ratelimit.fail_delay()
         raise HTTPException(status_code=400, detail=f"验证码错误（剩余 {CODE_MAX_FAILS - fails} 次机会）")
     username, _ = await admin_credentials(db)
     await db.execute("DELETE FROM admin_login_challenges WHERE id=?", (challenge,))
     await db.commit()
-    _verify_fails.pop(challenge, None)
     return _issue_admin_cookie(username)
 
 
@@ -219,13 +225,34 @@ class ChangePasswordBody(BaseModel):
 
 
 @router.post("/api/admin-portal/change-password")
-async def change_password(body: ChangePasswordBody, db=Depends(get_db),
+async def change_password(body: ChangePasswordBody, request: Request, db=Depends(get_db),
                           admin: str = Depends(require_admin_cookie)):
+    """改密：旧密码错误同样受「限流 + 锁定 + 落库」保护（2026-10-18 补）。
+
+    - 每 IP 每小时 `CHPW_HOURLY_MAX` 次尝试（内存滑动窗，hit 计数）；
+    - 连续 `CHPW_FAILS` 次旧密码错误 → 锁 `CHPW_LOCK_S`（SQLite `login_lockouts`，重启不掉锁）；
+    - 失败后加统一随机延迟；成功即清零。
+    计数按 `chpw:<管理员账号>` 独立存放，避免改密手抖把登录锁一起占了。
+    """
+    ip = ratelimit.client_ip(request)
+    if ratelimit.hit(f"chpw:{ip}", 3600, ratelimit.CHPW_HOURLY_MAX):
+        raise HTTPException(status_code=429, detail="尝试过于频繁，请 1 小时后再试")
+    subject = f"chpw:{admin}"
+    locked, remain = await ratelimit.acct_status(db, subject, ratelimit.CHPW_FAILS, ratelimit.CHPW_LOCK_S)
+    if locked:
+        raise HTTPException(status_code=423,
+                            detail=f"旧密码错误次数过多，已临时锁定（约 {remain//60+1} 分钟后自动解锁）")
     _, pwd_hash = await admin_credentials(db)
     if not verify_password(body.oldPassword, pwd_hash):
+        # 不记全局熔断：改密需已登录 Cookie，不是匿名撞库面；记了反而给「持 Cookie 攻击者」一个锁死登录的杠杆
+        locked_now, _ = await ratelimit.acct_record_fail(db, subject, ratelimit.CHPW_FAILS, ratelimit.CHPW_LOCK_S)
+        ratelimit.fail_delay()
+        if locked_now:
+            raise HTTPException(status_code=423, detail="旧密码错误次数过多，已临时锁定（约 15 分钟后自动解锁）")
         raise HTTPException(status_code=400, detail="旧密码错误")
     if len(body.newPassword) < 6:
         raise HTTPException(status_code=400, detail="新密码至少 6 位")
+    await ratelimit.acct_reset(db, subject)
     await set_setting(db, "admin_password_hash", hash_password(body.newPassword))
     await db.commit()
     return {"ok": True}

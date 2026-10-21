@@ -250,3 +250,11 @@ TOKENHUB_REGION=ap-guangzhou
 - **公网**：`https://auth.aixuexihao.top/health` → `{"status":"ok","service":"benefit-auth","merged":true}`。
 - **回滚**：`tar xzf /opt/backups/app-before-issue188-20261018-192026.tar.gz -C /opt/benefit-auth && systemctl restart benefit-auth`（无 DB 迁移/无 .env 变更）。
 - **存量影响**：已登录家长要等下一次 `/api/account/login`（账密/扫码）才换到 365 天 token；未重登的旧 72h token 仍会到期 401 一次（配合 learning-server 0.5.39 滑动续签，重登一次即转长效）。
+
+## 管理后台登录加固（v0.2.2，已部署 2026-10-18 21:33）
+- **验证码失败计数落库**：`admin_login_challenges` 新增 `fails` 列（`init_db` 的 `_migrate` 自动 `ALTER TABLE`，存量库无需手工迁移；旧行默认 0）；去掉进程内存 dict `_verify_fails`——重启/换多 worker 都不再清零。规则不变：错 5 次（`CODE_MAX_FAILS`）作废挑战、成功即删行。
+- **改密补失败限流**（`POST /api/admin-portal/change-password`）：新增每 IP 每小时 20 次（`RL_CHPW_HOURLY_MAX`，内存滑动窗）+ 连续 5 次旧密码错误锁 15 分钟（`RL_CHPW_FAILS` / `RL_CHPW_LOCK_S`，落库 `login_lockouts` 的 `chpw:<账号>`，与登录锁 `admin:<账号>` 分开）+ 失败随机延迟；成功即清零。**不记全局熔断**（改密需已登录 Cookie，记了会给持 Cookie 攻击者一个锁死登录的杠杆）。
+- **顺带修掉两个形同虚设的闸门**：`login:{ip}`（10 次/15 分钟）与 `verify:{ip}`（20 次/小时）原先只用 `ip_exceeded()` 查、从没 `hit()` 计数，窗口永远不满；现已改为 `hit()` 计数。
+- **部署**（`tmp/deploy/deploy_benefit_security.py` 三段：preflight / deploy / verify）：部署前逐文件 manifest 比对——仅 4 个文件差异（`routers/admin_portal.py`、`database.py`、`ratelimit.py`、`main.py`），无远端独有改动；打 `app/` 包 530,955 B → OSS `deploy/benefit-auth-security-20261018-213302.tar.gz` + 预签名 URL 900s → 云助手 RunCommand。备份 `/opt/backups/app-before-security-20261018-213302.tar.gz` + `/opt/backups/benefit-db-before-security-20261018-213302.db`（sqlite backup API 热备）。无 .env 变更。
+- **自检**：`version="0.2.2"`、`SERVICE=active`、`HEALTH={"status":"ok",...}`、`PRAGMA table_info` 出现 `fails`；标记 `_verify_fails`=0 / 原子 `fails=fails+1`=1 / `CHPW_HOURLY_MAX`=1+2 / 三处 `hit(f.…)` 各 1；**线上端到端**：临时插入一次性挑战 → 两次错码 `400 剩余 4`、`400 剩余 3` 且 DB `fails` 1→2 → 删行后计数 0（已清理）；改密带坏 Cookie → 401；坏挑战 → 404；重启后新增日志 traceback=0。公网 `https://auth.aixuexihao.top/health` 200、`/admin/login` 200 且含「验证码」。
+- **回滚**：`tar xzf /opt/backups/app-before-security-20261018-213302.tar.gz -C /opt/benefit-auth && systemctl restart benefit-auth`；DB 多出的 `fails` 列旧代码不读、无害（如需连库回退：把 `benefit-db-before-security-20261018-213302.db` 覆盖回 `benefit.db`，会丢部署后新增的挑战/锁定行）。
