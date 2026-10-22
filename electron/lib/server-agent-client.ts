@@ -543,24 +543,51 @@ function historyTimeLabel(ts: unknown): string | undefined {
  * 联调点：退出重进时工具调用记录不恢复为气泡，仅正文/思考恢复。
  * time（2026-09-14 修复）：透传服务端消息时间戳格式化为展示标签——此前所有恢复消息都显示
  * 「进会话时刻」（m.time 缺失 → 渲染层 nowLabel() 兜底），并非真实发生时间。
+ *
+ * 一轮回复的合并（ISSUE-190，2026-10-21 修复）：服务端会话里**一轮 agent 回复 = 多条 assistant 消息**
+ * （思考 + toolCall → toolResult → 思考 + 正文 …）。逐条映射时，只有思考没有正文的那几条
+ * 会渲染成「空消息气泡」，账号退到主页再进来就能看到一串空气泡（用户反馈）。
+ * 实时气泡本来就只有一个：思考挂在最终回复气泡上点 🧠 查看。这里按「两条 user 消息之间 =
+ * 同一轮」聚合：正文照旧一条一个气泡（与实时逐段回复一致），但本轮所有思考合并后只挂在
+ * **最终回复**气泡上，不再单独产出「只有思考」的气泡；整轮没有任何正文（中止/纯工具轮）
+ * 则整轮不产出气泡。
  */
 export function mapHistoryMessages(raw: Array<{ role: string; content: unknown[]; timestamp?: number | string }>): HistoryMessage[] {
   const out: HistoryMessage[] = [];
+  // 本轮（两条 user 消息之间）的 assistant 消息缓冲：正文/思考/时间
+  let turn: Array<{ text: string; thinking: string; time?: string }> = [];
+
+  const flushTurn = () => {
+    if (turn.length === 0) return;
+    // 本轮所有 thinking 块合并，只挂到最终回复气泡（不再单列空气泡）
+    const thinking = turn.map((t) => t.thinking).filter(Boolean).join("\n\n").trim();
+    const replies = turn.filter((t) => t.text);
+    // 整轮没有正文（中止轮/纯工具轮）→ 不产出气泡，避免空白泡泡
+    replies.forEach((r, i) => {
+      const isFinal = i === replies.length - 1;
+      out.push({
+        role: "ai",
+        text: r.text,
+        ...(isFinal && thinking ? { thinking } : {}),
+        ...(r.time ? { time: r.time } : {}),
+      });
+    });
+    turn = [];
+  };
+
   for (const m of raw ?? []) {
     const time = historyTimeLabel(m.timestamp);
     const content = Array.isArray(m.content) ? m.content : [];
     if (m.role === "user") {
+      flushTurn();
       const text = contentText(content);
       if (text) out.push({ role: "user", text, ...(time ? { time } : {}) });
     } else if (m.role === "assistant") {
-      const text = contentText(content);
-      const thinking = contentThinking(content);
-      if (text || thinking) {
-        out.push({ role: "ai", text, thinking: thinking || undefined, ...(time ? { time } : {}) });
-      }
+      turn.push({ text: contentText(content), thinking: contentThinking(content), time });
     }
     // toolResult / 其它角色不恢复为气泡（前端只展示 user/ai）
   }
+  flushTurn();
   return out;
 }
 

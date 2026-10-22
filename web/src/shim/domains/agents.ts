@@ -83,24 +83,50 @@ function historyTimeLabel(ts: unknown): string | undefined {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 把服务端会话原始消息映射成前端气泡恢复用的 HistoryMessage（user/assistant 正文与思考；工具气泡不恢复）。 */
+/**
+ * 把服务端会话原始消息映射成前端气泡恢复用的 HistoryMessage（user/assistant 正文与思考；工具气泡不恢复）。
+ *
+ * 一轮回复的合并（ISSUE-190，2026-10-21，与 electron/lib/server-agent-client.ts 同步）：一轮 agent 回复在会话里
+ * 是多条 assistant 消息（思考 + toolCall → toolResult → 思考 + 正文 …），逐条映射会让「只有思考、
+ * 没有正文」的消息变成空消息气泡，退到主页再进来就能看到一串空气泡。按「两条 user 消息之间 = 同一轮」
+ * 聚合：正文照旧一条一个气泡，本轮所有思考合并后只挂**最终回复**气泡（点 🧠 查看）；整轮没有正文
+ * （中止/纯工具轮）则不产出气泡。
+ */
 function mapHistoryMessages(raw: Array<{ role: string; content: unknown[]; timestamp?: number | string }>): HistoryMessage[] {
   const out: HistoryMessage[] = [];
+  // 本轮（两条 user 消息之间）的 assistant 消息缓冲：正文/思考/时间
+  let turn: Array<{ text: string; thinking: string; time?: string }> = [];
+
+  const flushTurn = () => {
+    if (turn.length === 0) return;
+    const thinking = turn.map((t) => t.thinking).filter(Boolean).join("\n\n").trim();
+    const replies = turn.filter((t) => t.text);
+    // 整轮没有正文（中止轮/纯工具轮）→ 不产出气泡，避免空白泡泡
+    replies.forEach((r, i) => {
+      const isFinal = i === replies.length - 1;
+      out.push({
+        role: "ai",
+        text: r.text,
+        ...(isFinal && thinking ? { thinking } : {}),
+        ...(r.time ? { time: r.time } : {}),
+      });
+    });
+    turn = [];
+  };
+
   for (const m of raw ?? []) {
     const time = historyTimeLabel(m.timestamp);
     const content = Array.isArray(m.content) ? m.content : [];
     if (m.role === "user") {
+      flushTurn();
       const text = contentText(content);
       if (text) out.push({ role: "user", text, ...(time ? { time } : {}) });
     } else if (m.role === "assistant") {
-      const text = contentText(content);
-      const thinking = contentThinking(content);
-      if (text || thinking) {
-        out.push({ role: "ai", text, thinking: thinking || undefined, ...(time ? { time } : {}) });
-      }
+      turn.push({ text: contentText(content), thinking: contentThinking(content), time });
     }
     // toolResult / 其它角色不恢复为气泡（前端只展示 user/ai）
   }
+  flushTurn();
   return out;
 }
 

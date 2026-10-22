@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { translateAgentEvent, parseSseChunk, messageText, bridgeChildAgentEvents, previewArgs, previewToolResult } from "../electron/lib/server-agent-client";
+import { translateAgentEvent, parseSseChunk, messageText, bridgeChildAgentEvents, previewArgs, previewToolResult, mapHistoryMessages } from "../electron/lib/server-agent-client";
 
 // ISSUE-159：openChildSession 依赖 HTTP —— serverFetch 与登录态 mock 掉（本文件其余用例全是纯函数，不受影响）
 vi.mock("../electron/lib/auth-manager", () => ({ getCachedLicense: () => ({ token: "test-token" }) }));
@@ -196,5 +196,66 @@ describe("openChildSession（ISSUE-159：materials 不再被丢弃）", () => {
     expect(r.messages).toEqual([]);
     expect(r.materials).toEqual([]);
     expect(fn.mock.calls[0]![1]).toMatchObject({ method: "POST", body: { session: "main" } });
+  });
+});
+
+// ISSUE-190（2026-10-21 用户反馈）：账号退到主页再进来，agent 一轮回复的思考过程被单列成（空的）消息气泡。
+// 根因：服务端会话里一轮回复是多条 assistant 消息（思考 + toolCall → toolResult → 思考 + 正文），
+// 逐条映射时「只有思考没有正文」的那些就成了空气泡。修复：按轮聚合，思考只挂最终回复气泡。
+describe("mapHistoryMessages（ISSUE-190：历史回填不再单列思考空气泡）", () => {
+  const ts = (min: number) => `2026-10-20T10:${String(min).padStart(2, "0")}:00.000Z`;
+  const user = (text: string, min: number) => ({ role: "user", content: [{ type: "text", text }], timestamp: ts(min) });
+  const assistant = (content: unknown[], min: number) => ({ role: "assistant", content, timestamp: ts(min) });
+  const toolResult = (min: number) => ({ role: "toolResult", content: [{ type: "text", text: "ok" }], timestamp: ts(min) });
+
+  it("只有思考/工具调用的中间消息 → 不再单列气泡，思考并入最终回复气泡", () => {
+    const out = mapHistoryMessages([
+      user("今天的作业", 0),
+      assistant([{ type: "thinking", thinking: "先查计划" }, { type: "toolCall", id: "t1", name: "get_date", arguments: {} }], 1),
+      toolResult(1),
+      assistant([{ type: "thinking", thinking: "再建课" }, { type: "text", text: "建好了" }], 2),
+    ]);
+    expect(out.map((m) => m.role)).toEqual(["user", "ai"]);
+    expect(out[1]!.text).toBe("建好了");
+    expect(out[1]!.thinking).toBe("先查计划\n\n再建课");
+    expect(out[1]!.time).toMatch(/^\d{2}-\d{2} \d{2}:\d{2}$/);
+  });
+
+  it("一轮里有多段正文 → 各段仍各成一个气泡（与实时逐段回复一致），思考只挂最终回复", () => {
+    const out = mapHistoryMessages([
+      user("帮我看看", 0),
+      assistant([{ type: "thinking", thinking: "先回应" }, { type: "text", text: "我先查一下。" }], 1),
+      toolResult(1),
+      assistant([{ type: "thinking", thinking: "查到结果" }, { type: "text", text: "查到了。" }], 2),
+    ]);
+    const ai = out.filter((m) => m.role === "ai");
+    expect(ai.map((m) => m.text)).toEqual(["我先查一下。", "查到了。"]);
+    expect(ai[0]!.thinking).toBeUndefined();
+    expect(ai[1]!.thinking).toBe("先回应\n\n查到结果");
+  });
+
+  it("整轮没有正文（中止轮/纯工具轮）→ 不产出空白 AI 气泡", () => {
+    const out = mapHistoryMessages([
+      user("停一下", 0),
+      assistant([{ type: "thinking", thinking: "查一下" }, { type: "toolCall", id: "t1", name: "get_date", arguments: {} }], 1),
+      toolResult(1),
+    ]);
+    expect(out.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  it("不同 user 轮次的思考不串泡", () => {
+    const out = mapHistoryMessages([
+      user("第一轮", 0),
+      assistant([{ type: "thinking", thinking: "想A" }], 1),
+      assistant([{ type: "text", text: "回复A" }], 2),
+      user("第二轮", 3),
+      assistant([{ type: "thinking", thinking: "想B" }, { type: "text", text: "回复B" }], 4),
+    ]);
+    expect(out.map((m) => [m.role, m.text, m.thinking])).toEqual([
+      ["user", "第一轮", undefined],
+      ["ai", "回复A", "想A"],
+      ["user", "第二轮", undefined],
+      ["ai", "回复B", "想B"],
+    ]);
   });
 });
