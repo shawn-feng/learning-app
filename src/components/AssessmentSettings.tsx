@@ -65,14 +65,27 @@ export default function AssessmentSettings() {
   // 试评结果（"hello"）：用于直观看逐词着色是否正常（不落库）
   const [testSpeech, setTestSpeech] = useState<SpeechAssessment | null>(null);
   // ISSUE-183：考核朗读/背诵规则——录音最低平均音量（0-100 归一分，0=不校验）+ 通过线家长默认值
+  // ISSUE-191：minVolumeNorm 降为「默认线」；每个孩子可单独设置（childNorm），未设置的孩子用默认线
   const [minVolumeNorm, setMinVolumeNorm] = useState(42);
+  // 只存「单独设置的孩子」；null = 明确回到默认线（保存时让服务端删除该孩子覆盖）
+  const [childNorm, setChildNorm] = useState<Record<string, number | null>>({});
+  const [children, setChildren] = useState<Array<{ childId: string; name: string; avatar?: string; age?: number }>>([]);
   const [recitePassDefault, setRecitePassDefault] = useState(90);
   // 声希打分松紧：0 默认（不传）/ 1 严格 / 2 宽松 / 3 非常严格 / 4 非常宽松（腾讯智聆无此参数）
   const [typeThres, setTypeThres] = useState(0);
   const { recording, start, stop } = useAudioRecorder();
 
   useEffect(() => {
-    window.api.assessmentConfigGet().then((r: any) => {
+    let alive = true;
+    (async () => {
+      const [r, cr] = await Promise.all([
+        window.api.assessmentConfigGet().catch(() => null),
+        Promise.resolve((window.api as any).childList?.()).catch(() => null),
+      ]);
+      if (!alive) return;
+      // 孩子列表（ISSUE-191：按孩子展示阈值滑条）
+      const list = Array.isArray(cr?.children) ? cr.children : [];
+      setChildren(list);
       if (r?.success) {
         setEnabled(r.config.enabled);
         setProvider(r.config.provider);
@@ -81,12 +94,24 @@ export default function AssessmentSettings() {
         // 服务端 loadAssessmentConfig 已带默认值兜底；再兜一层防旧服务端不回字段
         const mv = Number(r.config.minVolumeNorm);
         const rp = Number(r.config.recitePassDefault);
-        if (Number.isFinite(mv) && mv >= 0) setMinVolumeNorm(Math.min(100, Math.round(mv)));
+        const globalNorm = Number.isFinite(mv) && mv >= 0 ? Math.min(100, Math.round(mv)) : 42;
+        if (Number.isFinite(mv) && mv >= 0) setMinVolumeNorm(globalNorm);
         if (Number.isFinite(rp) && rp > 0) setRecitePassDefault(Math.min(100, Math.round(rp)));
         const tt = Number(r.config.typeThres);
         if (Number.isInteger(tt) && tt >= 0 && tt <= 4) setTypeThres(tt);
+        // 每个孩子：只收「单独设置」的条目；没有条目的孩子显示默认线并保持继承（不写成显式值）
+        const map = (r.config.minVolumeNormByChild || {}) as Record<string, unknown>;
+        const seeded: Record<string, number> = {};
+        for (const [childId, raw] of Object.entries(map)) {
+          const per = Number(raw);
+          if (Number.isFinite(per) && per >= 0) seeded[childId] = Math.min(100, Math.round(per));
+        }
+        setChildNorm(seeded);
       }
-    });
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const currentProvider = ASSESSMENT_PROVIDERS.find((p) => p.id === provider)!;
@@ -111,6 +136,7 @@ export default function AssessmentSettings() {
       provider: defaultProvider,
       providers,
       minVolumeNorm,
+      minVolumeNormByChild: childNorm,
       recitePassDefault,
       typeThres,
     });
@@ -129,6 +155,7 @@ export default function AssessmentSettings() {
       provider,
       providers: {},
       minVolumeNorm,
+      minVolumeNormByChild: childNorm,
       recitePassDefault,
       typeThres,
     });
@@ -260,17 +287,18 @@ export default function AssessmentSettings() {
         </div>
       ))}
 
-      {/* ISSUE-183/189：录音音量校验（考核 + 语音输入通用，家长可配；随「保存」一起提交） */}
+      {/* ISSUE-183/189/191：录音音量校验（考核 + 孩子端语音输入通用；每个孩子单独可配；随「保存」一起提交） */}
       <div style={{ marginTop: 24, borderTop: "1px solid #e5e5e5", paddingTop: 16 }}>
         <h3 style={{ margin: "0 0 4px", fontSize: 16 }}>录音音量与朗读评分</h3>
         <p className="desc" style={{ marginBottom: 14 }}>
-          录音音量不达标时：考核里的朗读/背诵题算没答、要求重录；聊天语音输入与音频转写不送识别、提示重说——
+          录音音量不达标时：考核里的朗读/背诵题算没答、要求重录；孩子端聊天语音输入与音频转写不送识别、提示重说——
           让孩子大声说，减轻声音小导致的评分/识别误差。评分改用各维度（准确度/流利度/完整度）平均分。
+          家长端聊天不做音量检测。
         </p>
 
         <div style={{ marginBottom: 14 }}>
           <label style={{ display: "block", fontSize: 13, marginBottom: 4, fontWeight: 500 }}>
-            录音最低平均音量：<b>{minVolumeNorm > 0 ? minVolumeNorm : "不校验（关闭）"}</b>
+            默认录音最低平均音量：<b>{minVolumeNorm > 0 ? minVolumeNorm : "不校验（关闭）"}</b>
           </label>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <input
@@ -285,10 +313,69 @@ export default function AssessmentSettings() {
             <span style={{ fontSize: 12, color: "#afafaf" }}>0 = 不校验</span>
           </div>
           <p style={{ fontSize: 12, color: "#afafaf", margin: "4px 0 0" }}>
-            录音平均音量低于此值（0-100 归一分）时，孩子端所有录音（考核朗读/背诵、聊天按住说话、音频转写）
-            都会提示重说、不送识别/不算答；服务端对考核提交的录音再校一次。
-            默认 42（约 -35dBFS），可按孩子实际录音情况调低/调高或关闭。
+            未单独设置的孩子（含以后新加的孩子）用这条默认线。录音平均音量低于此值（0-100 归一分）时，
+            孩子端所有录音（考核朗读/背诵、聊天按住说话、音频转写）都会提示重说、不送识别/不算答；
+            服务端对考核提交的录音再校一次。默认 42（约 -35dBFS）。
           </p>
+        </div>
+
+        {/* ISSUE-191：每个孩子单独的音量阈值——设备麦克风灵敏度 / 年龄 / 说话音量各不相同 */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: "block", fontSize: 13, marginBottom: 4, fontWeight: 500 }}>
+            每个孩子的录音阈值
+          </label>
+          <p style={{ fontSize: 12, color: "#afafaf", margin: "0 0 8px" }}>
+            每个孩子的设备麦克风、年龄和说话音量不同，可单独调整；单独设置优先于上面的默认线。
+            0 = 该孩子不校验。
+          </p>
+          {children.length === 0 ? (
+            <p style={{ fontSize: 12, color: "#afafaf", margin: 0 }}>暂无孩子</p>
+          ) : (
+            children.map((c) => {
+              const override = childNorm[c.childId];
+              const value = override == null ? minVolumeNorm : override;
+              const following = override == null;
+              return (
+                <div
+                  key={c.childId}
+                  style={{ display: "flex", alignItems: "center", gap: 10, margin: "6px 0" }}
+                >
+                  <span style={{ width: 96, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.name}>
+                    {c.avatar ? `${c.avatar} ` : ""}
+                    {c.name}
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={value}
+                    onChange={(e) =>
+                      setChildNorm((prev) => ({ ...prev, [c.childId]: Number(e.target.value) }))
+                    }
+                    style={{ flex: 1, maxWidth: 260 }}
+                  />
+                  <b style={{ width: 76, fontSize: 13 }}>{value > 0 ? value : "不校验"}</b>
+                  <button
+                    onClick={() => setChildNorm((prev) => ({ ...prev, [c.childId]: null }))}
+                    disabled={following}
+                    title="把该孩子恢复为跟随上面的默认线"
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 12,
+                      border: "1px solid #dde3ea",
+                      background: "#fff",
+                      color: following ? "#c8c8c8" : "#1cb0f6",
+                      fontSize: 12,
+                      cursor: following ? "default" : "pointer",
+                    }}
+                  >
+                    用默认
+                  </button>
+                </div>
+              );
+            })
+          )}
         </div>
 
         <div style={{ marginBottom: 8 }}>

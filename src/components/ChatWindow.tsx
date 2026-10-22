@@ -267,9 +267,10 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { recording, start, stop, streamRef } = useAudioRecorder();
-  // ISSUE-189：达标线=家长端「录音最低平均音量」（assessment_config.minVolumeNorm，0=不校验）；
-  // 录音中实时音量条 + 松开后 ASR 前置拦截都用这条线。
-  const minNorm = useVolumeThreshold();
+  // ISSUE-189 / ISSUE-191：达标线按「当前孩子」取（assessment_config.minVolumeNormByChild[childId]，
+  // 未单独设置回退家长默认 minVolumeNorm；0=不校验）；录音中实时音量条 + 松开后 ASR 前置拦截都用这条线。
+  // ISSUE-191：家长端聊天（owner="parent"）不做音量检测——不传 childId → minNorm=0 且不显示音量条。
+  const minNorm = useVolumeThreshold(isParent ? undefined : childId);
   // ISSUE-189：录音中实时音量条（复用录音流，逐帧 RMS 上色）——孩子边录边看声音够不够大；
   // 松开后再按整段平均音量做 ASR 前置拦截（不达标不发送给识别服务）。
   const meterRef = useRef<VolumeMeter | null>(null);
@@ -602,8 +603,9 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     setAudioTranscribeState((s) => ({ ...s, [uid]: { busy: true } }));
     try {
       const buf = await file.arrayBuffer();
-      // ISSUE-189：手动转写同样先校平均音量（上传/拖入的音频也算录音环节）——太小不送识别服务
-      const volumeNorm = await measureBlobVolumeNorm(new Blob([buf], { type: file.type || "audio/webm" }));
+      // ISSUE-189：手动转写同样先校平均音量（上传/拖入的音频也算录音环节）——太小不送识别服务。
+      // ISSUE-191：家长端聊天不做音量检测（isParent 时跳过解码测量，不拦）。
+      const volumeNorm = isParent ? null : await measureBlobVolumeNorm(new Blob([buf], { type: file.type || "audio/webm" }));
       if (isVolumeTooLow(volumeNorm, minNorm)) {
         setAudioTranscribeState((s) => ({
           ...s,
@@ -750,6 +752,8 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
   }
 
   function startLiveMeter() {
+    // ISSUE-191：家长端聊天不做音量检测（不画音量条/不测阈值）
+    if (isParent) return;
     const stream = streamRef.current;
     if (!stream || meterRef.current) return;
     const meter = createVolumeMeter(stream);
@@ -802,7 +806,8 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
     }
     // ISSUE-189：ASR 前置音量门——整段解码后算平均音量，不达标**不调用识别服务**，
     // 直接提示重说（测不出音量时放行，不因解码失败卡住孩子；与考核口径同一公式）。
-    const volumeNorm = await measureBlobVolumeNorm(blob);
+    // ISSUE-191：家长端聊天不做音量检测（跳过解码测量）。
+    const volumeNorm = isParent ? null : await measureBlobVolumeNorm(blob);
     if (isVolumeTooLow(volumeNorm, minNorm)) {
       // Web：并行听写结果是一次性消费账本，本次不调 voiceTranscribe 就主动丢弃，防串到下一次识别
       try {
@@ -1219,8 +1224,9 @@ export default function ChatWindow({ messages, onSend, disabled, running = false
         </div>
       )}
 
-      {/* ISSUE-189：录音中实时音量条（达标线=家长配置的录音最低平均音量；0=关闭则不画线） */}
-      {recording && (
+      {/* ISSUE-189：录音中实时音量条（达标线=该孩子配置的阈值；0=关闭则不画线）
+          ISSUE-191：家长端聊天完全不显示音量检测 UI */}
+      {recording && !isParent && (
         <div
           className="voice-live-meter"
           title={

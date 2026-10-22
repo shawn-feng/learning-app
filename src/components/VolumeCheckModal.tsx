@@ -15,17 +15,18 @@ import {
  *
  * 为什么要有：孩子声音小是 ASR 识别不准 / 朗读评分失真的头号原因（ISSUE-183 对考核已做前置校验，
  * 但孩子平时不知道自己"有多小"）。这里让孩子录一段、实时看音量条、录完直接给结论（达标/还差一点/太小），
- * 达标线就是聊天语音输入送 ASR 前的那条线（家长端「录音最低平均音量」，useVolumeThreshold
- * 读取，与考核 iframe 同源），所以「这里达标 = 录音能用」；家长设 0（关闭）时只显示音量、不做判定。
+ * 达标线就是聊天语音输入送 ASR 前的那条线（ISSUE-191 起按**当前孩子**取：家长在「设置 → 发音评测」
+ * 里给孩子单独配的阈值，未单独设置回退家长默认线；useVolumeThreshold 读取，与考核 iframe 同源），
+ * 所以「这里达标 = 录音能用」；家长设 0（关闭）时只显示音量、不做判定。
  *
  * 纯本地：只用 getUserMedia + decodeAudioData，不调 ASR / 不落盘 / 不上传，家长关了语音输入也能用。
  */
 type Phase = "idle" | "recording" | "measuring" | "done";
 
-export default function VolumeCheckModal({ onClose }: { onClose: () => void }) {
+export default function VolumeCheckModal({ childId, onClose }: { childId: string; onClose: () => void }) {
   const { recording, start, stop, streamRef } = useAudioRecorder();
-  // 达标线 = 家长端「录音最低平均音量」（0=不校验 → 只显示音量，不做达标判定）
-  const minNorm = useVolumeThreshold();
+  // 达标线 = 该孩子的阈值（0=不校验 → 只显示音量，不做达标判定）
+  const minNorm = useVolumeThreshold(childId);
   const [phase, setPhase] = useState<Phase>("idle");
   const [elapsed, setElapsed] = useState(0);
   const [norm, setNorm] = useState<number | null>(null);

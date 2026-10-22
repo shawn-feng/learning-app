@@ -169,11 +169,12 @@ describe("ISSUE-189 接线守卫（防后人把音量门删掉）", () => {
     expect(settings).toContain("音频转写");
   });
 
-  it("阈值读取走 assessmentConfigGet，失败回退默认 42", () => {
+  it("阈值读取走 assessmentConfigGet，失败回退默认 42（ISSUE-191 起按孩子解析）", () => {
     const hook = read("src/hooks/useVolumeThreshold.ts");
     expect(hook).toContain("assessmentConfigGet");
     expect(hook).toContain("DEFAULT_MIN_VOLUME_NORM");
-    expect(hook).toContain("parseVolumeThreshold");
+    // 解析（每孩子优先/默认线兜底/无 childId=0）收口到纯函数，便于单测
+    expect(hook).toContain("resolveVolumeThreshold");
   });
 
   it("考核 iframe：音量门改为全题型（不再只对口语题校），文字题 ASR 前同样拦", () => {

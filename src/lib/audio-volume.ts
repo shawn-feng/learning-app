@@ -1,5 +1,5 @@
 /**
- * ISSUE-183 / ISSUE-189：录音音量口径（客户端统一实现）。
+ * ISSUE-183 / ISSUE-189 / ISSUE-191：录音音量口径（客户端统一实现）。
  *
  * ⚠️ 公式与 `server/src/assessment/volume.ts`（服务端兜底）、`src/lib/exam-template.ts`
  * （考核 iframe 独立 HTML，无法 import）**完全一致**——任何一处改公式，三处必须同步。
@@ -13,6 +13,8 @@
  * - ISSUE-189 所有录音环节：录音实时音量条 + 送 ASR 前平均音量门（聊天语音输入 / 附件转写 /
  *   考核文字题 ASR），不达标直接拦下、不发送给识别服务。
  * - ISSUE-189 孩子端「声音检测」弹框：录一段、实时看音量、录完给达标结论。
+ * - ISSUE-191 阈值按孩子：`resolveVolumeThreshold` 优先取该孩子的单独设置，否则回退家长默认线；
+ *   没有 childId = 家长端上下文 → 0（家长不需要音量检测）。
  */
 
 /** 归一分满分区间下限（dBFS）：低于它按 0 分计。 */
@@ -23,9 +25,11 @@ export const DEFAULT_MIN_VOLUME_NORM = 42;
 
 /**
  * 语音输入 / ASR 前置音量线的**默认值**（ISSUE-189）：与 ISSUE-183 考核默认阈值同档
- * （42 ≈ -35 dBFS）。实际生效的线由家长端「设置 → 发音评测 → 录音最低平均音量」决定
- * （`assessment_config.minVolumeNorm`，0=不校验），客户端经 `useVolumeThreshold` 读取；
- * 读不到配置时回退本值。考核 iframe 同源用 `GET /exam/config` 的 `examRules.minVolumeNorm`。
+ * （42 ≈ -35 dBFS）。实际生效的线由家长端「设置 → 发音评测」按孩子配置——ISSUE-191 起
+ * 每个孩子可单独设置（`assessment_config.minVolumeNormByChild[childId]`），未单独设置回退
+ * 家长默认线 `minVolumeNorm`。客户端经 `useVolumeThreshold(childId)` / `resolveVolumeThreshold`
+ * 读取；读不到配置时回退本值。考核 iframe 同源用 `GET /exam/config/:childId` 的
+ * `examRules.minVolumeNorm`（服务端按孩子解析）。
  */
 export const MIN_ASR_VOLUME_NORM = DEFAULT_MIN_VOLUME_NORM;
 
@@ -49,6 +53,29 @@ export function parseVolumeThreshold(v: unknown, fallback: number): number {
   const n = Math.round(Number(v));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(100, Math.max(0, n));
+}
+
+/** 家长端评估配置里与音量阈值相关的字段（`GET /assessment/config` 的 config 子集）。 */
+export interface VolumeThresholdConfig {
+  /** 家长默认线（新孩子 / 未单独设置的孩子）；0 = 不校验 */
+  minVolumeNorm?: unknown;
+  /** ISSUE-191：每个孩子单独的音量阈值（childId → 0-100，0 = 该孩子不校验） */
+  minVolumeNormByChild?: Record<string, unknown> | null;
+}
+
+/**
+ * ISSUE-191：某孩子实际生效的阈值——有单独设置用单独的（含 0 = 该孩子关闭），
+ * 没单独设置回退家长默认线；**没有 childId（家长端聊天 / 试音）返回 0**：家长不需要音量阈值检测。
+ * 与 `server/src/assessment/config.ts` 的 `resolveMinVolumeNorm` 同一语义。
+ */
+export function resolveVolumeThreshold(
+  config: VolumeThresholdConfig | null | undefined,
+  childId?: string
+): number {
+  if (!childId) return 0;
+  const per = config?.minVolumeNormByChild?.[childId];
+  const raw = per != null ? per : config?.minVolumeNorm;
+  return parseVolumeThreshold(raw, DEFAULT_MIN_VOLUME_NORM);
 }
 
 /** 音量门是否开启（0 = 家长关闭校验 / 不拦）。 */

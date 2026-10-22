@@ -1416,7 +1416,7 @@ export default function Learn({ child, onExit }: Props) {
       {showMistakes && <MistakeBookModal childId={child.childId} onClose={() => setShowMistakes(false)} />}
       {showFiles && <FilesPanel childId={child.childId} onClose={() => setShowFiles(false)} />}
       {/* ISSUE-189：声音检测弹框（孩子录一段 → 实时音量条 → 平均音量达标结论） */}
-      {showVolumeCheck && <VolumeCheckModal onClose={() => setShowVolumeCheck(false)} />}
+      {showVolumeCheck && <VolumeCheckModal childId={child.childId} onClose={() => setShowVolumeCheck(false)} />}
       {showTodo && (
         <TodoModal
           childId={child.childId}
