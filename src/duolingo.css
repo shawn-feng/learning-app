@@ -11,6 +11,12 @@
   --duo-green-deep: #46a302;
   --duo-green-tint: #e9f9dc;
   --duo-green-soft: #f3fbe9;
+  /* 聊天里「孩子自己说的话」用低饱和浅绿 + 深色字：大面积浅底比亮绿底白字更不刺眼 */
+  --duo-user-bubble: #e3f3d2;
+  --duo-user-bubble-edge: #cfe6b8;
+  --duo-user-bubble-border: #c4e0a9;
+  --duo-user-ink: #33501c;
+  --duo-user-ink-soft: #587244;
   --duo-blue: #1cb0f6;
   --duo-blue-dark: #1899d6;
   --duo-blue-tint: #ddf4ff;
@@ -1391,12 +1397,12 @@ button[style*="rgb(255, 200, 0)"] {
 }
 
 .message.user .bubble {
-  background: var(--duo-green);
-  color: #fff;
-  border: none;
+  background: var(--duo-user-bubble);
+  color: var(--duo-user-ink);
+  border: 2px solid var(--duo-user-bubble-border);
   border-bottom-right-radius: 6px;
-  font-weight: 600;
-  box-shadow: 0 3px 0 var(--duo-green-dark);
+  font-weight: 500;
+  box-shadow: 0 2px 0 var(--duo-user-bubble-edge);
 }
 
 .message.ai .bubble {
@@ -1412,7 +1418,35 @@ button[style*="rgb(255, 200, 0)"] {
 }
 
 .message.user .msg-time {
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--duo-user-ink-soft);
+}
+
+/* 用户气泡内的加粗/链接/附件在浅绿底上改成深色，避免白字消失 */
+.message.user .bubble-md strong {
+  color: #2c4a17;
+}
+
+.message.user .bubble-md a {
+  color: #1b6b86;
+}
+
+.message.user .bubble-file-thumb {
+  background: rgba(47, 74, 26, 0.06);
+}
+
+.message.user .bubble-file-thumb:hover {
+  background: rgba(47, 74, 26, 0.12);
+}
+
+.message.user .bubble-file-name,
+.message.user .bubble-file-row {
+  background: rgba(47, 74, 26, 0.07);
+  color: var(--duo-user-ink);
+}
+
+.message.user .bubble-file-name:hover,
+.message.user .bubble-file-row.clickable:hover {
+  background: rgba(47, 74, 26, 0.14);
 }
 
 .message.ai .msg-time {
