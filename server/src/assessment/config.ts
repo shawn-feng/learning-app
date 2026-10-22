@@ -15,8 +15,15 @@ export interface AssessmentConfig {
   enabled: boolean;
   provider: AssessmentProviderId;
   providers: Record<AssessmentProviderId, Record<string, string>>;
-  /** 考核录音最低平均音量（0-100 归一分，与客户端 exam-template 同一口径，见 volume.ts）。0 = 不校验。 */
+  /** 考核录音最低平均音量（0-100 归一分，与客户端 exam-template 同一口径，见 volume.ts）。0 = 不校验。
+   *  ISSUE-191 起作为**默认线**：孩子没有单独设置时用它（新孩子 / 旧配置 / 未单独配置的孩子）。 */
   minVolumeNorm: number;
+  /**
+   * ISSUE-191：每个孩子单独的音量阈值（childId → 0-100 归一分，0 = 该孩子不校验）。
+   * 每个孩子的设备麦克风灵敏度、年龄/说话音量都不一样，家长按孩子单独设置；未出现在表里的孩子
+   * 回退 `minVolumeNorm`（默认线）。存储仍在该家长的 assessment_config 加密 JSON 内，随配置下发。
+   */
+  minVolumeNormByChild: Record<string, number>;
   /** 朗读/背诵通过线家长默认值（0-100）。题目/方法/排期自带 recitePass 时以题目为准，未设才用它。 */
   recitePassDefault: number;
   /**
@@ -39,6 +46,52 @@ export function parseTypeThres(v: unknown, fallback: number): number {
 
 export const ASSESSMENT_PROVIDER_ORDER: AssessmentProviderId[] = ["tencent-soe", "aliyun-ssecp"];
 
+/**
+ * 合并「每个孩子的阈值覆盖表」补丁（ISSUE-191）：
+ * - 数值 → 夹取到 0-100 写入（0 = 该孩子不校验）；
+ * - `null` → 删除该孩子的覆盖（回到家长默认线）——设置页「用默认」按钮用它；
+ * - 非法值/空 childId 忽略；非对象补丁原样返回 existing。
+ */
+export function mergeVolumeNormByChild(
+  existing: Record<string, number>,
+  patch: unknown
+): Record<string, number> {
+  const next: Record<string, number> = { ...(existing || {}) };
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return next;
+  for (const [childId, raw] of Object.entries(patch as Record<string, unknown>)) {
+    if (!childId) continue;
+    if (raw === null) {
+      delete next[childId];
+      continue;
+    }
+    const n = Math.round(Number(raw));
+    if (!Number.isFinite(n)) continue;
+    next[childId] = Math.min(100, Math.max(0, n));
+  }
+  return next;
+}
+
+/**
+ * 解析已落盘的「每个孩子的阈值覆盖表」（ISSUE-191）：只收 childId 非空、值为 0-100 整数的条目，
+ * 非法/数组/非对象一律丢弃（旧配置无此字段 → 空表，回退家长默认线）。
+ */
+export function parseVolumeNormByChild(v: unknown): Record<string, number> {
+  return mergeVolumeNormByChild({}, v);
+}
+
+/**
+ * 某孩子实际生效的音量阈值：有单独设置（ISSUE-191）用单独的（含 0=该孩子不校验），
+ * 否则回退家长默认线 `minVolumeNorm`。考核/聊天/服务端兜底三处都走本函数，避免口径漂移。
+ */
+export function resolveMinVolumeNorm(
+  cfg: Pick<AssessmentConfig, "minVolumeNorm" | "minVolumeNormByChild">,
+  childId?: string
+): number {
+  if (!childId) return cfg.minVolumeNorm;
+  const per = cfg.minVolumeNormByChild?.[childId];
+  return per == null ? cfg.minVolumeNorm : per;
+}
+
 const DEFAULT_CONFIG: AssessmentConfig = {
   enabled: false,
   provider: "tencent-soe",
@@ -47,6 +100,7 @@ const DEFAULT_CONFIG: AssessmentConfig = {
     "aliyun-ssecp": { appKey: "", appSecret: "", userId: "pi-child" },
   },
   minVolumeNorm: DEFAULT_EXAM_MIN_VOLUME_NORM,
+  minVolumeNormByChild: {},
   recitePassDefault: DEFAULT_EXAM_RECITE_PASS,
   typeThres: 0,
 };
@@ -57,7 +111,7 @@ export function loadAssessmentConfig(db: DatabaseSync, parentId: string, dataDir
   const row = db
     .prepare("SELECT value_json FROM assessment_config WHERE parent_id = ?")
     .get(parentId) as { value_json: string } | undefined;
-  if (!row) return { ...DEFAULT_CONFIG, providers: { ...DEFAULT_CONFIG.providers } };
+  if (!row) return { ...DEFAULT_CONFIG, providers: { ...DEFAULT_CONFIG.providers }, minVolumeNormByChild: {} };
   let parsed: any = null;
   try {
     const dec = decryptJson(secret, row.value_json);
@@ -66,7 +120,7 @@ export function loadAssessmentConfig(db: DatabaseSync, parentId: string, dataDir
     parsed = null;
   }
   if (!parsed || typeof parsed !== "object") {
-    return { ...DEFAULT_CONFIG, providers: { ...DEFAULT_CONFIG.providers } };
+    return { ...DEFAULT_CONFIG, providers: { ...DEFAULT_CONFIG.providers }, minVolumeNormByChild: {} };
   }
   return {
     enabled: !!parsed.enabled,
@@ -77,6 +131,8 @@ export function loadAssessmentConfig(db: DatabaseSync, parentId: string, dataDir
     },
     // ISSUE-183：旧配置无这两个字段 → 回默认值（阈值 42≈-35dBFS / 通过线 90）
     minVolumeNorm: parseVolumeThreshold(parsed.minVolumeNorm, DEFAULT_EXAM_MIN_VOLUME_NORM),
+    // ISSUE-191：旧配置无「每个孩子」覆盖表 → 空表（全员回退上面的默认线）
+    minVolumeNormByChild: parseVolumeNormByChild(parsed.minVolumeNormByChild),
     recitePassDefault: parsePassLine(parsed.recitePassDefault, DEFAULT_EXAM_RECITE_PASS),
     // 旧配置无 typeThres → 0（不启用，保持引擎默认松紧）
     typeThres: parseTypeThres(parsed.typeThres, DEFAULT_CONFIG.typeThres),
@@ -97,6 +153,8 @@ export function getMaskedAssessmentConfig(cfg: AssessmentConfig): AssessmentConf
     provider: cfg.provider,
     providers: {} as AssessmentConfig["providers"],
     minVolumeNorm: cfg.minVolumeNorm,
+    // ISSUE-191：每孩子阈值不是密钥，原样回显（设置页按孩子展示滑条）
+    minVolumeNormByChild: { ...(cfg.minVolumeNormByChild || {}) },
     recitePassDefault: cfg.recitePassDefault,
     typeThres: cfg.typeThres,
   };
@@ -120,6 +178,8 @@ export function applyAssessmentConfigPatch(
     provider?: string;
     providers?: Record<string, Record<string, string>>;
     minVolumeNorm?: number;
+    /** ISSUE-191：按孩子覆盖（childId → 0-100，null=删除回到默认线）；只更新传入的条目，未传的条目保留 */
+    minVolumeNormByChild?: Record<string, number | null>;
     recitePassDefault?: number;
     typeThres?: number;
   }
@@ -129,6 +189,10 @@ export function applyAssessmentConfigPatch(
   if (patch.provider) cfg.provider = patch.provider as AssessmentProviderId;
   // ISSUE-183：两个字段传了（含 0=不校验）才更新；未传保持原值
   if (patch.minVolumeNorm != null) cfg.minVolumeNorm = parseVolumeThreshold(patch.minVolumeNorm, cfg.minVolumeNorm);
+  // ISSUE-191：合并式更新——null 删除该孩子的覆盖（「用默认」），旧客户端/局部保存不传本字段时不动既有覆盖
+  if (patch.minVolumeNormByChild) {
+    cfg.minVolumeNormByChild = mergeVolumeNormByChild(cfg.minVolumeNormByChild, patch.minVolumeNormByChild);
+  }
   if (patch.recitePassDefault != null) cfg.recitePassDefault = parsePassLine(patch.recitePassDefault, cfg.recitePassDefault);
   if (patch.typeThres != null) cfg.typeThres = parseTypeThres(patch.typeThres, cfg.typeThres);
 

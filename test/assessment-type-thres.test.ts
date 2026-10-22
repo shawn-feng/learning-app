@@ -29,11 +29,14 @@ describe("打码配置回显 typeThres", () => {
       provider: "aliyun-ssecp",
       providers: { "tencent-soe": {}, "aliyun-ssecp": { appKey: "ak-1234567890", appSecret: "sk-1234567890" } },
       minVolumeNorm: 42,
+      minVolumeNormByChild: { "child-a": 60 },
       recitePassDefault: 90,
       typeThres: 2,
     };
     const masked = getMaskedAssessmentConfig(base);
     expect(masked.typeThres).toBe(2);
+    // ISSUE-191：每孩子阈值不是密钥，原样回显
+    expect(masked.minVolumeNormByChild).toEqual({ "child-a": 60 });
     // 顺带确认密钥仍打码（typeThres 不应影响打码逻辑）
     expect(masked.providers["aliyun-ssecp"].appSecret).toContain("****");
   });

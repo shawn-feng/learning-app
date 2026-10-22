@@ -14,7 +14,7 @@ import { ApiError } from "../auth/proxy.js";
 import { verifySession } from "../auth/jwt.js";
 import { resolveStoredFileAbs } from "./files.js";
 import { ASSESS_AUDIO_MAX_BYTES, bytesLabel } from "../util/limits.js";
-import { assessAudio, toSpeechAssessment, loadAssessmentConfig, getMaskedAssessmentConfig, applyAssessmentConfigPatch } from "../assessment/index.js";
+import { assessAudio, toSpeechAssessment, loadAssessmentConfig, getMaskedAssessmentConfig, applyAssessmentConfigPatch, resolveMinVolumeNorm } from "../assessment/index.js";
 import { webmToWav16k, wavAverageVolumeNorm } from "../assessment/audio.js";
 
 interface AssessmentDeps {
@@ -96,6 +96,8 @@ export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentD
       provider?: string;
       providers?: Record<string, Record<string, string>>;
       minVolumeNorm?: number;
+      /** ISSUE-191：每个孩子单独的音量阈值（childId → 0-100，null=删除回默认线）；合并式更新 */
+      minVolumeNormByChild?: Record<string, number | null>;
       recitePassDefault?: number;
       typeThres?: number;
     };
@@ -104,6 +106,7 @@ export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentD
       provider: body.provider,
       providers: body.providers,
       minVolumeNorm: body.minVolumeNorm,
+      minVolumeNormByChild: body.minVolumeNormByChild,
       recitePassDefault: body.recitePassDefault,
       typeThres: body.typeThres,
     });
@@ -139,21 +142,24 @@ export function registerAssessmentRoutes(app: FastifyInstance, deps: AssessmentD
     try {
       const audio = readAudioBytes(db, config.dataDir, parentId, fileId);
       // ISSUE-183 服务端兜底：评测前对合并音频整体再算一次平均音量（客户端 iframe 已有前置校验，
-      // 这里拦旧版客户端 / 绕过场景）。低于家长阈值 → 该题按未答拦下，返回明确错误码，不送评测引擎。
+      // 这里拦旧版客户端 / 绕过场景）。低于阈值 → 该题按未答拦下，返回明确错误码，不送评测引擎。
+      // ISSUE-191：阈值按当前孩子取（有单独设置用单独的，否则家长默认线）；没有 childId 的是家长端
+      // 「测试评测」试音（孩子上下文为空）→ 不做音量校验（家长不需要音量阈值检测）。
       // 仅评测启用时生效；转码失败不在本环节定论（assessAudio 会报原始转换错误）。
       const assessCfg = loadAssessmentConfig(db, parentId, config.dataDir);
+      const minVolumeNorm = childId ? resolveMinVolumeNorm(assessCfg, childId) : 0;
       let wav16k: Buffer | undefined;
-      if (assessCfg.enabled && assessCfg.minVolumeNorm > 0) {
+      if (assessCfg.enabled && minVolumeNorm > 0) {
         try {
           wav16k = await webmToWav16k(audio);
           const norm = wavAverageVolumeNorm(wav16k);
-          if (norm < assessCfg.minVolumeNorm) {
-            req.log.warn({ fileId, childId, volumeNorm: norm, minVolumeNorm: assessCfg.minVolumeNorm }, "录音平均音量低于阈值，按未答拦下");
+          if (norm < minVolumeNorm) {
+            req.log.warn({ fileId, childId, volumeNorm: norm, minVolumeNorm }, "录音平均音量低于阈值，按未答拦下");
             return reply.code(422).send({
-              error: `声音太小啦（音量 ${norm}，需要 ${assessCfg.minVolumeNorm}）。请大声一点重新录音。`,
+              error: `声音太小啦（音量 ${norm}，需要 ${minVolumeNorm}）。请大声一点重新录音。`,
               code: "VOLUME_TOO_LOW",
               volumeNorm: norm,
-              minVolumeNorm: assessCfg.minVolumeNorm,
+              minVolumeNorm,
             });
           }
         } catch {

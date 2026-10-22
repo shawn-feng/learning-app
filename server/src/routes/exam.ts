@@ -24,7 +24,7 @@ import { getRetakeCountInRate, maybeCreateRetakePlan, setRetakeCountInRate } fro
 import { masterByQuestion, upsertExamMistake } from "../db/mistakes.js";
 import { persistExamResult } from "../exam-results.js";
 import { attachStructuredQuestions, attachPlanQuestions, buildPlanSpecEntries, parsePlanCourses, type PlanCourseSpec } from "../assess-selection.js";
-import { loadAssessmentConfig } from "../assessment/index.js";
+import { loadAssessmentConfig, resolveMinVolumeNorm } from "../assessment/index.js";
 import {
   getOrCreateKnowledgePoint,
   saveQuestion,
@@ -722,11 +722,11 @@ export function registerExamRoutes(app: FastifyInstance, deps: ExamDeps): void {
     //  - 自定义考核计划（scope.courses 指定范围）：直接返回带 rubric 的课程（家长已定范围，不经过选课 LLM）
     //  - 固定考核计划：内置规则 = 计划周期内「必学」课程全部考核（范围在开考时按学习计划窗口实时计算）
     //  - 带 courses=title1,title2 参数：返回选中课程（含 rubric）+ 判分 prompt（第二段兼容路径）
-    // ISSUE-183：随配置一并下发家长级考核规则——考核录音最低平均音量（孩子端 iframe 前置校验）
-    // 与朗读/背诵通过线家长默认值（题目未自带 recitePass 时用）。
+    // ISSUE-183 / ISSUE-191：随配置一并下发考核规则——考核录音最低平均音量（孩子端 iframe 前置校验，
+    // 按**当前孩子**取：有单独设置用单独的，否则回退家长默认线）与朗读/背诵通过线家长默认值。
     const assessCfg = loadAssessmentConfig(deps.db, parentId, deps.config.dataDir);
     const examRules = {
-      minVolumeNorm: assessCfg.minVolumeNorm,
+      minVolumeNorm: resolveMinVolumeNorm(assessCfg, childId),
       recitePassDefault: assessCfg.recitePassDefault,
     };
     const planId = String((req.query as { schedule?: string }).schedule || "");

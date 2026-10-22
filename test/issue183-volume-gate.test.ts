@@ -26,6 +26,8 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "issue183-vol-"));
 const SECRET = "test-secret-183";
 const parentId = "parent-r183";
 const childId = "child-r183";
+// ISSUE-191：第二个孩子——用于验证「没有单独设置 → 回退默认线」
+const child2Id = "child-r183-b";
 
 const mainDb = openDb(dataDir);
 const config: ServerConfig = {
@@ -42,14 +44,14 @@ let token: string;
 const QUIET = makeWav(0.005); // -49 dBFS → 18 分
 const LOUD = makeWav(0.2); // -17 dBFS → 72 分
 
-function seedAudio(id: string, stored: string, buf: Buffer): void {
+function seedAudio(id: string, stored: string, buf: Buffer, ownerChild: string = childId): void {
   const now = new Date().toISOString();
   mainDb
     .prepare(
       "INSERT INTO files (id, parent_id, child_id, original_name, stored_path, mime, size, created_at) VALUES (?,?,?,?,?,?,?,?)"
     )
-    .run(id, parentId, childId, stored, stored, "audio/wav", buf.length, now);
-  const abs = path.join(dataDir, "workspaces", parentId, childId, "uploads", stored);
+    .run(id, parentId, ownerChild, stored, stored, "audio/wav", buf.length, now);
+  const abs = path.join(dataDir, "workspaces", parentId, ownerChild, "uploads", stored);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, buf);
 }
@@ -64,14 +66,21 @@ async function saveConfig(patch: Record<string, unknown>): Promise<void> {
   expect(res.statusCode).toBe(200);
 }
 
-async function assess(fileId: string): Promise<{ status: number; body: Record<string, unknown> }> {
+async function assessAs(
+  ownerChild: string,
+  fileId: string
+): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await app.inject({
     method: "POST",
     url: "/api/v1/assessment/assess",
     headers: { authorization: `Bearer ${token}` },
-    payload: { childId, audioFileId: fileId, refText: "你好世界" },
+    payload: { childId: ownerChild, audioFileId: fileId, refText: "你好世界" },
   });
   return { status: res.statusCode, body: res.json() as Record<string, unknown> };
+}
+
+async function assess(fileId: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  return assessAs(childId, fileId);
 }
 
 beforeAll(async () => {
@@ -80,8 +89,12 @@ beforeAll(async () => {
   mainDb
     .prepare("INSERT INTO children (id,parent_id,name,created_at,updated_at) VALUES (?,?,?,?,?)")
     .run(childId, parentId, "珊珊", now, now);
+  mainDb
+    .prepare("INSERT INTO children (id,parent_id,name,created_at,updated_at) VALUES (?,?,?,?,?)")
+    .run(child2Id, parentId, "闻闻", now, now);
   seedAudio("file-quiet", "quiet.wav", QUIET);
   seedAudio("file-loud", "loud.wav", LOUD);
+  seedAudio("file-quiet-2", "quiet2.wav", QUIET, child2Id);
   token = signSession({ parent_id: parentId, email: "r183@test", plan: "basic" }, SECRET, 7);
   app = Fastify();
   registerAssessmentRoutes(app, { config, db: mainDb });
@@ -134,6 +147,36 @@ describe("ISSUE-183 录音平均音量服务端兜底", () => {
     const r = await assess("file-quiet");
     expect(r.status).toBe(502);
     expect(String(r.body.error)).toContain("发音评测未启用");
+  });
+});
+
+// ISSUE-191：家长按孩子单独设置阈值后，服务端兜底按该孩子的线拦（不再所有孩子共用一条）。
+describe("ISSUE-191 服务端兜底：按孩子阈值", () => {
+  it("该孩子单独 60 → 小声(18)按 60 拦下（不是全局 42）", async () => {
+    await saveConfig({ enabled: true, minVolumeNorm: 42, minVolumeNormByChild: { [childId]: 60 } });
+    const r = await assess("file-quiet");
+    expect(r.status, JSON.stringify(r.body)).toBe(422);
+    expect(r.body.code).toBe("VOLUME_TOO_LOW");
+    expect(r.body.minVolumeNorm).toBe(60);
+  });
+
+  it("该孩子显式设 0（关闭）→ 小声也不拦", async () => {
+    await saveConfig({ enabled: true, minVolumeNorm: 42, minVolumeNormByChild: { [childId]: 0 } });
+    const r = await assess("file-quiet");
+    expect(r.status).not.toBe(422);
+  });
+
+  it("另一个孩子没有单独设置 → 回退默认线（默认 0 时小声也不拦）", async () => {
+    await saveConfig({ enabled: true, minVolumeNorm: 0, minVolumeNormByChild: { [childId]: 60 } });
+    const r = await assessAs(child2Id, "file-quiet-2");
+    expect(r.status).not.toBe(422);
+  });
+
+  it("家长端试音（childId 为空）→ 不做音量校验", async () => {
+    await saveConfig({ enabled: true, minVolumeNorm: 42, minVolumeNormByChild: { [childId]: 60 } });
+    const r = await assessAs("", "file-quiet");
+    expect(r.status).not.toBe(422);
+    expect(String(r.body.error)).not.toContain("声音太小");
   });
 });
 

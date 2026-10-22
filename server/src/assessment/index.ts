@@ -32,7 +32,14 @@ export async function assessAudio(
   throw new Error(`未知评测服务：${id}`);
 }
 
-export { loadAssessmentConfig, getMaskedAssessmentConfig, applyAssessmentConfigPatch } from "./config.js";
+export {
+  loadAssessmentConfig,
+  getMaskedAssessmentConfig,
+  applyAssessmentConfigPatch,
+  resolveMinVolumeNorm,
+  parseVolumeNormByChild,
+  mergeVolumeNormByChild,
+} from "./config.js";
 export type { AssessmentConfig } from "./config.js";
 export type { AssessmentProviderId, AssessmentResult, SpeechAssessment } from "./types.js";
 export { toSpeechAssessment } from "./toSpeechAssessment.js";
