@@ -24,6 +24,9 @@ jobs:
           npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
 
+      - name: Install root dependencies (shared src)
+        run: npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund
+
       - name: Build web UI
         run: |
           (cd web && npm install --legacy-peer-deps --no-audit --no-fund)
