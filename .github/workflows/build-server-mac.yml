@@ -21,12 +21,12 @@ jobs:
       - name: Build server bundle
         run: |
           cd server
-          npm ci --legacy-peer-deps
+          npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
 
       - name: Build web UI
         run: |
-          (cd web && npm ci --legacy-peer-deps)
+          (cd web && npm install --legacy-peer-deps --no-audit --no-fund)
           npm --prefix web run build
 
       - name: Download Node 22 x64
