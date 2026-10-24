@@ -1,0 +1,94 @@
+name: Build macOS Server (x64)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build-mac-server:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build server bundle
+        run: |
+          cd server
+          npm ci --legacy-peer-deps
+          npm run build
+
+      - name: Build web UI
+        run: |
+          (cd web && npm ci --legacy-peer-deps)
+          npm --prefix web run build
+
+      - name: Download Node 22 x64
+        run: |
+          mkdir -p build/runtime
+          curl -fsSL https://nodejs.org/dist/v22.23.3/node-v22.23.3-darwin-x64.tar.gz -o /tmp/node.tar.gz
+          tar -xzf /tmp/node.tar.gz -C /tmp
+          cp /tmp/node-v22.23.3-darwin-x64/bin/node build/runtime/node
+          chmod +x build/runtime/node
+          file build/runtime/node
+
+      - name: Download ffmpeg x64
+        run: |
+          curl -fsSL https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-x64.gz -o /tmp/ffmpeg.gz
+          gunzip -c /tmp/ffmpeg.gz > build/runtime/ffmpeg
+          chmod +x build/runtime/ffmpeg
+          file build/runtime/ffmpeg
+
+      - name: Assemble runtime
+        run: |
+          cp server/dist/server.cjs build/runtime/server.cjs
+          mkdir -p build/runtime/web
+          cp -R web/dist build/runtime/web/dist
+          echo "0.5.41" > build/runtime/VERSION
+          ls -lh build/runtime
+
+      - name: Compile menu bar app (x86_64 / macOS 12)
+        run: |
+          mkdir -p build/app/Contents/MacOS build/app/Contents/Resources
+          SDK="$(xcrun --sdk macosx --show-sdk-path)"
+          xcrun swiftc -O -swift-version 5 -target x86_64-apple-macos12.0 -sdk "$SDK" \
+            -framework AppKit -framework IOKit \
+            mac-server/main.swift -o build/app/Contents/MacOS/LearningServer
+          cp mac-server/Info.plist build/app/Contents/Info.plist
+          cp -R build/runtime build/app/Contents/Resources/runtime
+          file build/app/Contents/MacOS/LearningServer
+
+      - name: Ad-hoc sign
+        run: |
+          codesign --force --deep --sign - --timestamp=none build/app
+          codesign --verify --deep --strict --verbose=2 build/app || true
+
+      - name: Create DMG
+        run: |
+          mkdir -p build/dmg
+          cp -R build/app "build/dmg/学习伙伴服务端.app"
+          ln -s /Applications build/dmg/Applications
+          cp mac-server/README.txt "build/dmg/安装说明.txt"
+          hdiutil create -volname "学习伙伴服务端" -srcfolder build/dmg -ov -format UDZO "LearningServer-0.5.41-x64.dmg"
+          hdiutil verify "LearningServer-0.5.41-x64.dmg"
+          shasum -a 256 "LearningServer-0.5.41-x64.dmg" | tee "LearningServer-0.5.41-x64.dmg.sha256"
+
+      - name: Zip app for inspection
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent build/app "LearningServer-0.5.41-x64-app.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LearningServer-0.5.41-x64
+          path: |
+            LearningServer-0.5.41-x64.dmg
+            LearningServer-0.5.41-x64.dmg.sha256
+            LearningServer-0.5.41-x64-app.zip
+          if-no-files-found: error
