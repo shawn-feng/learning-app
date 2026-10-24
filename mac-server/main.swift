@@ -410,7 +410,7 @@ final class ServerAppDelegate: NSObject, NSApplicationDelegate {
                 var assertion: IOPMAssertionID = 0
                 let reason = "学习伙伴服务端需要持续运行" as CFString
                 let result = IOPMAssertionCreateWithName(
-                    kIOPMAssertionTypeNoIdleSleep,
+                    kIOPMAssertionTypeNoIdleSleep as CFString,
                     IOPMAssertionLevel(kIOPMAssertionLevelOn),
                     reason,
                     &assertion
