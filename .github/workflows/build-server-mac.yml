@@ -59,6 +59,7 @@ jobs:
       - name: Compile menu bar app (x86_64 / macOS 12)
         run: |
           mkdir -p build/app/Contents/MacOS build/app/Contents/Resources
+          plutil -lint mac-server/Info.plist
           SDK="$(xcrun --sdk macosx --show-sdk-path)"
           xcrun swiftc -O -swift-version 5 -target x86_64-apple-macos12.0 -sdk "$SDK" \
             -framework AppKit -framework IOKit \
@@ -66,6 +67,8 @@ jobs:
           cp mac-server/Info.plist build/app/Contents/Info.plist
           cp -R build/runtime build/app/Contents/Resources/runtime
           file build/app/Contents/MacOS/LearningServer
+          vtool -show-build build/app/Contents/MacOS/LearningServer | head -20
+          otool -L build/app/Contents/MacOS/LearningServer | head -20
 
       - name: Ad-hoc sign
         run: |
